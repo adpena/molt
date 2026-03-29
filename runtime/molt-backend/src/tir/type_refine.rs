@@ -126,8 +126,8 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         for block in func.blocks.values() {
             // A block whose first op is StateBlockStart or CheckException
             // is an exception handler — its args must stay DynBox.
-            if let Some(first_op) = block.ops.first() {
-                if matches!(
+            if let Some(first_op) = block.ops.first()
+                && matches!(
                     first_op.opcode,
                     OpCode::StateBlockStart | OpCode::CheckException
                 ) {
@@ -135,7 +135,6 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                         eh_handler_args.insert(arg.id);
                     }
                 }
-            }
         }
     }
 

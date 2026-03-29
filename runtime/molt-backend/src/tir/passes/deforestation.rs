@@ -332,11 +332,10 @@ fn fuse_sum(func: &mut TirFunction, chain: &IteratorChain, stats: &mut PassStats
     }
 
     // 3. Replace the CallBuiltin in the consumer block with the Copy.
-    if let Some(consumer) = func.blocks.get_mut(&chain.consumer_block) {
-        if chain.consumer_op_idx < consumer.ops.len() {
+    if let Some(consumer) = func.blocks.get_mut(&chain.consumer_block)
+        && chain.consumer_op_idx < consumer.ops.len() {
             consumer.ops[chain.consumer_op_idx] = copy_op;
         }
-    }
 
     stats.values_changed += 1;
     stats.ops_added += 2; // init + add
@@ -402,11 +401,10 @@ fn fuse_any_all(
     if let Some(header) = func.blocks.get_mut(&chain.loop_header_block) {
         header.ops.insert(chain.for_iter_op_idx, init_op);
     }
-    if let Some(consumer) = func.blocks.get_mut(&chain.consumer_block) {
-        if chain.consumer_op_idx < consumer.ops.len() {
+    if let Some(consumer) = func.blocks.get_mut(&chain.consumer_block)
+        && chain.consumer_op_idx < consumer.ops.len() {
             consumer.ops[chain.consumer_op_idx] = copy_op;
         }
-    }
 
     stats.values_changed += 1;
     stats.ops_added += 1;
@@ -468,11 +466,10 @@ fn fuse_min_max(
         body.ops.push(init_op);
         body.ops.push(cmp_op);
     }
-    if let Some(consumer) = func.blocks.get_mut(&chain.consumer_block) {
-        if chain.consumer_op_idx < consumer.ops.len() {
+    if let Some(consumer) = func.blocks.get_mut(&chain.consumer_block)
+        && chain.consumer_op_idx < consumer.ops.len() {
             consumer.ops[chain.consumer_op_idx] = copy_op;
         }
-    }
 
     stats.values_changed += 1;
     stats.ops_added += 2;
@@ -527,11 +524,10 @@ fn fuse_list(func: &mut TirFunction, chain: &IteratorChain, stats: &mut PassStat
     if let Some(body) = func.blocks.get_mut(&chain.loop_body_block) {
         body.ops.push(store_op);
     }
-    if let Some(consumer) = func.blocks.get_mut(&chain.consumer_block) {
-        if chain.consumer_op_idx < consumer.ops.len() {
+    if let Some(consumer) = func.blocks.get_mut(&chain.consumer_block)
+        && chain.consumer_op_idx < consumer.ops.len() {
             consumer.ops[chain.consumer_op_idx] = copy_op;
         }
-    }
 
     stats.values_changed += 1;
     stats.ops_added += 2;

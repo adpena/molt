@@ -604,7 +604,7 @@ impl<'a> LuauEmitter<'a> {
                 if exprs.is_empty() {
                     self.line("return");
                 } else {
-                    let vals: Vec<String> = exprs.iter().map(|e| fmt_expr(e)).collect();
+                    let vals: Vec<String> = exprs.iter().map(fmt_expr).collect();
                     self.line(&format!("return {}", vals.join(", ")));
                 }
             }
@@ -692,11 +692,11 @@ fn fmt_expr(expr: &LuauExpr) -> String {
         LuauExpr::Index(t, k) => format!("{}[{}]", fmt_expr(t), fmt_expr(k)),
         LuauExpr::Field(obj, field) => format!("{}.{}", fmt_expr(obj), field),
         LuauExpr::Call(func, args) => {
-            let args_str: Vec<String> = args.iter().map(|a| fmt_expr(a)).collect();
+            let args_str: Vec<String> = args.iter().map(fmt_expr).collect();
             format!("{}({})", fmt_expr(func), args_str.join(", "))
         }
         LuauExpr::MethodCall(obj, method, args) => {
-            let args_str: Vec<String> = args.iter().map(|a| fmt_expr(a)).collect();
+            let args_str: Vec<String> = args.iter().map(fmt_expr).collect();
             format!("{}:{}({})", fmt_expr(obj), method, args_str.join(", "))
         }
         LuauExpr::Table(entries) => {
@@ -746,7 +746,7 @@ fn fmt_type(ty: &LuauType) -> String {
         LuauType::Function => "((...any) -> ...any)".to_string(),
         LuauType::Union(types) => types
             .iter()
-            .map(|t| fmt_type(t))
+            .map(fmt_type)
             .collect::<Vec<_>>()
             .join(" | "),
     }

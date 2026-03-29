@@ -297,8 +297,8 @@ pub fn monomorphize(module: &mut TirModule) -> usize {
                 .get(&cache_key)
                 .cloned()
                 .unwrap_or_else(|| spec_name.clone());
-            if &actual_spec_name != callee_name {
-                if let Some(block) = module.functions[*caller_idx].blocks.get_mut(bid) {
+            if &actual_spec_name != callee_name
+                && let Some(block) = module.functions[*caller_idx].blocks.get_mut(bid) {
                     let op = &mut block.ops[*op_idx];
                     // Update "callee" attr (preferred) or "s_value".
                     if op.attrs.contains_key("callee") {
@@ -309,7 +309,6 @@ pub fn monomorphize(module: &mut TirModule) -> usize {
                             .insert("s_value".to_string(), AttrValue::Str(actual_spec_name));
                     }
                 }
-            }
         }
 
         // Add all newly created specializations to the module.

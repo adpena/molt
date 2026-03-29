@@ -1,0 +1,38 @@
+{
+  "profile": "quick",
+  "timestamp": "2026-03-29T02:02:54.457540+00:00",
+  "all_passed": false,
+  "total_duration_s": 5.8695399170101155,
+  "pass_count": 1,
+  "fail_count": 3,
+  "results": [
+    {
+      "name": "compile",
+      "status": "pass",
+      "duration_s": 2.9648398749995977,
+      "details": "compiled OK with 95 warnings (enforced in lint layer)",
+      "metrics": {}
+    },
+    {
+      "name": "lint",
+      "status": "fail",
+      "duration_s": 2.904700042010518,
+      "details": "              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `(compiled as usize).is_multiple_of(progress_interval)`\n     |\n     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#manual_is_multiple_of\n     = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`\n     = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`\n\nerror: could not compile `molt-backend` (lib) due to 160 previous errors\n",
+      "metrics": {}
+    },
+    {
+      "name": "unit-rust",
+      "status": "skip",
+      "duration_s": 0.0,
+      "details": "skipped due to prior failure",
+      "metrics": {}
+    },
+    {
+      "name": "unit-python",
+      "status": "skip",
+      "duration_s": 0.0,
+      "details": "skipped due to prior failure",
+      "metrics": {}
+    }
+  ]
+}

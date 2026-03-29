@@ -104,7 +104,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
     }
 
     // Detect loop structural roles from the original SimpleIR ops.
-    let loop_roles = detect_loop_roles(ir, &cfg, &block_map);
+    let loop_roles = detect_loop_roles(ir, cfg, &block_map);
 
     TirFunction {
         name: ir.name.clone(),

@@ -77,11 +77,10 @@ fn is_false(value: &bool) -> bool {
 
 fn ensure_output_parent_dir(output_file: &str) -> io::Result<()> {
     let path = Path::new(output_file);
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
         }
-    }
     Ok(())
 }
 
@@ -880,6 +879,7 @@ fn run_daemon(_socket_path: &str) -> io::Result<()> {
     ))
 }
 
+#[allow(clippy::vec_init_then_push)] // pushes are behind #[cfg] feature gates
 fn main() -> io::Result<()> {
     // TIR optimization is ON by default. The pipeline has catch_unwind +
     // validate_labels fallback per-function, so broken roundtrips degrade
@@ -1005,8 +1005,7 @@ fn main() -> io::Result<()> {
             // msgpack binary format — deserialize directly via serde
             if let Some(ir_path) = ir_file_path {
                 let file = std::fs::File::open(ir_path).map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::Other,
+                    io::Error::other(
                         format!("failed to open IR file '{}': {}", ir_path, e),
                     )
                 })?;
@@ -1073,8 +1072,7 @@ fn main() -> io::Result<()> {
             // NDJSON streaming format — one function per line
             if let Some(ir_path) = ir_file_path {
                 let file = std::fs::File::open(ir_path).map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::Other,
+                    io::Error::other(
                         format!("failed to open IR file '{}': {}", ir_path, e),
                     )
                 })?;
@@ -1099,8 +1097,7 @@ fn main() -> io::Result<()> {
         } else if let Some(ir_path) = ir_file_path {
             // Stream JSON directly from file — never holds raw JSON string in memory.
             let file = std::fs::File::open(ir_path).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
+                io::Error::other(
                     format!("failed to open IR file '{}': {}", ir_path, e),
                 )
             })?;
@@ -1323,7 +1320,7 @@ fn main() -> io::Result<()> {
                             SimpleBackend::build_module_context(&stdlib_funcs);
                         let mut stdlib_remaining = stdlib_funcs;
                         let stdlib_total_batches =
-                            (stdlib_remaining.len() + stdlib_batch_size - 1) / stdlib_batch_size;
+                            stdlib_remaining.len().div_ceil(stdlib_batch_size);
                         let mut stdlib_batch_paths: Vec<std::path::PathBuf> = Vec::new();
                         let stdlib_tmp_dir = std::env::temp_dir()
                             .join(format!("molt_stdlib_batch_{}", std::process::id()));
@@ -1424,7 +1421,7 @@ fn main() -> io::Result<()> {
                 // when compiling 1000+ stdlib functions into one ObjectModule.
                 let mut all_functions: Vec<_> = ir.functions.into_iter().collect();
                 let profile = ir.profile;
-                let total_batches = (all_functions.len() + batch_size - 1) / batch_size;
+                let total_batches = all_functions.len().div_ceil(batch_size);
                 let mut batch_paths: Vec<std::path::PathBuf> = Vec::new();
                 let tmp_dir =
                     std::env::temp_dir().join(format!("molt_batch_{}", std::process::id()));
@@ -1496,15 +1493,13 @@ fn main() -> io::Result<()> {
                         cmd.arg(p);
                     }
                     let ld_result = cmd.output().map_err(|e| {
-                        io::Error::new(
-                            io::ErrorKind::Other,
+                        io::Error::other(
                             format!("failed to run ld -r for batch merge: {e}"),
                         )
                     })?;
                     if !ld_result.status.success() {
                         let stderr = String::from_utf8_lossy(&ld_result.stderr);
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
+                        return Err(io::Error::other(
                             format!("ld -r failed: {stderr}"),
                         ));
                     }

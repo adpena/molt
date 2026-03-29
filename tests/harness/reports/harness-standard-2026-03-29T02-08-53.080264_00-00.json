@@ -1,0 +1,75 @@
+{
+  "profile": "standard",
+  "timestamp": "2026-03-29T02:08:53.080264+00:00",
+  "all_passed": false,
+  "total_duration_s": 34.58136116701644,
+  "pass_count": 3,
+  "fail_count": 5,
+  "results": [
+    {
+      "name": "compile",
+      "status": "fail",
+      "duration_s": 3.2478615420113783,
+      "details": "333:24: warning: static `tzname` is never used\nmolt-runtime/src/object/ops_sys.rs:1384:16: warning: function `tzset` is never used\nmolt-runtime/src/object/ops_sys.rs:1385:24: warning: static `timezone` is never used\nmolt-runtime/src/object/ops_sys.rs:1418:16: warning: function `tzset` is never used\nmolt-runtime/src/object/ops_sys.rs:1419:24: warning: static `daylight` is never used\nwarning: `molt-runtime` (lib) generated 95 warnings (run `cargo fix --lib -p molt-runtime` to apply 5 suggestions)\n",
+      "metrics": {}
+    },
+    {
+      "name": "lint",
+      "status": "fail",
+      "duration_s": 2.581375374997151,
+      "details": "^^^^^\n...\n2078 |         func: cranelift_codegen::ir::Function,\n     |         -------------------------------------\nhelp: consider unboxing the value\n     |\n2236 |                 } => match Self::retry_define_at_opt_none(&mut self.module, func_id, *func, &name) {\n     |                                                                                      +\n\nFor more information about this error, try `rustc --explain E0308`.\nerror: could not compile `molt-backend` (lib) due to 3 previous errors\n",
+      "metrics": {}
+    },
+    {
+      "name": "unit-rust",
+      "status": "fail",
+      "duration_s": 11.17567825000151,
+      "details": "default: rc=101 ation about this error, try `rustc --explain E0308`.\nerror: could not compile `molt-backend` (lib) due to 3 previous errors\nerror: could not compile `molt-backend` (lib test) due to 3 previous errors\n; molt-runtime --features refcount_verify: rc=101 ror\nwarning: build failed, waiting for other jobs to finish...\nwarning: `molt-runtime` (lib test) generated 92 warnings (92 duplicates)\nwarning: `molt-runtime` (test \"test_float\") generated 1 warning\n; molt-runtime --features audit: rc=101 ror\nwarning: build failed, waiting for other jobs to finish...\nwarning: `molt-runtime` (lib test) generated 92 warnings (92 duplicates)\nwarning: `molt-runtime` (test \"test_float\") generated 1 warning\n",
+      "metrics": {
+        "tests_passed": 0
+      }
+    },
+    {
+      "name": "unit-python",
+      "status": "pass",
+      "duration_s": 0.06442979100393131,
+      "details": "manifest (69 tests) + import ok",
+      "metrics": {
+        "tests_passed": 69
+      }
+    },
+    {
+      "name": "wasm-compile",
+      "status": "skip",
+      "duration_s": 0.00010595899948384613,
+      "details": "corpus directory not found",
+      "metrics": {}
+    },
+    {
+      "name": "differential",
+      "status": "fail",
+      "duration_s": 6.820907917004661,
+      "details": "264/283 CPython parity",
+      "metrics": {
+        "test_count": 283,
+        "pass_count": 264
+      }
+    },
+    {
+      "name": "resource",
+      "status": "pass",
+      "duration_s": 10.656787125000847,
+      "details": "6/6 scenarios passed",
+      "metrics": {
+        "test_count": 6
+      }
+    },
+    {
+      "name": "audit",
+      "status": "pass",
+      "duration_s": 0.03421520799747668,
+      "details": "audit config validated",
+      "metrics": {}
+    }
+  ]
+}

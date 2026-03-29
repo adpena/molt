@@ -118,7 +118,7 @@ fn create_device(platform: GpuPlatform) -> Result<Box<dyn GpuDevice>, GpuError> 
         GpuPlatform::Metal => {
             #[cfg(target_os = "macos")]
             {
-                return Ok(Box::new(super::gpu_metal::MetalDevice::new()?));
+                Ok(Box::new(super::gpu_metal::MetalDevice::new()?))
             }
             #[cfg(not(target_os = "macos"))]
             {

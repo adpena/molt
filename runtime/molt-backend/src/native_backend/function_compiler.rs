@@ -311,14 +311,13 @@ fn preanalyze_function_ir(
                         }
                     }
                 }
-                if let Some(var) = &op.var {
-                    if var != "none" {
+                if let Some(var) = &op.var
+                    && var != "none" {
                         let entry = last_use.entry(var.clone()).or_insert(*end);
                         if *entry < *end {
                             *entry = *end;
                         }
                     }
-                }
             }
         }
 
@@ -373,14 +372,13 @@ fn preanalyze_function_ir(
                 ) {
                     continue;
                 }
-                if let Some(out) = &op.out {
-                    if out != "none"
+                if let Some(out) = &op.out
+                    && out != "none"
                         && counter_name != Some(out.as_str())
                         && seen.insert(out.clone())
                     {
                         assigned.push(out.clone());
                     }
-                }
             }
             if !assigned.is_empty() {
                 loop_body_out_vars.insert(start, assigned);
@@ -936,7 +934,7 @@ impl SimpleBackend {
                     let val = op.value.unwrap_or(0);
                     const INLINE_MIN: i64 = -(1_i64 << 46);
                     const INLINE_MAX: i64 = (1_i64 << 46) - 1;
-                    if val >= INLINE_MIN && val <= INLINE_MAX {
+                    if (INLINE_MIN..=INLINE_MAX).contains(&val) {
                         let boxed = box_int(val);
                         let iconst = builder.ins().iconst(types::I64, boxed);
                         if let Some(out__) = op.out {
@@ -5139,9 +5137,9 @@ impl SimpleBackend {
                             continue;
                         }
                         let peek_op = &ops[peek];
-                        if peek_op.kind == "index" {
-                            if let Some(ref pargs) = peek_op.args {
-                                if pargs.len() >= 2 && pargs[0] == pair_name {
+                        if peek_op.kind == "index"
+                            && let Some(ref pargs) = peek_op.args
+                                && pargs.len() >= 2 && pargs[0] == pair_name {
                                     // Check if the index argument is a const "1" or "0".
                                     // The const var names are looked up by scanning
                                     // backwards for a const op that defined the arg.
@@ -5157,8 +5155,6 @@ impl SimpleBackend {
                                         }
                                     }
                                 }
-                            }
-                        }
                     }
 
                     if let (Some(di), Some(vi)) = (done_idx, val_idx) {
@@ -8305,11 +8301,10 @@ impl SimpleBackend {
                         &[],
                     );
                     builder.ins().call(set_state_ref2, &[self_ptr, state_val]);
-                    if args.len() <= 1 {
-                        if let Some(out__) = op.out {
+                    if args.len() <= 1
+                        && let Some(out__) = op.out {
                             def_var_named(&mut builder, &vars, out__, res);
                         }
-                    }
                     jump_block(&mut builder, next_block, &[]);
 
                     switch_to_block_tracking(&mut builder, next_block, &mut is_block_filled);
@@ -9572,7 +9567,7 @@ impl SimpleBackend {
                     if std::env::var("MOLT_DEBUG_CALL_CLEANUP").as_deref() == Ok("1")
                         && std::env::var("MOLT_DEBUG_FUNC_FILTER")
                             .ok()
-                            .map_or(true, |f| func_ir.name.contains(&f))
+                            .is_none_or(|f| func_ir.name.contains(&f))
                     {
                         let obj_names: Vec<&str> =
                             origin_obj_cleanup.iter().map(|t| t.as_str()).collect();
@@ -10511,10 +10506,7 @@ impl SimpleBackend {
                             3 => "molt_call_func_fast3",
                             _ => unreachable!(),
                         };
-                        let mut param_types = Vec::with_capacity(nargs + 1);
-                        for _ in 0..=nargs {
-                            param_types.push(types::I64);
-                        }
+                        let param_types = vec![types::I64; nargs + 1];
                         let fast_ref = import_func_ref(
                             &mut self.module,
                             &mut self.import_ids,
@@ -11952,7 +11944,7 @@ impl SimpleBackend {
                         if std::env::var("MOLT_DEBUG_CHECK_EXCEPTION").as_deref() == Ok("1")
                             && std::env::var("MOLT_DEBUG_FUNC_FILTER")
                                 .ok()
-                                .map_or(true, |f| func_ir.name.contains(&f))
+                                .is_none_or(|f| func_ir.name.contains(&f))
                         {
                             eprintln!("check_exception {} op={}", func_ir.name, op_idx,);
                         }
@@ -12921,17 +12913,15 @@ impl SimpleBackend {
                             if let Some(next) = next_out {
                                 for fwd in (op_idx + 1)..ops.len() {
                                     let f = &ops[fwd];
-                                    if f.kind == "store_var" {
-                                        if let (Some(v), Some(a)) = (&f.var, &f.args) {
-                                            if v.starts_with("_bb")
+                                    if f.kind == "store_var"
+                                        && let (Some(v), Some(a)) = (&f.var, &f.args)
+                                            && v.starts_with("_bb")
                                                 && v.contains("_arg")
                                                 && a.first().map(|s| s.as_str()) == Some(next)
                                             {
                                                 arg_name = Some(v.clone());
                                                 break;
                                             }
-                                        }
-                                    }
                                     if f.kind == "loop_end" {
                                         break;
                                     }
@@ -12942,13 +12932,10 @@ impl SimpleBackend {
                                 for bwd in (0..op_idx).rev() {
                                     let b = &ops[bwd];
                                     if b.kind == "load_var" && b.var.as_deref() == Some(an.as_str())
-                                    {
-                                        if let Some(ref out) = b.out {
-                                            if let Some(v) = var_get(&mut builder, &vars, out) {
+                                        && let Some(ref out) = b.out
+                                            && let Some(v) = var_get(&mut builder, &vars, out) {
                                                 break 'find_phi Some(*v);
                                             }
-                                        }
-                                    }
                                 }
                             }
                             None
@@ -13428,11 +13415,10 @@ impl SimpleBackend {
                         reachable_blocks.insert(frame.loop_block);
                         // Step 3: def_var the counter with incremented value,
                         // then jump with no explicit args.  SSA carries the phi.
-                        if let Some(next_idx) = frame.next_index.take() {
-                            if let Some(name) = frame.index_name.as_ref() {
+                        if let Some(next_idx) = frame.next_index.take()
+                            && let Some(name) = frame.index_name.as_ref() {
                                 def_var_named(&mut builder, &vars, name, next_idx);
                             }
-                        }
                         jump_block(&mut builder, frame.loop_block, &[]);
                         is_block_filled = true;
                     }
@@ -13461,11 +13447,10 @@ impl SimpleBackend {
                         if !is_block_filled {
                             ensure_block_in_layout(&mut builder, frame.loop_block);
                             reachable_blocks.insert(frame.loop_block);
-                            if let Some(next_idx) = frame.next_index.take() {
-                                if let Some(name) = frame.index_name.as_ref() {
+                            if let Some(next_idx) = frame.next_index.take()
+                                && let Some(name) = frame.index_name.as_ref() {
                                     def_var_named(&mut builder, &vars, name, next_idx);
                                 }
-                            }
                             jump_block(&mut builder, frame.loop_block, &[]);
                         }
                         if builder.func.layout.is_block_inserted(frame.loop_block) {
@@ -14538,7 +14523,7 @@ impl SimpleBackend {
                     if std::env::var("MOLT_DEBUG_RET_CLEANUP").as_deref() == Ok("1")
                         && std::env::var("MOLT_DEBUG_FUNC_FILTER")
                             .ok()
-                            .map_or(true, |f| func_ir.name.contains(&f))
+                            .is_none_or(|f| func_ir.name.contains(&f))
                     {
                         eprintln!(
                             "debug ret cleanup func={} op_idx={} ret_var={:?} tracked_obj_vars_len={} tracked_vars_len={}",
@@ -14959,15 +14944,14 @@ impl SimpleBackend {
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
                         }
-                    } else if let Some(ref args) = op.args {
-                        if !args.is_empty() {
+                    } else if let Some(ref args) = op.args
+                        && !args.is_empty() {
                             let val = var_get(&mut builder, &vars, &args[0])
                                 .expect("copy_var: src not found");
                             if let Some(ref out_name) = op.out {
                                 def_var_named(&mut builder, &vars, out_name, *val);
                             }
                         }
-                    }
                 }
                 "load_param" => {
                     // TIR emits load_param for function parameters — map param index
@@ -14996,11 +14980,10 @@ impl SimpleBackend {
             // Now that def_var_named has stored the new value, dec_ref the old
             // one.  On the first iteration this is the None-sentinel (0) which
             // molt_dec_ref_obj treats as a no-op.
-            if let Some(old_val) = loop_reassign_old_val {
-                if !is_block_filled {
+            if let Some(old_val) = loop_reassign_old_val
+                && !is_block_filled {
                     builder.ins().call(local_dec_ref_obj, &[old_val]);
                 }
-            }
 
             // IMPORTANT: entry-tracked cleanup must be control-flow safe.
             //

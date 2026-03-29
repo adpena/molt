@@ -192,8 +192,8 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
     for (bid, block) in &func.blocks {
         match &block.terminator {
             Terminator::Branch { target, args } => {
-                if let Some(expected) = arg_count(target) {
-                    if args.len() != expected {
+                if let Some(expected) = arg_count(target)
+                    && args.len() != expected {
                         errors.push(VerifyError::block(
                             *bid,
                             format!(
@@ -204,7 +204,6 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                             ),
                         ));
                     }
-                }
             }
             Terminator::CondBranch {
                 then_block,
@@ -213,8 +212,8 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 else_args,
                 ..
             } => {
-                if let Some(expected) = arg_count(then_block) {
-                    if then_args.len() != expected {
+                if let Some(expected) = arg_count(then_block)
+                    && then_args.len() != expected {
                         errors.push(VerifyError::block(
                             *bid,
                             format!(
@@ -225,9 +224,8 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                             ),
                         ));
                     }
-                }
-                if let Some(expected) = arg_count(else_block) {
-                    if else_args.len() != expected {
+                if let Some(expected) = arg_count(else_block)
+                    && else_args.len() != expected {
                         errors.push(VerifyError::block(
                             *bid,
                             format!(
@@ -238,7 +236,6 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                             ),
                         ));
                     }
-                }
             }
             Terminator::Switch {
                 cases,
@@ -246,8 +243,8 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 default_args,
                 ..
             } => {
-                if let Some(expected) = arg_count(default) {
-                    if default_args.len() != expected {
+                if let Some(expected) = arg_count(default)
+                    && default_args.len() != expected {
                         errors.push(VerifyError::block(
                             *bid,
                             format!(
@@ -258,10 +255,9 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                             ),
                         ));
                     }
-                }
                 for (case_val, target, args) in cases {
-                    if let Some(expected) = arg_count(target) {
-                        if args.len() != expected {
+                    if let Some(expected) = arg_count(target)
+                        && args.len() != expected {
                             errors.push(VerifyError::block(
                                 *bid,
                                 format!(
@@ -273,7 +269,6 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                                 ),
                             ));
                         }
-                    }
                 }
             }
             Terminator::Return { .. } | Terminator::Unreachable => {}
@@ -323,9 +318,9 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
             Some(&def_bid) => {
                 if def_bid == bid {
                     // Same block: ensure definition comes before use.
-                    if let (Some(use_idx), Some(def_idx_opt)) = (op_idx, def_op_index.get(&used)) {
-                        if let Some(def_idx) = def_idx_opt {
-                            if *def_idx >= use_idx {
+                    if let (Some(use_idx), Some(def_idx_opt)) = (op_idx, def_op_index.get(&used))
+                        && let Some(def_idx) = def_idx_opt
+                            && *def_idx >= use_idx {
                                 errors.push(VerifyError::op(
                                     bid,
                                     use_idx,
@@ -335,9 +330,7 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                                     ),
                                 ));
                             }
-                        }
                         // def_idx_opt == None means it's a block arg, always dominates.
-                    }
                 } else {
                     // Different block: def_bid must dominate bid.
                     if !dominates(&dom, def_bid, bid) {
@@ -459,7 +452,7 @@ fn compute_dominators(func: &TirFunction) -> HashMap<BlockId, Option<BlockId>> {
             }
             let old = idom.get(&b).copied().flatten();
             let new_val = new_idom;
-            if idom.get(&b).is_none() || old != new_val {
+            if !idom.contains_key(&b) || old != new_val {
                 idom.insert(b, new_val);
                 changed = true;
             }

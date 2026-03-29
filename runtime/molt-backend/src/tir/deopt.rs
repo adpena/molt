@@ -61,8 +61,8 @@ pub fn find_deopt_points(func: &TirFunction) -> Vec<(BlockId, usize, DeoptPoint)
     let mut points = Vec::new();
     for (bid, block) in &func.blocks {
         for (i, op) in block.ops.iter().enumerate() {
-            if op.opcode == OpCode::TypeGuard {
-                if let Some(AttrValue::Str(expected)) = op.attrs.get("expected_type") {
+            if op.opcode == OpCode::TypeGuard
+                && let Some(AttrValue::Str(expected)) = op.attrs.get("expected_type") {
                     points.push((
                         *bid,
                         i,
@@ -77,7 +77,6 @@ pub fn find_deopt_points(func: &TirFunction) -> Vec<(BlockId, usize, DeoptPoint)
                         },
                     ));
                 }
-            }
         }
     }
     points
