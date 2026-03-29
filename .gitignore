@@ -68,6 +68,7 @@ bench/codon_probe/
 bench/friends/repos/
 runtime/molt-runtime/fuzz/corpus/
 runtime/molt-runtime/fuzz/artifacts/
+runtime/molt-backend/fuzz/corpus/
 packaging/out/
 .claude/worktrees/
 .claude/projects/

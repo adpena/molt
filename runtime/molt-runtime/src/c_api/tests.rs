@@ -524,8 +524,9 @@ fn plain_function_object_has_no_set_name_attr() {
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
 
         let none_bits = MoltObject::none().bits();
-        let got_bits =
-            crate::builtins::attributes::molt_get_attr_name_default(func_bits, name_bits, none_bits);
+        let got_bits = crate::builtins::attributes::molt_get_attr_name_default(
+            func_bits, name_bits, none_bits,
+        );
 
         assert!(obj_from_bits(got_bits).is_none());
         assert!(!exception_pending(_py));
