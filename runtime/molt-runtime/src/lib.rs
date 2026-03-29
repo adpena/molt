@@ -127,6 +127,32 @@ mod state;
 mod utils;
 pub mod vfs;
 
+/// Public Rust API for runtime lifecycle, used by `molt-ffi` and other
+/// dependent crates that need to call init/shutdown without going through
+/// C ABI extern blocks.
+pub mod lifecycle {
+    use crate::state::runtime_state::{molt_runtime_init, molt_runtime_shutdown};
+
+    /// Initialize the runtime.  Returns 1 on success, 0 if already shut down.
+    /// Idempotent: repeated calls after the first return 1 immediately.
+    ///
+    /// # Safety
+    /// Must be called from the main thread before spawning worker threads.
+    #[inline]
+    pub fn init() -> u64 {
+        molt_runtime_init()
+    }
+
+    /// Shut down the runtime. Returns 1 on success, 0 if not initialized.
+    ///
+    /// # Safety
+    /// No runtime calls may be made after this returns.
+    #[inline]
+    pub fn shutdown() -> u64 {
+        molt_runtime_shutdown()
+    }
+}
+
 #[allow(unused_imports)]
 pub(crate) use crate::async_rt::*;
 pub use crate::concurrency::isolates::*;
@@ -443,8 +469,9 @@ pub(crate) use crate::call::bind::{
     molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos,
 };
 pub(crate) use crate::call::class_init::{
-    alloc_instance_for_class, alloc_instance_for_class_no_pool, call_builtin_type_if_needed,
-    call_class_init_with_args, function_attr_bits, raise_not_callable, try_call_generator,
+    alloc_instance_for_class, alloc_instance_for_class_no_pool,
+    alloc_instance_for_default_object_new, call_builtin_type_if_needed, call_class_init_with_args,
+    function_attr_bits, raise_not_callable, try_call_generator,
 };
 pub(crate) use crate::call::dispatch::{
     call_callable0, call_callable1, call_callable2, call_callable3, callable_arity,
