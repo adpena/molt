@@ -64,6 +64,12 @@ def joinCanonTerminator (jmap : JoinMap) : Terminator → Terminator
       let (tl', ta') := canonicalizeJump jmap tl ta
       let (el', ea') := canonicalizeJump jmap el ea
       .br cond tl' ta' el' ea'
+  | .yield val resume resumeArgs =>
+      let (resume', args') := canonicalizeJump jmap resume resumeArgs
+      .yield val resume' args'
+  | .switch scrutinee cases default_ =>
+      .switch scrutinee cases default_  -- switch targets not canonicalized (no args)
+  | .unreachable => .unreachable
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 3: Block and function-level canonicalization

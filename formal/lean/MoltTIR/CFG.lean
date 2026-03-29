@@ -15,6 +15,8 @@ def termSuccessors : Terminator → List Label
   | .jmp target _ => [target]
   | .br _ thenLbl _ elseLbl _ => [thenLbl, elseLbl]
   | .yield _ resume _ => [resume]   -- STATE_YIELD resumes at one target
+  | .switch _ cases default_ => default_ :: cases.map (·.2)
+  | .unreachable => []
 
 /-- All successor labels reachable from a block (via its terminator). -/
 def blockSuccessors (b : Block) : List Label :=

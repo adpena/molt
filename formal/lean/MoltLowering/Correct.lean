@@ -46,6 +46,7 @@ theorem lowerEnv_corr (nm : NameMap) (pyEnv : MoltPython.PyEnv)
 -- Operator semantics correspondence
 -- ═══════════════════════════════════════════════════════════════════════════
 
+set_option maxHeartbeats 800000 in
 theorem binOp_int_comm (op : MoltPython.BinOp) (x y : Int)
     (hresult : ∃ pv, MoltPython.evalBinOp op (.intVal x) (.intVal y) = some pv)
     (htir : ∃ tv, MoltTIR.evalBinOp (lowerBinOp op) (.int x) (.int y) = some tv) :

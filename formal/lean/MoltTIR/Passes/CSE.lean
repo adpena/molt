@@ -96,6 +96,11 @@ def cseTerminator (avail : AvailMap) : Terminator → Terminator
   | .jmp target args => .jmp target (args.map (cseExpr avail))
   | .br cond tl ta el ea =>
       .br (cseExpr avail cond) tl (ta.map (cseExpr avail)) el (ea.map (cseExpr avail))
+  | .yield val resume resumeArgs =>
+      .yield (cseExpr avail val) resume (resumeArgs.map (cseExpr avail))
+  | .switch scrutinee cases default_ =>
+      .switch (cseExpr avail scrutinee) cases default_
+  | .unreachable => .unreachable
 
 /-- Build the final availability map after processing instructions. -/
 def buildAvail : AvailMap → List Instr → AvailMap

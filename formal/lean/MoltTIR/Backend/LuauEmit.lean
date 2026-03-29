@@ -56,6 +56,12 @@ def emitBinOp : MoltTIR.BinOp → LuauBinOp
   | .bit_xor => .bxor   -- real backend uses bit32.bxor
   | .lshift  => .lshl   -- real backend uses bit32.lshift
   | .rshift  => .lshr   -- real backend uses bit32.rshift
+  | .and_    => .land   -- short-circuit modeled at terminator level
+  | .or_     => .lor    -- short-circuit modeled at terminator level
+  | .is      => .eq     -- identity mapped to equality in Luau
+  | .is_not  => .ne     -- identity mapped to inequality in Luau
+  | .in_     => .eq     -- membership approximated (placeholder)
+  | .not_in  => .ne     -- membership approximated (placeholder)
 
 /-- Map IR unary operator to Luau unary operator. -/
 def emitUnOp : MoltTIR.UnOp → LuauUnOp
@@ -63,6 +69,7 @@ def emitUnOp : MoltTIR.UnOp → LuauUnOp
   | .not => .lnot
   | .abs => .abs
   | .invert => .lnot  -- approximation; real backend uses bit32.bnot
+  | .pos => .abs     -- unary plus approximated as abs (identity for numeric)
 
 -- ======================================================================
 -- Section 3: Expression emission
@@ -150,6 +157,15 @@ def emitTerminator (names : VarNames) : MoltTIR.Terminator → List LuauStmt
       -- structured control flow reconstruction pass. Here we emit a
       -- simplified placeholder that captures the condition evaluation.
       [.ifStmt (emitExpr names cond) [] none]
+  | .yield val _ _ =>
+      -- Generators emit as return in simplified model
+      [.returnStmt (some (emitExpr names val))]
+  | .switch scrutinee _ _ =>
+      -- Switch emitted as placeholder condition check
+      [.ifStmt (emitExpr names scrutinee) [] none]
+  | .unreachable =>
+      -- Unreachable emits nothing
+      []
 
 /-- Emit an IR block as a list of Luau statements. -/
 def emitBlock (names : VarNames) (b : MoltTIR.Block) : List LuauStmt :=

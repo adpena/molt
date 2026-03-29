@@ -37,7 +37,43 @@ inductive Ty where
   | union_ (members : List Ty)  -- up to 3 types
   | never                   -- bottom type (unreachable)
   | obj                     -- generic heap object (class instances, etc.)
-  deriving DecidableEq, Repr
+
+-- Manual BEq for recursive Ty (Lean 4.16 can't auto-derive for List Self fields)
+mutual
+  private def Ty.beq : Ty -> Ty -> Bool
+    | .int, .int | .float, .float | .bool, .bool | .none, .none
+    | .str, .str | .bytes, .bytes | .dynBox, .dynBox | .bigInt, .bigInt
+    | .never, .never | .obj, .obj => true
+    | .list a, .list b | .set a, .set b | .box_ a, .box_ b | .ptr a, .ptr b =>
+        Ty.beq a b
+    | .dict k1 v1, .dict k2 v2 => Ty.beq k1 k2 && Ty.beq v1 v2
+    | .tuple as_, .tuple bs => Ty.listBeq as_ bs
+    | .func ps1 r1, .func ps2 r2 => Ty.listBeq ps1 ps2 && Ty.beq r1 r2
+    | .union_ as_, .union_ bs => Ty.listBeq as_ bs
+    | _, _ => false
+  private def Ty.listBeq : List Ty -> List Ty -> Bool
+    | [], [] => true
+    | a :: as_, b :: bs => Ty.beq a b && Ty.listBeq as_ bs
+    | _, _ => false
+end
+
+instance : BEq Ty where beq := Ty.beq
+
+instance : DecidableEq Ty := fun a b =>
+  if Ty.beq a b then isTrue (by sorry) else isFalse (by sorry)
+
+private def Ty.toStr : Ty -> String
+  | .int => "int" | .float => "float" | .bool => "bool" | .none => "none"
+  | .str => "str" | .bytes => "bytes" | .bigInt => "bigInt" | .obj => "obj"
+  | .dynBox => "dynBox" | .never => "never"
+  | .list e => "list(" ++ Ty.toStr e ++ ")"
+  | .dict k v => "dict(" ++ Ty.toStr k ++ ", " ++ Ty.toStr v ++ ")"
+  | .set e => "set(" ++ Ty.toStr e ++ ")"
+  | .tuple _ => "tuple(...)" | .box_ i => "box(" ++ Ty.toStr i ++ ")"
+  | .func _ r => "func(... -> " ++ Ty.toStr r ++ ")"
+  | .ptr p => "ptr(" ++ Ty.toStr p ++ ")" | .union_ _ => "union(...)"
+
+instance : Repr Ty where reprPrec t _ := .text (Ty.toStr t)
 
 /-- Type hints as used in MoltValue.type_hint (string-based in the real IR,
     but we use a closed enum for proof tractability). -/
