@@ -276,3 +276,21 @@ fix should resolve this along with the loop issues.
 ### Impact
 This bug blocks ALL class-based conformance tests where `__init__` sets
 instance attributes. Likely 30+ tests affected.
+
+## Global Assignment: Deeper Root Cause (2026-03-29)
+
+The `_emit_module_attr_set_runtime` function adds `module_cache_get` + 
+`module_set_attr` ops inside function bodies. These ops work in the ORIGINAL
+structured SimpleIR but break after the TIR roundtrip because:
+
+1. The `const_str` for the module name gets remapped during TIR processing
+2. At runtime, `module_cache_get` receives non-string data → TypeError
+
+The fix should NOT use `module_cache_get`. Instead, it should reuse the
+module object that's already available in the function scope (the same
+object used by `module_get_global` for reading).
+
+Specifically: the `_store_local_value` path at line 7455 should use the
+same module lookup mechanism as `visit_Name` at line 6210 (which uses
+`_emit_module_attr_get`), not `_emit_module_attr_set_runtime` (which
+does an independent `module_cache_get`).
