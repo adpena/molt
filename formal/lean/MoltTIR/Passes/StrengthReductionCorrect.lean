@@ -82,7 +82,7 @@ theorem srExpr_correct (ρ : Env) (e : Expr) :
       | some vb =>
         cases vb with
         | int n => simp [evalExpr, evalBinOp, one_mul]
-        | str s => simp [evalExpr, evalBinOp]; sorry  -- string repetition: 1 * s = s
+        | str s => simp [evalExpr, evalBinOp]; trace_state; sorry  -- string repetition: 1 * s = s
         | float f => simp [evalExpr, evalBinOp, one_mul]
         | _ => simp [evalExpr, evalBinOp]
     -- x * 2 => x + x
