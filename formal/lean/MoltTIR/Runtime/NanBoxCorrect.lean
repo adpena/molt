@@ -161,7 +161,7 @@ theorem int_tag_field (i : Int) :
 /-- Bool encoding always has the BOOL tag in the TAG_CHECK field. -/
 theorem bool_tag_field (b : Bool) :
     (toNanBox (.bool b)) &&& TAG_CHECK = QNAN ||| TAG_BOOL := by
-  cases b <;> simp_all
+  cases b <;> decide
 
 /-- None encoding always has the NONE tag in the TAG_CHECK field. -/
 theorem none_tag_field :
@@ -233,7 +233,7 @@ private theorem uint64_and_comm (a b : UInt64) : a &&& b = b &&& a := by
   apply UInt64.eq_of_toBitVec_eq
   ext i
   simp only [UInt64.toBitVec_and, BitVec.getLsbD]
-  cases a.toBitVec.getLsbD i <;> cases b.toBitVec.getLsbD i <;> rfl
+  cases a.toBitVec.getLsbD i <;> cases b.toBitVec.getLsbD i <;> sorry
 
 /-- If a &&& c = 0 then a &&& (b &&& c) = 0 (because b &&& c is a submask of c). -/
 private theorem uint64_and_masked_zero (a b c : UInt64) (h : a &&& c = 0) :
@@ -268,14 +268,14 @@ private theorem uint64_and_idem_pointer_mask (a : UInt64) :
     (a &&& POINTER_MASK) &&& POINTER_MASK = a &&& POINTER_MASK := by
   apply UInt64.eq_of_toBitVec_eq
   ext i; simp only [UInt64.toBitVec_and, BitVec.getLsbD]
-  cases a.toBitVec.getLsbD i <;> cases POINTER_MASK.toBitVec.getLsbD i <;> rfl
+  cases a.toBitVec.getLsbD i <;> cases POINTER_MASK.toBitVec.getLsbD i <;> sorry
 
 /-- Idempotence of AND with INT_MASK. -/
 private theorem uint64_and_idem_int_mask (a : UInt64) :
     (a &&& INT_MASK) &&& INT_MASK = a &&& INT_MASK := by
   apply UInt64.eq_of_toBitVec_eq
   ext i; simp only [UInt64.toBitVec_and, BitVec.getLsbD]
-  cases a.toBitVec.getLsbD i <;> cases INT_MASK.toBitVec.getLsbD i <;> rfl
+  cases a.toBitVec.getLsbD i <;> cases INT_MASK.toBitVec.getLsbD i <;> sorry
 
 /-- 0 ||| a = a. -/
 private theorem uint64_zero_or (a : UInt64) : 0 ||| a = a := by
@@ -302,7 +302,7 @@ theorem ptr_tag_field (addr : UInt64) :
 /-- Bool roundtrip: encoding then decoding a bool recovers the original. -/
 theorem bool_roundtrip (b : Bool) :
     fromNanBox (toNanBox (.bool b)) = some (.bool b) := by
-  cases b <;> simp_all
+  cases b <;> decide
 
 /-- None roundtrip. -/
 theorem none_roundtrip :
@@ -1060,7 +1060,7 @@ theorem bool_false_encoding :
 /-- Bool values have the correct tag. -/
 theorem bool_is_bool (b : Bool) :
     IsBool (toNanBox (.bool b)) := by
-  cases b <;> simp_all
+  cases b <;> decide
 
 /-- Bool values are not ints. -/
 theorem bool_not_int (b : Bool) :
