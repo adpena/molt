@@ -161,32 +161,28 @@ impl<'a> SsaContext<'a> {
                 // For store-style ops the `var` names the target.
                 // Heuristic: if `out` is set, `var` is likely an input;
                 // if only `var` is set with no `out`, it could be a store target.
-                if let Some(v) = &op.var {
-                    if is_variable(v) {
+                if let Some(v) = &op.var
+                    && is_variable(v) {
                         // For "store_var" the var is the destination and args[0] is input.
                         // For most ops, var is read.
                         if op.kind != "store_var" && !defs.contains(v) {
                             uses.insert(v.clone());
                         }
                     }
-                }
 
                 // Definitions: `out` field names the variable being assigned.
-                if let Some(out) = &op.out {
-                    if is_variable(out) {
+                if let Some(out) = &op.out
+                    && is_variable(out) {
                         defs.insert(out.clone());
                         self.all_vars.insert(out.clone());
                     }
-                }
                 // `store_var` with `var` field is a definition of that variable.
-                if op.kind == "store_var" {
-                    if let Some(v) = &op.var {
-                        if is_variable(v) {
+                if op.kind == "store_var"
+                    && let Some(v) = &op.var
+                        && is_variable(v) {
                             defs.insert(v.clone());
                             self.all_vars.insert(v.clone());
                         }
-                    }
-                }
             }
 
             // Function parameters are implicit definitions in the entry block.
@@ -569,27 +565,22 @@ impl<'a> SsaContext<'a> {
             }
         }
         // If `var` is an input (not store_var), resolve it too.
-        if op.kind != "store_var" {
-            if let Some(v) = &op.var {
-                if is_variable(v) {
-                    if let Some(vid) = Self::resolve_var(v, var_stacks) {
+        if op.kind != "store_var"
+            && let Some(v) = &op.var
+                && is_variable(v)
+                    && let Some(vid) = Self::resolve_var(v, var_stacks) {
                         operands.push(vid);
                     }
-                }
-            }
-        }
         // For store_var, the source is in args.
-        if op.kind == "store_var" {
-            if let Some(args) = &op.args {
+        if op.kind == "store_var"
+            && let Some(args) = &op.args {
                 for a in args {
-                    if is_variable(a) {
-                        if let Some(vid) = Self::resolve_var(a, var_stacks) {
+                    if is_variable(a)
+                        && let Some(vid) = Self::resolve_var(a, var_stacks) {
                             operands.push(vid);
                         }
-                    }
                 }
             }
-        }
 
         // Create result value if this op produces an output.
         let mut results = Vec::new();
@@ -670,15 +661,14 @@ impl<'a> SsaContext<'a> {
         // metadata (a non-variable string) rather than an SSA reference.  For
         // such ops, the var was NOT resolved to an operand above (it was either
         // not a variable or failed resolution), so we store it as an attr.
-        if op.kind != "store_var" && op.kind != "load_var" && op.kind != "copy_var" {
-            if let Some(ref v) = op.var {
+        if op.kind != "store_var" && op.kind != "load_var" && op.kind != "copy_var"
+            && let Some(ref v) = op.var {
                 // Only store as attr if it wasn't already resolved as an SSA operand.
                 // We can detect this: if the var is a variable name that resolved,
                 // it's already in operands; if it's not a variable or didn't resolve,
                 // we need to preserve it as an attr.
                 attrs.insert("_var".into(), AttrValue::Str(v.clone()));
             }
-        }
 
         // For ops that map to OpCode::Copy as a fallback (unknown ops),
         // preserve the original kind string so the back-conversion can
@@ -750,8 +740,8 @@ impl<'a> SsaContext<'a> {
         match kind {
             "ret" | "ret_void" | "return" => {
                 let mut values = Vec::new();
-                if kind == "ret" || kind == "return" {
-                    if let Some(op) = last_op {
+                if (kind == "ret" || kind == "return")
+                    && let Some(op) = last_op {
                         // The frontend emits `ret` with the return value in
                         // `op.var` (not `op.args`).  Check both locations so
                         // the return value is never silently dropped.
@@ -765,14 +755,12 @@ impl<'a> SsaContext<'a> {
                             }
                         }
                         for a in candidates {
-                            if is_variable(a) {
-                                if let Some(vid) = Self::resolve_var(a, var_stacks) {
+                            if is_variable(a)
+                                && let Some(vid) = Self::resolve_var(a, var_stacks) {
                                     values.push(vid);
                                 }
-                            }
                         }
                     }
-                }
                 Terminator::Return { values }
             }
 

@@ -220,15 +220,12 @@ fn reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
 
             // Follow implicit exception edges from CheckException ops.
             for op in &block.ops {
-                if op.opcode == super::super::ops::OpCode::CheckException {
-                    if let Some(super::super::ops::AttrValue::Int(target_label)) =
+                if op.opcode == super::super::ops::OpCode::CheckException
+                    && let Some(super::super::ops::AttrValue::Int(target_label)) =
                         op.attrs.get("value")
-                    {
-                        if let Some(&target_bid) = reverse_label.get(target_label) {
+                        && let Some(&target_bid) = reverse_label.get(target_label) {
                             stack.push(target_bid);
                         }
-                    }
-                }
             }
         }
     }

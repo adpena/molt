@@ -189,10 +189,7 @@ pub fn generate_wgsl(kernel: &GpuKernel) -> String {
     // 1. Storage buffer bindings
     // ------------------------------------------------------------------
     for (idx, buf) in kernel.buffers.iter().enumerate() {
-        let wgsl_ty = match tir_type_to_wgsl(&buf.element_type) {
-            Some(t) => t,
-            None => "u32", // fallback: unsupported type mapped to u32
-        };
+        let wgsl_ty = tir_type_to_wgsl(&buf.element_type).unwrap_or("u32");
         let access = match buf.access {
             WgslBufferAccess::ReadOnly => "read",
             WgslBufferAccess::ReadWrite => "read_write",
@@ -217,10 +214,7 @@ pub fn generate_wgsl(kernel: &GpuKernel) -> String {
         out.push('\n');
         out.push_str("struct Params {\n");
         for param in &kernel.params {
-            let wgsl_ty = match tir_type_to_wgsl(&param.ty) {
-                Some(t) => t,
-                None => "u32", // fallback: unsupported type mapped to u32
-            };
+            let wgsl_ty = tir_type_to_wgsl(&param.ty).unwrap_or("u32");
             writeln!(out, "    {}: {},", param.name, wgsl_ty).unwrap();
         }
         out.push_str("}\n");

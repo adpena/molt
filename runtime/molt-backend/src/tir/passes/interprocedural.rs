@@ -76,8 +76,8 @@ impl CallGraph {
 ///
 /// Attr-key conventions used across TIR passes:
 ///   - `Call`        → `attrs["callee"]` (set by CHA devirtualization) or
-///                     `attrs["s_value"]` (set by the SSA builder for
-///                     statically-known call targets).
+///     `attrs["s_value"]` (set by the SSA builder for
+///     statically-known call targets).
 ///   - `CallMethod`  → `attrs["method"]` (virtual dispatch target name).
 ///   - `CallBuiltin` → `attrs["name"]`   (builtin function name).
 fn callee_name_from_op(opcode: OpCode, attrs: &HashMap<String, AttrValue>) -> Option<String> {

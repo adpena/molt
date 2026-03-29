@@ -496,7 +496,7 @@ pub fn apply_profile_order(ir: &mut SimpleIR) {
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub fn fold_constants(ops: &mut Vec<OpIR>) {
+pub fn fold_constants(ops: &mut [OpIR]) {
     // Map from variable name -> known constant integer value (raw, unboxed).
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
     // Map from variable name -> known constant boolean value.
@@ -519,8 +519,8 @@ pub fn fold_constants(ops: &mut Vec<OpIR>) {
             "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul"
                 if op.fast_int.unwrap_or(false) =>
             {
-                if let Some(ref args) = op.args {
-                    if args.len() == 2 {
+                if let Some(ref args) = op.args
+                    && args.len() == 2 {
                         let a_val = const_ints.get(&args[0]).copied();
                         let b_val = const_ints.get(&args[1]).copied();
                         if let (Some(a), Some(b)) = (a_val, b_val) {
@@ -540,7 +540,6 @@ pub fn fold_constants(ops: &mut Vec<OpIR>) {
                             continue;
                         }
                     }
-                }
                 // Output variable is no longer a known constant.
                 if let Some(ref out) = op.out {
                     const_ints.remove(out);
@@ -553,8 +552,8 @@ pub fn fold_constants(ops: &mut Vec<OpIR>) {
             | "inplace_bit_xor"
                 if op.fast_int.unwrap_or(false) =>
             {
-                if let Some(ref args) = op.args {
-                    if args.len() == 2 {
+                if let Some(ref args) = op.args
+                    && args.len() == 2 {
                         let a_val = const_ints.get(&args[0]).copied();
                         let b_val = const_ints.get(&args[1]).copied();
                         if let (Some(a), Some(b)) = (a_val, b_val) {
@@ -574,7 +573,6 @@ pub fn fold_constants(ops: &mut Vec<OpIR>) {
                             continue;
                         }
                     }
-                }
                 if let Some(ref out) = op.out {
                     const_ints.remove(out);
                     const_bools.remove(out);
@@ -583,9 +581,9 @@ pub fn fold_constants(ops: &mut Vec<OpIR>) {
 
             // Boolean not: `not` on a known bool constant.
             "not" => {
-                if let Some(ref args) = op.args {
-                    if args.len() == 1 {
-                        if let Some(&val) = const_bools.get(&args[0]) {
+                if let Some(ref args) = op.args
+                    && args.len() == 1
+                        && let Some(&val) = const_bools.get(&args[0]) {
                             let result = !val;
                             op.kind = "const_bool".to_string();
                             op.value = Some(if result { 1 } else { 0 });
@@ -596,8 +594,6 @@ pub fn fold_constants(ops: &mut Vec<OpIR>) {
                             }
                             continue;
                         }
-                    }
-                }
                 if let Some(ref out) = op.out {
                     const_ints.remove(out);
                     const_bools.remove(out);
@@ -649,7 +645,7 @@ struct BranchSnapshot {
 }
 
 #[allow(dead_code)]
-pub fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
+pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
     let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
 
@@ -674,8 +670,8 @@ pub fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
             "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul"
                 if op.fast_int.unwrap_or(false) =>
             {
-                if let Some(ref args) = op.args {
-                    if args.len() == 2 {
+                if let Some(ref args) = op.args
+                    && args.len() == 2 {
                         let a_val = const_ints.get(&args[0]).copied();
                         let b_val = const_ints.get(&args[1]).copied();
                         if let (Some(a), Some(b)) = (a_val, b_val) {
@@ -695,7 +691,6 @@ pub fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
                             continue;
                         }
                     }
-                }
                 if let Some(ref out) = op.out {
                     const_ints.remove(out);
                     const_bools.remove(out);
@@ -707,8 +702,8 @@ pub fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
             | "inplace_bit_xor"
                 if op.fast_int.unwrap_or(false) =>
             {
-                if let Some(ref args) = op.args {
-                    if args.len() == 2 {
+                if let Some(ref args) = op.args
+                    && args.len() == 2 {
                         let a_val = const_ints.get(&args[0]).copied();
                         let b_val = const_ints.get(&args[1]).copied();
                         if let (Some(a), Some(b)) = (a_val, b_val) {
@@ -728,7 +723,6 @@ pub fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
                             continue;
                         }
                     }
-                }
                 if let Some(ref out) = op.out {
                     const_ints.remove(out);
                     const_bools.remove(out);
@@ -737,9 +731,9 @@ pub fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
 
             // ----- boolean not -----
             "not" => {
-                if let Some(ref args) = op.args {
-                    if args.len() == 1 {
-                        if let Some(&val) = const_bools.get(&args[0]) {
+                if let Some(ref args) = op.args
+                    && args.len() == 1
+                        && let Some(&val) = const_bools.get(&args[0]) {
                             let result = !val;
                             op.kind = "const_bool".to_string();
                             op.value = Some(if result { 1 } else { 0 });
@@ -750,8 +744,6 @@ pub fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
                             }
                             continue;
                         }
-                    }
-                }
                 if let Some(ref out) = op.out {
                     const_ints.remove(out);
                     const_bools.remove(out);
@@ -788,20 +780,18 @@ pub fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
 
                         let mut merged_ints = BTreeMap::new();
                         for (name, then_val) in &then_ints {
-                            if let Some(&else_val) = else_ints.get(name) {
-                                if then_val == &else_val {
+                            if let Some(&else_val) = else_ints.get(name)
+                                && then_val == &else_val {
                                     merged_ints.insert(name.clone(), *then_val);
                                 }
-                            }
                         }
 
                         let mut merged_bools = BTreeMap::new();
                         for (name, then_val) in &then_bools {
-                            if let Some(&else_val) = else_bools.get(name) {
-                                if then_val == &else_val {
+                            if let Some(&else_val) = else_bools.get(name)
+                                && then_val == &else_val {
                                     merged_bools.insert(name.clone(), *then_val);
                                 }
-                            }
                         }
 
                         const_ints = merged_ints;
@@ -812,20 +802,18 @@ pub fn fold_constants_cross_block(ops: &mut Vec<OpIR>) {
 
                         let mut merged_ints = BTreeMap::new();
                         for (name, pre_val) in &snapshot.pre_ints {
-                            if let Some(&then_val) = then_ints.get(name) {
-                                if pre_val == &then_val {
+                            if let Some(&then_val) = then_ints.get(name)
+                                && pre_val == &then_val {
                                     merged_ints.insert(name.clone(), *pre_val);
                                 }
-                            }
                         }
 
                         let mut merged_bools = BTreeMap::new();
                         for (name, pre_val) in &snapshot.pre_bools {
-                            if let Some(&then_val) = then_bools.get(name) {
-                                if pre_val == &then_val {
+                            if let Some(&then_val) = then_bools.get(name)
+                                && pre_val == &then_val {
                                     merged_bools.insert(name.clone(), *pre_val);
                                 }
-                            }
                         }
 
                         const_ints = merged_ints;
@@ -944,11 +932,10 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
     // Map from output variable name (owned) → op index.
     let mut alloc_sites: BTreeMap<String, usize> = BTreeMap::new();
     for (idx, op) in func_ir.ops.iter().enumerate() {
-        if alloc_kinds.contains(&op.kind.as_str()) {
-            if let Some(ref out) = op.out {
+        if alloc_kinds.contains(&op.kind.as_str())
+            && let Some(ref out) = op.out {
                 alloc_sites.insert(out.clone(), idx);
             }
-        }
     }
 
     if alloc_sites.is_empty() {
@@ -972,13 +959,11 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
 
         // Handle copy aliases: if source is a tracked alloc, propagate.
         if kind == "copy" {
-            if let (Some(args), Some(out)) = (&op.args, &op.out) {
-                if args.len() == 1 {
-                    if let Some(root) = alias_to_alloc.get(&args[0]).cloned() {
+            if let (Some(args), Some(out)) = (&op.args, &op.out)
+                && args.len() == 1
+                    && let Some(root) = alias_to_alloc.get(&args[0]).cloned() {
                         alias_to_alloc.insert(out.clone(), root);
                     }
-                }
-            }
             continue;
         }
 
@@ -1008,13 +993,11 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
         }
 
         // Also check `var` field (used by ret and some other ops).
-        if let Some(ref var) = op.var {
-            if let Some(root) = alias_to_alloc.get(var).cloned() {
-                if kind == "ret" || escaping_ops.contains(kind) {
+        if let Some(ref var) = op.var
+            && let Some(root) = alias_to_alloc.get(var).cloned()
+                && (kind == "ret" || escaping_ops.contains(kind)) {
                     escaped.insert(root);
                 }
-            }
-        }
     }
 
     // Phase 3: Mark non-escaping allocations as stack-eligible.
@@ -1145,9 +1128,9 @@ pub fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
     let mut known_int: BTreeSet<String> = BTreeSet::new();
     for op in ops.iter() {
         if let Some(ref out) = op.out {
-            if INT_PRODUCING_OPS.contains(&op.kind.as_str()) {
-                known_int.insert(out.clone());
-            } else if matches!(op.type_hint.as_deref(), Some("int") | Some("bool")) {
+            if INT_PRODUCING_OPS.contains(&op.kind.as_str())
+                || matches!(op.type_hint.as_deref(), Some("int") | Some("bool"))
+            {
                 known_int.insert(out.clone());
             } else if op.fast_int.unwrap_or(false) {
                 // An arithmetic op already marked fast_int produces an int.
@@ -1176,28 +1159,25 @@ pub fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
                 let is_comparison = COMPARISON_OPS.contains(&kind);
                 // Already has fast_int — just ensure output is tracked.
                 if op.fast_int.unwrap_or(false) {
-                    if !is_comparison {
-                        if let Some(ref out) = op.out {
-                            if known_int.insert(out.clone()) {
+                    if !is_comparison
+                        && let Some(ref out) = op.out
+                            && known_int.insert(out.clone()) {
                                 made_progress = true;
                             }
-                        }
-                    }
                     continue;
                 }
                 // Check if all operands are known-int.
-                let all_int = op.args.as_ref().map_or(false, |args| {
+                let all_int = op.args.as_ref().is_some_and(|args| {
                     args.len() >= 2 && args.iter().all(|a| known_int.contains(a))
                 });
                 if all_int {
                     // Promote to fast_int.
                     func_ir.ops[idx].fast_int = Some(true);
                     // Comparisons produce bool, not int — don't add to known_int.
-                    if !is_comparison {
-                        if let Some(ref out) = func_ir.ops[idx].out {
+                    if !is_comparison
+                        && let Some(ref out) = func_ir.ops[idx].out {
                             known_int.insert(out.clone());
                         }
-                    }
                     made_progress = true;
                     changed_any = true;
                 }
@@ -1225,12 +1205,11 @@ pub fn propagate_loop_fast_int(func_ir: &mut FunctionIR) {
 pub fn build_const_int_map(ops: &[OpIR]) -> BTreeMap<String, i64> {
     let mut map = BTreeMap::new();
     for op in ops {
-        if op.kind == "const" {
-            if let (Some(out), Some(val)) = (op.out.as_ref(), op.value) {
+        if op.kind == "const"
+            && let (Some(out), Some(val)) = (op.out.as_ref(), op.value) {
                 // Only store the first definition (SSA correctness).
                 map.entry(out.clone()).or_insert(val);
             }
-        }
     }
     map
 }
@@ -1830,11 +1809,10 @@ pub fn compute_rc_coalesce_skips(
 fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
     let mut last_use = BTreeMap::new();
     for (i, op) in ops.iter().enumerate() {
-        if let Some(var) = &op.var {
-            if var != "none" {
+        if let Some(var) = &op.var
+            && var != "none" {
                 last_use.insert(var.clone(), i);
             }
-        }
         if let Some(args) = &op.args {
             for name in args {
                 if name != "none" {
@@ -1842,11 +1820,10 @@ fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
                 }
             }
         }
-        if let Some(out) = &op.out {
-            if out != "none" {
+        if let Some(out) = &op.out
+            && out != "none" {
                 last_use.insert(out.clone(), i);
             }
-        }
     }
     last_use
 }
@@ -1886,13 +1863,11 @@ pub fn rc_coalescing(func_ir: &mut FunctionIR) {
         // Skip dec_ref/release ops whose variable was flagged by the
         // dead-inc_ref analysis (the inc_ref was removed, so the dec_ref
         // must be removed too).
-        if matches!(op.kind.as_str(), "dec_ref" | "release") {
-            if let Some(arg) = op.args.as_ref().and_then(|a| a.first()) {
-                if skip_dec_ref.contains(arg.as_str()) {
+        if matches!(op.kind.as_str(), "dec_ref" | "release")
+            && let Some(arg) = op.args.as_ref().and_then(|a| a.first())
+                && skip_dec_ref.contains(arg.as_str()) {
                     continue;
                 }
-            }
-        }
         new_ops.push(op.clone());
     }
     func_ir.ops = new_ops;
@@ -2047,7 +2022,7 @@ pub fn hoist_loop_invariants(func_ir: &mut FunctionIR) {
             if !is_hoistable(op) {
                 continue;
             }
-            let inputs_outside = op.args.as_ref().map_or(true, |args| {
+            let inputs_outside = op.args.as_ref().is_none_or(|args| {
                 args.iter().all(|arg| !defined_in_loop.contains(arg))
             });
             if !inputs_outside {
@@ -2119,18 +2094,16 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
             match op.kind.as_str() {
                 "call" | "call_internal" | "func_new" | "func_new_closure" | "func_new_builtin"
                 | "code_new" | "call_guarded" => {
-                    if let Some(name) = op.s_value.as_ref() {
-                        if defined.contains(name.as_str()) {
+                    if let Some(name) = op.s_value.as_ref()
+                        && defined.contains(name.as_str()) {
                             refs.insert(name.clone());
                         }
-                    }
                 }
                 "call_indirect" => {
-                    if let Some(name) = op.s_value.as_ref() {
-                        if defined.contains(name.as_str()) {
+                    if let Some(name) = op.s_value.as_ref()
+                        && defined.contains(name.as_str()) {
                             refs.insert(name.clone());
                         }
-                    }
                 }
                 // alloc_task's s_value is the poll function name directly
                 // (e.g., "foo_poll"). generator_create/coro_create reference
@@ -2153,21 +2126,19 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
                 }
                 // Ops that take a function pointer address via s_value.
                 "fn_ptr_code_set" | "asyncgen_locals_register" | "gen_locals_register" => {
-                    if let Some(name) = op.s_value.as_ref() {
-                        if defined.contains(name.as_str()) {
+                    if let Some(name) = op.s_value.as_ref()
+                        && defined.contains(name.as_str()) {
                             refs.insert(name.clone());
                         }
-                    }
                 }
                 // Other op kinds that legitimately reference functions by name.
                 "task_new" | "generator_send" | "spawn" | "call_func" | "call_method"
                 | "import_from" | "import_name" | "class_def" | "make_function" | "decorator"
                 | "super_call" | "yield_from" | "await" => {
-                    if let Some(name) = op.s_value.as_ref() {
-                        if defined.contains(name.as_str()) {
+                    if let Some(name) = op.s_value.as_ref()
+                        && defined.contains(name.as_str()) {
                             refs.insert(name.clone());
                         }
-                    }
                 }
                 _ => {}
             }
@@ -2224,14 +2195,13 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
     ir.functions.retain(|f| reachable.contains(&f.name));
     let eliminated = original_count - ir.functions.len();
 
-    if eliminated > 0 {
-        if std::env::var("MOLT_DEBUG_DEAD_FUNC_ELIM").is_ok() {
+    if eliminated > 0
+        && std::env::var("MOLT_DEBUG_DEAD_FUNC_ELIM").is_ok() {
             eprintln!(
                 "dead-func-elim: removed {eliminated} of {original_count} functions ({} retained)",
                 ir.functions.len()
             );
         }
-    }
 }
 
 fn is_protected_runtime_entrypoint(name: &str) -> bool {
@@ -2434,11 +2404,10 @@ pub fn split_large_function(
         // Strip check_exception ops that reference labels NOT in this chunk.
         // These are dead code — the target label is in another chunk.
         chunk_ops.retain(|op| {
-            if op.kind == "check_exception" {
-                if let Some(target_id) = op.value {
+            if op.kind == "check_exception"
+                && let Some(target_id) = op.value {
                     return chunk_labels.contains(&target_id);
                 }
-            }
             true
         });
 
@@ -2550,8 +2519,8 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
     // Find the maximum state ID already in use so we can allocate fresh IDs.
     let mut max_state_id: i64 = 0;
     for op in &func_ir.ops {
-        if let Some(id) = op.value {
-            if matches!(
+        if let Some(id) = op.value
+            && matches!(
                 op.kind.as_str(),
                 "state_yield"
                     | "state_transition"
@@ -2562,7 +2531,6 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
             ) {
                 max_state_id = max_state_id.max(id);
             }
-        }
     }
     let mut next_state_id = max_state_id + 100; // leave headroom
 

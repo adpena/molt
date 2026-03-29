@@ -74,7 +74,7 @@ impl ClassHierarchy {
     /// would disagree, but the TIR operates under a closed-world assumption for
     /// registered modules).
     pub fn is_leaf_class(&self, class_name: &str) -> bool {
-        self.children.get(class_name).map_or(true, |c| c.is_empty())
+        self.children.get(class_name).is_none_or(|c| c.is_empty())
     }
 
     /// For a method call on a known receiver type, returns the fully-qualified
@@ -98,11 +98,10 @@ impl ClassHierarchy {
     fn find_defining_class(&self, class_name: &str, method_name: &str) -> Option<String> {
         let mut current: Option<String> = Some(class_name.to_string());
         while let Some(cls) = current {
-            if let Some(method_set) = self.methods.get(&cls) {
-                if method_set.contains(method_name) {
+            if let Some(method_set) = self.methods.get(&cls)
+                && method_set.contains(method_name) {
                     return Some(cls);
                 }
-            }
             // Ascend to parent; if not in the map, stop.
             current = self
                 .parent

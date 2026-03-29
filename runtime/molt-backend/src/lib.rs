@@ -1,3 +1,8 @@
+// TODO: fix in dedicated cleanup pass
+#![allow(clippy::needless_range_loop)] // index vars used in mutation / skip-set patterns
+#![allow(clippy::too_many_arguments)] // refactoring signatures risks breaking callers
+#![allow(clippy::type_complexity)] // complex return types in TIR CFG helpers
+
 #[cfg(feature = "native-backend")]
 use cranelift_codegen::Context;
 #[cfg(feature = "native-backend")]
@@ -446,7 +451,7 @@ fn analyze_native_backend_functions(functions: &[FunctionIR]) -> NativeBackendIr
         }
         // Check: all fast_int arithmetic ops, all call_internal targets
         // are self or candidates, and the function has typed params.
-        let has_all_int_params = func_ir.param_types.as_ref().map_or(false, |pts| {
+        let has_all_int_params = func_ir.param_types.as_ref().is_some_and(|pts| {
             !pts.is_empty() && pts.iter().all(|t| t == "int")
         });
         if !has_all_int_params {
@@ -468,11 +473,10 @@ fn analyze_native_backend_functions(functions: &[FunctionIR]) -> NativeBackendIr
                         }
                     }
                     "call_internal" => {
-                        if let Some(target) = op.s_value.as_ref() {
-                            if target != &func_ir.name {
+                        if let Some(target) = op.s_value.as_ref()
+                            && target != &func_ir.name {
                                 all_calls_self = false;
                             }
-                        }
                     }
                     "call_func" | "call_method" | "call_guarded" => {
                         all_ops_typed = false;
@@ -502,14 +506,12 @@ fn analyze_native_backend_functions(functions: &[FunctionIR]) -> NativeBackendIr
         let func_ir = functions.iter().find(|f| &f.name == name).unwrap();
         let mut valid = true;
         for op in &func_ir.ops {
-            if op.kind == "call_internal" {
-                if let Some(target) = op.s_value.as_ref() {
-                    if !typed_int_candidates.contains(target) {
+            if op.kind == "call_internal"
+                && let Some(target) = op.s_value.as_ref()
+                    && !typed_int_candidates.contains(target) {
                         valid = false;
                         break;
                     }
-                }
-            }
         }
         if valid {
             typed_int_functions.insert(name.clone());
@@ -1553,11 +1555,10 @@ fn drain_cleanup_tracked_dedup(
         if skip == Some(name.as_str()) {
             return true;
         }
-        if let Some(ref set) = already_decrefed {
-            if set.contains(name.as_str()) {
+        if let Some(ref set) = already_decrefed
+            && set.contains(name.as_str()) {
                 return false;
             }
-        }
         let last = last_use.get(name).copied().unwrap_or(usize::MAX);
         if last <= op_idx {
             if let Some(ref mut set) = already_decrefed {
@@ -2027,10 +2028,8 @@ impl SimpleBackend {
             }
         }
         #[cfg(target_arch = "aarch64")]
-        if !portable && target.is_none() {
-            if std::arch::is_aarch64_feature_detected!("lse") {
-                let _ = isa_builder.enable("has_lse");
-            }
+        if !portable && target.is_none() && std::arch::is_aarch64_feature_detected!("lse") {
+            let _ = isa_builder.enable("has_lse");
         }
 
         let isa = isa_builder
@@ -2135,7 +2134,7 @@ impl SimpleBackend {
             /// IR for a sequential retry at opt_level=none.
             NeedsRetry {
                 func_id: cranelift_module::FuncId,
-                func: cranelift_codegen::ir::Function,
+                func: Box<cranelift_codegen::ir::Function>,
                 name: String,
             },
         }
@@ -2193,7 +2192,7 @@ impl SimpleBackend {
                                 );
                                 let _ = tx.send((idx, CompileResult::NeedsRetry {
                                     func_id: item.func_id,
-                                    func: ctx.func,
+                                    func: Box::new(ctx.func),
                                     name: item.name,
                                 }));
                             }
@@ -2204,7 +2203,7 @@ impl SimpleBackend {
                                 );
                                 let _ = tx.send((idx, CompileResult::NeedsRetry {
                                     func_id: item.func_id,
-                                    func: ctx.func,
+                                    func: Box::new(ctx.func),
                                     name: item.name,
                                 }));
                             }
@@ -2239,7 +2238,7 @@ impl SimpleBackend {
                     func_id,
                     func,
                     name,
-                } => match Self::retry_define_at_opt_none(&mut self.module, func_id, func, &name) {
+                } => match Self::retry_define_at_opt_none(&mut self.module, func_id, *func, &name) {
                     Ok(()) => {
                         self.defined_func_names.insert(name.clone());
                         eprintln!("  -> {} compiled successfully at opt_level=none", name);
@@ -2346,13 +2345,11 @@ impl SimpleBackend {
     fn resolve_const_int(ops: &[OpIR], before_idx: usize, var_name: &str) -> Option<i64> {
         for i in (0..before_idx).rev() {
             let op = &ops[i];
-            if op.kind == "const" {
-                if let Some(ref out) = op.out {
-                    if out == var_name {
+            if op.kind == "const"
+                && let Some(ref out) = op.out
+                    && out == var_name {
                         return op.value;
                     }
-                }
-            }
         }
         None
     }
@@ -2536,13 +2533,12 @@ impl SimpleBackend {
                     &body_bytes,
                 );
                 // Cache hit — apply directly and skip.
-                if let Some(cached_bytes) = tir_cache.get(&content_hash) {
-                    if let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
+                if let Some(cached_bytes) = tir_cache.get(&content_hash)
+                    && let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
                     {
                         func_ir.ops = cached_ops;
                         continue;
                     }
-                }
                 work_items.push(TirWorkItem {
                     index: i,
                     content_hash,
@@ -2914,7 +2910,7 @@ impl SimpleBackend {
         // Progress reporting: pick interval based on function count so the
         // user sees roughly 20 updates during a long build, but at least
         // every 50 functions.
-        let progress_interval = (func_count / 20).max(1).min(50);
+        let progress_interval = (func_count / 20).clamp(1, 50);
         let mut last_progress = std::time::Instant::now();
         for func_ir in ir.functions {
             let func_name = func_ir.name.clone();
@@ -2937,14 +2933,14 @@ impl SimpleBackend {
             }
             if slowest_func
                 .as_ref()
-                .map_or(true, |(_, d)| func_elapsed > *d)
+                .is_none_or(|(_, d)| func_elapsed > *d)
             {
                 slowest_func = Some((func_name, func_elapsed));
             }
             compiled += 1;
             // Print progress at regular intervals, or every 500ms for
             // slow builds where individual functions take a long time.
-            if compiled as usize % progress_interval == 0
+            if (compiled as usize).is_multiple_of(progress_interval)
                 || last_progress.elapsed().as_millis() >= 500
             {
                 let pct = (compiled as f64 / func_count as f64 * 100.0) as u32;
