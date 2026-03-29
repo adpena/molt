@@ -616,6 +616,44 @@ fn is_stateful_dispatch_terminator(kind: &str) -> bool {
     )
 }
 
+fn has_non_linear_control_flow(ops: &[OpIR]) -> bool {
+    ops.iter().any(|op| {
+        matches!(
+            op.kind.as_str(),
+            "if"
+                | "else"
+                | "end_if"
+                | "loop_start"
+                | "loop_index_start"
+                | "loop_break_if_true"
+                | "loop_break_if_false"
+                | "loop_break"
+                | "loop_continue"
+                | "loop_end"
+                | "for_iter_start"
+                | "for_iter_end"
+                | "while_start"
+                | "while_end"
+                | "try_start"
+                | "try_end"
+                | "async_for_start"
+                | "async_for_end"
+                | "jump"
+                | "br_if"
+                | "label"
+                | "state_switch"
+                | "state_transition"
+                | "state_yield"
+                | "chan_send_yield"
+                | "chan_recv_yield"
+                | "state_label"
+                | "check_exception"
+                | "ret"
+                | "ret_void"
+        )
+    })
+}
+
 fn build_dispatch_blocks(ops: &[OpIR]) -> (Vec<usize>, Vec<usize>) {
     let op_count = ops.len();
     if op_count == 0 {
@@ -4350,7 +4388,10 @@ impl WasmBackend {
         // Compute live ranges for each variable: first write -> last read.
         // Variables whose ranges don't overlap can share a WASM local,
         // reducing total local count and binary size.
-        let coalesced_map: BTreeMap<String, String> = {
+        let coalesced_map: BTreeMap<String, String> = if has_non_linear_control_flow(&func_ir.ops)
+        {
+            BTreeMap::new()
+        } else {
             let mut first_write: BTreeMap<String, usize> = BTreeMap::new();
             let mut last_read: BTreeMap<String, usize> = BTreeMap::new();
 
@@ -14453,5 +14494,26 @@ mod tests {
         ];
         let read_vars = collect_read_vars(&ops);
         assert!(read_vars.is_empty(), "no variable is ever read");
+    }
+
+    #[test]
+    fn non_linear_control_flow_detection_handles_jumpful_functions() {
+        let ops = vec![
+            make_op("const", None, None, Some("v0")),
+            make_op("check_exception", None, None, None),
+            make_op("jump", None, None, None),
+            make_op("label", None, None, None),
+        ];
+        assert!(has_non_linear_control_flow(&ops));
+    }
+
+    #[test]
+    fn non_linear_control_flow_detection_ignores_straight_line_ops() {
+        let ops = vec![
+            make_op("const", None, None, Some("v0")),
+            make_op("add", Some(vec!["v0", "v1"]), None, Some("v2")),
+            make_op("tuple_new", Some(vec!["v2"]), None, Some("v3")),
+        ];
+        assert!(!has_non_linear_control_flow(&ops));
     }
 }

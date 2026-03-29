@@ -793,7 +793,7 @@ pub extern "C" fn molt_env_set(key_bits: u64, value_bits: u64) -> u64 {
             allowed,
         );
         if !allowed {
-            return raise_exception::<u64>(_py, "PermissionError", "missing env.write capability");
+            return raise_capability_denied(_py, "env.write");
         }
         let value = match string_obj_to_owned(obj_from_bits(value_bits)) {
             Some(value) => value,
@@ -824,7 +824,7 @@ pub extern "C" fn molt_env_unset(key_bits: u64) -> u64 {
             allowed,
         );
         if !allowed {
-            return raise_exception::<u64>(_py, "PermissionError", "missing env.write capability");
+            return raise_capability_denied(_py, "env.write");
         }
         let removed = {
             let mut guard = env_state()
@@ -940,7 +940,7 @@ pub extern "C" fn molt_env_popitem() -> u64 {
         let allowed = has_capability(_py, "env.write");
         audit_capability_decision("env.popitem", "env.write", AuditArgs::None, allowed);
         if !allowed {
-            return raise_exception::<u64>(_py, "PermissionError", "missing env.write capability");
+            return raise_capability_denied(_py, "env.write");
         }
         let (key, value) = {
             let mut guard = env_state()
@@ -984,7 +984,7 @@ pub extern "C" fn molt_env_clear() -> u64 {
         let allowed = has_capability(_py, "env.write");
         audit_capability_decision("env.clear", "env.write", AuditArgs::None, allowed);
         if !allowed {
-            return raise_exception::<u64>(_py, "PermissionError", "missing env.write capability");
+            return raise_capability_denied(_py, "env.write");
         }
         {
             let mut guard = env_state()
@@ -1011,7 +1011,7 @@ pub extern "C" fn molt_env_putenv(key_bits: u64, value_bits: u64) -> u64 {
             allowed,
         );
         if !allowed {
-            return raise_exception::<u64>(_py, "PermissionError", "missing env.write capability");
+            return raise_capability_denied(_py, "env.write");
         }
         let value = match string_obj_to_owned(obj_from_bits(value_bits)) {
             Some(value) => value,
@@ -1042,7 +1042,7 @@ pub extern "C" fn molt_env_unsetenv(key_bits: u64) -> u64 {
             allowed,
         );
         if !allowed {
-            return raise_exception::<u64>(_py, "PermissionError", "missing env.write capability");
+            return raise_capability_denied(_py, "env.write");
         }
         {
             let mut guard = process_env_state()
