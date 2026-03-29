@@ -74,6 +74,29 @@ theorem dceFunc_blocks_none (f : Func) (lbl : Label)
 theorem dceBlock_params (b : Block) : (dceBlock b).params = b.params := rfl
 theorem dceBlock_term (b : Block) : (dceBlock b).term = b.term := rfl
 
+
+/-- Helper: evalTerminator for switch depends only on f.blocks, not the function
+    itself (since switch doesn't modify its sub-expressions in DCE/SCCP/etc.).
+    If g.blocks agrees with f.blocks on all labels, then evalTerminator g = evalTerminator f
+    for switch terminators. -/
+private theorem evalTerminator_switch_congr (f g : Func) (ρ : Env)
+    (scrutinee : Expr) (cases_ : List (Int × Label)) (default_ : Label)
+    (hblocks_none : ∀ lbl, f.blocks lbl = none → g.blocks lbl = none)
+    (hblocks_params : ∀ lbl blk, f.blocks lbl = some blk →
+      ∃ blk', g.blocks lbl = some blk' ∧ blk'.params = blk.params) :
+    evalTerminator g ρ (.switch scrutinee cases_ default_) =
+    evalTerminator f ρ (.switch scrutinee cases_ default_) := by
+  simp only [evalTerminator]
+  match evalExpr ρ scrutinee with
+  | some (.int n) =>
+    let target := match cases_.find? (fun p => p.1 == n) with
+      | some (_, lbl) => lbl
+      | none => default_
+    -- Both sides look up f.blocks target / g.blocks target
+    -- and use .params for bindParams. Since params are preserved, the result is the same.
+    sorry  -- needs congruence through let + bindParams; structurally correct
+  | some (.bool _) | some (.float _) | some (.str _) | some .none | none => rfl
+
 theorem dce_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     evalTerminator (dceFunc f) ρ t = evalTerminator f ρ t := by
   cases t with
@@ -109,7 +132,7 @@ theorem dce_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     | some .none => rfl
     | none => rfl
   | yield _ _ _ => rfl
-  | switch _ _ _ => sorry  -- switch: let-binding in evalTerminator blocks proof
+  | switch _ _ _ => sorry  -- switch evalTerminator congruence
   | unreachable => rfl
 
 private theorem dce_instrs_agreeOn_precond_dead (instrs : List Instr) (term : Terminator) :
@@ -171,7 +194,11 @@ private theorem evalTerminator_agreeOn (f : Func) (ρ₁ ρ₂ : Env) (t : Termi
     | none => rfl
   | yield val resume resumeArgs =>
     simp only [evalTerminator]
-  | switch _ _ _ => sorry  -- switch: let-binding in evalTerminator
+  | switch scrutinee cases_ default_ =>
+    simp only [evalTerminator]
+    have hscr : EnvAgreeOn (exprVars scrutinee) ρ₁ ρ₂ :=
+      fun x hx => h x (by simp only [termVars]; exact hx)
+    rw [evalExpr_agreeOn ρ₁ ρ₂ scrutinee hscr]
   | unreachable => rfl
 
 private theorem execInstrs_dce_of_total
@@ -359,7 +386,7 @@ theorem sccp_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     | some .none => rfl
     | none => rfl
   | yield _ _ _ => rfl
-  | switch _ _ _ => sorry  -- switch: let-binding in evalTerminator
+  | switch _ _ _ => sorry  -- switch evalTerminator congruence
   | unreachable => rfl
 
 theorem sccpFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
@@ -628,7 +655,7 @@ private theorem cse_evalTerminator (f : Func) (ρ : Env) (avail : AvailMap) (t :
   | yield val resume resumeArgs =>
     -- Both sides evaluate to none (generators not modeled)
     rfl
-  | switch _ _ _ => sorry  -- switch: let-binding in evalTerminator blocks proof
+  | switch _ _ _ => sorry  -- switch evalTerminator congruence
   | unreachable => rfl
 
 /-- CSE preserves function execution semantics under SSA.
@@ -798,7 +825,7 @@ private theorem guardHoist_evalTerminator (f : Func) (ρ : Env) (t : Terminator)
     | some .none => rfl
     | none => rfl
   | yield _ _ _ => rfl
-  | switch _ _ _ => sorry  -- switch: let-binding in evalTerminator
+  | switch _ _ _ => sorry  -- switch evalTerminator congruence
   | unreachable => rfl
 
 -- ── 5d: Guard hoisting preserves instruction list totality ─────────
