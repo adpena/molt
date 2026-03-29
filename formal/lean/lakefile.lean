@@ -73,4 +73,5 @@ lean_lib MoltPython where
 lean_lib MoltLowering where
   srcDir := "."
   roots := #[`MoltLowering.ASTtoTIR, `MoltLowering.Properties,
+             `MoltLowering.EnvCorr,
              `MoltLowering.Correct]
