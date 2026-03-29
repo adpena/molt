@@ -17835,218 +17835,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     )
                     return res
-                needs_new, new_returns_any = self._class_new_policy(
-                    class_id, class_info
-                )
-                if needs_new:
-                    callargs = self._emit_call_args_builder(node)
-                    res_hint = "Any" if new_returns_any else class_id
-                    res = MoltValue(self.next_var(), type_hint=res_hint)
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[class_ref, callargs],
-                            result=res,
-                        )
-                    )
-                    return res
-                init_method = class_info.get("methods", {}).get("__init__")
-                if init_method is None:
-                    for base_name in class_info.get("mro", [])[1:]:
-                        base_info = self.classes.get(base_name)
-                        if base_info and base_info.get("methods", {}).get("__init__"):
-                            init_method = base_info["methods"]["__init__"]
-                            break
-                if (node.args or node.keywords) and init_method is None:
-                    return self._emit_type_error_value(
-                        f"{class_id}() takes no arguments"
-                    )
-                res = MoltValue(self.next_var(), type_hint=class_id)
-                alloc_kind = "ALLOC_CLASS"
-                if not class_info.get("dynamic"):
-                    alloc_kind = (
-                        "ALLOC_CLASS_STATIC"
-                        if class_info.get("static")
-                        else "ALLOC_CLASS_TRUSTED"
-                    )
-                self.emit(
-                    MoltOp(kind=alloc_kind, args=[class_ref, class_id], result=res)
-                )
-                self.emit(
-                    MoltOp(
-                        kind="OBJECT_SET_CLASS",
-                        args=[res, class_ref],
-                        result=MoltValue("none"),
-                    )
-                )
-                field_order = class_info.get("field_order") or list(
-                    class_info.get("fields", {}).keys()
-                )
-                defaults = class_info.get("defaults", {})
-                for name in field_order:
-                    default_expr = defaults.get(name)
-                    use_init = False
-                    if not class_info.get("dynamic"):
-                        if default_expr is None:
-                            use_init = True
-                        elif isinstance(default_expr, ast.Constant):
-                            const_val = default_expr.value
-                            if const_val is None or isinstance(
-                                const_val, (int, float, bool)
-                            ):
-                                use_init = True
-                    if default_expr is not None:
-                        val = self.visit(default_expr)
-                        if val is None:
-                            val = MoltValue(self.next_var(), type_hint="None")
-                            self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-                    else:
-                        val = MoltValue(self.next_var(), type_hint="None")
-                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-                    if class_info.get("dynamic"):
-                        self.emit(
-                            MoltOp(
-                                kind="SETATTR_GENERIC_PTR",
-                                args=[res, name, val],
-                                result=MoltValue("none"),
-                            )
-                        )
-                    elif use_init:
-                        self._emit_guarded_setattr(
-                            res, name, val, class_id, use_init=True, assume_exact=True
-                        )
-                    else:
-                        self._emit_guarded_setattr(
-                            res, name, val, class_id, assume_exact=True
-                        )
-                if init_method is not None:
-                    init_func = init_method["func"]
-                    if needs_bind:
-                        init_func_val = self._emit_class_method_func(
-                            class_ref, "__init__"
-                        )
-                        bound_init = MoltValue(self.next_var(), type_hint="method")
-                        self.emit(
-                            MoltOp(
-                                kind="BOUND_METHOD_NEW",
-                                args=[init_func_val, res],
-                                result=bound_init,
-                            )
-                        )
-                        callargs = self._emit_call_args_builder(node)
-                        init_res = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(
-                            MoltOp(
-                                kind="CALL_BIND",
-                                args=[bound_init, callargs],
-                                result=init_res,
-                            )
-                        )
-                        self.emit(
-                            MoltOp(
-                                kind="OBJECT_SET_CLASS",
-                                args=[res, class_ref],
-                                result=MoltValue("none"),
-                            )
-                        )
-                        return res
-                    target_name = init_func.type_hint.split(":", 1)[1]
-                    args = [res] + self._emit_call_args(node.args)
-                    func_obj = None
-                    param_count = init_method.get("param_count")
-                    defaults = init_method.get("defaults", [])
-                    kwonly_count = init_method.get("kwonly_count")
-                    positional_limit = None
-                    if param_count is not None and isinstance(kwonly_count, int):
-                        positional_limit = param_count - kwonly_count
-                    if param_count is not None:
-                        missing = param_count - len(args)
-                        if missing > 0 and any(
-                            not spec.get("const", False) for spec in defaults[-missing:]
-                        ):
-                            func_obj = self._emit_class_method_func(
-                                class_ref, "__init__"
-                            )
-                    args = self._apply_default_specs(
-                        param_count,
-                        defaults,
-                        args,
-                        node,
-                        call_name=f"{class_id}.__init__",
-                        func_obj=func_obj,
-                        positional_limit=positional_limit,
-                    )
-                    if args is None:
-                        init_func_val = self._emit_class_method_func(
-                            class_ref, "__init__"
-                        )
-                        bound_init = MoltValue(self.next_var(), type_hint="method")
-                        self.emit(
-                            MoltOp(
-                                kind="BOUND_METHOD_NEW",
-                                args=[init_func_val, res],
-                                result=bound_init,
-                            )
-                        )
-                        callargs = self._emit_call_args_builder(node)
-                        init_res = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(
-                            MoltOp(
-                                kind="CALL_BIND",
-                                args=[bound_init, callargs],
-                                result=init_res,
-                            )
-                        )
-                        self.emit(
-                            MoltOp(
-                                kind="OBJECT_SET_CLASS",
-                                args=[res, class_ref],
-                                result=MoltValue("none"),
-                            )
-                        )
-                        return res
-                    init_res = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(kind="CALL", args=[target_name] + args, result=init_res)
-                    )
-                    self.emit(
-                        MoltOp(
-                            kind="OBJECT_SET_CLASS",
-                            args=[res, class_ref],
-                            result=MoltValue("none"),
-                        )
-                    )
-                    return res
-                self.emit(
-                    MoltOp(
-                        kind="OBJECT_SET_CLASS",
-                        args=[res, class_ref],
-                        result=MoltValue("none"),
-                    )
-                )
+                _, new_returns_any = self._class_new_policy(class_id, class_info)
                 callargs = self._emit_call_args_builder(node)
-                init_name = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=["__init__"], result=init_name))
-                init_obj = MoltValue(self.next_var(), type_hint="Any")
+                res_hint = "Any" if new_returns_any else class_id
+                res = MoltValue(self.next_var(), type_hint=res_hint)
+                # Route user class construction through the class object so __new__,
+                # metaclass __call__, and runtime constructor policy stay coherent.
                 self.emit(
                     MoltOp(
-                        kind="GETATTR_NAME",
-                        args=[class_ref, init_name],
-                        result=init_obj,
-                    )
-                )
-                bound_init = MoltValue(self.next_var(), type_hint="method")
-                self.emit(
-                    MoltOp(
-                        kind="BOUND_METHOD_NEW",
-                        args=[init_obj, res],
-                        result=bound_init,
-                    )
-                )
-                init_res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="CALL_BIND", args=[bound_init, callargs], result=init_res
+                        kind="CALL_BIND",
+                        args=[class_ref, callargs],
+                        result=res,
                     )
                 )
                 return res
@@ -18693,19 +18492,39 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="IS_CALLABLE", args=[arg], result=res))
                 return res
             if func_id == "str":
-                # Support str(object=x) keyword argument (CPython compat)
+                # CPython str() signatures:
+                #   str() → ''
+                #   str(object) → str(object)
+                #   str(object=x) → str(x)
+                #   str(bytes, encoding) → decoded str
+                #   str(bytes, encoding, errors) → decoded str
+                #   str(bytes, encoding=..., errors=...) → decoded str
                 kw_object = next((kw.value for kw in node.keywords if kw.arg == "object"), None)
-                has_unsupported_kw = any(kw.arg not in ("object",) for kw in node.keywords if kw.arg is not None)
+                kw_encoding = next((kw.value for kw in node.keywords if kw.arg == "encoding"), None)
+                kw_errors = next((kw.value for kw in node.keywords if kw.arg == "errors"), None)
+                known_kw = {"object", "encoding", "errors"}
+                has_unsupported_kw = any(kw.arg not in known_kw for kw in node.keywords if kw.arg is not None)
                 has_star_kw = any(kw.arg is None for kw in node.keywords)
-                if has_unsupported_kw or has_star_kw or len(node.args) > 1:
+                if has_unsupported_kw or has_star_kw or len(node.args) > 3:
                     callee = self.visit(node.func)
                     if callee is None:
                         raise NotImplementedError("Unsupported call target")
                     return self._emit_dynamic_call(node, callee, True)
+                # str(bytes_obj, encoding[, errors]) — decode bytes to str
+                # Fall through to dynamic call which the runtime handles via
+                # the str() builtin's multi-arg path.
+                has_encoding = len(node.args) >= 2 or kw_encoding is not None
+                if has_encoding:
+                    callee = self.visit(node.func)
+                    if callee is None:
+                        raise NotImplementedError("Unsupported call target")
+                    return self._emit_dynamic_call(node, callee, True)
+                # str() → ''
                 if not node.args and kw_object is None:
                     res = MoltValue(self.next_var(), type_hint="str")
                     self.emit(MoltOp(kind="CONST_STR", args=[""], result=res))
                     return res
+                # str(object) or str(object=x)
                 if node.args:
                     arg = self.visit(node.args[0])
                 elif kw_object is not None:

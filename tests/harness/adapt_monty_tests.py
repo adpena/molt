@@ -21,25 +21,49 @@ from pathlib import Path
 
 
 def parse_expectation(filepath: Path) -> tuple[str, str]:
-    """Parse expectation from last comment lines."""
-    lines = filepath.read_text().strip().splitlines()
+    """Parse expectation from test file comments and docstrings."""
+    text = filepath.read_text()
+    lines = text.strip().splitlines()
+
+    # call-external files depend on helpers not in the file
+    if lines and lines[0].strip() == "# call-external":
+        return ("skip", "call-external")
+
+    # Scan from bottom for comment-based expectations
     for line in reversed(lines):
-        line = line.strip()
-        if line.startswith("# Return="):
-            return ("return", line[len("# Return="):])
-        if line.startswith("# Return.str="):
-            return ("return_str", line[len("# Return.str="):])
-        if line.startswith("# Return.type="):
-            return ("return_type", line[len("# Return.type="):])
-        if line.startswith("# Raise="):
-            return ("raise", line[len("# Raise="):])
-        if line.startswith("# NoException"):
+        stripped = line.strip()
+        if stripped.startswith("# Return="):
+            return ("return", stripped[len("# Return="):])
+        if stripped.startswith("# Return.str="):
+            return ("return_str", stripped[len("# Return.str="):])
+        if stripped.startswith("# Return.type="):
+            return ("return_type", stripped[len("# Return.type="):])
+        if stripped.startswith("# Raise="):
+            return ("raise", stripped[len("# Raise="):])
+        if stripped.startswith("# NoException"):
             return ("noexception", "")
-        if line.startswith("# call-external"):
-            return ("skip", "call-external")
-        if line.startswith("#"):
+        if stripped.startswith("# ref-counts="):
+            return ("assert_only", "")  # Treat refcount metadata as assert-only
+        if stripped.startswith("#"):
             continue
         break
+
+    # Check for TRACEBACK: docstring block (135 files use this pattern)
+    traceback_match = re.search(
+        r'TRACEBACK:\s*\n.*?(\w+Error|\w+Exception|SyntaxError|ImportError)',
+        text,
+        re.DOTALL,
+    )
+    if traceback_match:
+        exc_type = traceback_match.group(1)
+        # Extract the exception message if present
+        msg_match = re.search(
+            exc_type + r':\s*(.+?)(?:\n|""")',
+            text,
+        )
+        exc_msg = msg_match.group(1).strip() if msg_match else ""
+        return ("raise", f"{exc_type}({exc_msg})" if exc_msg else exc_type)
+
     return ("assert_only", "")
 
 
