@@ -18,6 +18,38 @@ from typing import Callable
 from molt.harness_report import LayerResult, LayerStatus
 
 
+def _discover_workspace_crates(project_root: Path) -> list[str]:
+    """Discover crates in the workspace by reading Cargo.toml.
+
+    Returns a list of crate *package* names (e.g. ``molt-backend``).
+    Falls back to an empty list if the file is missing or unparseable.
+    """
+    import tomllib
+
+    cargo_toml = project_root / "runtime" / "Cargo.toml"
+    if not cargo_toml.exists():
+        return []
+    try:
+        with open(cargo_toml, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        return []
+    members = data.get("workspace", {}).get("members", [])
+    crates: list[str] = []
+    for member in members:
+        member_cargo = project_root / "runtime" / member / "Cargo.toml"
+        if member_cargo.exists():
+            try:
+                with open(member_cargo, "rb") as f:
+                    crate_data = tomllib.load(f)
+                name = crate_data.get("package", {}).get("name", "")
+                if name:
+                    crates.append(name)
+            except Exception:
+                continue
+    return crates
+
+
 @dataclass
 class HarnessConfig:
     """Configuration for a harness run."""
@@ -134,26 +166,41 @@ def run_layer_lint(config: HarnessConfig) -> LayerResult:
     """Run ``cargo clippy -D warnings`` on molt-authored crates only.
 
     We skip molt-runtime (pre-existing warnings in vendored code) and
-    molt-lang-cpython-abi (10+ errors in upstream-generated bindings we
-    don't own).  Only crates we control and keep warning-free are checked.
+    molt-cpython-abi (upstream-generated bindings with 10+ errors).
+    Only crates we control and keep warning-free are checked.
+
+    The set of crates is discovered dynamically from the workspace
+    ``Cargo.toml`` so that adding or removing workspace members never
+    breaks this layer.
     """
     t0 = time.monotonic()
 
     # Crates we own and keep clippy-clean.  We skip molt-runtime (pre-existing
-    # warnings in vendored code), molt-lang-cpython-abi (upstream-generated
+    # warnings in vendored code), molt-cpython-abi (upstream-generated
     # bindings with 10+ errors), molt-runtime-core (3 pre-existing errors),
     # and all stdlib crates that depend on molt-runtime-core.
-    clean_crates = [
+    known_clean = {
         "molt-backend",
         "molt-db",
         "molt-snapshot",
         "molt-embed",
         "molt-harness",
         "molt-runtime-protobuf",
-    ]
+        "molt-ffi",
+    }
+    available = set(_discover_workspace_crates(config.project_root))
+    lint_crates = sorted(known_clean & available)
+
+    if not lint_crates:
+        return LayerResult(
+            name="lint",
+            status=LayerStatus.SKIP,
+            duration_s=time.monotonic() - t0,
+            details="no clippy-clean crates found in workspace",
+        )
 
     cmd: list[str] = ["cargo", "clippy"]
-    for crate in clean_crates:
+    for crate in lint_crates:
         cmd += ["-p", crate]
     cmd += ["--", "-D", "warnings"]
 
@@ -172,7 +219,7 @@ def run_layer_lint(config: HarnessConfig) -> LayerResult:
         name="lint",
         status=LayerStatus.PASS,
         duration_s=elapsed,
-        details=f"clippy clean ({len(clean_crates)} crates)",
+        details=f"clippy clean ({len(lint_crates)} crates: {', '.join(lint_crates)})",
     )
 
 

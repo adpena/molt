@@ -25,7 +25,7 @@ use crate::tir::ops::{AttrValue, Dialect, OpCode};
 // ---------------------------------------------------------------------------
 
 /// Whole-program class hierarchy for devirtualization.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ClassHierarchy {
     /// class_name → set of direct child class names
     children: HashMap<String, HashSet<String>>,

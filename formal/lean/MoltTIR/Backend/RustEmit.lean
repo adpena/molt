@@ -67,27 +67,28 @@ def emitRustType : MoltTIR.Ty → RustType
 -- ======================================================================
 
 /-- Map IR binary operator to Rust binary operator.
-    Unlike Luau, Rust has no floor-division operator; floordiv maps to
-    a method call in the real transpiler. Here we approximate with div. -/
+    Each IR operator maps to a distinct Rust operator variant with
+    matching semantics. Floor division and pow have dedicated variants
+    rather than approximations. -/
 def emitRustBinOp : MoltTIR.BinOp → RustBinOp
   | .add => .add
   | .sub => .sub
   | .mul => .mul
   | .div => .div
-  | .floordiv => .div     -- approximation; real transpiler uses checked integer div
+  | .floordiv => .floordiv  -- Python // floor division (round toward -inf)
   | .mod => .rem
-  | .pow => .mul           -- approximation; real transpiler uses i64::pow
+  | .pow => .pow           -- i64::pow / f64::powi
   | .eq => .eq
   | .ne => .ne
   | .lt => .lt
   | .le => .le
   | .gt => .gt
   | .ge => .ge
-  | .bit_and => .and      -- approximation; real transpiler uses & operator
-  | .bit_or  => .or       -- approximation; real transpiler uses | operator
-  | .bit_xor => .ne       -- approximation; real transpiler uses ^ operator
-  | .lshift  => .mul      -- approximation; real transpiler uses << operator
-  | .rshift  => .div      -- approximation; real transpiler uses >> operator
+  | .bit_and => .bitAnd   -- Rust & operator
+  | .bit_or  => .bitOr    -- Rust | operator
+  | .bit_xor => .bitXor   -- Rust ^ operator
+  | .lshift  => .shl      -- Rust << operator
+  | .rshift  => .shr      -- Rust >> operator
 
 /-- Map IR unary operator to Rust unary operator. -/
 def emitRustUnOp : MoltTIR.UnOp → RustUnOp

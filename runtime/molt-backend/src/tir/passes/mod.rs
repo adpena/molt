@@ -37,15 +37,22 @@ pub const VERIFICATION_FAILED_SENTINEL: usize = 0;
 /// Pass order is critical -- each pass feeds into the next:
 /// 1. Unboxing (needs types from type_refine)
 /// 2. Escape analysis (benefits from unboxed info)
-/// 3. SCCP (folds constants after unboxing reveals types)
-/// 4. Strength reduction (after SCCP reveals constant operands)
-/// 5. BCE (after SCCP/SR simplify loop bounds)
-/// 6. DCE (cleans up dead code from all prior passes)
+/// 3. Refcount elimination (uses escape analysis results)
+/// 4. Type guard hoisting (moves checks up in CFG)
+/// 5. SCCP (folds constants after unboxing reveals types)
+/// 6. Strength reduction (after SCCP reveals constant operands)
+/// 7. BCE (after SCCP/SR simplify loop bounds)
+/// 8. DCE (cleans up dead code from all prior passes)
 ///
-/// If post-pipeline verification fails, returns an EMPTY Vec to signal
-/// the caller should fall back to unoptimized code.  This avoids panicking
-/// (fatal under panic=abort profiles).
+/// If post-pipeline verification fails, restores the pre-optimization
+/// snapshot and returns an empty Vec to signal the caller should use
+/// unoptimized code.  This avoids panicking (fatal under panic=abort).
 pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
+    // Snapshot the function BEFORE any mutation so we can restore on
+    // verification failure.  Without this, a corrupting pass would leave
+    // `func` in an invalid state with no recovery path.
+    let snapshot = func.clone();
+
     let mut stats = Vec::with_capacity(8);
 
     // Each pass can be individually disabled for debugging:
@@ -78,15 +85,17 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
         stats.push(dce::run(func));
     }
 
-    // Verify TIR invariants after all passes.  Instead of panicking
-    // (which kills the process under panic=abort profiles), return an
-    // empty Vec to signal the caller to fall back to unoptimized code.
+    // Verify TIR invariants after all passes.  On failure, restore the
+    // pre-optimization snapshot so callers get valid (unoptimized) IR
+    // instead of corrupted output.
     if let Err(errors) = super::verify::verify_function(func) {
         eprintln!(
-            "[TIR] WARNING: verification found {} error(s) after optimization: {:?}",
+            "[TIR] WARNING: verification found {} error(s) after optimization — \
+             restoring pre-optimization snapshot: {:?}",
             errors.len(),
             errors
         );
+        *func = snapshot;
         return Vec::new(); // signal: verification failed
     }
 

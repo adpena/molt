@@ -7,7 +7,7 @@ use super::values::ValueId;
 use crate::tir::passes::cha::ClassHierarchy;
 
 /// A function in TIR: a collection of basic blocks in SSA form.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TirFunction {
     pub name: String,
     /// Original parameter names, aligned 1:1 with `param_types` and the entry
@@ -110,7 +110,7 @@ impl TirFunction {
 }
 
 /// A module: a collection of TIR functions.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TirModule {
     pub name: String,
     pub functions: Vec<TirFunction>,

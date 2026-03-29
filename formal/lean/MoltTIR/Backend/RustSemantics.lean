@@ -183,6 +183,32 @@ def evalRustBinOp (op : RustBinOp) (a b : RustValue) : Option RustValue :=
   -- comparison (bool x bool -> bool)
   | .eq,  .boolean x, .boolean y => Option.some (.boolean (x == y))
   | .ne,  .boolean x, .boolean y => Option.some (.boolean (x != y))
+  -- exponentiation (int x int -> int, non-negative exponent only)
+  | .pow, .int x, .int y =>
+      if y < 0 then Option.none
+      else Option.some (.int (x ^ y.toNat))
+  -- floor division (Python // semantics: round toward negative infinity)
+  -- For positive divisor: same as truncating div when dividend >= 0,
+  -- otherwise adjusts by -1 when there is a remainder.
+  | .floordiv, .int x, .int y =>
+      if y == 0 then Option.none
+      else
+        let q := x / y
+        let r := x % y
+        -- Python floor division: if remainder is nonzero and signs differ, subtract 1
+        if r != 0 && ((r < 0) != (y < 0)) then Option.some (.int (q - 1))
+        else Option.some (.int q)
+  -- bitwise (int x int -> int)
+  | .bitAnd, .int x, .int y => Option.some (.int (Int.land x y))
+  | .bitOr,  .int x, .int y => Option.some (.int (Int.lor x y))
+  | .bitXor, .int x, .int y => Option.some (.int (Int.xor x y))
+  -- shift (int x int -> int, non-negative shift amount)
+  | .shl, .int x, .int y =>
+      if y < 0 then Option.none
+      else Option.some (.int (Int.shiftLeft x y.toNat))
+  | .shr, .int x, .int y =>
+      if y < 0 then Option.none
+      else Option.some (.int (Int.shiftRight x y.toNat))
   -- logical (bool x bool -> bool)
   | .and, .boolean x, .boolean y => Option.some (.boolean (x && y))
   | .or,  .boolean x, .boolean y => Option.some (.boolean (x || y))

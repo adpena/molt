@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::blocks::{BlockId, Terminator};
 use super::function::TirFunction;
+use super::ops::OpCode;
 use super::values::ValueId;
 
 // ---------------------------------------------------------------------------
@@ -73,6 +74,7 @@ pub fn verify_function(func: &TirFunction) -> Result<(), Vec<VerifyError>> {
     let mut errors = Vec::new();
     verify_entry_block(func, &mut errors);
     verify_no_duplicate_values(func, &mut errors);
+    verify_op_attributes(func, &mut errors);
     verify_terminators(func, &mut errors);
     verify_block_args(func, &mut errors);
     verify_ssa(func, &mut errors);
@@ -129,7 +131,141 @@ fn verify_no_duplicate_values(func: &TirFunction, errors: &mut Vec<VerifyError>)
 }
 
 // ---------------------------------------------------------------------------
-// Check 3: every block has a well-formed terminator (block exists in function)
+// Check 3: op-level attribute and operand validation
+// ---------------------------------------------------------------------------
+
+fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
+    for (bid, block) in &func.blocks {
+        for (op_idx, op) in block.ops.iter().enumerate() {
+            // Check required attributes per opcode.
+            // NOTE: Constant ops (ConstInt, ConstFloat, ConstStr, ConstBytes)
+            // intentionally skip attribute checks because the lowering from
+            // SimpleIR may produce placeholder constants (e.g. `const` with
+            // no value) that are later consumed by type refinement. These
+            // ops are structurally valid even without their value attribute.
+            match op.opcode {
+                OpCode::Call | OpCode::CallBuiltin => {
+                    // Callee can be either an attribute or the first operand
+                    // (SimpleIR encodes it as `var`, which becomes an operand).
+                    if !op.attrs.contains_key("callee")
+                        && !op.attrs.contains_key("s_value")
+                        && op.operands.is_empty()
+                    {
+                        errors.push(VerifyError::op(
+                            *bid,
+                            op_idx,
+                            format!(
+                                "{:?} op has no callee (attr or operand)",
+                                op.opcode
+                            ),
+                        ));
+                    }
+                }
+                OpCode::CallMethod => {
+                    if !op.attrs.contains_key("method")
+                        && !op.attrs.contains_key("callee")
+                        && !op.attrs.contains_key("s_value")
+                        && op.operands.is_empty()
+                    {
+                        errors.push(VerifyError::op(
+                            *bid,
+                            op_idx,
+                            "CallMethod op has no method (attr or operand)",
+                        ));
+                    }
+                }
+                _ => {}
+            }
+
+            // Check expected result counts for well-known opcodes.
+            let expected_results = match op.opcode {
+                // These produce exactly one result.
+                OpCode::ConstInt
+                | OpCode::ConstFloat
+                | OpCode::ConstStr
+                | OpCode::ConstBool
+                | OpCode::ConstNone
+                | OpCode::ConstBytes
+                | OpCode::Add
+                | OpCode::Sub
+                | OpCode::Mul
+                | OpCode::Div
+                | OpCode::FloorDiv
+                | OpCode::Mod
+                | OpCode::Pow
+                | OpCode::Neg
+                | OpCode::Pos
+                | OpCode::Eq
+                | OpCode::Ne
+                | OpCode::Lt
+                | OpCode::Le
+                | OpCode::Gt
+                | OpCode::Ge
+                | OpCode::Is
+                | OpCode::IsNot
+                | OpCode::In
+                | OpCode::NotIn
+                | OpCode::BitAnd
+                | OpCode::BitOr
+                | OpCode::BitXor
+                | OpCode::BitNot
+                | OpCode::Shl
+                | OpCode::Shr
+                | OpCode::And
+                | OpCode::Or
+                | OpCode::Not
+                | OpCode::BoxVal
+                | OpCode::UnboxVal
+                | OpCode::TypeGuard
+                | OpCode::Index
+                | OpCode::LoadAttr
+                | OpCode::GetIter
+                | OpCode::IterNext
+                | OpCode::ForIter
+                | OpCode::Alloc
+                | OpCode::StackAlloc
+                | OpCode::BuildList
+                | OpCode::BuildDict
+                | OpCode::BuildTuple
+                | OpCode::BuildSet
+                | OpCode::BuildSlice
+                | OpCode::CheckException
+                | OpCode::Import
+                | OpCode::ImportFrom => Some(1),
+                // These produce zero results (side-effecting only).
+                OpCode::IncRef
+                | OpCode::DecRef
+                | OpCode::StoreAttr
+                | OpCode::DelAttr
+                | OpCode::StoreIndex
+                | OpCode::DelIndex
+                | OpCode::Free
+                | OpCode::Raise
+                | OpCode::Deopt => Some(0),
+                // Variable/unknown result count.
+                _ => None,
+            };
+
+            if let Some(expected) = expected_results {
+                if op.results.len() != expected {
+                    errors.push(VerifyError::op(
+                        *bid,
+                        op_idx,
+                        format!(
+                            "{:?} op has {} results but expected {}",
+                            op.opcode,
+                            op.results.len(),
+                            expected
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Check 4: every block has a well-formed terminator (block exists in function)
 // ---------------------------------------------------------------------------
 
 fn verify_terminators(func: &TirFunction, errors: &mut Vec<VerifyError>) {
