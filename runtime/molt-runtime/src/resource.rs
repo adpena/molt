@@ -168,7 +168,10 @@ impl OperationEstimate {
                 usize::try_from(result_bytes).ok()
             }
             Self::LeftShift { value_bits, shift } => {
-                let result_bits = (*value_bits as u64) + (*shift as u64);
+                // result_bits = value_bits + shift, with 4x safety multiplier
+                // (matches Pow's safety margin)
+                let result_bits = ((*value_bits as u128) + (*shift as u128))
+                    .checked_mul(4)?;
                 let result_bytes = result_bits.div_ceil(8);
                 usize::try_from(result_bytes).ok()
             }
