@@ -257,6 +257,10 @@ struct CompileFuncContext<'a> {
     /// Functions eligible for multi-value return optimization.
     /// Maps function name -> number of return values (2 or 3).
     multi_return_candidates: &'a BTreeMap<String, usize>,
+    /// Functions whose WASM signature includes a leading closure (i64) parameter.
+    /// The `call_guarded` fast path must extract closure bits from the callee
+    /// object and prepend them to the argument list when calling these targets.
+    closure_functions: &'a BTreeSet<String>,
     /// Linear-memory offset of a scratch buffer used to spill `call_func` args.
     call_func_spill_offset: u32,
     /// Linear-memory offset of a shared scratch buffer used for outlined class_def
@@ -3480,6 +3484,22 @@ impl WasmBackend {
         }
 
         let import_ids = self.import_ids.clone();
+
+        // Build the set of functions whose WASM signature includes a leading
+        // closure parameter.  The `call_guarded` fast path needs this to
+        // extract the closure environment from the callee object and prepend
+        // it when directly calling the target.
+        let closure_functions: BTreeSet<String> = default_trampoline_spec
+            .iter()
+            .filter_map(|(name, &(_arity, has_closure))| {
+                if has_closure {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         let compile_ctx = CompileFuncContext {
             func_map: &func_to_table_idx,
             func_indices: &func_to_index,
@@ -3488,6 +3508,7 @@ impl WasmBackend {
             reloc_enabled,
             table_base,
             multi_return_candidates: &multi_return_candidates,
+            closure_functions: &closure_functions,
             call_func_spill_offset,
             class_def_spill_offset,
             const_str_scratch_segment,
@@ -4249,6 +4270,7 @@ impl WasmBackend {
         let trampoline_map = ctx.trampoline_map;
         let table_base = ctx.table_base;
         let import_ids = ctx.import_ids;
+        let closure_functions = ctx.closure_functions;
         let mut locals = BTreeMap::new();
         let mut local_count = 0;
         let mut local_types = Vec::new();
@@ -10316,6 +10338,15 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(code_id));
                         emit_call(func, reloc_enabled, import_ids["trace_enter_slot"]);
                         func.instruction(&Instruction::Drop);
+                        // For closure functions, extract the closure environment
+                        // from the callee object and push it as the leading arg.
+                        // The WASM signature of closure functions is
+                        //   (closure_env, arg1, arg2, …) → i64
+                        // so we must prepend the env before the user arguments.
+                        if closure_functions.contains(target_name) {
+                            func.instruction(&Instruction::LocalGet(callee_bits));
+                            emit_call(func, reloc_enabled, import_ids["function_closure_bits"]);
+                        }
                         for arg_name in &args_names[1..] {
                             let arg = locals[arg_name];
                             func.instruction(&Instruction::LocalGet(arg));
