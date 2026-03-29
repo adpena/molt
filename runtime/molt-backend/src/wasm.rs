@@ -261,6 +261,10 @@ struct CompileFuncContext<'a> {
     /// The `call_guarded` fast path must extract closure bits from the callee
     /// object and prepend them to the argument list when calling these targets.
     closure_functions: &'a BTreeSet<String>,
+    /// Functions that escape through function-object creation ops and therefore
+    /// must preserve callable-object dispatch semantics when invoked via
+    /// `call_guarded`.
+    escaped_callable_targets: &'a BTreeSet<String>,
     /// Linear-memory offset of a scratch buffer used to spill `call_func` args.
     call_func_spill_offset: u32,
     /// Linear-memory offset of a shared scratch buffer used for outlined class_def
@@ -1662,6 +1666,7 @@ impl WasmBackend {
 
         // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
         let mut func_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
+        let mut escaped_callable_targets: BTreeSet<String> = BTreeSet::new();
         let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
         let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
         for func_ir in &ir.functions {
@@ -1691,6 +1696,7 @@ impl WasmBackend {
                         };
                         let arity = op.value.unwrap_or(0) as usize;
                         let has_closure = op.kind == "func_new_closure";
+                        escaped_callable_targets.insert(name.clone());
                         if let Some(out) = op.out.as_ref() {
                             func_obj_names.insert(out.clone(), name.clone());
                         }
@@ -1701,6 +1707,12 @@ impl WasmBackend {
                         } else {
                             func_trampoline_spec.insert(name.clone(), (arity, has_closure));
                         }
+                    }
+                    "builtin_func" => {
+                        let Some(name) = op.s_value.as_ref() else {
+                            continue;
+                        };
+                        escaped_callable_targets.insert(name.clone());
                     }
                     "set_attr_generic_obj" => {
                         let Some(attr) = op.s_value.as_deref() else {
@@ -3509,6 +3521,7 @@ impl WasmBackend {
             table_base,
             multi_return_candidates: &multi_return_candidates,
             closure_functions: &closure_functions,
+            escaped_callable_targets: &escaped_callable_targets,
             call_func_spill_offset,
             class_def_spill_offset,
             const_str_scratch_segment,
@@ -10299,11 +10312,78 @@ impl WasmBackend {
                         let callargs_tmp = locals["__molt_tmp0"];
                         let tmp_ptr = locals["__molt_tmp1"];
                         let arity = args_names.len().saturating_sub(1);
+                        let escaped_target = ctx.escaped_callable_targets.contains(target_name);
                         let func_idx = *func_indices
                             .get(target_name)
                             .expect("call_guarded target not found");
                         let table_slot = func_map[target_name];
                         let table_idx = table_base + table_slot;
+                        if escaped_target {
+                            func.instruction(&Instruction::LocalGet(callee_bits));
+                            emit_call(func, reloc_enabled, import_ids["is_function_obj"]);
+                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            emit_call(func, reloc_enabled, import_ids["recursion_guard_enter"]);
+                            func.instruction(&Instruction::I64Const(0));
+                            func.instruction(&Instruction::I64Ne);
+                            func.instruction(&Instruction::If(BlockType::Empty));
+                            let code_id = op.value.unwrap_or(0);
+                            func.instruction(&Instruction::I64Const(code_id));
+                            emit_call(func, reloc_enabled, import_ids["trace_enter_slot"]);
+                            func.instruction(&Instruction::Drop);
+                            let spill_base = ctx.call_func_spill_offset;
+                            for (i, arg_name) in args_names[1..].iter().enumerate() {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::I32Const(
+                                    (spill_base + (i as u32) * 8) as i32,
+                                ));
+                                func.instruction(&Instruction::LocalGet(arg));
+                                func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                    align: 3,
+                                    offset: 0,
+                                    memory_index: 0,
+                                }));
+                            }
+                            func.instruction(&Instruction::LocalGet(callee_bits));
+                            func.instruction(&Instruction::I64Const(spill_base as i64));
+                            func.instruction(&Instruction::I64Const(arity as i64));
+                            func.instruction(&Instruction::I64Const(code_id));
+                            emit_call(func, reloc_enabled, import_ids["call_func_dispatch"]);
+                            func.instruction(&Instruction::LocalSet(out));
+                            emit_call(func, reloc_enabled, import_ids["trace_exit"]);
+                            func.instruction(&Instruction::Drop);
+                            emit_call(func, reloc_enabled, import_ids["recursion_guard_exit"]);
+                            func.instruction(&Instruction::Else);
+                            const_cache.emit_none(func);
+                            func.instruction(&Instruction::LocalSet(out));
+                            func.instruction(&Instruction::End);
+                            func.instruction(&Instruction::Else);
+                            func.instruction(&Instruction::I64Const(arity as i64));
+                            func.instruction(&Instruction::I64Const(0));
+                            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                            func.instruction(&Instruction::LocalSet(callargs_tmp));
+                            for arg_name in &args_names[1..] {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(callargs_tmp));
+                                func.instruction(&Instruction::LocalGet(arg));
+                                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
+                                func.instruction(&Instruction::Drop);
+                            }
+                            let site_bits = box_int(stable_ic_site_id(
+                                func_ir.name.as_str(),
+                                op_idx,
+                                "call_guarded_nonfunc",
+                            ));
+                            func.instruction(&Instruction::I64Const(site_bits));
+                            func.instruction(&Instruction::LocalGet(callee_bits));
+                            func.instruction(&Instruction::LocalGet(callargs_tmp));
+                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
+                            func.instruction(&Instruction::LocalSet(out));
+                            func.instruction(&Instruction::End);
+                            continue;
+                        }
                         func.instruction(&Instruction::LocalGet(callee_bits));
                         emit_call(func, reloc_enabled, import_ids["is_function_obj"]);
                         emit_call(func, reloc_enabled, import_ids["is_truthy"]);

@@ -328,6 +328,51 @@ fn call_func_uses_dispatch() {
 }
 
 #[test]
+fn call_guarded_escaped_function_dispatches_on_object() {
+    let mut func_new = op("func_new");
+    func_new.s_value = Some("guarded_target".to_string());
+    func_new.value = Some(2);
+    func_new.out = Some("v_func".to_string());
+
+    let mut call = op("call_guarded");
+    call.s_value = Some("guarded_target".to_string());
+    call.args = Some(vec![
+        "v_func".to_string(),
+        "p0".to_string(),
+        "p1".to_string(),
+    ]);
+    call.out = Some("v0".to_string());
+
+    let wasm = compile_ir(SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_test_func".to_string(),
+                params: vec!["p0".to_string(), "p1".to_string()],
+                ops: vec![func_new, call, ret_value("v0")],
+                param_types: None,
+            },
+            FunctionIR {
+                name: "guarded_target".to_string(),
+                params: vec!["arg0".to_string(), "arg1".to_string()],
+                ops: vec![op("ret_void")],
+                param_types: None,
+            },
+        ],
+        profile: None,
+    });
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "call_func_dispatch") > 0,
+        "escaped call_guarded should use call_func_dispatch; calls={calls:?}"
+    );
+    assert_eq!(
+        count_import(&calls, "handle_resolve"),
+        0,
+        "escaped call_guarded should skip handle_resolve and dispatch on the function object directly; calls={calls:?}"
+    );
+}
+
+#[test]
 fn class_def_uses_guarded_class_def_import() {
     let mut class_name = op("const_str");
     class_name.s_value = Some("A".to_string());

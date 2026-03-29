@@ -129,6 +129,9 @@ theorem edgeThreadTerminator_correct (f : Func) (σ : AbsEnv) (ρ : Env)
     | .known .none => simp [habseval]
     | .unknown => simp [habseval]
     | .overdefined => simp [habseval]
+  | yield val resume resumeArgs => rfl
+  | switch scrutinee cases default_ => rfl
+  | unreachable => rfl
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: Block-level correctness
