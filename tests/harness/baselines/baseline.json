@@ -4,16 +4,12 @@
     "unit-python": 69,
     "conformance_cpython": 385,
     "conformance_molt_compile": 416,
-    "conformance_molt_runtime": 28
+    "conformance_molt_runtime": 16
   },
   "metrics": {
     "cpython_conformance_rate": 0.94,
     "molt_compilation_rate": 0.90,
-    "molt_runtime_parity": 0.42,
-    "ssa_fix_landed": true,
-    "comprehensions_working": true,
-    "init_attrs_working": true,
-    "for_loops_working": true,
-    "while_loops_working": true
+    "molt_runtime_parity": 0.53,
+    "molt_conformance_sample": "16/30 (53%) on 30-file diverse sample"
   }
 }
