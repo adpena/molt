@@ -833,7 +833,7 @@ def sign_manifest(manifest_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def load_manifest(path: Union[str, Path]) -> CapabilityManifest:
+def load_manifest(path: Union[str, Path], *, require_signed: bool = False) -> CapabilityManifest:
     """Load a capability manifest from a TOML, JSON, or YAML file.
 
     The file format is determined by extension:
@@ -883,7 +883,11 @@ def load_manifest(path: Union[str, Path]) -> CapabilityManifest:
     # validate_manifest() directly.
 
     # Verify manifest integrity if a signature is present.
-    verify_manifest_signature(p, manifest)
+    sig_status = verify_manifest_signature(p, manifest)
+    if require_signed and sig_status.is_unsigned:
+        raise ManifestError(
+            f"manifest {p} is unsigned but --require-signed-manifest was specified"
+        )
 
     return manifest
 

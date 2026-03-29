@@ -843,6 +843,18 @@ pub(crate) fn alloc_object_zeroed_with_pool(
         }
         return std::ptr::null_mut();
     }
+    // Enforce resource budget before committing the allocation.
+    if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(total_size)) {
+        // Budget exceeded — return the memory and signal failure.
+        if pool_eligible {
+            // Came from pool; put it back.
+            let _ = object_pool_put(_py, total_size, header_ptr);
+        } else {
+            let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+            unsafe { std::alloc::dealloc(header_ptr, layout) };
+        }
+        return std::ptr::null_mut();
+    }
     profile_hit(_py, &ALLOC_COUNT);
     profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, total_size as u64);
     profile_alloc_type(_py, type_id);
@@ -880,6 +892,11 @@ pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id:
                     type_id, total_size
                 );
             }
+            return std::ptr::null_mut();
+        }
+        // Enforce resource budget before committing the allocation.
+        if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(total_size)) {
+            std::alloc::dealloc(ptr, layout);
             return std::ptr::null_mut();
         }
         profile_hit(_py, &ALLOC_COUNT);
@@ -960,6 +977,21 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
                 "molt OOM alloc_object type_id={} total_size={}",
                 type_id, total_size
             );
+        }
+        return std::ptr::null_mut();
+    }
+    // Enforce resource budget before committing the allocation.
+    if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(total_size)) {
+        // Budget exceeded — return the memory to its source.
+        if from_nursery {
+            // Nursery memory is bump-allocated; we cannot return individual
+            // chunks, so we just let it be reclaimed on the next nursery reset.
+            // The tracker denied the allocation so the caller sees null.
+        } else if pool_eligible {
+            let _ = object_pool_put(_py, total_size, header_ptr);
+        } else {
+            let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+            unsafe { std::alloc::dealloc(header_ptr, layout) };
         }
         return std::ptr::null_mut();
     }
@@ -2117,6 +2149,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             }
             release_ptr(ptr);
             let total_size = total_size_from_header(header, ptr);
+            // Notify the resource tracker that this object's memory is freed.
+            crate::resource::with_tracker(|t| t.on_free(total_size));
             free_cold_header(header.cold_idx);
             let should_pool = matches!(
                 header.type_id,

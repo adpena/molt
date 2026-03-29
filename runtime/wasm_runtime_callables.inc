@@ -15,7 +15,7 @@ entry_list! {
     (13, molt_types_simplenamespace_init, "types_simplenamespace_init", 3)
     (14, molt_types_capsule_new, "types_capsule_new", 1)
     (15, molt_types_cell_new, "types_cell_new", 1)
-    (16, molt_types_dynamic_class_attr_init, "types_dynamic_class_attr_init", 9)
+    (16, molt_types_dynamic_class_attr_init, "types_dynamic_class_attr_init", 3)
     (17, molt_types_coroutine, "types_coroutine", 1)
     (18, molt_types_get_original_bases, "types_get_original_bases", 1)
     (19, molt_types_prepare_class, "types_prepare_class", 2)
