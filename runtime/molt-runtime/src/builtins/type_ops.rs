@@ -426,6 +426,47 @@ pub(crate) fn isinstance_bits(_py: &PyToken<'_>, val_bits: u64, class_bits: u64)
 }
 
 pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u64) -> bool {
+    // Fast-path: if val is an exception instance and class_bits is an exception
+    // type class, use the exception class hierarchy directly.  This avoids the
+    // generic __instancecheck__ / metaclass path which can fail for exception
+    // objects whose metaclass doesn't support it (the same logic that `except`
+    // clauses use).
+    if let Some(val_ptr) = obj_from_bits(val_bits).as_ptr() {
+        if unsafe { object_type_id(val_ptr) } == TYPE_ID_EXCEPTION {
+            if let Some(cls_ptr) = obj_from_bits(class_bits).as_ptr() {
+                let cls_tid = unsafe { object_type_id(cls_ptr) };
+                if cls_tid == TYPE_ID_TYPE {
+                    let builtins = builtin_classes(_py);
+                    if issubclass_bits(class_bits, builtins.base_exception) {
+                        let val_type = type_of_bits(_py, val_bits);
+                        return issubclass_bits(val_type, class_bits);
+                    }
+                } else if cls_tid == TYPE_ID_TUPLE {
+                    // isinstance(exc, (TypeError, ValueError)) — check if all
+                    // tuple elements are exception types; if so, use the fast
+                    // path for each.
+                    let items = unsafe { seq_vec_ref(cls_ptr) };
+                    let builtins = builtin_classes(_py);
+                    let all_exc = items.iter().all(|&item_bits| {
+                        if let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() {
+                            let is_type =
+                                unsafe { object_type_id(item_ptr) } == TYPE_ID_TYPE;
+                            is_type && issubclass_bits(item_bits, builtins.base_exception)
+                        } else {
+                            false
+                        }
+                    });
+                    if all_exc {
+                        let val_type = type_of_bits(_py, val_bits);
+                        return items
+                            .iter()
+                            .any(|&item_bits| issubclass_bits(val_type, item_bits));
+                    }
+                }
+            }
+        }
+    }
+
     let saved_exc_bits = if exception_pending(_py) {
         molt_exception_last()
     } else {
