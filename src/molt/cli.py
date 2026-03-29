@@ -15843,6 +15843,11 @@ def _execute_backend_compile(
             # cleared the cache tree, and the backend's own
             # ensure_output_parent_dir may race with ld -r timing.
             backend_output.parent.mkdir(parents=True, exist_ok=True)
+            # Progress indicator: show compilation start on stderr so the
+            # user knows something is happening during multi-minute builds.
+            if not json_output:
+                _entry_stem = Path(entry_file).stem if entry_file else "program"
+                print(f"Compiling {_entry_stem}...", end="", flush=True, file=sys.stderr)
             ir_bytes = _ensure_backend_ir_bytes()
             ir_fmt = _get_backend_ir_fmt()
             if ir_fmt != "json":
@@ -15938,6 +15943,8 @@ def _execute_backend_compile(
                 if backend_stderr:
                     print(backend_stderr, end="", file=sys.stderr)
             backend_output_written = True
+            if not json_output:
+                print(" done", file=sys.stderr)
         if backend_output_written and not (
             daemon_ready and backend_compiled and backend_output_exists
         ):
