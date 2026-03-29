@@ -366,6 +366,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn roundtrip_unpack_sequence_preserves_output_vars() {
+        let ops = vec![
+            op_out("const", "seq"),
+            OpIR {
+                kind: "unpack_sequence".to_string(),
+                args: Some(vec!["seq".to_string(), "a".to_string(), "b".to_string()]),
+                value: Some(2),
+                ..OpIR::default()
+            },
+            op_args("ret", &["a"]),
+        ];
+        let result = roundtrip(ops);
+        let unpack = result
+            .iter()
+            .find(|op| op.kind == "unpack_sequence")
+            .expect("roundtrip must preserve unpack_sequence");
+        assert_eq!(
+            unpack.args.as_deref(),
+            Some(&["seq".to_string(), "a".to_string(), "b".to_string()][..]),
+            "unpack_sequence must preserve sequence input and output vars",
+        );
+        assert_eq!(unpack.value, Some(2));
+    }
+
     // ---------------------------------------------------------------------------
     // Test 16: check_exception label ID preserved through round-trip
     // ---------------------------------------------------------------------------

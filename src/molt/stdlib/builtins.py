@@ -6,13 +6,29 @@ compiled code without introducing dynamic indirection.
 
 from __future__ import annotations
 
-import sys as _sys
-
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+_MOLT_SYS_MODULES = _require_intrinsic("molt_sys_modules")
+
+
+def _modules_dict() -> dict[str, object]:
+    modules = _MOLT_SYS_MODULES()
+    if not isinstance(modules, dict):
+        raise RuntimeError("molt_sys_modules returned invalid value")
+    return modules
+
+
+def _module_namespace(name: str) -> dict[str, object]:
+    module = _modules_dict().get(name)
+    namespace = getattr(module, "__dict__", None)
+    if isinstance(namespace, dict):
+        return namespace
+    return globals()
+
+
 # During builtins bootstrap we cannot rely on `globals()` / `locals()` being present
-# yet (we are defining them). Use the module object dict via `sys.modules`.
-_NS = _sys.modules[__name__].__dict__
+# yet (we are defining them). Use the module object dict via the runtime modules map.
+_NS = _module_namespace(__name__)
 
 # `builtins` must match CPython's public API surface; keep typing helpers out of the
 # runtime module namespace.
@@ -91,7 +107,7 @@ def _is_placeholder_module(mod: object) -> bool:
 
 
 def _require_importlib_util_module() -> object:
-    modules = getattr(_sys, "modules", {})
+    modules = _modules_dict()
     mod = modules.get("importlib.util")
     if mod is None:
         mod = _MOLT_MODULE_IMPORT("importlib.util")
@@ -101,7 +117,7 @@ def _require_importlib_util_module() -> object:
 
 
 def _recover_placeholder_module(resolved: str, placeholder: object):
-    modules = getattr(_sys, "modules", {})
+    modules = _modules_dict()
     previous = modules.pop(resolved, None)
     try:
         importlib_util = _require_importlib_util_module()
@@ -134,7 +150,7 @@ def _recover_placeholder_module(resolved: str, placeholder: object):
 
 
 def _load_via_spec(resolved: str):
-    modules = getattr(_sys, "modules", {})
+    modules = _modules_dict()
     existing = modules.get(resolved)
     if existing is not None and not _is_placeholder_module(existing):
         return existing
@@ -170,7 +186,7 @@ def _intrinsic_import(name, globals=None, locals=None, fromlist=(), level=0):
     if not name:
         raise ImportError("Empty module name")
     resolved = _resolve_import_name(name, globals, level) if level else name
-    modules = getattr(_sys, "modules", {})
+    modules = _modules_dict()
     if resolved in modules:
         mod = modules[resolved]
         if mod is None:

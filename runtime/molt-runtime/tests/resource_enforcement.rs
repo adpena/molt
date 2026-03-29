@@ -3,7 +3,9 @@
 //! These tests verify that the ResourceTracker is actually called during
 //! heap allocation and that memory limits are enforced.
 
-use molt_runtime::resource::{LimitedTracker, ResourceLimits, ResourceTracker, set_tracker, UnlimitedTracker};
+use molt_runtime::resource::{
+    LimitedTracker, ResourceLimits, ResourceTracker, UnlimitedTracker, set_tracker,
+};
 
 #[test]
 fn tracker_receives_allocations() {

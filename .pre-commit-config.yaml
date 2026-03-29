@@ -17,4 +17,6 @@ repos:
     hooks:
       - id: check-yaml
       - id: end-of-file-fixer
+        exclude: '\.lean$'
       - id: trailing-whitespace
+        exclude: '\.lean$'

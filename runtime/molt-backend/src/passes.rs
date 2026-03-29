@@ -2272,13 +2272,10 @@ pub fn split_large_function(
         return Err(func);
     }
 
-    // Functions with exception handling cannot be safely split — the if/end_if
-    // pairing across split boundaries creates orphan control flow. The batched
-    // compilation cache handles large stdlib functions instead.
-    let has_exceptions = func.ops.iter().any(|op| op.kind == "check_exception");
-    if has_exceptions {
-        return Err(func);
-    }
+    // Exception handling ops (check_exception) are protected by the
+    // forbidden-range mechanism below — the splitter never separates a
+    // check_exception from its target label.  This allows safe splitting
+    // of large stdlib functions that contain exception handlers.
 
     // ---------------------------------------------------------------
     // 1. Find safe split points (indices where depth == 0).

@@ -274,7 +274,12 @@ pub extern "C" fn molt_shutil_copytree(
 pub extern "C" fn molt_shutil_rmtree(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.rmtree", "fs.write", audit_path_arg(path_bits), allowed);
+        audit_capability_decision(
+            "shutil.rmtree",
+            "fs.write",
+            audit_path_arg(path_bits),
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }
@@ -351,7 +356,12 @@ pub extern "C" fn molt_shutil_move(src_bits: u64, dst_bits: u64) -> u64 {
 pub extern "C" fn molt_shutil_disk_usage(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("shutil.disk_usage", "fs.read", audit_path_arg(path_bits), allowed);
+        audit_capability_decision(
+            "shutil.disk_usage",
+            "fs.read",
+            audit_path_arg(path_bits),
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -589,14 +599,14 @@ pub extern "C" fn molt_shutil_make_archive(
     crate::with_gil_entry!(_py, {
         let allowed_r = has_capability(_py, "fs.read");
         let audit_args = audit_path_arg(base_name_bits);
-        audit_capability_decision("shutil.make_archive", "fs.read", audit_args.clone(), allowed_r);
-        let allowed_w = has_capability(_py, "fs.write");
         audit_capability_decision(
             "shutil.make_archive",
-            "fs.write",
-            audit_args,
-            allowed_w,
+            "fs.read",
+            audit_args.clone(),
+            allowed_r,
         );
+        let allowed_w = has_capability(_py, "fs.write");
+        audit_capability_decision("shutil.make_archive", "fs.write", audit_args, allowed_w);
         if !allowed_r || !allowed_w {
             return raise_exception::<_>(
                 _py,
@@ -755,12 +765,7 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
             allowed_r,
         );
         let allowed_w = has_capability(_py, "fs.write");
-        audit_capability_decision(
-            "shutil.unpack_archive",
-            "fs.write",
-            audit_args,
-            allowed_w,
-        );
+        audit_capability_decision("shutil.unpack_archive", "fs.write", audit_args, allowed_w);
         if !allowed_r || !allowed_w {
             return raise_exception::<_>(
                 _py,
@@ -800,7 +805,12 @@ pub extern "C" fn molt_shutil_unpack_archive(filename_bits: u64, extract_dir_bit
         {
             // tar requires spawning a subprocess — gate on "process" capability.
             let allowed = has_capability(_py, "process");
-            audit_capability_decision("shutil.unpack_archive", "process", AuditArgs::Path(filename.to_string_lossy().into_owned()), allowed);
+            audit_capability_decision(
+                "shutil.unpack_archive",
+                "process",
+                AuditArgs::Path(filename.to_string_lossy().into_owned()),
+                allowed,
+            );
             if !allowed {
                 return raise_exception::<u64>(
                     _py,
@@ -866,7 +876,12 @@ pub extern "C" fn molt_shutil_unpack_archive(_filename_bits: u64, _extract_dir_b
 pub extern "C" fn molt_shutil_chown(path_bits: u64, user_bits: u64, group_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.write");
-        audit_capability_decision("shutil.chown", "fs.write", audit_path_arg(path_bits), allowed);
+        audit_capability_decision(
+            "shutil.chown",
+            "fs.write",
+            audit_path_arg(path_bits),
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.write capability");
         }

@@ -1,0 +1,112 @@
+name: Formal Verification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'formal/**'
+      - 'runtime/molt-obj-model/src/lib.rs'
+      - 'runtime/molt-backend/src/luau.rs'
+      - 'tools/check_formal_methods.py'
+      - '.github/workflows/formal.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'formal/**'
+      - 'runtime/molt-obj-model/src/lib.rs'
+      - 'runtime/molt-backend/src/luau.rs'
+      - 'tools/check_formal_methods.py'
+      - '.github/workflows/formal.yml'
+
+jobs:
+  formal-lean:
+    name: Lean Proof Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Cache Lean build
+        uses: actions/cache@v4
+        with:
+          path: |
+            formal/lean/.lake
+            formal/lean/lake-packages
+          key: lean-${{ runner.os }}-${{ hashFiles('formal/lean/lean-toolchain', 'formal/lean/lakefile.lean') }}
+          restore-keys: |
+            lean-${{ runner.os }}-
+
+      - name: Build proofs
+        working-directory: formal/lean
+        run: lake build
+        timeout-minutes: 15
+
+      - name: Check sorry count
+        working-directory: formal/lean
+        run: |
+          SORRY_COUNT=$(grep -r "\bsorry\b" --include="*.lean" -l | wc -l | tr -d ' ')
+          echo "Files with sorry: $SORRY_COUNT"
+          BASELINE=$(cat SORRY_BASELINE | tr -d '[:space:]')
+          echo "Baseline: $BASELINE"
+          if [ "$SORRY_COUNT" -gt "$BASELINE" ]; then
+            echo "::error::Sorry file count ($SORRY_COUNT) exceeds baseline ($BASELINE). Fix new sorry gaps or update SORRY_BASELINE."
+            exit 1
+          fi
+          if [ "$SORRY_COUNT" -lt "$BASELINE" ]; then
+            echo "::notice::Sorry file count ($SORRY_COUNT) is below baseline ($BASELINE). Consider lowering SORRY_BASELINE."
+          fi
+
+  formal-quint:
+    name: Quint Model Checking
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Quint
+        run: npm install -g @informalsystems/quint
+
+      - name: Verify all models
+        working-directory: formal/quint
+        run: |
+          failures=0
+          total=0
+          for model in *.qnt; do
+            total=$((total + 1))
+            echo "::group::Verifying $model"
+            if quint verify "$model" --max-steps=10 2>&1; then
+              echo "PASS: $model"
+            else
+              echo "::warning::Model $model failed verification (non-blocking)"
+              failures=$((failures + 1))
+            fi
+            echo "::endgroup::"
+          done
+          echo "Quint verification: $((total - failures))/$total models passed"
+          echo "::notice::Quint model verification complete: $((total - failures))/$total passed"
+          # Non-blocking for now: some models may need --invariant tuning.
+          # To make blocking, uncomment:
+          # if [ "$failures" -gt 0 ]; then exit 1; fi
+
+  formal-correspondence:
+    name: Proof-Code Correspondence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check NaN-box and Luau builtin correspondence
+        run: python3 tools/check_formal_methods.py --check-correspondence
