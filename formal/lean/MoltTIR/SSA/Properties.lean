@@ -236,6 +236,12 @@ def ssaDestruct (f : Func) : List EdgeCopy :=
         | none => []
       thenCopy ++ elseCopy
     | .ret _ => []
+    | .yield _ resume resumeArgs =>
+      match genEdgeCopies f lbl resume resumeArgs with
+      | some pc => [{ predLabel := lbl, succLabel := resume, pcopy := pc }]
+      | none => []
+    | .switch _ _ _ => []   -- switch targets have no args to copy
+    | .unreachable => []
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 5: Correctness of parallel copy insertion
@@ -318,6 +324,16 @@ private theorem ssaDestruct_mem_genEdgeCopies {f : Func}
         obtain ⟨rfl, rfl, rfl⟩ := helse
         exact ⟨ea, hgen⟩
       | none => simp [hgen] at helse
+  | .yield _ resume resumeArgs =>
+    intro hec
+    match hgen : genEdgeCopies f predLbl resume resumeArgs with
+    | some pc =>
+      simp [hgen] at hec
+      obtain ⟨rfl, rfl, rfl⟩ := hec
+      exact ⟨resumeArgs, hgen⟩
+    | none => simp [hgen] at hec
+  | .switch _ _ _ => simp
+  | .unreachable => simp
 
 /-- genEdgeCopies only succeeds when the successor block exists. -/
 private theorem genEdgeCopies_succBlock {f : Func} {predLbl succLbl : Label}

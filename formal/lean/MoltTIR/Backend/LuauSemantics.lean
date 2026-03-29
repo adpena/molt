@@ -139,13 +139,14 @@ def evalLuauBinOp (op : LuauBinOp) (a b : LuauValue) : Option LuauValue :=
   -- string concatenation
   | .concat, .str x, .str y => some (.str (x ++ y))
   -- bitwise (models bit32.band/bor/bxor/lshift/rshift on integers)
-  | .band, .number x, .number y => some (.number (x &&& y))
-  | .bor,  .number x, .number y => some (.number (x ||| y))
-  | .bxor, .number x, .number y => some (.number (x ^^^ y))
+  -- Note: Int lacks bitwise instances in Lean 4; we model these via Nat conversion.
+  | .band, .number x, .number y => some (.number (Int.ofNat (x.toNat &&& y.toNat)))
+  | .bor,  .number x, .number y => some (.number (Int.ofNat (x.toNat ||| y.toNat)))
+  | .bxor, .number x, .number y => some (.number (Int.ofNat (x.toNat ^^^ y.toNat)))
   | .lshl, .number x, .number y =>
-      if y < 0 then none else some (.number (x <<< y.toNat))
+      if y < 0 then none else some (.number (Int.ofNat (x.toNat <<< y.toNat)))
   | .lshr, .number x, .number y =>
-      if y < 0 then none else some (.number (x >>> y.toNat))
+      if y < 0 then none else some (.number (Int.ofNat (x.toNat >>> y.toNat)))
   -- catch-all for type mismatches and unmodeled ops
   | _, _, _ => none
 

@@ -94,6 +94,13 @@ theorem constFoldTerminator_correct (f : Func) (ρ : Env) (t : Terminator) :
     | some (.str _) => rfl
     | some .none => rfl
     | none => rfl
+  | yield val resume resumeArgs =>
+    simp only [constFoldTerminator, evalTerminator]
+  | switch scrutinee cases default_ =>
+    simp only [constFoldTerminator, evalTerminator]
+    rw [constFoldExpr_correct ρ scrutinee]
+  | unreachable =>
+    simp only [constFoldTerminator, evalTerminator]
 
 /-- Constant folding preserves full block execution. -/
 theorem constFoldBlock_correct (f : Func) (ρ : Env) (b : Block) :
