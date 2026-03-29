@@ -290,7 +290,7 @@ theorem joinCanon_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     simp only [evalTerminator]
     match evalExpr ρ scrutinee with
     | some (.int n) =>
-      simp only []
+      simp only [switchTarget]
       match hfind : (cases.find? (fun p => p.1 == n)) with
       | some (_, lbl) =>
         simp only [hfind]
