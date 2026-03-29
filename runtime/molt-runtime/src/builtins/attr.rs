@@ -855,6 +855,12 @@ pub(crate) unsafe fn class_attr_lookup_raw_mro(
                     return Some(func_bits);
                 }
             }
+            // __doc__ defaults to None for all classes (CPython parity).
+            // Builtin types and types.ModuleType don't store __doc__ in their
+            // class dict, but cls.__doc__ must still return None, not raise.
+            if attr_name.as_deref() == Some("__doc__") {
+                return Some(MoltObject::none().bits());
+            }
             return None;
         }
         let mut current_ptr = class_ptr;
