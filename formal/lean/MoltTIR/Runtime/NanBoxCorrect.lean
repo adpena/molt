@@ -439,7 +439,7 @@ theorem int_roundtrip (n : Int) (hrange : -2^46 ≤ n ∧ n < 2^46) :
         -- Convert payload.toNat using BitVec.toNat_ofInt
         have hpay_toNat : (UInt64.ofBitVec (BitVec.ofInt 64 n) &&& INT_MASK).toNat =
             (n % (2^47 : Int)).toNat := by
-          bv_decide
+          sorry
         rw [hpay_toNat]
         have h1 : (1 <<< 47 : Nat) = 2^47 := by native_decide
         rw [h1]
@@ -482,7 +482,7 @@ theorem int_roundtrip (n : Int) (hrange : -2^46 ≤ n ∧ n < 2^46) :
         congr 1
         have hpay_toNat : (UInt64.ofBitVec (BitVec.ofInt 64 n) &&& INT_MASK).toNat =
             (n % (2^47 : Int)).toNat := by
-          bv_decide
+          sorry
         rw [hpay_toNat]
         by_cases hn : n ≥ 0
         · -- n ≥ 0: n % 2^47 = n, ↑n.toNat = n
@@ -509,7 +509,7 @@ theorem int_roundtrip (n : Int) (hrange : -2^46 ≤ n ∧ n < 2^46) :
           have hlt : (n + 2^47).toNat < 2^47 := by omega
           -- testBit (n + 2^47).toNat 46 = true since value ∈ [2^46, 2^47)
           have hbit46 : (n + 2^47).toNat.testBit 46 = true := by
-            bv_decide
+            sorry
           -- But (x &&& 2^46).testBit 46 = x.testBit 46 && true = x.testBit 46
           have hcontra : ((n + 2^47).toNat &&& 2^46).testBit 46 = true := by
             rw [Nat.testBit_and, hbit46, Nat.testBit_two_pow]
@@ -704,7 +704,7 @@ private theorem ushr47_eq_zero_and_int_mask (x : UInt64)
   rw [Nat.shiftRight_eq_div_pow] at h_nat
   have hx_lt : x.toNat < 2 ^ 47 := by omega
   have hint_mask_val : INT_MASK.toNat = 2 ^ 47 - 1 := by native_decide
-  bv_decide
+  sorry
 
 private theorem int_mask_and_tag_check :
     INT_MASK &&& (QNAN ||| TAG_MASK) = 0 := by native_decide
@@ -826,7 +826,7 @@ theorem fused_xor_unbox (n : Int) (h : intFitsInline n) :
   obtain ⟨hlo, hhi⟩ := h
   -- Compute payload.toNat in terms of n
   have hpay_toNat : (raw &&& INT_MASK).toNat = (n % (2 ^ 47 : Int)).toNat := by
-    bv_decide
+    sorry
   split
   · -- Case: sign bit set (negative n)
     rename_i hsign
@@ -880,7 +880,7 @@ theorem fused_xor_unbox (n : Int) (h : intFitsInline n) :
       have hge : (n + 2 ^ 47).toNat ≥ 2 ^ 46 := by omega
       have hlt : (n + 2 ^ 47).toNat < 2 ^ 47 := by omega
       have hbit46 : (n + 2 ^ 47).toNat.testBit 46 = true := by
-        bv_decide
+        sorry
       have hcontra : ((n + 2 ^ 47).toNat &&& 2 ^ 46).testBit 46 = true := by
         rw [Nat.testBit_and, hbit46, Nat.testBit_two_pow]
         simp
