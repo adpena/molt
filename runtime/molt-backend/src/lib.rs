@@ -128,8 +128,7 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
         let mut scan = end_if_idx + 1;
         while scan < ops.len() && ops[scan].kind == "phi" {
             let phi_op = &ops[scan];
-            if let (Some(out), Some(args)) = (&phi_op.out, &phi_op.args) {
-                if args.len() == 2 && out != "none" {
+            if let (Some(out), Some(args)) = (&phi_op.out, &phi_op.args) && args.len() == 2 && out != "none" {
                     let has_else = if_to_else.contains_key(&if_idx);
                     let then_insert;
                     let else_insert;
@@ -154,7 +153,6 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
                         phi_idx: scan,
                         phi_out: out.clone(),
                     });
-                }
             }
             scan += 1;
         }
