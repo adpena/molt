@@ -37,6 +37,14 @@ fn fixed_arity_call_target_ptr(fn_ptr: u64, _tramp_ptr: u64) -> u64 {
     }
 }
 
+#[inline]
+fn should_force_trampoline_for_fixed_arity_call(
+    _tramp_ptr: u64,
+    task_trampoline_needed: bool,
+) -> bool {
+    task_trampoline_needed
+}
+
 #[cfg(target_arch = "wasm32")]
 #[inline]
 fn is_void_wasm_call1_target(fn_ptr: u64) -> bool {
@@ -94,6 +102,10 @@ unsafe fn maybe_call_function_obj_trampoline(
     #[cfg(target_arch = "wasm32")]
     unsafe {
         let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let force_trampoline = should_force_trampoline_for_fixed_arity_call(
+            tramp_ptr,
+            function_needs_task_trampoline(_py, func_bits),
+        );
         if matches!(
             std::env::var("MOLT_TRACE_TRAMPOLINE_POLICY")
                 .ok()
@@ -106,10 +118,10 @@ unsafe fn maybe_call_function_obj_trampoline(
             eprintln!(
                 "[molt trampoline policy] fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} nargs={} reserved_info={reserved_info:?} force_trampoline={}",
                 args.len(),
-                tramp_ptr != 0,
+                force_trampoline,
             );
         }
-        if tramp_ptr != 0 {
+        if force_trampoline {
             return Some(call_function_obj_trampoline(_py, func_bits, args));
         }
     }
@@ -2122,10 +2134,22 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
 
 #[cfg(test)]
 mod tests {
-    use super::fixed_arity_call_target_ptr;
+    use super::{
+        fixed_arity_call_target_ptr, should_force_trampoline_for_fixed_arity_call,
+    };
 
     #[test]
     fn fixed_arity_call_target_uses_fn_ptr_without_trampoline() {
         assert_eq!(fixed_arity_call_target_ptr(293, 0), 293);
+    }
+
+    #[test]
+    fn fixed_arity_call_policy_keeps_plain_wasm_trampolines_on_raw_slot() {
+        assert!(!should_force_trampoline_for_fixed_arity_call(293, false));
+    }
+
+    #[test]
+    fn fixed_arity_call_policy_keeps_task_trampolines_on_vector_path() {
+        assert!(should_force_trampoline_for_fixed_arity_call(293, true));
     }
 }
