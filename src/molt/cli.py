@@ -15655,13 +15655,15 @@ def _execute_backend_compile(
     backend_daemon_health: dict[str, Any] | None,
 ) -> tuple[_BackendExecutionResult | None, dict[str, Any] | None]:
     backend_output_ctx: ContextManager[Path]
-    if cache and cache_path is not None:
-        backend_output_ctx = nullcontext(cache_path)
-    else:
-        backend_output_ctx = _temporary_backend_output_path(
-            artifacts_root,
-            is_wasm=is_wasm,
-        )
+    # One-shot backend subprocess compilation should always write to a fresh
+    # artifact path and stage atomically into cache/output afterward. Writing
+    # directly into the cache artifact path couples codegen to cache lifecycle
+    # and breaks first-build correctness when a toolchain rebuild invalidates
+    # cache directories in the same command.
+    backend_output_ctx = _temporary_backend_output_path(
+        artifacts_root,
+        is_wasm=is_wasm,
+    )
     with backend_output_ctx as backend_output:
         backend_compiled = False
         backend_output_written = True
