@@ -69,6 +69,24 @@ pub extern "C" fn molt_class_new(name_bits: u64) -> u64 {
                 inc_ref_bits(_py, builtins.type_obj);
             }
         }
+        // Set __doc__ = None on the class dict (CPython parity).
+        // Every class has a __doc__ attribute; without this, `cls.__doc__`
+        // raises AttributeError which breaks libraries like six.
+        unsafe {
+            let dict_bits = class_dict_bits(ptr);
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                let doc_key = alloc_string(_py, b"__doc__");
+                if !doc_key.is_null() {
+                    dict_set_in_place(
+                        _py,
+                        dict_ptr,
+                        MoltObject::from_ptr(doc_key).bits(),
+                        MoltObject::none().bits(),
+                    );
+                    dec_ref_bits(_py, MoltObject::from_ptr(doc_key).bits());
+                }
+            }
+        }
         MoltObject::from_ptr(ptr).bits()
     })
 }
