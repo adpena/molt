@@ -209,10 +209,17 @@ private theorem evalBinOp_comm
        split at hrest <;>
        (try subst_vars; simp [lowerValue] at hlv; subst_vars;
         simp [lowerBinOp, MoltTIR.evalBinOp, hcond]; done) <;>
-       sorry)
+       (trace_state; sorry))
     | (split <;> (try subst_vars) <;> simp_all [lowerValue]; done)
     | omega
-    | sorry)
+    | (-- String repetition: split heval if, extract pv, then lowerValue pv gives tv
+       split at heval
+       <;> simp only [Option.some.injEq] at heval
+       <;> subst heval
+       <;> simp only [lowerValue, Option.some.injEq] at hlv
+       <;> subst hlv
+       <;> simp [lowerBinOp, MoltTIR.evalBinOp]
+       <;> (intro h; omega)))
 
 private theorem evalUnaryOp_comm
     (op : MoltPython.UnaryOp) (va pv : MoltPython.PyValue)
