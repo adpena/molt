@@ -277,6 +277,44 @@ pip install .[accel]  # brings in msgpack and packaged default exports for molt_
 export MOLT_WORKER_CMD="molt-worker --stdio --exports demo/molt_worker_app/molt_exports.json --compiled-exports demo/molt_worker_app/molt_exports.json"
 ```
 
+## Development Setup
+
+### Prerequisites
+- **Python 3.12+** (via `uv` or system install)
+- **Rust/Cargo** (stable toolchain, `rustup` recommended)
+- **uv** (Python package manager: `curl -LsSf https://astral.sh/uv/install.sh | sh`)
+- **clang/lld** (for native linking: Xcode CLT on macOS, `apt install clang lld` on Linux)
+- **wasm-ld** (for WASM targets: `brew install llvm` or `apt install lld`)
+
+### First Build
+```bash
+git clone <repo> && cd molt
+uv sync --python 3.12
+molt doctor                    # check toolchain health
+molt run examples/hello.py     # build + run (first build takes 1-2 minutes)
+```
+
+### Running Tests
+```bash
+molt test                                     # dev test suite
+molt test --suite diff                        # differential parity tests
+cargo test -p molt-backend --features native-backend --lib  # Rust backend tests
+cargo test -p molt-runtime --lib              # Rust runtime tests
+uv run --python 3.12 python3 -m pytest tests/cli/  # CLI tests
+```
+
+### Key Environment Variables
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MOLT_TRUSTED` | `false` | Grant all capabilities (`1`/`true`/`yes`) |
+| `MOLT_CAPABILITY_TIER` | `standard` | Capability tier: `safe`, `standard`, `full` |
+| `MOLT_BACKEND_DAEMON` | `1` | Use persistent backend daemon for faster rebuilds |
+| `MOLT_TIR_OPT` | `1` | Enable TIR optimization (`0` to disable) |
+| `MOLT_EXT_ROOT` | `$PWD` | Project root for module resolution |
+| `PYTHONPATH` | — | Must include `src` for source development |
+
+See `AGENTS.md` for the full capability system and `docs/cli-reference.md` for all CLI flags.
+
 ## CLI overview
 
 - `molt run <file.py>`: compile with Molt and run the native binary (`--trusted` disables capability checks). Use `--timing` for build/run timing; script args are forwarded by default (use `--` to separate).
