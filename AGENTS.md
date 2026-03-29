@@ -231,6 +231,67 @@ Molt uses a capability-based security model. Programs must have explicit capabil
 | `standard` | (default) | Safe + writes: fs.write, env.write, os.mkdir, tempfile.*, signal.*, thread.*, shutil.copy/move |
 | `full` | `MOLT_CAPABILITY_TIER=full` | Standard + network: net.*, ssl.*, websocket.*, process.exec, db.*, ffi.*, select.* |
 
+### Tier → Capability Mapping (exhaustive)
+
+**`safe` tier** — Read-only operations. No network, no writes, no exec. Suitable for Cloudflare Workers and sandboxed environments.
+
+| Capability | Description | Developer Notice |
+|-----------|-------------|-----------------|
+| `env.read` | Read environment variables | Required for `sys.flags`, `os.environ` reads |
+| `env.len` / `env.snapshot` | Count/snapshot env | |
+| `fs.read` | Read files | Required for `import`, `open()` for reading |
+| `fs.stat` | File stat/exists checks | Required for `os.path.exists()`, `Path.is_file()` |
+| `fs.readdir` | List directory contents | Required for `os.listdir()`, `Path.iterdir()` |
+| `glob.glob` | Glob pattern matching | |
+| `os.getcwd` / `os.access` | CWD and access checks | |
+| `os.getpid` / `os.getppid` / `os.getuid` / `os.geteuid` / `os.getgid` / `os.getegid` | Process/user IDs | |
+| `os.getlogin` / `os.getpgrp` / `os.getloadavg` / `os.uname` | System info | |
+| `os.readlink` / `os.listdir` / `os.scandir` / `os.walk` | Directory traversal | |
+| `shutil.which` | Locate executable in PATH | |
+| `time.wall` | Wall-clock time | |
+
+**`standard` tier** (default for `molt run`) — Adds write operations.
+
+| Capability | Description | Developer Notice |
+|-----------|-------------|-----------------|
+| *All `safe` capabilities* | | |
+| `env.write` / `env.clear` / `env.popitem` | Modify environment | Writes to process-local mirror only |
+| `env.expanduser` / `env.expandvars` | Expand `~` and `$VAR` | |
+| `fs.write` | Write/create files | **Creates/modifies files on disk** |
+| `os.mkdir` / `os.makedirs` | Create directories | |
+| `os.rmdir` / `os.removedirs` | Remove directories | **Destructive** |
+| `os.link` / `os.symlink` / `os.chmod` / `os.utime` / `os.umask` | File metadata | |
+| `os.chdir` | Change working directory | **Affects all subsequent relative paths** |
+| `os.truncate` / `os.ftruncate` / `os.lseek` | File I/O | |
+| `shutil.copy` / `shutil.copyfile` / `shutil.copytree` / `shutil.move` | Copy/move files | **shutil.move is destructive to source** |
+| `tempfile.*` | Create temp files/dirs | Cleaned up on exit |
+| `signal.*` | Signal handling | **Can affect process behavior** |
+| `thread.spawn` / `thread.shared` | Threading | **Concurrent access to shared state** |
+
+**`full` tier** (`MOLT_CAPABILITY_TIER=full` or `MOLT_TRUSTED=1`) — Adds network, process exec, database, FFI.
+
+| Capability | Description | Developer Notice |
+|-----------|-------------|-----------------|
+| *All `standard` capabilities* | | |
+| `net.bind` / `net.listen` | Listen on network ports | **Exposes host to inbound connections** |
+| `net.connect` / `net.asyncio` / `net.poll` | Outbound network | **Can exfiltrate data** |
+| `ssl.read` / `ssl.write` | TLS operations | |
+| `websocket.connect` | WebSocket connections | **Persistent outbound connections** |
+| `process.exec` / `process.asyncio` | Execute subprocesses | **Arbitrary command execution** |
+| `os.kill` / `os.waitpid` | Process management | **Can terminate other processes** |
+| `select.*` | I/O multiplexing | |
+| `db.read` / `db.write` / `db.query` / `db.exec` | Database access | **Can read/modify persistent data** |
+| `ffi.unsafe` / `ffi.require` / `ffi.sizeof` | FFI | **Can call arbitrary native code** |
+| `fcntl.fcntl` | File descriptor control | |
+| `python.bridge` | CPython bridge | Opt-in compatibility layer only |
+
+### Security Invariants
+- Capabilities are loaded **eagerly at runtime init**, before any user code runs
+- Environment writes from user code go to a **local mirror**, not `std::env::set_var`
+- A program **cannot escalate** its tier at runtime by modifying `MOLT_TRUSTED` or `MOLT_CAPABILITIES`
+- `exec()`/`eval()`/`compile()` are **never supported** regardless of tier — Molt is AOT-only
+- Runtime monkeypatching and unrestricted reflection are **never supported** regardless of tier
+
 ### Environment Variables
 - `MOLT_CAPABILITY_TIER=safe|standard|full` — set capability tier (default: `standard`)
 - `MOLT_TRUSTED=1` — equivalent to `full` tier, grants everything
