@@ -295,6 +295,7 @@ theorem constFoldTerminator_vars_subset (t : Terminator) :
     exact constFoldExpr_vars_subset scrutinee v hv
   | unreachable =>
     simp only [constFoldTerminator, termVars] at hv
+    exact absurd hv (List.not_mem_nil _)
 
 /-- constFoldBlock uses are a subset of original block uses. -/
 theorem constFoldBlock_uses_subset (b : Block) :

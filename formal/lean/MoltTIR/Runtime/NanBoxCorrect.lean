@@ -817,18 +817,20 @@ theorem fused_xor_unbox (n : Int) (h : intFitsInline n) :
   -- Step 1: Simplify xorTagCheck (fromInt n) to raw &&& INT_MASK.
   simp only []
   unfold xorTagCheck fromInt EXPECTED_INT_TAG
-  have hraw_def : UInt64.mk (BitVec.ofInt 64 n) = UInt64.mk (BitVec.ofInt 64 n) := rfl
-  have hdisj : (QNAN ||| TAG_INT) &&& (UInt64.mk (BitVec.ofInt 64 n) &&& INT_MASK) = 0 :=
-    uint64_and_masked_zero (QNAN ||| TAG_INT) (UInt64.mk (BitVec.ofInt 64 n)) INT_MASK qnan_or_int_and_int_mask
-  have hxor : (QNAN ||| TAG_INT ||| (UInt64.mk (BitVec.ofInt 64 n) &&& INT_MASK)) ^^^ (QNAN ||| TAG_INT)
-              = UInt64.mk (BitVec.ofInt 64 n) &&& INT_MASK :=
-    uint64_xor_or_self_disjoint (QNAN ||| TAG_INT) (UInt64.mk (BitVec.ofInt 64 n) &&& INT_MASK) hdisj
+  let raw := UInt64.mk (BitVec.ofInt 64 n)
+  show signExtend47 ((QNAN ||| TAG_INT ||| (raw &&& INT_MASK)) ^^^ (QNAN ||| TAG_INT)) = n
+  have hraw_def : raw = UInt64.mk (BitVec.ofInt 64 n) := rfl
+  have hdisj : (QNAN ||| TAG_INT) &&& (raw &&& INT_MASK) = 0 :=
+    uint64_and_masked_zero (QNAN ||| TAG_INT) raw INT_MASK qnan_or_int_and_int_mask
+  have hxor : (QNAN ||| TAG_INT ||| (raw &&& INT_MASK)) ^^^ (QNAN ||| TAG_INT)
+              = raw &&& INT_MASK :=
+    uint64_xor_or_self_disjoint (QNAN ||| TAG_INT) (raw &&& INT_MASK) hdisj
   rw [hxor]
   -- Step 2: Unfold signExtend47 and simplify payload.
   unfold signExtend47
   simp only []
   -- payload = (raw &&& INT_MASK) &&& INT_MASK = raw &&& INT_MASK (by idempotence)
-  rw [uint64_and_idem_int_mask (UInt64.mk (BitVec.ofInt 64 n))]
+  rw [uint64_and_idem_int_mask raw]
   -- Step 3: Prove the sign-extension roundtrip.
   -- We need: if (raw &&& INT_MASK) &&& INT_SIGN ≠ 0
   --          then (raw &&& INT_MASK).toNat - 2^47 = n
