@@ -419,6 +419,10 @@ pub unsafe extern "C" fn molt_tuple_builder_finish(builder_bits: u64) -> u64 {
             *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
 
             let vec = Box::from_raw(vec_ptr);
+            // Intern the empty tuple as a singleton (CPython: () is () == True)
+            if vec.is_empty() {
+                return cached_empty_tuple(_py);
+            }
             let slice = vec.as_slice();
             let capacity = vec.capacity().max(MAX_SMALL_LIST);
             let tuple_ptr = alloc_tuple_with_capacity(_py, slice, capacity);
@@ -659,33 +663,34 @@ pub(crate) fn alloc_tuple_with_capacity(
 /// Uses AtomicU64 instead of OnceLock to avoid recursive init panics on WASM.
 static EMPTY_TUPLE_PTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+fn cached_empty_tuple(_py: &PyToken<'_>) -> u64 {
+    let cached = EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Relaxed);
+    if cached != 0 {
+        return cached;
+    }
+    let ptr = alloc_tuple_with_capacity(_py, &[], 0);
+    if !ptr.is_null() {
+        unsafe {
+            let header = header_from_obj_ptr(ptr);
+            (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            (*header)
+                .ref_count
+                .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+        }
+        let _ = EMPTY_TUPLE_PTR.compare_exchange(
+            0,
+            ptr as u64,
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     // Fast path: return the immortal empty tuple singleton.
     if elems.is_empty() {
-        let cached = EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Relaxed);
-        let bits = if cached != 0 {
-            cached
-        } else {
-            let ptr = alloc_tuple_with_capacity(_py, &[], 0);
-            if !ptr.is_null() {
-                unsafe {
-                    let header = header_from_obj_ptr(ptr);
-                    (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
-                    (*header)
-                        .ref_count
-                        .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
-                }
-                // CAS: if another thread beat us, use theirs (single-threaded on WASM, but safe)
-                let _ = EMPTY_TUPLE_PTR.compare_exchange(
-                    0,
-                    ptr as u64,
-                    std::sync::atomic::Ordering::Relaxed,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-            }
-            EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Relaxed)
-        };
-        return bits as *mut u8;
+        return cached_empty_tuple(_py) as *mut u8;
     }
     let cap = if elems.len() <= MAX_SMALL_LIST {
         MAX_SMALL_LIST
