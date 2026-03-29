@@ -17676,6 +17676,37 @@ def _prepare_frontend_pipeline(
     )
 
 
+def _build_cache_variant(
+    *,
+    profile: str,
+    runtime_cargo: str,
+    backend_cargo: str,
+    emit: str,
+    stdlib_split: bool,
+    codegen_env: str,
+    linked: bool,
+    partition_mode: bool = False,
+) -> str:
+    """Build a cache variant key from build configuration.
+
+    Changes to any parameter produce a different variant, ensuring cache
+    entries for different build configurations never collide.
+    """
+    parts = [
+        f"profile={profile}",
+        f"runtime_cargo={runtime_cargo}",
+        f"backend_cargo={backend_cargo}",
+        f"emit={emit}",
+        f"stdlib_split={int(stdlib_split)}",
+        f"codegen_env={codegen_env}",
+    ]
+    if linked:
+        parts.append("linked=1")
+    if partition_mode:
+        parts.append("partitioned=v1")
+    return ";".join(parts)
+
+
 def _prepare_backend_cache_setup(
     *,
     cache_enabled: bool,
@@ -17709,17 +17740,15 @@ def _prepare_backend_cache_setup(
             cache_hit=False,
             cache_hit_tier=None,
         )
-    cache_variant_parts = [
-        f"profile={profile}",
-        f"runtime_cargo={runtime_cargo_profile}",
-        f"backend_cargo={backend_cargo_profile}",
-        f"emit={emit_mode}",
-        f"stdlib_split={int(split_stdlib_object)}",
-        f"codegen_env={_backend_codegen_env_digest(is_wasm=is_wasm)}",
-    ]
-    if linked:
-        cache_variant_parts.append("linked=1")
-    cache_variant = ";".join(cache_variant_parts)
+    cache_variant = _build_cache_variant(
+        profile=profile,
+        runtime_cargo=runtime_cargo_profile,
+        backend_cargo=backend_cargo_profile,
+        emit=emit_mode,
+        stdlib_split=split_stdlib_object,
+        codegen_env=_backend_codegen_env_digest(is_wasm=is_wasm),
+        linked=linked,
+    )
     module_cache_payload, backend_cache_payload = _cache_payloads_for_ir(ir)
     cache_key = _cache_key(
         ir,
