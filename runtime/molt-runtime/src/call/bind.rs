@@ -12,9 +12,10 @@ use crate::{
     TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE, TYPE_ID_DATACLASS, TYPE_ID_DICT,
     TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST,
     TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
-    alloc_dict_with_pairs, alloc_exception_from_class_bits, alloc_instance_for_class, alloc_object,
-    alloc_string, alloc_tuple, apply_class_slots_layout, attr_lookup_ptr,
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes,
+    alloc_dict_with_pairs, alloc_exception_from_class_bits, alloc_instance_for_class,
+    alloc_instance_for_default_object_new, alloc_object, alloc_string, alloc_tuple,
+    apply_class_slots_layout, attr_lookup_ptr, attr_lookup_ptr_allow_missing,
+    attr_name_bits_from_bytes,
     audit::{AuditArgs, audit_capability_decision},
     bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
     call_callable1, call_class_init_with_args, call_function_obj_vec, class_attr_lookup,
@@ -712,55 +713,14 @@ unsafe fn call_type_with_builder(
                 resolved_new_bits = Some(new_bits);
                 let default_new = resolved_new_is_default_object_new(resolved_new_bits);
                 if default_new {
-                    if let Some(inst_bits) = alloc_dataclass_for_class(_py, call_ptr) {
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                        inst_bits
-                    } else {
-                        let (pos_len, kw_len) = if builder_ptr.is_null() {
-                            (1usize, 0usize)
-                        } else {
-                            let args_ptr = callargs_ptr(builder_ptr);
-                            if args_ptr.is_null() {
-                                (1usize, 0usize)
-                            } else {
-                                (1 + (*args_ptr).pos.len(), (*args_ptr).kw_names.len())
-                            }
-                        };
-                        let new_builder_bits = molt_callargs_new(pos_len as u64, kw_len as u64);
-                        if new_builder_bits == 0 {
-                            return MoltObject::none().bits();
-                        }
-                        let _ = molt_callargs_push_pos(new_builder_bits, class_bits);
-                        if !builder_ptr.is_null() {
-                            let args_ptr = callargs_ptr(builder_ptr);
-                            if !args_ptr.is_null() {
-                                for &arg in (*args_ptr).pos.iter() {
-                                    let _ = molt_callargs_push_pos(new_builder_bits, arg);
-                                }
-                                for (&name_bits, &val_bits) in (*args_ptr)
-                                    .kw_names
-                                    .iter()
-                                    .zip((*args_ptr).kw_values.iter())
-                                {
-                                    let _ = molt_callargs_push_kw(
-                                        new_builder_bits,
-                                        name_bits,
-                                        val_bits,
-                                    );
-                                }
-                            }
-                        }
-                        let inst_bits = molt_call_bind(new_bits, new_builder_bits);
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                        if !isinstance_bits(_py, inst_bits, class_bits) {
-                            return inst_bits;
-                        }
-                        inst_bits
+                    let inst_bits = alloc_instance_for_default_object_new(_py, call_ptr);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
                     }
+                    if !isinstance_bits(_py, inst_bits, class_bits) {
+                        return inst_bits;
+                    }
+                    inst_bits
                 } else {
                     let (pos_len, kw_len) = if builder_ptr.is_null() {
                         (1usize, 0usize)

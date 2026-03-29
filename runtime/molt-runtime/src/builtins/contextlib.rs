@@ -803,12 +803,22 @@ pub extern "C" fn molt_contextlib_contextdecorator_call(
 pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed_read = has_capability(_py, "fs.read");
-        audit_capability_decision("contextlib.chdir_enter", "fs.read", AuditArgs::None, allowed_read);
+        audit_capability_decision(
+            "contextlib.chdir_enter",
+            "fs.read",
+            AuditArgs::None,
+            allowed_read,
+        );
         if !allowed_read {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let allowed_write = has_capability(_py, "fs.write");
-        audit_capability_decision("contextlib.chdir_enter", "fs.write", AuditArgs::None, allowed_write);
+        audit_capability_decision(
+            "contextlib.chdir_enter",
+            "fs.write",
+            AuditArgs::None,
+            allowed_write,
+        );
         if !allowed_write {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }
@@ -835,12 +845,22 @@ pub extern "C" fn molt_contextlib_chdir_enter(path_bits: u64) -> u64 {
 pub extern "C" fn molt_contextlib_chdir_exit(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed_read = has_capability(_py, "fs.read");
-        audit_capability_decision("contextlib.chdir_exit", "fs.read", AuditArgs::None, allowed_read);
+        audit_capability_decision(
+            "contextlib.chdir_exit",
+            "fs.read",
+            AuditArgs::None,
+            allowed_read,
+        );
         if !allowed_read {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.read capability");
         }
         let allowed_write = has_capability(_py, "fs.write");
-        audit_capability_decision("contextlib.chdir_exit", "fs.write", AuditArgs::None, allowed_write);
+        audit_capability_decision(
+            "contextlib.chdir_exit",
+            "fs.write",
+            AuditArgs::None,
+            allowed_write,
+        );
         if !allowed_write {
             return raise_exception::<u64>(_py, "PermissionError", "missing fs.write capability");
         }

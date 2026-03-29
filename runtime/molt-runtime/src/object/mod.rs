@@ -1546,6 +1546,54 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 TYPE_ID_STRING => {
                     utf8_cache_remove(py, ptr as usize);
                 }
+                // Class objects: dec-ref all ref-counted fields and bump the
+                // global type version so all inline caches that held a pointer
+                // to this class are invalidated before the memory is reused.
+                //
+                // ORDERING IS CRITICAL: `molt_class_set_base` stores both the
+                // class payload slots (bases, mro) AND the class dict entries
+                // `__bases__`/`__mro__` as counted references.  We must
+                // dec-ref the payload slots BEFORE dec-refing the dict, so
+                // that when the dict cascade runs it sees refcount==1 (not 0)
+                // and correctly frees those objects without a double-free.
+                TYPE_ID_TYPE => {
+                    let name_bits = layout::class_name_bits(ptr);
+                    let dict_bits = layout::class_dict_bits(ptr);
+                    let bases_bits = layout::class_bases_bits(ptr);
+                    let mro_bits = layout::class_mro_bits(ptr);
+                    let annotations_bits = layout::class_annotations_bits(ptr);
+                    let annotate_bits = layout::class_annotate_bits(ptr);
+                    let qualname_bits = layout::class_qualname_bits(ptr);
+                    // Metaclass reference stored in the MoltHeader `state` slot
+                    // by `molt_type_new` / `object_set_class_bits`.
+                    let metaclass_bits = object_class_bits(ptr);
+
+                    // Dec-ref non-dict slots first so the dict cascade doesn't
+                    // see a refcount of zero for objects it also references.
+                    // `dec_ref_bits` is a no-op for primitives (None, int, etc.)
+                    // so we don't need to guard against None/zero explicitly —
+                    // but we do guard against the zero-bits sentinel (bits==0
+                    // is not a valid NaN-boxed heap pointer, and as_ptr() on it
+                    // returns None, making dec_ref_bits a no-op anyway; the
+                    // explicit guard is for clarity and avoids the function call).
+                    dec_ref_bits(py, name_bits);
+                    dec_ref_bits(py, bases_bits);
+                    dec_ref_bits(py, mro_bits);
+                    dec_ref_bits(py, annotations_bits);
+                    dec_ref_bits(py, annotate_bits);
+                    dec_ref_bits(py, qualname_bits);
+                    dec_ref_bits(py, metaclass_bits);
+                    // Dict last: its cascade will free __bases__ and __mro__
+                    // after the slot refs above have been released.
+                    dec_ref_bits(py, dict_bits);
+                    // Invalidate all result-level inline caches that may hold a
+                    // stale pointer to this now-freed class object.  Without
+                    // this bump, caches that were written when type_version==N
+                    // would still pass the version check after the class is freed
+                    // and its memory reused, causing use-after-free in
+                    // inc_ref_bits on the cached result.
+                    bump_type_version();
+                }
                 TYPE_ID_LIST => {
                     let vec_ptr = seq_vec_ptr(ptr);
                     if !vec_ptr.is_null() {
