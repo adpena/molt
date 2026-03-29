@@ -19,6 +19,9 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("inc_ref_obj", 1),
     ("obj_get_state", 14), // (i32) -> i64
     ("obj_set_state", 39), // (i32, i64) -> ()
+    // ── INTERNAL: Resource tracking ──
+    ("resource_on_allocate", 1), // (i32 size) -> i32 (0=ok, 1=denied)
+    ("resource_on_free", 1),     // (i32 size) -> void
     // ── INTERNAL: Module system ──
     ("module_cache_get", 2),
     ("module_cache_set", 3),

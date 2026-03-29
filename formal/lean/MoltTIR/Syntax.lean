@@ -39,6 +39,8 @@ inductive BinOp where
   | eq | ne | lt | le | gt | ge
   -- bitwise
   | bit_and | bit_or | bit_xor | lshift | rshift
+  -- boolean / identity / membership (short-circuit semantics modeled at terminator level)
+  | and_ | or_ | is | is_not | in_ | not_in
   deriving DecidableEq, Repr
 
 /-- Unary operators. Maps to Molt opcodes: not, abs, neg, invert. -/
@@ -47,6 +49,7 @@ inductive UnOp where
   | not       -- boolean negation
   | abs       -- absolute value
   | invert    -- bitwise inversion
+  | pos       -- unary plus (identity for numeric, __pos__ dispatch for objects)
   deriving DecidableEq, Repr
 
 /-- Expressions (pure, no side effects). -/
@@ -87,6 +90,32 @@ inductive Terminator where
        (thenLabel : Label) (thenArgs : List Expr)
        (elseLabel : Label) (elseArgs : List Expr)
   | yield (val : Expr) (resume : Label) (resumeArgs : List Expr)
+  | switch (scrutinee : Expr) (cases : List (Int × Label)) (default_ : Label)
+  | unreachable
+  deriving Repr
+
+/-- Side-effecting operations that are not pure expressions.
+    These correspond to opcode sequences in the real IR that perform calls,
+    attribute access, container construction, iteration, refcount manipulation,
+    boxing/unboxing, and module imports. -/
+inductive SideEffectOp where
+  | call (callee : String) (args : List Expr) (dst : Var)
+  | callMethod (receiver : Expr) (method : String) (args : List Expr) (dst : Var)
+  | loadAttr (obj : Expr) (attr : String) (dst : Var)
+  | storeAttr (obj : Expr) (attr : String) (val : Expr)
+  | index (obj : Expr) (idx : Expr) (dst : Var)
+  | storeIndex (obj : Expr) (idx : Expr) (val : Expr)
+  | buildList (elems : List Expr) (dst : Var)
+  | buildDict (keys : List Expr) (vals : List Expr) (dst : Var)
+  | buildTuple (elems : List Expr) (dst : Var)
+  | getIter (obj : Expr) (dst : Var)
+  | iterNext (iter : Expr) (dst : Var)
+  | raise (exc : Expr)
+  | incRef (val : Expr)
+  | decRef (val : Expr)
+  | boxVal (val : Expr) (dst : Var)
+  | unboxVal (val : Expr) (dst : Var)
+  | import_ (module : String) (dst : Var)
   deriving Repr
 
 /-- A basic block with parameters, instructions, and a terminator.
@@ -128,5 +157,36 @@ def termVars : Terminator → List Var
       exprVars cond ++ thenArgs.bind exprVars ++ elseArgs.bind exprVars
   | .yield val _ resumeArgs =>
       exprVars val ++ resumeArgs.bind exprVars
+  | .switch scrutinee _ _ => exprVars scrutinee
+  | .unreachable => []
+
+/-- Collect all variables referenced in a side-effecting operation. -/
+def sideEffectVars : SideEffectOp → List Var
+  | .call _ args _ => args.bind exprVars
+  | .callMethod receiver _ args _ => exprVars receiver ++ args.bind exprVars
+  | .loadAttr obj _ _ => exprVars obj
+  | .storeAttr obj _ val => exprVars obj ++ exprVars val
+  | .index obj idx _ => exprVars obj ++ exprVars idx
+  | .storeIndex obj idx val => exprVars obj ++ exprVars idx ++ exprVars val
+  | .buildList elems _ => elems.bind exprVars
+  | .buildDict keys vals _ => keys.bind exprVars ++ vals.bind exprVars
+  | .buildTuple elems _ => elems.bind exprVars
+  | .getIter obj _ => exprVars obj
+  | .iterNext iter _ => exprVars iter
+  | .raise exc => exprVars exc
+  | .incRef val => exprVars val
+  | .decRef val => exprVars val
+  | .boxVal val _ => exprVars val
+  | .unboxVal val _ => exprVars val
+  | .import_ _ _ => []
+
+/-- Collect the destination variable (if any) defined by a side-effecting operation. -/
+def sideEffectDst : SideEffectOp → Option Var
+  | .call _ _ dst | .callMethod _ _ _ dst | .loadAttr _ _ dst
+  | .index _ _ dst | .buildList _ dst | .buildDict _ _ dst
+  | .buildTuple _ dst | .getIter _ dst | .iterNext _ dst
+  | .boxVal _ dst | .unboxVal _ dst | .import_ _ dst => some dst
+  | .storeAttr _ _ _ | .storeIndex _ _ _ | .raise _
+  | .incRef _ | .decRef _ => none
 
 end MoltTIR

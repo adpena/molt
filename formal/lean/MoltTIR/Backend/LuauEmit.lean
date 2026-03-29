@@ -49,13 +49,13 @@ def emitBinOp : MoltTIR.BinOp → LuauBinOp
   | .le => .le
   | .gt => .gt
   | .ge => .ge
-  -- Bitwise ops map to Luau's bit32 library calls in practice,
-  -- but for the AST-level model we treat them as direct operators.
-  | .bit_and => .land  -- approximation; real backend uses bit32.band
-  | .bit_or => .lor    -- approximation; real backend uses bit32.bor
-  | .bit_xor => .land  -- approximation; real backend uses bit32.bxor
-  | .lshift => .land   -- approximation; real backend uses bit32.lshift
-  | .rshift => .land   -- approximation; real backend uses bit32.rshift
+  -- Bitwise ops map to Luau's bit32 library calls in practice.
+  -- At the AST level we model them as distinct bitwise operator nodes.
+  | .bit_and => .band   -- real backend uses bit32.band
+  | .bit_or  => .bor    -- real backend uses bit32.bor
+  | .bit_xor => .bxor   -- real backend uses bit32.bxor
+  | .lshift  => .lshl   -- real backend uses bit32.lshift
+  | .rshift  => .lshr   -- real backend uses bit32.rshift
 
 /-- Map IR unary operator to Luau unary operator. -/
 def emitUnOp : MoltTIR.UnOp → LuauUnOp

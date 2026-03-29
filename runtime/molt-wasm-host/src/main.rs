@@ -4313,6 +4313,26 @@ fn define_time_host(linker: &mut Linker<HostState>, store: &mut Store<HostState>
     Ok(())
 }
 
+fn define_resource_host(
+    linker: &mut Linker<HostState>,
+    store: &mut Store<HostState>,
+) -> Result<()> {
+    let on_allocate = Func::wrap(&mut *store, |size: i32| -> i32 {
+        use molt_runtime::resource;
+        match resource::with_tracker(|t| t.on_allocate(size as usize)) {
+            Ok(()) => 0,  // allocation permitted
+            Err(_) => 1,  // allocation denied
+        }
+    });
+    let on_free = Func::wrap(&mut *store, |size: i32| {
+        use molt_runtime::resource;
+        resource::with_tracker(|t| t.on_free(size as usize));
+    });
+    linker.define(&mut *store, "env", "molt_resource_on_allocate_host", on_allocate)?;
+    linker.define(&mut *store, "env", "molt_resource_on_free_host", on_free)?;
+    Ok(())
+}
+
 fn set_memory_from_exports(store: &mut Store<HostState>, instance: &wasmtime::Instance) {
     if store.data().memory.is_some() {
         return;
@@ -4658,6 +4678,7 @@ fn main() -> Result<()> {
     define_ws_host(&mut linker, &mut store)?;
     define_process_host(&mut linker, &mut store)?;
     define_time_host(&mut linker, &mut store)?;
+    define_resource_host(&mut linker, &mut store)?;
     let getpid = Func::wrap(&mut store, || -> i64 { std::process::id() as i64 });
     linker.define(&mut store, "env", "molt_getpid_host", getpid)?;
 
