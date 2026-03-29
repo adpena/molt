@@ -56,3 +56,9 @@ def test_parse_io_mode_flag_invalid():
         assert False, "Should have raised ValueError"
     except ValueError:
         pass
+
+
+def test_parse_type_gate_flag():
+    from molt.cli import _parse_type_gate_flag
+    assert _parse_type_gate_flag(True) == {"MOLT_TYPE_GATE": "1"}
+    assert _parse_type_gate_flag(False) == {}
