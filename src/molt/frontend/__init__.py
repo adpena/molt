@@ -7496,6 +7496,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.async_local_hints[name] = value.type_hint
             update_locals_cache()
             return
+        # Do NOT cache in self.locals when the variable is module-backed
+        # (in module_global_mutations). The canonical store is the module dict
+        # and reads must go through MODULE_GET_ATTR to see the latest value
+        # across loop iterations. Without this guard, the stale local SSA
+        # value shadows the module dict, causing while-loop conditions and
+        # augmented assignments to read outdated values.
+        if (
+            self.current_func_name == "molt_main"
+            and name in self.module_global_mutations
+        ):
+            update_locals_cache()
+            return
         self.locals[name] = value
         update_locals_cache()
 
