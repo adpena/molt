@@ -39,8 +39,12 @@ inductive TermResult where
   | ret (v : Value)
   | jump (target : Label) (env : Env)
 
-/-- Evaluate a terminator given the post-instruction environment and the function
-    (needed to look up target block params). -/
+/-- Compute the target label for a switch terminator given the scrutinee value. -/
+def switchTarget (cases_ : List (Int × Label)) (default_ : Label) (n : Int) : Label :=
+  match cases_.find? (fun p => p.1 == n) with
+  | some (_, lbl) => lbl
+  | none => default_
+
 def evalTerminator (f : Func) (ρ : Env) : Terminator → Option TermResult
   | .ret e =>
       match evalExpr ρ e with
@@ -83,15 +87,12 @@ def evalTerminator (f : Func) (ρ : Env) : Terminator → Option TermResult
   | .switch scrutinee cases default_ =>
       match evalExpr ρ scrutinee with
       | some (.int n) =>
-          let target := match cases.find? (fun p => p.1 == n) with
-            | some (_, lbl) => lbl
-            | none => default_
-          match f.blocks target with
+          match f.blocks (switchTarget cases default_ n) with
           | none => none
           | some blk =>
               match bindParams blk.params [] with
               | none => none
-              | some ρ' => some (.jump target ρ')
+              | some ρ' => some (.jump (switchTarget cases default_ n) ρ')
       | _ => none
   | .unreachable => none
 
