@@ -1893,8 +1893,24 @@ pub extern "C" fn molt_db_set_exec_hook(ptr: usize) {
     })
 }
 
+/// Default capabilities granted to all Molt programs.  These are safe
+/// operations that don't expose the host to untrusted code execution,
+/// network access, or arbitrary filesystem writes.
+///
+/// Programs needing network/exec/eval must either set `MOLT_TRUSTED=1`
+/// or explicitly list capabilities via `MOLT_CAPABILITIES=net.bind,...`.
+const DEFAULT_CAPABILITIES: &[&str] = &[
+    "env.read",       // read environment variables (sys.flags, etc.)
+    "fs.read",        // read files (import, open for reading)
+    "fs.stat",        // stat/exists checks
+    "fs.readdir",     // list directory contents
+];
+
 fn load_capabilities() -> HashSet<String> {
-    let mut set = HashSet::new();
+    let mut set: HashSet<String> = DEFAULT_CAPABILITIES
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
     let caps = std::env::var("MOLT_CAPABILITIES").unwrap_or_default();
     for cap in caps.split(',') {
         let cap = cap.trim();
