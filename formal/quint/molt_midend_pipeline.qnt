@@ -137,9 +137,12 @@ module molt_midend_pipeline {
   // 3. Size is non-negative
   val sizeNonNegative: bool = ir.size >= 0
 
-  // 4. Fixed point stability: once at fixed point, state doesn't change
+  // 4. Fixed point stability: once at fixed point, no pass changed anything
+  //    in the final round (not just the last pass — the entire round was stable).
+  //    This is stronger than just checking `not(ir.changed)` which only reflects
+  //    the last applied pass.
   val fixedPointStable: bool = {
-    ir.atFixedPoint implies not(ir.changed)
+    ir.atFixedPoint implies (not(ir.roundChanged) and not(ir.changed))
   }
 
   // 5. Pass ordering completeness: each round applies all passes

@@ -29,6 +29,37 @@ theorem absEnvJoin_sound (σ₁ σ₂ : AbsEnv) (ρ : Env)
   simp only [absEnvJoin]
   exact AbsVal.join_concretizes (σ₁ x) (σ₂ x) v (h1 x v hv) (h2 x v hv)
 
+
+/-- Join of strongly-sound abstract environments is strongly sound. -/
+theorem absEnvJoin_strongSound (σ₁ σ₂ : AbsEnv) (ρ : Env)
+    (h1 : AbsEnvStrongSound σ₁ ρ) (h2 : AbsEnvStrongSound σ₂ ρ) :
+    AbsEnvStrongSound (absEnvJoin σ₁ σ₂) ρ := by
+  constructor
+  · exact absEnvJoin_sound σ₁ σ₂ ρ h1.1 h2.1
+  · intro x v hv
+    simp only [absEnvJoin] at hv
+    -- hv : AbsVal.join (σ₁ x) (σ₂ x) = .known v
+    -- Case split on (σ₁ x) and (σ₂ x) to find which one is .known v
+    have : σ₁ x = .known v ∨ σ₂ x = .known v := by
+      generalize hsx1 : σ₁ x = a at hv
+      generalize hsx2 : σ₂ x = b at hv
+      cases a with
+      | unknown => exact Or.inr (by simpa [AbsVal.join] using hv)
+      | overdefined =>
+        cases b <;> simp [AbsVal.join] at hv
+      | known v1 =>
+        cases b with
+        | unknown => exact Or.inl (by simpa [AbsVal.join] using hv)
+        | overdefined => simp [AbsVal.join] at hv
+        | known v2 =>
+          simp only [AbsVal.join] at hv
+          split at hv
+          · exact Or.inl hv
+          · exact nomatch hv
+    rcases this with h | h
+    · exact h1.2 x v h
+    · exact h2.2 x v h
+
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Abstract evaluation concretizes (weak soundness)
 -- ══════════════════════════════════════════════════════════════════
