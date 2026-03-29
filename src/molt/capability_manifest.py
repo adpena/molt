@@ -848,6 +848,9 @@ def load_manifest(path: Union[str, Path], *, require_signed: bool = False) -> Ca
     ----------
     path : str or Path
         Filesystem path to the manifest file.
+    require_signed : bool, optional
+        If True, raise :class:`ManifestError` when the manifest has no
+        embedded signature.  Defaults to False.
 
     Returns
     -------
@@ -857,7 +860,8 @@ def load_manifest(path: Union[str, Path], *, require_signed: bool = False) -> Ca
     Raises
     ------
     ManifestError
-        If the manifest has structural errors.
+        If the manifest has structural errors, a signature mismatch is
+        detected, or *require_signed* is True and the manifest is unsigned.
     FileNotFoundError
         If the file does not exist.
     """
@@ -878,9 +882,9 @@ def load_manifest(path: Union[str, Path], *, require_signed: bool = False) -> Ca
         )
 
     # Validate -- raises ManifestError on fatal issues, returns warnings.
-    _warnings = validate_manifest(manifest)
-    # Warnings are informational; callers who want them can call
-    # validate_manifest() directly.
+    validation_warnings = validate_manifest(manifest)
+    for w in validation_warnings:
+        warnings.warn(w, stacklevel=2)
 
     # Verify manifest integrity if a signature is present.
     sig_status = verify_manifest_signature(p, manifest)
