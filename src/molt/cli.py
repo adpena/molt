@@ -15846,7 +15846,7 @@ def _execute_backend_compile(
             # Progress indicator: show compilation start on stderr so the
             # user knows something is happening during multi-minute builds.
             if not json_output:
-                _entry_stem = Path(entry_file).stem if entry_file else "program"
+                _entry_stem = entry_module.rsplit(".", 1)[-1] if entry_module else "program"
                 print(f"Compiling {_entry_stem}...", end="", flush=True, file=sys.stderr)
             ir_bytes = _ensure_backend_ir_bytes()
             ir_fmt = _get_backend_ir_fmt()
