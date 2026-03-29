@@ -26953,6 +26953,10 @@ def main() -> int:
             "  molt build app.py --target wasm    Build for WebAssembly\n"
             "  molt deploy cloudflare app.py      Deploy to Cloudflare Workers\n"
             "  molt test                          Run test suites\n"
+            "  molt doctor                        Check toolchain health\n"
+            "\n"
+            "Use --trusted to disable capability checks for local development.\n"
+            "Set MOLT_CAPABILITY_TIER=safe|standard|full to control permissions.\n"
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True, title="commands")
