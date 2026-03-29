@@ -3005,6 +3005,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-ffi"
+version = "0.1.0"
+dependencies = [
+ "molt-runtime",
+]
+
+[[package]]
 name = "molt-harness"
 version = "0.1.0"
 dependencies = [
@@ -3249,6 +3256,10 @@ dependencies = [
  "molt-runtime-core",
  "num_cpus",
 ]
+
+[[package]]
+name = "molt-runtime-protobuf"
+version = "0.1.0"
 
 [[package]]
 name = "molt-runtime-regex"

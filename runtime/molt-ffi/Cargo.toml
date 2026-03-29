@@ -1,0 +1,12 @@
+[package]
+name = "molt-ffi"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Stable C API for Molt runtime intrinsics — enables cross-runtime stdlib access"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+molt-runtime = { path = "../molt-runtime", default-features = false, features = ["stdlib_micro"] }
