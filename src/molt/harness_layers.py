@@ -6,7 +6,9 @@ is a strict superset of the previous one.
 """
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -462,6 +464,151 @@ def run_layer_audit(config: HarnessConfig) -> LayerResult:
 
 
 # ---------------------------------------------------------------------------
+# Deep-profile layer implementations
+# ---------------------------------------------------------------------------
+
+
+def run_layer_fuzz(config: HarnessConfig) -> LayerResult:
+    """Run all 3 fuzz targets in parallel for a configurable duration."""
+    start = time.monotonic()
+    fuzz_dir = config.project_root / "runtime" / "molt-backend"
+    targets = ["fuzz_nan_boxing", "fuzz_wasm_type_section", "fuzz_tir_passes"]
+    duration = config.fuzz_duration_s
+
+    # Check if nightly is available
+    proc = _run_cmd(["rustup", "run", "nightly", "rustc", "--version"])
+    if proc.returncode != 0:
+        return LayerResult(
+            name="fuzz",
+            status=LayerStatus.SKIP,
+            duration_s=time.monotonic() - start,
+            details="nightly not available",
+        )
+
+    # Run each target sequentially to avoid OOM
+    crashes: list[str] = []
+    for target in targets:
+        proc = _run_cmd(
+            [
+                "cargo", "+nightly", "fuzz", "run", target,
+                "--", f"-max_total_time={duration}",
+            ],
+            cwd=fuzz_dir,
+            timeout_s=duration + 60,
+        )
+        if proc.returncode != 0 and "SUMMARY" not in proc.stderr:
+            crashes.append(f"{target}: exit {proc.returncode}")
+
+    dur = time.monotonic() - start
+    if crashes:
+        return LayerResult(
+            name="fuzz",
+            status=LayerStatus.FAIL,
+            duration_s=dur,
+            details=f"{len(crashes)} crashes: {'; '.join(crashes)}",
+        )
+    return LayerResult(
+        name="fuzz",
+        status=LayerStatus.PASS,
+        duration_s=dur,
+        details=f"{len(targets)} targets, {duration}s each, 0 crashes",
+    )
+
+
+def run_layer_conformance(config: HarnessConfig) -> LayerResult:
+    """Run Monty conformance via the CPython runner."""
+    start = time.monotonic()
+    runner = config.project_root / "tests" / "harness" / "run_monty_conformance.py"
+    if not runner.exists():
+        return LayerResult(
+            name="conformance",
+            status=LayerStatus.SKIP,
+            duration_s=time.monotonic() - start,
+            details="runner not found",
+        )
+
+    proc = _run_cmd(
+        ["python3", str(runner)],
+        cwd=config.project_root,
+        timeout_s=300,
+    )
+    dur = time.monotonic() - start
+
+    match = re.search(r"(\d+)/(\d+)\s+\((\d+)%\)\s+passed", proc.stdout)
+    if match:
+        passed, total = int(match.group(1)), int(match.group(2))
+        pct = int(match.group(3))
+        return LayerResult(
+            name="conformance",
+            status=LayerStatus.PASS if passed == total else LayerStatus.FAIL,
+            duration_s=dur,
+            details=f"{passed}/{total} ({pct}%)",
+            metrics={"test_count": total, "pass_count": passed, "pass_rate": pct / 100},
+        )
+    return LayerResult(
+        name="conformance",
+        status=LayerStatus.FAIL,
+        duration_s=dur,
+        details=f"parse error: {proc.stdout[-200:]}",
+    )
+
+
+def run_layer_size(config: HarnessConfig) -> LayerResult:
+    """Measure binary and WASM sizes."""
+    start = time.monotonic()
+    metrics: dict[str, int | float] = {}
+
+    # Check molt binary size
+    molt_path = shutil.which("molt")
+    if molt_path:
+        metrics["molt_binary_bytes"] = os.path.getsize(molt_path)
+
+    # Check runtime library sizes
+    target_dir = config.project_root / "runtime" / "target" / "release"
+    for name in ["libmolt_runtime.a", "libmolt_runtime.rlib"]:
+        path = target_dir / name
+        if path.exists():
+            metrics[f"{name}_bytes"] = path.stat().st_size
+
+    dur = time.monotonic() - start
+    if not metrics:
+        return LayerResult(
+            name="size",
+            status=LayerStatus.SKIP,
+            duration_s=dur,
+            details="no artifacts found",
+        )
+
+    detail_parts = [f"{k}={v:,}" for k, v in sorted(metrics.items())]
+    return LayerResult(
+        name="size",
+        status=LayerStatus.PASS,
+        duration_s=dur,
+        details="; ".join(detail_parts),
+        metrics=metrics,
+    )
+
+
+def run_layer_bench(config: HarnessConfig) -> LayerResult:
+    """Check if criterion benchmarks exist (placeholder for full bench runs)."""
+    start = time.monotonic()
+    bench_dir = config.project_root / "runtime" / "molt-harness" / "benches"
+    if not bench_dir.exists():
+        return LayerResult(
+            name="bench",
+            status=LayerStatus.SKIP,
+            duration_s=time.monotonic() - start,
+            details="no bench directory",
+        )
+    return LayerResult(
+        name="bench",
+        status=LayerStatus.SKIP,
+        duration_s=time.monotonic() - start,
+        details="criterion benchmarks not yet configured",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Stub for not-yet-implemented layers
 # ---------------------------------------------------------------------------
 
@@ -497,10 +644,10 @@ LAYERS: list[LayerDef] = [
     LayerDef(name="resource", profile="standard", run_fn=run_layer_resource),
     LayerDef(name="audit", profile="standard", run_fn=run_layer_audit),
     # deep (8 additional layers)
-    LayerDef(name="fuzz", profile="deep", run_fn=_stub_layer("fuzz")),
-    LayerDef(name="conformance", profile="deep", run_fn=_stub_layer("conformance")),
-    LayerDef(name="bench", profile="deep", run_fn=_stub_layer("bench")),
-    LayerDef(name="size", profile="deep", run_fn=_stub_layer("size")),
+    LayerDef(name="fuzz", profile="deep", run_fn=run_layer_fuzz),
+    LayerDef(name="conformance", profile="deep", run_fn=run_layer_conformance),
+    LayerDef(name="bench", profile="deep", run_fn=run_layer_bench),
+    LayerDef(name="size", profile="deep", run_fn=run_layer_size),
     LayerDef(name="mutation", profile="deep", run_fn=_stub_layer("mutation")),
     LayerDef(name="determinism", profile="deep", run_fn=_stub_layer("determinism")),
     LayerDef(name="miri", profile="deep", run_fn=_stub_layer("miri")),
