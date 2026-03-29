@@ -963,19 +963,26 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
 }
 
 fn format_bytes(bytes: &[u8]) -> String {
-    let mut out = String::from("b'");
+    // Match CPython: use double quotes when bytes contain single quote but not double
+    let use_double = bytes.contains(&b'\'') && !bytes.contains(&b'"');
+    let quote = if use_double { '"' } else { '\'' };
+    let mut out = String::from("b");
+    out.push(quote);
     for &b in bytes {
         match b {
             b'\\' => out.push_str("\\\\"),
-            b'\'' => out.push_str("\\'"),
             b'\n' => out.push_str("\\n"),
             b'\r' => out.push_str("\\r"),
             b'\t' => out.push_str("\\t"),
+            _ if b == quote as u8 => {
+                out.push('\\');
+                out.push(quote);
+            }
             0x20..=0x7e => out.push(b as char),
             _ => out.push_str(&format!("\\x{:02x}", b)),
         }
     }
-    out.push('\'');
+    out.push(quote);
     out
 }
 
