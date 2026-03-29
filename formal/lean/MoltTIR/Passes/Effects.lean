@@ -72,6 +72,9 @@ def termEffect : Terminator → Effect
   | .ret _ => .pure
   | .jmp _ _ => .control
   | .br _ _ _ _ _ => .control
+  | .yield _ _ _ => .control
+  | .switch _ _ _ => .control
+  | .unreachable => .control
 
 /-- Maximum effect in a block: join of all instruction effects and the terminator effect. -/
 def blockEffect (b : Block) : Effect :=

@@ -27,6 +27,10 @@ def termVarsIn (scope : List Var) : Terminator → Bool
       exprVarsIn scope c
       && thenArgs.all (exprVarsIn scope)
       && elseArgs.all (exprVarsIn scope)
+  | .yield val _ resumeArgs =>
+      exprVarsIn scope val && resumeArgs.all (exprVarsIn scope)
+  | .switch scrutinee _ _ => exprVarsIn scope scrutinee
+  | .unreachable => true
 
 /-- A block is well-formed if each instruction only references previously-defined vars,
     and the terminator only references vars defined by params + all instrs. -/
