@@ -82,3 +82,26 @@ the primary assertion failures.
 2. Fix comprehension unbound-local detection (1 test, medium)
 3. Fix walrus operator assignment in conditionals (from earlier analysis)
 4. Run full success-expected suite with warm cache to get accurate pass count
+
+## Deep Investigation: `global` Assignment Bug
+
+### Symptom
+`global x; x = value` inside a function does not update the module dict.
+Both regular assignment and walrus operator `:=` are affected.
+
+### Root Cause (Partial)
+The frontend code at `frontend/__init__.py:20947` correctly checks for
+`global_decls` and now emits `MODULE_SET_ATTR`. However, the compiled
+binary still shows the old behavior — the module dict is not updated.
+
+### Hypothesis
+The `MODULE_CACHE_GET` inside a function may return a stale or different
+module object than the one at module level. Or the module may not be
+registered in the cache when the function runs (timing issue during
+module initialization).
+
+### Next Steps
+1. Add IR dump logging to verify `module_set_attr` ops ARE in the function IR
+2. Check if `module_cache_get` returns the correct module object at runtime
+3. Test whether the issue is in all backends (native, WASM, LLVM) or just one
+4. Compare with how `module_get_global` (which DOES work for reads) resolves modules
