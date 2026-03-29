@@ -189,6 +189,11 @@ unsafe fn context_exit_unchecked(_py: &PyToken<'_>, ctx_bits: u64, exc_bits: u64
             if exit_fn_addr.is_null() {
                 return;
             }
+            // SAFETY: exit_fn_addr was stored by alloc_context_manager from a
+            // function pointer provided by the caller of molt_context_new. That
+            // caller (compiled Python `with` statement lowering) guarantees the
+            // pointer is a valid `extern "C" fn(u64, u64) -> u64`. The null check
+            // above rules out zero. A dangling pointer here causes a segfault.
             let exit_fn =
                 std::mem::transmute::<*const (), extern "C" fn(u64, u64) -> u64>(exit_fn_addr);
             exit_fn(context_payload_bits(ptr), exc_bits);
@@ -297,6 +302,10 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
                             "context manager missing __enter__",
                         );
                     }
+                    // SAFETY: enter_fn_addr was stored by alloc_context_manager from
+                    // a function pointer provided by molt_context_new. The caller
+                    // guarantees it is a valid `extern "C" fn(u64) -> u64`. The null
+                    // check above rules out zero. Dangling pointer causes a segfault.
                     let enter_fn =
                         std::mem::transmute::<*const (), extern "C" fn(u64) -> u64>(enter_fn_addr);
                     let res = enter_fn(context_payload_bits(ptr));
@@ -360,6 +369,11 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                             "context manager missing __exit__",
                         );
                     }
+                    // SAFETY: exit_fn_addr was stored by alloc_context_manager
+                    // from a function pointer provided by molt_context_new. The
+                    // caller guarantees it is a valid `extern "C" fn(u64, u64) -> u64`.
+                    // The null check above rules out zero. Dangling pointer causes
+                    // a segfault.
                     let exit_fn = std::mem::transmute::<*const (), extern "C" fn(u64, u64) -> u64>(
                         exit_fn_addr,
                     );

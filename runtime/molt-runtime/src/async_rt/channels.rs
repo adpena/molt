@@ -658,6 +658,16 @@ pub extern "C" fn molt_stream_new_with_io_hooks(
     hook_ctx: *mut u8,
 ) -> *mut u8 {
     crate::with_gil_entry!(_py, {
+        // SAFETY (all three hook transmutes below): The usize values are function
+        // pointers provided by the host embedder (Cloudflare Worker JS glue or native
+        // embedder) via the C FFI boundary. The caller guarantees:
+        //   1. Non-zero values are valid pointers to functions with the declared
+        //      extern "C" signature.
+        //   2. The pointed-to functions remain valid for the lifetime of this
+        //      MoltStream (the stream holds no ownership; the host must outlive it).
+        //   3. hook_ctx passed alongside is the correct opaque context pointer that
+        //      each hook expects as its first argument.
+        // Violation (bad pointer or signature mismatch) causes UB at hook call site.
         let send_hook = if send_hook == 0 {
             None
         } else {
@@ -908,6 +918,12 @@ pub extern "C" fn molt_ws_new_with_hooks(
     hook_ctx: *mut u8,
 ) -> *mut u8 {
     crate::with_gil_entry!(_py, {
+        // SAFETY (all three hook transmutes below): Same contract as
+        // molt_stream_new_with_io_hooks — the host embedder supplies valid function
+        // pointers as usize values. Non-zero means the pointer is a valid
+        // extern "C" fn with the declared signature. The host must keep the backing
+        // code alive for the lifetime of this MoltWebSocket.
+        // Violation causes UB when the hook is later invoked.
         let send_hook = if send_hook == 0 {
             None
         } else {
@@ -2210,7 +2226,11 @@ pub unsafe extern "C" fn molt_ws_connect(
             unsafe { *out = bits_from_ptr(ws_ptr) };
             return 0;
         }
-        // SAFETY: hook pointer was registered as a `WsConnectHook`.
+        // SAFETY: hook_ptr was stored into WS_CONNECT_HOOK by the host via
+        // a registration function that accepts only `WsConnectHook`-typed values.
+        // The AtomicUsize store/load preserves the bit pattern. The host must keep
+        // the function alive for the process lifetime (static hook). Transmuting a
+        // stale or mistyped pointer causes UB on the subsequent call.
         let hook: WsConnectHook = unsafe { std::mem::transmute(hook_ptr) };
         let ws_ptr = hook(url_ptr, url_len);
         if ws_ptr.is_null() {
@@ -2726,6 +2746,11 @@ fn db_query_impl(
         if hook_ptr == 0 {
             return 7;
         }
+        // SAFETY: hook_ptr was stored into DB_QUERY_HOOK by the host embedder's
+        // registration function, which accepts only `DbHostHook`-typed values.
+        // The AtomicUsize load preserves the original function pointer bit pattern.
+        // The host must keep the function valid for the process lifetime.
+        // A stale or mistyped pointer causes UB on the subsequent call.
         let hook: DbHostHook = unsafe { std::mem::transmute(hook_ptr) };
         hook(req_ptr, len, out, token_id)
     }
@@ -2770,6 +2795,11 @@ fn db_exec_impl(
         if hook_ptr == 0 {
             return 7;
         }
+        // SAFETY: hook_ptr was stored into DB_EXEC_HOOK by the host embedder's
+        // registration function, which accepts only `DbHostHook`-typed values.
+        // The AtomicUsize load preserves the original function pointer bit pattern.
+        // The host must keep the function valid for the process lifetime.
+        // A stale or mistyped pointer causes UB on the subsequent call.
         let hook: DbHostHook = unsafe { std::mem::transmute(hook_ptr) };
         hook(req_ptr, len, out, token_id)
     }
