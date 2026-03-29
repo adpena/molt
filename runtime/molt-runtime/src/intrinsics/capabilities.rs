@@ -1,5 +1,5 @@
 use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_emit};
-use crate::{MoltObject, has_capability, is_trusted, raise_exception, string_obj_to_owned};
+use crate::{MoltObject, capability_fix_hint, has_capability, is_trusted, raise_exception, string_obj_to_owned};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_capabilities_trusted() -> u64 {
@@ -61,14 +61,11 @@ pub extern "C" fn molt_capabilities_require(name_bits: u64) -> u64 {
             ));
         }
         if !allowed {
-            eprintln!(
-                "molt: PermissionError: missing '{name}' capability \
-                 (set MOLT_TRUSTED=1 or MOLT_CAPABILITIES={name})"
-            );
+            let hint = capability_fix_hint(&name);
             return raise_exception::<_>(
                 _py,
                 "PermissionError",
-                &format!("missing {name} capability"),
+                &format!("missing '{name}' capability. {hint}"),
             );
         }
         MoltObject::none().bits()
