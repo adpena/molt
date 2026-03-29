@@ -508,6 +508,57 @@ fn attr_object_ic_keeps_class_attrs_distinct_per_site() {
 }
 
 #[test]
+fn plain_function_object_has_no_set_name_attr() {
+    let _ = molt_runtime_init();
+    crate::with_gil_entry!(_py, {
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::molt_id as *const () as usize as u64,
+            1,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+
+        let name_ptr = alloc_string(_py, b"__set_name__");
+        assert!(!name_ptr.is_null());
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+
+        let none_bits = MoltObject::none().bits();
+        let got_bits =
+            crate::builtins::attributes::molt_get_attr_name_default(func_bits, name_bits, none_bits);
+
+        assert!(obj_from_bits(got_bits).is_none());
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, got_bits);
+        dec_ref_bits(_py, name_bits);
+        dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
+fn class_apply_set_name_tolerates_plain_function_attrs() {
+    let _ = molt_runtime_init();
+    crate::with_gil_entry!(_py, {
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::molt_id as *const () as usize as u64,
+            1,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+        let class_bits = create_test_heap_class(_py, b"A", &[(b"f", func_bits)]);
+
+        let res_bits = crate::molt_class_apply_set_name(class_bits);
+        assert!(obj_from_bits(res_bits).is_none());
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, class_bits);
+        dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
 fn scalar_handle_helpers_roundtrip() {
     let _ = molt_runtime_init();
     assert!(obj_from_bits(molt_none()).is_none());
