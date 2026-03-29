@@ -545,6 +545,7 @@ impl SimpleBackend {
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut builder_ctx);
 
         let mut vars: BTreeMap<String, Variable> = BTreeMap::new();
+        let mut const_str_slots: BTreeMap<cranelift_module::DataId, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
         let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
         for name in var_names.iter() {
             let var = builder.declare_var(types::I64);
@@ -1066,36 +1067,51 @@ impl SimpleBackend {
                         bytes,
                     );
 
-                    let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
-                    let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                    let len = builder.ins().iconst(types::I64, bytes.len() as i64);
+                    // Cache const_str NaN-boxed results in a stack slot keyed by
+                    // DataId. Stack slots persist across exception handler
+                    // boundaries, unlike Cranelift variables which can be reset
+                    // by check_exception cleanup. This fixes the while-loop
+                    // module-scope bug where const_str attr names were corrupted.
+                    let boxed = if let Some(&slot) = const_str_slots.get(&data_id) {
+                        builder.ins().stack_load(types::I64, slot, 0)
+                    } else {
+                        let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+                        let ptr = builder.ins().symbol_value(types::I64, global_ptr);
+                        let len = builder.ins().iconst(types::I64, bytes.len() as i64);
 
-                    def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
-                    def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
+                        def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
+                        def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
 
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_string_from_bytes",
-                        &[types::I64, types::I64, types::I64],
-                        &[types::I32],
-                    );
-                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        8,
-                        3,
-                    ));
-                    let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[ptr, len, out_ptr]);
-                    let boxed = builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_string_from_bytes",
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I32],
+                        );
+                        let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                        let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        builder.ins().call(local_callee, &[ptr, len, out_ptr]);
+                        let val = builder.ins().stack_load(types::I64, out_slot, 0);
+
+                        // Store in a dedicated cache slot for reuse.
+                        let cache_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                        builder.ins().stack_store(val, cache_slot, 0);
+                        const_str_slots.insert(data_id, cache_slot);
+                        val
+                    };
 
                     let out_name_clone = out_name.clone();
                     def_var_named(&mut builder, &vars, out_name, boxed);
-                    // String constants must not be dec_ref'd — they are
-                    // effectively immortal (backing data is in __const).
                     rc_skip_dec.insert(out_name_clone);
                 }
                 "const_bytes" => {
