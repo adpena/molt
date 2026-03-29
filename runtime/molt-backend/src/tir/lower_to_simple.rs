@@ -829,18 +829,17 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
     // Preserve original fast_int / fast_float / type_hint from the input IR
     // when the type refiner did not produce a more specific type.  This ensures
     // the round-trip is lossless even when type refinement yields DynBox.
-    if opir.fast_int.is_none()
-        && attr_bool(&tir_op.attrs, "_fast_int") == Some(true) {
-            opir.fast_int = Some(true);
-        }
-    if opir.fast_float.is_none()
-        && attr_bool(&tir_op.attrs, "_fast_float") == Some(true) {
-            opir.fast_float = Some(true);
-        }
+    if opir.fast_int.is_none() && attr_bool(&tir_op.attrs, "_fast_int") == Some(true) {
+        opir.fast_int = Some(true);
+    }
+    if opir.fast_float.is_none() && attr_bool(&tir_op.attrs, "_fast_float") == Some(true) {
+        opir.fast_float = Some(true);
+    }
     if opir.type_hint.is_none()
-        && let Some(th) = attr_str(&tir_op.attrs, "_type_hint") {
-            opir.type_hint = Some(th);
-        }
+        && let Some(th) = attr_str(&tir_op.attrs, "_type_hint")
+    {
+        opir.type_hint = Some(th);
+    }
 }
 
 /// Convert a TIR type to a human-readable hint string for the backend.

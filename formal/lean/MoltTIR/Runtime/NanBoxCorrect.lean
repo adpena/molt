@@ -749,18 +749,14 @@ theorem fused_xor_implies_isInt (bits : UInt64) :
   --   = (d &&& TAG_CHECK) ^^^ (expected &&& TAG_CHECK)   [XOR-AND distributivity]
   --   = 0 ^^^ expected                                    [d &&& TAG_CHECK = 0; expected &&& TAG_CHECK = expected]
   --   = expected
-  set d := bits ^^^ (QNAN ||| TAG_INT) with hd_def
-  -- bits = d ^^^ (QNAN ||| TAG_INT)
-  have hbits : bits = d ^^^ (QNAN ||| TAG_INT) := by
-    rw [hd_def]; exact (uint64_xor_self_cancel bits (QNAN ||| TAG_INT)).symm
+  have hd_def : bits ^^^ (QNAN ||| TAG_INT) = bits ^^^ (QNAN ||| TAG_INT) := rfl
+  have hbits : bits = (bits ^^^ (QNAN ||| TAG_INT)) ^^^ (QNAN ||| TAG_INT) :=
+    (uint64_xor_self_cancel bits (QNAN ||| TAG_INT)).symm
   rw [hbits]
-  -- Goal: (d ^^^ (QNAN ||| TAG_INT)) &&& (QNAN ||| TAG_MASK) = QNAN ||| TAG_INT
-  rw [uint64_xor_and_distrib d (QNAN ||| TAG_INT) (QNAN ||| TAG_MASK)]
-  -- Goal: (d &&& (QNAN ||| TAG_MASK)) ^^^ ((QNAN ||| TAG_INT) &&& (QNAN ||| TAG_MASK)) = QNAN ||| TAG_INT
+  -- Goal: ((bits ^^^ ..) ^^^ ..) &&& (QNAN ||| TAG_MASK) = QNAN ||| TAG_INT
+  rw [uint64_xor_and_distrib (bits ^^^ (QNAN ||| TAG_INT)) (QNAN ||| TAG_INT) (QNAN ||| TAG_MASK)]
   rw [expected_int_and_tag_check]
-  -- Goal: (d &&& (QNAN ||| TAG_MASK)) ^^^ (QNAN ||| TAG_INT) = QNAN ||| TAG_INT
-  rw [ushr47_zero_and_tag_check_zero d h]
-  -- Goal: 0 ^^^ (QNAN ||| TAG_INT) = QNAN ||| TAG_INT
+  rw [ushr47_zero_and_tag_check_zero (bits ^^^ (QNAN ||| TAG_INT)) h]
   exact uint64_zero_xor (QNAN ||| TAG_INT)
 
 /-- For any concrete int, the fused check passes. -/
@@ -821,18 +817,18 @@ theorem fused_xor_unbox (n : Int) (h : intFitsInline n) :
   -- Step 1: Simplify xorTagCheck (fromInt n) to raw &&& INT_MASK.
   simp only []
   unfold xorTagCheck fromInt EXPECTED_INT_TAG
-  set raw := UInt64.mk (BitVec.ofInt 64 n) with hraw_def
-  have hdisj : (QNAN ||| TAG_INT) &&& (raw &&& INT_MASK) = 0 :=
-    uint64_and_masked_zero (QNAN ||| TAG_INT) raw INT_MASK qnan_or_int_and_int_mask
-  have hxor : (QNAN ||| TAG_INT ||| (raw &&& INT_MASK)) ^^^ (QNAN ||| TAG_INT)
-              = raw &&& INT_MASK :=
-    uint64_xor_or_self_disjoint (QNAN ||| TAG_INT) (raw &&& INT_MASK) hdisj
+  have hraw_def : UInt64.mk (BitVec.ofInt 64 n) = UInt64.mk (BitVec.ofInt 64 n) := rfl
+  have hdisj : (QNAN ||| TAG_INT) &&& (UInt64.mk (BitVec.ofInt 64 n) &&& INT_MASK) = 0 :=
+    uint64_and_masked_zero (QNAN ||| TAG_INT) (UInt64.mk (BitVec.ofInt 64 n)) INT_MASK qnan_or_int_and_int_mask
+  have hxor : (QNAN ||| TAG_INT ||| (UInt64.mk (BitVec.ofInt 64 n) &&& INT_MASK)) ^^^ (QNAN ||| TAG_INT)
+              = UInt64.mk (BitVec.ofInt 64 n) &&& INT_MASK :=
+    uint64_xor_or_self_disjoint (QNAN ||| TAG_INT) (UInt64.mk (BitVec.ofInt 64 n) &&& INT_MASK) hdisj
   rw [hxor]
   -- Step 2: Unfold signExtend47 and simplify payload.
   unfold signExtend47
   simp only []
   -- payload = (raw &&& INT_MASK) &&& INT_MASK = raw &&& INT_MASK (by idempotence)
-  rw [uint64_and_idem_int_mask raw]
+  rw [uint64_and_idem_int_mask (UInt64.mk (BitVec.ofInt 64 n))]
   -- Step 3: Prove the sign-extension roundtrip.
   -- We need: if (raw &&& INT_MASK) &&& INT_SIGN ≠ 0
   --          then (raw &&& INT_MASK).toNat - 2^47 = n
