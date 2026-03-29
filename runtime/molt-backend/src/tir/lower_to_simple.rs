@@ -501,7 +501,13 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
         OpCode::CheckException => Some(OpIR {
             kind: "check_exception".to_string(),
-            args: Some(operand_args(op)),
+            // Emit with None args (matching the original structured IR format).
+            // The Cranelift backend manages live-value state implicitly from
+            // the structured control flow context. Emitting the TIR operands
+            // (which are all block-argument values captured at exception
+            // boundaries) causes the backend to generate incorrect exception
+            // handling state with inflated argument lists.
+            args: None,
             out: out_var,
             value: attr_int(&op.attrs, "value"),
             ..OpIR::default()
