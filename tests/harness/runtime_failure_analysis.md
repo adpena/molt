@@ -187,3 +187,36 @@ construction from iterables, and likely dict comprehension too.
 Directly blocks: comprehension__all.py, frozenset__ops.py, dict__ops.py,
 and any test using list/set/dict comprehension or frozenset(iterable).
 Estimated 15-20 conformance tests would pass if fixed.
+
+## Root Cause Identified: lower_to_simple Lossy Roundtrip
+
+### Key Finding (2026-03-29)
+
+The TIR pass interaction bug is NOT in the TIR passes. It's in `lower_to_simple_ir`
+in `runtime/molt-backend/src/tir/lower_to_simple.rs`.
+
+**Evidence:**
+1. SimpleIR JSON is byte-for-byte identical between TIR-on and TIR-off
+2. Binary output differs by 150K bytes (0.8% of 19MB)
+3. Skipping all TIR passes (but keeping the roundtrip) produces broken output
+4. MOLT_TIR_OPT=0 (no roundtrip at all) produces correct output
+5. The IR is identical yet the compiled behavior differs
+
+**Conclusion:**
+`lower_to_simple_ir` produces SimpleIR that is semantically identical at the
+JSON level but has different IN-MEMORY representation that the WASM backend
+compiles differently. Likely candidates:
+- Different op ordering within a basic block
+- Missing or reordered constant data
+- Different function metadata (param types, local types)
+- Different exception handling structure
+- The `type_map` from type_refine affecting how ops are lowered
+
+**Fix Approach:**
+Add debug assertions in `lower_to_simple.rs` that compare the input SimpleIR
+with the output SimpleIR on a per-op basis, flagging any semantic difference.
+This requires modifying the Rust backend with debug prints.
+
+### Impact
+This single bug blocks ALL comprehensions, frozenset construction, and
+module-level loop mutations. Fixing it would likely pass 20+ conformance tests.
