@@ -783,16 +783,29 @@ impl SimpleBackend {
             builder.def_var(var, ptr_val);
         }
 
-        // Initialize ALL variables to None (0x7ffb...) in the entry block.
-        // This ensures that exception handler state blocks (which join
-        // all check_exception sites) have valid NaN-boxed None values
-        // instead of 0 (raw float) for undefined variables. Without this,
-        // runtime functions receive 0 which doesn't match any NaN-box tag,
-        // causing null pointer dereferences.
+        // Initialize most variables to None (0x7ffb...) in the entry block.
+        // This ensures that exception handler state blocks have valid
+        // NaN-boxed None values instead of 0 (raw float) for undefined
+        // variables. However, const_str output variables are EXCLUDED
+        // because the None initialization corrupts loop header SSA phis:
+        // the phi merges entry(None) with back-edge(const_str), and on
+        // the second iteration the phi picks None instead of the valid
+        // string, breaking module_get_attr/module_set_attr attr names.
+        let const_str_out_names: std::collections::HashSet<String> = func_ir.ops.iter()
+            .filter(|op| op.kind == "const_str" || op.kind == "const_bytes")
+            .filter_map(|op| op.out.clone())
+            .collect();
         {
             let none_val = builder.ins().iconst(types::I64, box_none());
+            let _ = std::fs::write("/tmp/molt_init_diag.txt",
+                format!("func={} const_str_outs={:?} total_vars={}
+",
+                    func_ir.name, const_str_out_names, vars.len()));
             for (name, var) in &vars {
                 if param_name_set.contains(name.as_str()) {
+                    continue;
+                }
+                if const_str_out_names.contains(name) {
                     continue;
                 }
                 builder.def_var(*var, none_val);
@@ -9742,6 +9755,9 @@ impl SimpleBackend {
                         brif_block(&mut builder, is_ok, call_block, &[], error_block, &[]);
 
                         // Error block: recursion limit exceeded (cold path).
+                        // Return immediately so the pending RecursionError
+                        // propagates to the caller instead of being silently
+                        // swallowed as None when no check_exception follows.
                         builder.switch_to_block(error_block);
                         let raise_ref = import_func_ref(
                             &mut self.module,
@@ -9754,7 +9770,7 @@ impl SimpleBackend {
                         );
                         let raise_call = builder.ins().call(raise_ref, &[]);
                         let err_val = builder.inst_results(raise_call)[0];
-                        jump_block(&mut builder, merge_block, &[err_val]);
+                        builder.ins().return_(&[err_val]);
 
                         // Call block: direct call to the target function.
                         builder.switch_to_block(call_block);
@@ -10300,8 +10316,13 @@ impl SimpleBackend {
 
                     builder.switch_to_block(then_fail_block);
                     builder.seal_block(then_fail_block);
+                    // Recursion guard failed — exception is already pending
+                    // from molt_recursion_guard_enter.  Return immediately so
+                    // the pending RecursionError propagates to the caller
+                    // instead of being silently swallowed as None (which
+                    // caused TypeError: NoneType + int downstream).
                     let none_bits = builder.ins().iconst(types::I64, box_none());
-                    jump_block(&mut builder, merge_block, &[none_bits]);
+                    builder.ins().return_(&[none_bits]);
 
                     builder.switch_to_block(else_block);
                     builder.seal_block(else_block);
@@ -10330,8 +10351,10 @@ impl SimpleBackend {
 
                     builder.switch_to_block(else_fail_block);
                     builder.seal_block(else_fail_block);
+                    // Same as then_fail_block: return immediately on recursion
+                    // guard failure so the pending RecursionError propagates.
                     let none_bits = builder.ins().iconst(types::I64, box_none());
-                    jump_block(&mut builder, merge_block, &[none_bits]);
+                    builder.ins().return_(&[none_bits]);
 
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
