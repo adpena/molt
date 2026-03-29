@@ -27,14 +27,9 @@ fn with_env_state<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
     out
 }
 
-// WARNING: This function permanently poisons the process state.
-// `molt_runtime_shutdown()` sets a one-shot `RUNTIME_SHUTDOWN_COMPLETE` flag that
-// prevents subsequent re-initialization of the runtime within the same process.
-// Tests that call `with_trusted_runtime` therefore cannot coexist with other tests
-// that need a live runtime in the same process.
-//
-// Mitigation: run with `cargo test -- --test-threads=1`, or isolate these tests
-// into a dedicated test binary (e.g., `tests/platform_tests_isolated.rs`).
+// Each test gets a fresh runtime by resetting the one-shot shutdown flag
+// before re-initializing.  The `molt_runtime_reset_for_testing()` call is
+// `#[cfg(test)]`-gated and safe here because `TEST_MUTEX` serializes access.
 fn with_trusted_runtime<R>(f: impl FnOnce() -> R) -> R {
     let _guard = crate::TEST_MUTEX
         .lock()
@@ -43,9 +38,18 @@ fn with_trusted_runtime<R>(f: impl FnOnce() -> R) -> R {
     unsafe {
         std::env::set_var("MOLT_TRUSTED", "1");
     }
+    // Tear down any existing runtime.
     let _ = crate::state::runtime_state::molt_runtime_shutdown();
+    // Reset the one-shot flags so `molt_runtime_init` can allocate a fresh
+    // `RuntimeState`.  Without this, the `RUNTIME_SHUTDOWN_COMPLETE` flag
+    // set by the shutdown above would permanently prevent re-initialization
+    // for all subsequent tests in this process.
+    crate::state::runtime_state::molt_runtime_reset_for_testing();
     let out = f();
     let _ = crate::state::runtime_state::molt_runtime_shutdown();
+    // Reset again after the final shutdown so the next test (or any other
+    // test in the process) can initialize the runtime from scratch.
+    crate::state::runtime_state::molt_runtime_reset_for_testing();
     match prior {
         Some(value) => unsafe {
             std::env::set_var("MOLT_TRUSTED", value);

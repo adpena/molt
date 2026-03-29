@@ -598,3 +598,32 @@ pub(crate) fn set_thread_runtime_state(ptr: *mut RuntimeState) {
 pub(crate) fn clear_thread_runtime_state() {
     let _ = TLS_RUNTIME_STATE.try_with(|slot| slot.set(std::ptr::null_mut()));
 }
+
+/// Resets all one-shot flags that prevent runtime re-initialization.
+///
+/// # Safety contract
+///
+/// This function is **test-only** (`#[cfg(test)]`).  It must NEVER be
+/// compiled into production binaries.  The flags it clears exist to prevent
+/// dangerous double-init / use-after-free during process exit.  Resetting
+/// them is only safe in a controlled test harness where:
+///
+/// 1. A serialization mutex (`TEST_MUTEX`) ensures no concurrent runtime
+///    access.
+/// 2. The previous runtime has been fully shut down via
+///    `molt_runtime_shutdown()`.
+/// 3. The caller will immediately re-initialize via `molt_runtime_init()`.
+#[cfg(test)]
+pub(crate) fn molt_runtime_reset_for_testing() {
+    // Clear the permanent shutdown flag so `molt_runtime_init` will accept
+    // a new `RuntimeState` allocation.
+    RUNTIME_SHUTDOWN_COMPLETE.store(false, AtomicOrdering::SeqCst);
+
+    // Clear the global state pointer (should already be null after shutdown,
+    // but be defensive).
+    RUNTIME_STATE_PTR.store(std::ptr::null_mut(), AtomicOrdering::SeqCst);
+
+    // Clear the TLS cache so no stale pointer is returned by
+    // `runtime_state_tls()`.
+    clear_thread_runtime_state();
+}
