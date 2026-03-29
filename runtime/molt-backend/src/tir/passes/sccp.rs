@@ -322,39 +322,39 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 if targets_loop {
                     None
                 } else {
-                match lattice.get(cond) {
-                    Some(LatticeValue::Constant(ConstVal::Bool(true))) => {
-                        Some(Terminator::Branch {
-                            target: *then_block,
-                            args: then_args.clone(),
-                        })
-                    }
-                    Some(LatticeValue::Constant(ConstVal::Bool(false))) => {
-                        Some(Terminator::Branch {
-                            target: *else_block,
-                            args: else_args.clone(),
-                        })
-                    }
-                    // Python truthiness: nonzero int is truthy
-                    Some(LatticeValue::Constant(ConstVal::Int(v))) => {
-                        if *v != 0 {
+                    match lattice.get(cond) {
+                        Some(LatticeValue::Constant(ConstVal::Bool(true))) => {
                             Some(Terminator::Branch {
                                 target: *then_block,
                                 args: then_args.clone(),
                             })
-                        } else {
+                        }
+                        Some(LatticeValue::Constant(ConstVal::Bool(false))) => {
                             Some(Terminator::Branch {
                                 target: *else_block,
                                 args: else_args.clone(),
                             })
                         }
+                        // Python truthiness: nonzero int is truthy
+                        Some(LatticeValue::Constant(ConstVal::Int(v))) => {
+                            if *v != 0 {
+                                Some(Terminator::Branch {
+                                    target: *then_block,
+                                    args: then_args.clone(),
+                                })
+                            } else {
+                                Some(Terminator::Branch {
+                                    target: *else_block,
+                                    args: else_args.clone(),
+                                })
+                            }
+                        }
+                        Some(LatticeValue::Constant(ConstVal::None)) => Some(Terminator::Branch {
+                            target: *else_block,
+                            args: else_args.clone(),
+                        }),
+                        _ => None,
                     }
-                    Some(LatticeValue::Constant(ConstVal::None)) => Some(Terminator::Branch {
-                        target: *else_block,
-                        args: else_args.clone(),
-                    }),
-                    _ => None,
-                }
                 } // close else { ... } for targets_loop guard
             }
             _ => None,
