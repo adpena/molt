@@ -285,23 +285,30 @@ theorem joinCanon_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     | some (.str _) => rfl
     | some .none => rfl
     | none => rfl
-  | yield _ _ _ => simp only [evalTerminator]
+  | yield _ _ _ => rfl
   | switch scrutinee cases default_ =>
     simp only [evalTerminator]
     match evalExpr ρ scrutinee with
     | some (.int n) =>
-      match (cases.find? (fun p => p.1 == n)) with
+      simp only []
+      match hfind : (cases.find? (fun p => p.1 == n)) with
       | some (_, lbl) =>
+        simp only [hfind]
         match hblk : f.blocks lbl with
         | none => simp [joinCanonFunc_blocks_none f lbl hblk]
         | some blk => simp [joinCanonFunc_blocks_some f lbl blk hblk,
                              joinCanonFunc_block_params]
       | none =>
+        simp only [hfind]
         match hblk : f.blocks default_ with
         | none => simp [joinCanonFunc_blocks_none f default_ hblk]
         | some blk => simp [joinCanonFunc_blocks_some f default_ blk hblk,
                              joinCanonFunc_block_params]
-    | _ => rfl
+    | some (.bool _) => rfl
+    | some (.float _) => rfl
+    | some (.str _) => rfl
+    | some .none => rfl
+    | none => rfl
   | unreachable => rfl
 
 /-- joinCanonFunc preserves execFunc for all inputs.

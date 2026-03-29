@@ -130,3 +130,41 @@ and any test with `while False` or unreachable loop bodies.
 2. The issue is likely in how dead loop bodies interact with module-level
    variable storage (the loop body references `count` which forces it into
    a mutable binding, and a later pass incorrectly rewrites it)
+
+## Module-Level Loop Variable Mutation (Root Cause Analysis)
+
+### Symptom
+```python
+total = 0
+for x in [1, 2, 3]:
+    total += x
+print(total)  # prints module object, not 6
+```
+
+### Root Cause
+`_prepare_mutable_control_flow_bindings` (line 10016) moves loop-mutated
+variables from `self.locals` to the module dict. Inside the loop body,
+`_store_local_value` re-adds the variable to `self.locals` (line 7513)
+AND writes to the module dict (line 7464). After the loop, `visit_Name`
+finds the stale local in `self.locals` (line 6205-6207) and uses it
+instead of reading from the module dict.
+
+Post-loop re-eviction from `self.locals` doesn't fix this because the
+post-loop `module_get_attr` reads back the value from the module dict,
+but the test shows `total=<module>` — suggesting `module_get_attr` is
+returning the MODULE OBJECT instead of the attribute value.
+
+### Hypothesis
+The `_emit_module_attr_set_on` at line 7464 may be writing to the wrong
+module object, or the module dict lookup for `total` finds the module
+object itself (name collision between the variable name and the module).
+
+### Impact
+Affects ALL for-loops and while-loops at module level that mutate variables.
+This is the single largest conformance blocker — fixing it would likely
+pass 10+ additional tests.
+
+### Fix Approach
+Need to dump the IR to verify that `module_get_attr` post-loop reads
+the correct variable, and that `module_set_attr` inside the loop writes
+to the correct attribute name on the correct module object.
