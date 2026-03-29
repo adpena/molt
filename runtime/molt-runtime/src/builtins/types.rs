@@ -480,6 +480,11 @@ pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
             }
         }
         let builtins = builtin_classes(_py);
+        let class_label = class_name_for_error(cls_bits);
+        println!(
+            "molt type_new_init: object.__new__ cls={} bits=0x{cls_bits:x}",
+            class_label,
+        );
         if is_builtin_class_bits(_py, cls_bits) && cls_bits != builtins.object {
             let class_name = class_name_for_error(cls_bits);
             let msg =
@@ -1834,7 +1839,7 @@ static METHOD_INIT_FN: AtomicU64 = AtomicU64::new(0);
 
 fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u64) -> u64 {
     init_atomic_bits(_py, slot, || {
-        let ptr = alloc_function_obj(_py, fn_ptr, arity);
+        let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {
@@ -4998,7 +5003,7 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         let member_descriptor_bits =
             type_from_class_attr(_py, builtins.function, "__globals__").unwrap_or(builtins.object);
 
-        let coroutine_func_ptr = alloc_function_obj(
+        let coroutine_func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
             crate::molt_types_coroutine as *const () as usize as u64,
             1,
@@ -5008,7 +5013,7 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         }
         let coroutine_bits = MoltObject::from_ptr(coroutine_func_ptr).bits();
 
-        let get_original_bases_ptr = alloc_function_obj(
+        let get_original_bases_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
             crate::molt_types_get_original_bases as *const () as usize as u64,
             1,
@@ -5019,7 +5024,7 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         }
         let get_original_bases_bits = MoltObject::from_ptr(get_original_bases_ptr).bits();
 
-        let prepare_ptr = alloc_function_obj(
+        let prepare_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
             crate::molt_types_prepare_class as *const () as usize as u64,
             2,
@@ -5032,7 +5037,7 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         let prepare_bits = MoltObject::from_ptr(prepare_ptr).bits();
         mark_vararg_method(_py, prepare_bits, false);
 
-        let resolve_ptr = alloc_function_obj(
+        let resolve_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
             crate::molt_types_resolve_bases as *const () as usize as u64,
             2,
@@ -5046,7 +5051,7 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         let resolve_bits = MoltObject::from_ptr(resolve_ptr).bits();
         mark_vararg_method(_py, resolve_bits, false);
 
-        let new_ptr = alloc_function_obj(
+        let new_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
             crate::molt_types_new_class as *const () as usize as u64,
             2,

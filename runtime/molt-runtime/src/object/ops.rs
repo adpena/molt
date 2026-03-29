@@ -28,13 +28,13 @@ pub(crate) use crate::object::ops_encoding::{
     normalize_encoding, unicode_escape,
 };
 
+use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::object::layout::{range_start_bits, range_step_bits, range_stop_bits};
 use crate::object::ops_bytes::{
     BytesCtorKind, bytes_ascii_space, bytes_item_to_u8, collect_bytearray_assign_bytes,
 };
 use crate::state::runtime_state::PythonVersionInfo;
 use crate::*;
-use crate::audit::{AuditArgs, audit_capability_decision};
 use memchr::{memchr, memmem};
 use molt_obj_model::MoltObject;
 use num_bigint::{BigInt, Sign};
@@ -1534,6 +1534,25 @@ pub extern "C" fn molt_id(val: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chr(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        // Fast path: inline small integer in valid codepoint range.
+        // Avoids BigInt allocation, error-message formatting, and (for ASCII)
+        // goes straight to the interned single-char cache.
+        let obj = obj_from_bits(val);
+        if let Some(i) = to_i64(obj) {
+            if i < 0 || i > 0x10FFFF {
+                return raise_exception::<_>(_py, "ValueError", "chr() arg not in range(0x110000)");
+            }
+            let code = i as u32;
+            let mut out_bytes = Vec::with_capacity(4);
+            push_wtf8_codepoint(&mut out_bytes, code);
+            let out = alloc_string(_py, &out_bytes);
+            if out.is_null() {
+                return MoltObject::none().bits();
+            }
+            return MoltObject::from_ptr(out).bits();
+        }
+
+        // Slow path: BigInt / __index__ protocol.
         let type_name = class_name_for_error(type_of_bits(_py, val));
         let msg = format!("'{type_name}' object cannot be interpreted as an integer");
         let Some(value) = index_bigint_from_obj(_py, val, &msg) else {
@@ -2441,7 +2460,67 @@ pub extern "C" fn molt_sys_executable() -> u64 {
     })
 }
 
-// molt_set_argv and molt_set_argv_utf16 live in ops_sys.rs
+#[unsafe(no_mangle)]
+/// # Safety
+/// Caller must ensure `argv` points to `argc` null-terminated strings.
+pub unsafe extern "C" fn molt_set_argv(argc: i32, argv: *const *const u8) {
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let mut args = Vec::new();
+            if argc > 0 && !argv.is_null() {
+                for idx in 0..argc {
+                    let ptr = *argv.add(idx as usize);
+                    if ptr.is_null() {
+                        args.push(Vec::new());
+                        continue;
+                    }
+                    let bytes = CStr::from_ptr(ptr as *const i8).to_bytes();
+                    let (decoded, _) = decode_bytes_text("utf-8", "surrogateescape", bytes)
+                        .expect("argv decode must succeed for utf-8+surrogateescape");
+                    args.push(decoded);
+                }
+            }
+            let trace_argv = matches!(std::env::var("MOLT_TRACE_ARGV").ok().as_deref(), Some("1"));
+            if trace_argv {
+                eprintln!("molt_set_argv argc={argc} argv0={:?}", args.first());
+            }
+            *runtime_state(_py).argv.lock().unwrap() = args;
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[unsafe(no_mangle)]
+/// # Safety
+/// Caller must ensure `argv` points to `argc` null-terminated UTF-16 strings.
+pub unsafe extern "C" fn molt_set_argv_utf16(argc: i32, argv: *const *const u16) {
+    crate::with_gil_entry!(_py, {
+        let mut args = Vec::new();
+        if argc > 0 && !argv.is_null() {
+            for idx in 0..argc {
+                let ptr = *argv.add(idx as usize);
+                if ptr.is_null() {
+                    args.push(Vec::new());
+                    continue;
+                }
+                let mut len = 0usize;
+                while *ptr.add(len) != 0 {
+                    len += 1;
+                }
+                let slice = std::slice::from_raw_parts(ptr, len);
+                let mut raw = Vec::with_capacity(slice.len() * 2);
+                for &unit in slice {
+                    raw.push((unit & 0x00FF) as u8);
+                    raw.push((unit >> 8) as u8);
+                }
+                let (decoded, _) = decode_bytes_text("utf-16-le", "surrogatepass", &raw)
+                    .expect("argv decode must succeed for utf-16-le+surrogatepass");
+                args.push(decoded);
+            }
+        }
+        *runtime_state(_py).argv.lock().unwrap() = args;
+    })
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_getpid() -> u64 {

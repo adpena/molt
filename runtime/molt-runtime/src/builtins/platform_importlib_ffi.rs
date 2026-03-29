@@ -214,7 +214,12 @@ pub extern "C" fn molt_importlib_extension_loader_payload(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.extension_loader_payload", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.extension_loader_payload",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -281,7 +286,12 @@ pub extern "C" fn molt_importlib_source_exec_payload(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.source_exec_payload", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.source_exec_payload",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -367,7 +377,12 @@ pub extern "C" fn molt_importlib_zip_source_exec_payload(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.zip.source_exec_payload", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.zip.source_exec_payload",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -471,7 +486,12 @@ pub extern "C" fn molt_importlib_exec_extension(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.exec.extension", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.exec.extension",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -498,8 +518,14 @@ pub extern "C" fn molt_importlib_exec_extension(
             }
             Err(bits) => return bits,
         }
-        let ext_allowed = has_capability(_py, "module.extension.exec") || has_capability(_py, "module.exec");
-        audit_capability_decision("importlib.exec.extension.module", "module.extension.exec", AuditArgs::None, ext_allowed);
+        let ext_allowed =
+            has_capability(_py, "module.extension.exec") || has_capability(_py, "module.exec");
+        audit_capability_decision(
+            "importlib.exec.extension.module",
+            "module.extension.exec",
+            AuditArgs::None,
+            ext_allowed,
+        );
         if !ext_allowed {
             return raise_exception::<_>(
                 _py,
@@ -573,7 +599,12 @@ pub extern "C" fn molt_importlib_exec_sourceless(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.exec.sourceless", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.exec.sourceless",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -600,8 +631,14 @@ pub extern "C" fn molt_importlib_exec_sourceless(
             }
             Err(bits) => return bits,
         }
-        let bc_allowed = has_capability(_py, "module.bytecode.exec") || has_capability(_py, "module.exec");
-        audit_capability_decision("importlib.exec.sourceless.module", "module.bytecode.exec", AuditArgs::None, bc_allowed);
+        let bc_allowed =
+            has_capability(_py, "module.bytecode.exec") || has_capability(_py, "module.exec");
+        audit_capability_decision(
+            "importlib.exec.sourceless.module",
+            "module.bytecode.exec",
+            AuditArgs::None,
+            bc_allowed,
+        );
         if !bc_allowed {
             return raise_exception::<_>(
                 _py,
@@ -1201,7 +1238,12 @@ pub extern "C" fn molt_importlib_resources_reader_resource_path_from_roots(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.reader.resource_path_from_roots", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.reader.resource_path_from_roots",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -1233,7 +1275,12 @@ pub extern "C" fn molt_importlib_resources_reader_open_resource_bytes_from_roots
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.reader.open_resource_bytes_from_roots", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.reader.open_resource_bytes_from_roots",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -1270,7 +1317,12 @@ pub extern "C" fn molt_importlib_resources_reader_is_resource_from_roots(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.reader.is_resource_from_roots", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.reader.is_resource_from_roots",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -1294,7 +1346,12 @@ pub extern "C" fn molt_importlib_resources_reader_is_resource_from_roots(
 pub extern "C" fn molt_importlib_resources_reader_contents_from_roots(roots_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.reader.contents_from_roots", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.reader.contents_from_roots",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -1334,7 +1391,12 @@ pub extern "C" fn molt_importlib_zip_read_entry(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.zip.read_entry", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.zip.read_entry",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -1466,7 +1528,12 @@ fn importlib_find_in_path_payload(
     package_context: bool,
 ) -> u64 {
     let allowed = has_capability(_py, "fs.read");
-    audit_capability_decision("importlib.find.in_path_payload", "fs.read", AuditArgs::None, allowed);
+    audit_capability_decision(
+        "importlib.find.in_path_payload",
+        "fs.read",
+        AuditArgs::None,
+        allowed,
+    );
     if !allowed {
         return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
     }
@@ -3273,7 +3340,12 @@ fn importlib_find_spec_from_path_hooks_impl(
         return spec_bits;
     }
     let fs_allowed = has_capability(_py, "fs.read");
-    audit_capability_decision("importlib.find_spec.from_path_hooks_impl", "fs.read", AuditArgs::None, fs_allowed);
+    audit_capability_decision(
+        "importlib.find_spec.from_path_hooks_impl",
+        "fs.read",
+        AuditArgs::None,
+        fs_allowed,
+    );
     if ctx.fullname != "math" && !fs_allowed {
         return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
     }
@@ -3340,7 +3412,12 @@ fn importlib_find_spec_with_runtime_state_bits(
         return Ok(spec_bits);
     }
     let fs_allowed = has_capability(_py, "fs.read");
-    audit_capability_decision("importlib.find_spec.with_runtime_state_bits", "fs.read", AuditArgs::None, fs_allowed);
+    audit_capability_decision(
+        "importlib.find_spec.with_runtime_state_bits",
+        "fs.read",
+        AuditArgs::None,
+        fs_allowed,
+    );
     if ctx.fullname != "math" && !fs_allowed {
         return Err(raise_exception::<_>(
             _py,
@@ -4359,7 +4436,12 @@ pub extern "C" fn molt_importlib_find_spec_payload(
             };
         }
         let fs_allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.find_spec.payload", "fs.read", AuditArgs::None, fs_allowed);
+        audit_capability_decision(
+            "importlib.find_spec.payload",
+            "fs.read",
+            AuditArgs::None,
+            fs_allowed,
+        );
         if fullname != "math" && !fs_allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5068,7 +5150,12 @@ pub extern "C" fn molt_importlib_namespace_paths(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.namespace_paths", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.namespace_paths",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5097,7 +5184,12 @@ pub extern "C" fn molt_importlib_namespace_paths(
 pub extern "C" fn molt_importlib_resources_path_payload(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.path_payload", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.path_payload",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5167,7 +5259,12 @@ pub extern "C" fn molt_importlib_resources_package_info(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.package_info", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.package_info",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5231,7 +5328,12 @@ pub extern "C" fn molt_importlib_resources_open_resource_bytes_from_package(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.open_resource_bytes_from_package", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.open_resource_bytes_from_package",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5279,7 +5381,12 @@ pub extern "C" fn molt_importlib_resources_open_resource_bytes_from_package_part
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.open_resource_bytes_from_package_parts", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.open_resource_bytes_from_package_parts",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5330,7 +5437,12 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package(
     crate::with_gil_entry!(_py, {
         static DECODE_NAME: AtomicU64 = AtomicU64::new(0);
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.read_text_from_package", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.read_text_from_package",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5442,7 +5554,12 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package_parts(
     crate::with_gil_entry!(_py, {
         static DECODE_NAME: AtomicU64 = AtomicU64::new(0);
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.read_text_from_package_parts", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.read_text_from_package_parts",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5550,7 +5667,12 @@ pub extern "C" fn molt_importlib_resources_contents_from_package(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.contents_from_package", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.contents_from_package",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5605,7 +5727,12 @@ pub extern "C" fn molt_importlib_resources_contents_from_package_parts(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.contents_from_package_parts", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.contents_from_package_parts",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5652,7 +5779,12 @@ pub extern "C" fn molt_importlib_resources_is_resource_from_package(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.is_resource_from_package", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.is_resource_from_package",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5701,7 +5833,12 @@ pub extern "C" fn molt_importlib_resources_is_resource_from_package_parts(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.is_resource_from_package_parts", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.is_resource_from_package_parts",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5744,7 +5881,12 @@ pub extern "C" fn molt_importlib_resources_resource_path_from_package(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.resource_path_from_package", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.resource_path_from_package",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5798,7 +5940,12 @@ pub extern "C" fn molt_importlib_resources_resource_path_from_package_parts(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.resource_path_from_package_parts", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.resource_path_from_package_parts",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -5918,7 +6065,12 @@ pub extern "C" fn molt_importlib_resources_files_payload(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.resources.files_payload", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.resources.files_payload",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -6152,7 +6304,12 @@ pub extern "C" fn molt_importlib_metadata_dist_paths(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.metadata.dist_paths", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.metadata.dist_paths",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -6180,7 +6337,12 @@ pub extern "C" fn molt_importlib_metadata_entry_points_payload(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.metadata.entry_points_payload", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.metadata.entry_points_payload",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -6210,7 +6372,12 @@ pub extern "C" fn molt_importlib_metadata_entry_points_select_payload(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.metadata.entry_points_select_payload", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.metadata.entry_points_select_payload",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -6254,7 +6421,12 @@ pub extern "C" fn molt_importlib_metadata_entry_points_filter_payload(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.metadata.entry_points_filter_payload", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.metadata.entry_points_filter_payload",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -6426,7 +6598,12 @@ fn alloc_importlib_metadata_payload_dict_bits(
 pub extern "C" fn molt_importlib_metadata_payload(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.metadata.payload", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.metadata.payload",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -6449,7 +6626,12 @@ pub extern "C" fn molt_importlib_metadata_distributions_payload(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.metadata.distributions_payload", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.metadata.distributions_payload",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -6492,7 +6674,12 @@ pub extern "C" fn molt_importlib_metadata_distributions_payload(
 pub extern "C" fn molt_importlib_metadata_record_payload(path_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.metadata.record_payload", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.metadata.record_payload",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }
@@ -6576,7 +6763,12 @@ pub extern "C" fn molt_importlib_metadata_packages_distributions_payload(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("importlib.metadata.packages_distributions_payload", "fs.read", AuditArgs::None, allowed);
+        audit_capability_decision(
+            "importlib.metadata.packages_distributions_payload",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
         if !allowed {
             return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
         }

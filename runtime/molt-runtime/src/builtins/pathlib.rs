@@ -10,8 +10,8 @@
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 
-use crate::*;
 use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::*;
 use std::fs;
 use std::path::{Component, MAIN_SEPARATOR, Path, PathBuf};
 

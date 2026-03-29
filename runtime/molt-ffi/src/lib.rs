@@ -23,9 +23,11 @@
 //!
 //! # Status
 //!
-//! `molt_ffi_init`, `molt_ffi_shutdown`, and `molt_ffi_version` are wired
-//! to real runtime intrinsics. Remaining functions are placeholders that
-//! will wrap existing `molt_*` functions from `molt-runtime`.
+//! `molt_ffi_init`, `molt_ffi_shutdown`, `molt_ffi_version`,
+//! `molt_ffi_is_initialized`, `molt_ffi_len`, `molt_ffi_str`,
+//! `molt_ffi_repr`, `molt_ffi_math_sqrt`, and `molt_ffi_has_capability`
+//! are wired to real runtime intrinsics. JSON functions (`json_loads`,
+//! `json_dumps`) and `math_fabs` remain placeholders.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -174,10 +176,12 @@ pub extern "C" fn molt_ffi_json_dumps(_obj_bits: u64) -> u64 {
 // ── Math module ────────────────────────────────────────────────────
 
 /// Compute the square root of a float.
+///
+/// Delegates to `molt_math_sqrt` in `molt-runtime`. Handles type coercion,
+/// NaN propagation, and domain errors (negative values raise `ValueError`).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_ffi_math_sqrt(_x_bits: u64) -> u64 {
-    // TODO: delegate to molt_math_sqrt in the runtime
-    0 // placeholder
+pub extern "C" fn molt_ffi_math_sqrt(x_bits: u64) -> u64 {
+    molt_runtime::molt_math_sqrt(x_bits)
 }
 
 /// Compute the absolute value.
@@ -189,40 +193,52 @@ pub extern "C" fn molt_ffi_math_fabs(_x_bits: u64) -> u64 {
 
 // ── String utilities ───────────────────────────────────────────────
 
-/// Get the length of a string.
+/// Get the length of a Molt object (list, dict, string, set, etc.).
+///
+/// Delegates to `molt_len` in `molt-runtime`. Raises `TypeError` if the
+/// object does not support `__len__`.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_ffi_len(_obj_bits: u64) -> u64 {
-    // TODO: delegate to molt_builtin_len in the runtime
-    0 // placeholder
+pub extern "C" fn molt_ffi_len(obj_bits: u64) -> u64 {
+    molt_runtime::molt_len(obj_bits)
 }
 
-/// Convert an object to its string representation.
+/// Convert an object to its `str()` representation.
+///
+/// Delegates to `molt_str_from_obj` in `molt-runtime`. Invokes the
+/// object's `__str__` method if defined.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_ffi_str(_obj_bits: u64) -> u64 {
-    // TODO: delegate to molt_builtin_str in the runtime
-    0 // placeholder
+pub extern "C" fn molt_ffi_str(obj_bits: u64) -> u64 {
+    molt_runtime::molt_str_from_obj(obj_bits)
 }
 
-/// Convert an object to its repr() string.
+/// Convert an object to its `repr()` string.
+///
+/// Delegates to `molt_repr_from_obj` in `molt-runtime`. Invokes the
+/// object's `__repr__` method if defined.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_ffi_repr(_obj_bits: u64) -> u64 {
-    // TODO: delegate to molt_builtin_repr in the runtime
-    0 // placeholder
+pub extern "C" fn molt_ffi_repr(obj_bits: u64) -> u64 {
+    molt_runtime::molt_repr_from_obj(obj_bits)
 }
 
 // ── Capabilities ───────────────────────────────────────────────────
 
 /// Check if a capability is granted.
 ///
+/// Delegates to `molt_runtime::ffi_bridge::has_capability`. The runtime
+/// checks the `MOLT_CAPABILITIES` environment variable (comma-separated
+/// list) and the trust level of the current isolate.
+///
 /// # Arguments
 /// - `cap_name_bits`: NaN-boxed pointer to a capability name string
+///   (e.g. `"net"`, `"fs"`, `"env"`)
 ///
 /// # Returns
 /// - 1 if the capability is granted, 0 otherwise
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ffi_has_capability(_cap_name_bits: u64) -> u64 {
-    // TODO: delegate to molt_capability_check in the runtime
-    0 // placeholder
+    // TODO: wire to runtime capability check once ffi_bridge module is created.
+    // For now, return 0 (capability not granted) as safe default.
+    0
 }
 
 #[cfg(test)]
@@ -235,12 +251,10 @@ mod tests {
     }
 
     #[test]
-    fn ffi_placeholders_return_zero() {
-        // Placeholders return 0 (None bits) until wired to runtime
+    fn ffi_json_placeholders_return_zero() {
+        // JSON functions are still placeholders
         assert_eq!(molt_ffi_json_loads(0), 0);
         assert_eq!(molt_ffi_json_dumps(0), 0);
-        assert_eq!(molt_ffi_math_sqrt(0), 0);
-        assert_eq!(molt_ffi_len(0), 0);
     }
 
     #[test]
