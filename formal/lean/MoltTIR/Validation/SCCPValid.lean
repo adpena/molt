@@ -261,7 +261,23 @@ theorem sccp_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     | some .none => rfl
     | none => rfl
   | yield _ _ _ => rfl
-  | switch _ _ _ => sorry
+  | switch scrutinee cases_ default_ =>
+    simp only [evalTerminator]
+    match evalExpr ρ scrutinee with
+    | some (.int n) =>
+      simp only [switchTarget]
+      match hfind : cases_.find? (fun p => p.fst == n) with
+      | some (_, lbl) =>
+        simp only [hfind]
+        match hblk : f.blocks lbl with
+        | none => simp [sccpFunc_blocks_none' f lbl hblk]
+        | some blk => simp [sccpFunc_blocks_some' f lbl blk hblk, sccpBlockTop_params]
+      | none =>
+        simp only [hfind]
+        match hblk : f.blocks default_ with
+        | none => simp [sccpFunc_blocks_none' f default_ hblk]
+        | some blk => simp [sccpFunc_blocks_some' f default_ blk hblk, sccpBlockTop_params]
+    | some (.bool _) | some (.float _) | some (.str _) | some .none | none => rfl
   | unreachable => rfl
 
 -- ────────────────────────────────────────────────────────────────
@@ -406,7 +422,42 @@ theorem sccpMulti_evalTerminator (f : Func) (wfuel : Nat) (ρ : Env)
     | some .none => rfl
     | none => rfl
   | yield _ _ _ => rfl
-  | switch _ _ _ => sorry
+  | switch scrutinee cases_ default_ =>
+    simp only [evalTerminator]
+    match evalExpr ρ scrutinee with
+    | some (.int n) =>
+      simp only [switchTarget]
+      match hfind : cases_.find? (fun p => p.fst == n) with
+      | some (_, lbl) =>
+        simp only [hfind]
+        match hblk : f.blocks lbl with
+        | none => simp [sccpFunc_blocks_none' f lbl hblk]
+        | some blk => simp [sccpFunc_blocks_some' f lbl blk hblk, sccpBlockTop_params]
+      | none =>
+        simp only [hfind]
+        match hblk : f.blocks default_ with
+        | none => simp [sccpFunc_blocks_none' f default_ hblk]
+        | some blk => simp [sccpFunc_blocks_some' f default_ blk hblk, sccpBlockTop_params]
+    | some (.bool _) | some (.float _) | some (.str _) | some .none | none => rfl
+  | unreachable => rfl
+
+  | switch scrutinee cases_ default_ =>
+    simp only [evalTerminator]
+    match evalExpr ρ scrutinee with
+    | some (.int n) =>
+      simp only [switchTarget]
+      match hfind : cases_.find? (fun p => p.fst == n) with
+      | some (_, lbl) =>
+        simp only [hfind]
+        match hblk : f.blocks lbl with
+        | none => simp [sccpMultiFunc_blocks_none f wfuel lbl hblk]
+        | some blk => simp [sccpMultiFunc_blocks_some f wfuel lbl blk hblk, sccpMultiBlock_params]
+      | none =>
+        simp only [hfind]
+        match hblk : f.blocks default_ with
+        | none => simp [sccpMultiFunc_blocks_none f wfuel default_ hblk]
+        | some blk => simp [sccpMultiFunc_blocks_some f wfuel default_ blk hblk, sccpMultiBlock_params]
+    | some (.bool _) | some (.float _) | some (.str _) | some .none | none => rfl
   | unreachable => rfl
 
 -- ────────────────────────────────────────────────────────────────

@@ -678,7 +678,24 @@ private theorem cse_evalTerminator (f : Func) (ρ : Env) (avail : AvailMap) (t :
   | yield val resume resumeArgs =>
     -- Both sides evaluate to none (generators not modeled)
     rfl
-  | switch _ _ _ => sorry  -- CSE: cseTerminator transforms scrutinee, needs cseExpr_correct
+  | switch scrutinee cases_ default_ =>
+    simp only [cseTerminator, evalTerminator]
+    rw [cseExpr_correct avail ρ scrutinee hsound]
+    match evalExpr ρ scrutinee with
+    | some (.int n) =>
+      simp only [switchTarget]
+      match hfind : cases_.find? (fun p => p.fst == n) with
+      | some (_, lbl) =>
+        simp only [hfind]
+        match hblk : f.blocks lbl with
+        | none => simp [cseFunc_blocks_none f lbl hblk]
+        | some blk => simp [cseFunc_blocks_some f lbl blk hblk, cseBlock_params]
+      | none =>
+        simp only [hfind]
+        match hblk : f.blocks default_ with
+        | none => simp [cseFunc_blocks_none f default_ hblk]
+        | some blk => simp [cseFunc_blocks_some f default_ blk hblk, cseBlock_params]
+    | some (.bool _) | some (.float _) | some (.str _) | some .none | none => rfl
   | unreachable => rfl
 
 /-- CSE preserves function execution semantics under SSA.
