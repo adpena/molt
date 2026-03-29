@@ -626,4 +626,10 @@ pub(crate) fn molt_runtime_reset_for_testing() {
     // Clear the TLS cache so no stale pointer is returned by
     // `runtime_state_tls()`.
     clear_thread_runtime_state();
+
+    // Clear the intrinsic registry's one-shot flags so the next init can
+    // re-register intrinsics into a fresh builtins module.  Without this,
+    // BUILTINS_MODULE_PTR holds a dangling pointer to the destroyed module
+    // and MANIFEST_SET prevents re-setting the manifest.
+    crate::intrinsics::registry::reset_for_testing();
 }

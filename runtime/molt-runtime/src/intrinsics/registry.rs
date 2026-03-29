@@ -30,28 +30,30 @@ static MANIFEST_SET: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_intrinsic_manifest(ptr: u64, len: u64) -> u64 {
-    // Save old values before overwriting so the loser can restore them.
-    let old_ptr = INTRINSIC_MANIFEST_PTR.load(Ordering::Relaxed);
-    let old_len = INTRINSIC_MANIFEST_LEN.load(Ordering::Relaxed);
-    // Store PTR and LEN *before* setting MANIFEST_SET so that any reader
-    // observing MANIFEST_SET=true is guaranteed to see the pointer values
-    // (Release on the CAS provides the happens-before edge).
-    INTRINSIC_MANIFEST_PTR.store(ptr as u32 as *mut u8, Ordering::Relaxed);
-    INTRINSIC_MANIFEST_LEN.store(len as u32, Ordering::Relaxed);
+    // Claim the one-shot slot FIRST.  Only the winner stores PTR/LEN.
+    // This avoids the race where a loser's pre-CAS stores clobber the
+    // winner's values before the loser discovers it lost.
     if MANIFEST_SET
-        .compare_exchange(false, true, Ordering::Release, Ordering::Acquire)
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        // Another thread won the race — restore the winner's values.
-        INTRINSIC_MANIFEST_PTR.store(old_ptr, Ordering::Relaxed);
-        INTRINSIC_MANIFEST_LEN.store(old_len, Ordering::Relaxed);
-        return 0;
+        return 0; // another caller already set the manifest
     }
+    // Winner: store PTR and LEN.  The Release edge from the CAS above
+    // ensures any reader that observes MANIFEST_SET=true will also see
+    // these stores (via an Acquire load on MANIFEST_SET).
+    INTRINSIC_MANIFEST_PTR.store(ptr as u32 as *mut u8, Ordering::Release);
+    INTRINSIC_MANIFEST_LEN.store(len as u32, Ordering::Release);
     0
 }
 
 #[cfg(target_arch = "wasm32")]
 fn parse_manifest() -> Option<std::collections::BTreeSet<&'static str>> {
+    // Gate on MANIFEST_SET (Acquire) to ensure we see the winner's
+    // PTR/LEN stores that were published with Release ordering.
+    if !MANIFEST_SET.load(Ordering::Acquire) {
+        return None;
+    }
     let ptr = INTRINSIC_MANIFEST_PTR.load(Ordering::Acquire);
     let len = INTRINSIC_MANIFEST_LEN.load(Ordering::Acquire) as usize;
     if ptr.is_null() || len == 0 {
@@ -491,6 +493,20 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     crate::builtins::modules::molt_module_cache_set(name_bits, module_bits);
     dec_ref_bits(_py, module_bits);
     dec_ref_bits(_py, name_bits);
+}
+
+/// Reset all one-shot globals in the intrinsic registry.
+///
+/// Called by `molt_runtime_reset_for_testing` to clear dangling pointers
+/// after runtime shutdown.  Without this, `BUILTINS_MODULE_PTR` holds a
+/// dangling pointer to the destroyed builtins module and `MANIFEST_SET`
+/// prevents re-setting the manifest on the next init.
+#[cfg(test)]
+pub(crate) fn reset_for_testing() {
+    MANIFEST_SET.store(false, Ordering::SeqCst);
+    INTRINSIC_MANIFEST_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
+    INTRINSIC_MANIFEST_LEN.store(0, Ordering::SeqCst);
+    BUILTINS_MODULE_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
 }
 
 // Expose internals for testing.
