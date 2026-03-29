@@ -173,6 +173,22 @@ pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut
     }
 }
 
+pub(crate) unsafe fn alloc_instance_for_default_object_new(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+) -> u64 {
+    unsafe {
+        if let Some(inst_bits) = alloc_dataclass_for_class(_py, class_ptr) {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            inst_bits
+        } else {
+            alloc_instance_for_class(_py, class_ptr)
+        }
+    }
+}
+
 pub(crate) unsafe fn alloc_instance_for_class_no_pool(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
@@ -776,26 +792,14 @@ pub(crate) unsafe fn call_class_init_with_args(
                 resolved_new_bits = Some(new_bits);
                 let default_new = resolved_new_is_default_object_new(resolved_new_bits);
                 let inst_bits = if default_new {
-                    if let Some(inst_bits) = alloc_dataclass_for_class(_py, class_ptr) {
-                        inst_bits
-                    } else {
-                        let builder_bits = molt_callargs_new(args.len() as u64 + 1, 0);
-                        if builder_bits == 0 {
-                            return MoltObject::none().bits();
-                        }
-                        let _ = molt_callargs_push_pos(builder_bits, class_bits);
-                        for &arg in args {
-                            let _ = molt_callargs_push_pos(builder_bits, arg);
-                        }
-                        let inst_bits = molt_call_bind(new_bits, builder_bits);
-                        if exception_pending(_py) {
-                            return MoltObject::none().bits();
-                        }
-                        if !isinstance_bits(_py, inst_bits, class_bits) {
-                            return inst_bits;
-                        }
-                        inst_bits
+                    let inst_bits = alloc_instance_for_default_object_new(_py, class_ptr);
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
                     }
+                    if !isinstance_bits(_py, inst_bits, class_bits) {
+                        return inst_bits;
+                    }
+                    inst_bits
                 } else {
                     let builder_bits = molt_callargs_new(args.len() as u64 + 1, 0);
                     if builder_bits == 0 {

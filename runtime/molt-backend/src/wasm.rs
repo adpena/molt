@@ -160,9 +160,9 @@ const TAG_EXCEPTION_INDEX: u32 = 0;
 
 /// First dynamic type index; must equal the count of all statically-defined types.
 ///
-/// Static signatures currently occupy indices 0..=39 inclusive. Dynamic user
+/// Static signatures currently occupy indices 0..=40 inclusive. Dynamic user
 /// arity signatures and wrapper signatures must start after that fixed set.
-const STATIC_TYPE_COUNT: u32 = 40;
+const STATIC_TYPE_COUNT: u32 = 41;
 
 #[derive(Clone, Copy)]
 struct DataSegmentInfo {
@@ -1989,6 +1989,20 @@ impl WasmBackend {
         // Type 39: (i32, i64) -> () (obj_set_state)
         self.types
             .function([ValType::I32, ValType::I64], std::iter::empty::<ValType>());
+        // Type 40: (i64, i32, i64, i32, i64, i64, i64, i64) -> i64 (guarded_class_def)
+        self.types.function(
+            [
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+                ValType::I32,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+                ValType::I64,
+            ],
+            std::iter::once(ValType::I64),
+        );
 
         // Build the set of import name prefixes to skip in "pure" profile mode.
         // In pure mode, IO/ASYNC/TIME imports are omitted entirely. Any code path
@@ -8991,9 +9005,9 @@ impl WasmBackend {
 
                         let name = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(name));
-                        func.instruction(&Instruction::I64Const(spill_base as i64));
+                        func.instruction(&Instruction::I32Const(spill_base as i32));
                         func.instruction(&Instruction::I64Const(nbases as i64));
-                        func.instruction(&Instruction::I64Const(attrs_base as i64));
+                        func.instruction(&Instruction::I32Const(attrs_base as i32));
                         func.instruction(&Instruction::I64Const(nattrs as i64));
                         func.instruction(&Instruction::I64Const(layout_size));
                         func.instruction(&Instruction::I64Const(layout_version));

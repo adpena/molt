@@ -41,7 +41,13 @@ use memchr::{memchr, memmem};
 #[cfg(target_arch = "wasm32")]
 use super::exceptions::{molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init};
 #[cfg(target_arch = "wasm32")]
-use crate::builtins::types::{molt_object_new_bound, molt_type_init, molt_type_new};
+use crate::builtins::types::{
+    molt_object_new_bound, molt_type_init, molt_type_new, molt_types_capsule_new,
+    molt_types_cell_new, molt_types_coroutine, molt_types_dynamic_class_attr_init,
+    molt_types_get_original_bases, molt_types_mappingproxy_init, molt_types_mappingproxy_new,
+    molt_types_method_init, molt_types_method_new, molt_types_new_class, molt_types_prepare_class,
+    molt_types_resolve_bases, molt_types_simplenamespace_init,
+};
 #[cfg(target_arch = "wasm32")]
 use crate::object::ops_builtins::{molt_object_init, molt_object_init_subclass, molt_type_call};
 

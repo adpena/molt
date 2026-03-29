@@ -11,7 +11,7 @@ use serde_json::Value as JsonValue;
 use sha1::Sha1;
 use sha2::Sha256;
 
-use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_emit};
+use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_capability_decision, audit_emit};
 use crate::builtins::io::{
     path_basename_text, path_dirname_text, path_join_text, path_normpath_text,
 };

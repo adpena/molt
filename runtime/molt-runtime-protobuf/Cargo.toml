@@ -6,6 +6,4 @@ license = "Apache-2.0"
 description = "Protobuf serialization for Molt via buffa"
 
 [dependencies]
-# buffa will be added when the integration matures.
-# For now, this crate provides the API surface and type definitions.
-# buffa = "0.2"
+buffa = "0.2"
