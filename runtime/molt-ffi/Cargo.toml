@@ -10,3 +10,4 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 molt-runtime = { path = "../molt-runtime", default-features = false, features = ["stdlib_micro"] }
+molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
