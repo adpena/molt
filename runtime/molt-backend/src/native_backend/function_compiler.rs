@@ -1131,6 +1131,10 @@ impl SimpleBackend {
                     };
 
                     let out_name_clone = out_name.clone();
+                    // Register in slot-by-name for module_get/set_attr bypass.
+                    if let Some(&slot) = const_str_slots.get(&data_id) {
+                        const_str_slot_by_name.insert(out_name_clone.clone(), slot);
+                    }
                     def_var_named(&mut builder, &vars, out_name, boxed);
                     rc_skip_dec.insert(out_name_clone);
                 }
@@ -9777,13 +9781,23 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let raise_call = builder.ins().call(raise_ref, &[]);
-                        let err_val = builder.inst_results(raise_call)[0];
+                        let raise_results = builder.inst_results(raise_call);
+                        let err_val = if raise_results.is_empty() {
+                            builder.ins().iconst(types::I64, box_none())
+                        } else {
+                            raise_results[0]
+                        };
                         builder.ins().return_(&[err_val]);
 
                         // Call block: direct call to the target function.
                         builder.switch_to_block(call_block);
                         let direct_call = builder.ins().call(local_callee, &args);
-                        let call_res = builder.inst_results(direct_call)[0];
+                        let direct_results = builder.inst_results(direct_call);
+                        let call_res = if direct_results.is_empty() {
+                            builder.ins().iconst(types::I64, box_none())
+                        } else {
+                            direct_results[0]
+                        };
 
                         // Exit recursion guard.
                         let exit_ref = import_func_ref(
@@ -11368,12 +11382,19 @@ impl SimpleBackend {
                             func_ir.name, op_idx, op.args
                         )
                     });
-                    let attr_bits = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
-                        panic!(
-                            "Attr not found in {} op {} ({:?})",
-                            func_ir.name, op_idx, op.args
-                        )
-                    });
+                    // Load attr name from stack slot if this is a const_str,
+                    // bypassing the SSA variable which can be corrupted to None
+                    // by loop phi merging at check_exception boundaries.
+                    let attr_val = if let Some(&slot) = const_str_slot_by_name.get(&args[1]) {
+                        builder.ins().stack_load(types::I64, slot, 0)
+                    } else {
+                        *var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
+                            panic!(
+                                "Attr not found in {} op {} ({:?})",
+                                func_ir.name, op_idx, op.args
+                            )
+                        })
+                    };
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
@@ -11384,7 +11405,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
-                        .call(local_callee, &[*module_bits, *attr_bits]);
+                        .call(local_callee, &[*module_bits, attr_val]);
                     let res = builder.inst_results(call)[0];
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
@@ -11394,7 +11415,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
-                    let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
+                    let attr_bits = *var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
@@ -11405,7 +11426,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
-                        .call(local_callee, &[*module_bits, *attr_bits]);
+                        .call(local_callee, &[*module_bits, attr_bits]);
                     let res = builder.inst_results(call)[0];
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
@@ -11415,7 +11436,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
-                    let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
+                    let attr_bits = *var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
@@ -11426,7 +11447,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
-                        .call(local_callee, &[*module_bits, *attr_bits]);
+                        .call(local_callee, &[*module_bits, attr_bits]);
                     if let Some(out_name) = op.out.as_ref()
                         && out_name != "none"
                     {
@@ -11438,7 +11459,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
-                    let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
+                    let attr_bits = *var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
@@ -11449,7 +11470,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder
                         .ins()
-                        .call(local_callee, &[*module_bits, *attr_bits]);
+                        .call(local_callee, &[*module_bits, attr_bits]);
                     let res = builder.inst_results(call)[0];
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
@@ -11459,7 +11480,11 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
-                    let attr_bits = var_get(&mut builder, &vars, &args[1]).expect("Attr not found");
+                    let attr_bits = if let Some(&slot) = const_str_slot_by_name.get(&args[1]) {
+                        builder.ins().stack_load(types::I64, slot, 0)
+                    } else {
+                        *var_get(&mut builder, &vars, &args[1]).expect("Attr not found")
+                    };
                     let val_bits = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
                         panic!(
                             "Value not found for module_set_attr in {} op {}",
@@ -11476,7 +11501,7 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder
                         .ins()
-                        .call(local_callee, &[*module_bits, *attr_bits, *val_bits]);
+                        .call(local_callee, &[*module_bits, attr_bits, *val_bits]);
                 }
                 "module_import_star" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
