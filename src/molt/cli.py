@@ -8416,6 +8416,9 @@ def _parse_package_grants(
     return packages
 
 
+_VALID_AUDIT_SINKS = frozenset({"jsonl", "stderr", "null", "buffered"})
+
+
 def _parse_audit_log_flag(value: str) -> dict[str, str]:
     """Parse --audit-log flag value into environment variables.
 
@@ -8423,6 +8426,11 @@ def _parse_audit_log_flag(value: str) -> dict[str, str]:
     """
     parts = value.split(":", 1)
     sink = parts[0]
+    if sink not in _VALID_AUDIT_SINKS:
+        raise ValueError(
+            f"Invalid audit sink: {sink!r}. "
+            f"Must be one of: {', '.join(sorted(_VALID_AUDIT_SINKS))}"
+        )
     output = parts[1] if len(parts) > 1 else "stderr"
     return {
         "MOLT_AUDIT_ENABLED": "1",

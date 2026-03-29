@@ -46,6 +46,20 @@ resource::with_tracker(|t| t.on_allocate(4096))?;
 - Each thread has its own tracker instance. Cross-thread tracking requires
   `set_global_tracker_factory` to install a factory that creates per-thread trackers.
 
+## Non-Reentrancy
+
+`with_tracker` holds a mutable borrow on the thread-local tracker via `RefCell`.
+**Do not call `with_tracker` from within a tracker hook.** This will panic with
+"already mutably borrowed."
+
+In practice, this means `ResourceTracker` implementations must not allocate
+via paths that re-enter `with_tracker`. The built-in `LimitedTracker` avoids
+this — its error messages use `format!()` which allocates, but this happens
+after the borrow is released (in the error return path, not inside the hook).
+
+Custom tracker implementations should follow the same pattern: compute results
+inside the hook, allocate error details outside.
+
 ## LimitedTracker Configuration
 
 `LimitedTracker` is created from a `ResourceLimits` struct. Omitted fields
@@ -88,7 +102,7 @@ Default limit: 10 MB per single-operation result. Configurable via
 - **Pow**: `result_bits = base_bits * exponent * 4` (4x safety factor for intermediates)
 - **Repeat**: `item_bytes * count`
 - **Multiply**: `result_bits = a_bits + b_bits`
-- **LeftShift**: `result_bits = value_bits + shift`
+- **LeftShift**: `result_bytes = ceil((value_bits + shift) / 8) * 2` (2x safety factor for intermediates)
 - **StringReplace**: accounts for per-replacement growth, empty-string edge case
 
 Overflow in estimation is treated as "too large" and rejected.
