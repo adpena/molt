@@ -28,6 +28,7 @@ lean_lib MoltTIR where
              `MoltTIR.Passes.Pipeline, `MoltTIR.Passes.FullPipeline,
              `MoltTIR.SSA.Dominance,
              `MoltTIR.SSA.WellFormedSSA,
+             `MoltTIR.SSA.CSEHelpers,
              `MoltTIR.SSA.PassPreservesSSA,
              `MoltTIR.SSA.Properties,
              `MoltTIR.AbstractInterp.Lattice,

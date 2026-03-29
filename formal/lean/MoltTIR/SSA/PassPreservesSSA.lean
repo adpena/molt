@@ -29,6 +29,7 @@ import MoltTIR.Passes.LICM
 import MoltTIR.Passes.GuardHoist
 import MoltTIR.Passes.JoinCanon
 import MoltTIR.Passes.EdgeThread
+import MoltTIR.SSA.CSEHelpers
 
 namespace MoltTIR
 
@@ -738,14 +739,10 @@ theorem cse_preserves_ssa (f : Func) (h : SSAWellFormed f) :
           -- which are instruction dsts. We prove this by induction on instrs.
           have hv_not_orig_instr : v ∉ blk.instrs.flatMap (fun i => exprVars i.rhs) := by
             intro hc; exact hv_orig (List.mem_append_left _ hc)
-          suffices hsuff : ∀ (avail : AvailMap) (instrs : List Instr),
-            (∀ e, e ∈ avail → e.dst ∈ instrs.map Instr.dst) →
-            ∀ w, w ∈ (cseInstrs avail instrs).flatMap (fun i => exprVars i.rhs) →
-            w ∈ instrs.flatMap (fun i => exprVars i.rhs) ∨ w ∈ instrs.map Instr.dst by
-            rcases hsuff [] blk.instrs (by simp) v hi with h_orig | h_dst
-            · exact absurd h_orig hv_not_orig_instr
-            · exact h_dst
-          sorry /- cseInstrs introduces uses only from original or instruction dsts -/
+          rcases cseInstrs_vars [] blk.instrs (blk.instrs.map Instr.dst)
+            (by simp) (fun d hd => hd) v hi with h_orig | h_dst
+          · exact absurd h_orig hv_not_orig_instr
+          · exact h_dst
         · -- v in termVars of cseTerminator but not in original termVars
           -- cseTerminator only uses cseExpr which can introduce avail dsts
           -- The avail for the terminator is buildAvail [] b.instrs
@@ -753,7 +750,12 @@ theorem cse_preserves_ssa (f : Func) (h : SSAWellFormed f) :
           simp only [blockAllDefs]
           have hv_not_orig_term : v ∉ termVars blk.term := by
             intro hc; exact hv_orig (List.mem_append_right _ hc)
-          sorry /- cseTerminator introduces uses only from instruction dsts -/
+          have hfinal := buildAvail_dsts ([] : AvailMap) blk.instrs
+            (blk.instrs.map Instr.dst) (by simp) (fun d hd => hd)
+          rcases cseTerminator_vars (buildAvail [] blk.instrs) blk.term v ht with h_orig | ⟨entry, hmem, hdst⟩
+          · exact absurd h_orig hv_not_orig_term
+          · apply List.mem_append_right
+            exact hdst ▸ hfinal entry hmem
       have hdef_at_use : DefinedIn f v b_use := ⟨blk, hblk, hv_in_defs⟩
       have heq : b_def = b_use := h.unique_defs v b_def b_use hdef_orig hdef_at_use
       rw [heq]
