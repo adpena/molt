@@ -18,6 +18,7 @@
 //! buffa:           Pure-Rust protobuf wire format codec
 //! ```
 
+pub mod audit_event;
 pub mod decode;
 pub mod encode;
 
@@ -319,6 +320,19 @@ mod tests {
         assert_eq!(decoded.len(), 2);
         assert_eq!(decoded[0], FieldValue::Bytes(b"Alice".to_vec()));
         assert_eq!(decoded[1], FieldValue::Uint64(30));
+    }
+
+    #[test]
+    fn audit_event_roundtrip() {
+        use crate::audit_event::{decode_audit_event, encode_audit_event};
+        let encoded = encode_audit_event(1234567890, "fs.read", "fs.read", 0, "my_module");
+        assert!(!encoded.is_empty());
+        let decoded = decode_audit_event(&encoded).unwrap();
+        assert_eq!(decoded.timestamp_ns, 1234567890);
+        assert_eq!(decoded.operation, "fs.read");
+        assert_eq!(decoded.capability, "fs.read");
+        assert_eq!(decoded.decision, 0);
+        assert_eq!(decoded.module_name, "my_module");
     }
 
     #[test]
