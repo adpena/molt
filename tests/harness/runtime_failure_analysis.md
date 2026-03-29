@@ -294,3 +294,17 @@ Specifically: the `_store_local_value` path at line 7455 should use the
 same module lookup mechanism as `visit_Name` at line 6210 (which uses
 `_emit_module_attr_get`), not `_emit_module_attr_set_runtime` (which
 does an independent `module_cache_get`).
+
+## Recursion Guard: Not Fixed by Agent's Patch
+
+The agent fixed `call_guarded` (WASM) and direct-call error blocks (Cranelift),
+but the `recurse()` test uses the generic `molt_guarded_call` outlined path
+(line 9796 in function_compiler.rs). This path correctly raises RecursionError
+but the CALLER doesn't check for pending exceptions after the call.
+
+The IR for `recurse()` shows: `call -> add -> ret` with NO check_exception
+between call and add. When the call returns None (from RecursionError),
+the add tries `None + 1` and gets TypeError.
+
+Root fix: emit CHECK_EXCEPTION after every non-leaf function call in the
+backend, or at minimum after calls that could recurse.
