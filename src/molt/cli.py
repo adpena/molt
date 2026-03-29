@@ -8452,6 +8452,13 @@ def _parse_io_mode_flag(value: str) -> dict[str, str]:
     return env
 
 
+def _parse_type_gate_flag(enabled: bool) -> dict[str, str]:
+    """Propagate --type-gate to the backend via environment variable."""
+    if enabled:
+        return {"MOLT_TYPE_GATE": "1"}
+    return {}
+
+
 def _parse_capability_manifest_dict(
     data: Any, field: str, errors: list[str]
 ) -> CapabilityManifest | None:
@@ -21748,6 +21755,7 @@ def build(
     require_signed_manifest: bool = False,
     audit_log: str | None = None,
     io_mode: str | None = None,
+    type_gate: bool = False,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -21762,6 +21770,8 @@ def build(
     # --io-mode: propagate IO mode via environment variable.
     if io_mode is not None:
         os.environ.update(_parse_io_mode_flag(io_mode))
+    # --type-gate: propagate type gate to the backend.
+    os.environ.update(_parse_type_gate_flag(type_gate))
     # --portable: force baseline ISA for cross-machine reproducible codegen.
     if portable:
         os.environ["MOLT_PORTABLE"] = "1"
@@ -21879,6 +21889,7 @@ def _run_script_cross(
     build_profile: BuildProfile | None = None,
     audit_log: str | None = None,
     io_mode: str | None = None,
+    type_gate: bool = False,
 ) -> int:
     """Build with a cross target (wasm or luau) and run with the appropriate runtime."""
     if file_path and module:
@@ -21944,6 +21955,9 @@ def _run_script_cross(
     # --io-mode flag (overrides manifest io config)
     if io_mode is not None:
         env.update(_parse_io_mode_flag(io_mode))
+
+    # --type-gate flag
+    env.update(_parse_type_gate_flag(type_gate))
 
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
@@ -22222,6 +22236,7 @@ def run_script(
     build_profile: BuildProfile | None = None,
     audit_log: str | None = None,
     io_mode: str | None = None,
+    type_gate: bool = False,
 ) -> int:
     if file_path and module:
         return _fail(
@@ -22287,6 +22302,9 @@ def run_script(
     # --io-mode flag (overrides manifest io config)
     if io_mode is not None:
         env.update(_parse_io_mode_flag(io_mode))
+
+    # --type-gate flag
+    env.update(_parse_type_gate_flag(type_gate))
 
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
@@ -27197,6 +27215,12 @@ def main() -> int:
         help="IO mode: real (default), virtual (sandbox), callback (host-mediated)",
     )
     build_parser.add_argument(
+        "--type-gate",
+        action="store_true",
+        default=False,
+        help="Reject compilation if capability-touching code paths contain untyped variables",
+    )
+    build_parser.add_argument(
         "--diagnostics",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -27486,6 +27510,12 @@ def main() -> int:
         choices=["real", "virtual", "callback"],
         default=None,
         help="IO mode: real (default), virtual (sandbox), callback (host-mediated)",
+    )
+    run_parser.add_argument(
+        "--type-gate",
+        action="store_true",
+        default=False,
+        help="Reject compilation if capability-touching code paths contain untyped variables",
     )
     run_parser.add_argument(
         "--trusted",
@@ -28576,6 +28606,7 @@ def main() -> int:
             require_signed_manifest=getattr(args, "require_signed_manifest", False),
             audit_log=getattr(args, "audit_log", None),
             io_mode=getattr(args, "io_mode", None),
+            type_gate=getattr(args, "type_gate", False),
         )
     if args.command == "extension":
         if args.extension_command == "build":
@@ -28724,6 +28755,7 @@ def main() -> int:
                 cast(BuildProfile | None, run_profile),
                 audit_log=getattr(args, "audit_log", None),
                 io_mode=getattr(args, "io_mode", None),
+                type_gate=getattr(args, "type_gate", False),
             )
         return run_script(
             args.file,
@@ -28740,6 +28772,7 @@ def main() -> int:
             cast(BuildProfile | None, run_profile),
             audit_log=getattr(args, "audit_log", None),
             io_mode=getattr(args, "io_mode", None),
+            type_gate=getattr(args, "type_gate", False),
         )
     if args.command == "compare":
         python_exe = args.python or args.python_version
