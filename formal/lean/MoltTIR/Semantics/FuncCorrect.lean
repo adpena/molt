@@ -86,9 +86,12 @@ theorem constFold_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     -- Both sides evaluate to none (generators not modeled)
     rfl
   | switch scrutinee cases default_ =>
-    -- Switch semantics: constFoldFunc preserves block lookups, and constFoldExpr
-    -- preserves evaluation. The proof follows the same structure as br but with
-    -- switch dispatch logic. Each sub-case is analogous to the jmp case.
+    simp only [constFoldTerminator, evalTerminator]
+    rw [constFoldExpr_correct ρ scrutinee]
+    -- After rewrite, both sides match on evalExpr ρ scrutinee.
+    -- For non-int cases, both return none = none (rfl).
+    -- For int n, both compute the same target label (cases/default unchanged),
+    -- then look up blocks. constFoldFunc preserves block lookups.
     sorry
   | unreachable =>
     -- Both sides evaluate to none
