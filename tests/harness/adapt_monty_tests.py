@@ -56,13 +56,18 @@ def parse_expectation(filepath: Path) -> tuple[str, str]:
     )
     if traceback_match:
         exc_type = traceback_match.group(1)
-        # Extract the exception message if present
+        # Extract the full "ExcType: message" line from the traceback.
+        # This is what str(exception) produces and what our adapted code prints.
         msg_match = re.search(
             exc_type + r':\s*(.+?)(?:\n|""")',
             text,
         )
-        exc_msg = msg_match.group(1).strip() if msg_match else ""
-        return ("raise", f"{exc_type}({exc_msg})" if exc_msg else exc_type)
+        if msg_match:
+            exc_msg = msg_match.group(1).strip()
+            # Return as "raise" with the full "ExcType: message" as expected output
+            # The adapt_file function will use this directly in the .expected file
+            return ("raise_traceback", f"{exc_type}: {exc_msg}")
+        return ("raise_traceback", exc_type)
 
     return ("assert_only", "")
 
@@ -121,13 +126,24 @@ def adapt_file(src: Path, dst: Path) -> bool:
         return True
 
     elif kind == "raise":
-        # Wrap in try/except, print exception type and message
-        exc_match = re.match(r"(\w+)\((.*)\)", expected)
+        # Wrap in try/except, print exception type and message.
+        # Expected format: "ExcType('message')" or "ExcType(message)" or "ExcType"
+        # str(exception) produces: message (without outer quotes)
+        # So ExcType("'int' has no attr 'foo'") → str(e) = "'int' has no attr 'foo'"
+        exc_match = re.match(r"(\w+)\((.*)\)$", expected, re.DOTALL)
         if exc_match:
             exc_type = exc_match.group(1)
-            exc_msg = exc_match.group(2).strip("'\"")
+            raw_msg = exc_match.group(2)
+            # The Raise= comment wraps the message in quotes:
+            # Raise=TypeError('msg') or Raise=TypeError("msg")
+            # str(exception) does NOT include these outer quotes.
+            # Strip exactly one layer of outer quotes if they match.
+            if len(raw_msg) >= 2 and raw_msg[0] == raw_msg[-1] and raw_msg[0] in "'\"":
+                exc_msg = raw_msg[1:-1]
+            else:
+                exc_msg = raw_msg
         else:
-            exc_type = expected
+            exc_type = expected.split("(")[0] if "(" in expected else expected
             exc_msg = ""
 
         adapted = (
@@ -142,10 +158,60 @@ def adapt_file(src: Path, dst: Path) -> bool:
             + '    print("NO_EXCEPTION_RAISED")\n'
         )
         dst.write_text(adapted)
-        if exc_msg:
-            dst.with_suffix(".expected").write_text(f"{exc_type}: {exc_msg}\n")
+        # Generate expected output by running the adapted file through CPython.
+        # This handles edge cases like KeyError (uses repr of key) and other
+        # exceptions where str(e) differs from the Raise= comment's message.
+        try:
+            import subprocess
+            cp_result = subprocess.run(
+                [sys.executable, str(dst)],
+                capture_output=True, text=True, timeout=10,
+            )
+            if cp_result.returncode == 0 and cp_result.stdout.strip():
+                dst.with_suffix(".expected").write_text(cp_result.stdout.strip() + "\n")
+            elif exc_msg:
+                dst.with_suffix(".expected").write_text(f"{exc_type}: {exc_msg}\n")
+            else:
+                dst.with_suffix(".expected").write_text(f"{exc_type}:\n")
+        except Exception:
+            if exc_msg:
+                dst.with_suffix(".expected").write_text(f"{exc_type}: {exc_msg}\n")
+            else:
+                dst.with_suffix(".expected").write_text(f"{exc_type}:\n")
+        return True
+
+    elif kind == "raise_traceback":
+        # TRACEBACK: pattern — expected is already "ExcType: message" or just "ExcType"
+        if ": " in expected:
+            exc_type = expected.split(":")[0]
         else:
-            dst.with_suffix(".expected").write_text(f"{exc_type}:\n")
+            exc_type = expected
+
+        adapted = (
+            "try:\n"
+            + _indent(content, 4)
+            + "\n"
+            + f"except {exc_type} as e:\n"
+            + f'    print(f"{exc_type}: {{e}}")\n'
+            + "except Exception as e:\n"
+            + '    print(f"WRONG_EXCEPTION: {type(e).__name__}: {e}")\n'
+            + "else:\n"
+            + '    print("NO_EXCEPTION_RAISED")\n'
+        )
+        dst.write_text(adapted)
+        # Generate expected by running through CPython (same as raise handler)
+        try:
+            import subprocess
+            cp_result = subprocess.run(
+                [sys.executable, str(dst)],
+                capture_output=True, text=True, timeout=10,
+            )
+            if cp_result.returncode == 0 and cp_result.stdout.strip():
+                dst.with_suffix(".expected").write_text(cp_result.stdout.strip() + "\n")
+            else:
+                dst.with_suffix(".expected").write_text(expected + "\n")
+        except Exception:
+            dst.with_suffix(".expected").write_text(expected + "\n")
         return True
 
     elif kind in ("noexception", "assert_only"):
@@ -165,6 +231,10 @@ def _indent(text: str, spaces: int) -> str:
 def main() -> int:
     src_dir = Path("tests/harness/corpus/monty_compat")
     dst_dir = Path("tests/harness/corpus/molt_adapted")
+    # Clean previous run to avoid stale files from skipped tests
+    if dst_dir.exists():
+        import shutil
+        shutil.rmtree(dst_dir)
     dst_dir.mkdir(parents=True, exist_ok=True)
 
     adapted = 0
