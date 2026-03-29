@@ -656,8 +656,7 @@ impl<'a> SsaContext<'a> {
         // Variables resolve via var_stacks; constants get a fresh ConstInt/ConstFloat value.
         let mut operands = Vec::new();
         if let Some(args) = &op.args {
-            let args_iter: Box<dyn Iterator<Item = &String> + '_> = if op.kind == "unpack_sequence"
-            {
+            let args_iter: Box<dyn Iterator<Item = &String> + '_> = if op.kind == "unpack_sequence" {
                 Box::new(args.iter().take(1))
             } else {
                 Box::new(args.iter())
@@ -1629,11 +1628,7 @@ mod tests {
             .flat_map(|block| block.ops.iter())
             .filter(|op| op.opcode == OpCode::CheckException)
             .collect();
-        assert_eq!(
-            check_ops.len(),
-            1,
-            "expected exactly one check_exception op"
-        );
+        assert_eq!(check_ops.len(), 1, "expected exactly one check_exception op");
         assert!(
             check_ops[0].operands.is_empty(),
             "check_exception should not carry dead handler args, got operands {:?}",
