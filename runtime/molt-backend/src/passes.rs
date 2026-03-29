@@ -1703,7 +1703,9 @@ mod tests {
         assert_eq!(stub.name, "user_large");
         assert!(!chunks.is_empty());
         assert!(
-            stub.ops.iter().all(|op| op.args.as_ref() == Some(&vec!["p0".to_string()])),
+            stub.ops
+                .iter()
+                .all(|op| op.args.as_ref() == Some(&vec!["p0".to_string()])),
             "split stub must forward original params into each chunk call"
         );
         assert!(
@@ -1712,7 +1714,9 @@ mod tests {
                 .all(|chunk| chunk.name.starts_with("__molt_chunk_user_large_"))
         );
         assert!(
-            chunks.iter().all(|chunk| chunk.params == vec!["p0".to_string()]),
+            chunks
+                .iter()
+                .all(|chunk| chunk.params == vec!["p0".to_string()]),
             "split chunks must preserve original params"
         );
     }

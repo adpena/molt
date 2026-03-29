@@ -148,3 +148,26 @@ def test_wasm_linked_bool_truthiness_controls_if_branch(tmp_path: Path) -> None:
 
     assert run.returncode == 0, run.stderr
     assert run.stdout.splitlines() == ["True", "a"]
+
+
+def test_wasm_linked_caught_missing_intrinsic_does_not_poison_module_init(
+    tmp_path: Path,
+) -> None:
+    require_wasm_toolchain()
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "missing_intrinsic_probe.py"
+    src.write_text(
+        "from _intrinsics import require_intrinsic\n\n"
+        "try:\n"
+        "    require_intrinsic('molt_definitely_missing_probe')\n"
+        "except RuntimeError:\n"
+        "    print('caught')\n\n"
+        "print('ok')\n",
+        encoding="utf-8",
+    )
+
+    output_wasm = build_wasm_linked(root, src, tmp_path)
+    run = run_wasm_linked(root, output_wasm)
+
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.splitlines() == ["caught", "ok"]

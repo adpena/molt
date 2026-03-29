@@ -412,7 +412,6 @@ fn class_def_uses_guarded_class_def_import() {
     );
 }
 
-
 #[test]
 fn ret_with_value_compiles() {
     let mut c = op("const");

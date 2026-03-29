@@ -2,7 +2,6 @@
 ///
 /// The TIR pass interaction bug (comprehensions returning empty lists) is caused by
 /// type annotations (fast_int, fast_float, type_hint) being lost during the roundtrip.
-
 use molt_backend::{FunctionIR, OpIR};
 
 fn make_comprehension_ir() -> FunctionIR {
@@ -196,7 +195,11 @@ fn roundtrip_preserves_type_hint_on_list_append() {
         .iter()
         .filter(|op| op.kind == "list_append" && op.type_hint.as_deref() == Some("list"))
         .collect();
-    assert_eq!(orig_append.len(), 1, "original should have list_append with type_hint=list");
+    assert_eq!(
+        orig_append.len(),
+        1,
+        "original should have list_append with type_hint=list"
+    );
 
     let tir_func = molt_backend::tir::lower_from_simple::lower_to_tir(&ir);
     let type_map = molt_backend::tir::type_refine::extract_type_map(&tir_func);
@@ -206,7 +209,10 @@ fn roundtrip_preserves_type_hint_on_list_append() {
         .iter()
         .filter(|op| op.kind == "list_append")
         .collect();
-    assert!(!rt_append.is_empty(), "roundtripped should have list_append");
+    assert!(
+        !rt_append.is_empty(),
+        "roundtripped should have list_append"
+    );
     assert_eq!(
         rt_append[0].type_hint.as_deref(),
         Some("list"),

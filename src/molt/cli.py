@@ -17318,6 +17318,7 @@ def _prepare_frontend_stage_state(
     verbose: bool,
     out_dir: str | None,
     trusted: bool,
+    split_runtime: bool,
     require_linked: bool,
     linked: bool,
     linked_output: str | None,
@@ -17453,7 +17454,6 @@ def _prepare_frontend_stage_state(
         output_base=output_base,
         out_dir_path=out_dir_path,
         project_root=project_root,
-        split_runtime=split_runtime,
     )
     if prepared_build_outputs_error is not None:
         return None, _fail(prepared_build_outputs_error, json_output, command="build")
@@ -17531,6 +17531,7 @@ def _prepare_frontend_pipeline(
     verbose: bool,
     out_dir: str | None,
     trusted: bool,
+    split_runtime: bool,
     require_linked: bool,
     linked: bool,
     linked_output: str | None,
@@ -17574,6 +17575,7 @@ def _prepare_frontend_pipeline(
             verbose=verbose,
             out_dir=out_dir,
             trusted=trusted,
+            split_runtime=split_runtime,
             require_linked=require_linked,
             linked=linked,
             linked_output=linked_output,
@@ -21900,6 +21902,7 @@ def build(
             verbose=verbose,
             out_dir=out_dir,
             trusted=trusted,
+            split_runtime=split_runtime,
             require_linked=require_linked,
             linked=linked,
             linked_output=linked_output,

@@ -2688,26 +2688,39 @@ impl SimpleBackend {
 
                 // Dump raw ops to file for debugging TIR roundtrip issues.
                 if let Some(ref pattern) = dump_func_pattern
-                    && func_ir.name.contains(pattern.as_str()) {
-                        let _ = std::fs::create_dir_all("/tmp/molt_ir");
-                        let sanitized: String = func_ir.name.chars()
-                            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
-                            .collect();
-                        let mut dump = String::new();
-                        dump.push_str(&format!("// func: {} ({} ops)\n", func_ir.name, func_ir.ops.len()));
-                        dump.push_str(&format!("// params: {:?}\n", func_ir.params));
-                        dump.push_str(&format!("// param_types: {:?}\n", func_ir.param_types));
-                        for (idx, op) in func_ir.ops.iter().enumerate() {
-                            dump.push_str(&format!("{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?}\n",
+                    && func_ir.name.contains(pattern.as_str())
+                {
+                    let _ = std::fs::create_dir_all("/tmp/molt_ir");
+                    let sanitized: String = func_ir
+                        .name
+                        .chars()
+                        .map(|c| {
+                            if c.is_alphanumeric() || c == '_' {
+                                c
+                            } else {
+                                '_'
+                            }
+                        })
+                        .collect();
+                    let mut dump = String::new();
+                    dump.push_str(&format!(
+                        "// func: {} ({} ops)\n",
+                        func_ir.name,
+                        func_ir.ops.len()
+                    ));
+                    dump.push_str(&format!("// params: {:?}\n", func_ir.params));
+                    dump.push_str(&format!("// param_types: {:?}\n", func_ir.param_types));
+                    for (idx, op) in func_ir.ops.iter().enumerate() {
+                        dump.push_str(&format!("{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?}\n",
                                 idx, op.kind,
                                 op.out.as_deref().unwrap_or(""),
                                 op.var.as_deref().unwrap_or(""),
                                 op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
                                 op.value, op.s_value, op.fast_int, op.fast_float));
-                        }
-                        let path = format!("/tmp/molt_ir/{}.txt", sanitized);
-                        let _ = std::fs::write(&path, &dump);
                     }
+                    let path = format!("/tmp/molt_ir/{}.txt", sanitized);
+                    let _ = std::fs::write(&path, &dump);
+                }
 
                 // Save original ops BEFORE phi rewrite. The Cranelift backend
                 // expects the original phi ops; the TIR pipeline needs
@@ -2739,9 +2752,15 @@ impl SimpleBackend {
 
             let uncached_count = work_items.len();
             // ALWAYS write diagnostic
-            let _ = std::fs::write("/tmp/molt_tir_diag_absolute.txt",
-                format!("functions={} uncached={}
-", ir.functions.len(), uncached_count));
+            let _ = std::fs::write(
+                "/tmp/molt_tir_diag_absolute.txt",
+                format!(
+                    "functions={} uncached={}
+",
+                    ir.functions.len(),
+                    uncached_count
+                ),
+            );
             if uncached_count > 0 {
                 eprintln!(
                     "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions in parallel"
@@ -2798,50 +2817,41 @@ impl SimpleBackend {
                             param_types: input.param_types,
                         };
                         let func_name = tmp_func.name.clone();
-                        let result =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                let mut tir_func =
-                                    crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
-                                crate::tir::type_refine::refine_types(&mut tir_func);
-                                let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
-                                        std::collections::HashMap::new()
-                                    } else {
-                                        crate::tir::type_refine::extract_type_map(&tir_func)
-                                    };
-                                let stats = crate::tir::passes::run_pipeline(&mut tir_func);
-                                if stats.is_empty() {
-                                    return None;
-                                }
-                                if tir_dump {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let mut tir_func =
+                                crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
+                            crate::tir::type_refine::refine_types(&mut tir_func);
+                            let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
+                                std::collections::HashMap::new()
+                            } else {
+                                crate::tir::type_refine::extract_type_map(&tir_func)
+                            };
+                            let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                            if stats.is_empty() {
+                                return None;
+                            }
+                            if tir_dump {
+                                eprintln!("{}", crate::tir::printer::print_function(&tir_func));
+                            }
+                            if tir_stats {
+                                for s in &stats {
                                     eprintln!(
-                                        "{}",
-                                        crate::tir::printer::print_function(&tir_func)
+                                        "[TIR] {}: {} changed, {} removed, {} added",
+                                        s.name, s.values_changed, s.ops_removed, s.ops_added
                                     );
                                 }
-                                if tir_stats {
-                                    for s in &stats {
-                                        eprintln!(
-                                            "[TIR] {}: {} changed, {} removed, {} added",
-                                            s.name,
-                                            s.values_changed,
-                                            s.ops_removed,
-                                            s.ops_added
-                                        );
-                                    }
-                                }
-                                // Skip lossy roundtrip when passes didn't change anything.
-                                let any_changed = stats.iter().any(|s| {
-                                    s.values_changed > 0
-                                        || s.ops_removed > 0
-                                        || s.ops_added > 0
-                                });
-                                if !any_changed {
-                                    return None;
-                                }
-                                Some(crate::tir::lower_to_simple::lower_to_simple_ir(
-                                    &tir_func, &type_map,
-                                ))
-                            }));
+                            }
+                            // Skip lossy roundtrip when passes didn't change anything.
+                            let any_changed = stats.iter().any(|s| {
+                                s.values_changed > 0 || s.ops_removed > 0 || s.ops_added > 0
+                            });
+                            if !any_changed {
+                                return None;
+                            }
+                            Some(crate::tir::lower_to_simple::lower_to_simple_ir(
+                                &tir_func, &type_map,
+                            ))
+                        }));
 
                         if let Err(_panic) = result {
                             eprintln!(
@@ -2859,8 +2869,10 @@ impl SimpleBackend {
                 // TIR analysis runs for verification and type annotation but
                 // the roundtripped ops are not used — the original structured
                 // SimpleIR is preserved for Cranelift correctness.
-                let _ = std::fs::write("/tmp/molt_tir_phase3.txt",
-                    format!("Phase 3: {} results\n", results.len()));
+                let _ = std::fs::write(
+                    "/tmp/molt_tir_phase3.txt",
+                    format!("Phase 3: {} results\n", results.len()),
+                );
                 for (idx, original_ops) in &results {
                     ir.functions[*idx].ops = original_ops.clone();
                 }
