@@ -62,21 +62,22 @@ pub fn find_deopt_points(func: &TirFunction) -> Vec<(BlockId, usize, DeoptPoint)
     for (bid, block) in &func.blocks {
         for (i, op) in block.ops.iter().enumerate() {
             if op.opcode == OpCode::TypeGuard
-                && let Some(AttrValue::Str(expected)) = op.attrs.get("expected_type") {
-                    points.push((
-                        *bid,
-                        i,
-                        DeoptPoint {
-                            fallback_func: format!("{}_generic", func.name),
-                            live_values: op.operands.clone(),
-                            var_mapping: vec![],
-                            reason: DeoptReason::TypeMismatch {
-                                expected: expected.clone(),
-                                actual: "unknown".into(),
-                            },
+                && let Some(AttrValue::Str(expected)) = op.attrs.get("expected_type")
+            {
+                points.push((
+                    *bid,
+                    i,
+                    DeoptPoint {
+                        fallback_func: format!("{}_generic", func.name),
+                        live_values: op.operands.clone(),
+                        var_mapping: vec![],
+                        reason: DeoptReason::TypeMismatch {
+                            expected: expected.clone(),
+                            actual: "unknown".into(),
                         },
-                    ));
-                }
+                    },
+                ));
+            }
         }
     }
     points

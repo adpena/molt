@@ -312,12 +312,13 @@ fn preanalyze_function_ir(
                     }
                 }
                 if let Some(var) = &op.var
-                    && var != "none" {
-                        let entry = last_use.entry(var.clone()).or_insert(*end);
-                        if *entry < *end {
-                            *entry = *end;
-                        }
+                    && var != "none"
+                {
+                    let entry = last_use.entry(var.clone()).or_insert(*end);
+                    if *entry < *end {
+                        *entry = *end;
                     }
+                }
             }
         }
 
@@ -374,11 +375,11 @@ fn preanalyze_function_ir(
                 }
                 if let Some(out) = &op.out
                     && out != "none"
-                        && counter_name != Some(out.as_str())
-                        && seen.insert(out.clone())
-                    {
-                        assigned.push(out.clone());
-                    }
+                    && counter_name != Some(out.as_str())
+                    && seen.insert(out.clone())
+                {
+                    assigned.push(out.clone());
+                }
             }
             if !assigned.is_empty() {
                 loop_body_out_vars.insert(start, assigned);
@@ -913,16 +914,14 @@ impl SimpleBackend {
                         | "state_label"
                         | "state_switch"
                         | "state_transition"
-                )
-            {
+                ) {
                 // Check the precomputed loop_body_out_vars: this variable must
                 // appear in at least one enclosing loop's assignment set.
-                let is_loop_body_var = loop_body_out_vars.values().any(|bv| {
-                    bv.iter().any(|v| v == name)
-                });
+                let is_loop_body_var = loop_body_out_vars
+                    .values()
+                    .any(|bv| bv.iter().any(|v| v == name));
                 if is_loop_body_var {
-                    vars.get(name.as_str())
-                        .map(|var| builder.use_var(*var))
+                    vars.get(name.as_str()).map(|var| builder.use_var(*var))
                 } else {
                     None
                 }
@@ -5140,22 +5139,22 @@ impl SimpleBackend {
                         let peek_op = &ops[peek];
                         if peek_op.kind == "index"
                             && let Some(ref pargs) = peek_op.args
-                                && pargs.len() >= 2 && pargs[0] == pair_name {
-                                    // Check if the index argument is a const "1" or "0".
-                                    // The const var names are looked up by scanning
-                                    // backwards for a const op that defined the arg.
-                                    let idx_var = &pargs[1];
-                                    // Find the const op that produced idx_var.
-                                    if let Some(const_val) =
-                                        Self::resolve_const_int(ops, peek, idx_var)
-                                    {
-                                        if const_val == 1 && done_idx.is_none() {
-                                            done_idx = Some(peek);
-                                        } else if const_val == 0 && val_idx.is_none() {
-                                            val_idx = Some(peek);
-                                        }
-                                    }
+                            && pargs.len() >= 2
+                            && pargs[0] == pair_name
+                        {
+                            // Check if the index argument is a const "1" or "0".
+                            // The const var names are looked up by scanning
+                            // backwards for a const op that defined the arg.
+                            let idx_var = &pargs[1];
+                            // Find the const op that produced idx_var.
+                            if let Some(const_val) = Self::resolve_const_int(ops, peek, idx_var) {
+                                if const_val == 1 && done_idx.is_none() {
+                                    done_idx = Some(peek);
+                                } else if const_val == 0 && val_idx.is_none() {
+                                    val_idx = Some(peek);
                                 }
+                            }
+                        }
                     }
 
                     if let (Some(di), Some(vi)) = (done_idx, val_idx) {
@@ -8303,9 +8302,10 @@ impl SimpleBackend {
                     );
                     builder.ins().call(set_state_ref2, &[self_ptr, state_val]);
                     if args.len() <= 1
-                        && let Some(out__) = op.out {
-                            def_var_named(&mut builder, &vars, out__, res);
-                        }
+                        && let Some(out__) = op.out
+                    {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                     jump_block(&mut builder, next_block, &[]);
 
                     switch_to_block_tracking(&mut builder, next_block, &mut is_block_filled);
@@ -12916,13 +12916,13 @@ impl SimpleBackend {
                                     let f = &ops[fwd];
                                     if f.kind == "store_var"
                                         && let (Some(v), Some(a)) = (&f.var, &f.args)
-                                            && v.starts_with("_bb")
-                                                && v.contains("_arg")
-                                                && a.first().map(|s| s.as_str()) == Some(next)
-                                            {
-                                                arg_name = Some(v.clone());
-                                                break;
-                                            }
+                                        && v.starts_with("_bb")
+                                        && v.contains("_arg")
+                                        && a.first().map(|s| s.as_str()) == Some(next)
+                                    {
+                                        arg_name = Some(v.clone());
+                                        break;
+                                    }
                                     if f.kind == "loop_end" {
                                         break;
                                     }
@@ -12932,11 +12932,13 @@ impl SimpleBackend {
                             if let Some(ref an) = arg_name {
                                 for bwd in (0..op_idx).rev() {
                                     let b = &ops[bwd];
-                                    if b.kind == "load_var" && b.var.as_deref() == Some(an.as_str())
+                                    if b.kind == "load_var"
+                                        && b.var.as_deref() == Some(an.as_str())
                                         && let Some(ref out) = b.out
-                                            && let Some(v) = var_get(&mut builder, &vars, out) {
-                                                break 'find_phi Some(*v);
-                                            }
+                                        && let Some(v) = var_get(&mut builder, &vars, out)
+                                    {
+                                        break 'find_phi Some(*v);
+                                    }
                                 }
                             }
                             None
@@ -13417,9 +13419,10 @@ impl SimpleBackend {
                         // Step 3: def_var the counter with incremented value,
                         // then jump with no explicit args.  SSA carries the phi.
                         if let Some(next_idx) = frame.next_index.take()
-                            && let Some(name) = frame.index_name.as_ref() {
-                                def_var_named(&mut builder, &vars, name, next_idx);
-                            }
+                            && let Some(name) = frame.index_name.as_ref()
+                        {
+                            def_var_named(&mut builder, &vars, name, next_idx);
+                        }
                         jump_block(&mut builder, frame.loop_block, &[]);
                         is_block_filled = true;
                     }
@@ -13449,9 +13452,10 @@ impl SimpleBackend {
                             ensure_block_in_layout(&mut builder, frame.loop_block);
                             reachable_blocks.insert(frame.loop_block);
                             if let Some(next_idx) = frame.next_index.take()
-                                && let Some(name) = frame.index_name.as_ref() {
-                                    def_var_named(&mut builder, &vars, name, next_idx);
-                                }
+                                && let Some(name) = frame.index_name.as_ref()
+                            {
+                                def_var_named(&mut builder, &vars, name, next_idx);
+                            }
                             jump_block(&mut builder, frame.loop_block, &[]);
                         }
                         if builder.func.layout.is_block_inserted(frame.loop_block) {
@@ -14951,13 +14955,14 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out_name, *val);
                         }
                     } else if let Some(ref args) = op.args
-                        && !args.is_empty() {
-                            let val = var_get(&mut builder, &vars, &args[0])
-                                .expect("copy_var: src not found");
-                            if let Some(ref out_name) = op.out {
-                                def_var_named(&mut builder, &vars, out_name, *val);
-                            }
+                        && !args.is_empty()
+                    {
+                        let val = var_get(&mut builder, &vars, &args[0])
+                            .expect("copy_var: src not found");
+                        if let Some(ref out_name) = op.out {
+                            def_var_named(&mut builder, &vars, out_name, *val);
                         }
+                    }
                 }
                 "load_param" => {
                     // TIR emits load_param for function parameters — map param index
@@ -14987,9 +14992,10 @@ impl SimpleBackend {
             // one.  On the first iteration this is the None-sentinel (0) which
             // molt_dec_ref_obj treats as a no-op.
             if let Some(old_val) = loop_reassign_old_val
-                && !is_block_filled {
-                    builder.ins().call(local_dec_ref_obj, &[old_val]);
-                }
+                && !is_block_filled
+            {
+                builder.ins().call(local_dec_ref_obj, &[old_val]);
+            }
 
             // IMPORTANT: entry-tracked cleanup must be control-flow safe.
             //

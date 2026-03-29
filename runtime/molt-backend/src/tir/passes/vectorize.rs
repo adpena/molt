@@ -472,13 +472,14 @@ fn analyse_loop(func: &TirFunction, body: &HashSet<BlockId>) -> VectorizationInf
                 .collect();
             for v in operand_and_result_ids {
                 if let Some(ty) = ty_map.get(&v)
-                    && is_numeric(ty) {
-                        match &seen_type {
-                            None => seen_type = Some(ty.clone()),
-                            Some(prev) if prev == ty => {}
-                            _ => mixed_types = true,
-                        }
+                    && is_numeric(ty)
+                {
+                    match &seen_type {
+                        None => seen_type = Some(ty.clone()),
+                        Some(prev) if prev == ty => {}
+                        _ => mixed_types = true,
                     }
+                }
             }
 
             // Reduction detection: look for Add/Mul/etc. that uses an

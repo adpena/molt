@@ -130,11 +130,12 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 && matches!(
                     first_op.opcode,
                     OpCode::StateBlockStart | OpCode::CheckException
-                ) {
-                    for arg in &block.args {
-                        eh_handler_args.insert(arg.id);
-                    }
+                )
+            {
+                for arg in &block.args {
+                    eh_handler_args.insert(arg.id);
                 }
+            }
         }
     }
 
