@@ -15943,7 +15943,10 @@ def _execute_backend_compile(
         ):
             if not backend_output.exists():
                 return None, _fail(
-                    "Backend output missing", json_output, command="build"
+                    f"Backend output missing at {backend_output}. "
+                    f"Run with --verbose to see full build output, or try --rebuild to bypass cached state.",
+                    json_output,
+                    command="build",
                 )
         if backend_output_written:
             if diagnostics_enabled and "backend_artifact_stage" not in phase_starts:
