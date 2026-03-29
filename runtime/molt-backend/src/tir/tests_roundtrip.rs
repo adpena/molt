@@ -387,7 +387,11 @@ mod tests {
             .args
             .as_ref()
             .expect("unpack_sequence must retain args");
-        assert_eq!(unpack_args.len(), 3, "unpack_sequence keeps one input and two outputs");
+        assert_eq!(
+            unpack_args.len(),
+            3,
+            "unpack_sequence keeps one input and two outputs"
+        );
         assert_eq!(unpack.value, Some(2));
         let ret = result
             .iter()
@@ -1040,8 +1044,8 @@ mod tests {
         // Simulate: for i in range(3): call print(i)
         // The "call" op inside the loop must survive the TIR roundtrip.
         let ops = vec![
-            op_out("const", "stop"),      // stop = 3
-            op_out("const", "idx"),       // idx = 0
+            op_out("const", "stop"), // stop = 3
+            op_out("const", "idx"),  // idx = 0
             op("loop_start"),
             // Loop body: a call that must NOT be eliminated
             op_out_args("call", "result", &["idx"]),

@@ -620,8 +620,7 @@ fn has_non_linear_control_flow(ops: &[OpIR]) -> bool {
     ops.iter().any(|op| {
         matches!(
             op.kind.as_str(),
-            "if"
-                | "else"
+            "if" | "else"
                 | "end_if"
                 | "loop_start"
                 | "loop_index_start"
@@ -3297,6 +3296,13 @@ impl WasmBackend {
         // Table compaction: only count referenced builtins for the table size.
         // Unreferenced builtins are omitted entirely (not sentinel-filled).
         let table_base: u32 = self.options.table_base;
+        let split_runtime_runtime_table_min =
+            std::env::var("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN")
+                .ok()
+                .and_then(|raw| raw.parse::<u32>().ok());
+        let split_runtime_owned_slot_start = split_runtime_runtime_table_min
+            .map(|min| min.saturating_sub(table_base) as usize)
+            .unwrap_or(0);
         // 1 sentinel slot + one slot per POLL_TABLE_FUNCS entry.
         // Derived dynamically so adding/removing poll functions cannot desync.
         let poll_table_prefix = (1 + POLL_TABLE_FUNCS.len()) as u32;
@@ -3469,6 +3475,7 @@ impl WasmBackend {
             table_indices.push(wrapper_idx);
         }
 
+        let mut compact_builtin_entries: Vec<(String, u32)> = Vec::new();
         // Table compaction: only allocate slots for referenced builtins.
         // Unreferenced builtins are completely omitted from the element table.
         let mut compact_slot = 0u32;
@@ -3490,9 +3497,9 @@ impl WasmBackend {
             }
             let idx = compact_slot + compact_builtin_table_start;
             func_to_table_idx.insert(runtime_key.clone(), idx);
-            if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
+            let target_index = if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
                 func_to_index.insert(runtime_key, *wrapper_idx);
-                table_indices.push(*wrapper_idx);
+                *wrapper_idx
             } else {
                 let import_idx = self
                     .import_ids
@@ -3506,8 +3513,9 @@ impl WasmBackend {
                     import_idx
                 };
                 func_to_index.insert(runtime_key, safe);
-                table_indices.push(safe);
-            }
+                safe
+            };
+            compact_builtin_entries.push((import_name, target_index));
             compact_slot += 1;
         }
         debug_assert_eq!(
@@ -3533,6 +3541,9 @@ impl WasmBackend {
                 reserved_runtime_trampoline_table_start + spec.index,
             );
             table_indices.push(reserved_runtime_trampoline_func_start + spec.index);
+        }
+        for (_import_name, target_index) in &compact_builtin_entries {
+            table_indices.push(*target_index);
         }
         for (i, (name, _)) in compact_builtin_trampoline_funcs.iter().enumerate() {
             let idx = compact_builtin_trampoline_table_start + i as u32;
@@ -3715,8 +3726,12 @@ impl WasmBackend {
         let mut element_section = None;
         let mut element_payload = None;
         if reloc_enabled {
-            let table_init_index =
-                self.compile_table_init(reloc_enabled, table_base, &table_indices);
+            let table_init_index = self.compile_table_init(
+                reloc_enabled,
+                table_base,
+                &table_indices,
+                split_runtime_owned_slot_start,
+            );
             self.exports
                 .export("molt_table_init", ExportKind::Func, table_init_index);
             let main_index = self
@@ -3733,9 +3748,13 @@ impl WasmBackend {
                 .export("molt_main", ExportKind::Func, wrapper_index);
 
             let mut ref_exported = BTreeSet::new();
-            for func_index in &table_indices {
-                if ref_exported.insert(*func_index) {
-                    let name = format!("__molt_table_ref_{func_index}");
+            for (slot, func_index) in table_indices.iter().enumerate() {
+                if slot < split_runtime_owned_slot_start {
+                    continue;
+                }
+                let table_index = table_base + slot as u32;
+                if ref_exported.insert(table_index) {
+                    let name = format!("__molt_table_ref_{table_index}");
                     self.exports.export(&name, ExportKind::Func, *func_index);
                 }
             }
@@ -4274,12 +4293,13 @@ impl WasmBackend {
         reloc_enabled: bool,
         table_base: u32,
         table_indices: &[u32],
+        owned_slot_start: usize,
     ) -> u32 {
         let func_index = self.func_count;
         self.funcs.function(8);
         self.func_count += 1;
         let mut func = Function::new_with_locals_types(Vec::new());
-        for (slot, target_index) in table_indices.iter().enumerate() {
+        for (slot, target_index) in table_indices.iter().enumerate().skip(owned_slot_start) {
             let table_index = table_base + slot as u32;
             emit_i32_const(&mut func, reloc_enabled, table_index as i32);
             emit_ref_func(&mut func, reloc_enabled, *target_index);
@@ -4388,8 +4408,7 @@ impl WasmBackend {
         // Compute live ranges for each variable: first write -> last read.
         // Variables whose ranges don't overlap can share a WASM local,
         // reducing total local count and binary size.
-        let coalesced_map: BTreeMap<String, String> = if has_non_linear_control_flow(&func_ir.ops)
-        {
+        let coalesced_map: BTreeMap<String, String> = if has_non_linear_control_flow(&func_ir.ops) {
             BTreeMap::new()
         } else {
             let mut first_write: BTreeMap<String, usize> = BTreeMap::new();
