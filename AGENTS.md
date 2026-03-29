@@ -224,25 +224,24 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 
 Molt uses a capability-based security model. Programs must have explicit capabilities granted to perform sensitive operations.
 
+### Capability Tiers (simplest way to configure)
+| Tier | Env Var | What It Grants |
+|------|---------|----------------|
+| `safe` | `MOLT_CAPABILITY_TIER=safe` | Read-only: env.read, fs.read, fs.stat, fs.readdir, os.getcwd, os.getpid, time.wall, glob, uname |
+| `standard` | (default) | Safe + writes: fs.write, env.write, os.mkdir, tempfile.*, signal.*, thread.*, shutil.copy/move |
+| `full` | `MOLT_CAPABILITY_TIER=full` | Standard + network: net.*, ssl.*, websocket.*, process.exec, db.*, ffi.*, select.* |
+
 ### Environment Variables
-- `MOLT_TRUSTED=1` — grants ALL capabilities (development/testing only)
-- `MOLT_CAPABILITIES=cap1,cap2,...` — explicit capability list (additive with defaults)
+- `MOLT_CAPABILITY_TIER=safe|standard|full` — set capability tier (default: `standard`)
+- `MOLT_TRUSTED=1` — equivalent to `full` tier, grants everything
+- `MOLT_CAPABILITIES=cap1,cap2,...` — additive individual capabilities on top of tier
+- `--trusted` flag on `molt run`/`molt build` — equivalent to `MOLT_TRUSTED=1`
 
-### Default Capabilities (granted to all programs)
-- `env.read` — read environment variables (required for sys.flags, etc.)
-- `fs.read` — read files (required for imports and file I/O)
-- `fs.stat` — stat/exists checks
-- `fs.readdir` — list directory contents
-
-### Capabilities Requiring Explicit Grant
-- **Filesystem write:** `fs.write`, `os.mkdir`, `os.makedirs`, `os.rmdir`, `os.removedirs`, `os.link`, `os.symlink`, `os.chmod`, `os.utime`, `shutil.copy`, `shutil.copyfile`, `shutil.copytree`, `shutil.move`, `tempfile.*`
-- **Environment write:** `env.write`, `env.clear`, `env.popitem`
-- **Network:** `net.bind`, `net.listen`, `net.connect`, `net.poll`, `net.asyncio`, `ssl.read`, `ssl.write`, `websocket.connect`
-- **Process:** `process.exec`, `process.asyncio`, `os.kill`, `os.waitpid`, `signal.*`
-- **Threading:** `thread.spawn`, `thread.shared`
-- **Database:** `db.read`, `db.write`, `db.query`, `db.exec`
-- **FFI:** `ffi.unsafe`, `ffi.require`, `ffi.sizeof`
-- **Time:** `time.wall`
+### Error Messages
+When a capability is denied, the error includes a fix suggestion:
+```
+PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITY_TIER=full
+```
 
 ### Never Supported (by design, per Tier-0 constraints)
 - `exec()` / `eval()` / `compile()` — Molt is AOT; no runtime code execution
@@ -251,9 +250,10 @@ Molt uses a capability-based security model. Programs must have explicit capabil
 - `module.exec` — dynamic module execution is policy-deferred, not active
 
 ### Development Workflow
-- Use `--trusted` flag or `MOLT_TRUSTED=1` for development and testing
-- Production deployments should use explicit `MOLT_CAPABILITIES` lists
-- The capability manifest (`--capability-manifest`) provides declarative capability grants
+- `molt run` defaults to `standard` tier — most dev workflows just work
+- `molt deploy --cloudflare` should use `safe` tier for edge security
+- `MOLT_TRUSTED=1` or `--trusted` for anything that needs network/exec
+- `MOLT_CAPABILITIES=net.connect,db.read` for fine-grained production control
 
 ## Binary Analysis & Debugging Tools (Available)
 - **WASM inspection:** `wasm-objdump` (`-x` headers, `-d` disassemble, `-s` sections), `wasm-dis`, `wasm-validate`, `wasm-tools dump/validate` — installed via `brew install wabt wasm-tools`
