@@ -62,7 +62,8 @@ theorem binOp_int_comm (op : MoltPython.BinOp) (x y : Int)
     | (split <;> subst_vars <;> simp_all [lowerValue]; done)
     | (split <;> (try subst_vars) <;> simp_all [lowerValue]; done)
     | omega
-    | sorry)
+    | (obtain ⟨hy, rfl⟩ := hpv; subst htv;
+       simp only [show ¬(y < 0) from by omega, ite_false, Option.bind, lowerValue]))
 
 theorem unaryOp_neg_int_comm (x : Int) :
     (do let pv ← MoltPython.evalUnaryOp .neg (.intVal x)
