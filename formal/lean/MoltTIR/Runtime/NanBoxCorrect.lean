@@ -20,6 +20,7 @@
   - formal/lean/MoltTIR/Runtime/NanBox.lean (base definitions)
 -/
 import MoltTIR.Runtime.NanBox
+import Std.Tactic.BVDecide
 
 set_option autoImplicit false
 
@@ -668,7 +669,7 @@ private theorem uint64_xor_and_distrib (a b c : UInt64) :
   cases a with | ofBitVec av => cases b with | ofBitVec bv => cases c with | ofBitVec cv =>
   show UInt64.ofBitVec _ = UInt64.ofBitVec _; congr 1
   ext i; simp [BitVec.getLsbD_and, BitVec.getLsbD_xor]
-  sorry -- Bool.xor/Bool.and after 3-way cases doesn't reduce on 4.28
+  bv_decide
 
 /-- XOR self-inverse: (a ^^^ b) ^^^ b = a. -/
 private theorem uint64_xor_self_cancel (a b : UInt64) :
