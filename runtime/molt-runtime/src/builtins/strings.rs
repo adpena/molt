@@ -2001,6 +2001,11 @@ pub unsafe extern "C" fn molt_string_from_bytes(
             if obj_ptr.is_null() {
                 return 2;
             }
+            // Make the string immortal so dec_ref becomes a no-op. Const
+            // strings from data segments live for the entire program lifetime
+            // and must not be collected out from under the cache.
+            let header = crate::object::header_from_obj_ptr(obj_ptr);
+            (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
             let bits = MoltObject::from_ptr(obj_ptr).bits();
 
             // Cache the newly allocated string for future calls with the
