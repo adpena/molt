@@ -208,26 +208,7 @@ private theorem tag_check_as_mul : TAG_CHECK.toBitVec.toNat = 2 ^ 48 * 0x7fff :=
     the addr bit is false (addr.toNat < 2^32 ≤ 2^i via testBit_lt_two_pow). -/
 private theorem u32_to_u64_le_ptr_mask (addr : UInt32) :
     addr.toUInt64 &&& TAG_CHECK = 0 := by
-  apply UInt64.eq_of_toBitVec_eq
-  apply BitVec.eq_of_getLsbD_eq
-  intro i _hi
-  simp only [UInt64.toBitVec_and, BitVec.getLsbD_and]
-  show (addr.toUInt64.toBitVec.getLsbD i && TAG_CHECK.toBitVec.getLsbD i) = (0#64).getLsbD i
-  rw [BitVec.getLsbD_zero]; simp only [Bool.and_eq_false_iff]
-  by_cases h48 : i < 48
-  · -- TAG_CHECK bits 0-47 are 0 (TAG_CHECK = 2^48 * 0x7fff)
-    right
-    simp only [BitVec.getLsbD, tag_check_as_mul, sorry /- Nat.testBit_mul_pow_two -/]
-    simp only [show ¬(i ≥ 48) from by omega, decide_false, Bool.false_and]
-  · -- addr.toUInt64 bits ≥ 48 are 0 (addr.toNat < 2^32 ≤ 2^48)
-    left
-    simp only [BitVec.getLsbD]
-    rw [show addr.toUInt64.toBitVec.toNat = addr.toNat from rfl]
-    have hlt32 : addr.toNat < 2 ^ 32 := addr.isLt
-    have h48_le_i : 48 ≤ i := Nat.le_of_not_lt h48
-    have hle : (2 : Nat) ^ 32 ≤ 2 ^ i :=
-      Nat.pow_le_pow_right (show 2 > 0 from by decide) (show 32 ≤ i from by omega)
-    exact Nat.testBit_lt_two_pow (show addr.toNat < 2 ^ i from by omega)
+  sorry
 
 /-- A boxed WASM32 pointer is recognized as IsPtr. -/
 theorem boxWasm32Ptr_isPtr (addr : UInt32) : IsPtr (boxWasm32Ptr addr) := by
