@@ -193,12 +193,12 @@ theorem funcEquiv_implies_refines (f1 f2 : Func) (h : FuncEquiv f1 f2) :
     that is only valid under certain type/value constraints can be validated
     by providing the abstract environment as a witness. -/
 def ExprRefinesUnder (σ : AbsEnv) (e_in e_out : Expr) : Prop :=
-  ∀ (ρ : Env), AbsEnvSound σ ρ →
+  ∀ (ρ : Env), AbsEnvStrongSound σ ρ →
     ∀ (v : Value), evalExpr ρ e_out = some v → evalExpr ρ e_in = some v
 
 /-- Conditional expression equivalence under abstract environment. -/
 def ExprEquivUnder (σ : AbsEnv) (e1 e2 : Expr) : Prop :=
-  ∀ (ρ : Env), AbsEnvSound σ ρ →
+  ∀ (ρ : Env), AbsEnvStrongSound σ ρ →
     evalExpr ρ e1 = evalExpr ρ e2
 
 /-- Conditional equivalence implies conditional refinement. -/

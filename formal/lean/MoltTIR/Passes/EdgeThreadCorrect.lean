@@ -68,7 +68,7 @@ theorem edgeThreadTerminator_known_false (σ : AbsEnv) (cond : Expr)
     evaluates to the same TermResult as the original branch. -/
 theorem edgeThread_branch_true_correct (f : Func) (σ : AbsEnv) (ρ : Env)
     (cond : Expr) (tl : Label) (ta : List Expr) (el : Label) (ea : List Expr)
-    (hsound : AbsEnvSound σ ρ)
+    (hsound : AbsEnvStrongSound σ ρ)
     (hknown : absEvalExpr σ cond = .known (.bool true)) :
     evalTerminator f ρ (edgeThreadTerminator σ (.br cond tl ta el ea)) =
     evalTerminator f ρ (.br cond tl ta el ea) := by
@@ -81,7 +81,7 @@ theorem edgeThread_branch_true_correct (f : Func) (σ : AbsEnv) (ρ : Env)
 /-- Symmetric case for known-false threading. -/
 theorem edgeThread_branch_false_correct (f : Func) (σ : AbsEnv) (ρ : Env)
     (cond : Expr) (tl : Label) (ta : List Expr) (el : Label) (ea : List Expr)
-    (hsound : AbsEnvSound σ ρ)
+    (hsound : AbsEnvStrongSound σ ρ)
     (hknown : absEvalExpr σ cond = .known (.bool false)) :
     evalTerminator f ρ (edgeThreadTerminator σ (.br cond tl ta el ea)) =
     evalTerminator f ρ (.br cond tl ta el ea) := by
@@ -103,10 +103,9 @@ theorem edgeThread_branch_false_correct (f : Func) (σ : AbsEnv) (ρ : Env)
     - br with known-false condition: reduces to known_false case.
     - br with unknown/overdefined condition: identity, trivially correct.
 
-    NOTE: this theorem inherits the `sorry` from absEvalExpr_sound
-    (the var-case definedness gap documented in SCCPCorrect.lean). -/
+    Uses `AbsEnvStrongSound` for the var-case definedness proof. -/
 theorem edgeThreadTerminator_correct (f : Func) (σ : AbsEnv) (ρ : Env)
-    (t : Terminator) (hsound : AbsEnvSound σ ρ) :
+    (t : Terminator) (hsound : AbsEnvStrongSound σ ρ) :
     evalTerminator f ρ (edgeThreadTerminator σ t) =
     evalTerminator f ρ t := by
   cases t with

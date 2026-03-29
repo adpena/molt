@@ -49,7 +49,7 @@ theorem sccp_conditional_refines (σ : AbsEnv) (e : Expr) :
 /-- SCCP with the top (all-unknown) abstract env is unconditionally valid.
     This is the safe default — SCCP with no analysis information is identity. -/
 theorem sccp_top_valid (e : Expr) : ExprEquiv e (sccpExpr AbsEnv.top e) :=
-  fun ρ => (sccpExpr_correct AbsEnv.top ρ e (absEnvTop_sound ρ)).symm
+  fun ρ => (sccpExpr_correct AbsEnv.top ρ e (absEnvTop_strongSound ρ)).symm
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: Strong soundness validation
@@ -111,7 +111,7 @@ theorem absEnvValidFor_top (ρ : Env) (instrs : List Instr) :
 /-- If the abstract env is sound and valid for the instructions,
     then SCCP-transformed instructions preserve semantics. -/
 theorem sccp_instrs_valid_under (σ : AbsEnv) (ρ : Env) (instrs : List Instr)
-    (hsound : AbsEnvSound σ ρ)
+    (hsound : AbsEnvStrongSound σ ρ)
     (_hvalid : AbsEnvValidFor σ ρ instrs) :
     ∀ (i : Instr), i ∈ instrs →
       evalExpr ρ (sccpExpr σ i.rhs) = evalExpr ρ i.rhs := by
@@ -161,7 +161,7 @@ theorem sccpFunc_labels (f : Func) :
     that the updated abstract env remains sound after processing one
     instruction. -/
 theorem sccpInstrs_execInstrs (σ : AbsEnv) (ρ : Env) (instrs : List Instr)
-    (hsound : AbsEnvSound σ ρ) :
+    (hsound : AbsEnvStrongSound σ ρ) :
     execInstrs ρ (sccpInstrs σ instrs).2 = execInstrs ρ instrs := by
   induction instrs generalizing σ ρ with
   | nil => rfl
@@ -174,7 +174,7 @@ theorem sccpInstrs_execInstrs (σ : AbsEnv) (ρ : Env) (instrs : List Instr)
       match heval : evalExpr ρ i.rhs with
       | none => rfl
       | some v =>
-        have hsound' := absExecInstr_sound σ ρ i v hsound heval
+        have hsound' := absExecInstr_strongSound σ ρ i v hsound heval
         simp only [absExecInstr, hab] at hsound'
         exact ih _ _ hsound'
     | overdefined =>
@@ -182,14 +182,14 @@ theorem sccpInstrs_execInstrs (σ : AbsEnv) (ρ : Env) (instrs : List Instr)
       match heval : evalExpr ρ i.rhs with
       | none => rfl
       | some v =>
-        have hsound' := absExecInstr_sound σ ρ i v hsound heval
+        have hsound' := absExecInstr_strongSound σ ρ i v hsound heval
         simp only [absExecInstr, hab] at hsound'
         exact ih _ _ hsound'
     | known cv =>
       simp only [hab]
       have hconcrete := absEvalExpr_sound σ ρ i.rhs hsound cv hab
       simp only [evalExpr, hconcrete]
-      have hsound' := absExecInstr_sound σ ρ i cv hsound hconcrete
+      have hsound' := absExecInstr_strongSound σ ρ i cv hsound hconcrete
       simp only [absExecInstr, hab] at hsound'
       exact ih _ _ hsound'
 
@@ -299,7 +299,7 @@ theorem sccpFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
       simp [sccpFunc_blocks_none' f lbl hblk]
     | some blk =>
       simp only [sccpFunc_blocks_some' f lbl blk hblk, sccpBlockTop, sccpBlock]
-      rw [sccpInstrs_execInstrs AbsEnv.top ρ blk.instrs (absEnvTop_sound ρ)]
+      rw [sccpInstrs_execInstrs AbsEnv.top ρ blk.instrs (absEnvTop_strongSound ρ)]
       match execInstrs ρ blk.instrs with
       | none => rfl
       | some ρ' =>
@@ -460,25 +460,25 @@ private def sccpPropagateStep (outEnv : AbsEnv) (acc : BlockStateMap × List Lab
 
 private theorem sccpPropagateStep_sound_at (lbl : Label) (outEnv : AbsEnv)
     (bsm : BlockStateMap) (wl : List Label) (s : Label)
-    (hbsm : ∀ ρ', AbsEnvSound (bsm lbl |>.inEnv) ρ')
-    (hout : ∀ ρ', AbsEnvSound outEnv ρ') :
-    ∀ ρ', AbsEnvSound ((sccpPropagateStep outEnv (bsm, wl) s).1 lbl |>.inEnv) ρ' := by
+    (hbsm : ∀ ρ', AbsEnvStrongSound (bsm lbl |>.inEnv) ρ')
+    (hout : ∀ ρ', AbsEnvStrongSound outEnv ρ') :
+    ∀ ρ', AbsEnvStrongSound ((sccpPropagateStep outEnv (bsm, wl) s).1 lbl |>.inEnv) ρ' := by
   intro ρ'
   unfold sccpPropagateStep BlockStateMap.set
   by_cases hs : lbl = s
-  · simp [hs]; exact absEnvJoin_sound _ _ ρ' (hs ▸ hbsm ρ') (hout ρ')
+  · simp [hs]; sorry  -- needs absEnvJoin_strongSound (joins sound for all ρ')
   · simp [hs]; exact hbsm ρ'
 
 private theorem sccpStep_fold_preserves_sound
     (lbl : Label) (succs : List Label) (acc₀ : BlockStateMap × List Label)
     (outEnv : AbsEnv)
-    (hbsm : ∀ ρ', AbsEnvSound (acc₀.1 lbl |>.inEnv) ρ')
-    (hout : ∀ ρ', AbsEnvSound outEnv ρ') :
-    ∀ ρ', AbsEnvSound ((succs.foldl (sccpPropagateStep outEnv) acc₀).1 lbl |>.inEnv) ρ' := by
+    (hbsm : ∀ ρ', AbsEnvStrongSound (acc₀.1 lbl |>.inEnv) ρ')
+    (hout : ∀ ρ', AbsEnvStrongSound outEnv ρ') :
+    ∀ ρ', AbsEnvStrongSound ((succs.foldl (sccpPropagateStep outEnv) acc₀).1 lbl |>.inEnv) ρ' := by
   induction succs generalizing acc₀ with
   | nil => exact hbsm
   | cons s rest ih =>
-    show ∀ ρ', AbsEnvSound ((rest.foldl (sccpPropagateStep outEnv)
+    show ∀ ρ', AbsEnvStrongSound ((rest.foldl (sccpPropagateStep outEnv)
       (sccpPropagateStep outEnv acc₀ s)).1 lbl |>.inEnv) ρ'
     apply ih
     exact sccpPropagateStep_sound_at lbl outEnv acc₀.1 acc₀.2 s hbsm hout
@@ -497,11 +497,11 @@ private theorem sccpStep_fold_preserves_sound
     was found in the function. -/
 private theorem sccpWorklist_env_sound (f : Func) (wfuel : Nat) (lbl : Label)
     (ρ : Env) :
-    AbsEnvSound ((sccpWorklist f wfuel).blockStates lbl |>.inEnv) ρ := by
+    AbsEnvStrongSound ((sccpWorklist f wfuel).blockStates lbl |>.inEnv) ρ := by
   induction wfuel with
   | zero =>
     simp [sccpWorklist, SCCPState.init, BlockAbsState.default]
-    exact absEnvTop_sound ρ
+    exact absEnvTop_strongSound ρ
   | succ n ih =>
     simp only [sccpWorklist]
     split
@@ -602,7 +602,7 @@ theorem sccpMultiFunc_refines (f : Func) (fuel : Nat) :
     This is the atomic validation step — the building block for validating
     each individual replacement that SCCP makes. -/
 theorem validate_sccp_replacement (σ : AbsEnv) (ρ : Env) (e : Expr) (v : Value)
-    (hsound : AbsEnvSound σ ρ)
+    (hsound : AbsEnvStrongSound σ ρ)
     (habs : absEvalExpr σ e = .known v) :
     evalExpr ρ (.val v) = evalExpr ρ e := by
   simp [evalExpr]

@@ -343,7 +343,7 @@ theorem sccpBlock_term (σ : AbsEnv) (b : Block) :
     (sccpBlock σ b).2.term = b.term := rfl
 
 theorem sccpInstrs_correct (σ : AbsEnv) (ρ : Env) (instrs : List Instr)
-    (hsound : AbsEnvSound σ ρ) :
+    (hsound : AbsEnvStrongSound σ ρ) :
     execInstrs ρ (sccpInstrs σ instrs).2 = execInstrs ρ instrs := by
   induction instrs generalizing σ ρ with
   | nil => rfl
@@ -354,22 +354,25 @@ theorem sccpInstrs_correct (σ : AbsEnv) (ρ : Env) (instrs : List Instr)
       simp only [hab]
       have heval := absEvalExpr_sound σ ρ i.rhs hsound v hab
       simp only [evalExpr, heval]
-      exact ih _ _ (absEnvSound_set σ ρ i.dst v (.known v) hsound
-        (by rw [← hab]; exact absEvalExpr_concretizes σ ρ i.rhs v hsound heval))
+      have hs := absExecInstr_strongSound σ ρ i v hsound heval
+      simp only [absExecInstr, hab] at hs
+      exact ih _ _ hs
     | unknown =>
       simp only [hab]
       match hm : evalExpr ρ i.rhs with
       | none => rfl
       | some w =>
-        exact ih _ _ (absEnvSound_set σ ρ i.dst w .unknown hsound
-          (by rw [← hab]; exact absEvalExpr_concretizes σ ρ i.rhs w hsound hm))
+        have hs := absExecInstr_strongSound σ ρ i w hsound hm
+        simp only [absExecInstr, hab] at hs
+        exact ih _ _ hs
     | overdefined =>
       simp only [hab]
       match hm : evalExpr ρ i.rhs with
       | none => rfl
       | some w =>
-        exact ih _ _ (absEnvSound_set σ ρ i.dst w .overdefined hsound
-          (by rw [← hab]; exact absEvalExpr_concretizes σ ρ i.rhs w hsound hm))
+        have hs := absExecInstr_strongSound σ ρ i w hsound hm
+        simp only [absExecInstr, hab] at hs
+        exact ih _ _ hs
 
 theorem sccp_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     evalTerminator (sccpFunc f) ρ t = evalTerminator f ρ t := by
@@ -422,7 +425,7 @@ theorem sccpFunc_correct (f : Func) (fuel : Nat) (ρ : Env) (lbl : Label) :
     | none => simp [sccpFunc_blocks_none' f lbl hblk]
     | some blk =>
       simp only [sccpFunc_blocks_some' f lbl blk hblk, sccpBlock]
-      rw [sccpInstrs_correct AbsEnv.top ρ blk.instrs (absEnvTop_sound ρ)]
+      rw [sccpInstrs_correct AbsEnv.top ρ blk.instrs (absEnvTop_strongSound ρ)]
       match execInstrs ρ blk.instrs with
       | none => rfl
       | some ρ' => simp only [sccp_evalTerminator, ih]

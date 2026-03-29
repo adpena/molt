@@ -114,7 +114,7 @@ theorem sccpExpr_idempotent (σ : AbsEnv) (e : Expr) :
 theorem fullPipeline_semantically_idempotent
     (σ : AbsEnv) (ρ : Env) (e : Expr)
     (avail : AvailMap)
-    (hsound : AbsEnvSound σ ρ)
+    (hsound : AbsEnvStrongSound σ ρ)
     (havail : AvailMapSound avail ρ) :
     evalExpr ρ (fullPipelineExpr σ avail (fullPipelineExpr σ avail e)) =
     evalExpr ρ (fullPipelineExpr σ avail e) := by
@@ -160,7 +160,7 @@ theorem pipeline_extensible (pass : Expr → Expr)
     (hpass : SemanticsPreserving pass)
     (σ : AbsEnv) (ρ : Env) (e : Expr)
     (avail : AvailMap)
-    (hsound : AbsEnvSound σ ρ)
+    (hsound : AbsEnvStrongSound σ ρ)
     (havail : AvailMapSound avail ρ) :
     evalExpr ρ (pass (fullPipelineExpr σ avail e)) = evalExpr ρ e := by
   rw [hpass ρ (fullPipelineExpr σ avail e)]

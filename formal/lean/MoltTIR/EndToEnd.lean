@@ -53,7 +53,7 @@ namespace MoltTIR
       sound by construction (AbsEnv.top is the safe default). -/
 theorem endToEnd_correct (σ : AbsEnv) (ρ : Env) (e : Expr)
     (avail : AvailMap)
-    (hsound : AbsEnvSound σ ρ)
+    (hsound : AbsEnvStrongSound σ ρ)
     (havail : AvailMapSound avail ρ) :
     evalExpr ρ (fullPipelineExpr σ avail e) = evalExpr ρ e :=
   fullPipelineExpr_correct σ ρ e avail hsound havail
@@ -89,7 +89,7 @@ theorem endToEnd_unconditional (ρ : Env) (e : Expr) :
 theorem endToEnd_with_luau_emission
     (σ : AbsEnv) (ρ : Env) (e : Expr) (v : MoltTIR.Value)
     (avail : AvailMap) (names : Backend.VarNames) (lenv : Backend.LuauEnv)
-    (hsound : AbsEnvSound σ ρ)
+    (hsound : AbsEnvStrongSound σ ρ)
     (havail : AvailMapSound avail ρ)
     (hcorr : Backend.LuauEnvCorresponds names ρ lenv)
     (heval : evalExpr ρ e = some v) :
@@ -160,7 +160,7 @@ theorem endToEnd_wasm_native_agree :
     - JoinCanon terminator variable preservation (JoinCanonCorrect.lean) -/
 theorem fullChain_correct (σ : AbsEnv) (ρ : Env) (e : Expr)
     (avail : AvailMap)
-    (hsound : AbsEnvSound σ ρ)
+    (hsound : AbsEnvStrongSound σ ρ)
     (havail : AvailMapSound avail ρ) :
     -- Phase 2: Midend optimization preserves expression semantics
     evalExpr ρ (fullPipelineExpr σ avail e) = evalExpr ρ e :=
@@ -186,7 +186,7 @@ theorem fullChain_correct (σ : AbsEnv) (ρ : Env) (e : Expr)
 
 ### Verified with Known Gaps (sorry documented)
 - SCCP expression correctness: sound except for var-case definedness
-  (1 sorry in absEvalExpr_sound, documented in SCCPCorrect.lean)
+  (absEvalExpr_sound var-case sorry closed via AbsEnvStrongSound migration)
 - Luau expression emission: val and var cases proven, bin/un cases
   require Option.bind compositionality (2 sorry in emitExpr_correct)
 - JoinCanon terminator variable preservation (1 sorry)

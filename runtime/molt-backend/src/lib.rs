@@ -2728,13 +2728,9 @@ impl SimpleBackend {
                     func_ir.param_types.as_deref(),
                     &body_bytes,
                 );
-                // Cache hit — apply directly and skip.
-                if let Some(cached_bytes) = tir_cache.get(&content_hash)
-                    && let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
-                {
-                    func_ir.ops = cached_ops;
-                    continue;
-                }
+                // Cache disabled — always process through TIR pipeline.
+                // (TIR roundtrip has a lossy linearization bug; cached ops
+                // from previous runs with roundtrip enabled would be broken.)
                 work_items.push(TirWorkItem {
                     index: i,
                     content_hash,
@@ -2743,6 +2739,10 @@ impl SimpleBackend {
             }
 
             let uncached_count = work_items.len();
+            // ALWAYS write diagnostic
+            let _ = std::fs::write("/tmp/molt_tir_diag_absolute.txt",
+                format!("functions={} uncached={}
+", ir.functions.len(), uncached_count));
             if uncached_count > 0 {
                 eprintln!(
                     "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions in parallel"
