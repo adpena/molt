@@ -168,12 +168,10 @@ impl OperationEstimate {
                 usize::try_from(result_bytes).ok()
             }
             Self::LeftShift { value_bits, shift } => {
-                // result_bits = value_bits + shift, with 4x safety multiplier
-                // (matches Pow's safety margin)
-                let result_bits = ((*value_bits as u128) + (*shift as u128))
-                    .checked_mul(4)?;
+                let result_bits = (*value_bits as u64) + (*shift as u64);
                 let result_bytes = result_bits.div_ceil(8);
-                usize::try_from(result_bytes).ok()
+                // 2x safety multiplier for BigInt intermediate allocation during shift
+                result_bytes.checked_mul(2).and_then(|v| usize::try_from(v).ok())
             }
             Self::StringReplace {
                 input_len,
