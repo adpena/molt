@@ -197,9 +197,8 @@ theorem ssa_implies_wellformed {f : Func} (hssa : SSAWellFormed f)
     -- position i is either a param or an instruction at position j < i
     -- (by the SSA unique-def + dominance within a block).
     sorry
-  · -- Terminator variables are all in the full scope.
-    -- All vars used in the terminator are in blockAllUses, hence by
-    -- block-scoping they're in blockAllDefs = params ++ instrs.map dst.
+  · -- Terminator: needs termVarsIn_of_forall from BlockScopeHelpers
+    -- (not yet migrated to 4.28)
     sorry
 
 end MoltTIR
