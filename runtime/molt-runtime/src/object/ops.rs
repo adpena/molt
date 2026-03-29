@@ -10400,6 +10400,12 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                     return true;
                 }
             }
+            // Range equality: range(a,b,c) == range(a,b,c) if start,stop,step match.
+            if ltype == TYPE_ID_RANGE {
+                return obj_eq(_py, obj_from_bits(range_start_bits(lp)), obj_from_bits(range_start_bits(rp)))
+                    && obj_eq(_py, obj_from_bits(range_stop_bits(lp)), obj_from_bits(range_stop_bits(rp)))
+                    && obj_eq(_py, obj_from_bits(range_step_bits(lp)), obj_from_bits(range_step_bits(rp)));
+            }
         }
         return lp == rp;
     }
