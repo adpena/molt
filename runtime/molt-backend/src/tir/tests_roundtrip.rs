@@ -383,12 +383,22 @@ mod tests {
             .iter()
             .find(|op| op.kind == "unpack_sequence")
             .expect("roundtrip must preserve unpack_sequence");
-        assert_eq!(
-            unpack.args.as_deref(),
-            Some(&["seq".to_string(), "a".to_string(), "b".to_string()][..]),
-            "unpack_sequence must preserve sequence input and output vars",
-        );
+        let unpack_args = unpack
+            .args
+            .as_ref()
+            .expect("unpack_sequence must retain args");
+        assert_eq!(unpack_args.len(), 3, "unpack_sequence keeps one input and two outputs");
         assert_eq!(unpack.value, Some(2));
+        let ret = result
+            .iter()
+            .find(|op| op.kind == "ret")
+            .expect("roundtrip must preserve return");
+        let ret_args = ret.args.as_ref().expect("ret must retain args");
+        assert_eq!(
+            ret_args.first(),
+            unpack_args.get(1),
+            "later uses must resolve to the first unpack output value",
+        );
     }
 
     // ---------------------------------------------------------------------------

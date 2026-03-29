@@ -181,7 +181,9 @@ private theorem qnan_or_ptr_and_tag_check :
 /-- Algebraic: uint64_and_or_distrib_right for NanBoxCorrect scope. -/
 private theorem uint64_and_or_distrib_right' (a b c : UInt64) :
     (a ||| b) &&& c = (a &&& c) ||| (b &&& c) := by
-  sorry
+  cases a with | ofBitVec av => cases b with | ofBitVec bv => cases c with | ofBitVec cv =>
+  show UInt64.ofBitVec _ = UInt64.ofBitVec _; congr 1
+  ext i; simp [BitVec.getLsbD_and, BitVec.getLsbD_or, Bool.and_or_distrib_right]
 
 private theorem uint64_and_assoc' (a b c : UInt64) : a &&& b &&& c = a &&& (b &&& c) := by
   cases a with | ofBitVec av => cases b with | ofBitVec bv => cases c with | ofBitVec cv =>
@@ -207,8 +209,10 @@ private theorem uint64_xor_or_self_disjoint (a b : UInt64)
     exact this
   have hi : (a.toBitVec &&& b.toBitVec).getLsbD i = (0#64).getLsbD i := by
     rw [hdisj']
-  simp only [BitVec.getLsbD, BitVec.getLsbD_zero] at hi
-  sorry
+  simp only [BitVec.getLsbD_and, BitVec.getLsbD_zero] at hi
+  -- hi : a.toBitVec.getLsbD i && b.toBitVec.getLsbD i = false
+  -- Goal: (a.toBitVec.getLsbD i || b.toBitVec.getLsbD i) ^^ a.toBitVec.getLsbD i = b.toBitVec.getLsbD i
+  cases ha : a.toBitVec.getLsbD i <;> cases hb : b.toBitVec.getLsbD i <;> simp_all
 
 /-- Shifting right by 47 gives 0 when all bits >= 47 are 0.
     Key: INT_MASK has exactly bits 0..46 set, so (raw &&& INT_MASK) has no bits >= 47. -/
@@ -232,8 +236,7 @@ private theorem int_mask_ushr47_zero (raw : UInt64) :
 private theorem uint64_and_comm (a b : UInt64) : a &&& b = b &&& a := by
   apply UInt64.eq_of_toBitVec_eq
   ext i
-  simp only [UInt64.toBitVec_and, BitVec.getLsbD]
-  cases a.toBitVec.getLsbD i <;> cases b.toBitVec.getLsbD i <;> sorry
+  sorry
 
 /-- If a &&& c = 0 then a &&& (b &&& c) = 0 (because b &&& c is a submask of c). -/
 private theorem uint64_and_masked_zero (a b c : UInt64) (h : a &&& c = 0) :
@@ -268,14 +271,14 @@ private theorem uint64_and_idem_pointer_mask (a : UInt64) :
     (a &&& POINTER_MASK) &&& POINTER_MASK = a &&& POINTER_MASK := by
   apply UInt64.eq_of_toBitVec_eq
   ext i; simp only [UInt64.toBitVec_and, BitVec.getLsbD]
-  cases a.toBitVec.getLsbD i <;> cases POINTER_MASK.toBitVec.getLsbD i <;> sorry
+  cases a.toBitVec.getLsbD i <;> cases POINTER_MASK.toBitVec.getLsbD i <;> simp_all
 
 /-- Idempotence of AND with INT_MASK. -/
 private theorem uint64_and_idem_int_mask (a : UInt64) :
     (a &&& INT_MASK) &&& INT_MASK = a &&& INT_MASK := by
   apply UInt64.eq_of_toBitVec_eq
   ext i; simp only [UInt64.toBitVec_and, BitVec.getLsbD]
-  cases a.toBitVec.getLsbD i <;> cases INT_MASK.toBitVec.getLsbD i <;> sorry
+  cases a.toBitVec.getLsbD i <;> cases INT_MASK.toBitVec.getLsbD i <;> simp_all
 
 /-- 0 ||| a = a. -/
 private theorem uint64_zero_or (a : UInt64) : 0 ||| a = a := by
