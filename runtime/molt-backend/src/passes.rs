@@ -2270,12 +2270,20 @@ pub fn split_large_function(
     // ---------------------------------------------------------------
 
     // Build forbidden ranges: for each label_id referenced by
-    // check_exception, find the span [earliest_ref, label_def] (or
-    // [label_def, latest_ref] if the label comes first) and forbid
-    // splitting within that range.
+    // check_exception, jump, or br_if, find the span covering the
+    // reference(s) and the label definition, and forbid splitting
+    // within that range.
+    //
+    // This is critical after TIR optimization, which replaces structured
+    // loop markers (loop_start/loop_end/loop_break_if_*) with
+    // unstructured label/jump/br_if ops.  Without this protection, the
+    // depth tracker sees depth=0 everywhere (no loop_start/loop_end to
+    // increment/decrement) and the splitter can cut through the middle
+    // of a linearized loop body, producing chunk functions whose control
+    // flow falls through to Cranelift trap instructions (SIGILL).
     let mut label_positions: std::collections::BTreeMap<i64, usize> =
         std::collections::BTreeMap::new();
-    let mut check_exc_refs: std::collections::BTreeMap<i64, (usize, usize)> =
+    let mut label_refs: std::collections::BTreeMap<i64, (usize, usize)> =
         std::collections::BTreeMap::new();
     for (idx, op) in func.ops.iter().enumerate() {
         match op.kind.as_str() {
@@ -2284,9 +2292,9 @@ pub fn split_large_function(
                     label_positions.insert(id, idx);
                 }
             }
-            "check_exception" => {
+            "check_exception" | "jump" | "br_if" => {
                 if let Some(id) = op.value {
-                    let entry = check_exc_refs.entry(id).or_insert((idx, idx));
+                    let entry = label_refs.entry(id).or_insert((idx, idx));
                     entry.0 = entry.0.min(idx);
                     entry.1 = entry.1.max(idx);
                 }
@@ -2295,12 +2303,12 @@ pub fn split_large_function(
         }
     }
     // Compute forbidden ranges: a split point at index `sp` is forbidden
-    // if it falls strictly between a check_exception and its target label.
+    // if it falls strictly between a label reference and its definition.
     let mut forbidden_ranges: Vec<(usize, usize)> = Vec::new();
-    for (label_id, (earliest_check, latest_check)) in &check_exc_refs {
+    for (label_id, (earliest_ref, latest_ref)) in &label_refs {
         if let Some(&label_idx) = label_positions.get(label_id) {
-            let range_start = (*earliest_check).min(label_idx);
-            let range_end = (*latest_check).max(label_idx);
+            let range_start = (*earliest_ref).min(label_idx);
+            let range_end = (*latest_ref).max(label_idx);
             forbidden_ranges.push((range_start, range_end));
         }
     }
