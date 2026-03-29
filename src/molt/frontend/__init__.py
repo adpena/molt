@@ -26644,6 +26644,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 bound_val = self._emit_module_load(top_name)
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
+                self.module_global_mutations.add(bind_name)
                 self.globals[bind_name] = bound_val
                 if bind_name in self.boxed_locals:
                     self._store_local_value(bind_name, bound_val)
@@ -26756,6 +26757,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.global_imported_names[bind_name] = module_name
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
+                self.module_global_mutations.add(bind_name)
                 self.globals[bind_name] = attr_val
                 if bind_name in self.boxed_locals:
                     self._store_local_value(bind_name, attr_val)

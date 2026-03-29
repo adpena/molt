@@ -66,6 +66,14 @@ inductive RustType where
 inductive RustBinOp where
   -- arithmetic
   | add | sub | mul | div | rem
+  -- exponentiation (i64::pow / f64::powi)
+  | pow
+  -- floor division (Python // semantics: round toward negative infinity)
+  | floordiv
+  -- bitwise
+  | bitAnd | bitOr | bitXor
+  -- shift
+  | shl | shr
   -- comparison
   | eq | ne | lt | le | gt | ge
   -- logical

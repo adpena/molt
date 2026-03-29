@@ -33,6 +33,8 @@ inductive LuauBinOp where
   | eq | ne | lt | le | gt | ge
   -- logical
   | land | lor
+  -- bitwise (models bit32.band/bor/bxor/lshift/rshift library calls)
+  | band | bor | bxor | lshl | lshr
   -- string
   | concat
   deriving DecidableEq, Repr
