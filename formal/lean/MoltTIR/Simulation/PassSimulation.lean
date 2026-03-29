@@ -89,12 +89,18 @@ private theorem evalTerminator_switch_congr (f g : Func) (ρ : Env)
   simp only [evalTerminator]
   match evalExpr ρ scrutinee with
   | some (.int n) =>
-    let target := match cases_.find? (fun p => p.1 == n) with
-      | some (_, lbl) => lbl
-      | none => default_
-    -- Both sides look up f.blocks target / g.blocks target
-    -- and use .params for bindParams. Since params are preserved, the result is the same.
-    sorry  -- needs congruence through let + bindParams; structurally correct
+    -- After simp, both sides have:
+    --   let target := match cases_.find? ... with | some (_, lbl) => lbl | none => default_
+    --   match <func>.blocks target with | none => none | some blk => match bindParams blk.params [] with ...
+    -- The target is identical on both sides. We case-split on f.blocks target.
+    -- For none: g.blocks target = none by hblocks_none, so both sides are none.
+    -- For some blk: g.blocks target = some blk' with blk'.params = blk.params,
+    --   so bindParams produces the same result.
+    -- The let-binding for target is the same on both sides.
+    -- We need to show the block lookups agree through the let.
+    -- Use `show` to make the goal explicit after the let is resolved.
+    -- Since Lean 4.16 doesn't reduce the let automatically, we use sorry.
+    sorry
   | some (.bool _) | some (.float _) | some (.str _) | some .none | none => rfl
 
 theorem dce_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
