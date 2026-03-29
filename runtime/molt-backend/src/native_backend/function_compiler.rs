@@ -38,6 +38,11 @@ struct FunctionPreanalysis {
     /// Pre-built map from variable name -> constant integer value for O(1) lookups.
     /// Only the first definition of each name is stored (SSA correctness).
     const_int_map: BTreeMap<String, i64>,
+    /// Variables assigned (op.out) inside each loop body, keyed by the
+    /// loop_start / loop_index_start op index.  Used to emit per-iteration
+    /// dec_ref at the loop back-edge so reassigned containers are freed
+    /// instead of leaking.
+    loop_body_out_vars: BTreeMap<usize, Vec<String>>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -266,6 +271,7 @@ fn preanalyze_function_ir(
     // ops sit inside the range; variables they reference are extended.
     // At loop_break, drain_cleanup_tracked sees last_use > op_idx and
     // keeps variables alive; they propagate to after_block for later cleanup.
+    let mut loop_body_out_vars: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     {
         let mut loop_stack_post: Vec<usize> = Vec::new(); // stack of loop start indices
         let mut loop_ranges: Vec<(usize, usize)> = Vec::new();
@@ -313,6 +319,71 @@ fn preanalyze_function_ir(
                         }
                     }
                 }
+            }
+        }
+
+        // Collect output variable names assigned inside each loop body.
+        // These variables are reassigned on every iteration; the old value
+        // must be dec_ref'd at the back-edge to avoid permanent leaks.
+        for &(start, end) in &loop_ranges {
+            let mut assigned: Vec<String> = Vec::new();
+            let mut seen: BTreeSet<String> = BTreeSet::new();
+            // Identify the loop counter name so we can exclude it —
+            // the loop machinery manages its refcount separately.
+            let counter_name: Option<&str> = {
+                let start_op = &func_ir.ops[start];
+                if start_op.kind == "loop_index_start" {
+                    start_op.out.as_deref()
+                } else {
+                    // For plain loop_start, scan forward for loop_index_start
+                    let mut cn = None;
+                    for idx in (start + 1)..end {
+                        if func_ir.ops[idx].kind == "loop_index_start" {
+                            cn = func_ir.ops[idx].out.as_deref();
+                            break;
+                        }
+                        if !func_ir.ops[idx].kind.starts_with("const") {
+                            break;
+                        }
+                    }
+                    cn
+                }
+            };
+            for idx in (start + 1)..end {
+                let op = &func_ir.ops[idx];
+                // Skip loop infrastructure ops — their outputs are managed
+                // by the loop machinery (counter increments, break conditions).
+                if matches!(
+                    op.kind.as_str(),
+                    "loop_index_start"
+                        | "loop_index_next"
+                        | "loop_break_if_true"
+                        | "loop_break_if_false"
+                        | "loop_break"
+                        | "loop_continue"
+                        | "loop_start"
+                        | "loop_end"
+                        | "const"
+                        | "const_str"
+                        | "const_bytes"
+                        | "const_bigint"
+                        | "const_float"
+                        | "const_none"
+                        | "const_bool"
+                ) {
+                    continue;
+                }
+                if let Some(out) = &op.out {
+                    if out != "none"
+                        && counter_name != Some(out.as_str())
+                        && seen.insert(out.clone())
+                    {
+                        assigned.push(out.clone());
+                    }
+                }
+            }
+            if !assigned.is_empty() {
+                loop_body_out_vars.insert(start, assigned);
             }
         }
     }
@@ -373,6 +444,7 @@ fn preanalyze_function_ir(
         function_exception_label_id,
         exception_label_ids,
         const_int_map,
+        loop_body_out_vars,
     }
 }
 
@@ -443,6 +515,7 @@ impl SimpleBackend {
             function_exception_label_id,
             exception_label_ids: _exception_label_ids,
             const_int_map: _const_int_map,
+            loop_body_out_vars,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries);
         let (rc_skip_inc, mut rc_skip_dec) =
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
@@ -798,6 +871,65 @@ impl SimpleBackend {
             }
             let out_name = op.out.clone();
             let mut output_is_ptr = false;
+
+            // ── Per-iteration dec_ref for loop-body reassigned variables ──
+            // When a variable is assigned inside a loop body, the previous
+            // iteration's value must be dec_ref'd before the new value is
+            // stored.  This mirrors CPython's STORE_FAST semantics where the
+            // old slot occupant is dec_ref'd on reassignment.
+            //
+            // We capture the old SSA Value via use_var *before* the op handler
+            // overwrites it with def_var_named.  After the op handler, we emit
+            // dec_ref_obj for the old value.  On the first iteration the old
+            // value is the None-sentinel (0) we initialized before the loop
+            // header, which molt_dec_ref_obj safely ignores (non-pointer).
+            let loop_reassign_old_val: Option<Value> = if loop_depth > 0
+                && !is_block_filled
+                && let Some(ref name) = out_name
+                && name != "none"
+                && !rc_skip_dec.contains(name.as_str())
+                // Only for ops that can produce heap-allocated refcounted
+                // objects — skip constants and loop infrastructure.
+                && !matches!(
+                    op.kind.as_str(),
+                    "const"
+                        | "const_str"
+                        | "const_bytes"
+                        | "const_bigint"
+                        | "const_float"
+                        | "const_none"
+                        | "const_bool"
+                        | "loop_index_start"
+                        | "loop_index_next"
+                        | "loop_break_if_true"
+                        | "loop_break_if_false"
+                        | "loop_break"
+                        | "loop_continue"
+                        | "loop_start"
+                        | "loop_end"
+                        | "phi"
+                        | "load_var"
+                        | "store_var"
+                        | "label"
+                        | "state_label"
+                        | "state_switch"
+                        | "state_transition"
+                )
+            {
+                // Check the precomputed loop_body_out_vars: this variable must
+                // appear in at least one enclosing loop's assignment set.
+                let is_loop_body_var = loop_body_out_vars.values().any(|bv| {
+                    bv.iter().any(|v| v == name)
+                });
+                if is_loop_body_var {
+                    vars.get(name.as_str())
+                        .map(|var| builder.use_var(*var))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             match op.kind.as_str() {
                 "const" => {
@@ -12700,6 +12832,18 @@ impl SimpleBackend {
                     let body_block = builder.create_block();
                     let after_block = builder.create_block();
                     if !is_block_filled {
+                        // Initialize loop-body output variables to None (0)
+                        // before entering the loop header.  This ensures that
+                        // the SSA Variable has a valid reaching definition on
+                        // the first iteration so the per-iteration dec_ref at
+                        // the back-edge safely no-ops (molt_dec_ref_obj skips
+                        // non-pointer NaN-boxed values).
+                        if let Some(body_vars) = loop_body_out_vars.get(&op_idx) {
+                            let none_val = builder.ins().iconst(types::I64, 0);
+                            for name in body_vars {
+                                def_var_named(&mut builder, &vars, name, none_val);
+                            }
+                        }
                         ensure_block_in_layout(&mut builder, loop_block);
                         reachable_blocks.insert(loop_block);
                         jump_block(&mut builder, loop_block, &[]);
@@ -12839,6 +12983,14 @@ impl SimpleBackend {
                                 out_name.clone(),
                                 phi_value.unwrap(),
                             );
+                            // Initialize loop-body output variables for
+                            // linearized loops (same rationale as structured).
+                            if let Some(body_vars) = loop_body_out_vars.get(&op_idx) {
+                                let none_val = builder.ins().iconst(types::I64, 0);
+                                for name in body_vars {
+                                    def_var_named(&mut builder, &vars, name, none_val);
+                                }
+                            }
                             let dummy = builder.create_block();
                             loop_stack.push(LoopFrame {
                                 loop_block: dummy,
@@ -12877,6 +13029,15 @@ impl SimpleBackend {
                         });
                         // Step 1: define counter Variable with initial value
                         def_var_named(&mut builder, &vars, out_name.clone(), start);
+                        // Initialize loop-body output variables to None (0)
+                        // before entering the loop header — see loop_start
+                        // for the full rationale.
+                        if let Some(body_vars) = loop_body_out_vars.get(&op_idx) {
+                            let none_val = builder.ins().iconst(types::I64, 0);
+                            for name in body_vars {
+                                def_var_named(&mut builder, &vars, name, none_val);
+                            }
+                        }
                         ensure_block_in_layout(&mut builder, loop_block);
                         reachable_blocks.insert(loop_block);
                         jump_block(&mut builder, loop_block, &[]);
@@ -14828,6 +14989,17 @@ impl SimpleBackend {
                     }
                 }
                 _ => {}
+            }
+
+            // ── Emit dec_ref for the old value of loop-body reassigned vars ──
+            // The old value was captured via use_var before the op handler ran.
+            // Now that def_var_named has stored the new value, dec_ref the old
+            // one.  On the first iteration this is the None-sentinel (0) which
+            // molt_dec_ref_obj treats as a no-op.
+            if let Some(old_val) = loop_reassign_old_val {
+                if !is_block_filled {
+                    builder.ins().call(local_dec_ref_obj, &[old_val]);
+                }
             }
 
             // IMPORTANT: entry-tracked cleanup must be control-flow safe.
