@@ -545,6 +545,9 @@ impl SimpleBackend {
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut builder_ctx);
 
         let mut vars: BTreeMap<String, Variable> = BTreeMap::new();
+        // Cache const_str NaN-boxed results by DataId to avoid re-allocation
+        // inside loops. The cached Cranelift Variable persists across iterations.
+        let mut const_str_cache: BTreeMap<cranelift_module::DataId, Variable> = BTreeMap::new();
         let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
         for name in var_names.iter() {
             let var = builder.declare_var(types::I64);
@@ -1066,31 +1069,47 @@ impl SimpleBackend {
                         bytes,
                     );
 
-                    let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
-                    let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                    let len = builder.ins().iconst(types::I64, bytes.len() as i64);
+                    // Cache const_str results by data_id. Inside loops, the
+                    // same string literal is requested multiple times. Reusing
+                    // the cached Cranelift variable avoids re-calling
+                    // molt_string_from_bytes and eliminates stack-slot aliasing
+                    // bugs that corrupt the NaN-boxed string bits.
+                    let boxed = if let Some(&cached_var) = const_str_cache.get(&data_id) {
+                        builder.use_var(cached_var)
+                    } else {
+                        let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+                        let ptr = builder.ins().symbol_value(types::I64, global_ptr);
+                        let len = builder.ins().iconst(types::I64, bytes.len() as i64);
 
-                    def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
-                    def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
+                        def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
+                        def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
 
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_string_from_bytes",
-                        &[types::I64, types::I64, types::I64],
-                        &[types::I32],
-                    );
-                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        8,
-                        3,
-                    ));
-                    let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[ptr, len, out_ptr]);
-                    let boxed = builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_string_from_bytes",
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I32],
+                        );
+                        let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                        let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        builder.ins().call(local_callee, &[ptr, len, out_ptr]);
+                        let val = builder
+                            .ins()
+                            .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+
+                        // Store in a Cranelift variable for reuse across loop iterations.
+                        let cache_var_name = format!("__const_str_cache_{}", const_str_cache.len());
+                        let cache_var = declare_var_named(&mut builder, &mut vars, &cache_var_name, types::I64);
+                        builder.def_var(cache_var, val);
+                        const_str_cache.insert(data_id, cache_var);
+                        val
+                    };
 
                     let out_name_clone = out_name.clone();
                     def_var_named(&mut builder, &vars, out_name, boxed);
@@ -9922,10 +9941,7 @@ impl SimpleBackend {
                         Linkage::Import
                     };
 
-                    let callee = match self
-                        .module
-                        .declare_function(target_name, linkage, &sig)
-                    {
+                    let callee = match self.module.declare_function(target_name, linkage, &sig) {
                         Ok(id) => id,
                         Err(e) => {
                             // Signature mismatch on re-declaration — emit a
