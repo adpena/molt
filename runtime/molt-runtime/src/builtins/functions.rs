@@ -6203,6 +6203,13 @@ pub extern "C" fn molt_codeop_compile_command(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let trace = matches!(
+            std::env::var("MOLT_TRACE_FUNC_NEW").ok().as_deref(),
+            Some("1")
+        );
+        if trace {
+            eprintln!("molt func new: fn_ptr={fn_ptr} tramp_ptr={trampoline_ptr} arity={arity}");
+        }
         let ptr = alloc_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
             MoltObject::none().bits()
@@ -6263,6 +6270,15 @@ pub extern "C" fn molt_func_new_closure(
     closure_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        let trace = matches!(
+            std::env::var("MOLT_TRACE_FUNC_NEW").ok().as_deref(),
+            Some("1")
+        );
+        if trace {
+            eprintln!(
+                "molt func new closure: fn_ptr={fn_ptr} tramp_ptr={trampoline_ptr} arity={arity} closure_bits={closure_bits}"
+            );
+        }
         let ptr = alloc_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
             return MoltObject::none().bits();
