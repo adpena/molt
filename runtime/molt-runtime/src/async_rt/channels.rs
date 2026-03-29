@@ -2069,6 +2069,21 @@ pub(crate) fn has_capability(_py: &PyToken<'_>, name: &str) -> bool {
 }
 
 /// Suggest the minimum tier or env var needed to grant a missing capability.
+/// Raise a PermissionError with an actionable message including the
+/// capability name, tier suggestion, and `--trusted` escape hatch.
+pub(crate) fn raise_capability_denied<T: crate::builtins::exceptions::ExceptionSentinel>(
+    _py: &crate::concurrency::PyToken<'_>,
+    cap: &str,
+) -> T {
+    let hint = capability_fix_hint(cap);
+    crate::raise_exception::<T>(
+        _py,
+        "PermissionError",
+        &format!("missing '{cap}' capability. {hint}"),
+    )
+}
+
+/// Suggest the minimum tier or env var needed to grant a missing capability.
 pub(crate) fn capability_fix_hint(name: &str) -> String {
     // Check which tier provides it.
     if TIER_SAFE.contains(&name) {
