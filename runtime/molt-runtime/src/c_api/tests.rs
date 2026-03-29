@@ -149,6 +149,34 @@ extern "C" fn c_api_test_static_noargs(self_bits: u64, arg_bits: u64) -> u64 {
     })
 }
 
+fn create_test_heap_class(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]) -> u64 {
+    let builtins = crate::builtins::classes::builtin_classes(_py);
+    let name_bits = unsafe { molt_string_from(name.as_ptr(), name.len() as u64) };
+    assert!(!obj_from_bits(name_bits).is_none());
+    let namespace_bits = molt_dict_new(attrs.len() as u64);
+    assert!(!obj_from_bits(namespace_bits).is_none());
+    for &(attr_name, value_bits) in attrs {
+        let attr_bits = unsafe { molt_string_from(attr_name.as_ptr(), attr_name.len() as u64) };
+        assert!(!obj_from_bits(attr_bits).is_none());
+        assert_eq!(
+            molt_mapping_setitem(namespace_bits, attr_bits, value_bits),
+            0
+        );
+        dec_ref_bits(_py, attr_bits);
+    }
+    let class_bits = crate::builtins::types::molt_type_new(
+        builtins.type_obj,
+        name_bits,
+        none_bits(),
+        namespace_bits,
+        none_bits(),
+    );
+    assert!(!obj_from_bits(class_bits).is_none());
+    dec_ref_bits(_py, namespace_bits);
+    dec_ref_bits(_py, name_bits);
+    class_bits
+}
+
 #[test]
 fn c_api_version_is_nonzero() {
     assert!(molt_c_api_version() >= 1);
@@ -391,6 +419,91 @@ fn object_setattr_symbol_roundtrip() {
         dec_ref_bits(_py, attr_bits);
         dec_ref_bits(_py, exc_bits);
         dec_ref_bits(_py, msg_bits);
+    });
+}
+
+#[test]
+fn attr_object_ic_keeps_type_objects_distinct_per_site() {
+    let _ = molt_runtime_init();
+    crate::with_gil_entry!(_py, {
+        let class_a_bits = create_test_heap_class(_py, b"A", &[]);
+        let class_b_bits = create_test_heap_class(_py, b"B", &[]);
+        let site_bits = MoltObject::from_int(37).bits();
+
+        let a_name_bits = unsafe {
+            crate::builtins::attributes::molt_get_attr_object_ic(
+                class_a_bits,
+                b"__name__".as_ptr(),
+                b"__name__".len() as u64,
+                site_bits,
+            ) as u64
+        };
+        let b_name_bits = unsafe {
+            crate::builtins::attributes::molt_get_attr_object_ic(
+                class_b_bits,
+                b"__name__".as_ptr(),
+                b"__name__".len() as u64,
+                site_bits,
+            ) as u64
+        };
+
+        let mut a_len = 0u64;
+        let a_ptr = unsafe { molt_string_as_ptr(a_name_bits, &mut a_len as *mut u64) };
+        assert!(!a_ptr.is_null());
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(a_ptr, a_len as usize) },
+            b"A"
+        );
+
+        let mut b_len = 0u64;
+        let b_ptr = unsafe { molt_string_as_ptr(b_name_bits, &mut b_len as *mut u64) };
+        assert!(!b_ptr.is_null());
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(b_ptr, b_len as usize) },
+            b"B"
+        );
+
+        dec_ref_bits(_py, b_name_bits);
+        dec_ref_bits(_py, a_name_bits);
+        dec_ref_bits(_py, class_b_bits);
+        dec_ref_bits(_py, class_a_bits);
+    });
+}
+
+#[test]
+fn attr_object_ic_keeps_class_attrs_distinct_per_site() {
+    let _ = molt_runtime_init();
+    crate::with_gil_entry!(_py, {
+        let class_a_bits =
+            create_test_heap_class(_py, b"A", &[(b"x", MoltObject::from_int(1).bits())]);
+        let class_b_bits =
+            create_test_heap_class(_py, b"B", &[(b"x", MoltObject::from_int(2).bits())]);
+        let site_bits = MoltObject::from_int(41).bits();
+
+        let a_x_bits = unsafe {
+            crate::builtins::attributes::molt_get_attr_object_ic(
+                class_a_bits,
+                b"x".as_ptr(),
+                1,
+                site_bits,
+            ) as u64
+        };
+        let b_x_bits = unsafe {
+            crate::builtins::attributes::molt_get_attr_object_ic(
+                class_b_bits,
+                b"x".as_ptr(),
+                1,
+                site_bits,
+            ) as u64
+        };
+
+        assert_eq!(to_i64(obj_from_bits(a_x_bits)), Some(1));
+        assert_eq!(to_i64(obj_from_bits(b_x_bits)), Some(2));
+
+        dec_ref_bits(_py, b_x_bits);
+        dec_ref_bits(_py, a_x_bits);
+        dec_ref_bits(_py, class_b_bits);
+        dec_ref_bits(_py, class_a_bits);
     });
 }
 

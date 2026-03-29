@@ -108,6 +108,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("guarded_field_get_ptr", 21),
     ("guarded_field_init_ptr", 22),
     ("guarded_field_set_ptr", 22),
+    ("guarded_class_def", 28),
     // ── INTERNAL: Arithmetic ──
     ("abs_builtin", 2),
     ("add", 3),
@@ -973,6 +974,14 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
             "class_new",
             "class_set_base",
             "class_apply_set_name",
+            "class_layout_version",
+            "class_set_layout_version",
+        ],
+    ),
+    (
+        "class_def",
+        &[
+            "guarded_class_def",
             "class_layout_version",
             "class_set_layout_version",
         ],
