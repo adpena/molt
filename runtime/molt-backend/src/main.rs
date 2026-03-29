@@ -1477,6 +1477,13 @@ fn main() -> io::Result<()> {
                         )
                     })?;
                 } else {
+                    // Ensure output parent exists right before ld -r.
+                    ensure_output_parent_dir(output_file).unwrap_or_else(|e| {
+                        eprintln!(
+                            "MOLT_BACKEND: warning: pre-ld-r mkdir failed for '{}': {e}",
+                            output_file
+                        );
+                    });
                     // Use the system linker for partial linking.
                     // Respect CC/LD env vars for cross-compilation.
                     let ld_bin = std::env::var("LD")
