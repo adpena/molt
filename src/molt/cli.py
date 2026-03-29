@@ -8416,6 +8416,34 @@ def _parse_package_grants(
     return packages
 
 
+def _parse_audit_log_flag(value: str) -> dict[str, str]:
+    """Parse --audit-log flag value into environment variables.
+
+    Format: SINK:OUTPUT (e.g., 'jsonl:stderr', 'stderr:stderr', 'jsonl:/tmp/audit.log')
+    """
+    parts = value.split(":", 1)
+    sink = parts[0]
+    output = parts[1] if len(parts) > 1 else "stderr"
+    return {
+        "MOLT_AUDIT_ENABLED": "1",
+        "MOLT_AUDIT_SINK": sink,
+        "MOLT_AUDIT_OUTPUT": output,
+    }
+
+
+def _parse_io_mode_flag(value: str) -> dict[str, str]:
+    """Parse --io-mode flag value into environment variables.
+
+    Valid values: real, virtual, callback
+    """
+    if value not in ("real", "virtual", "callback"):
+        raise ValueError(f"Invalid IO mode: {value!r}. Must be one of: real, virtual, callback")
+    env: dict[str, str] = {}
+    if value != "real":
+        env["MOLT_IO_MODE"] = value
+    return env
+
+
 def _parse_capability_manifest_dict(
     data: Any, field: str, errors: list[str]
 ) -> CapabilityManifest | None:
@@ -21681,11 +21709,19 @@ def build(
     split_runtime: bool = False,
     capability_manifest: str | None = None,
     require_signed_manifest: bool = False,
+    audit_log: str | None = None,
+    io_mode: str | None = None,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
     if profile not in {"dev", "release"}:
         return _fail(f"Invalid build profile: {profile}", json_output, command="build")
+    # --audit-log: propagate audit config via environment variables.
+    if audit_log is not None:
+        os.environ.update(_parse_audit_log_flag(audit_log))
+    # --io-mode: propagate IO mode via environment variable.
+    if io_mode is not None:
+        os.environ.update(_parse_io_mode_flag(io_mode))
     # --portable: force baseline ISA for cross-machine reproducible codegen.
     if portable:
         os.environ["MOLT_PORTABLE"] = "1"
@@ -21801,6 +21837,8 @@ def _run_script_cross(
     require_signed_manifest: bool = False,
     build_args: list[str] | None = None,
     build_profile: BuildProfile | None = None,
+    audit_log: str | None = None,
+    io_mode: str | None = None,
 ) -> int:
     """Build with a cross target (wasm or luau) and run with the appropriate runtime."""
     if file_path and module:
@@ -21858,6 +21896,14 @@ def _run_script_cross(
                 json_output,
                 command="run",
             )
+
+    # --audit-log flag (overrides manifest audit config)
+    if audit_log is not None:
+        env.update(_parse_audit_log_flag(audit_log))
+
+    # --io-mode flag (overrides manifest io config)
+    if io_mode is not None:
+        env.update(_parse_io_mode_flag(io_mode))
 
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
@@ -22134,6 +22180,8 @@ def run_script(
     require_signed_manifest: bool = False,
     build_args: list[str] | None = None,
     build_profile: BuildProfile | None = None,
+    audit_log: str | None = None,
+    io_mode: str | None = None,
 ) -> int:
     if file_path and module:
         return _fail(
@@ -22191,6 +22239,14 @@ def run_script(
                 json_output,
                 command="run",
             )
+
+    # --audit-log flag (overrides manifest audit config)
+    if audit_log is not None:
+        env.update(_parse_audit_log_flag(audit_log))
+
+    # --io-mode flag (overrides manifest io config)
+    if io_mode is not None:
+        env.update(_parse_io_mode_flag(io_mode))
 
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
@@ -27090,6 +27146,17 @@ def main() -> int:
         help="Reject unsigned capability manifests. Requires --capability-manifest.",
     )
     build_parser.add_argument(
+        "--audit-log",
+        metavar="SINK:OUTPUT",
+        help="Enable audit logging (e.g., 'jsonl:stderr', 'stderr:stderr')",
+    )
+    build_parser.add_argument(
+        "--io-mode",
+        choices=["real", "virtual", "callback"],
+        default=None,
+        help="IO mode: real (default), virtual (sandbox), callback (host-mediated)",
+    )
+    build_parser.add_argument(
         "--diagnostics",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -27368,6 +27435,17 @@ def main() -> int:
         action="store_true",
         default=False,
         help="Reject unsigned capability manifests. Requires --capability-manifest.",
+    )
+    run_parser.add_argument(
+        "--audit-log",
+        metavar="SINK:OUTPUT",
+        help="Enable audit logging (e.g., 'jsonl:stderr', 'stderr:stderr')",
+    )
+    run_parser.add_argument(
+        "--io-mode",
+        choices=["real", "virtual", "callback"],
+        default=None,
+        help="IO mode: real (default), virtual (sandbox), callback (host-mediated)",
     )
     run_parser.add_argument(
         "--trusted",
@@ -28456,6 +28534,8 @@ def main() -> int:
             split_runtime=getattr(args, "split_runtime", False),
             capability_manifest=getattr(args, "capability_manifest", None),
             require_signed_manifest=getattr(args, "require_signed_manifest", False),
+            audit_log=getattr(args, "audit_log", None),
+            io_mode=getattr(args, "io_mode", None),
         )
     if args.command == "extension":
         if args.extension_command == "build":
@@ -28602,6 +28682,8 @@ def main() -> int:
                 getattr(args, "require_signed_manifest", False),
                 build_args,
                 cast(BuildProfile | None, run_profile),
+                audit_log=getattr(args, "audit_log", None),
+                io_mode=getattr(args, "io_mode", None),
             )
         return run_script(
             args.file,
@@ -28616,6 +28698,8 @@ def main() -> int:
             getattr(args, "require_signed_manifest", False),
             build_args,
             cast(BuildProfile | None, run_profile),
+            audit_log=getattr(args, "audit_log", None),
+            io_mode=getattr(args, "io_mode", None),
         )
     if args.command == "compare":
         python_exe = args.python or args.python_version
