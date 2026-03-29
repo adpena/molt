@@ -467,6 +467,46 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
         }
     }
 
+    // Fast-path for builtin types: resolve the value's type via type_of_bits and
+    // check with issubclass_bits directly.  This avoids the metaclass
+    // __instancecheck__ lookup which may not be wired up for builtin type objects
+    // (range, dict_keys, filter, map, zip, enumerate, etc.).
+    //
+    // We handle both a single type and a tuple of types here so that
+    // isinstance(x, (int, str)) also benefits from the fast path.
+    {
+        let class_obj = obj_from_bits(class_bits);
+        if let Some(class_ptr) = class_obj.as_ptr() {
+            let class_tid = unsafe { object_type_id(class_ptr) };
+            if class_tid == TYPE_ID_TYPE {
+                let val_type = type_of_bits(_py, val_bits);
+                if issubclass_bits(val_type, class_bits) {
+                    return true;
+                }
+            } else if class_tid == TYPE_ID_TUPLE {
+                let items = unsafe { seq_vec_ref(class_ptr) };
+                let val_type = type_of_bits(_py, val_bits);
+                let all_types = items.iter().all(|&item_bits| {
+                    if let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() {
+                        unsafe { object_type_id(item_ptr) == TYPE_ID_TYPE }
+                    } else {
+                        false
+                    }
+                });
+                if all_types {
+                    if items.iter().any(|&item_bits| issubclass_bits(val_type, item_bits)) {
+                        return true;
+                    }
+                    // All were TYPE_ID_TYPE but none matched — return false without
+                    // falling through to the expensive metaclass path.
+                    return false;
+                }
+                // Tuple contains non-type elements (e.g. nested tuples) — fall
+                // through to the generic path which recursively flattens them.
+            }
+        }
+    }
+
     let saved_exc_bits = if exception_pending(_py) {
         molt_exception_last()
     } else {
