@@ -3456,6 +3456,7 @@ impl WasmBackend {
             reserved_runtime_callable_table_start + RESERVED_RUNTIME_CALLABLE_COUNT;
         let compact_builtin_table_start =
             reserved_runtime_trampoline_table_start + RESERVED_RUNTIME_CALLABLE_COUNT;
+        let split_runtime_shared_abi_slot_end = compact_builtin_table_start as usize;
         let compact_builtin_trampoline_table_start =
             compact_builtin_table_start + compact_builtin_table_len as u32;
         let user_func_table_start =
@@ -3497,7 +3498,8 @@ impl WasmBackend {
             }
             let idx = compact_slot + compact_builtin_table_start;
             func_to_table_idx.insert(runtime_key.clone(), idx);
-            let target_index = if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key) {
+            let target_index = if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key)
+            {
                 func_to_index.insert(runtime_key, *wrapper_idx);
                 *wrapper_idx
             } else {
@@ -3731,6 +3733,7 @@ impl WasmBackend {
                 table_base,
                 &table_indices,
                 split_runtime_owned_slot_start,
+                split_runtime_shared_abi_slot_end,
             );
             self.exports
                 .export("molt_table_init", ExportKind::Func, table_init_index);
@@ -3749,7 +3752,9 @@ impl WasmBackend {
 
             let mut ref_exported = BTreeSet::new();
             for (slot, func_index) in table_indices.iter().enumerate() {
-                if slot < split_runtime_owned_slot_start {
+                if slot < split_runtime_owned_slot_start
+                    && slot >= split_runtime_shared_abi_slot_end
+                {
                     continue;
                 }
                 let table_index = table_base + slot as u32;
@@ -4294,12 +4299,16 @@ impl WasmBackend {
         table_base: u32,
         table_indices: &[u32],
         owned_slot_start: usize,
+        shared_abi_slot_end: usize,
     ) -> u32 {
         let func_index = self.func_count;
         self.funcs.function(8);
         self.func_count += 1;
         let mut func = Function::new_with_locals_types(Vec::new());
-        for (slot, target_index) in table_indices.iter().enumerate().skip(owned_slot_start) {
+        for (slot, target_index) in table_indices.iter().enumerate() {
+            if slot < owned_slot_start && slot >= shared_abi_slot_end {
+                continue;
+            }
             let table_index = table_base + slot as u32;
             emit_i32_const(&mut func, reloc_enabled, table_index as i32);
             emit_ref_func(&mut func, reloc_enabled, *target_index);
@@ -10434,8 +10443,12 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                             emit_call(func, reloc_enabled, import_ids["recursion_guard_exit"]);
                             func.instruction(&Instruction::Else);
+                            // Recursion guard failed — exception is already pending.
+                            // Return immediately so the pending RecursionError
+                            // propagates to the caller instead of being silently
+                            // swallowed as None (which caused TypeError downstream).
                             const_cache.emit_none(func);
-                            func.instruction(&Instruction::LocalSet(out));
+                            func.instruction(&Instruction::Return);
                             func.instruction(&Instruction::End);
                             func.instruction(&Instruction::Else);
                             func.instruction(&Instruction::I64Const(arity as i64));
@@ -10515,8 +10528,12 @@ impl WasmBackend {
                         func.instruction(&Instruction::Drop);
                         emit_call(func, reloc_enabled, import_ids["recursion_guard_exit"]);
                         func.instruction(&Instruction::Else);
+                        // Recursion guard failed — exception is already pending.
+                        // Return immediately so the pending RecursionError
+                        // propagates to the caller instead of being silently
+                        // swallowed as None (which caused TypeError downstream).
                         const_cache.emit_none(func);
-                        func.instruction(&Instruction::LocalSet(out));
+                        func.instruction(&Instruction::Return);
                         func.instruction(&Instruction::End);
 
                         // slow path: function object does not match expected target
