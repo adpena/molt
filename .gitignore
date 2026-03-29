@@ -50,6 +50,7 @@ hello_molt
 *_molt
 *.exe
 logs/
+tests/harness/reports/
 docs/python_documentation/
 third_party/
 winget-pkgs/
