@@ -38,6 +38,14 @@ thread-local tracker is accessed via `with_tracker`:
 resource::with_tracker(|t| t.on_allocate(4096))?;
 ```
 
+### Thread-Safety and Non-Reentrancy
+
+`with_tracker` borrows the thread-local `ResourceTracker` via `RefCell`. This means:
+- Calls to `with_tracker` must not be nested — calling `with_tracker` while already
+  inside a `with_tracker` closure will panic with a borrow error.
+- Each thread has its own tracker instance. Cross-thread tracking requires
+  `set_global_tracker_factory` to install a factory that creates per-thread trackers.
+
 ## LimitedTracker Configuration
 
 `LimitedTracker` is created from a `ResourceLimits` struct. Omitted fields
