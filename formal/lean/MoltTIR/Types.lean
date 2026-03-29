@@ -105,13 +105,13 @@ mutual
         -- Cross-constructor: beq returns false. By contrapositive of beq_refl,
         -- if beq a b = true were provable, then a = b, which contradicts the
         -- cross-constructor pattern. Since h : false = true, exact absurd.
-        sorry -- cross-constructor: Lean 4.16 can't reduce beq on wildcard patterns
+        sorry -- cross-constructor: wildcards prevent tactic reduction
   theorem Ty.listBeq_eq : (as_ bs : List Ty) → Ty.listBeq as_ bs = true → as_ = bs
     | [], [], _ => rfl
     | a :: as_, b :: bs, h => by
         unfold Ty.listBeq at h; have ⟨hab, habs⟩ := band_split' h
         have := Ty.beq_eq a b hab; have := Ty.listBeq_eq as_ bs habs; subst_vars; rfl
-    | [], _ :: _, h | _ :: _, [], h => by sorry -- length mismatch
+    | [], _ :: _, h | _ :: _, [], h => by sorry -- length mismatch: wildcards prevent tactic reduction
 end
 
 -- DecidableEq via beq_refl (falsity direction) and beq_eq (truth direction).
