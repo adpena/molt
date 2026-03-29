@@ -19270,6 +19270,17 @@ def _ensure_backend_binary(
     features_tag = "_".join(sorted(backend_features)) if backend_features else "default"
     lock_name = f"backend.{cargo_profile}.{features_tag}"
     with _build_lock(project_root, lock_name):
+        def _materialize_rebuilt_backend_binary() -> bool:
+            cargo_output = backend_bin.parent / backend_bin.name.split(".")[0]
+            exe_suffix = ".exe" if os.name == "nt" else ""
+            if exe_suffix:
+                cargo_output = cargo_output.with_suffix(exe_suffix)
+            if backend_features != _DEFAULT_BACKEND_FEATURES:
+                if cargo_output.exists() and cargo_output != backend_bin:
+                    shutil.copy2(cargo_output, backend_bin)
+            _codesign_binary(backend_bin)
+            return backend_bin.exists()
+
         if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         if not _artifact_needs_rebuild(backend_bin, fingerprint, stored_fingerprint):
@@ -19403,15 +19414,10 @@ def _ensure_backend_binary(
         # the freshly-built binary to the feature-tagged path so that
         # concurrent or sequential builds with different feature sets
         # (native vs wasm vs rust) do not overwrite each other.
-        if backend_features != _DEFAULT_BACKEND_FEATURES:
-            cargo_output = backend_bin.parent / backend_bin.name.split(".")[0]
-            exe_suffix = ".exe" if os.name == "nt" else ""
-            if exe_suffix:
-                cargo_output = cargo_output.with_suffix(exe_suffix)
-            if cargo_output.exists() and cargo_output != backend_bin:
-                shutil.copy2(cargo_output, backend_bin)
-                _codesign_binary(backend_bin)
-        _codesign_binary(backend_bin)
+        if not _materialize_rebuilt_backend_binary():
+            if not json_output:
+                print("Backend binary missing after rebuild.", file=sys.stderr)
+            return False
         # -- Post-build feature probe (defense-in-depth) -----------------
         # Cargo's incremental cache may skip recompilation when only
         # features change, leaving a binary built for the wrong target.
@@ -19462,11 +19468,13 @@ def _ensure_backend_binary(
                         if err:
                             print(err, file=sys.stderr)
                     return False
-                # Re-copy to feature-tagged path after rebuild
-                if backend_features != _DEFAULT_BACKEND_FEATURES:
-                    if cargo_output.exists() and cargo_output != backend_bin:
-                        shutil.copy2(cargo_output, backend_bin)
-                        _codesign_binary(backend_bin)
+                if not _materialize_rebuilt_backend_binary():
+                    if not json_output:
+                        print(
+                            "Backend binary missing after rebuild.",
+                            file=sys.stderr,
+                        )
+                    return False
         except (subprocess.TimeoutExpired, OSError):
             pass  # Probe failed; proceed optimistically
         # -- End post-build feature probe --------------------------------
