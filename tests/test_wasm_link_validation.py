@@ -53,6 +53,34 @@ def _build_minimal_module(element_payload: bytes) -> bytes:
     return wasm_link._build_sections(sections)
 
 
+def _parse_data_segments(data: bytes) -> list[bytes]:
+    sections = wasm_link._parse_sections(data)
+    for section_id, payload in sections:
+        if section_id != 11:
+            continue
+        offset = 0
+        seg_count, offset = wasm_link._read_varuint(payload, offset)
+        out: list[bytes] = []
+        parse_offset = offset
+        for _ in range(seg_count):
+            flags = payload[parse_offset]
+            parse_offset += 1
+            if flags == 0:
+                parse_offset = wasm_link._skip_init_expr(payload, parse_offset)
+            elif flags == 1:
+                pass
+            elif flags == 2:
+                _, parse_offset = wasm_link._read_varuint(payload, parse_offset)
+                parse_offset = wasm_link._skip_init_expr(payload, parse_offset)
+            else:
+                raise AssertionError(f"unexpected data segment flags: {flags}")
+            data_len, parse_offset = wasm_link._read_varuint(payload, parse_offset)
+            out.append(payload[parse_offset : parse_offset + data_len])
+            parse_offset += data_len
+        return out
+    return []
+
+
 def test_wasm_link_allows_ref_func_element_expr() -> None:
     write_varuint = wasm_link._write_varuint
     payload = bytearray()
@@ -108,6 +136,87 @@ def test_append_table_ref_elements_tolerates_malformed_name_utf8() -> None:
     # Malformed name entries should be ignored, not crash wasm linking.
     result = wasm_link._append_table_ref_elements(malformed)
     assert result is None or isinstance(result, bytes)
+
+
+def test_neutralize_dead_element_entries_skips_modules_with_call_indirect() -> None:
+    write_varuint = wasm_link._write_varuint
+    sections = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = write_varuint(1) + write_varuint(0)
+    sections.append((3, func_payload))
+
+    table_payload = bytearray()
+    table_payload.extend(write_varuint(1))
+    table_payload.append(0x70)
+    table_payload.extend(write_varuint(0))
+    table_payload.extend(write_varuint(1))
+    sections.append((4, bytes(table_payload)))
+
+    element_payload = bytearray()
+    element_payload.extend(write_varuint(1))
+    element_payload.extend(write_varuint(0))
+    element_payload.extend(b"\x41\x00\x0b")
+    element_payload.extend(write_varuint(1))
+    element_payload.extend(write_varuint(0))
+    sections.append((9, bytes(element_payload)))
+
+    code_payload = bytearray()
+    body = bytearray()
+    body.extend(write_varuint(0))  # local decl count
+    body.extend(b"\x41\x00")      # i32.const 0
+    body.extend(b"\x11\x00\x00")  # call_indirect type 0 table 0
+    body.append(0x0B)               # end
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(len(body)))
+    code_payload.extend(body)
+    sections.append((10, bytes(code_payload)))
+
+    data = wasm_link._build_sections(sections)
+    assert wasm_link._neutralize_dead_element_entries(data) is None
+
+
+def test_dedup_data_segments_stops_scrub_at_path_extension_boundary() -> None:
+    write_varuint = wasm_link._write_varuint
+    sections = []
+
+    memory_payload = bytearray()
+    memory_payload.extend(write_varuint(1))
+    memory_payload.append(0x00)
+    memory_payload.extend(write_varuint(1))
+    sections.append((5, bytes(memory_payload)))
+
+    path_and_adjacent = (
+        b"/Users/alice/project/tmp/class_method_probe.py"
+        b"f__name__hi"
+    )
+    second_segment = b"keep-me"
+
+    data_payload = bytearray()
+    data_payload.extend(write_varuint(2))
+    for offset, raw in ((0, path_and_adjacent), (128, second_segment)):
+        data_payload.append(0x00)
+        data_payload.extend(b"\x41")
+        data_payload.extend(write_varuint(offset))
+        data_payload.extend(b"\x0b")
+        data_payload.extend(write_varuint(len(raw)))
+        data_payload.extend(raw)
+    sections.append((11, bytes(data_payload)))
+
+    data = wasm_link._build_sections(sections)
+    updated = wasm_link._dedup_data_segments(data)
+    assert updated is not None
+
+    segs = _parse_data_segments(updated)
+    assert segs[0].endswith(b"f__name__hi")
+    assert b"/Users/" not in segs[0]
+    assert segs[1] == second_segment
 
 
 # ---------------------------------------------------------------------------

@@ -1865,6 +1865,13 @@ def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
     except ValueError:
         return None
 
+    # Dynamic dispatch through call_indirect uses runtime-computed table
+    # indices. Those targets are not statically attributable to direct call
+    # edges, so element neutralization is unsound when any call_indirect
+    # remains in the module.
+    if _code_section_has_call_indirect(sections):
+        return None
+
     code_called = _collect_code_referenced_funcs(sections)
     elem_indices = _collect_element_func_indices(sections)
     # Functions only in the element table, never directly called from code
@@ -2392,10 +2399,21 @@ def _dedup_data_segments(data: bytes) -> bytes | None:
         )
 
     # --- Pass 2: scrub embedded file paths ---
-    # Replace /rustc/<hash>/... and /Users/<path>/... with a short tag,
-    # padded with null bytes to keep the same byte length (no relocation).
+    # Replace embedded source/build file paths with a short tag, padded with
+    # null bytes to keep the same byte length (no relocation). Match only
+    # through the first plausible file-extension boundary; linked data
+    # segments can concatenate adjacent literals without NUL separators, so a
+    # greedy "[^\\x00]+" scrubber is unsound and can zero live payload bytes.
+    _PATH_EXT_RE = (
+        rb"(?:rs|py|pyi|toml|json|ron|ya?ml|c|cc|cpp|h|hpp|m|mm|swift|"
+        rb"js|jsx|ts|tsx|md|txt|lean|wat|wasm)"
+    )
     _PATH_RE = re.compile(
-        rb"(?:/rustc/[0-9a-f]{20,}/[^\x00]{4,}|/Users/[^\x00]{10,})"
+        rb"(?:/rustc/[0-9a-f]{20,}/[^\x00]{1,512}?\."
+        + _PATH_EXT_RE
+        + rb"|/Users/[^\x00]{1,512}?\."
+        + _PATH_EXT_RE
+        + rb")"
     )
     saved_path_bytes = 0
     new_seg_raw: list[bytes] = []
