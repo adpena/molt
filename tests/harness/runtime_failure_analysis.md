@@ -105,3 +105,28 @@ module initialization).
 2. Check if `module_cache_get` returns the correct module object at runtime
 3. Test whether the issue is in all backends (native, WASM, LLVM) or just one
 4. Compare with how `module_get_global` (which DOES work for reads) resolves modules
+
+## TIR Pass Interaction Bug: `while False` corrupts variables
+
+### Symptom
+`while False: count += 1` at module level corrupts `count` — it becomes
+the module object instead of retaining its assigned value.
+
+### Findings
+- `MOLT_TIR_OPT=0` (all passes disabled): PASSES
+- Skipping any single pass: PASSES
+- Only SCCP + DCE: PASSES
+- All passes together: FAILS
+
+This is a pass-ordering/interaction bug where the combination of all 8
+TIR passes produces incorrect code. No single pass is the culprit.
+
+### Impact
+Affects: `while__all.py`, `execute_ok__all.py`, `edge__all.py`
+and any test with `while False` or unreachable loop bodies.
+
+### Next Steps
+1. Dump IR before and after each pass to find where the corruption starts
+2. The issue is likely in how dead loop bodies interact with module-level
+   variable storage (the loop body references `count` which forces it into
+   a mutable binding, and a later pass incorrectly rewrites it)
