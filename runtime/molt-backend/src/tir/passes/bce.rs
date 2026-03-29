@@ -54,13 +54,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     for bid in &block_ids {
         if let Some(block) = func.blocks.get(bid) {
             for op in &block.ops {
-                if op.opcode == OpCode::ConstInt {
-                    if let Some(AttrValue::Int(v)) = op.attrs.get("value") {
+                if op.opcode == OpCode::ConstInt
+                    && let Some(AttrValue::Int(v)) = op.attrs.get("value") {
                         for &result in &op.results {
                             const_int_value.insert(result, *v);
                         }
                     }
-                }
             }
         }
     }
@@ -80,13 +79,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     Some(&v) => v,
                     None => continue, // malformed op — skip
                 };
-                if let Some(&const_val) = const_int_value.get(&index_operand) {
-                    if const_val >= 0 {
+                if let Some(&const_val) = const_int_value.get(&index_operand)
+                    && const_val >= 0 {
                         op.attrs
                             .insert("bce_safe".to_string(), AttrValue::Bool(true));
                         stats.values_changed += 1;
                     }
-                }
             }
         }
     }

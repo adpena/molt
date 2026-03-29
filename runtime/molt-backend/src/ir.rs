@@ -109,11 +109,10 @@ impl SimpleIR {
                 serde_json::from_str(trimmed).map_err(|e| format!("NDJSON parse error: {e}"))?;
             match value.get("kind").and_then(|v| v.as_str()) {
                 Some("ir_stream_start") => {
-                    if let Some(p) = value.get("profile") {
-                        if !p.is_null() {
+                    if let Some(p) = value.get("profile")
+                        && !p.is_null() {
                             profile = Some(PgoProfileIR::from_json_value(p, "stream.profile")?);
                         }
-                    }
                 }
                 Some("function") => {
                     functions.push(FunctionIR::from_json_value(&value, "stream.function")?);

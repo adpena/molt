@@ -7,11 +7,20 @@
 //! # Architecture
 //!
 //! ```text
-//! Monty VM → yield OsCall("json.loads", args)
-//!     → Host → molt_ffi_json_loads(args)  // This crate
-//!     → Molt runtime → jiter-backed JSON parsing
-//!     → Resume with result
+//! Monty VM -> yield OsCall("json.loads", args)
+//!     -> Host -> molt_ffi_json_loads(args)  // This crate
+//!     -> Molt runtime -> jiter-backed JSON parsing
+//!     -> Resume with result
 //! ```
+//!
+//! # Build modes
+//!
+//! - **`runtime_linked`** (default): Links against `molt-runtime` for full
+//!   functionality. `len`, `str`, `repr`, `json_loads`, `json_dumps` all
+//!   delegate to the runtime's implementations.
+//! - **standalone** (`--no-default-features`): No runtime dependency. Math
+//!   functions work via `molt-obj-model` NaN-boxing. Other functions return
+//!   safe fallback values (0 / identity / None bits).
 //!
 //! # Conventions
 //!
@@ -20,15 +29,16 @@
 //! - Error returns use the runtime's exception mechanism
 //! - Functions are prefixed with `molt_ffi_` to avoid symbol conflicts
 //! - The runtime must be initialized via `molt_ffi_init()` before any calls
+//!   (runtime_linked mode only)
 //!
 //! # Status
 //!
-//! `molt_ffi_init`, `molt_ffi_shutdown`, `molt_ffi_version`,
-//! `molt_ffi_is_initialized`, `molt_ffi_len`, `molt_ffi_str`,
-//! `molt_ffi_repr`, and `molt_ffi_has_capability` delegate to `molt-runtime`.
-//! `molt_ffi_math_sqrt` and `molt_ffi_math_fabs` are implemented directly
-//! via `molt-obj-model` NaN-boxing without runtime linking. JSON functions
-//! (`json_loads`, `json_dumps`) remain placeholders.
+//! With `runtime_linked`: `molt_ffi_init`, `molt_ffi_shutdown`, `molt_ffi_version`,
+//! `molt_ffi_is_initialized`, `molt_ffi_len`, `molt_ffi_str`, `molt_ffi_repr`,
+//! `molt_ffi_json_loads`, `molt_ffi_json_dumps`, and `molt_ffi_has_capability`
+//! all delegate to `molt-runtime`.
+//! Without `runtime_linked`: `molt_ffi_math_sqrt` and `molt_ffi_math_fabs` work
+//! directly via `molt-obj-model`. Other functions return safe defaults.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -46,12 +56,14 @@ static FFI_INITIALIZED: AtomicBool = AtomicBool::new(false);
 // the linker needs concrete definitions. These stubs return safe no-op values.
 
 /// Stub: isolate bootstrap is not used in FFI mode.
+#[cfg(feature = "runtime_linked")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_isolate_bootstrap() -> u64 {
     molt_obj_model::MoltObject::none().bits()
 }
 
 /// Stub: isolate import is not used in FFI mode.
+#[cfg(feature = "runtime_linked")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
     molt_obj_model::MoltObject::none().bits()
@@ -62,6 +74,7 @@ pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
 // In FFI mode there is no function table, so these should never be reached.
 // We provide stubs that return -1 (error sentinel) to make linking succeed
 // and to surface a clear failure if they are ever called unexpectedly.
+#[cfg(feature = "runtime_linked")]
 macro_rules! indirect_call_stub {
     ($name:ident $(, $arg:ident: $ty:ty)*) => {
         #[unsafe(no_mangle)]
@@ -72,19 +85,33 @@ macro_rules! indirect_call_stub {
     };
 }
 
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect0);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect1, _a0: u64);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect2, _a0: u64, _a1: u64);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect3, _a0: u64, _a1: u64, _a2: u64);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect4, _a0: u64, _a1: u64, _a2: u64, _a3: u64);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect5, _a0: u64, _a1: u64, _a2: u64, _a3: u64, _a4: u64);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect6, _a0: u64, _a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect7, _a0: u64, _a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64, _a6: u64);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect8, _a0: u64, _a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64, _a6: u64, _a7: u64);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect9, _a0: u64, _a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64, _a6: u64, _a7: u64, _a8: u64);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect10, _a0: u64, _a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64, _a6: u64, _a7: u64, _a8: u64, _a9: u64);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect11, _a0: u64, _a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64, _a6: u64, _a7: u64, _a8: u64, _a9: u64, _a10: u64);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect12, _a0: u64, _a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64, _a6: u64, _a7: u64, _a8: u64, _a9: u64, _a10: u64, _a11: u64);
+#[cfg(feature = "runtime_linked")]
 indirect_call_stub!(molt_call_indirect13, _a0: u64, _a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64, _a6: u64, _a7: u64, _a8: u64, _a9: u64, _a10: u64, _a11: u64, _a12: u64);
 
 // ── Public FFI API ─────────────────────────────────────────────────
@@ -98,19 +125,29 @@ indirect_call_stub!(molt_call_indirect13, _a0: u64, _a1: u64, _a2: u64, _a3: u64
 /// Returns `1` on success, `0` if shutdown has already occurred, and `1`
 /// (idempotent) if already initialized.
 ///
+/// In standalone mode (no `runtime_linked` feature), always returns `1`.
+///
 /// # Safety
 ///
 /// Must be called from the main thread before spawning any threads
 /// that call `molt_ffi_*` functions.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ffi_init() -> u64 {
-    // Calls through the Rust module path (not extern "C" linkage) so that
-    // the cdylib linker resolves the symbol from the rlib dependency.
-    let result = molt_runtime::lifecycle::init();
-    if result != 0 {
-        FFI_INITIALIZED.store(true, Ordering::Release);
+    #[cfg(feature = "runtime_linked")]
+    {
+        // Calls through the Rust module path (not extern "C" linkage) so that
+        // the cdylib linker resolves the symbol from the rlib dependency.
+        let result = molt_runtime::lifecycle::init();
+        if result != 0 {
+            FFI_INITIALIZED.store(true, Ordering::Release);
+        }
+        return result;
     }
-    result
+    #[cfg(not(feature = "runtime_linked"))]
+    {
+        FFI_INITIALIZED.store(true, Ordering::Release);
+        1
+    }
 }
 
 /// Shut down the Molt runtime.
@@ -118,13 +155,22 @@ pub extern "C" fn molt_ffi_init() -> u64 {
 /// Flushes audit sinks, tears down the RuntimeState, and releases all
 /// resources. Returns `1` on success, `0` if not initialized.
 ///
+/// In standalone mode, resets the initialized flag and returns `1`.
+///
 /// # Safety
 ///
 /// No `molt_ffi_*` calls may be made after this returns.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ffi_shutdown() -> u64 {
     FFI_INITIALIZED.store(false, Ordering::Release);
-    molt_runtime::lifecycle::shutdown()
+    #[cfg(feature = "runtime_linked")]
+    {
+        return molt_runtime::lifecycle::shutdown();
+    }
+    #[cfg(not(feature = "runtime_linked"))]
+    {
+        1
+    }
 }
 
 /// Get the FFI API version.
@@ -149,29 +195,65 @@ pub extern "C" fn molt_ffi_is_initialized() -> u32 {
 
 /// Parse a JSON string into a Molt object.
 ///
+/// **Requires runtime linking.** When linked against `molt-runtime` (default),
+/// delegates to the jiter-backed `molt_json_loads`. In standalone FFI mode,
+/// returns None bits.
+///
 /// # Arguments
 /// - `json_str_bits`: NaN-boxed pointer to a Molt string object containing JSON
 ///
 /// # Returns
 /// - NaN-boxed Molt object (dict, list, str, int, float, bool, None)
 /// - On error: sets pending exception and returns None bits
+///
+/// # Linking
+///
+/// To use the full implementation, link your application against both
+/// `libmolt_ffi.a` and `libmolt_runtime.a`, or build with
+/// `--features runtime_linked` (the default).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_ffi_json_loads(_json_str_bits: u64) -> u64 {
-    // TODO: delegate to molt_json_loads in the runtime
-    0 // placeholder
+pub extern "C" fn molt_ffi_json_loads(json_str_bits: u64) -> u64 {
+    #[cfg(feature = "runtime_linked")]
+    {
+        return molt_runtime::molt_json_loads(json_str_bits);
+    }
+    #[cfg(not(feature = "runtime_linked"))]
+    {
+        let _ = json_str_bits;
+        molt_obj_model::MoltObject::none().bits()
+    }
 }
 
 /// Serialize a Molt object to a JSON string.
+///
+/// **Requires runtime linking.** When linked against `molt-runtime` (default),
+/// delegates to `molt_json_dumps`. In standalone FFI mode, returns None bits.
 ///
 /// # Arguments
 /// - `obj_bits`: NaN-boxed Molt object to serialize
 ///
 /// # Returns
 /// - NaN-boxed pointer to a Molt string containing JSON
+/// - On error: sets pending exception and returns None bits
+///
+/// # Notes
+///
+/// Uses default serialization options (no indent, no sort_keys,
+/// ensure_ascii=False). For full control, use the runtime directly.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_ffi_json_dumps(_obj_bits: u64) -> u64 {
-    // TODO: delegate to molt_json_dumps in the runtime
-    0 // placeholder
+pub extern "C" fn molt_ffi_json_dumps(obj_bits: u64) -> u64 {
+    #[cfg(feature = "runtime_linked")]
+    {
+        // Default options: indent=None, sort_keys=False, ensure_ascii=False
+        let none_bits = molt_obj_model::MoltObject::none().bits();
+        let false_bits = molt_obj_model::MoltObject::from_bool(false).bits();
+        return molt_runtime::molt_json_dumps(obj_bits, none_bits, false_bits, false_bits);
+    }
+    #[cfg(not(feature = "runtime_linked"))]
+    {
+        let _ = obj_bits;
+        molt_obj_model::MoltObject::none().bits()
+    }
 }
 
 // ── Math module ────────────────────────────────────────────────────
@@ -210,33 +292,67 @@ pub extern "C" fn molt_ffi_math_fabs(x_bits: u64) -> u64 {
     }
 }
 
-// ── String utilities ───────────────────────────────────────────────
+// ── Builtins: len, str, repr ───────────────────────────────────────
 
 /// Get the length of a Molt object (list, dict, string, set, etc.).
 ///
-/// Delegates to `molt_len` in `molt-runtime`. Raises `TypeError` if the
-/// object does not support `__len__`.
+/// **Requires runtime linking.** With `runtime_linked`, delegates to
+/// `molt_len` in `molt-runtime` which dispatches through `__len__`.
+///
+/// In standalone mode, returns the NaN-boxed integer 0 for all inputs.
+/// This is a safe approximation — callers that need accurate `len()`
+/// must link against the full runtime.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ffi_len(obj_bits: u64) -> u64 {
-    molt_runtime::molt_len(obj_bits)
+    #[cfg(feature = "runtime_linked")]
+    {
+        return molt_runtime::molt_len(obj_bits);
+    }
+    #[cfg(not(feature = "runtime_linked"))]
+    {
+        let _ = obj_bits;
+        molt_obj_model::MoltObject::from_int(0).bits()
+    }
 }
 
 /// Convert an object to its `str()` representation.
 ///
-/// Delegates to `molt_str_from_obj` in `molt-runtime`. Invokes the
-/// object's `__str__` method if defined.
+/// **Requires runtime linking.** With `runtime_linked`, delegates to
+/// `molt_str_from_obj` which invokes the object's `__str__` method.
+///
+/// In standalone mode, returns the input unchanged (identity). For
+/// NaN-boxed ints and floats this is incorrect (they should become
+/// string objects), but it is a safe no-crash fallback.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ffi_str(obj_bits: u64) -> u64 {
-    molt_runtime::molt_str_from_obj(obj_bits)
+    #[cfg(feature = "runtime_linked")]
+    {
+        return molt_runtime::molt_str_from_obj(obj_bits);
+    }
+    #[cfg(not(feature = "runtime_linked"))]
+    {
+        // Identity: return the object unchanged.
+        obj_bits
+    }
 }
 
 /// Convert an object to its `repr()` string.
 ///
-/// Delegates to `molt_repr_from_obj` in `molt-runtime`. Invokes the
-/// object's `__repr__` method if defined.
+/// **Requires runtime linking.** With `runtime_linked`, delegates to
+/// `molt_repr_from_obj` which invokes the object's `__repr__` method.
+///
+/// In standalone mode, returns the input unchanged (identity).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ffi_repr(obj_bits: u64) -> u64 {
-    molt_runtime::molt_repr_from_obj(obj_bits)
+    #[cfg(feature = "runtime_linked")]
+    {
+        return molt_runtime::molt_repr_from_obj(obj_bits);
+    }
+    #[cfg(not(feature = "runtime_linked"))]
+    {
+        // Identity: return the object unchanged.
+        obj_bits
+    }
 }
 
 // ── Capabilities ───────────────────────────────────────────────────
@@ -270,16 +386,60 @@ mod tests {
     }
 
     #[test]
-    fn ffi_json_placeholders_return_zero() {
-        // JSON functions are still placeholders
-        assert_eq!(molt_ffi_json_loads(0), 0);
-        assert_eq!(molt_ffi_json_dumps(0), 0);
-    }
-
-    #[test]
     fn ffi_not_initialized_by_default() {
         // Without calling molt_ffi_init, is_initialized should return 0
         assert_eq!(molt_ffi_is_initialized(), 0);
+    }
+
+    // ── JSON tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn ffi_json_loads_none_returns_none() {
+        // Passing None bits — in standalone mode returns None, in runtime
+        // mode the runtime handles it (likely returns None or raises).
+        let none = molt_obj_model::MoltObject::none();
+        let result = molt_ffi_json_loads(none.bits());
+        // We just verify it doesn't crash; the exact return depends on mode.
+        let _ = result;
+    }
+
+    #[test]
+    fn ffi_json_dumps_none_returns_result() {
+        let none = molt_obj_model::MoltObject::none();
+        let result = molt_ffi_json_dumps(none.bits());
+        let _ = result;
+    }
+
+    #[cfg(not(feature = "runtime_linked"))]
+    #[test]
+    fn ffi_json_standalone_returns_none_bits() {
+        let none_bits = molt_obj_model::MoltObject::none().bits();
+        assert_eq!(molt_ffi_json_loads(42), none_bits);
+        assert_eq!(molt_ffi_json_dumps(42), none_bits);
+    }
+
+    // ── len/str/repr standalone tests ───────────────────────────────
+
+    #[cfg(not(feature = "runtime_linked"))]
+    #[test]
+    fn ffi_len_standalone_returns_zero() {
+        let result = molt_ffi_len(12345);
+        let obj = molt_obj_model::MoltObject::from_bits(result);
+        assert_eq!(obj.as_int(), Some(0));
+    }
+
+    #[cfg(not(feature = "runtime_linked"))]
+    #[test]
+    fn ffi_str_standalone_returns_identity() {
+        let input = molt_obj_model::MoltObject::from_int(42).bits();
+        assert_eq!(molt_ffi_str(input), input);
+    }
+
+    #[cfg(not(feature = "runtime_linked"))]
+    #[test]
+    fn ffi_repr_standalone_returns_identity() {
+        let input = molt_obj_model::MoltObject::from_float(3.14).bits();
+        assert_eq!(molt_ffi_repr(input), input);
     }
 
     // ── math_sqrt tests ──────────────────────────────────────────

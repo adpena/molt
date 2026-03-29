@@ -368,9 +368,9 @@ fn evaluate_op(opcode: OpCode, operands: &[Option<&ConstVal>]) -> Option<ConstVa
         // Comparisons
         OpCode::Eq => eval_cmp(operands, |a, b| a == b, |a, b| a == b, |a, b| a == b),
         OpCode::Ne => eval_cmp(operands, |a, b| a != b, |a, b| a != b, |a, b| a != b),
-        OpCode::Lt => eval_cmp(operands, |a, b| a < b, |a, b| a < b, |a, b| a < b),
+        OpCode::Lt => eval_cmp(operands, |a, b| a < b, |a, b| a < b, |a, b| !a & b),
         OpCode::Le => eval_cmp(operands, |a, b| a <= b, |a, b| a <= b, |a, b| a <= b),
-        OpCode::Gt => eval_cmp(operands, |a, b| a > b, |a, b| a > b, |a, b| a > b),
+        OpCode::Gt => eval_cmp(operands, |a, b| a > b, |a, b| a > b, |a, b| a & !b),
         OpCode::Ge => eval_cmp(operands, |a, b| a >= b, |a, b| a >= b, |a, b| a >= b),
 
         // Unary

@@ -161,7 +161,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // BFS backwards from the back-edge predecessor to the header.
     let mut block_to_header: HashMap<BlockId, BlockId> = HashMap::new();
 
-    for (&header, _) in &loop_headers {
+    for &header in loop_headers.keys() {
         // All back-edge predecessors and blocks reachable from them down to
         // header (exclusive) are in the loop. For our purposes we just mark
         // all blocks with BlockId in [header.0, back_pred.0] as belonging

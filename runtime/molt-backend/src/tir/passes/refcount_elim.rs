@@ -65,7 +65,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 && op
                     .operands
                     .first()
-                    .map_or(false, |v| stack_alloc_vals.contains(v))
+                    .is_some_and(|v| stack_alloc_vals.contains(v))
             {
                 remove[i] = true;
             }

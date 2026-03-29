@@ -91,11 +91,10 @@ fn is_conditional_branch(kind: &str) -> bool {
 fn build_label_map(ops: &[OpIR]) -> HashMap<i64, usize> {
     let mut map = HashMap::new();
     for (idx, op) in ops.iter().enumerate() {
-        if matches!(op.kind.as_str(), "label" | "state_label") {
-            if let Some(id) = op.value {
+        if matches!(op.kind.as_str(), "label" | "state_label")
+            && let Some(id) = op.value {
                 map.insert(id, idx);
             }
-        }
     }
     map
 }
@@ -158,29 +157,24 @@ fn find_leaders(ops: &[OpIR], label_map: &HashMap<i64, usize>) -> BTreeSet<usize
         }
 
         // The instruction *after* a terminator/conditional/block-ender is a leader.
-        if is_terminator(kind) || is_conditional_branch(kind) || is_block_ender(kind) {
-            if idx + 1 < ops.len() {
+        if (is_terminator(kind) || is_conditional_branch(kind) || is_block_ender(kind))
+            && idx + 1 < ops.len() {
                 leaders.insert(idx + 1);
             }
-        }
 
         // Target of a jump/br_if is a leader.
-        if matches!(kind, "jump" | "goto" | "br_if") {
-            if let Some(target_label) = op.value {
-                if let Some(&target_op) = label_map.get(&target_label) {
+        if matches!(kind, "jump" | "goto" | "br_if")
+            && let Some(target_label) = op.value
+                && let Some(&target_op) = label_map.get(&target_label) {
                     leaders.insert(target_op);
                 }
-            }
-        }
 
         // `loop_break_if_true` / `loop_break_if_false` target a label if present.
-        if matches!(kind, "loop_break_if_true" | "loop_break_if_false") {
-            if let Some(target_label) = op.value {
-                if let Some(&target_op) = label_map.get(&target_label) {
+        if matches!(kind, "loop_break_if_true" | "loop_break_if_false")
+            && let Some(target_label) = op.value
+                && let Some(&target_op) = label_map.get(&target_label) {
                     leaders.insert(target_op);
                 }
-            }
-        }
     }
 
     leaders
@@ -288,13 +282,11 @@ fn build_edges(
         match kind {
             // Unconditional jump.
             "jump" | "goto" => {
-                if let Some(target_label) = last_op.value {
-                    if let Some(&target_op) = label_map.get(&target_label) {
-                        if let Some(target_bid) = block_containing(blocks, target_op) {
+                if let Some(target_label) = last_op.value
+                    && let Some(&target_op) = label_map.get(&target_label)
+                        && let Some(target_bid) = block_containing(blocks, target_op) {
                             add_edge(&mut successors, &mut predecessors, bid, target_bid);
                         }
-                    }
-                }
             }
 
             // Return — no successors.
@@ -338,13 +330,11 @@ fn build_edges(
                     add_edge(&mut successors, &mut predecessors, bid, bid + 1);
                 }
                 // Taken path.
-                if let Some(target_label) = last_op.value {
-                    if let Some(&target_op) = label_map.get(&target_label) {
-                        if let Some(target_bid) = block_containing(blocks, target_op) {
+                if let Some(target_label) = last_op.value
+                    && let Some(&target_op) = label_map.get(&target_label)
+                        && let Some(target_bid) = block_containing(blocks, target_op) {
                             add_edge(&mut successors, &mut predecessors, bid, target_bid);
                         }
-                    }
-                }
             }
 
             // Conditional loop break.
@@ -356,22 +346,19 @@ fn build_edges(
                 // Break target: from explicit label, or inferred from the
                 // enclosing loop's post-loop_end block.
                 let mut break_added = false;
-                if let Some(target_label) = last_op.value {
-                    if let Some(&target_op) = label_map.get(&target_label) {
-                        if let Some(target_bid) = block_containing(blocks, target_op) {
+                if let Some(target_label) = last_op.value
+                    && let Some(&target_op) = label_map.get(&target_label)
+                        && let Some(target_bid) = block_containing(blocks, target_op) {
                             add_edge(&mut successors, &mut predecessors, bid, target_bid);
                             break_added = true;
                         }
-                    }
-                }
                 if !break_added {
                     // No explicit label — use the pre-computed break target
                     // from the enclosing loop header.
-                    if let Some(&header_bid) = loop_header_stack.last() {
-                        if let Some(&post_loop_bid) = loop_break_targets.get(&header_bid) {
+                    if let Some(&header_bid) = loop_header_stack.last()
+                        && let Some(&post_loop_bid) = loop_break_targets.get(&header_bid) {
                             add_edge(&mut successors, &mut predecessors, bid, post_loop_bid);
                         }
-                    }
                 }
             }
 
@@ -655,11 +642,10 @@ fn compute_exception_edges(
 
         // Add exception edges from this block to all active handlers.
         for handler in &active_handlers {
-            if let Some(handler_bid) = handler {
-                if *handler_bid != bid {
+            if let Some(handler_bid) = handler
+                && *handler_bid != bid {
                     edges.push((bid, *handler_bid));
                 }
-            }
         }
     }
 

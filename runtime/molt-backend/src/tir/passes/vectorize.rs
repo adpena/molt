@@ -212,7 +212,7 @@ fn find_loops(func: &TirFunction) -> HashMap<BlockId, HashSet<BlockId>> {
             if dominates(&dom, s, *bid) {
                 // Natural loop: collect all nodes between latch and header.
                 let body = natural_loop_body(func, s, *bid);
-                loops.entry(s).or_insert_with(HashSet::new).extend(body);
+                loops.entry(s).or_default().extend(body);
             }
         }
     }
@@ -378,7 +378,7 @@ fn natural_loop_body(func: &TirFunction, header: BlockId, latch: BlockId) -> Has
 
     let mut worklist = vec![latch];
     while let Some(node) = worklist.pop() {
-        if func.blocks.get(&node).is_some() {
+        if func.blocks.contains_key(&node) {
             // Walk predecessors — we need a pred map; build ad-hoc here.
             // Since this is called per back-edge, build it inline.
             for (&bid, blk) in &func.blocks {
@@ -471,15 +471,14 @@ fn analyse_loop(func: &TirFunction, body: &HashSet<BlockId>) -> VectorizationInf
                 .copied()
                 .collect();
             for v in operand_and_result_ids {
-                if let Some(ty) = ty_map.get(&v) {
-                    if is_numeric(ty) {
+                if let Some(ty) = ty_map.get(&v)
+                    && is_numeric(ty) {
                         match &seen_type {
                             None => seen_type = Some(ty.clone()),
                             Some(prev) if prev == ty => {}
                             _ => mixed_types = true,
                         }
                     }
-                }
             }
 
             // Reduction detection: look for Add/Mul/etc. that uses an

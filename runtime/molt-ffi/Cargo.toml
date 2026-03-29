@@ -8,6 +8,10 @@ description = "Stable C API for Molt runtime intrinsics — enables cross-runtim
 [lib]
 crate-type = ["cdylib", "staticlib"]
 
+[features]
+default = ["runtime_linked"]
+runtime_linked = ["dep:molt-runtime"]
+
 [dependencies]
-molt-runtime = { path = "../molt-runtime", default-features = false, features = ["stdlib_micro"] }
+molt-runtime = { path = "../molt-runtime", default-features = false, features = ["stdlib_micro"], optional = true }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
