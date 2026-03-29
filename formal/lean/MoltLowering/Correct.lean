@@ -194,6 +194,15 @@ private theorem evalBinOp_comm
         (try subst_vars; try (simp at heval; subst heval)) <;>
         simp [lowerValue] at hlv <;> subst hlv <;>
         simp_all [lowerBinOp, MoltTIR.evalBinOp]; done)
+    -- string repetition: split heval if, extract pv, then close
+    | (split at heval
+       <;> simp only [Option.some.injEq] at heval
+       <;> subst heval
+       <;> simp only [lowerValue] at hlv
+       <;> simp only [Option.some.injEq] at hlv
+       <;> subst hlv
+       <;> simp_all [lowerBinOp, MoltTIR.evalBinOp]
+       <;> done)
     -- floordiv conditional: heval is ⟨guard, conditional_result⟩
     | (obtain ⟨hcond, hrest⟩ := heval;
        split at hrest <;>
