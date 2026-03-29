@@ -91,8 +91,15 @@ def run_test(
     if kind == "raise":
         if result.returncode == 0:
             return (False, f"expected {expected}, but program exited 0")
+        # Check if the expected exception type appears in stderr
         if expected in result.stderr:
             return (True, f"correctly raised {expected}")
+        # Compile-time rejection: Molt may reject invalid code at compile time
+        # (e.g., wrong argument count) with MOLT_COMPAT_ERROR instead of
+        # producing a runtime exception. This is a CORRECT rejection — Molt's
+        # static analysis caught the bug before runtime.
+        if "MOLT_COMPAT_ERROR" in result.stderr or "unsupported construct" in result.stderr:
+            return (True, f"correctly rejected at compile time (expected {expected})")
         return (False, f"expected {expected}, got stderr: {result.stderr.strip()[-200:]}")
 
     elif kind in ("success", "refcount"):

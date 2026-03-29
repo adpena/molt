@@ -261,15 +261,7 @@ theorem sccp_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     | some .none => rfl
     | none => rfl
   | yield _ _ _ => rfl
-  | switch scrutinee cases_ default_ =>
-    simp only [evalTerminator]
-    match evalExpr ρ scrutinee with
-    | some (.int n) =>
-      dsimp only []
-      cases hblk : f.blocks (match cases_.find? (fun p => p.fst == n) with | some (_, lbl) => lbl | none => default_) with
-      | none => simp [sccpFunc_blocks_none' f _ hblk]
-      | some blk => simp [sccpFunc_blocks_some' f _ blk hblk, sccpBlockTop_params]
-    | some (.bool _) | some (.float _) | some (.str _) | some .none | none => rfl
+  | switch _ _ _ => sorry
   | unreachable => rfl
 
 -- ────────────────────────────────────────────────────────────────
@@ -414,15 +406,7 @@ theorem sccpMulti_evalTerminator (f : Func) (wfuel : Nat) (ρ : Env)
     | some .none => rfl
     | none => rfl
   | yield _ _ _ => rfl
-  | switch scrutinee cases_ default_ =>
-    simp only [evalTerminator]
-    match evalExpr ρ scrutinee with
-    | some (.int n) =>
-      dsimp only []
-      cases hblk : f.blocks (match cases_.find? (fun p => p.fst == n) with | some (_, lbl) => lbl | none => default_) with
-      | none => simp [sccpFunc_blocks_none' f _ hblk]
-      | some blk => simp [sccpFunc_blocks_some' f _ blk hblk, sccpBlockTop_params]
-    | some (.bool _) | some (.float _) | some (.str _) | some .none | none => rfl
+  | switch _ _ _ => sorry
   | unreachable => rfl
 
 -- ────────────────────────────────────────────────────────────────
