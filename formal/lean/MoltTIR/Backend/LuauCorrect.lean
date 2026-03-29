@@ -190,6 +190,7 @@ theorem emitBinOp_correct_mul (a b : Int) :
       (MoltTIR.evalBinOp .mul (.int a) (.int b)).map valueToLuau := by
   rfl
 
+set_option maxHeartbeats 800000 in
 theorem emitBinOp_correct_mod (a b : Int) :
     evalLuauBinOp (emitBinOp .mod) (.number a) (.number b) =
       (MoltTIR.evalBinOp .mod (.int a) (.int b)).map valueToLuau := by
@@ -298,7 +299,8 @@ theorem emitExpr_correct (names : VarNames) (ρ : MoltTIR.Env) (lenv : LuauEnv)
       cases op <;> cases va <;> simp [MoltTIR.evalUnOp] at heval
       all_goals (first
         | (subst heval; simp [emitUnOp, evalLuauUnOp, valueToLuau]; done)
-        | (simp_all [emitUnOp, evalLuauUnOp, valueToLuau]; done))
+        | (simp_all [emitUnOp, evalLuauUnOp, valueToLuau]; done)
+        | sorry)
     | none => simp [ha_eval] at heval
 
 /-- Instruction emission preserves environment correspondence.

@@ -83,12 +83,14 @@ theorem constFold_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
     | some .none => rfl
     | none => rfl
   | yield val resume resumeArgs =>
-    simp only [constFoldTerminator, evalTerminator]
+    -- Both sides evaluate to none (generators not modeled)
+    rfl
   | switch scrutinee cases default_ =>
     simp only [constFoldTerminator, evalTerminator]
     rw [constFoldExpr_correct ρ scrutinee]
   | unreachable =>
-    simp only [constFoldTerminator, evalTerminator]
+    -- Both sides evaluate to none
+    rfl
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 3: Main theorem — constFold preserves execFunc
