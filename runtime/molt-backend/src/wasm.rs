@@ -259,6 +259,9 @@ struct CompileFuncContext<'a> {
     multi_return_candidates: &'a BTreeMap<String, usize>,
     /// Linear-memory offset of a scratch buffer used to spill `call_func` args.
     call_func_spill_offset: u32,
+    /// Linear-memory offset of a shared scratch buffer used for outlined class_def
+    /// payloads (bases followed by attribute key/value pairs).
+    class_def_spill_offset: u32,
     /// Data segment ref for the 8-byte scratch slot used by `const_str` ops.
     const_str_scratch_segment: DataSegmentRef,
 }
@@ -2146,6 +2149,7 @@ impl WasmBackend {
 
         let mut max_func_arity = 0usize;
         let mut max_call_arity = 0usize;
+        let mut max_class_def_words = 0usize;
         let mut builtin_trampoline_specs: BTreeMap<String, usize> = BTreeMap::new();
         for func_ir in &ir.functions {
             let is_poll = func_ir.name.ends_with("_poll");
@@ -2159,6 +2163,21 @@ impl WasmBackend {
                     && !args.is_empty()
                 {
                     max_call_arity = max_call_arity.max(args.len() - 1);
+                }
+                if op.kind == "class_def"
+                    && let Some(meta) = op.s_value.as_deref()
+                {
+                    let mut parts = meta.split(',');
+                    let nbases = parts
+                        .next()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .expect("class_def metadata missing base count");
+                    let nattrs = parts
+                        .next()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .expect("class_def metadata missing attr count");
+                    let words = nbases.max(1) + (nattrs * 2).max(1);
+                    max_class_def_words = max_class_def_words.max(words);
                 }
                 if op.kind == "builtin_func"
                     && let Some(name) = op.s_value.as_ref()
@@ -2230,6 +2249,14 @@ impl WasmBackend {
         let spill_bytes = vec![0u8; spill_slots * 8];
         let spill_segment = self.add_data_segment_mutable(reloc_enabled, &spill_bytes);
         let call_func_spill_offset = spill_segment.offset;
+
+        // Shared outlined class_def spill buffer. The runtime helper snapshots the
+        // bases/attrs payload before nested calls, so reentrant wasm->runtime->wasm
+        // execution cannot observe stale scratch contents.
+        let class_def_words = max_class_def_words.max(2);
+        let class_def_bytes = vec![0u8; class_def_words * 8];
+        let class_def_segment = self.add_data_segment_mutable(reloc_enabled, &class_def_bytes);
+        let class_def_spill_offset = class_def_segment.offset;
 
         // Allocate an 8-byte scratch buffer in linear memory for const_str
         // operations.  Previously each const_str allocated a fresh 8-byte
@@ -3448,6 +3475,7 @@ impl WasmBackend {
             table_base,
             multi_return_candidates: &multi_return_candidates,
             call_func_spill_offset,
+            class_def_spill_offset,
             const_str_scratch_segment,
         };
         for func_ir in &ir.functions {
@@ -8888,6 +8916,89 @@ impl WasmBackend {
                         let name = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(name));
                         emit_call(func, reloc_enabled, import_ids["class_new"]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "class_def" => {
+                        let args = op.args.as_ref().unwrap();
+                        let meta = op.s_value.as_deref().expect("class_def needs s_value");
+                        let mut parts = meta.split(',');
+                        let nbases = parts
+                            .next()
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .expect("class_def metadata missing base count");
+                        let nattrs = parts
+                            .next()
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .expect("class_def metadata missing attr count");
+                        let layout_size = parts
+                            .next()
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .expect("class_def metadata missing layout size");
+                        let layout_version = parts
+                            .next()
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .expect("class_def metadata missing layout version");
+                        let flags = parts
+                            .next()
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .expect("class_def metadata missing flags");
+
+                        let spill_base = ctx.class_def_spill_offset;
+                        let bases_words = nbases.max(1) as u32;
+                        let attrs_base = spill_base + bases_words * 8;
+                        let attrs_start = 1 + nbases;
+
+                        for (i, base_name) in args[1..1 + nbases].iter().enumerate() {
+                            let base = locals[base_name];
+                            func.instruction(&Instruction::I32Const(
+                                (spill_base + (i as u32) * 8) as i32,
+                            ));
+                            func.instruction(&Instruction::LocalGet(base));
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                        }
+
+                        for i in 0..nattrs {
+                            let key = locals[&args[attrs_start + i * 2]];
+                            let val = locals[&args[attrs_start + i * 2 + 1]];
+                            func.instruction(&Instruction::I32Const(
+                                (attrs_base + (i as u32) * 16) as i32,
+                            ));
+                            func.instruction(&Instruction::LocalGet(key));
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                            func.instruction(&Instruction::I32Const(
+                                (attrs_base + (i as u32) * 16 + 8) as i32,
+                            ));
+                            func.instruction(&Instruction::LocalGet(val));
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                align: 3,
+                                offset: 0,
+                                memory_index: 0,
+                            }));
+                        }
+
+                        let name = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(name));
+                        func.instruction(&Instruction::I64Const(spill_base as i64));
+                        func.instruction(&Instruction::I64Const(nbases as i64));
+                        func.instruction(&Instruction::I64Const(attrs_base as i64));
+                        func.instruction(&Instruction::I64Const(nattrs as i64));
+                        func.instruction(&Instruction::I64Const(layout_size));
+                        func.instruction(&Instruction::I64Const(layout_version));
+                        func.instruction(&Instruction::I64Const(flags));
+                        emit_call(func, reloc_enabled, import_ids["guarded_class_def"]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));

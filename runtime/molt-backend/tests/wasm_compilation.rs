@@ -328,6 +328,46 @@ fn call_func_uses_dispatch() {
 }
 
 #[test]
+fn class_def_uses_guarded_class_def_import() {
+    let mut class_name = op("const_str");
+    class_name.s_value = Some("A".to_string());
+    class_name.out = Some("v_name".to_string());
+
+    let mut attr_name = op("const_str");
+    attr_name.s_value = Some("x".to_string());
+    attr_name.out = Some("v_attr".to_string());
+
+    let mut attr_value = op("const");
+    attr_value.value = Some(1);
+    attr_value.out = Some("v_value".to_string());
+
+    let mut class_def = op("class_def");
+    class_def.args = Some(vec![
+        "v_name".to_string(),
+        "v_attr".to_string(),
+        "v_value".to_string(),
+    ]);
+    class_def.s_value = Some("0,1,0,0,0".to_string());
+    class_def.out = Some("v_cls".to_string());
+
+    let wasm = compile_single_function(
+        vec![
+            class_name,
+            attr_name,
+            attr_value,
+            class_def,
+            ret_value("v_cls"),
+        ],
+        &[],
+    );
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "guarded_class_def") > 0,
+        "class_def should call guarded_class_def"
+    );
+}
+
+#[test]
 fn ret_with_value_compiles() {
     let mut c = op("const");
     c.value = Some(42);
