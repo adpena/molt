@@ -1,4 +1,5 @@
 use crate::PyToken;
+use crate::object::ops_sys::molt_ord;
 use crate::object::{HEADER_FLAG_COROUTINE, NEWLINE_KIND_CR, NEWLINE_KIND_CRLF, NEWLINE_KIND_LF};
 use molt_obj_model::MoltObject;
 use std::borrow::Cow;
@@ -36,6 +37,9 @@ struct AttrICEntry {
     type_version: u64,
     /// type_id of the object this was cached for
     obj_type_id: u32,
+    /// Logical lookup owner for result IC correctness: the class object for
+    /// TYPE_ID_TYPE, otherwise the receiver's class object.
+    class_bits: u64,
 }
 
 static ATTR_IC_RESULT_CACHE: OnceLock<Mutex<HashMap<u64, AttrICEntry>>> = OnceLock::new();
@@ -98,6 +102,15 @@ fn ic_site_from_bits(site_bits: u64) -> Option<u64> {
         return None;
     }
     Some(site_bits)
+}
+
+#[inline]
+unsafe fn attr_ic_class_bits(obj_ptr: *mut u8, type_id: u32) -> u64 {
+    if type_id == TYPE_ID_TYPE {
+        MoltObject::from_ptr(obj_ptr).bits()
+    } else {
+        unsafe { object_class_bits(obj_ptr) }
+    }
 }
 
 unsafe fn attr_name_bits_for_site(_py: &PyToken<'_>, site_id: u64, slice: &[u8]) -> Option<u64> {
@@ -1861,7 +1874,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                             v if v == fn_addr!(molt_ascii_from_obj) => Some("(obj, /)"),
                             v if v == fn_addr!(molt_bin_builtin) => Some("(number, /)"),
                             v if v == fn_addr!(molt_callable_builtin) => Some("(obj, /)"),
-                            v if v == fn_addr!(molt_chr) => Some("(i, /)"),
+                            v if v == fn_addr!(crate::object::ops::molt_chr) => Some("(i, /)"),
                             v if v == fn_addr!(molt_del_attr_name) => Some("(obj, name, /)"),
                             v if v == fn_addr!(molt_divmod_builtin) => Some("(x, y, /)"),
                             v if v == fn_addr!(molt_format_builtin) => {
@@ -1878,7 +1891,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                                 "(file, mode='r', buffering=-1, encoding=None, errors=None, newline=None, closefd=True, opener=None)",
                             ),
                             v if v == fn_addr!(molt_oct_builtin) => Some("(number, /)"),
-                            v if v == fn_addr!(molt_ord) => Some("(c, /)"),
+                            v if v == fn_addr!(crate::object::ops_sys::molt_ord) => Some("(c, /)"),
                             v if v == fn_addr!(molt_pow) => Some("(base, exp, mod=None)"),
                             v if v == fn_addr!(molt_print_builtin) => {
                                 Some("(*args, sep=' ', end='\\n', file=None, flush=False)")
@@ -4740,6 +4753,7 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                     || type_id == TYPE_ID_DATACLASS
                     || type_id == TYPE_ID_TYPE
                 {
+                    let class_bits = attr_ic_class_bits(obj_ptr, type_id);
                     let current_version = global_type_version();
                     let cache = attr_ic_result_cache()
                         .lock()
@@ -4747,6 +4761,7 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                     if let Some(entry) = cache.get(&site_id) {
                         if entry.type_version == current_version
                             && entry.obj_type_id == type_id
+                            && entry.class_bits == class_bits
                             && entry.result_bits != 0
                         {
                             // Validate the cached name still matches the requested attr.
@@ -4826,6 +4841,7 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                                                 result_bits: out,
                                                 type_version: current_version,
                                                 obj_type_id: type_id,
+                                                class_bits,
                                             },
                                         ) {
                                             drop(cache);
