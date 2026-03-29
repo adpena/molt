@@ -2678,10 +2678,38 @@ impl SimpleBackend {
             }
             let mut work_items: Vec<TirWorkItem> = Vec::new();
 
+            // Debug: dump raw IR for functions matching MOLT_DUMP_FUNC_IR pattern.
+            let dump_func_pattern = std::env::var("MOLT_DUMP_FUNC_IR").ok();
+
             for (i, func_ir) in ir.functions.iter_mut().enumerate() {
                 if gpu_kernel_names.contains(&func_ir.name) {
                     continue;
                 }
+
+                // Dump raw ops to file for debugging TIR roundtrip issues.
+                if let Some(ref pattern) = dump_func_pattern {
+                    if func_ir.name.contains(pattern.as_str()) {
+                        let _ = std::fs::create_dir_all("/tmp/molt_ir");
+                        let sanitized: String = func_ir.name.chars()
+                            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                            .collect();
+                        let mut dump = String::new();
+                        dump.push_str(&format!("// func: {} ({} ops)\n", func_ir.name, func_ir.ops.len()));
+                        dump.push_str(&format!("// params: {:?}\n", func_ir.params));
+                        dump.push_str(&format!("// param_types: {:?}\n", func_ir.param_types));
+                        for (idx, op) in func_ir.ops.iter().enumerate() {
+                            dump.push_str(&format!("{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?}\n",
+                                idx, op.kind,
+                                op.out.as_deref().unwrap_or(""),
+                                op.var.as_deref().unwrap_or(""),
+                                op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
+                                op.value, op.s_value, op.fast_int, op.fast_float));
+                        }
+                        let path = format!("/tmp/molt_ir/{}.txt", sanitized);
+                        let _ = std::fs::write(&path, &dump);
+                    }
+                }
+
                 // Save original ops BEFORE phi rewrite. The Cranelift backend
                 // expects the original phi ops; the TIR pipeline needs
                 // store_var/load_var. If TIR verification fails, we must

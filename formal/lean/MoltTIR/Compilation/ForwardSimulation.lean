@@ -236,20 +236,21 @@ structure PhaseSimulation (SourceSt TargetSt : Type)
     (ss_steps : ss ≠ ss') →  -- source takes a step (prevents trivial reflexive case)
     ∃ ts', refines ts' ss'
 
-/-- Compose two phase simulations.
+-- Compose two phase simulations.
+--
+--   If Phase 1 establishes a simulation from A to B, and Phase 2 from B to C,
+--   then their composition establishes a simulation from A to C.
+--
+--   The composed refinement is the relational composition:
+--     refines_AC tc sa  :=  exists sb, refines_BC tc sb /\ refines_AB sb sa
+--
+--   This is the fundamental transitivity principle that makes compositional
+--   verification possible. Each phase can be verified independently, and the
+--   results compose automatically.
+--
+--   Reference: CompCert's `compose_forward_simulations` in
+--   common/Smallstep.v.
 
-    If Phase 1 establishes a simulation from A to B, and Phase 2 from B to C,
-    then their composition establishes a simulation from A to C.
-
-    The composed refinement is the relational composition:
-      refines_AC tc sa  :=  exists sb, refines_BC tc sb /\ refines_AB sb sa
-
-    This is the fundamental transitivity principle that makes compositional
-    verification possible. Each phase can be verified independently, and the
-    results compose automatically.
-
-    Reference: CompCert's `compose_forward_simulations` in
-    common/Smallstep.v. -/
 /-- Compose two phase simulations, given a receptiveness condition on B.
 
     The receptiveness condition states: if B refines A, and A steps to A',

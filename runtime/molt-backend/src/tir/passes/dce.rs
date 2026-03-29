@@ -223,9 +223,10 @@ fn reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
                 if op.opcode == super::super::ops::OpCode::CheckException
                     && let Some(super::super::ops::AttrValue::Int(target_label)) =
                         op.attrs.get("value")
-                        && let Some(&target_bid) = reverse_label.get(target_label) {
-                            stack.push(target_bid);
-                        }
+                    && let Some(&target_bid) = reverse_label.get(target_label)
+                {
+                    stack.push(target_bid);
+                }
             }
         }
     }
@@ -256,12 +257,15 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let has_eh = func.has_exception_handling;
 
     // --- Phase 1: remove unreachable blocks ---
+    // Preserve blocks with loop roles (LoopHeader, LoopEnd) even if
+    // unreachable — lower_to_simple_ir depends on them for loop
+    // structure reconstruction.
     let reachable = reachable_blocks(func);
     let unreachable: Vec<BlockId> = func
         .blocks
         .keys()
         .copied()
-        .filter(|id| !reachable.contains(id))
+        .filter(|id| !reachable.contains(id) && !func.loop_roles.contains_key(id))
         .collect();
     for id in &unreachable {
         func.blocks.remove(id);
