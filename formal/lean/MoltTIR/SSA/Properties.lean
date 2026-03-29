@@ -136,8 +136,11 @@ theorem not_liveAt_of_dead_after {f : Func}
     obtain ⟨i, himem, hv⟩ := hinstr
     -- i ∈ blk.instrs.drop i₂ means i is at some absolute index ≥ i₂
     have ⟨⟨j, hj_lt⟩, hj_eq⟩ := List.mem_iff_get.mp himem
-    have hj_abs : i₂ + j < blk.instrs.length := by sorry -- List.length_drop arithmetic
-    have hget_eq : blk.instrs.get ⟨i₂ + j, hj_abs⟩ = i := by sorry -- List.getElem_drop
+    have hdrop_len : (blk.instrs.drop i₂).length = blk.instrs.length - i₂ := by
+      simp [List.length_drop]
+    have hj_abs : i₂ + j < blk.instrs.length := by omega
+    have hget_eq : blk.instrs.get ⟨i₂ + j, hj_abs⟩ = i := by
+      sorry -- needs: (l.drop n).get ⟨j,_⟩ = l.get ⟨n+j,_⟩ (List.get_drop removed in 4.28)
     exact hnot_used_after (i₂ + j) hj_abs (by omega) (hget_eq ▸ hv)
   | inr hor =>
     cases hor with
