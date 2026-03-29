@@ -744,11 +744,7 @@ fn fmt_type(ty: &LuauType) -> String {
         },
         LuauType::Dict(k, v) => format!("{{[{}]: {}}}", fmt_type(k), fmt_type(v)),
         LuauType::Function => "((...any) -> ...any)".to_string(),
-        LuauType::Union(types) => types
-            .iter()
-            .map(fmt_type)
-            .collect::<Vec<_>>()
-            .join(" | "),
+        LuauType::Union(types) => types.iter().map(fmt_type).collect::<Vec<_>>().join(" | "),
     }
 }
 

@@ -41,7 +41,6 @@ struct UseInfo {
 pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
     // Step 1: Find all Alloc ops and their result ValueIds.
     let mut escapes: HashMap<ValueId, EscapeState> = HashMap::new();
-    
 
     for block in func.blocks.values() {
         for op in &block.ops {
@@ -305,17 +304,17 @@ pub fn apply(func: &mut TirFunction, escapes: &HashMap<ValueId, EscapeState>) ->
     for block in func.blocks.values_mut() {
         // Rewrite Alloc → StackAlloc for NoEscape values.
         for op in &mut block.ops {
-            if op.opcode == OpCode::Alloc
-                && op.results.iter().any(|r| no_escape.contains(r)) {
-                    op.opcode = OpCode::StackAlloc;
-                    stats.values_changed += 1;
-                }
+            if op.opcode == OpCode::Alloc && op.results.iter().any(|r| no_escape.contains(r)) {
+                op.opcode = OpCode::StackAlloc;
+                stats.values_changed += 1;
+            }
         }
 
         // Remove IncRef/DecRef on NoEscape values.
         let before_len = block.ops.len();
         block.ops.retain(|op| {
-            !((op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef) && op.operands.iter().any(|o| no_escape.contains(o)))
+            !((op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
+                && op.operands.iter().any(|o| no_escape.contains(o)))
         });
         stats.ops_removed += before_len - block.ops.len();
     }

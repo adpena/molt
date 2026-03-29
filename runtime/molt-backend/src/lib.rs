@@ -2829,6 +2829,15 @@ impl SimpleBackend {
                                         );
                                     }
                                 }
+                                // Skip lossy roundtrip when passes didn't change anything.
+                                let any_changed = stats.iter().any(|s| {
+                                    s.values_changed > 0
+                                        || s.ops_removed > 0
+                                        || s.ops_added > 0
+                                });
+                                if !any_changed {
+                                    return None;
+                                }
                                 Some(crate::tir::lower_to_simple::lower_to_simple_ir(
                                     &tir_func, &type_map,
                                 ))

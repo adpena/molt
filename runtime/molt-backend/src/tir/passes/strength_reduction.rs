@@ -91,11 +91,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 OpCode::Pow => {
                     // x ** 2 => x * x
                     if let Some(&exp) = const_map.get(&rhs)
-                        && exp == 2 && is_i64(&lhs, &type_map) {
-                            op.opcode = OpCode::Mul;
-                            op.operands = vec![lhs, lhs];
-                            stats.values_changed += 1;
-                        }
+                        && exp == 2
+                        && is_i64(&lhs, &type_map)
+                    {
+                        op.opcode = OpCode::Mul;
+                        op.operands = vec![lhs, lhs];
+                        stats.values_changed += 1;
+                    }
                 }
                 OpCode::FloorDiv => {
                     // x // 2^k => x >> k — deferred to Phase 3 (requires inserting
