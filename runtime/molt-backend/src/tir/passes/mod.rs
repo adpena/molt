@@ -67,58 +67,27 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     let dump_tir = std::env::var("MOLT_DUMP_IR").is_ok() || std::env::var("TIR_DUMP").is_ok();
     if has_loop_role && dump_tir {
         let _ = std::fs::create_dir_all("/tmp/molt_tir");
-        let sanitized: String = func
-            .name
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
+        let sanitized: String = func.name.chars()
+            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
             .collect();
-        let mut dump = format!(
-            "// PRE-OPT TIR: {} (loop_roles={:?})\n",
-            func.name, func.loop_roles
-        );
+        let mut dump = format!("// PRE-OPT TIR: {} (loop_roles={:?})\n", func.name, func.loop_roles);
         dump.push_str(&format!("// blocks: {}\n", func.blocks.len()));
         let mut bids: Vec<_> = func.blocks.keys().copied().collect();
         bids.sort_by_key(|b| b.0);
         for bid in &bids {
             let block = &func.blocks[bid];
-            dump.push_str(&format!(
-                "\nblock {} (args={}, ops={}):\n",
-                bid.0,
-                block.args.len(),
-                block.ops.len()
-            ));
+            dump.push_str(&format!("\nblock {} (args={}, ops={}):\n", bid.0, block.args.len(), block.ops.len()));
             for op in &block.ops {
-                dump.push_str(&format!(
-                    "  {:?} operands={:?} results={:?}\n",
-                    op.opcode, op.operands, op.results
-                ));
+                dump.push_str(&format!("  {:?} operands={:?} results={:?}\n", op.opcode, op.operands, op.results));
             }
-            dump.push_str(&format!(
-                "  TERM: {:?}\n",
-                std::mem::discriminant(&block.terminator)
-            ));
+            dump.push_str(&format!("  TERM: {:?}\n", std::mem::discriminant(&block.terminator)));
             match &block.terminator {
-                super::blocks::Terminator::Branch { target, args } => {
-                    dump.push_str(&format!("    → block {} (args={})\n", target.0, args.len()))
-                }
-                super::blocks::Terminator::CondBranch {
-                    cond,
-                    then_block,
-                    else_block,
-                    ..
-                } => dump.push_str(&format!(
-                    "    cond={:?} then={} else={}\n",
-                    cond, then_block.0, else_block.0
-                )),
-                super::blocks::Terminator::Return { values } => {
-                    dump.push_str(&format!("    return {} values\n", values.len()))
-                }
+                super::blocks::Terminator::Branch { target, args } =>
+                    dump.push_str(&format!("    → block {} (args={})\n", target.0, args.len())),
+                super::blocks::Terminator::CondBranch { cond, then_block, else_block, .. } =>
+                    dump.push_str(&format!("    cond={:?} then={} else={}\n", cond, then_block.0, else_block.0)),
+                super::blocks::Terminator::Return { values } =>
+                    dump.push_str(&format!("    return {} values\n", values.len())),
                 _ => {}
             }
         }
@@ -158,67 +127,31 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
             format!("zero_delta restore for func={}\n", func.name),
         );
         *func = snapshot;
-        return Vec::new(); // Signal caller to use original ops
+        return Vec::new();  // Signal caller to use original ops
     }
 
     // Dump post-optimization TIR for loop-bearing functions.
     if has_loop_role && dump_tir {
-        let sanitized: String = func
-            .name
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
+        let sanitized: String = func.name.chars()
+            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
             .collect();
-        let mut dump = format!(
-            "// POST-OPT TIR: {} (loop_roles={:?})\n",
-            func.name, func.loop_roles
-        );
-        dump.push_str(&format!(
-            "// stats: {:?}\n",
-            stats
-                .iter()
-                .map(|s| (s.name, s.values_changed, s.ops_removed, s.ops_added))
-                .collect::<Vec<_>>()
-        ));
+        let mut dump = format!("// POST-OPT TIR: {} (loop_roles={:?})\n", func.name, func.loop_roles);
+        dump.push_str(&format!("// stats: {:?}\n", stats.iter().map(|s| (s.name, s.values_changed, s.ops_removed, s.ops_added)).collect::<Vec<_>>()));
         let mut bids: Vec<_> = func.blocks.keys().copied().collect();
         bids.sort_by_key(|b| b.0);
         for bid in &bids {
             let block = &func.blocks[bid];
-            dump.push_str(&format!(
-                "\nblock {} (args={}, ops={}):\n",
-                bid.0,
-                block.args.len(),
-                block.ops.len()
-            ));
+            dump.push_str(&format!("\nblock {} (args={}, ops={}):\n", bid.0, block.args.len(), block.ops.len()));
             for op in &block.ops {
-                dump.push_str(&format!(
-                    "  {:?} operands={:?} results={:?}\n",
-                    op.opcode, op.operands, op.results
-                ));
+                dump.push_str(&format!("  {:?} operands={:?} results={:?}\n", op.opcode, op.operands, op.results));
             }
             match &block.terminator {
-                super::blocks::Terminator::Branch { target, args } => dump.push_str(&format!(
-                    "  TERM: Branch → block {} (args={})\n",
-                    target.0,
-                    args.len()
-                )),
-                super::blocks::Terminator::CondBranch {
-                    cond,
-                    then_block,
-                    else_block,
-                    ..
-                } => dump.push_str(&format!(
-                    "  TERM: CondBranch cond={:?} then={} else={}\n",
-                    cond, then_block.0, else_block.0
-                )),
-                super::blocks::Terminator::Return { values } => {
-                    dump.push_str(&format!("  TERM: Return {} values\n", values.len()))
-                }
+                super::blocks::Terminator::Branch { target, args } =>
+                    dump.push_str(&format!("  TERM: Branch → block {} (args={})\n", target.0, args.len())),
+                super::blocks::Terminator::CondBranch { cond, then_block, else_block, .. } =>
+                    dump.push_str(&format!("  TERM: CondBranch cond={:?} then={} else={}\n", cond, then_block.0, else_block.0)),
+                super::blocks::Terminator::Return { values } =>
+                    dump.push_str(&format!("  TERM: Return {} values\n", values.len())),
                 _ => dump.push_str("  TERM: other\n"),
             }
         }
