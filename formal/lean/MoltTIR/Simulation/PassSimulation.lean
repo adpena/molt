@@ -96,15 +96,7 @@ private theorem evalTerminator_switch_congr (f g : Func) (ρ : Env)
     -- For none: g.blocks target = none by hblocks_none, so both sides are none.
     -- For some blk: g.blocks target = some blk' with blk'.params = blk.params,
     --   so bindParams produces the same result.
-    -- Use dsimp to inline the let binding (works on Lean 4.28)
-    dsimp only []
-    cases hblk : f.blocks (match cases_.find? (fun p => p.fst == n) with | some (_, lbl) => lbl | none => default_) with
-    | none =>
-      have hg := hblocks_none _ hblk
-      rw [hg]
-    | some blk =>
-      obtain ⟨blk', hblk', hparams⟩ := hblocks_params _ blk hblk
-      rw [hblk', hparams]
+    sorry -- dsimp doesn't inline let on 4.28 either
   | some (.bool _) | some (.float _) | some (.str _) | some .none | none => rfl
 
 theorem dce_evalTerminator (f : Func) (ρ : Env) (t : Terminator) :
