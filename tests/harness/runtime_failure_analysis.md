@@ -245,3 +245,34 @@ module-level loop mutations. Fixing it would likely pass 20+ conformance tests.
 The SSA back-edge threading bug (being fixed by partner in ssa.rs) blocks
 ALL loop, comprehension, and iteration tests. Once fixed, the conformance
 rate should jump significantly.
+
+## __init__ Attribute Bug: Same TIR Root Cause
+
+### Finding
+```python
+class Foo:
+    def __init__(self):
+        self.x = 42
+f = Foo()
+print(f.x)  # → 0.0 (should be 42)
+```
+
+But `f.set_x(42)` via a regular method works. And `Foo.__init__(f)` explicit
+call works. The bug is in the `Foo()` constructor dispatch path.
+
+### Key Evidence
+- `MOLT_TIR_OPT=0` → correct (42)
+- Skipping any single TIR pass → correct (42)
+- All passes together → broken (0.0)
+- Direct `f.x = 42` (no __init__) → correct
+- Regular method `self.x = 42` → correct
+- Explicit `Foo.__init__(f)` → correct
+
+### Conclusion
+Same root cause as the loop bug — the TIR `lower_to_tir → lower_to_simple`
+roundtrip corrupts the `__init__` function's compiled code. The partner's SSA
+fix should resolve this along with the loop issues.
+
+### Impact
+This bug blocks ALL class-based conformance tests where `__init__` sets
+instance attributes. Likely 30+ tests affected.
