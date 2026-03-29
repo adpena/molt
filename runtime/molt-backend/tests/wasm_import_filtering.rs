@@ -52,6 +52,47 @@ fn ir_with_async_ops() -> SimpleIR {
     }
 }
 
+fn ir_with_escaped_call_guarded() -> SimpleIR {
+    let mut func_new = op("func_new");
+    func_new.s_value = Some("callee".to_string());
+    func_new.value = Some(2);
+    func_new.out = Some("f".to_string());
+
+    let mut call_guarded = op("call_guarded");
+    call_guarded.s_value = Some("callee".to_string());
+    call_guarded.args = Some(vec!["f".to_string(), "p0".to_string(), "p1".to_string()]);
+    call_guarded.out = Some("out".to_string());
+
+    let mut ret = op("ret");
+    ret.var = Some("out".to_string());
+    ret.args = Some(vec!["out".to_string()]);
+
+    let mut callee_none = op("const_none");
+    callee_none.out = Some("retv".to_string());
+
+    let mut callee_ret = op("ret");
+    callee_ret.var = Some("retv".to_string());
+    callee_ret.args = Some(vec!["retv".to_string()]);
+
+    SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec!["p0".to_string(), "p1".to_string()],
+                ops: vec![func_new, call_guarded, ret],
+                param_types: None,
+            },
+            FunctionIR {
+                name: "callee".to_string(),
+                params: vec!["a".to_string(), "b".to_string()],
+                ops: vec![callee_none, callee_ret],
+                param_types: None,
+            },
+        ],
+        profile: None,
+    }
+}
+
 #[allow(dead_code)]
 fn ir_with_socket_ops() -> SimpleIR {
     let mut sock = op("socket_new");
@@ -232,6 +273,26 @@ fn auto_hello_world_does_not_include_db_imports() {
         "hello-world should not have db imports, found: {:?}",
         db_imports
     );
+}
+
+#[test]
+fn auto_call_guarded_keeps_escaped_dispatch_imports() {
+    let wasm = compile_with_profile(ir_with_escaped_call_guarded(), WasmProfile::Auto);
+    let names = import_names(&wasm);
+    for name in [
+        "is_function_obj",
+        "is_truthy",
+        "recursion_guard_enter",
+        "recursion_guard_exit",
+        "trace_enter_slot",
+        "trace_exit",
+        "call_func_dispatch",
+    ] {
+        assert!(
+            names.contains(name),
+            "Auto profile should retain {name} for escaped call_guarded; imports={names:?}"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------
