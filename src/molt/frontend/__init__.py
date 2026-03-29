@@ -8626,14 +8626,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             length = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="LEN", args=[iterable], result=length))
 
-            idx = MoltValue(self.next_var(), type_hint="int")
-            # Initialize idx before the loop so the SSA phi at the loop
-            # header merges this initial value with the loop_index_next
-            # back-edge value. Without this, loop_index_start reads from
-            # the constant directly, bypassing the phi.
-            self.emit(MoltOp(kind="MISSING", args=[], result=idx))
             self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="LOOP_INDEX_START", args=[idx], result=idx))
+            idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="LOOP_INDEX_START", args=[zero], result=idx))
             cond = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="LT", args=[idx, length], result=cond))
             self.emit(
@@ -8770,12 +8765,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         def emit_range_loop_body() -> None:
             if step_const is not None and step_const != 0:
                 with self._suppress_check_exception(emit_on_exit=False):
-                    idx = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="COPY", args=[start], result=idx))
                     self.emit(
                         MoltOp(kind="LOOP_START", args=[], result=MoltValue("none"))
                     )
-                    self.emit(MoltOp(kind="LOOP_INDEX_START", args=[idx], result=idx))
+                    idx = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
                     cond = MoltValue(self.next_var(), type_hint="bool")
                     if step_const > 0:
                         self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
@@ -8817,10 +8811,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="LT", args=[zero, step], result=step_pos))
             self.emit(MoltOp(kind="IF", args=[step_pos], result=MoltValue("none")))
             with self._suppress_check_exception(emit_on_exit=False):
-                idx = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="COPY", args=[start], result=idx))
                 self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-                self.emit(MoltOp(kind="LOOP_INDEX_START", args=[idx], result=idx))
+                idx = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
                 cond = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
                 self.emit(
@@ -8851,10 +8844,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="LT", args=[step, zero], result=step_neg))
             self.emit(MoltOp(kind="IF", args=[step_neg], result=MoltValue("none")))
             with self._suppress_check_exception(emit_on_exit=False):
-                idx_neg = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="COPY", args=[start], result=idx_neg))
                 self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-                self.emit(MoltOp(kind="LOOP_INDEX_START", args=[idx_neg], result=idx_neg))
+                idx_neg = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx_neg))
                 cond_neg = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="LT", args=[stop, idx_neg], result=cond_neg))
                 self.emit(
@@ -10230,10 +10222,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         stop = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
         guard_map = self._emit_hoisted_loop_guards(body)
-        idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="COPY", args=[start], result=idx))
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[idx], result=idx))
+        idx = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
         cond = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="LT", args=[idx, stop], result=cond))
         self.emit(

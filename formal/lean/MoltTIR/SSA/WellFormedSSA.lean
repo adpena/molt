@@ -138,6 +138,70 @@ theorem blockSSA_no_dup_defs {b : Block} (h : blockSSA b) :
   exact Ne.symm (fun heq => hdisj b hb (heq ▸ ha))
 
 -- ══════════════════════════════════════════════════════════════════
+-- Section 5b: Helper lemmas for block well-formedness
+-- ══════════════════════════════════════════════════════════════════
+
+/-- exprVarsIn characterized as ∀ over exprVars. -/
+private theorem exprVarsIn_iff_forall (scope : List Var) (e : Expr) :
+    exprVarsIn scope e = true ↔ ∀ v ∈ exprVars e, scope.contains v = true := by
+  induction e with
+  | val _ => simp [exprVarsIn, exprVars]
+  | var x => simp [exprVarsIn, exprVars]
+  | bin op a b iha ihb =>
+    simp only [exprVarsIn, exprVars, Bool.and_eq_true, List.mem_append]
+    constructor
+    · intro ⟨ha, hb⟩ v hv
+      rcases hv with hva | hvb
+      · exact iha.mp ha v hva
+      · exact ihb.mp hb v hvb
+    · intro h
+      exact ⟨iha.mpr (fun v hv => h v (Or.inl hv)),
+             ihb.mpr (fun v hv => h v (Or.inr hv))⟩
+  | un op a ih => simp only [exprVarsIn, exprVars]; exact ih
+
+/-- Build termVarsIn from per-var evidence. -/
+private theorem termVarsIn_of_forall' (scope : List Var) (t : Terminator)
+    (h : ∀ v ∈ termVars t, scope.contains v = true) :
+    termVarsIn scope t = true := by
+  cases t with
+  | ret e => exact (exprVarsIn_iff_forall scope e).mpr h
+  | jmp _ args =>
+    simp only [termVarsIn, List.all_eq_true]
+    intro e he; exact (exprVarsIn_iff_forall scope e).mpr fun v hv =>
+      h v (by simp only [termVars]; exact List.mem_flatMap.mpr ⟨e, he, hv⟩)
+  | br cond _ ta _ ea =>
+    simp only [termVarsIn, Bool.and_eq_true, List.all_eq_true]
+    refine ⟨⟨?_, ?_⟩, ?_⟩
+    · exact (exprVarsIn_iff_forall scope cond).mpr fun v hv =>
+        h v (by simp only [termVars]
+                exact List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inl hv))))
+    · intro e he; exact (exprVarsIn_iff_forall scope e).mpr fun v hv =>
+        h v (by simp only [termVars]
+                exact List.mem_append.mpr (Or.inl (List.mem_append.mpr
+                  (Or.inr (List.mem_flatMap.mpr ⟨e, he, hv⟩)))))
+    · intro e he; exact (exprVarsIn_iff_forall scope e).mpr fun v hv =>
+        h v (by simp only [termVars]
+                exact List.mem_append.mpr (Or.inr (List.mem_flatMap.mpr ⟨e, he, hv⟩)))
+  | yield val _ resumeArgs =>
+    simp only [termVarsIn, Bool.and_eq_true, List.all_eq_true]
+    refine ⟨?_, ?_⟩
+    · exact (exprVarsIn_iff_forall scope val).mpr fun v hv =>
+        h v (by simp only [termVars]; exact List.mem_append.mpr (Or.inl hv))
+    · intro e he; exact (exprVarsIn_iff_forall scope e).mpr fun v hv =>
+        h v (by simp only [termVars]; exact List.mem_append.mpr (Or.inr (List.mem_flatMap.mpr ⟨e, he, hv⟩)))
+  | switch scrutinee _ _ =>
+    exact (exprVarsIn_iff_forall scope scrutinee).mpr fun v hv =>
+      h v (by simp only [termVars]; exact hv)
+  | unreachable => simp [termVarsIn]
+
+/-- If all vars in termVars are members of a scope list, then termVarsIn returns true.
+    This version uses List membership instead of List.contains. -/
+private theorem termVarsIn_of_mem (scope : List Var) (t : Terminator)
+    (h : ∀ v ∈ termVars t, v ∈ scope) :
+    termVarsIn scope t = true :=
+  termVarsIn_of_forall' scope t fun v hv => List.contains_iff_mem.mpr (h v hv)
+
+-- ══════════════════════════════════════════════════════════════════
 -- Section 6: Connecting to WellFormed.lean
 -- ══════════════════════════════════════════════════════════════════
 
@@ -150,6 +214,16 @@ def BlockScoped (f : Func) : Prop :=
   ∀ (lbl : Label) (blk : Block),
     f.blocks lbl = some blk →
     ∀ v ∈ blockAllUses blk, v ∈ blockAllDefs blk
+
+/-- Intra-block ordering: every variable used by instruction i is either
+    a block parameter or the destination of a preceding instruction j < i.
+    This captures the sequential definition-before-use property within a
+    single basic block. In a well-formed SSA IR, this holds because
+    instructions are emitted in dominance order within each block. -/
+def IntraBlockOrdered (b : Block) : Prop :=
+  ∀ (i : Nat) (hi : i < b.instrs.length),
+    ∀ v ∈ exprVars (b.instrs[i]).rhs,
+      v ∈ b.params ∨ v ∈ (b.instrs.take i).map Instr.dst
 
 /-- Helper: if v is in the full block definitions (params ++ instrs.map dst),
     and v is not in params, then v is in instrs.map dst. -/
@@ -170,35 +244,43 @@ private theorem in_blockAllDefs_of_not_param (b : Block) (v : Var)
     guarantees inter-block dominance, not intra-block sequential scoping.
     In Molt's IR (as in MLIR/Cranelift), block arguments subsume phi nodes,
     ensuring that cross-block variable access always goes through params. -/
-theorem ssa_implies_wellformed {f : Func} (hssa : SSAWellFormed f)
+theorem ssa_implies_wellformed {f : Func} (_hssa : SSAWellFormed f)
     (hscoped : BlockScoped f)
-    (hblk_ssa : ∀ lbl blk, f.blocks lbl = some blk → blockSSA blk) :
+    (_hblk_ssa : ∀ lbl blk, f.blocks lbl = some blk → blockSSA blk)
+    (hintra : ∀ lbl blk, f.blocks lbl = some blk → IntraBlockOrdered blk) :
     ∀ (lbl : Label) (blk : Block),
       f.blocks lbl = some blk →
       blockWellFormed blk = true := by
   intro lbl blk hblk
   unfold blockWellFormed
-  -- Need to show: instrOk && termVarsIn scope term = true
-  -- where instrOk checks each instruction's RHS vars are in scope,
-  -- and scope = params ++ instrs.map dst
   simp only [Bool.and_eq_true]
   constructor
   · -- Each instruction's RHS variables are in scope at that point.
-    -- Under SSA with block-scoping, every variable used at instruction i
-    -- is either a param or defined by instruction j < i in the same block.
-    -- The unique_defs property ensures no shadowing, and blockSSA ensures
-    -- params and instruction dsts are disjoint with no duplicates.
-    simp only [List.all_eq_true, List.mem_zipIdx]
-    intro ⟨i, instr⟩ hmem
-    -- instr is the i-th instruction in blk.instrs
-    -- Need: exprVarsIn (params ++ (instrs.take i).map dst) instr.rhs = true
-    -- Under block-scoping + SSA, all vars in instr.rhs are in blockAllDefs blk.
-    -- Under blockSSA, within the block, the def site of each var v used at
-    -- position i is either a param or an instruction at position j < i
-    -- (by the SSA unique-def + dominance within a block).
-    sorry
-  · -- Terminator: needs termVarsIn_of_forall from BlockScopeHelpers
-    -- (not yet migrated to 4.28)
-    sorry
+    -- IntraBlockOrdered gives us that vars used at position i are in
+    -- params or defined by instructions j < i.
+    simp only [List.all_eq_true]
+    intro ⟨instr, i⟩ hmem
+    -- Extract that instr = blk.instrs[i] and i < length
+    have hinfo := List.mem_zipIdx hmem
+    obtain ⟨_, hi_lt, hinstr_eq⟩ := hinfo
+    simp at hi_lt
+    have hinstr_eq' : instr = blk.instrs[i] := by simp at hinstr_eq; exact hinstr_eq
+    rw [hinstr_eq']
+    have hord := hintra lbl blk hblk i hi_lt
+    apply (exprVarsIn_iff_forall _ _).mpr
+    intro v hv
+    apply List.contains_iff_mem.mpr
+    rcases hord v hv with hp | hd
+    · exact List.mem_append.mpr (Or.inl hp)
+    · exact List.mem_append.mpr (Or.inr hd)
+  · -- Terminator: all vars in termVars are in blockAllDefs by BlockScoped,
+    -- and blockAllDefs = definedVars params instrs = the full scope.
+    have hblk_scoped := hscoped lbl blk hblk
+    apply termVarsIn_of_mem
+    intro v hv
+    have hv_used : v ∈ blockAllUses blk := by
+      unfold blockAllUses
+      exact List.mem_append.mpr (Or.inr hv)
+    exact hblk_scoped v hv_used
 
 end MoltTIR
