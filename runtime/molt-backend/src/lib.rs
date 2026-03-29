@@ -2882,6 +2882,42 @@ impl SimpleBackend {
                 // and update the cache.
                 for (idx, content_hash, opt_ops, original_ops) in results {
                     if let Some(optimized_ops) = opt_ops {
+                        // Compare roundtripped ops with originals to find divergence.
+                        if std::env::var("MOLT_DIFF_ROUNDTRIP").is_ok() {
+                            let _ = std::fs::create_dir_all("/tmp/molt_rt_diff");
+                            let func_name = &ir.functions[idx].name;
+                            let mut diff = String::new();
+                            let orig = &original_ops;
+                            let rt = &optimized_ops;
+                            if orig.len() != rt.len() {
+                                diff.push_str(&format!("LENGTH DIFF: orig={} rt={}\n", orig.len(), rt.len()));
+                            }
+                            for (i, (o, r)) in orig.iter().zip(rt.iter()).enumerate() {
+                                let mut diffs = Vec::new();
+                                if o.kind != r.kind { diffs.push(format!("kind: {:?} vs {:?}", o.kind, r.kind)); }
+                                if o.out != r.out { diffs.push(format!("out: {:?} vs {:?}", o.out, r.out)); }
+                                if o.var != r.var { diffs.push(format!("var: {:?} vs {:?}", o.var, r.var)); }
+                                if o.args != r.args { diffs.push(format!("args: {:?} vs {:?}", o.args, r.args)); }
+                                if o.value != r.value { diffs.push(format!("value: {:?} vs {:?}", o.value, r.value)); }
+                                if o.s_value != r.s_value { diffs.push(format!("s_value: {:?} vs {:?}", o.s_value, r.s_value)); }
+                                if o.fast_int != r.fast_int { diffs.push(format!("fast_int: {:?} vs {:?}", o.fast_int, r.fast_int)); }
+                                if o.fast_float != r.fast_float { diffs.push(format!("fast_float: {:?} vs {:?}", o.fast_float, r.fast_float)); }
+                                if o.raw_int != r.raw_int { diffs.push(format!("raw_int: {:?} vs {:?}", o.raw_int, r.raw_int)); }
+                                if o.stack_eligible != r.stack_eligible { diffs.push(format!("stack_eligible: {:?} vs {:?}", o.stack_eligible, r.stack_eligible)); }
+                                if o.type_hint != r.type_hint { diffs.push(format!("type_hint: {:?} vs {:?}", o.type_hint, r.type_hint)); }
+                                if o.task_kind != r.task_kind { diffs.push(format!("task_kind: {:?} vs {:?}", o.task_kind, r.task_kind)); }
+                                if o.container_type != r.container_type { diffs.push(format!("container_type: {:?} vs {:?}", o.container_type, r.container_type)); }
+                                if o.ic_index != r.ic_index { diffs.push(format!("ic_index: {:?} vs {:?}", o.ic_index, r.ic_index)); }
+                                if o.f_value != r.f_value { diffs.push(format!("f_value: {:?} vs {:?}", o.f_value, r.f_value)); }
+                                if !diffs.is_empty() {
+                                    diff.push_str(&format!("op {}: {} [{}]\n", i, o.kind, diffs.join(", ")));
+                                }
+                            }
+                            if !diff.is_empty() {
+                                let san: String = func_name.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect();
+                                let _ = std::fs::write(format!("/tmp/molt_rt_diff/{}.txt", san), &diff);
+                            }
+                        }
                         let serialized = crate::tir::serialize::serialize_ops(&optimized_ops);
                         tir_cache.put(&content_hash, &serialized, vec![]);
                         ir.functions[idx].ops = optimized_ops;
