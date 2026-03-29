@@ -448,6 +448,8 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // SAFETY: `poll_fn_addr` is a valid extern "C" fn pointer stored in the task object
+            // by the async runtime. The caller ensures it points to a 1-arg poll function. UB if null.
             let poll_fn: extern "C" fn(u64) -> i64 = std::mem::transmute(poll_fn_addr as usize);
             poll_fn(addr)
         }

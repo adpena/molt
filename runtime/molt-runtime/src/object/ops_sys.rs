@@ -1,6 +1,7 @@
 // System, GC, time, signal, traceback, profiling, and related runtime support.
 // Split from ops.rs for compilation-unit size reduction.
 
+use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::object::ops::{range_components_bigint, range_len_bigint};
 use crate::object::ops_string::{push_wtf8_codepoint, wtf8_codepoint_at};
 use crate::state::runtime_state::PythonVersionInfo;
@@ -1705,7 +1706,14 @@ fn traceback_source_line_native(_py: &PyToken<'_>, filename: &str, lineno: i64) 
     if lineno <= 0 {
         return String::new();
     }
-    if !has_capability(_py, "fs.read") {
+    let allowed = has_capability(_py, "fs.read");
+    audit_capability_decision(
+        "traceback.source_line",
+        "fs.read",
+        AuditArgs::Path(filename.to_string()),
+        allowed,
+    );
+    if !allowed {
         return String::new();
     }
     let Ok(file) = std::fs::File::open(filename) else {
