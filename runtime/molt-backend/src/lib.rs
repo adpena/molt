@@ -2664,7 +2664,7 @@ impl SimpleBackend {
                 let hash = std::hash::Hasher::finish(&hasher);
                 std::path::PathBuf::from(format!(".molt_cache/{:016x}", hash))
             };
-            let mut tir_cache = crate::tir::cache::CompilationCache::open(cache_dir);
+            let tir_cache = crate::tir::cache::CompilationCache::open(cache_dir);
 
             // Phase 1 (sequential): check cache for every function. For cache
             // hits, apply immediately. For misses, collect the function index,
@@ -2687,8 +2687,8 @@ impl SimpleBackend {
                 }
 
                 // Dump raw ops to file for debugging TIR roundtrip issues.
-                if let Some(ref pattern) = dump_func_pattern {
-                    if func_ir.name.contains(pattern.as_str()) {
+                if let Some(ref pattern) = dump_func_pattern
+                    && func_ir.name.contains(pattern.as_str()) {
                         let _ = std::fs::create_dir_all("/tmp/molt_ir");
                         let sanitized: String = func_ir.name.chars()
                             .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
@@ -2708,7 +2708,6 @@ impl SimpleBackend {
                         let path = format!("/tmp/molt_ir/{}.txt", sanitized);
                         let _ = std::fs::write(&path, &dump);
                     }
-                }
 
                 // Save original ops BEFORE phi rewrite. The Cranelift backend
                 // expects the original phi ops; the TIR pipeline needs
@@ -2789,7 +2788,7 @@ impl SimpleBackend {
                     .into_par_iter()
                     .map(|input| {
                         let idx = input.index;
-                        let content_hash = input.content_hash;
+                        let _content_hash = input.content_hash;
                         let original_ops = input.original_ops;
                         // Build a temporary FunctionIR for the TIR pipeline.
                         let tmp_func = FunctionIR {
