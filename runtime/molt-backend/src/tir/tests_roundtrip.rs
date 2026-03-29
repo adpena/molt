@@ -995,4 +995,60 @@ mod tests {
             "const.value=0 must be preserved (not treated as None)"
         );
     }
+
+    // ---------------------------------------------------------------------------
+    // Test: Loop body ops survive TIR optimization roundtrip
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn loop_body_ops_survive_optimization() {
+        // Simulate: for i in range(3): call print(i)
+        // The "call" op inside the loop must survive the TIR roundtrip.
+        let ops = vec![
+            op_out("const", "stop"),      // stop = 3
+            op_out("const", "idx"),       // idx = 0
+            op("loop_start"),
+            // Loop body: a call that must NOT be eliminated
+            op_out_args("call", "result", &["idx"]),
+            // Increment
+            op_out("const", "one"),
+            op_out_args("add", "idx2", &["idx", "one"]),
+            op("loop_end"),
+            op("ret_void"),
+        ];
+        let result = roundtrip(ops);
+        // The "call" op must exist in the output — it has side effects
+        // and must not be eliminated by any optimization pass.
+        let call_count = result.iter().filter(|o| o.kind == "call").count();
+        assert!(
+            call_count >= 1,
+            "loop body 'call' op was eliminated by TIR optimization! \
+             This is the known TIR pass interaction bug. \
+             Output ops: {:?}",
+            result.iter().map(|o| &o.kind).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn loop_body_ops_survive_no_opt() {
+        // Same test without optimization — should always pass.
+        let ops = vec![
+            op_out("const", "stop"),
+            op_out("const", "idx"),
+            op("loop_start"),
+            op_out_args("call", "result", &["idx"]),
+            op_out("const", "one"),
+            op_out_args("add", "idx2", &["idx", "one"]),
+            op("loop_end"),
+            op("ret_void"),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let call_count = result.iter().filter(|o| o.kind == "call").count();
+        assert!(
+            call_count >= 1,
+            "loop body 'call' op was eliminated even without optimization! \
+             Output ops: {:?}",
+            result.iter().map(|o| &o.kind).collect::<Vec<_>>()
+        );
+    }
 }

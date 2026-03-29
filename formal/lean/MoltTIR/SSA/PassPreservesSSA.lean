@@ -249,6 +249,9 @@ theorem constFoldTerminator_successors (t : Terminator) :
   | ret _ => simp [constFoldTerminator, termSuccessors]
   | jmp target args => simp [constFoldTerminator, termSuccessors]
   | br cond tl ta el ea => simp [constFoldTerminator, termSuccessors]
+  | yield val resume resumeArgs => simp [constFoldTerminator, termSuccessors]
+  | switch scrutinee cases default_ => simp [constFoldTerminator, termSuccessors]
+  | unreachable => simp [constFoldTerminator, termSuccessors]
 
 /-- constFoldBlock preserves terminator successors. -/
 theorem constFoldBlock_successors (b : Block) :
@@ -282,6 +285,16 @@ theorem constFoldTerminator_vars_subset (t : Terminator) :
       · exact List.mem_append_left _ (List.mem_append_left _ (constFoldExpr_vars_subset cond v hc))
       · exact List.mem_append_left _ (List.mem_append_right _ (map_constFoldExpr_vars_subset ta v hta'))
     · exact List.mem_append_right _ (map_constFoldExpr_vars_subset ea v hea')
+  | yield val resume resumeArgs =>
+    simp only [constFoldTerminator, termVars] at hv ⊢
+    rcases List.mem_append.mp hv with hval | hargs
+    · exact List.mem_append_left _ (constFoldExpr_vars_subset val v hval)
+    · exact List.mem_append_right _ (map_constFoldExpr_vars_subset resumeArgs v hargs)
+  | switch scrutinee cases default_ =>
+    simp only [constFoldTerminator, termVars] at *
+    exact constFoldExpr_vars_subset scrutinee v hv
+  | unreachable =>
+    simp only [constFoldTerminator, termVars] at hv
 
 /-- constFoldBlock uses are a subset of original block uses. -/
 theorem constFoldBlock_uses_subset (b : Block) :
@@ -894,6 +907,9 @@ private theorem buildJoinMap_entries (f : Func) :
           rw [hl, hs]
         · exact hacc s l hmem'
     | br _ _ _ _ _ => simp only [hterm]; exact hacc
+    | yield _ _ _ => simp only [hterm]; exact hacc
+    | switch _ _ _ => simp only [hterm]; exact hacc
+    | unreachable => simp only [hterm]; exact hacc
 
 /-- joinLookup that returns some l means l was stored in the map at a matching key. -/
 private theorem joinLookup_some_eq {jmap : JoinMap} {sig : JoinSig} {l : Label}
@@ -942,6 +958,15 @@ private theorem joinCanonTerminator_successors_eq (f : Func) (t : Terminator) :
     have htl := canonicalizeJump_target hmap tl ta
     have hel := canonicalizeJump_target hmap el ea
     rw [htl, hel]
+  | yield val resume resumeArgs =>
+    simp only [joinCanonTerminator, canonicalizeJump, termSuccessors]
+    cases hl : joinLookup (buildJoinMap f) { target := resume, args := resumeArgs } with
+    | none => rfl
+    | some canonical =>
+      simp only [termSuccessors]
+      exact congrArg (· :: []) (joinLookup_some_eq hmap hl)
+  | switch _ _ _ => simp [joinCanonTerminator, termSuccessors]
+  | unreachable => simp [joinCanonTerminator, termSuccessors]
 
 /-- Join canonicalization preserves SSA. -/
 theorem joinCanon_preserves_ssa (f : Func) (h : SSAWellFormed f) :
@@ -990,6 +1015,14 @@ theorem joinCanon_preserves_ssa (f : Func) (h : SSAWellFormed f) :
           cases joinLookup (buildJoinMap f) { target := tl, args := ta } <;>
           cases joinLookup (buildJoinMap f) { target := el, args := ea } <;>
           simp only [termVars] <;> exact id
+        | yield val resume resumeArgs =>
+          simp only [joinCanonTerminator, canonicalizeJump, termVars]
+          cases joinLookup (buildJoinMap f) { target := resume, args := resumeArgs } <;>
+          simp only [termVars] <;> exact id
+        | switch _ _ _ =>
+          simp only [joinCanonTerminator, termVars]; exact id
+        | unreachable =>
+          simp only [joinCanonTerminator, termVars]; exact id
     exact use_dom_def_of_mapFunc f (joinCanonBlock (buildJoinMap f))
       (joinCanonBlock_defs (buildJoinMap f)) hterm huses h
   · -- Entry preserved
@@ -1045,6 +1078,9 @@ private theorem edgeThreadTerminator_successors_subset (σ : AbsEnv) (t : Termin
       | float n => simp [habsEval] at hl; exact hl
       | str s => simp [habsEval] at hl; exact hl
       | none => simp [habsEval] at hl; exact hl
+  | yield _ _ _ => simp [edgeThreadTerminator] at hl; exact hl
+  | switch _ _ _ => simp [edgeThreadTerminator] at hl; exact hl
+  | unreachable => simp [edgeThreadTerminator, termSuccessors] at hl
 
 /-- edgeThreadTerminator only removes vars: termVars subset. -/
 private theorem edgeThreadTerminator_vars_subset (σ : AbsEnv) (t : Terminator) :
@@ -1074,6 +1110,9 @@ private theorem edgeThreadTerminator_vars_subset (σ : AbsEnv) (t : Terminator) 
       | float n => simp [habsEval] at hv; exact hv
       | str s => simp [habsEval] at hv; exact hv
       | none => simp [habsEval] at hv; exact hv
+  | yield _ _ _ => simp [edgeThreadTerminator] at hv; exact hv
+  | switch _ _ _ => simp [edgeThreadTerminator] at hv; exact hv
+  | unreachable => simp [edgeThreadTerminator, termVars] at hv
 
 /-- Edge threading preserves SSA: only terminators change.
     Edge threading only removes edges (br->jmp removes one successor).
