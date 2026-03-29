@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::PassStats;
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, OpCode};
 use crate::tir::values::ValueId;
@@ -296,6 +296,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     }
 
     // Phase 4: Fold constant conditional branches to unconditional branches.
+    // SAFETY: Never fold branches whose targets include a loop header —
+    // the loop condition depends on runtime iteration state that SCCP's
+    // forward-only lattice cannot model correctly.
     for &bid in &block_ids {
         let block = func.blocks.get_mut(&bid).unwrap();
         let new_term = match &block.terminator {
@@ -306,6 +309,19 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 else_block,
                 else_args,
             } => {
+                // Skip if either branch target is a loop header — folding
+                // these would eliminate loop bodies.
+                let targets_loop = func
+                    .loop_roles
+                    .get(then_block)
+                    .map_or(false, |r| *r == LoopRole::LoopHeader)
+                    || func
+                        .loop_roles
+                        .get(else_block)
+                        .map_or(false, |r| *r == LoopRole::LoopHeader);
+                if targets_loop {
+                    None
+                } else {
                 match lattice.get(cond) {
                     Some(LatticeValue::Constant(ConstVal::Bool(true))) => {
                         Some(Terminator::Branch {
@@ -339,6 +355,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     }),
                     _ => None,
                 }
+                } // close else { ... } for targets_loop guard
             }
             _ => None,
         };
