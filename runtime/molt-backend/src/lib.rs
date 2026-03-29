@@ -86,8 +86,10 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
     // Phase 1: find all if/else/end_if/phi patterns and collect rewrite info.
     // Build if_stack to match if/else/end_if.
     let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new(); // (if_idx, else_idx)
-    let mut if_to_end_if: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
-    let mut if_to_else: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    let mut if_to_end_if: std::collections::BTreeMap<usize, usize> =
+        std::collections::BTreeMap::new();
+    let mut if_to_else: std::collections::BTreeMap<usize, usize> =
+        std::collections::BTreeMap::new();
 
     for (idx, op) in ops.iter().enumerate() {
         match op.kind.as_str() {
@@ -114,12 +116,12 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
     //               insert_before_end_if_idx, store_var_name2, store_var_arg2,
     //               phi_idx, phi_out)>
     struct PhiRewrite {
-        then_insert_idx: usize,   // index to insert store_var for then-path
-        then_arg: String,         // value name for then-path
-        else_insert_idx: usize,   // index to insert store_var for else-path
-        else_arg: String,         // value name for else-path
-        phi_idx: usize,           // index of the phi op to replace
-        phi_out: String,          // output variable name
+        then_insert_idx: usize, // index to insert store_var for then-path
+        then_arg: String,       // value name for then-path
+        else_insert_idx: usize, // index to insert store_var for else-path
+        else_arg: String,       // value name for else-path
+        phi_idx: usize,         // index of the phi op to replace
+        phi_out: String,        // output variable name
     }
 
     let mut rewrites: Vec<PhiRewrite> = Vec::new();
@@ -128,31 +130,34 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
         let mut scan = end_if_idx + 1;
         while scan < ops.len() && ops[scan].kind == "phi" {
             let phi_op = &ops[scan];
-            if let (Some(out), Some(args)) = (&phi_op.out, &phi_op.args) && args.len() == 2 && out != "none" {
-                    let has_else = if_to_else.contains_key(&if_idx);
-                    let then_insert;
-                    let else_insert;
-                    if has_else {
-                        // Insert then-path store_var just before the `else` op.
-                        then_insert = *if_to_else.get(&if_idx).unwrap();
-                        // Insert else-path store_var just before end_if.
-                        else_insert = end_if_idx;
-                    } else {
-                        // No explicit else: the else-path is the fall-through
-                        // from IF (condition was false). Store the else-path
-                        // value BEFORE the IF so it's the default. Store the
-                        // then-path value before END_IF (overrides on true).
-                        else_insert = if_idx; // Before the IF
-                        then_insert = end_if_idx; // Before END_IF (in then-branch)
-                    }
-                    rewrites.push(PhiRewrite {
-                        then_insert_idx: then_insert,
-                        then_arg: args[0].clone(),
-                        else_insert_idx: else_insert,
-                        else_arg: args[1].clone(),
-                        phi_idx: scan,
-                        phi_out: out.clone(),
-                    });
+            if let (Some(out), Some(args)) = (&phi_op.out, &phi_op.args)
+                && args.len() == 2
+                && out != "none"
+            {
+                let has_else = if_to_else.contains_key(&if_idx);
+                let then_insert;
+                let else_insert;
+                if has_else {
+                    // Insert then-path store_var just before the `else` op.
+                    then_insert = *if_to_else.get(&if_idx).unwrap();
+                    // Insert else-path store_var just before end_if.
+                    else_insert = end_if_idx;
+                } else {
+                    // No explicit else: the else-path is the fall-through
+                    // from IF (condition was false). Store the else-path
+                    // value BEFORE the IF so it's the default. Store the
+                    // then-path value before END_IF (overrides on true).
+                    else_insert = if_idx; // Before the IF
+                    then_insert = end_if_idx; // Before END_IF (in then-branch)
+                }
+                rewrites.push(PhiRewrite {
+                    then_insert_idx: then_insert,
+                    then_arg: args[0].clone(),
+                    else_insert_idx: else_insert,
+                    else_arg: args[1].clone(),
+                    phi_idx: scan,
+                    phi_out: out.clone(),
+                });
             }
             scan += 1;
         }
@@ -593,9 +598,10 @@ fn analyze_native_backend_functions(functions: &[FunctionIR]) -> NativeBackendIr
         }
         // Check: all fast_int arithmetic ops, all call_internal targets
         // are self or candidates, and the function has typed params.
-        let has_all_int_params = func_ir.param_types.as_ref().is_some_and(|pts| {
-            !pts.is_empty() && pts.iter().all(|t| t == "int")
-        });
+        let has_all_int_params = func_ir
+            .param_types
+            .as_ref()
+            .is_some_and(|pts| !pts.is_empty() && pts.iter().all(|t| t == "int"));
         if !has_all_int_params {
             // Also detect functions where ALL const/add/sub/mul/lt/gt/le/ge/eq/ne
             // ops have fast_int, all params are used only in fast_int contexts,
@@ -616,9 +622,10 @@ fn analyze_native_backend_functions(functions: &[FunctionIR]) -> NativeBackendIr
                     }
                     "call_internal" => {
                         if let Some(target) = op.s_value.as_ref()
-                            && target != &func_ir.name {
-                                all_calls_self = false;
-                            }
+                            && target != &func_ir.name
+                        {
+                            all_calls_self = false;
+                        }
                     }
                     "call_func" | "call_method" | "call_guarded" => {
                         all_ops_typed = false;
@@ -650,10 +657,11 @@ fn analyze_native_backend_functions(functions: &[FunctionIR]) -> NativeBackendIr
         for op in &func_ir.ops {
             if op.kind == "call_internal"
                 && let Some(target) = op.s_value.as_ref()
-                    && !typed_int_candidates.contains(target) {
-                        valid = false;
-                        break;
-                    }
+                && !typed_int_candidates.contains(target)
+            {
+                valid = false;
+                break;
+            }
         }
         if valid {
             typed_int_functions.insert(name.clone());
@@ -1698,9 +1706,10 @@ fn drain_cleanup_tracked_dedup(
             return true;
         }
         if let Some(ref set) = already_decrefed
-            && set.contains(name.as_str()) {
-                return false;
-            }
+            && set.contains(name.as_str())
+        {
+            return false;
+        }
         let last = last_use.get(name).copied().unwrap_or(usize::MAX);
         if last <= op_idx {
             if let Some(ref mut set) = already_decrefed {
@@ -2380,33 +2389,38 @@ impl SimpleBackend {
                     func_id,
                     func,
                     name,
-                } => match Self::retry_define_at_opt_none(&mut self.module, func_id, *func, &name) {
-                    Ok(()) => {
-                        self.defined_func_names.insert(name.clone());
-                        eprintln!("  -> {} compiled successfully at opt_level=none", name);
-                    }
-                    Err(retry_err) => {
-                        eprintln!("  -> retry also failed for {}: {}", name, retry_err);
-                        let sig = self
-                            .module
-                            .declarations()
-                            .get_function_decl(func_id)
-                            .signature
-                            .clone();
-                        eprintln!(
-                            "  -> emitting trap stub for {} (function too large for Cranelift)",
-                            name
-                        );
-                        match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
-                            Ok(()) => {
-                                self.defined_func_names.insert(name);
-                            }
-                            Err(stub_err) => {
-                                eprintln!("  -> trap stub also failed for {}: {}", name, stub_err);
+                } => {
+                    match Self::retry_define_at_opt_none(&mut self.module, func_id, *func, &name) {
+                        Ok(()) => {
+                            self.defined_func_names.insert(name.clone());
+                            eprintln!("  -> {} compiled successfully at opt_level=none", name);
+                        }
+                        Err(retry_err) => {
+                            eprintln!("  -> retry also failed for {}: {}", name, retry_err);
+                            let sig = self
+                                .module
+                                .declarations()
+                                .get_function_decl(func_id)
+                                .signature
+                                .clone();
+                            eprintln!(
+                                "  -> emitting trap stub for {} (function too large for Cranelift)",
+                                name
+                            );
+                            match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
+                                Ok(()) => {
+                                    self.defined_func_names.insert(name);
+                                }
+                                Err(stub_err) => {
+                                    eprintln!(
+                                        "  -> trap stub also failed for {}: {}",
+                                        name, stub_err
+                                    );
+                                }
                             }
                         }
                     }
-                },
+                }
             }
         }
     }
@@ -2489,9 +2503,10 @@ impl SimpleBackend {
             let op = &ops[i];
             if op.kind == "const"
                 && let Some(ref out) = op.out
-                    && out == var_name {
-                        return op.value;
-                    }
+                && out == var_name
+            {
+                return op.value;
+            }
         }
         None
     }
@@ -2688,10 +2703,10 @@ impl SimpleBackend {
                 // Cache hit — apply directly and skip.
                 if let Some(cached_bytes) = tir_cache.get(&content_hash)
                     && let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
-                    {
-                        func_ir.ops = cached_ops;
-                        continue;
-                    }
+                {
+                    func_ir.ops = cached_ops;
+                    continue;
+                }
                 work_items.push(TirWorkItem {
                     index: i,
                     content_hash,
@@ -3092,10 +3107,7 @@ impl SimpleBackend {
             if timing && func_elapsed.as_millis() > 500 {
                 eprintln!("MOLT_BACKEND_TIMING: function `{func_name}` took {func_elapsed:.2?}");
             }
-            if slowest_func
-                .as_ref()
-                .is_none_or(|(_, d)| func_elapsed > *d)
-            {
+            if slowest_func.as_ref().is_none_or(|(_, d)| func_elapsed > *d) {
                 slowest_func = Some((func_name, func_elapsed));
             }
             compiled += 1;

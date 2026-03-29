@@ -85,6 +85,20 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
         stats.push(dce::run(func));
     }
 
+    // If no pass changed anything, restore the snapshot to avoid any
+    // incidental TIR structure mutation from pass traversals.  The
+    // lower_to_simple_ir roundtrip on an unmodified snapshot is known-good;
+    // passes that report zero changes should be identity transforms but
+    // in practice may reorder blocks or invalidate metadata.
+    let total_changes: usize = stats
+        .iter()
+        .map(|s| s.values_changed + s.ops_removed + s.ops_added)
+        .sum();
+    if total_changes == 0 {
+        *func = snapshot;
+        return stats;
+    }
+
     // Verify TIR invariants after all passes.  On failure, restore the
     // pre-optimization snapshot so callers get valid (unoptimized) IR
     // instead of corrupted output.
