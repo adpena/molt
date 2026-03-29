@@ -279,7 +279,7 @@ mod tests {
             FieldValue::Bytes(b"Alice".to_vec()),
             FieldValue::Uint64(30),
         ];
-        let bytes = encode_message(&schema, &values);
+        let bytes = encode_message(&schema, &values).unwrap();
         assert!(!bytes.is_empty());
         assert_eq!(bytes[0], 0x0A); // Field 1, wire type 2
         assert_eq!(bytes[1], 5); // length
@@ -315,7 +315,7 @@ mod tests {
             FieldValue::Bytes(b"Alice".to_vec()),
             FieldValue::Uint64(30),
         ];
-        let encoded = encode_message(&schema, &values);
+        let encoded = encode_message(&schema, &values).unwrap();
         let decoded = decode_message(&schema, &encoded).unwrap();
         assert_eq!(decoded.len(), 2);
         assert_eq!(decoded[0], FieldValue::Bytes(b"Alice".to_vec()));
@@ -378,7 +378,7 @@ mod tests {
             FieldValue::Bytes(b"hello".to_vec()),
             FieldValue::Fixed32(123),
         ];
-        let encoded = encode_message(&schema, &values);
+        let encoded = encode_message(&schema, &values).unwrap();
         let decoded = decode_message(&schema, &encoded).unwrap();
         assert_eq!(decoded, values);
     }

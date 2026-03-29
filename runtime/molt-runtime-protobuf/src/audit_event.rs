@@ -87,6 +87,7 @@ pub fn encode_audit_event(
         FieldValue::Bytes(module_name.as_bytes().to_vec()),
     ];
     encode_message(&schema, &values)
+        .expect("encode_audit_event: schema and values are always in sync")
 }
 
 /// Decode an `AuditEvent` from protobuf wire format.
