@@ -581,9 +581,38 @@ impl<'a> SsaContext<'a> {
     }
 
     /// Get the variable name being defined by an op, if any.
+    ///
+    /// Side-effect-only ops (set_attr, store_index, del_attr, etc.) may have
+    /// an `out` field in SimpleIR but should NOT produce a TIR result value.
+    /// The verifier enforces StoreAttr/StoreIndex/DelAttr have 0 results.
     fn get_def_var(&self, op: &OpIR) -> Option<String> {
         if op.kind == "store_var" {
             return op.var.clone().filter(|v| is_variable(v));
+        }
+        // Side-effect-only ops: no result value even if `out` is set.
+        if matches!(
+            op.kind.as_str(),
+            "set_attr"
+                | "store_attr"
+                | "set_attr_name"
+                | "set_attr_generic_ptr"
+                | "set_attr_generic_obj"
+                | "guarded_field_set"
+                | "guarded_field_set_init"
+                | "store"
+                | "store_init"
+                | "store_index"
+                | "index_set"
+                | "del_attr"
+                | "del_attr_generic_ptr"
+                | "del_attr_generic_obj"
+                | "del_index"
+                | "raise"
+                | "raise_from"
+                | "inc_ref"
+                | "dec_ref"
+        ) {
+            return None;
         }
         op.out.clone().filter(|v| is_variable(v))
     }
