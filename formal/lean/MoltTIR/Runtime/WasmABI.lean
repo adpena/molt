@@ -196,7 +196,10 @@ private theorem u64_or_zero (a : UInt64) : a ||| 0 = a := by
 /-- Three-way OR-AND distributivity for UInt64. -/
 private theorem u64_three_or_and_distrib (a b c d : UInt64) :
     (a ||| b ||| c) &&& d = ((a ||| b) &&& d) ||| (c &&& d) := by
-  sorry
+  cases a with | ofBitVec av => cases b with | ofBitVec bv =>
+  cases c with | ofBitVec cv => cases d with | ofBitVec dv =>
+  show UInt64.ofBitVec _ = UInt64.ofBitVec _; congr 1
+  ext i; simp [BitVec.getLsbD_and, BitVec.getLsbD_or, Bool.and_or_distrib_right]
 
 private theorem tag_check_as_mul : TAG_CHECK.toBitVec.toNat = 2 ^ 48 * 0x7fff := by native_decide
 
