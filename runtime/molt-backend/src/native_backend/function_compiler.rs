@@ -809,6 +809,7 @@ impl SimpleBackend {
         // 2. Implementation
         let ops = &func_ir.ops;
         let mut skip_ops: BTreeSet<usize> = BTreeSet::new();
+
         // Scalarized tuples: keep element SSA Values in a side table so
         // `len`/`index` can fold without touching the runtime. The tuple
         // object itself must still use the canonical runtime layout.
@@ -14923,7 +14924,12 @@ impl SimpleBackend {
                         is_block_filled = true;
                     }
                 }
-                "phi" => {}
+                "phi" => {
+                    // Phi ops are rewritten to store_var/load_var by
+                    // rewrite_phi_to_store_load() before compilation.
+                    // Any residual phi is a no-op (handled by end_if
+                    // for the non-TIR structured path).
+                }
                 // TIR round-trip variable ops — wire SSA values between blocks
                 "store_var" => {
                     // Store a value into a named variable (block arg passing)
