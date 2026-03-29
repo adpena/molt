@@ -5202,9 +5202,12 @@ def _build_module_lowering_metadata(
         logical_source_path_by_module[module_name] = generated_module_source_paths.get(
             module_name, str(module_path)
         )
-        entry_override_by_module[module_name] = (
-            None if module_name == entry_module else entry_module
-        )
+        # Every lowered module needs to know the canonical entry module name.
+        # The frontend uses `entry_module` together with `module_name` to
+        # recognize the real entry module and emit __main__ cache/name
+        # semantics for it. Passing `None` for the entry module itself causes
+        # `__name__` to lower as the ordinary module name instead of "__main__".
+        entry_override_by_module[module_name] = entry_module
         module_is_namespace_by_module[module_name] = module_name in namespace_modules
         module_is_package_by_module[module_name] = module_path.name == "__init__.py"
     return (

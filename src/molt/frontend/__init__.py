@@ -1382,6 +1382,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.module_const_dicts: dict[str, dict[str, Any]] = {}
         self._register_code_symbol("molt_main")
         if self.module_name:
+            is_real_entry_module = (
+                self.entry_module
+                and self.module_name == self.entry_module
+                and self.module_name != "__main__"
+            )
+            entry_spawn_override_enabled = (
+                is_real_entry_module and "multiprocessing.spawn" in self.known_modules
+            )
             name_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(
                 MoltOp(kind="CONST_STR", args=[self.module_name], result=name_val)
@@ -1395,11 +1403,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
-            if (
-                self.entry_module
-                and self.module_name == self.entry_module
-                and self.module_name != "__main__"
-            ):
+            if entry_spawn_override_enabled:
                 spawn_key = MoltValue(self.next_var(), type_hint="str")
                 self.emit(
                     MoltOp(kind="CONST_STR", args=["MOLT_MP_SPAWN"], result=spawn_key)
@@ -1427,26 +1431,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 spawn_not = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="NOT", args=[spawn_eq], result=spawn_not))
                 self.emit(MoltOp(kind="IF", args=[spawn_not], result=MoltValue("none")))
-                if (
-                    self.entry_module
-                    and self.module_name == self.entry_module
-                    and self.module_name != "__main__"
-                ):
-                    entry_name = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(
-                        MoltOp(
-                            kind="CONST_STR",
-                            args=[self.module_name],
-                            result=entry_name,
-                        )
-                    )
-                    self.emit(
-                        MoltOp(
-                            kind="MODULE_CACHE_SET",
-                            args=[entry_name, module_val],
-                            result=MoltValue("none"),
-                        )
-                    )
+            if is_real_entry_module:
                 main_name = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=["__main__"], result=main_name))
                 self.emit(
@@ -1465,7 +1450,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         result=MoltValue("none"),
                     )
                 )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                if entry_spawn_override_enabled:
+                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.module_obj = module_val
         self._emit_module_metadata()
         self._apply_type_facts("molt_main")
