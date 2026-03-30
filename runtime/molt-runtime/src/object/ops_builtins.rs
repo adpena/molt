@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-use super::ops::{decode_slice_bound, slice_error};
+use super::ops_sys::{decode_slice_bound, slice_error};
 use super::ops_arith::binary_type_error;
 
 #[unsafe(no_mangle)]
