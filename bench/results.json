@@ -1,25 +1,26 @@
 {
-  "timestamp": "2026-03-25T16:17:02-0500",
+  "timestamp": "2026-03-30T11:56:01-0500",
   "summaries": {
-    "diff": {
+    "parity": {
       "total": 1,
       "passed": 0,
       "failed": 0,
-      "errors": 0,
+      "errors": 1,
       "skipped": 0,
-      "timeouts": 1
+      "timeouts": 0
     }
   },
   "regressions": [],
   "results": {
-    "diff": {
-      "arith.py": {
-        "name": "arith.py",
-        "suite": "diff",
-        "status": "timeout",
-        "cpython_time_s": 0.017731,
-        "molt_time_s": 5.003867,
-        "error_msg": "Molt timed out"
+    "parity": {
+      "test_arithmetic.py": {
+        "name": "test_arithmetic.py",
+        "suite": "parity",
+        "status": "error",
+        "cpython_time_s": 0.020976,
+        "molt_time_s": 0.891771,
+        "output_match": false,
+        "error_msg": "Molt exited 252"
       }
     }
   }

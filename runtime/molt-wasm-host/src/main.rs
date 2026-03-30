@@ -108,7 +108,7 @@ fn load_or_compile_module(
     debug_log(|| format!("read {label} wasm in {:?}", read_start.elapsed()));
     let compile_start = Instant::now();
     let module = Module::new(engine, wasm_bytes)
-        .with_context(|| format!("compile {label} {wasm_path:?}"))?;
+        .map_err(|err| err.context(format!("compile {label} {wasm_path:?}")))?;
     debug_log(|| format!("compiled {label} module in {:?}", compile_start.elapsed()));
     if precompiled_write_enabled()
         && let Some(precompiled) = resolve_precompiled_path(wasm_path, override_env)
@@ -172,7 +172,7 @@ fn build_engine() -> Result<Engine> {
     }
     config.wasm_function_references(true);
     config.wasm_gc(true);
-    Engine::new(&config)
+    Ok(Engine::new(&config)?)
 }
 
 struct HostState {
@@ -899,7 +899,9 @@ fn make_call_indirect_func(
             .and_then(|map| map.get(&name).cloned())
             .flatten();
         let Some(func) = func else {
-            return Err(anyhow::anyhow!("{name} used before output instantiation"));
+            return Err(wasmtime::Error::msg(format!(
+                "{name} used before output instantiation"
+            )));
         };
         func.call(&mut caller, params, results)
     })
@@ -4379,7 +4381,8 @@ fn alloc_results(ty: &FuncType) -> Result<Vec<Val>> {
 fn compute_module_hash(path: &Path) -> Result<String> {
     let bytes = std::fs::read(path)?;
     let hash = Sha256::digest(&bytes);
-    Ok(format!("sha256:{:x}", hash))
+    let hex = hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    Ok(format!("sha256:{hex}"))
 }
 
 /// Capture a snapshot of WASM linear memory after init completes.
@@ -4708,7 +4711,7 @@ fn main() -> Result<()> {
         debug_log(|| "instantiating runtime".to_string());
         let runtime_instance = linker
             .instantiate(&mut store, &runtime_module)
-            .context("instantiate runtime")?;
+            .map_err(|err| err.context("instantiate runtime"))?;
         debug_log(|| "runtime instantiated".to_string());
         for import in output_module.imports() {
             if import.module() != "molt_runtime" {
@@ -4724,7 +4727,7 @@ fn main() -> Result<()> {
         debug_log(|| "instantiating output module".to_string());
         let output_instance = linker
             .instantiate(&mut store, &output_module)
-            .context("instantiate output")?;
+            .map_err(|err| err.context("instantiate output"))?;
         debug_log(|| "output module instantiated".to_string());
         register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
         set_memory_from_exports(&mut store, &output_instance);
@@ -4734,9 +4737,10 @@ fn main() -> Result<()> {
         // via table.set + ref.func instead of passive element segments.
         if let Some(table_init) = output_instance.get_func(&mut store, "molt_table_init") {
             debug_log(|| "calling molt_table_init".to_string());
+            let mut no_results: [Val; 0] = [];
             table_init
-                .call(&mut store, &[], &mut [])
-                .context("molt_table_init failed")?;
+                .call(&mut store, &[], &mut no_results)
+                .map_err(|err| err.context("molt_table_init failed"))?;
             debug_log(|| "molt_table_init completed".to_string());
         }
 
@@ -4788,7 +4792,7 @@ fn main() -> Result<()> {
         debug_log(|| "instantiating linked output".to_string());
         let output_instance = linker
             .instantiate(&mut store, &output_module)
-            .context("instantiate linked output")?;
+            .map_err(|err| err.context("instantiate linked output"))?;
         debug_log(|| "linked output instantiated".to_string());
         register_call_indirect_exports(&mut store, &output_instance, &registry, &call_names)?;
         set_memory_from_exports(&mut store, &output_instance);
@@ -4796,9 +4800,10 @@ fn main() -> Result<()> {
         // Initialize the indirect function table (linked binary path).
         if let Some(table_init) = output_instance.get_func(&mut store, "molt_table_init") {
             debug_log(|| "calling molt_table_init (linked)".to_string());
+            let mut no_results: [Val; 0] = [];
             table_init
-                .call(&mut store, &[], &mut [])
-                .context("molt_table_init failed")?;
+                .call(&mut store, &[], &mut no_results)
+                .map_err(|err| err.context("molt_table_init failed"))?;
             debug_log(|| "molt_table_init completed (linked)".to_string());
         }
 
