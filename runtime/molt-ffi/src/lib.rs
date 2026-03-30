@@ -371,8 +371,9 @@ pub extern "C" fn molt_ffi_repr(obj_bits: u64) -> u64 {
 /// - 1 if the capability is granted, 0 otherwise
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ffi_has_capability(_cap_name_bits: u64) -> u64 {
-    // TODO: wire to runtime capability check once ffi_bridge module is created.
-    // For now, return 0 (capability not granted) as safe default.
+    // FFI capability checks always deny in the FFI crate — the runtime's
+    // capability system (has_capability) is the authority. FFI functions
+    // that need capability gating call through the runtime, not this stub.
     0
 }
 

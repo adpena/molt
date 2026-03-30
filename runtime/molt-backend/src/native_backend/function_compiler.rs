@@ -10126,12 +10126,16 @@ impl SimpleBackend {
                             // const_none result and continue so compilation
                             // doesn't panic. The function will get a trap at
                             // link time or runtime instead.
-                            if std::env::var("MOLT_DEBUG_DECLARE").as_deref() == Ok("1") {
-                                eprintln!(
-                                    "MOLT_BACKEND: declare_function failed for '{}': {e}",
-                                    target_name
-                                );
-                            }
+                            // Signature mismatch: the function was previously
+                            // declared with a different signature (e.g., Import
+                            // vs Export linkage). Emit const_none so compilation
+                            // continues — the function will return None at runtime
+                            // which produces a clear TypeError if called.
+                            eprintln!(
+                                "MOLT_BACKEND: WARNING: declare_function '{}' failed: {e}; \
+                                 call will return None at runtime",
+                                target_name
+                            );
                             let none_val = builder.ins().iconst(types::I64, box_none());
                             if let Some(out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, none_val);
