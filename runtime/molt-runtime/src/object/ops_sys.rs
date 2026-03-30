@@ -1322,7 +1322,7 @@ pub(crate) fn strftime_wasm(format: &str, parts: TimeParts) -> Result<String, St
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn tzname_native() -> Result<(String, String), String> {
+pub(crate) fn tzname_native() -> Result<(String, String), String> {
     #[cfg(unix)]
     unsafe {
         unsafe extern "C" {
@@ -1374,7 +1374,7 @@ fn tzname_native() -> Result<(String, String), String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn timezone_native() -> Result<i64, String> {
+pub(crate) fn timezone_native() -> Result<i64, String> {
     #[cfg(unix)]
     unsafe {
         unsafe extern "C" {
@@ -1408,7 +1408,7 @@ fn timezone_native() -> Result<i64, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn daylight_native() -> Result<i64, String> {
+pub(crate) fn daylight_native() -> Result<i64, String> {
     #[cfg(unix)]
     unsafe {
         unsafe extern "C" {
@@ -1441,14 +1441,14 @@ fn daylight_native() -> Result<i64, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn sample_offset_west_native(year: i32, month: i32, day: i32) -> Result<i64, String> {
+pub(crate) fn sample_offset_west_native(year: i32, month: i32, day: i32) -> Result<i64, String> {
     let days = days_from_civil(year, month, day);
     let secs = days.saturating_mul(86_400).saturating_add(12 * 3600);
     offset_west_from_secs(secs)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn altzone_native() -> Result<i64, String> {
+pub(crate) fn altzone_native() -> Result<i64, String> {
     let std_offset = timezone_native()?;
     if daylight_native()? == 0 {
         return Ok(std_offset);
@@ -1495,14 +1495,14 @@ fn altzone_native() -> Result<i64, String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn sample_offset_west_wasm(year: i32, month: i32, day: i32) -> Result<i64, String> {
+pub(crate) fn sample_offset_west_wasm(year: i32, month: i32, day: i32) -> Result<i64, String> {
     let days = days_from_civil(year, month, day);
     let secs = days.saturating_mul(86_400).saturating_add(12 * 3600);
     local_offset_west_wasm(secs)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn daylight_wasm() -> Result<i64, String> {
+pub(crate) fn daylight_wasm() -> Result<i64, String> {
     let year = time_parts_from_epoch_utc(current_epoch_secs_i64()?).year;
     let jan = sample_offset_west_wasm(year, 1, 1)?;
     let jul = sample_offset_west_wasm(year, 7, 1)?;
@@ -1510,7 +1510,7 @@ fn daylight_wasm() -> Result<i64, String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn altzone_wasm() -> Result<i64, String> {
+pub(crate) fn altzone_wasm() -> Result<i64, String> {
     let std_offset = timezone_west_wasm()?;
     if daylight_wasm()? == 0 {
         return Ok(std_offset);
@@ -1531,7 +1531,7 @@ fn altzone_wasm() -> Result<i64, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn mktime_native(parts: TimeParts) -> f64 {
+pub(crate) fn mktime_native(parts: TimeParts) -> f64 {
     let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
     tm.tm_sec = parts.second;
     tm.tm_min = parts.minute;
@@ -1547,7 +1547,7 @@ fn mktime_native(parts: TimeParts) -> f64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn mktime_wasm(parts: TimeParts) -> Result<f64, String> {
+pub(crate) fn mktime_wasm(parts: TimeParts) -> Result<f64, String> {
     let days = days_from_civil(parts.year, parts.month, parts.day);
     let local_secs = days
         .saturating_mul(86_400)
@@ -1575,7 +1575,7 @@ fn mktime_wasm(parts: TimeParts) -> Result<f64, String> {
     Ok(utc_secs as f64)
 }
 
-fn traceback_limit_from_bits(_py: &PyToken<'_>, limit_bits: u64) -> Result<Option<usize>, u64> {
+pub(crate) fn traceback_limit_from_bits(_py: &PyToken<'_>, limit_bits: u64) -> Result<Option<usize>, u64> {
     let obj = obj_from_bits(limit_bits);
     if obj.is_none() {
         return Ok(None);
@@ -1593,7 +1593,7 @@ fn traceback_limit_from_bits(_py: &PyToken<'_>, limit_bits: u64) -> Result<Optio
     Ok(Some(limit as usize))
 }
 
-fn traceback_frames(
+pub(crate) fn traceback_frames(
     _py: &PyToken<'_>,
     tb_bits: u64,
     limit: Option<usize>,
@@ -1699,7 +1699,7 @@ fn traceback_frames(
     out
 }
 
-fn traceback_source_line_native(_py: &PyToken<'_>, filename: &str, lineno: i64) -> String {
+pub(crate) fn traceback_source_line_native(_py: &PyToken<'_>, filename: &str, lineno: i64) -> String {
     if lineno <= 0 {
         return String::new();
     }
@@ -1729,7 +1729,7 @@ fn traceback_source_line_native(_py: &PyToken<'_>, filename: &str, lineno: i64) 
     String::new()
 }
 
-fn traceback_line_trim_bounds(line: &str) -> Option<(i64, i64)> {
+pub(crate) fn traceback_line_trim_bounds(line: &str) -> Option<(i64, i64)> {
     if line.is_empty() {
         return None;
     }
@@ -1751,7 +1751,7 @@ fn traceback_line_trim_bounds(line: &str) -> Option<(i64, i64)> {
     Some((start as i64, end as i64))
 }
 
-fn traceback_infer_column_offsets(line: &str) -> (i64, i64) {
+pub(crate) fn traceback_infer_column_offsets(line: &str) -> (i64, i64) {
     if line.is_empty() {
         return (0, 0);
     }
@@ -1821,7 +1821,7 @@ fn traceback_infer_column_offsets(line: &str) -> (i64, i64) {
     }
 }
 
-fn traceback_format_caret_line_native(line: &str, mut colno: i64, mut end_colno: i64) -> String {
+pub(crate) fn traceback_format_caret_line_native(line: &str, mut colno: i64, mut end_colno: i64) -> String {
     if line.is_empty() || colno < 0 {
         return String::new();
     }
@@ -1902,7 +1902,7 @@ mod traceback_format_tests {
     }
 }
 
-fn traceback_format_exception_only_line(
+pub(crate) fn traceback_format_exception_only_line(
     _py: &PyToken<'_>,
     exc_type_bits: u64,
     value_bits: u64,
@@ -1962,7 +1962,7 @@ fn traceback_format_exception_only_line(
     }
 }
 
-fn traceback_exception_type_bits(_py: &PyToken<'_>, value_bits: u64) -> u64 {
+pub(crate) fn traceback_exception_type_bits(_py: &PyToken<'_>, value_bits: u64) -> u64 {
     if let Some(ptr) = obj_from_bits(value_bits).as_ptr() {
         unsafe {
             if object_type_id(ptr) == TYPE_ID_EXCEPTION {
@@ -1977,7 +1977,7 @@ fn traceback_exception_type_bits(_py: &PyToken<'_>, value_bits: u64) -> u64 {
     }
 }
 
-fn traceback_exception_trace_bits(value_bits: u64) -> u64 {
+pub(crate) fn traceback_exception_trace_bits(value_bits: u64) -> u64 {
     if let Some(ptr) = obj_from_bits(value_bits).as_ptr() {
         unsafe {
             if object_type_id(ptr) == TYPE_ID_EXCEPTION {
@@ -1988,7 +1988,7 @@ fn traceback_exception_trace_bits(value_bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
-fn traceback_append_exception_single_lines(
+pub(crate) fn traceback_append_exception_single_lines(
     _py: &PyToken<'_>,
     exc_type_bits: u64,
     value_bits: u64,
@@ -2009,7 +2009,7 @@ fn traceback_append_exception_single_lines(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn traceback_append_exception_chain_lines(
+pub(crate) fn traceback_append_exception_chain_lines(
     _py: &PyToken<'_>,
     exc_type_bits: u64,
     value_bits: u64,
@@ -2108,7 +2108,7 @@ fn traceback_append_exception_chain_lines(
     traceback_append_exception_single_lines(_py, exc_type_bits, value_bits, tb_bits, limit, out);
 }
 
-fn traceback_lines_to_list(_py: &PyToken<'_>, lines: &[String]) -> u64 {
+pub(crate) fn traceback_lines_to_list(_py: &PyToken<'_>, lines: &[String]) -> u64 {
     let mut bits_vec: Vec<u64> = Vec::with_capacity(lines.len());
     for line in lines {
         let ptr = alloc_string(_py, line.as_bytes());
@@ -2132,26 +2132,26 @@ fn traceback_lines_to_list(_py: &PyToken<'_>, lines: &[String]) -> u64 {
 }
 
 #[derive(Clone)]
-struct TracebackPayloadFrame {
-    filename: String,
-    lineno: i64,
-    end_lineno: i64,
-    colno: i64,
-    end_colno: i64,
-    name: String,
-    line: String,
+pub(crate) struct TracebackPayloadFrame {
+    pub(crate) filename: String,
+    pub(crate) lineno: i64,
+    pub(crate) end_lineno: i64,
+    pub(crate) colno: i64,
+    pub(crate) end_colno: i64,
+    pub(crate) name: String,
+    pub(crate) line: String,
 }
 
 #[derive(Clone)]
-struct TracebackExceptionChainNode {
-    value_bits: u64,
-    frames: Vec<TracebackPayloadFrame>,
-    suppress_context: bool,
-    cause_index: Option<usize>,
-    context_index: Option<usize>,
+pub(crate) struct TracebackExceptionChainNode {
+    pub(crate) value_bits: u64,
+    pub(crate) frames: Vec<TracebackPayloadFrame>,
+    pub(crate) suppress_context: bool,
+    pub(crate) cause_index: Option<usize>,
+    pub(crate) context_index: Option<usize>,
 }
 
-fn traceback_split_molt_symbol(name: &str) -> (String, String) {
+pub(crate) fn traceback_split_molt_symbol(name: &str) -> (String, String) {
     if let Some((module_hint, func)) = name.split_once("__")
         && !module_hint.is_empty()
     {
@@ -2161,7 +2161,7 @@ fn traceback_split_molt_symbol(name: &str) -> (String, String) {
     ("<molt>".to_string(), name.to_string())
 }
 
-fn traceback_payload_from_traceback(
+pub(crate) fn traceback_payload_from_traceback(
     _py: &PyToken<'_>,
     source_bits: u64,
     limit: Option<usize>,
@@ -2183,7 +2183,7 @@ fn traceback_payload_from_traceback(
     out
 }
 
-fn traceback_payload_from_frame_chain(
+pub(crate) fn traceback_payload_from_frame_chain(
     _py: &PyToken<'_>,
     source_bits: u64,
     limit: Option<usize>,
@@ -2277,7 +2277,7 @@ fn traceback_payload_from_frame_chain(
     out
 }
 
-fn traceback_payload_from_entry(
+pub(crate) fn traceback_payload_from_entry(
     _py: &PyToken<'_>,
     entry_bits: u64,
 ) -> Option<TracebackPayloadFrame> {
@@ -2484,7 +2484,7 @@ fn traceback_payload_from_entry(
     from_frame.pop()
 }
 
-fn traceback_payload_from_entries(
+pub(crate) fn traceback_payload_from_entries(
     _py: &PyToken<'_>,
     source_bits: u64,
     limit: Option<usize>,
@@ -2511,7 +2511,7 @@ fn traceback_payload_from_entries(
     out
 }
 
-fn traceback_payload_from_source(
+pub(crate) fn traceback_payload_from_source(
     _py: &PyToken<'_>,
     source_bits: u64,
     limit: Option<usize>,
@@ -2537,7 +2537,7 @@ fn traceback_payload_from_source(
     Vec::new()
 }
 
-fn traceback_payload_to_list(_py: &PyToken<'_>, payload: &[TracebackPayloadFrame]) -> u64 {
+pub(crate) fn traceback_payload_to_list(_py: &PyToken<'_>, payload: &[TracebackPayloadFrame]) -> u64 {
     let mut tuples: Vec<u64> = Vec::new();
     for frame in payload {
         let filename_ptr = alloc_string(_py, frame.filename.as_bytes());
@@ -2608,7 +2608,7 @@ fn traceback_payload_to_list(_py: &PyToken<'_>, payload: &[TracebackPayloadFrame
     }
 }
 
-fn traceback_payload_frame_source_lines(
+pub(crate) fn traceback_payload_frame_source_lines(
     _py: &PyToken<'_>,
     frame: &TracebackPayloadFrame,
 ) -> Vec<String> {
@@ -2689,7 +2689,7 @@ fn traceback_payload_frame_source_lines(
     lines
 }
 
-fn traceback_payload_to_formatted_lines(
+pub(crate) fn traceback_payload_to_formatted_lines(
     _py: &PyToken<'_>,
     payload: &[TracebackPayloadFrame],
 ) -> Vec<String> {
@@ -2704,7 +2704,7 @@ fn traceback_payload_to_formatted_lines(
     lines
 }
 
-fn traceback_exception_components_payload(
+pub(crate) fn traceback_exception_components_payload(
     _py: &PyToken<'_>,
     value_bits: u64,
     limit: Option<usize>,
@@ -2759,7 +2759,7 @@ fn traceback_exception_components_payload(
     }
 }
 
-fn traceback_exception_chain_collect(
+pub(crate) fn traceback_exception_chain_collect(
     _py: &PyToken<'_>,
     value_bits: u64,
     limit: Option<usize>,
@@ -2858,7 +2858,7 @@ fn traceback_exception_chain_collect(
     Ok(index)
 }
 
-fn traceback_exception_chain_payload_bits(
+pub(crate) fn traceback_exception_chain_payload_bits(
     _py: &PyToken<'_>,
     value_bits: u64,
     limit: Option<usize>,
