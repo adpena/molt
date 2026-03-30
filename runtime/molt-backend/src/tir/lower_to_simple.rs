@@ -220,52 +220,116 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 }
             };
 
-            if let Terminator::CondBranch { cond, then_block, then_args, else_block, else_args, .. } = &block.terminator {
-                // Emit header ops.
-                emit_block_ops(block, &mut out);
+            let break_kind = func
+                .loop_break_kinds
+                .get(bid)
+                .copied()
+                .unwrap_or(LoopBreakKind::BreakIfTrue);
+            let mut region_chain = header_body_chain.get(bid).cloned().unwrap_or_default();
+            let mut cond_data: Option<(ValueId, BlockId, Vec<ValueId>, BlockId, Vec<ValueId>)> = None;
 
-                // Store then-args (after-loop block values for when break fires).
-                emit_block_arg_stores(*then_block, then_args, &block_param_vars, &mut out);
+            match &block.terminator {
+                Terminator::CondBranch {
+                    cond,
+                    then_block,
+                    then_args,
+                    else_block,
+                    else_args,
+                } => {
+                    emit_block_ops(block, &mut out);
+                    cond_data = Some((
+                        *cond,
+                        *then_block,
+                        then_args.clone(),
+                        *else_block,
+                        else_args.clone(),
+                    ));
+                }
+                Terminator::Branch { target, args } => {
+                    emit_block_ops(block, &mut out);
+                    if region_chain.first() == Some(target)
+                        && let Some(cond_block) = func.blocks.get(target)
+                        && let Terminator::CondBranch {
+                            cond,
+                            then_block,
+                            then_args,
+                            else_block,
+                            else_args,
+                        } = &cond_block.terminator
+                    {
+                        emit_block_inline(cond_block, args, &mut out);
+                        region_chain.remove(0);
+                        cond_data = Some((
+                            *cond,
+                            *then_block,
+                            then_args.clone(),
+                            *else_block,
+                            else_args.clone(),
+                        ));
+                    }
+                }
+                _ => {
+                    emit_block_ops(block, &mut out);
+                }
+            }
 
-                // Emit loop_break_if_true.
+            if let Some((cond, then_block, then_args, else_block, else_args)) = cond_data {
+                let (after_block, after_args, body_block, body_args) = match break_kind {
+                    LoopBreakKind::BreakIfTrue => {
+                        (then_block, then_args, else_block, else_args)
+                    }
+                    LoopBreakKind::BreakIfFalse => {
+                        (else_block, else_args, then_block, then_args)
+                    }
+                };
+
+                emit_block_arg_stores(after_block, &after_args, &block_param_vars, &mut out);
                 out.push(OpIR {
-                    kind: "loop_break_if_true".to_string(),
-                    args: Some(vec![value_var(*cond)]),
+                    kind: match break_kind {
+                        LoopBreakKind::BreakIfTrue => "loop_break_if_true".to_string(),
+                        LoopBreakKind::BreakIfFalse => "loop_break_if_false".to_string(),
+                    },
+                    args: Some(vec![value_var(cond)]),
                     ..OpIR::default()
                 });
 
-                // Emit ALL region blocks sequentially.  Each block's ops are
-                // inlined with block args mapped to predecessor values.
-                if let Some(chain) = header_body_chain.get(bid) {
-                    // Track the last block's branch args for threading.
-                    let mut prev_args: Vec<ValueId> = else_args.clone();
-                    for region_bid in chain {
+                let mut prev_args: Vec<ValueId> = body_args.clone();
+                if region_chain.is_empty() {
+                    if let Some(body_block_ir) = func.blocks.get(&body_block) {
+                        emit_block_inline(body_block_ir, &prev_args, &mut out);
+                        if let Terminator::Branch { target, args } = &body_block_ir.terminator {
+                            emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
+                        }
+                    }
+                } else {
+                    for region_bid in &region_chain {
                         if let Some(region_block) = func.blocks.get(region_bid) {
                             emit_block_inline(region_block, &prev_args, &mut out);
-                            // Get this block's terminator args for the next block.
                             prev_args = match &region_block.terminator {
                                 Terminator::Branch { args, .. } => args.clone(),
-                                Terminator::CondBranch { else_args, .. } => else_args.clone(),
+                                Terminator::CondBranch { then_args, else_args, .. } => {
+                                    if body_block == *region_bid {
+                                        body_args.clone()
+                                    } else if region_chain
+                                        .iter()
+                                        .position(|candidate| candidate == region_bid)
+                                        .and_then(|idx| region_chain.get(idx + 1))
+                                        == Some(&body_block)
+                                    {
+                                        then_args.clone()
+                                    } else {
+                                        else_args.clone()
+                                    }
+                                }
                                 _ => vec![],
                             };
                         }
                     }
-                    // The last region block's Branch target is the header (back-edge).
-                    // Store header phi values for next iteration.
-                    if let Some(last_bid) = chain.last() {
-                        if let Some(last_block) = func.blocks.get(last_bid) {
-                            if let Terminator::Branch { target, args } = &last_block.terminator {
-                                emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
-                            }
-                        }
-                    }
-                } else {
-                    // Fallback: just inline the direct else-block.
-                    if let Some(body_block) = func.blocks.get(else_block) {
-                        emit_block_inline(body_block, else_args, &mut out);
-                        if let Terminator::Branch { target, args } = &body_block.terminator {
-                            emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
-                        }
+                    if let Some(last_bid) = region_chain.last()
+                        && let Some(last_block) = func.blocks.get(last_bid)
+                        && let Terminator::Branch { target, args } = &last_block.terminator
+                    {
+                        emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
                     }
                 }
 
@@ -278,12 +342,17 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     ..OpIR::default()
                 });
             } else {
-                // Non-CondBranch header.
-                emit_block_ops(block, &mut out);
                 let original_has_ret = func.attrs.get("_original_has_ret")
                     .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
                     .unwrap_or(false);
-                emit_terminator(block, &block_param_vars, &block_label_id, &mut out, original_has_ret, loop_role);
+                emit_terminator(
+                    block,
+                    &block_param_vars,
+                    &block_label_id,
+                    &mut out,
+                    original_has_ret,
+                    loop_role,
+                );
             }
         } else {
             // Non-loop block: emit ops normally.
@@ -1857,11 +1926,13 @@ mod tests {
         let type_map = HashMap::new();
         let round_tripped = lower_to_simple_ir(&tir_func, &type_map);
 
-        // Must contain a conditional branch (from the loop_break_if_false).
-        let has_br_if = round_tripped.iter().any(|o| o.kind == "br_if");
+        // Must contain a structured loop exit op, not a state-machine branch.
+        let has_loop_break = round_tripped
+            .iter()
+            .any(|o| o.kind == "loop_break_if_false");
         assert!(
-            has_br_if,
-            "round-tripped while loop must contain a br_if for the loop condition; ops: {:?}",
+            has_loop_break,
+            "round-tripped while loop must contain loop_break_if_false for the loop condition; ops: {:?}",
             round_tripped
                 .iter()
                 .map(|o| o.kind.as_str())
