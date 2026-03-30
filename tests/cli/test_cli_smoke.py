@@ -368,6 +368,60 @@ def test_cli_doctor_json() -> None:
     assert "backend-daemon" in names
     assert "cargo-target-dir" in names
     assert "molt-cache-dir" in names
+    assert "cargo-upgrade" in names
+    assert "llvm-backend-toolchain" in names
+
+
+def test_cli_update_check_json() -> None:
+    res = _run_cli(["update", "--check", "--all", "--json"])
+    assert res.returncode == 0
+    payload = json.loads(res.stdout)
+    assert payload["command"] == "update"
+    assert payload["status"] == "ok"
+    data = payload["data"]
+    assert data["check_only"] is True
+    steps = data.get("steps")
+    assert isinstance(steps, list)
+    names = {entry.get("name") for entry in steps if isinstance(entry, dict)}
+    assert "rustup-update-stable" in names
+    assert "rustup-target-add-wasm32-unknown-unknown" in names
+    assert "rustup-target-add-wasm32-wasip1" in names
+    assert "cargo-update-root" in names
+    assert "cargo-update-runtime" in names
+    assert "cargo-update-fuzz" in names
+    assert "uv-lock-upgrade" in names
+    assert "cargo-upgrade-root" in names
+    assert "cargo-upgrade-runtime" in names
+    assert "cargo-upgrade-fuzz" in names
+
+
+def test_required_llvm_backend_major_matches_manifest() -> None:
+    assert cli._required_llvm_backend_major(ROOT) == 21
+
+
+def test_planned_update_steps_bootstrap_cargo_edit_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_which = shutil.which
+
+    def fake_which(name: str) -> str | None:
+        if name == "cargo-upgrade":
+            return None
+        return real_which(name)
+
+    monkeypatch.setattr(cli.shutil, "which", fake_which, raising=True)
+    steps, warnings = cli._planned_update_steps(
+        ROOT,
+        include_toolchains=False,
+        include_locks=False,
+        include_manifests=True,
+    )
+    assert warnings == []
+    names = [step.name for step in steps]
+    assert names[0] == "cargo-edit-bootstrap"
+    assert "cargo-upgrade-root" in names
+    assert "cargo-upgrade-runtime" in names
+    assert "cargo-upgrade-fuzz" in names
 
 
 @pytest.mark.xfail(reason="requires rebuilt libmolt_runtime.a (linker compat)")

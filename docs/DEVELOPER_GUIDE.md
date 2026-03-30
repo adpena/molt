@@ -40,6 +40,34 @@ For the canonical vision and scope, read [spec/areas/core/0000-vision.md](spec/a
 - **Windows path lengths**: keep repo paths short and avoid deeply nested build output paths when possible.
 - **WASM linker availability**: `wasm-ld` and `wasm-tools` must be installed; use `--require-linked` to fail fast when they are missing.
 
+## Toolchain And Dependency Maintenance
+
+Use the CLI as the single source of truth for setup diagnostics and repo refreshes:
+
+```bash
+molt doctor
+molt update --check
+```
+
+- `molt doctor` reports missing tools and version-pinned backend prerequisites such as the LLVM lane required by `runtime/molt-backend/Cargo.toml`.
+- `molt update --check` prints the exact commands Molt will run, without mutating the checkout or the machine.
+
+For a normal repo refresh:
+
+```bash
+molt update
+```
+
+This updates the Rust stable toolchain, ensures the wasm Rust targets exist, and refreshes the repo lockfiles.
+
+For a deliberate maintainer sweep that also upgrades direct Rust dependency requirements in manifests:
+
+```bash
+molt update --all
+```
+
+Treat `--all` as a coordinated change: rebuild the touched crates and rerun the backend/runtime verification matrix in the same session.
+
 ## Differential Suite Controls
 - **Memory profiling**: set `MOLT_DIFF_MEASURE_RSS=1` to collect per-test RSS metrics.
 - **Summary sidecar**: `MOLT_DIFF_ROOT/summary.json` (or `MOLT_DIFF_SUMMARY=<path>`) records jobs, limits, and RSS aggregates.

@@ -1174,15 +1174,6 @@ mod tests {
         }
     }
 
-    /// Helper to create an `OpIR` with `kind` and `out`.
-    fn op_out(kind: &str, out: &str) -> OpIR {
-        OpIR {
-            kind: kind.to_string(),
-            out: Some(out.to_string()),
-            ..OpIR::default()
-        }
-    }
-
     /// Helper to create an `OpIR` with `kind`, `args`, and `out`.
     fn op_args_out(kind: &str, args: &[&str], out: &str) -> OpIR {
         OpIR {
@@ -1217,16 +1208,6 @@ mod tests {
             kind: kind.to_string(),
             value: Some(value),
             out: Some(out.to_string()),
-            ..OpIR::default()
-        }
-    }
-
-    /// Helper to create an `OpIR` with `kind`, `args`, and `value`.
-    fn op_args_val(kind: &str, args: &[&str], value: i64) -> OpIR {
-        OpIR {
-            kind: kind.to_string(),
-            args: Some(args.iter().map(|s| s.to_string()).collect()),
-            value: Some(value),
             ..OpIR::default()
         }
     }

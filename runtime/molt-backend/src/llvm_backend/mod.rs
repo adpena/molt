@@ -1,6 +1,6 @@
 //! LLVM backend for release-mode maximum optimization.
 //!
-//! Requires: `--features llvm` and LLVM 19 installed.
+//! Requires: `--features llvm` and LLVM 21 installed.
 //!
 //! This backend targets maximum runtime performance at the cost of
 //! slower compilation. Use Cranelift backend for development iteration.

@@ -59,7 +59,6 @@ mod nanbox {
     pub const TAG_INT: u64 = 0x0001_0000_0000_0000;
     pub const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
     pub const TAG_NONE: u64 = 0x0003_0000_0000_0000;
-    pub const TAG_PTR: u64 = 0x0004_0000_0000_0000;
     pub const INT_SIGN_BIT: u64 = 1 << 46;
     pub const INT_MASK: u64 = (1u64 << 47) - 1;
 }
@@ -386,30 +385,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::ConstInt => {
                 let val = match op.attrs.get("value") {
                     Some(AttrValue::Int(v)) => *v,
-                    _ => 0, // graceful fallback for malformed TIR
+                    other => panic!("ConstInt missing integer value attribute: {:?}", other),
                 };
                 let result_id = op.results[0];
-                // NaN-box the integer for the runtime ABI.
-                // Small integers (fits in 47 bits): QNAN | TAG_INT | (val & INT_MASK)
-                // Sign extension: if negative, set the sign bit.
-                let boxed = {
-                    let masked = (val as u64) & nanbox::INT_MASK;
-                    let bits = nanbox::QNAN | nanbox::TAG_INT | masked;
-                    bits
-                };
                 let llvm_val = self
                     .backend
                     .context
                     .i64_type()
-                    .const_int(boxed, false)
+                    .const_int(val as u64, val < 0)
                     .into();
                 self.values.insert(result_id, llvm_val);
-                self.value_types.insert(result_id, TirType::DynBox);
+                self.value_types.insert(result_id, TirType::I64);
             }
             OpCode::ConstFloat => {
                 let val = match op.attrs.get("f_value").or_else(|| op.attrs.get("value")) {
                     Some(AttrValue::Float(v)) => *v,
-                    _ => 0.0, // graceful fallback for malformed TIR
+                    other => panic!("ConstFloat missing float value attribute: {:?}", other),
                 };
                 let result_id = op.results[0];
                 let llvm_val = self.backend.context.f64_type().const_float(val).into();
@@ -419,7 +410,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::ConstBool => {
                 let val = match op.attrs.get("value") {
                     Some(AttrValue::Bool(v)) => *v,
-                    _ => false, // graceful fallback for malformed TIR
+                    other => panic!("ConstBool missing bool value attribute: {:?}", other),
                 };
                 let result_id = op.results[0];
                 let llvm_val = self
@@ -3063,8 +3054,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .builder
                 .build_bit_cast(iv, target_float, "phi_i2f")
                 .unwrap(),
-            // Fallback: pass through (may cause verification warning)
-            _ => val,
+            _ => panic!(
+                "unsupported LLVM phi coercion from {:?} to {:?} in block {:?}",
+                val_ty, target_ty, in_block
+            ),
         };
         // Restore builder position.
         if let Some(bb) = saved_block {
@@ -3243,7 +3236,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .get_nth_param(1)
             .expect("trampoline args param missing")
             .into_int_value();
-        let ptr_ty = i64_ty.ptr_type(inkwell::AddressSpace::default());
+        let ptr_ty = self
+            .backend
+            .context
+            .ptr_type(inkwell::AddressSpace::default());
         let args_ptr = builder
             .build_int_to_ptr(args_bits, ptr_ty, "trampoline_args_ptr")
             .unwrap();
@@ -4253,12 +4249,13 @@ mod tests {
     use super::*;
     use crate::llvm_backend::LlvmBackend;
     use crate::llvm_backend::runtime_imports::declare_runtime_functions;
-    use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+    use crate::tir::blocks::{Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
-    use crate::tir::values::{TirValue, ValueId};
+    use crate::tir::values::ValueId;
     use inkwell::context::Context;
+    use inkwell::values::AnyValue;
 
     fn make_backend(ctx: &Context) -> LlvmBackend<'_> {
         let backend = LlvmBackend::new(ctx, "test");
@@ -4290,7 +4287,7 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![v0] };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
-        let ir = backend.dump_ir();
+        let ir = llvm_fn.print_to_string().to_string();
 
         assert!(ir.contains("const_ret"), "function name missing from IR");
         assert!(ir.contains("42"), "constant 42 missing from IR");
@@ -4323,7 +4320,7 @@ mod tests {
         };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
-        let ir = backend.dump_ir();
+        let ir = llvm_fn.print_to_string().to_string();
 
         // Should contain a native `add` instruction, NOT a call to molt_add
         assert!(
@@ -4363,7 +4360,7 @@ mod tests {
         };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
-        let ir = backend.dump_ir();
+        let ir = llvm_fn.print_to_string().to_string();
 
         assert!(
             ir.contains("fadd double"),
@@ -4398,7 +4395,7 @@ mod tests {
         };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
-        let ir = backend.dump_ir();
+        let ir = llvm_fn.print_to_string().to_string();
 
         assert!(
             ir.contains("molt_add"),
@@ -4478,7 +4475,7 @@ mod tests {
         );
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
-        let ir = backend.dump_ir();
+        let ir = llvm_fn.print_to_string().to_string();
 
         // Should have 3 blocks and a conditional branch
         assert!(
@@ -4516,7 +4513,7 @@ mod tests {
         };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
-        let ir = backend.dump_ir();
+        let ir = llvm_fn.print_to_string().to_string();
 
         assert!(
             ir.contains("icmp slt"),
@@ -4547,7 +4544,7 @@ mod tests {
         };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
-        let ir = backend.dump_ir();
+        let ir = llvm_fn.print_to_string().to_string();
 
         // Should contain the NaN-boxing OR operations
         assert!(

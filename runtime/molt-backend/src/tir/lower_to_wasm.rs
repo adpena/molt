@@ -1102,11 +1102,11 @@ fn infer_result_type(op: &super::ops::TirOp, ctx: &LowerCtx) -> TirType {
 #[cfg(feature = "wasm-backend")]
 mod tests {
     use super::*;
-    use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+    use crate::tir::blocks::{Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
-    use crate::tir::values::{TirValue, ValueId};
+    use crate::tir::values::ValueId;
 
     /// Build a trivial function: returns a constant i64.
     fn make_const_return_func(val: i64) -> TirFunction {

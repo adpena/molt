@@ -6,10 +6,10 @@ license = "Apache-2.0"
 description = "WASM execution state snapshot and resume for Molt"
 
 [dependencies]
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "format_comparison"
