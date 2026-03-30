@@ -630,10 +630,25 @@ fn emit_terminator(
     match &block.terminator {
         Terminator::Return { values } => {
             if values.is_empty() {
-                out.push(OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                });
+                if original_has_ret {
+                    let ret_name = format!("_ret_none_{}", out.len());
+                    out.push(OpIR {
+                        kind: "const_none".to_string(),
+                        out: Some(ret_name.clone()),
+                        ..OpIR::default()
+                    });
+                    out.push(OpIR {
+                        kind: "ret".to_string(),
+                        var: Some(ret_name.clone()),
+                        args: Some(vec![ret_name]),
+                        ..OpIR::default()
+                    });
+                } else {
+                    out.push(OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    });
+                }
             } else {
                 // The native backend reads the return value from `op.var`,
                 // not from `op.args`.  Set both for compatibility.
@@ -1019,6 +1034,44 @@ mod tests {
         let ops = lower_to_simple_ir(&func, &HashMap::new());
         let has_ret = ops.iter().any(|o| o.kind == "ret" || o.kind == "ret_void");
         assert!(has_ret, "expected a return op, got: {:?}", ops);
+    }
+
+    #[test]
+    fn empty_tir_return_preserves_original_ret_signature() {
+        let mut func = TirFunction::new("ret_none".into(), vec![], TirType::DynBox);
+        func.attrs
+            .insert("_original_has_ret".into(), AttrValue::Bool(true));
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+
+        assert!(
+            !ops.iter().any(|op| op.kind == "ret_void"),
+            "roundtrip must not downgrade original `ret` to `ret_void`: {ops:?}"
+        );
+        let ret_op = ops
+            .iter()
+            .find(|op| op.kind == "ret")
+            .expect("roundtrip must synthesize `ret None`");
+        let none_op = ops
+            .iter()
+            .find(|op| op.kind == "const_none")
+            .expect("roundtrip must synthesize a const_none return value");
+        let none_name = none_op
+            .out
+            .as_deref()
+            .expect("const_none must define an output var");
+        assert_eq!(
+            ret_op.var.as_deref(),
+            Some(none_name),
+            "ret must use the synthesized None value"
+        );
+        assert_eq!(
+            ret_op.args.as_ref().and_then(|args| args.first()).map(String::as_str),
+            Some(none_name),
+            "ret args must also reference the synthesized None value"
+        );
     }
 
     #[test]
