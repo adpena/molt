@@ -177,6 +177,9 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 OpCode::Add
                 | OpCode::Sub
                 | OpCode::Mul
+                | OpCode::InplaceAdd
+                | OpCode::InplaceSub
+                | OpCode::InplaceMul
                 | OpCode::Div
                 | OpCode::FloorDiv
                 | OpCode::Mod

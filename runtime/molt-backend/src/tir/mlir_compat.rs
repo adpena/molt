@@ -214,9 +214,9 @@ fn mlir_dialect(d: &Dialect) -> &'static str {
 
 fn mlir_opcode(op: &OpCode) -> &'static str {
     match op {
-        OpCode::Add => "add",
-        OpCode::Sub => "sub",
-        OpCode::Mul => "mul",
+        OpCode::Add | OpCode::InplaceAdd => "add",
+        OpCode::Sub | OpCode::InplaceSub => "sub",
+        OpCode::Mul | OpCode::InplaceMul => "mul",
         OpCode::Div => "div",
         OpCode::FloorDiv => "floordiv",
         OpCode::Mod => "mod",
