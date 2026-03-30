@@ -881,22 +881,34 @@ impl SimpleBackend {
             .filter(|op| op.kind == "const_str" || op.kind == "const_bytes")
             .filter_map(|op| op.out.clone())
             .collect();
+        // Collect output names of ops that produce heap pointers (list_new,
+        // tuple_new, dict_new, etc.). These must NOT be initialized to
+        // box_none because Cranelift phi resolution at loop headers can
+        // pick up the entry-block value instead of the pre-loop definition,
+        // causing runtime operations to receive box_none as a pointer.
+        let heap_alloc_out_names: std::collections::HashSet<String> = func_ir.ops.iter()
+            .filter(|op| matches!(op.kind.as_str(),
+                "list_new" | "tuple_new" | "dict_new" | "set_new" | "frozenset_new"
+                | "module_new" | "module_cache_get"
+            ))
+            .filter_map(|op| op.out.clone())
+            .collect();
         {
-            // Initialize ALL variables to raw 0 (not box_none).
-            // Raw 0 is a non-pointer NaN-box tag that is safe for
-            // dec_ref and comparison.  Using box_none (0x7FFB) causes
-            // Cranelift's SSA phi resolution at loop headers to pick up
-            // the entry-block definition instead of the pre-loop value
-            // when the back-edge path doesn't redefine the variable.
-            // This corrupts list cells (boxed locals), string pointers,
-            // and other heap references that are defined before a loop
-            // but read inside or after it.
+            let none_val = builder.ins().iconst(types::I64, box_none());
             let zero = builder.ins().iconst(types::I64, 0);
             for (name, var) in &vars {
                 if param_name_set.contains(name.as_str()) {
                     continue;
                 }
-                builder.def_var(*var, zero);
+                if const_str_out_names.contains(name) || heap_alloc_out_names.contains(name) {
+                    // Initialize to raw 0 (not box_none). Raw 0 is safe
+                    // for dec_ref (non-pointer NaN-box tag) and avoids
+                    // Cranelift using box_none as the SSA reaching
+                    // definition at loop header phis.
+                    builder.def_var(*var, zero);
+                    continue;
+                }
+                builder.def_var(*var, none_val);
             }
         }
 
@@ -12516,12 +12528,20 @@ impl SimpleBackend {
                         let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
                         brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
                     }
+                    // The fallthrough block is always fresh and both of its
+                    // predecessors are emitted here: the direct negative edge
+                    // and, on the fast-path probe, the validate block's
+                    // negative edge. Seal it now so later `use_var` calls in
+                    // the fallthrough block cannot synthesize placeholder
+                    // predecessors with zero-valued block params.
+                    if sealed_blocks.insert(fallthrough) {
+                        builder.seal_block(fallthrough);
+                    }
                     switch_to_block_tracking(&mut builder, fallthrough, &mut is_block_filled);
-                    // Defer sealing to seal_all_blocks() — early sealing breaks
-                    // SSA variable propagation for loop counters through fallthrough blocks.
-                    // check_exception's fallthrough is always a fresh empty block —
-                    // force-clear is_block_filled so subsequent ops (add, loop_index_next)
-                    // are never incorrectly skipped by the whitelist guard.
+                    // check_exception's fallthrough is always a fresh empty
+                    // block — force-clear is_block_filled so subsequent ops
+                    // (add, loop_index_next) are never incorrectly skipped by
+                    // the whitelist guard.
                     is_block_filled = false;
                     // Propagate remaining tracked objects to BOTH the fallthrough
                     // and the exception handler. Without this, the exception handler

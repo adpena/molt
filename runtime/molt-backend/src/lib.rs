@@ -2871,19 +2871,18 @@ impl SimpleBackend {
                 // Empty ops = TIR roundtrip failed validation; keep original ops.
                 for (idx, content_hash, ops) in &results {
                     if !ops.is_empty() {
-                        // Dump roundtripped ops for user module chunks.
-                        if ir.functions[*idx].name.contains("tfor_dump__molt")
-                        {
-                            let mut dump = format!("// {}\n", ir.functions[*idx].name);
-                            for (i, op) in ops.iter().enumerate() {
-                                dump.push_str(&format!(
-                                    "{:3}: {:25} args={:?} out={:?} var={:?} val={:?}\n",
-                                    i, op.kind, op.args, op.out, op.var, op.value
-                                ));
-                            }
-                            let _ = std::fs::write("/tmp/molt_tir_roundtrip.txt", &dump);
+                        // Loop functions: validate that the roundtrip preserved
+                        // structural loop markers.  If loop_start count doesn't
+                        // match, fall back to original ops.
+                        let orig_loops = ir.functions[*idx].ops.iter()
+                            .filter(|o| o.kind == "loop_start").count();
+                        let rt_loops = ops.iter()
+                            .filter(|o| o.kind == "loop_start").count();
+                        if orig_loops > 0 && rt_loops != orig_loops {
+                            // Loop structure not preserved — keep originals.
+                        } else {
+                            ir.functions[*idx].ops = ops.clone();
                         }
-                        ir.functions[*idx].ops = ops.clone();
                         tir_optimized_names.insert(ir.functions[*idx].name.clone());
                         let bytes = crate::tir::serialize::serialize_ops(ops);
                         tir_cache.put(content_hash, &bytes, vec![]);
@@ -3706,6 +3705,12 @@ mod tests {
             &function_arities,
             &function_has_ret,
         );
+        if std::env::var_os("MOLT_DEBUG_IMPORT_MAP").is_some() {
+            eprintln!("IMPORT_MAP {target_name}:");
+            for (name, (func_id, shape)) in &backend.import_ids {
+                eprintln!("  {name} => {:?} {:?}", func_id, shape);
+            }
+        }
         backend
             .deferred_defines
             .iter()
