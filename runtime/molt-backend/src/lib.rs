@@ -1991,23 +1991,10 @@ fn compute_function_has_ret(functions: &[FunctionIR]) -> BTreeMap<String, bool> 
     functions
         .iter()
         .map(|func| {
-            let is_split_helper = func.name.starts_with("__molt_chunk_");
-            // A function "has ret" if it contains a `ret` op (value-returning)
-            // OR a `ret_void` op that is called from a context expecting a value.
-            // Module chunk functions and __annotate__ functions use ret_void but
-            // are called via `call` ops that expect return values, so they must
-            // be treated as value-returning to avoid caller/callee ABI mismatch.
-            // Synthetic megafunction split helpers inherit the original name in
-            // `__molt_chunk_*`, but they are internal implementation details and
-            // must keep their actual ABI. Otherwise a void helper can be
-            // misdeclared as returning a value and its call site gets dropped on
-            // signature mismatch.
-            let has_ret = func.ops.iter().any(|op| op.kind == "ret")
-                || (!is_split_helper
-                    && (func.name.contains("_molt_module_chunk_")
-                        || func.name.contains("__annotate__")
-                        || func.name.contains("_molt_globals_")));
-            (func.name.clone(), has_ret)
+            // The backend ABI must reflect the function body's actual return
+            // shape, not naming heuristics. Call sites already box `None` when
+            // a direct call targets a void function and the result is ignored.
+            (func.name.clone(), func.ops.iter().any(|op| op.kind == "ret"))
         })
         .collect()
 }
@@ -2845,14 +2832,6 @@ impl SimpleBackend {
                             ops: input.ops,
                             param_types: input.param_types,
                         };
-                        // Skip TIR roundtrip for functions with loops — the
-                        // linearization does not preserve loop_start/loop_end/
-                        // loop_break_if_true/loop_continue structural markers
-                        // that the native backend requires for Cranelift loop blocks.
-                        let has_loop = tmp_func.ops.iter().any(|op| op.kind == "loop_start");
-                        if has_loop {
-                            return (idx, content_hash, tmp_func.ops);
-                        }
                         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                         crate::tir::type_refine::refine_types(&mut tir_func);
                         let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
@@ -3941,6 +3920,45 @@ mod tests {
                 .any(|callee| clif.contains(&format!("= call {callee}("))),
             "split stub must retain the direct call to the final value-returning chunk:\n{clif}",
         );
+    }
+
+    #[test]
+    fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
+        let result = compute_function_has_ret(&[
+            FunctionIR {
+                name: "demo__molt_module_chunk_1".to_string(),
+                params: vec![],
+                ops: vec![OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+            },
+            FunctionIR {
+                name: "demo____molt_globals_builtin__".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const_none".to_string(),
+                        out: Some("ret".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("ret".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+            },
+        ]);
+
+        assert_eq!(result.get("demo__molt_module_chunk_1"), Some(&false));
+        assert_eq!(result.get("demo____molt_globals_builtin__"), Some(&true));
     }
 
     #[test]
