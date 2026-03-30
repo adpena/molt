@@ -65,6 +65,9 @@ pub(crate) mod functions_http;
 pub(crate) mod functions_logging;
 pub(crate) mod functions_pickle;
 pub(crate) mod functions_stat;
+pub(crate) mod functions_re;
+pub(crate) mod functions_fnmatch;
+pub(crate) mod functions_textwrap;
 #[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod functions_zipfile;
 pub(crate) mod functools;
