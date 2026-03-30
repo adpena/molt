@@ -14976,7 +14976,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 isinstance(node.func.value, ast.Name)
                 and node.func.value.id == "molt_json"
             ):
-                if node.func.attr == "parse":
+                if node.func.attr == "parse" and len(node.args) == 1:
                     arg = self.visit(node.args[0])
                     res = MoltValue(self.next_var(), type_hint="Any")
                     if self.parse_codec == "cbor":
@@ -14991,7 +14991,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 isinstance(node.func.value, ast.Name)
                 and node.func.value.id == "molt_msgpack"
             ):
-                if node.func.attr == "parse":
+                if node.func.attr == "parse" and len(node.args) == 1:
                     arg = self.visit(node.args[0])
                     res = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(MoltOp(kind="MSGPACK_PARSE", args=[arg], result=res))
@@ -15000,7 +15000,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 isinstance(node.func.value, ast.Name)
                 and node.func.value.id == "molt_cbor"
             ):
-                if node.func.attr == "parse":
+                if node.func.attr == "parse" and len(node.args) == 1:
                     arg = self.visit(node.args[0])
                     res = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(MoltOp(kind="CBOR_PARSE", args=[arg], result=res))
