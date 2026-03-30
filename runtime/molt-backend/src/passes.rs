@@ -1,11 +1,19 @@
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "llvm")),
+    allow(dead_code)
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReturnAliasSummary {
     Param(usize),
 }
 
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "llvm")),
+    allow(dead_code)
+)]
 fn alias_source_name<'a>(
     op: &'a OpIR,
     summaries: &BTreeMap<String, ReturnAliasSummary>,
@@ -34,6 +42,10 @@ fn alias_source_name<'a>(
     }
 }
 
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "llvm")),
+    allow(dead_code)
+)]
 fn compute_function_return_alias_summary(
     func: &FunctionIR,
     known: &BTreeMap<String, ReturnAliasSummary>,
@@ -116,7 +128,7 @@ fn compute_function_return_alias_summary(
 }
 
 #[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
+    not(any(feature = "native-backend", feature = "llvm")),
     allow(dead_code)
 )]
 pub fn compute_return_alias_summaries(
@@ -1702,11 +1714,27 @@ mod tests {
 
         assert_eq!(stub.name, "user_large");
         assert!(!chunks.is_empty());
+        let stub_chunk_calls: Vec<&OpIR> = stub
+            .ops
+            .iter()
+            .filter(|op| op.kind == "call_internal")
+            .collect();
+        assert_eq!(stub_chunk_calls.len(), chunks.len());
         assert!(
-            stub.ops
+            stub_chunk_calls
                 .iter()
                 .all(|op| op.args.as_ref() == Some(&vec!["p0".to_string()])),
             "split stub must forward original params into each chunk call"
+        );
+        assert_eq!(
+            stub.ops.last().map(|op| op.kind.as_str()),
+            Some("ret"),
+            "split stub must return the propagated chunk result",
+        );
+        assert_eq!(
+            stub.ops.last().and_then(|op| op.args.as_ref()),
+            Some(&vec!["__chunk_ret".to_string()]),
+            "split stub must return the named propagated chunk result",
         );
         assert!(
             chunks
@@ -2481,14 +2509,31 @@ pub fn split_large_function(
 
     // ---------------------------------------------------------------
     // 4. Build the stub parent function that calls each chunk.
+    //    If any chunk contains a `ret` op, the stub must propagate
+    //    the return value. The last chunk with a `ret` is the one
+    //    whose result is returned.
     // ---------------------------------------------------------------
-    let mut stub_ops: Vec<OpIR> = Vec::with_capacity(chunks.len());
-    for chunk in &chunks {
+    let has_returning_chunk = chunks.iter().any(|c| c.ops.iter().any(|op| op.kind == "ret"));
+    let mut stub_ops: Vec<OpIR> = Vec::with_capacity(chunks.len() + 1);
+    for (ci, chunk) in chunks.iter().enumerate() {
+        let chunk_has_ret = chunk.ops.iter().any(|op| op.kind == "ret");
+        let out_name = if chunk_has_ret {
+            "__chunk_ret".to_string()
+        } else {
+            format!("__chunk_discard_{ci}")
+        };
         stub_ops.push(OpIR {
             kind: "call_internal".to_string(),
             s_value: Some(chunk.name.clone()),
             args: Some(func.params.clone()),
-            out: Some("none".to_string()),
+            out: Some(out_name),
+            ..OpIR::default()
+        });
+    }
+    if has_returning_chunk {
+        stub_ops.push(OpIR {
+            kind: "ret".to_string(),
+            args: Some(vec!["__chunk_ret".to_string()]),
             ..OpIR::default()
         });
     }

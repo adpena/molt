@@ -165,7 +165,7 @@ fn preanalyze_function_ir(
 
     for (idx, op) in func_ir.ops.iter().enumerate() {
         match op.kind.as_str() {
-            "ret" => has_ret = true,
+            "ret" | "ret_void" => has_ret = true,
             "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
             | "chan_recv_yield" => stateful = true,
             "store" => has_store = true,
