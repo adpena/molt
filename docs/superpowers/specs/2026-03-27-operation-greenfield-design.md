@@ -424,12 +424,8 @@ This sprint superseded and consolidated:
 - `docs/superpowers/plans/2026-03-27-branch-integration-into-main.md` (removed after the 2026-03-30 audit)
 
 The following plans remain active for their specific scope:
-- `docs/superpowers/plans/2026-03-26-stdlib-object-partition.md`
-- `docs/superpowers/plans/2026-03-26-linear-grouped-backlog.md`
-- `docs/superpowers/plans/2026-03-27-wave-a-correctness-fortress.md`
-- `docs/superpowers/plans/2026-03-27-wave-b-ecosystem-unlock.md`
-- `docs/superpowers/plans/2026-03-27-wave-c-wasm-first-class.md`
-- `docs/superpowers/plans/2026-03-29-consolidated-monty-buffa-and-waves.md`
+- `docs/superpowers/plans/2026-03-26-linear-grouped-backlog.md` (separate Linear/workspace ops lane)
+- `docs/superpowers/plans/2026-03-29-consolidated-monty-buffa-and-waves.md` (canonical engineering burndown plan)
 
 ## Non-Goals
 
