@@ -89,6 +89,8 @@ struct SsaContext<'a> {
     pending_inline_consts: Vec<super::ops::TirOp>,
     /// Function parameter names (treated as implicit entry-block definitions).
     params: Vec<String>,
+    /// Shared `None` value used for known variables without a reaching def.
+    undef_value: Option<ValueId>,
 }
 
 impl<'a> SsaContext<'a> {
@@ -106,6 +108,7 @@ impl<'a> SsaContext<'a> {
             value_types: HashMap::new(),
             pending_inline_consts: Vec::new(),
             params: params.to_vec(),
+            undef_value: None,
         }
     }
 
@@ -143,12 +146,10 @@ impl<'a> SsaContext<'a> {
             for idx in bb.start_op..bb.end_op {
                 let op = &self.ops[idx];
 
-                // Skip purely structural ops.
-                if is_structural(&op.kind) {
-                    continue;
+                let structural = is_structural(&op.kind);
+                if !structural {
+                    op_indices.push(idx);
                 }
-
-                op_indices.push(idx);
 
                 // Uses: args and var (when used as input).
                 if op.kind == "unpack_sequence" {
@@ -258,6 +259,10 @@ impl<'a> SsaContext<'a> {
     fn insert_block_arguments(&mut self) {
         // For each variable, compute the iterated dominance frontier of all
         // blocks that define it, then insert a block argument at those blocks.
+        // This is pruned SSA: only insert a block argument when the variable is
+        // actually live-in to the join block. Otherwise dead branch-local vars
+        // create bogus block params and unresolved predecessor values.
+        let live_in = self.compute_live_in_vars(false);
 
         // Function parameters are implicit definitions available at the entry
         // block. Add them as entry-block arguments so the rename phase creates
@@ -300,7 +305,7 @@ impl<'a> SsaContext<'a> {
 
             // Record that these blocks need a block argument for this variable.
             for &bid in &phi_blocks {
-                if !self.block_arg_vars[bid].contains(&var) {
+                if live_in[bid].contains(&var) && !self.block_arg_vars[bid].contains(&var) {
                     self.block_arg_vars[bid].push(var.clone());
                 }
             }
@@ -322,7 +327,7 @@ impl<'a> SsaContext<'a> {
             return;
         }
 
-        let live_in = self.compute_live_in_vars_with_exception_edges();
+        let live_in = self.compute_live_in_vars(true);
         for bid in handler_blocks {
             let mut vars: Vec<String> = live_in[bid].iter().cloned().collect();
             vars.sort();
@@ -334,15 +339,17 @@ impl<'a> SsaContext<'a> {
         }
     }
 
-    fn compute_live_in_vars_with_exception_edges(&self) -> Vec<HashSet<String>> {
+    fn compute_live_in_vars(&self, include_exception_edges: bool) -> Vec<HashSet<String>> {
         let n = self.cfg.blocks.len();
         let mut succs = self.cfg.successors.clone();
-        for &(from_bid, handler_bid) in &self.cfg.exception_edges {
-            if from_bid >= n || handler_bid >= n {
-                continue;
-            }
-            if !succs[from_bid].contains(&handler_bid) {
-                succs[from_bid].push(handler_bid);
+        if include_exception_edges {
+            for &(from_bid, handler_bid) in &self.cfg.exception_edges {
+                if from_bid >= n || handler_bid >= n {
+                    continue;
+                }
+                if !succs[from_bid].contains(&handler_bid) {
+                    succs[from_bid].push(handler_bid);
+                }
             }
         }
         for block_succs in &mut succs {
@@ -383,6 +390,8 @@ impl<'a> SsaContext<'a> {
 
     fn rename_and_emit(&mut self) {
         let n = self.cfg.blocks.len();
+        let undef_vid = self.fresh_value_typed();
+        self.undef_value = Some(undef_vid);
 
         // Build dominator tree children.
         let mut dom_children: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -452,6 +461,16 @@ impl<'a> SsaContext<'a> {
             }
 
             // 2. Process ops in this block.
+            if bid == self.cfg.entry {
+                tir_blocks[bid].ops.push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstNone,
+                    operands: vec![],
+                    results: vec![undef_vid],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                });
+            }
             let op_indices = self.block_info[bid].op_indices.clone();
             for &op_idx in &op_indices {
                 let op = &self.ops[op_idx];
@@ -639,6 +658,20 @@ impl<'a> SsaContext<'a> {
         var_stacks.get(var).and_then(|s| s.last().copied())
     }
 
+    fn resolve_known_var(
+        &self,
+        var: &str,
+        var_stacks: &HashMap<String, Vec<ValueId>>,
+    ) -> Option<ValueId> {
+        Self::resolve_var(var, var_stacks).or_else(|| {
+            if self.all_vars.contains(var) {
+                self.undef_value
+            } else {
+                None
+            }
+        })
+    }
+
     fn block_for_label(&self, label_id: i64) -> Option<usize> {
         self.cfg.blocks.iter().enumerate().find_map(|(bid, block)| {
             let has_label = (block.start_op..block.end_op).any(|op_idx| {
@@ -662,7 +695,7 @@ impl<'a> SsaContext<'a> {
                 Box::new(args.iter())
             };
             for a in args_iter {
-                if let Some(vid) = Self::resolve_var(a, var_stacks) {
+                if let Some(vid) = self.resolve_known_var(a, var_stacks) {
                     // Resolved as a variable
                     operands.push(vid);
                 } else if let Ok(int_val) = a.parse::<i64>() {
@@ -715,7 +748,7 @@ impl<'a> SsaContext<'a> {
         if op.kind != "store_var"
             && let Some(v) = &op.var
             && is_variable(v)
-            && let Some(vid) = Self::resolve_var(v, var_stacks)
+            && let Some(vid) = self.resolve_known_var(v, var_stacks)
         {
             operands.push(vid);
         }
@@ -725,7 +758,7 @@ impl<'a> SsaContext<'a> {
         {
             for a in args {
                 if is_variable(a)
-                    && let Some(vid) = Self::resolve_var(a, var_stacks)
+                    && let Some(vid) = self.resolve_known_var(a, var_stacks)
                 {
                     operands.push(vid);
                 }
@@ -916,7 +949,7 @@ impl<'a> SsaContext<'a> {
                     }
                     for a in candidates {
                         if is_variable(a)
-                            && let Some(vid) = Self::resolve_var(a, var_stacks)
+                            && let Some(vid) = self.resolve_known_var(a, var_stacks)
                         {
                             values.push(vid);
                         }
@@ -943,13 +976,16 @@ impl<'a> SsaContext<'a> {
                     .and_then(|op| {
                         op.args.as_ref().and_then(|a| a.first()).and_then(|a| {
                             if is_variable(a) {
-                                Self::resolve_var(a, var_stacks)
+                                self.resolve_known_var(a, var_stacks)
                             } else {
                                 None
                             }
                         })
                     })
-                    .unwrap_or(ValueId(0));
+                    .or(self.undef_value)
+                    .unwrap_or_else(|| {
+                        self.undef_value.expect("SSA undef value must be initialized")
+                    });
 
                 if succs.len() >= 2 {
                     let then_bid = succs[0];
@@ -1035,7 +1071,14 @@ impl<'a> SsaContext<'a> {
     ) -> Vec<ValueId> {
         self.block_arg_vars[target_bid]
             .iter()
-            .map(|var| Self::resolve_var(var, var_stacks).unwrap_or(ValueId(0)))
+            .map(|var| {
+                self.resolve_known_var(var, var_stacks).unwrap_or_else(|| {
+                    panic!(
+                        "unresolved SSA branch arg '{}' for target block {}",
+                        var, target_bid
+                    )
+                })
+            })
             .collect()
     }
 
@@ -1302,24 +1345,15 @@ mod tests {
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
 
-        // The join block (end_if) should have a block argument for x.
-        assert!(output.blocks.len() >= 3, "expected at least 3 blocks");
-
-        // Find the join block — it's the one containing op 5 (end_if).
-        let join_bid = cfg
-            .blocks
-            .iter()
-            .position(|b| b.start_op <= 5 && b.end_op > 5)
-            .unwrap();
-        let join_block = &output.blocks[join_bid];
-
         assert!(
-            !join_block.args.is_empty(),
-            "join block should have block arguments for x, got 0 args"
+            total_block_args(&output) > 0,
+            "SSA conversion should insert a merge arg for x, got 0 total block args"
         );
-
-        // The block argument should be for variable x.
-        assert_eq!(join_block.args.len(), 1, "exactly one block arg (for x)");
+        assert_eq!(
+            total_block_args(&output),
+            1,
+            "exactly one merged block arg should exist for x"
+        );
     }
 
     // =======================================================================
@@ -1380,23 +1414,19 @@ mod tests {
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
 
-        // Find join block.
-        let join_bid = cfg
-            .blocks
-            .iter()
-            .position(|b| b.start_op <= 7 && b.end_op > 7)
-            .unwrap();
-        let join_block = &output.blocks[join_bid];
-
         assert_eq!(
-            join_block.args.len(),
+            total_block_args(&output),
             2,
-            "join block should have 2 block args (x and y), got {}",
-            join_block.args.len()
+            "SSA conversion should insert exactly 2 merged block args (x and y), got {}",
+            total_block_args(&output)
         );
 
         // All block arg ValueIds should be unique.
-        let arg_ids: HashSet<ValueId> = join_block.args.iter().map(|a| a.id).collect();
+        let arg_ids: HashSet<ValueId> = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.args.iter().map(|arg| arg.id))
+            .collect();
         assert_eq!(arg_ids.len(), 2, "block arg ValueIds should be unique");
     }
 
@@ -1617,6 +1647,74 @@ mod tests {
             check_ops[0].operands.is_empty(),
             "check_exception should not carry dead handler args, got operands {:?}",
             check_ops[0].operands
+        );
+    }
+
+    #[test]
+    fn join_block_does_not_receive_dead_branch_only_vars() {
+        let ops = vec![
+            op_val_out("const", 1, "c"),
+            op_args("if", &["c"]),
+            op_val_out("const", 1, "x"),
+            op("else"),
+            op_val_out("const", 2, "y"),
+            op("end_if"),
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let join_bid = cfg
+            .blocks
+            .iter()
+            .position(|b| b.start_op <= 5 && b.end_op > 5)
+            .expect("join block should exist");
+        let join_block = &output.blocks[join_bid];
+        assert!(
+            join_block.args.is_empty(),
+            "join block must not receive dead branch-only vars, got {} args",
+            join_block.args.len()
+        );
+    }
+
+    #[test]
+    fn branch_defined_live_var_gets_none_on_missing_edge() {
+        let ops = vec![
+            op_val_out("const", 1, "c"),
+            op_args("if", &["c"]),
+            op_val_out("const", 1, "x"),
+            op("end_if"),
+            op_args("ret", &["x"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        assert_eq!(
+            total_block_args(&output),
+            1,
+            "live branch-defined var should still require one merge arg"
+        );
+
+        let undef_vid = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| op.opcode == OpCode::ConstNone)
+            .and_then(|op| op.results.first().copied())
+            .expect("SSA should materialize a shared undef None value");
+
+        let has_undef_branch_arg = output.blocks.iter().any(|block| match &block.terminator {
+            Terminator::Branch { args, .. } => args.contains(&undef_vid),
+            Terminator::CondBranch {
+                then_args,
+                else_args,
+                ..
+            } => then_args.contains(&undef_vid) || else_args.contains(&undef_vid),
+            _ => false,
+        });
+        assert!(
+            has_undef_branch_arg,
+            "missing branch edge must pass the explicit undef None value"
         );
     }
 
