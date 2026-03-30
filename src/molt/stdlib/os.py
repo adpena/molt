@@ -841,20 +841,9 @@ class _Path:
     altsep = altsep
 
     @staticmethod
-    def join(
-        first: Any,
-        second: Any = None,
-        third: Any = None,
-        fourth: Any = None,
-        fifth: Any = None,
-        sixth: Any = None,
-        seventh: Any = None,
-        eighth: Any = None,
-    ) -> Any:
-        parts: list[Any] = []
-        for arg in (first, second, third, fourth, fifth, sixth, seventh, eighth):
-            if arg is not None:
-                parts.append(arg)
+    def join(first: Any, *rest: Any) -> Any:
+        parts: list[Any] = [first]
+        parts.extend(rest)
         if not parts:
             return ""
         # Fast path: use the new 2-arg intrinsic for the common case.
