@@ -3421,9 +3421,10 @@ impl SimpleBackend {
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        let _one = builder.ins().iconst(types::I64, 1);
-                        let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
+                        // Check for zero divisor using the NaN-boxed representation.
+                        // box_int(0) = QNAN | TAG_INT = 0x7ff9000000000000.
+                        let boxed_zero = builder.ins().iconst(types::I64, box_int(0));
+                        let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, *rhs, boxed_zero);
                         builder
                             .ins()
                             .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
