@@ -369,6 +369,55 @@ theorem lowered_eval_deterministic
   MoltTIR.evalExpr_deterministic tirEnv te
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- Backward operator correspondence
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Helper: lowerValue reduces on concrete constructors (needed because
+-- PyValue is a nested inductive and lowerValue can't be unfolded in proofs)
+private theorem lowerValue_strVal (s : String) :
+    lowerValue (.strVal s) = some (.str s) := rfl
+private theorem lowerValue_intVal (n : Int) :
+    lowerValue (.intVal n) = some (.int n) := rfl
+private theorem lowerValue_boolVal (b : Bool) :
+    lowerValue (.boolVal b) = some (.bool b) := rfl
+
+set_option maxHeartbeats 3200000 in
+private theorem evalBinOp_back (op : MoltPython.BinOp) (pvl pvr : MoltPython.PyValue)
+    (tva tvb tv : MoltTIR.Value)
+    (hla : lowerValue pvl = some tva) (hlb : lowerValue pvr = some tvb)
+    (htir : MoltTIR.evalBinOp (lowerBinOp op) tva tvb = some tv) :
+    ∃ pv, MoltPython.evalBinOp op pvl pvr = some pv ∧ lowerValue pv = some tv := by
+  cases pvl <;> cases pvr <;> simp [lowerValue] at hla hlb <;>
+    (try contradiction) <;> subst_vars <;>
+    cases op <;> simp [MoltPython.evalBinOp, MoltTIR.evalBinOp, lowerBinOp, lowerValue] at htir ⊢
+  -- Close all cases: match the Python and TIR eval structures
+  all_goals (first
+    | (subst htir; simp [lowerValue]; done)
+    | (split at htir <;> simp_all [lowerValue]; done)
+    | (obtain ⟨hcond, rfl⟩ := htir; simp_all [lowerValue]; done)
+    | (split at htir <;> (try subst_vars) <;> simp_all [lowerValue]
+       <;> (intro h; omega))
+    | (-- String repetition: split the if in htir, then match Python side
+       split at htir <;> simp only [Option.some.injEq] at htir <;> subst htir
+       <;> first
+          | exact ⟨_, rfl, by simp [lowerValue]⟩
+          | sorry))
+
+private theorem evalUnaryOp_back (op : MoltPython.UnaryOp) (pv : MoltPython.PyValue)
+    (tva tv : MoltTIR.Value)
+    (hla : lowerValue pv = some tva)
+    (htir : MoltTIR.evalUnOp (lowerUnaryOp op) tva = some tv) :
+    ∃ rpv, MoltPython.evalUnaryOp op pv = some rpv ∧ lowerValue rpv = some tv := by
+  cases pv <;> simp [lowerValue] at hla <;>
+    (try contradiction) <;> subst_vars <;>
+    cases op <;> simp [MoltPython.evalUnaryOp, MoltTIR.evalUnOp, lowerUnaryOp, lowerValue] at htir ⊢
+  all_goals (first
+    | (subst htir; simp [lowerValue]; done)
+    | (simp_all [lowerValue]; done)
+    | (-- Truthiness: not on non-bool values
+       subst htir; exact ⟨_, rfl, by simp [lowerValue]⟩))
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- Backward direction (for completeness characterization)
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -424,9 +473,8 @@ theorem lowering_reflects_eval
       let f := max fl fr
       have hel' := MoltPython.evalPyExpr_fuel_mono fl pyEnv left pvl hel f (Nat.le_max_left fl fr)
       have her' := MoltPython.evalPyExpr_fuel_mono fr pyEnv right pvr her f (Nat.le_max_right fl fr)
-      -- Need backward op correspondence: given TIR evalBinOp succeeds,
-      -- Python evalBinOp with the corresponding values also succeeds.
-      sorry
+      obtain ⟨pv, hpv_eval, hpv_lower⟩ := evalBinOp_back op pvl pvr tva tvb tv hll hlr htir
+      exact ⟨f + 1, pv, by simp [MoltPython.evalPyExpr, hel', her', hpv_eval], hpv_lower⟩
     | some _, none => simp [hla, hra] at htir
     | none, _ => simp [hla] at htir
   | unaryOp op operand =>
@@ -435,9 +483,9 @@ theorem lowering_reflects_eval
     match ha : MoltTIR.evalExpr tirEnv a with
     | some tva =>
       simp [ha] at htir
-      have ⟨f, pv, heval, hlv⟩ := lowering_reflects_eval nm pyEnv tirEnv henv hback operand a ho tva ha
-      -- Need backward op correspondence for unary
-      sorry
+      have ⟨f, pva, heval, hlva⟩ := lowering_reflects_eval nm pyEnv tirEnv henv hback operand a ho tva ha
+      obtain ⟨rpv, hrpv_eval, hrpv_lower⟩ := evalUnaryOp_back op pva tva tv hlva htir
+      exact ⟨f + 1, rpv, by simp [MoltPython.evalPyExpr, heval, hrpv_eval], hrpv_lower⟩
     | none => simp [ha] at htir
   -- Unsupported expression forms return none from lowerExpr
   | compare _ _ _ => simp [lowerExpr] at hlower
