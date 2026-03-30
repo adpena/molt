@@ -932,16 +932,50 @@ impl SimpleBackend {
             //
             // Raw 0 is safe: dec_ref no-ops, comparisons detect it as
             // non-equal to any valid object, is_truthy returns false.
-            let init_val = if has_loop_or_backedge {
-                builder.ins().iconst(types::I64, 0)
+            // In loop-bearing functions, pre-materialize constants in the
+            // entry block so the entry-block def_var IS the correct value.
+            // The phi at loop headers then picks the correct constant on
+            // the first iteration instead of a bogus default.
+            let const_int_defs: BTreeMap<String, i64> = if has_loop_or_backedge {
+                func_ir.ops.iter()
+                    .filter(|op| op.kind == "const" || op.kind == "const_bool" || op.kind == "const_none")
+                    .filter_map(|op| {
+                        let out = op.out.as_ref()?;
+                        match op.kind.as_str() {
+                            "const" => {
+                                let val = op.value.unwrap_or(0);
+                                const INLINE_MAX: i64 = (1_i64 << 46) - 1;
+                                const INLINE_MIN: i64 = -(1_i64 << 46);
+                                if (INLINE_MIN..=INLINE_MAX).contains(&val) {
+                                    Some((out.clone(), box_int(val)))
+                                } else {
+                                    None // bigints handled separately
+                                }
+                            }
+                            "const_bool" => {
+                                let val = op.value.unwrap_or(0);
+                                Some((out.clone(), box_bool(val)))
+                            }
+                            "const_none" => Some((out.clone(), box_none())),
+                            _ => None,
+                        }
+                    })
+                    .collect()
             } else {
-                builder.ins().iconst(types::I64, box_none())
+                BTreeMap::new()
             };
+            let none_val = builder.ins().iconst(types::I64, box_none());
             for (name, var) in &vars {
                 if param_name_set.contains(name.as_str()) {
                     continue;
                 }
-                builder.def_var(*var, init_val);
+                if let Some(&bits) = const_int_defs.get(name) {
+                    // Pre-materialize constant in entry block.
+                    let val = builder.ins().iconst(types::I64, bits);
+                    builder.def_var(*var, val);
+                } else {
+                    builder.def_var(*var, none_val);
+                }
             }
         }
 
@@ -15896,3 +15930,4 @@ mod tests {
 }
 
  
+
