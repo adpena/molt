@@ -488,6 +488,43 @@ impl SimpleBackend {
                 ),
             );
         }
+        if let Some(pattern) = env_setting("MOLT_DUMP_FINAL_FUNC_IR")
+            && func_ir.name.contains(pattern.as_str())
+        {
+            let sanitized: String = func_ir
+                .name
+                .chars()
+                .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                .collect();
+            let mut dump = String::new();
+            dump.push_str(&format!("// final func: {} ({} ops)\n", func_ir.name, func_ir.ops.len()));
+            dump.push_str(&format!("// params: {:?}\n", func_ir.params));
+            dump.push_str(&format!("// param_types: {:?}\n", func_ir.param_types));
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                dump.push_str(&format!(
+                    "{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?} raw={:?} stack={:?} task={:?} container={:?} type={:?} ic={:?}\n",
+                    idx,
+                    op.kind,
+                    op.out.as_deref().unwrap_or(""),
+                    op.var.as_deref().unwrap_or(""),
+                    op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
+                    op.value,
+                    op.s_value,
+                    op.fast_int,
+                    op.fast_float,
+                    op.raw_int,
+                    op.stack_eligible,
+                    op.task_kind,
+                    op.container_type,
+                    op.type_hint,
+                    op.ic_index,
+                ));
+            }
+            let _ = crate::debug_artifacts::write_debug_artifact(
+                format!("native/final_ir/{sanitized}.txt"),
+                dump,
+            );
+        }
         self.compile_func_inner(
             func_ir,
             task_kinds,
@@ -9952,13 +9989,17 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let raise_call = builder.ins().call(raise_ref, &[]);
-                        let raise_results = builder.inst_results(raise_call);
-                        let err_val = if raise_results.is_empty() {
-                            builder.ins().iconst(types::I64, box_none())
+                        if has_ret {
+                            let raise_results = builder.inst_results(raise_call);
+                            let err_val = if raise_results.is_empty() {
+                                builder.ins().iconst(types::I64, box_none())
+                            } else {
+                                raise_results[0]
+                            };
+                            builder.ins().return_(&[err_val]);
                         } else {
-                            raise_results[0]
-                        };
-                        builder.ins().return_(&[err_val]);
+                            builder.ins().return_(&[]);
+                        }
 
                         // Call block: direct call to the target function.
                         builder.switch_to_block(call_block);
@@ -10067,8 +10108,12 @@ impl SimpleBackend {
                         // exception propagates to the caller.
                         builder.switch_to_block(exc_return_block);
                         builder.seal_block(exc_return_block);
-                        let none_val = builder.ins().iconst(types::I64, box_none());
-                        builder.ins().return_(&[none_val]);
+                        if has_ret {
+                            let none_val = builder.ins().iconst(types::I64, box_none());
+                            builder.ins().return_(&[none_val]);
+                        } else {
+                            builder.ins().return_(&[]);
+                        }
 
                         builder.switch_to_block(continue_block);
                         builder.block_params(continue_block)[0]
@@ -10582,8 +10627,12 @@ impl SimpleBackend {
                     // the pending RecursionError propagates to the caller
                     // instead of being silently swallowed as None (which
                     // caused TypeError: NoneType + int downstream).
-                    let none_bits = builder.ins().iconst(types::I64, box_none());
-                    builder.ins().return_(&[none_bits]);
+                    if has_ret {
+                        let none_bits = builder.ins().iconst(types::I64, box_none());
+                        builder.ins().return_(&[none_bits]);
+                    } else {
+                        builder.ins().return_(&[]);
+                    }
 
                     builder.switch_to_block(else_block);
                     builder.seal_block(else_block);
@@ -10614,8 +10663,12 @@ impl SimpleBackend {
                     builder.seal_block(else_fail_block);
                     // Same as then_fail_block: return immediately on recursion
                     // guard failure so the pending RecursionError propagates.
-                    let none_bits = builder.ins().iconst(types::I64, box_none());
-                    builder.ins().return_(&[none_bits]);
+                    if has_ret {
+                        let none_bits = builder.ins().iconst(types::I64, box_none());
+                        builder.ins().return_(&[none_bits]);
+                    } else {
+                        builder.ins().return_(&[]);
+                    }
 
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);

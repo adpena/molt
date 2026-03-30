@@ -170,24 +170,12 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             }
         }
 
-        // Emit loop_continue + loop_end for loop back-edge blocks.
-        if loop_role == super::blocks::LoopRole::LoopEnd {
-            out.push(OpIR {
-                kind: "loop_continue".to_string(),
-                ..OpIR::default()
-            });
-            out.push(OpIR {
-                kind: "loop_end".to_string(),
-                ..OpIR::default()
-            });
-        }
-
         // Emit terminator — pass original_has_ret so the roundtrip preserves
         // the function's return type (ret vs ret_void).
         let original_has_ret = func.attrs.get("_original_has_ret")
             .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
             .unwrap_or(false);
-        emit_terminator(block, &block_param_vars, &block_label_id, &mut out, original_has_ret);
+        emit_terminator(block, &block_param_vars, &block_label_id, &mut out, original_has_ret, loop_role);
     }
 
     VALUE_NAME_OVERRIDES.with(|overrides| overrides.borrow_mut().clear());
@@ -656,6 +644,7 @@ fn emit_terminator(
     block_label_id: &dyn Fn(&BlockId) -> i64,
     out: &mut Vec<OpIR>,
     original_has_ret: bool,
+    loop_role: super::blocks::LoopRole,
 ) {
     match &block.terminator {
         Terminator::Return { values } => {
@@ -692,13 +681,27 @@ fn emit_terminator(
         }
 
         Terminator::Branch { target, args } => {
-            // Store args into target block's parameter variables.
-            emit_block_arg_stores(*target, args, block_param_vars, out);
-            out.push(OpIR {
-                kind: "jump".to_string(),
-                value: Some(block_label_id(target)),
-                ..OpIR::default()
-            });
+            if loop_role == super::blocks::LoopRole::LoopEnd {
+                // Loop back-edge: emit loop_continue + loop_end instead
+                // of a plain jump.  The native backend uses these markers
+                // to construct the Cranelift loop back-edge.
+                emit_block_arg_stores(*target, args, block_param_vars, out);
+                out.push(OpIR {
+                    kind: "loop_continue".to_string(),
+                    ..OpIR::default()
+                });
+                out.push(OpIR {
+                    kind: "loop_end".to_string(),
+                    ..OpIR::default()
+                });
+            } else {
+                emit_block_arg_stores(*target, args, block_param_vars, out);
+                out.push(OpIR {
+                    kind: "jump".to_string(),
+                    value: Some(block_label_id(target)),
+                    ..OpIR::default()
+                });
+            }
         }
 
         Terminator::CondBranch {
@@ -708,25 +711,37 @@ fn emit_terminator(
             else_block,
             else_args,
         } => {
-            // Emit: br_if cond → then_block; else → else_block
-            // Correct emission order for CondBranch:
-            // 1. Store then-args (for the taken branch path)
-            // 2. br_if → then_block label
-            // 3. Store else-args (for the fallthrough path)
-            // 4. jump → else_block label
-            emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
-            out.push(OpIR {
-                kind: "br_if".to_string(),
-                args: Some(vec![value_var(*cond)]),
-                value: Some(block_label_id(then_block)),
-                ..OpIR::default()
-            });
-            emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
-            out.push(OpIR {
-                kind: "jump".to_string(),
-                value: Some(block_label_id(else_block)),
-                ..OpIR::default()
-            });
+            if loop_role == super::blocks::LoopRole::LoopHeader {
+                // Loop header conditional: the "then" branch exits the
+                // loop (break), the "else" branch continues into the body.
+                // Store then-args so the after-loop block gets correct values
+                // when the break is taken.
+                emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
+                // Emit loop_break_if_true which the native backend uses
+                // to construct the loop exit branch.
+                out.push(OpIR {
+                    kind: "loop_break_if_true".to_string(),
+                    args: Some(vec![value_var(*cond)]),
+                    ..OpIR::default()
+                });
+                // Fall through to body — store else-args for the body block.
+                emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
+            } else {
+                // Generic conditional branch.
+                emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
+                out.push(OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec![value_var(*cond)]),
+                    value: Some(block_label_id(then_block)),
+                    ..OpIR::default()
+                });
+                emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
+                out.push(OpIR {
+                    kind: "jump".to_string(),
+                    value: Some(block_label_id(else_block)),
+                    ..OpIR::default()
+                });
+            }
         }
 
         Terminator::Switch {
