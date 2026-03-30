@@ -418,14 +418,18 @@ C3 starts after C1. C4 after C3. C5 after C1+C2.
 
 ## Superseded Plans
 
-This sprint supersedes and consolidates:
-- `docs/superpowers/plans/2026-03-27-molt-stabilization-and-roadmap-continuation.md`
-- `docs/superpowers/plans/2026-03-27-repo-gap-closure-program.md`
-- `docs/superpowers/plans/2026-03-27-branch-integration-into-main.md`
+This sprint superseded and consolidated:
+- `docs/superpowers/plans/2026-03-27-molt-stabilization-and-roadmap-continuation.md` (removed after the 2026-03-30 audit)
+- `docs/superpowers/plans/2026-03-27-repo-gap-closure-program.md` (removed after the 2026-03-30 audit)
+- `docs/superpowers/plans/2026-03-27-branch-integration-into-main.md` (removed after the 2026-03-30 audit)
 
 The following plans remain active for their specific scope:
-- `docs/superpowers/plans/2026-03-26-stdlib-object-partition.md` (Tasks 1-2 covered by Track C2)
-- `docs/superpowers/plans/2026-03-26-linear-grouped-backlog.md` (Linear tooling, orthogonal)
+- `docs/superpowers/plans/2026-03-26-stdlib-object-partition.md`
+- `docs/superpowers/plans/2026-03-26-linear-grouped-backlog.md`
+- `docs/superpowers/plans/2026-03-27-wave-a-correctness-fortress.md`
+- `docs/superpowers/plans/2026-03-27-wave-b-ecosystem-unlock.md`
+- `docs/superpowers/plans/2026-03-27-wave-c-wasm-first-class.md`
+- `docs/superpowers/plans/2026-03-29-consolidated-monty-buffa-and-waves.md`
 
 ## Non-Goals
 

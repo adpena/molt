@@ -115,7 +115,7 @@ None. All new functionality is additive or behind feature flags / environment va
 
 ## Related
 
-- Cloudflare demo hardening plan: `docs/superpowers/plans/2026-03-28-cloudflare-demo-hardening.md`
+- Cloudflare follow-on work now rolls into `docs/superpowers/plans/2026-03-29-consolidated-monty-buffa-and-waves.md` after the 2026-03-30 plan audit.
 - Design spec: `docs/superpowers/specs/2026-03-28-cloudflare-demo-hardening-design.md`
 
 ---

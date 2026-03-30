@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEV_PY = REPO_ROOT / "tools" / "dev.py"
+
+
+def _load_dev_py():
+    spec = importlib.util.spec_from_file_location("molt_tools_dev_py", DEV_PY)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
+    module = _load_dev_py()
+    calls: list[tuple[list[str], str | None, bool]] = []
+
+    def fake_run_uv(args, python=None, env=None, tty=False):
+        calls.append((list(args), python, tty))
+
+    monkeypatch.setattr(module, "run_uv", fake_run_uv, raising=True)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        ["tools/dev.py", "update", "--check", "--all"],
+        raising=True,
+    )
+    module.main()
+
+    assert calls == [
+        (
+            ["python3", "-m", "molt.cli", "update", "--check", "--all"],
+            module.TEST_PYTHONS[0],
+            False,
+        )
+    ]

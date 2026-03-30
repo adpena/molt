@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-arrow = "57"
+arrow = "58"
 base64 = "0.22"
 chrono = "=0.4.43"
 crossbeam-channel = "0.5"
@@ -15,12 +15,12 @@ fallible-iterator-02 = { package = "fallible-iterator", version = "0.2" }
 molt-db = { path = "../molt-db", features = ["sqlite", "async", "postgres"] }
 postgres-protocol = "0.6"
 rmp-serde = "1"
-rusqlite = { version = "0.38", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 serde_json = "1"
 sqlparser = "0.61"
-tokio = { version = "1.49", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.50", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 uuid = "1"
 

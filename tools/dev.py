@@ -162,8 +162,20 @@ def main() -> None:
                 batch_cmd.append("--verified-subset")
             run_uv(batch_cmd, python=python, env=env, tty=use_tty)
             _log(f"tests done (python {python}) in {time.monotonic() - start:.2f}s")
+    elif cmd[0] == "doctor":
+        run_uv(
+            ["python3", "-m", "molt.cli", "doctor", *cmd[1:]],
+            python=TEST_PYTHONS[0],
+            tty=use_tty,
+        )
+    elif cmd[0] == "update":
+        run_uv(
+            ["python3", "-m", "molt.cli", "update", *cmd[1:]],
+            python=TEST_PYTHONS[0],
+            tty=use_tty,
+        )
     else:
-        print("Usage: tools/dev.py [lint|test]")
+        print("Usage: tools/dev.py [lint|test|doctor|update]")
 
 
 if __name__ == "__main__":

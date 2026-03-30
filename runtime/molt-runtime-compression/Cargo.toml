@@ -7,7 +7,7 @@ edition = "2021"
 molt-runtime-core = { path = "../molt-runtime-core" }
 
 # Compression backends (all optional)
-bzip2 = { version = "0.5", default-features = false, features = ["libbz2-rs-sys"], optional = true }
+bzip2 = { version = "0.6", optional = true }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"], optional = true }
 zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
 
