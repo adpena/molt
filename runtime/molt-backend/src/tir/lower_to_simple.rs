@@ -129,6 +129,15 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             None => continue,
         };
 
+        // Emit loop_start before loop header blocks.
+        let loop_role = func.loop_roles.get(bid).cloned().unwrap_or(super::blocks::LoopRole::None);
+        if loop_role == super::blocks::LoopRole::LoopHeader {
+            out.push(OpIR {
+                kind: "loop_start".to_string(),
+                ..OpIR::default()
+            });
+        }
+
         // Emit a label for every block except the entry.
         if *bid != func.entry_block {
             out.push(OpIR {
@@ -159,6 +168,18 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 annotate_type_flags(&mut opir, op, types);
                 out.push(opir);
             }
+        }
+
+        // Emit loop_continue + loop_end for loop back-edge blocks.
+        if loop_role == super::blocks::LoopRole::LoopEnd {
+            out.push(OpIR {
+                kind: "loop_continue".to_string(),
+                ..OpIR::default()
+            });
+            out.push(OpIR {
+                kind: "loop_end".to_string(),
+                ..OpIR::default()
+            });
         }
 
         // Emit terminator — pass original_has_ret so the roundtrip preserves
