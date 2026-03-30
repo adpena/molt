@@ -322,8 +322,9 @@ jobs:
           import json
           with open('bench/results.json') as f:
               data = json.load(f)
-          total = len(data)
-          passed = sum(1 for v in data.values() if v.get('pass') or v.get('status') == 'pass')
+          parity = data.get('results', {}).get('parity', {})
+          total = len(parity)
+          passed = sum(1 for v in parity.values() if v.get('status') == 'pass')
           print(f'Parity results: {passed}/{total} passed')
           " || echo "Could not parse results."
           else
