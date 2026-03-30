@@ -1,3 +1,14 @@
+const THIS_ENCODED: &str = concat!(
+    "NoErapgvbaf sbe perngvat naq znavchyngvat P-glcr pbqrf.",
+    " Gur P zbqhyr cebivqrf sbezhynf sbe qrpbqvat, rapbqvat,",
+    " naq genafyngvat fcrpvsvp punenpgre rapbqvatf.",
+);
+
+const OPCODE_PAYLOAD_312_JSON: &str = include_str!("../intrinsics/data/opcode_payload_312.json");
+const OPCODE_METADATA_PAYLOAD_314_JSON: &str =
+    include_str!("../intrinsics/data/opcode_metadata_payload_314.json");
+const TOKEN_PAYLOAD_312_JSON: &str = include_str!("../intrinsics/data/token_payload_312.json");
+
 #[cfg(not(feature = "stdlib_serial"))]
 use super::functions_email::email_quopri_alloc_str;
 #[cfg(feature = "stdlib_serial")]
@@ -166,7 +177,6 @@ pub(crate) fn alloc_runtime_function_obj(
 }
 
 
-#[inline]
 // Regex engine extracted to functions_re.rs.
 use super::functions_re::*;
 
@@ -564,8 +574,38 @@ pub extern "C" fn molt_enum_init_member(member_bits: u64, name_bits: u64, value_
         MoltObject::none().bits()
     })
 }
-// shlex extracted to functions_shlex.rs
-// shlex extracted to functions_shlex.rs
+
+fn shlex_is_safe(s: &str) -> bool {
+    s.bytes().all(|b| {
+        matches!(
+            b,
+            b'a'..=b'z'
+                | b'A'..=b'Z'
+                | b'0'..=b'9'
+                | b'_'
+                | b'@'
+                | b'%'
+                | b'+'
+                | b'='
+                | b':'
+                | b','
+                | b'.'
+                | b'/'
+                | b'-'
+        )
+    })
+}
+
+fn shlex_quote_impl(input: &str) -> String {
+    if input.is_empty() {
+        return "''".to_string();
+    }
+    if shlex_is_safe(input) {
+        return input.to_string();
+    }
+    let escaped = input.replace('\'', "'\"'\"'");
+    format!("'{escaped}'")
+}
 
 
 // Fnmatch implementation extracted to functions_fnmatch.rs.
@@ -637,7 +677,9 @@ pub(super) fn alloc_string_list(_py: &crate::PyToken<'_>, values: &[String]) -> 
         MoltObject::from_ptr(list_ptr).bits()
     }
 }
-// shlex extracted to functions_shlex.rs
+
+fn shlex_split_impl(
+    input: &str,
     whitespace: &str,
     posix: bool,
     comments: bool,
@@ -725,7 +767,14 @@ pub(super) fn alloc_string_list(_py: &crate::PyToken<'_>, values: &[String]) -> 
     }
     Ok(tokens)
 }
-// shlex extracted to functions_shlex.rs
+
+fn shlex_join_impl(parts: &[String]) -> String {
+    parts
+        .iter()
+        .map(|item| shlex_quote_impl(item))
+        .collect::<Vec<String>>()
+        .join(" ")
+}
 
 fn raise_os_error_from_io(_py: &crate::PyToken<'_>, err: std::io::Error) -> u64 {
     let msg = err.to_string();
@@ -913,8 +962,6 @@ pub(super) fn alloc_qs_dict(
     out
 }
 
-#[derive(Clone)]
-
 // Textwrap implementation extracted to functions_textwrap.rs.
 use super::functions_textwrap::*;
 
@@ -1101,10 +1148,102 @@ struct PkgutilModuleInfo {
     name: String,
     ispkg: bool,
 }
-// pkgutil extracted to functions_pkgutil.rs
-// pkgutil extracted to functions_pkgutil.rs
-// pkgutil extracted to functions_pkgutil.rs
-// pkgutil extracted to functions_pkgutil.rs
+
+fn pkgutil_join(base: &str, name: &str) -> String {
+    if base.is_empty() {
+        return name.to_string();
+    }
+    Path::new(base).join(name).to_string_lossy().into_owned()
+}
+
+fn pkgutil_iter_modules_in_path(path: &str, prefix: &str) -> Vec<PkgutilModuleInfo> {
+    let entries = match fs::read_dir(path) {
+        Ok(read_dir) => read_dir,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+
+    let mut yielded: HashSet<String> = HashSet::new();
+    let mut results: Vec<PkgutilModuleInfo> = Vec::new();
+    for entry in names {
+        if entry == "__pycache__" {
+            continue;
+        }
+        let full = pkgutil_join(path, &entry);
+        if !entry.contains('.') {
+            if let Ok(dir_entries) = fs::read_dir(&full) {
+                let mut ispkg = false;
+                for item in dir_entries.flatten() {
+                    if item.file_name().to_string_lossy() == "__init__.py" {
+                        ispkg = true;
+                        break;
+                    }
+                }
+                if ispkg && yielded.insert(entry.clone()) {
+                    results.push(PkgutilModuleInfo {
+                        module_finder: path.to_string(),
+                        name: format!("{prefix}{entry}"),
+                        ispkg: true,
+                    });
+                }
+            }
+            continue;
+        }
+        if !entry.ends_with(".py") {
+            continue;
+        }
+        let modname = &entry[..entry.len().saturating_sub(3)];
+        if modname.is_empty() || modname == "__init__" || modname.contains('.') {
+            continue;
+        }
+        if yielded.insert(modname.to_string()) {
+            results.push(PkgutilModuleInfo {
+                module_finder: path.to_string(),
+                name: format!("{prefix}{modname}"),
+                ispkg: false,
+            });
+        }
+    }
+    results
+}
+
+fn pkgutil_iter_modules_impl(paths: &[String], prefix: &str) -> Vec<PkgutilModuleInfo> {
+    let mut yielded: HashSet<String> = HashSet::new();
+    let mut out: Vec<PkgutilModuleInfo> = Vec::new();
+    for path in paths {
+        for info in pkgutil_iter_modules_in_path(path, prefix) {
+            if yielded.insert(info.name.clone()) {
+                out.push(info);
+            }
+        }
+    }
+    out
+}
+
+fn pkgutil_walk_packages_impl(paths: &[String], prefix: &str) -> Vec<PkgutilModuleInfo> {
+    let mut out: Vec<PkgutilModuleInfo> = Vec::new();
+    let infos = pkgutil_iter_modules_impl(paths, prefix);
+    for info in infos {
+        out.push(info.clone());
+        if !info.ispkg {
+            continue;
+        }
+        let mut pkg_name = info.name.clone();
+        if !prefix.is_empty() && pkg_name.starts_with(prefix) {
+            pkg_name = pkg_name[prefix.len()..].to_string();
+        }
+        let subdir = pkgutil_join(&info.module_finder, &pkg_name);
+        let subprefix = format!("{}.", info.name);
+        let nested = pkgutil_walk_packages_impl(&[subdir], &subprefix);
+        out.extend(nested);
+    }
+    out
+}
 
 fn alloc_pkgutil_module_info_list(_py: &crate::PyToken<'_>, values: &[PkgutilModuleInfo]) -> u64 {
     let mut tuple_bits: Vec<u64> = Vec::with_capacity(values.len());
@@ -1149,11 +1288,86 @@ fn alloc_pkgutil_module_info_list(_py: &crate::PyToken<'_>, values: &[PkgutilMod
         MoltObject::from_ptr(list_ptr).bits()
     }
 }
-// compileall extracted to functions_compileall.rs
-// compileall extracted to functions_compileall.rs
-// shlex extracted to functions_shlex.rs
-// shlex extracted to functions_shlex.rs
-// shlex extracted to functions_shlex.rs
+
+fn compileall_compile_file_impl(fullname: &str) -> bool {
+    let mut handle = match fs::File::open(fullname) {
+        Ok(handle) => handle,
+        Err(_) => return false,
+    };
+    let mut one = [0u8; 1];
+    handle.read(&mut one).is_ok()
+}
+
+fn compileall_compile_dir_impl(dir: &str, maxlevels: i64) -> bool {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    let mut success = true;
+    for entry in names {
+        if entry == "__pycache__" {
+            continue;
+        }
+        let full = pkgutil_join(dir, &entry);
+        if entry.ends_with(".py") {
+            if !compileall_compile_file_impl(&full) {
+                success = false;
+            }
+            continue;
+        }
+        if maxlevels <= 0 {
+            continue;
+        }
+        if fs::read_dir(&full).is_err() {
+            continue;
+        }
+        if !compileall_compile_dir_impl(&full, maxlevels - 1) {
+            success = false;
+        }
+    }
+    success
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_shlex_quote(text_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "shlex.quote argument must be str");
+        };
+        let out = shlex_quote_impl(&text);
+        let out_ptr = alloc_string(_py, out.as_bytes());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_shlex_split(text_bits: u64, whitespace_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "shlex.split argument must be str");
+        };
+        let Some(whitespace) = string_obj_to_owned(obj_from_bits(whitespace_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "shlex.split whitespace must be str");
+        };
+        let parts = match shlex_split_impl(&text, &whitespace, true, false, "#", true, "") {
+            Ok(parts) => parts,
+            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+        };
+        alloc_string_list(_py, &parts)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_shlex_split_ex(
+    text_bits: u64,
     whitespace_bits: u64,
     posix_bits: u64,
     comments_bits: u64,
@@ -1197,7 +1411,22 @@ fn alloc_pkgutil_module_info_list(_py: &crate::PyToken<'_>, values: &[PkgutilMod
         alloc_string_list(_py, &parts)
     })
 }
-// shlex extracted to functions_shlex.rs
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_shlex_join(words_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let parts = match iterable_to_string_vec(_py, words_bits) {
+            Ok(parts) => parts,
+            Err(bits) => return bits,
+        };
+        let out = shlex_join_impl(&parts);
+        let out_ptr = alloc_string(_py, out.as_bytes());
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    })
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_this_payload() -> u64 {
@@ -1274,12 +1503,321 @@ pub extern "C" fn molt_this_payload() -> u64 {
         MoltObject::from_ptr(payload_ptr).bits()
     })
 }
-// opcode extracted to functions_opcode.rs
-// opcode extracted to functions_opcode.rs
-// opcode extracted to functions_opcode.rs
-// opcode extracted to functions_opcode.rs
-// opcode extracted to functions_opcode.rs
-// opcode extracted to functions_opcode.rs
+
+#[unsafe(no_mangle)]
+
+fn opcode_num_popped_312(opcode: i64, oparg: i64) -> Option<i64> {
+    match opcode {
+        0 => Some(0),                 // CACHE
+        1 => Some(1),                 // POP_TOP
+        2 => Some(0),                 // PUSH_NULL
+        3 => Some(1),                 // INTERPRETER_EXIT
+        4 => Some(1 + 1),             // END_FOR
+        5 => Some(2),                 // END_SEND
+        9 => Some(0),                 // NOP
+        11 => Some(1),                // UNARY_NEGATIVE
+        12 => Some(1),                // UNARY_NOT
+        15 => Some(1),                // UNARY_INVERT
+        17 => Some(0),                // RESERVED
+        25 => Some(2),                // BINARY_SUBSCR
+        26 => Some(3),                // BINARY_SLICE
+        27 => Some(4),                // STORE_SLICE
+        30 => Some(1),                // GET_LEN
+        31 => Some(1),                // MATCH_MAPPING
+        32 => Some(1),                // MATCH_SEQUENCE
+        33 => Some(2),                // MATCH_KEYS
+        35 => Some(1),                // PUSH_EXC_INFO
+        36 => Some(2),                // CHECK_EXC_MATCH
+        37 => Some(2),                // CHECK_EG_MATCH
+        49 => Some(4),                // WITH_EXCEPT_START
+        50 => Some(1),                // GET_AITER
+        51 => Some(1),                // GET_ANEXT
+        52 => Some(1),                // BEFORE_ASYNC_WITH
+        53 => Some(1),                // BEFORE_WITH
+        54 => Some(2),                // END_ASYNC_FOR
+        55 => Some(3),                // CLEANUP_THROW
+        60 => Some(3),                // STORE_SUBSCR
+        61 => Some(2),                // DELETE_SUBSCR
+        68 => Some(1),                // GET_ITER
+        69 => Some(1),                // GET_YIELD_FROM_ITER
+        71 => Some(0),                // LOAD_BUILD_CLASS
+        74 => Some(0),                // LOAD_ASSERTION_ERROR
+        75 => Some(0),                // RETURN_GENERATOR
+        83 => Some(1),                // RETURN_VALUE
+        85 => Some(0),                // SETUP_ANNOTATIONS
+        87 => Some(0),                // LOAD_LOCALS
+        89 => Some(1),                // POP_EXCEPT
+        90 => Some(1),                // STORE_NAME
+        91 => Some(0),                // DELETE_NAME
+        92 => Some(1),                // UNPACK_SEQUENCE
+        93 => Some(1),                // FOR_ITER
+        94 => Some(1),                // UNPACK_EX
+        95 => Some(2),                // STORE_ATTR
+        96 => Some(1),                // DELETE_ATTR
+        97 => Some(1),                // STORE_GLOBAL
+        98 => Some(0),                // DELETE_GLOBAL
+        99 => Some((oparg - 2) + 2),  // SWAP
+        100 => Some(0),               // LOAD_CONST
+        101 => Some(0),               // LOAD_NAME
+        102 => Some(oparg),           // BUILD_TUPLE
+        103 => Some(oparg),           // BUILD_LIST
+        104 => Some(oparg),           // BUILD_SET
+        105 => Some(oparg * 2),       // BUILD_MAP
+        106 => Some(1),               // LOAD_ATTR
+        107 => Some(2),               // COMPARE_OP
+        108 => Some(2),               // IMPORT_NAME
+        109 => Some(1),               // IMPORT_FROM
+        110 => Some(0),               // JUMP_FORWARD
+        114 => Some(1),               // POP_JUMP_IF_FALSE
+        115 => Some(1),               // POP_JUMP_IF_TRUE
+        116 => Some(0),               // LOAD_GLOBAL
+        117 => Some(2),               // IS_OP
+        118 => Some(2),               // CONTAINS_OP
+        119 => Some(oparg + 1),       // RERAISE
+        120 => Some((oparg - 1) + 1), // COPY
+        121 => Some(0),               // RETURN_CONST
+        122 => Some(2),               // BINARY_OP
+        123 => Some(2),               // SEND
+        124 => Some(0),               // LOAD_FAST
+        125 => Some(1),               // STORE_FAST
+        126 => Some(0),               // DELETE_FAST
+        127 => Some(0),               // LOAD_FAST_CHECK
+        128 => Some(1),               // POP_JUMP_IF_NOT_NONE
+        129 => Some(1),               // POP_JUMP_IF_NONE
+        130 => Some(oparg),           // RAISE_VARARGS
+        131 => Some(1),               // GET_AWAITABLE
+        132 => Some(
+            (if (oparg & 0x01) != 0 { 1 } else { 0 })
+                + (if (oparg & 0x02) != 0 { 1 } else { 0 })
+                + (if (oparg & 0x04) != 0 { 1 } else { 0 })
+                + (if (oparg & 0x08) != 0 { 1 } else { 0 })
+                + 1,
+        ), // MAKE_FUNCTION
+        133 => Some((if oparg == 3 { 1 } else { 0 }) + 2), // BUILD_SLICE
+        134 => Some(0),               // JUMP_BACKWARD_NO_INTERRUPT
+        135 => Some(0),               // MAKE_CELL
+        136 => Some(0),               // LOAD_CLOSURE
+        137 => Some(0),               // LOAD_DEREF
+        138 => Some(1),               // STORE_DEREF
+        139 => Some(0),               // DELETE_DEREF
+        140 => Some(0),               // JUMP_BACKWARD
+        141 => Some(3),               // LOAD_SUPER_ATTR
+        142 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 3), // CALL_FUNCTION_EX
+        143 => Some(0),               // LOAD_FAST_AND_CLEAR
+        144 => Some(0),               // EXTENDED_ARG
+        145 => Some((oparg - 1) + 2), // LIST_APPEND
+        146 => Some((oparg - 1) + 2), // SET_ADD
+        147 => Some(2),               // MAP_ADD
+        149 => Some(0),               // COPY_FREE_VARS
+        150 => Some(1),               // YIELD_VALUE
+        151 => Some(0),               // RESUME
+        152 => Some(3),               // MATCH_CLASS
+        155 => Some((if (oparg & 0x04) == 0x04 { 1 } else { 0 }) + 1), // FORMAT_VALUE
+        156 => Some(oparg + 1),       // BUILD_CONST_KEY_MAP
+        157 => Some(oparg),           // BUILD_STRING
+        162 => Some((oparg - 1) + 2), // LIST_EXTEND
+        163 => Some((oparg - 1) + 2), // SET_UPDATE
+        164 => Some(1),               // DICT_MERGE
+        165 => Some(1),               // DICT_UPDATE
+        171 => Some(oparg + 2),       // CALL
+        172 => Some(0),               // KW_NAMES
+        173 => Some(1),               // CALL_INTRINSIC_1
+        174 => Some(2),               // CALL_INTRINSIC_2
+        175 => Some(1),               // LOAD_FROM_DICT_OR_GLOBALS
+        176 => Some(1),               // LOAD_FROM_DICT_OR_DEREF
+        237 => Some(3),               // INSTRUMENTED_LOAD_SUPER_ATTR
+        238 => Some(0),               // INSTRUMENTED_POP_JUMP_IF_NONE
+        239 => Some(0),               // INSTRUMENTED_POP_JUMP_IF_NOT_NONE
+        240 => Some(0),               // INSTRUMENTED_RESUME
+        241 => Some(0),               // INSTRUMENTED_CALL
+        242 => Some(1),               // INSTRUMENTED_RETURN_VALUE
+        243 => Some(1),               // INSTRUMENTED_YIELD_VALUE
+        244 => Some(0),               // INSTRUMENTED_CALL_FUNCTION_EX
+        245 => Some(0),               // INSTRUMENTED_JUMP_FORWARD
+        246 => Some(0),               // INSTRUMENTED_JUMP_BACKWARD
+        247 => Some(0),               // INSTRUMENTED_RETURN_CONST
+        248 => Some(0),               // INSTRUMENTED_FOR_ITER
+        249 => Some(0),               // INSTRUMENTED_POP_JUMP_IF_FALSE
+        250 => Some(0),               // INSTRUMENTED_POP_JUMP_IF_TRUE
+        251 => Some(2),               // INSTRUMENTED_END_FOR
+        252 => Some(2),               // INSTRUMENTED_END_SEND
+        253 => Some(0),               // INSTRUMENTED_INSTRUCTION
+        _ => None,
+    }
+}
+
+fn opcode_num_pushed_312(opcode: i64, oparg: i64) -> Option<i64> {
+    match opcode {
+        0 => Some(0),                                            // CACHE
+        1 => Some(0),                                            // POP_TOP
+        2 => Some(1),                                            // PUSH_NULL
+        3 => Some(0),                                            // INTERPRETER_EXIT
+        4 => Some(0),                                            // END_FOR
+        5 => Some(1),                                            // END_SEND
+        9 => Some(0),                                            // NOP
+        11 => Some(1),                                           // UNARY_NEGATIVE
+        12 => Some(1),                                           // UNARY_NOT
+        15 => Some(1),                                           // UNARY_INVERT
+        17 => Some(0),                                           // RESERVED
+        25 => Some(1),                                           // BINARY_SUBSCR
+        26 => Some(1),                                           // BINARY_SLICE
+        27 => Some(0),                                           // STORE_SLICE
+        30 => Some(2),                                           // GET_LEN
+        31 => Some(2),                                           // MATCH_MAPPING
+        32 => Some(2),                                           // MATCH_SEQUENCE
+        33 => Some(3),                                           // MATCH_KEYS
+        35 => Some(2),                                           // PUSH_EXC_INFO
+        36 => Some(2),                                           // CHECK_EXC_MATCH
+        37 => Some(2),                                           // CHECK_EG_MATCH
+        49 => Some(5),                                           // WITH_EXCEPT_START
+        50 => Some(1),                                           // GET_AITER
+        51 => Some(2),                                           // GET_ANEXT
+        52 => Some(2),                                           // BEFORE_ASYNC_WITH
+        53 => Some(2),                                           // BEFORE_WITH
+        54 => Some(0),                                           // END_ASYNC_FOR
+        55 => Some(2),                                           // CLEANUP_THROW
+        60 => Some(0),                                           // STORE_SUBSCR
+        61 => Some(0),                                           // DELETE_SUBSCR
+        68 => Some(1),                                           // GET_ITER
+        69 => Some(1),                                           // GET_YIELD_FROM_ITER
+        71 => Some(1),                                           // LOAD_BUILD_CLASS
+        74 => Some(1),                                           // LOAD_ASSERTION_ERROR
+        75 => Some(0),                                           // RETURN_GENERATOR
+        83 => Some(0),                                           // RETURN_VALUE
+        85 => Some(0),                                           // SETUP_ANNOTATIONS
+        87 => Some(1),                                           // LOAD_LOCALS
+        89 => Some(0),                                           // POP_EXCEPT
+        90 => Some(0),                                           // STORE_NAME
+        91 => Some(0),                                           // DELETE_NAME
+        92 => Some(oparg),                                       // UNPACK_SEQUENCE
+        93 => Some(2),                                           // FOR_ITER
+        94 => Some((oparg & 0xFF) + (oparg >> 8) + 1),           // UNPACK_EX
+        95 => Some(0),                                           // STORE_ATTR
+        96 => Some(0),                                           // DELETE_ATTR
+        97 => Some(0),                                           // STORE_GLOBAL
+        98 => Some(0),                                           // DELETE_GLOBAL
+        99 => Some((oparg - 2) + 2),                             // SWAP
+        100 => Some(1),                                          // LOAD_CONST
+        101 => Some(1),                                          // LOAD_NAME
+        102 => Some(1),                                          // BUILD_TUPLE
+        103 => Some(1),                                          // BUILD_LIST
+        104 => Some(1),                                          // BUILD_SET
+        105 => Some(1),                                          // BUILD_MAP
+        106 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 1), // LOAD_ATTR
+        107 => Some(1),                                          // COMPARE_OP
+        108 => Some(1),                                          // IMPORT_NAME
+        109 => Some(2),                                          // IMPORT_FROM
+        110 => Some(0),                                          // JUMP_FORWARD
+        114 => Some(0),                                          // POP_JUMP_IF_FALSE
+        115 => Some(0),                                          // POP_JUMP_IF_TRUE
+        116 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 1), // LOAD_GLOBAL
+        117 => Some(1),                                          // IS_OP
+        118 => Some(1),                                          // CONTAINS_OP
+        119 => Some(oparg),                                      // RERAISE
+        120 => Some((oparg - 1) + 2),                            // COPY
+        121 => Some(0),                                          // RETURN_CONST
+        122 => Some(1),                                          // BINARY_OP
+        123 => Some(2),                                          // SEND
+        124 => Some(1),                                          // LOAD_FAST
+        125 => Some(0),                                          // STORE_FAST
+        126 => Some(0),                                          // DELETE_FAST
+        127 => Some(1),                                          // LOAD_FAST_CHECK
+        128 => Some(0),                                          // POP_JUMP_IF_NOT_NONE
+        129 => Some(0),                                          // POP_JUMP_IF_NONE
+        130 => Some(0),                                          // RAISE_VARARGS
+        131 => Some(1),                                          // GET_AWAITABLE
+        132 => Some(1),                                          // MAKE_FUNCTION
+        133 => Some(1),                                          // BUILD_SLICE
+        134 => Some(0),                                          // JUMP_BACKWARD_NO_INTERRUPT
+        135 => Some(0),                                          // MAKE_CELL
+        136 => Some(1),                                          // LOAD_CLOSURE
+        137 => Some(1),                                          // LOAD_DEREF
+        138 => Some(0),                                          // STORE_DEREF
+        139 => Some(0),                                          // DELETE_DEREF
+        140 => Some(0),                                          // JUMP_BACKWARD
+        141 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 1), // LOAD_SUPER_ATTR
+        142 => Some(1),                                          // CALL_FUNCTION_EX
+        143 => Some(1),                                          // LOAD_FAST_AND_CLEAR
+        144 => Some(0),                                          // EXTENDED_ARG
+        145 => Some((oparg - 1) + 1),                            // LIST_APPEND
+        146 => Some((oparg - 1) + 1),                            // SET_ADD
+        147 => Some(0),                                          // MAP_ADD
+        149 => Some(0),                                          // COPY_FREE_VARS
+        150 => Some(1),                                          // YIELD_VALUE
+        151 => Some(0),                                          // RESUME
+        152 => Some(1),                                          // MATCH_CLASS
+        155 => Some(1),                                          // FORMAT_VALUE
+        156 => Some(1),                                          // BUILD_CONST_KEY_MAP
+        157 => Some(1),                                          // BUILD_STRING
+        162 => Some((oparg - 1) + 1),                            // LIST_EXTEND
+        163 => Some((oparg - 1) + 1),                            // SET_UPDATE
+        164 => Some(0),                                          // DICT_MERGE
+        165 => Some(0),                                          // DICT_UPDATE
+        171 => Some(1),                                          // CALL
+        172 => Some(0),                                          // KW_NAMES
+        173 => Some(1),                                          // CALL_INTRINSIC_1
+        174 => Some(1),                                          // CALL_INTRINSIC_2
+        175 => Some(1),                                          // LOAD_FROM_DICT_OR_GLOBALS
+        176 => Some(1),                                          // LOAD_FROM_DICT_OR_DEREF
+        237 => Some((if (oparg & 1) != 0 { 1 } else { 0 }) + 1), // INSTRUMENTED_LOAD_SUPER_ATTR
+        238 => Some(0),                                          // INSTRUMENTED_POP_JUMP_IF_NONE
+        239 => Some(0), // INSTRUMENTED_POP_JUMP_IF_NOT_NONE
+        240 => Some(0), // INSTRUMENTED_RESUME
+        241 => Some(0), // INSTRUMENTED_CALL
+        242 => Some(0), // INSTRUMENTED_RETURN_VALUE
+        243 => Some(1), // INSTRUMENTED_YIELD_VALUE
+        244 => Some(0), // INSTRUMENTED_CALL_FUNCTION_EX
+        245 => Some(0), // INSTRUMENTED_JUMP_FORWARD
+        246 => Some(0), // INSTRUMENTED_JUMP_BACKWARD
+        247 => Some(0), // INSTRUMENTED_RETURN_CONST
+        248 => Some(0), // INSTRUMENTED_FOR_ITER
+        249 => Some(0), // INSTRUMENTED_POP_JUMP_IF_FALSE
+        250 => Some(0), // INSTRUMENTED_POP_JUMP_IF_TRUE
+        251 => Some(0), // INSTRUMENTED_END_FOR
+        252 => Some(1), // INSTRUMENTED_END_SEND
+        253 => Some(0), // INSTRUMENTED_INSTRUCTION
+        _ => None,
+    }
+}
+
+fn opcode_is_noarg_pseudo_312(opcode: i64) -> bool {
+    matches!(opcode, 256..=259)
+}
+
+fn opcode_stack_effect_pseudo_312(opcode: i64) -> Option<i64> {
+    match opcode {
+        256 => Some(1),  // SETUP_FINALLY (max jump/non-jump)
+        257 => Some(2),  // SETUP_CLEANUP (max jump/non-jump)
+        258 => Some(1),  // SETUP_WITH (max jump/non-jump)
+        259 => Some(0),  // POP_BLOCK
+        260 => Some(0),  // JUMP
+        261 => Some(0),  // JUMP_NO_INTERRUPT
+        262 => Some(1),  // LOAD_METHOD
+        263 => Some(-1), // LOAD_SUPER_METHOD
+        264 => Some(-1), // LOAD_ZERO_SUPER_METHOD
+        265 => Some(-1), // LOAD_ZERO_SUPER_ATTR
+        266 => Some(-1), // STORE_FAST_MAYBE_NULL
+        _ => None,
+    }
+}
+
+#[inline]
+fn opcode_is_noarg_312(opcode: i64) -> bool {
+    opcode < 90 || opcode_is_noarg_pseudo_312(opcode)
+}
+
+#[inline]
+fn opcode_stack_effect_core_312(opcode: i64, oparg: i64) -> Option<i64> {
+    if let Some(effect) = opcode_stack_effect_pseudo_312(opcode) {
+        return Some(effect);
+    }
+    let popped = opcode_num_popped_312(opcode, oparg)?;
+    let pushed = opcode_num_pushed_312(opcode, oparg)?;
+    if popped < 0 || pushed < 0 {
+        return None;
+    }
+    pushed.checked_sub(popped)
+}
 
 fn token_payload_json_value_to_bits(
     _py: &crate::PyToken<'_>,
@@ -1382,12 +1920,97 @@ fn token_payload_json_value_to_bits(
         }
     }
 }
-// opcode extracted to functions_opcode.rs
-// opcode extracted to functions_opcode.rs
-// opcode extracted to functions_opcode.rs
-// opcode extracted to functions_opcode.rs
-// opcode extracted to functions_opcode.rs
-// opcode extracted to functions_opcode.rs
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_opcode_payload_312_json() -> u64 {
+    crate::with_gil_entry!(_py, {
+        email_quopri_alloc_str(_py, OPCODE_PAYLOAD_312_JSON)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_token_payload_312_json() -> u64 {
+    crate::with_gil_entry!(_py, { email_quopri_alloc_str(_py, TOKEN_PAYLOAD_312_JSON) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_token_payload_312() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let parsed: JsonValue = match serde_json::from_str(TOKEN_PAYLOAD_312_JSON) {
+            Ok(value) => value,
+            Err(err) => {
+                let msg = format!("invalid token payload json: {err}");
+                return raise_exception::<u64>(_py, "RuntimeError", msg.as_str());
+            }
+        };
+        match token_payload_json_value_to_bits(_py, &parsed) {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_opcode_metadata_payload_314_json() -> u64 {
+    crate::with_gil_entry!(_py, {
+        email_quopri_alloc_str(_py, OPCODE_METADATA_PAYLOAD_314_JSON)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_opcode_get_specialization_stats() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_opcode_stack_effect(opcode_bits: u64, oparg_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let opcode_obj = obj_from_bits(opcode_bits);
+        let Some(opcode) = to_i64(opcode_obj) else {
+            let msg = format!(
+                "'{}' object cannot be interpreted as an integer",
+                type_name(_py, opcode_obj)
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+
+        let oparg_obj = obj_from_bits(oparg_bits);
+        let opcode_noarg = opcode_is_noarg_312(opcode);
+        if oparg_obj.is_none() {
+            if opcode_noarg {
+                return match opcode_stack_effect_core_312(opcode, 0) {
+                    Some(effect) => MoltObject::from_int(effect).bits(),
+                    None => raise_exception::<_>(_py, "ValueError", "invalid opcode or oparg"),
+                };
+            }
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "stack_effect: opcode requires oparg but oparg was not specified",
+            );
+        }
+        if opcode_noarg {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "stack_effect: opcode does not permit oparg but oparg was specified",
+            );
+        }
+
+        let Some(oparg) = to_i64(oparg_obj) else {
+            let msg = format!(
+                "'{}' object cannot be interpreted as an integer",
+                type_name(_py, oparg_obj)
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        };
+
+        let Some(effect) = opcode_stack_effect_core_312(opcode, oparg) else {
+            return raise_exception::<_>(_py, "ValueError", "invalid opcode or oparg");
+        };
+        MoltObject::from_int(effect).bits()
+    })
+}
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ArgparseOptionalKind {
@@ -1417,9 +2040,125 @@ struct ArgparseSpec {
     positionals: Vec<String>,
     subparsers: Option<ArgparseSubparsersSpec>,
 }
-// argparse extracted to functions_argparse.rs
-// argparse extracted to functions_argparse.rs
-// argparse extracted to functions_argparse.rs
+
+fn argparse_choice_list(parsers: &HashMap<String, ArgparseSpec>) -> String {
+    let mut keys: Vec<&str> = parsers.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    keys.join(", ")
+}
+
+fn argparse_decode_spec(value: &JsonValue) -> Result<ArgparseSpec, String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "argparse spec must be a JSON object".to_string())?;
+
+    let mut optionals: Vec<ArgparseOptionalSpec> = Vec::new();
+    if let Some(raw_optionals) = obj.get("optionals") {
+        let items = raw_optionals
+            .as_array()
+            .ok_or_else(|| "argparse optionals must be a JSON array".to_string())?;
+        for item in items {
+            let item_obj = item
+                .as_object()
+                .ok_or_else(|| "argparse optional spec must be object".to_string())?;
+            let flag = item_obj
+                .get("flag")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| "argparse optional spec missing string flag".to_string())?
+                .to_string();
+            let dest = item_obj
+                .get("dest")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| "argparse optional spec missing string dest".to_string())?
+                .to_string();
+            let kind = item_obj
+                .get("kind")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| "argparse optional spec missing string kind".to_string())?;
+            let parsed_kind = match kind {
+                "value" => ArgparseOptionalKind::Value,
+                "store_true" => ArgparseOptionalKind::StoreTrue,
+                _ => return Err(format!("unsupported argparse optional kind: {kind}")),
+            };
+            let required = item_obj
+                .get("required")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false);
+            let default = item_obj.get("default").cloned().unwrap_or_else(|| {
+                if parsed_kind == ArgparseOptionalKind::StoreTrue {
+                    JsonValue::Bool(false)
+                } else {
+                    JsonValue::Null
+                }
+            });
+            optionals.push(ArgparseOptionalSpec {
+                flag,
+                dest,
+                kind: parsed_kind,
+                required,
+                default,
+            });
+        }
+    }
+
+    let mut positionals: Vec<String> = Vec::new();
+    if let Some(raw_positionals) = obj.get("positionals") {
+        let items = raw_positionals
+            .as_array()
+            .ok_or_else(|| "argparse positionals must be a JSON array".to_string())?;
+        for item in items {
+            let item_obj = item
+                .as_object()
+                .ok_or_else(|| "argparse positional spec must be object".to_string())?;
+            let dest = item_obj
+                .get("dest")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| "argparse positional spec missing string dest".to_string())?
+                .to_string();
+            positionals.push(dest);
+        }
+    }
+
+    let subparsers = if let Some(raw_subparsers) = obj.get("subparsers") {
+        let sp_obj = raw_subparsers
+            .as_object()
+            .ok_or_else(|| "argparse subparsers spec must be object".to_string())?;
+        let dest = sp_obj
+            .get("dest")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| "argparse subparsers spec missing string dest".to_string())?
+            .to_string();
+        let required = sp_obj
+            .get("required")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
+        let parsers_obj = sp_obj
+            .get("parsers")
+            .and_then(JsonValue::as_object)
+            .ok_or_else(|| "argparse subparsers spec missing parsers object".to_string())?;
+        let mut parsers: HashMap<String, ArgparseSpec> = HashMap::new();
+        for (name, parser_spec) in parsers_obj {
+            let parsed = argparse_decode_spec(parser_spec)?;
+            parsers.insert(name.clone(), parsed);
+        }
+        Some(ArgparseSubparsersSpec {
+            dest,
+            required,
+            parsers,
+        })
+    } else {
+        None
+    };
+
+    Ok(ArgparseSpec {
+        optionals,
+        positionals,
+        subparsers,
+    })
+}
+
+fn argparse_parse_with_spec(
+    spec: &ArgparseSpec,
     argv: &[String],
 ) -> Result<JsonMap<String, JsonValue>, String> {
     let mut out: JsonMap<String, JsonValue> = JsonMap::new();
@@ -1508,7 +2247,48 @@ struct ArgparseSpec {
 
     Ok(out)
 }
-// argparse extracted to functions_argparse.rs
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_argparse_parse(spec_json_bits: u64, argv_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(spec_json) = string_obj_to_owned(obj_from_bits(spec_json_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "argparse spec_json must be str");
+        };
+        let argv = match iterable_to_string_vec(_py, argv_bits) {
+            Ok(values) => values,
+            Err(bits) => return bits,
+        };
+
+        let spec_value: JsonValue = match serde_json::from_str(spec_json.as_str()) {
+            Ok(value) => value,
+            Err(err) => {
+                let msg = format!("invalid argparse spec json: {err}");
+                return raise_exception::<_>(_py, "ValueError", msg.as_str());
+            }
+        };
+        let spec = match argparse_decode_spec(&spec_value) {
+            Ok(spec) => spec,
+            Err(msg) => return raise_exception::<_>(_py, "ValueError", msg.as_str()),
+        };
+        let parsed = match argparse_parse_with_spec(&spec, argv.as_slice()) {
+            Ok(parsed) => parsed,
+            Err(msg) => return raise_exception::<_>(_py, "ValueError", msg.as_str()),
+        };
+        let payload = match serde_json::to_string(&JsonValue::Object(parsed)) {
+            Ok(payload) => payload,
+            Err(err) => {
+                let msg = format!("argparse payload encode failed: {err}");
+                return raise_exception::<_>(_py, "RuntimeError", msg.as_str());
+            }
+        };
+        let out_ptr = alloc_string(_py, payload.as_bytes());
+        if out_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out_ptr).bits()
+        }
+    })
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fnmatchcase(name_bits: u64, pat_bits: u64) -> u64 {
@@ -1684,7 +2464,9 @@ pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
         MoltObject::from_ptr(out_ptr).bits()
     })
 }
-// bisect extracted to functions_bisect.rs
+
+fn bisect_normalize_bounds(
+    _py: &crate::PyToken<'_>,
     seq_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
@@ -1733,7 +2515,9 @@ pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
     };
     Ok((lo, hi))
 }
-// bisect extracted to functions_bisect.rs
+
+fn bisect_find_index(
+    _py: &crate::PyToken<'_>,
     seq_bits: u64,
     x_bits: u64,
     mut lo: i64,
@@ -1798,7 +2582,9 @@ pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
     }
     Ok(lo)
 }
-// bisect extracted to functions_bisect.rs
+
+fn bisect_insert_at(
+    _py: &crate::PyToken<'_>,
     seq_bits: u64,
     pos: i64,
     x_bits: u64,
@@ -1824,7 +2610,10 @@ pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
     }
     Ok(())
 }
-// bisect extracted to functions_bisect.rs
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bisect_left(
+    seq_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
@@ -1842,7 +2631,10 @@ pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
         MoltObject::from_int(pos).bits()
     })
 }
-// bisect extracted to functions_bisect.rs
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bisect_right(
+    seq_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
@@ -1860,7 +2652,10 @@ pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
         MoltObject::from_int(pos).bits()
     })
 }
-// bisect extracted to functions_bisect.rs
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bisect_insort_left(
+    seq_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
@@ -1898,7 +2693,10 @@ pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
-// bisect extracted to functions_bisect.rs
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bisect_insort_right(
+    seq_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
@@ -2105,8 +2903,54 @@ pub extern "C" fn molt_textwrap_indent_ex(
         textwrap_indent_with_predicate(_py, &text, &prefix, predicate)
     })
 }
-// pkgutil extracted to functions_pkgutil.rs
-// pkgutil extracted to functions_pkgutil.rs
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_pkgutil_iter_modules(path_bits: u64, prefix_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let allowed = crate::has_capability(_py, "fs.read");
+        audit_capability_decision("pkgutil.iter.modules", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let Some(prefix) = string_obj_to_owned(obj_from_bits(prefix_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "prefix must be str");
+        };
+        let paths = if obj_from_bits(path_bits).is_none() {
+            Vec::new()
+        } else {
+            match iterable_to_string_vec(_py, path_bits) {
+                Ok(paths) => paths,
+                Err(bits) => return bits,
+            }
+        };
+        let out = pkgutil_iter_modules_impl(&paths, &prefix);
+        alloc_pkgutil_module_info_list(_py, &out)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_pkgutil_walk_packages(path_bits: u64, prefix_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let allowed = crate::has_capability(_py, "fs.read");
+        audit_capability_decision("pkgutil.walk.packages", "fs.read", AuditArgs::None, allowed);
+        if !allowed {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let Some(prefix) = string_obj_to_owned(obj_from_bits(prefix_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "prefix must be str");
+        };
+        let paths = if obj_from_bits(path_bits).is_none() {
+            Vec::new()
+        } else {
+            match iterable_to_string_vec(_py, path_bits) {
+                Ok(paths) => paths,
+                Err(bits) => return bits,
+            }
+        };
+        let out = pkgutil_walk_packages_impl(&paths, &prefix);
+        alloc_pkgutil_module_info_list(_py, &out)
+    })
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_shutil_copyfile(src_bits: u64, dst_bits: u64) -> u64 {
@@ -2291,9 +3135,53 @@ pub extern "C" fn molt_py_compile_compile(file_bits: u64, cfile_bits: u64) -> u6
         }
     })
 }
-// compileall extracted to functions_compileall.rs
-// compileall extracted to functions_compileall.rs
-// compileall extracted to functions_compileall.rs
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_compileall_compile_file(fullname_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let allowed = crate::has_capability(_py, "fs.read");
+        audit_capability_decision(
+            "compileall.compile.file",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
+        if !allowed {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let Some(fullname) = string_obj_to_owned(obj_from_bits(fullname_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "fullname must be str");
+        };
+        MoltObject::from_bool(compileall_compile_file_impl(&fullname)).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_compileall_compile_dir(dir_bits: u64, maxlevels_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let allowed = crate::has_capability(_py, "fs.read");
+        audit_capability_decision(
+            "compileall.compile.dir",
+            "fs.read",
+            AuditArgs::None,
+            allowed,
+        );
+        if !allowed {
+            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        }
+        let Some(dir) = string_obj_to_owned(obj_from_bits(dir_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "dir must be str");
+        };
+        let Some(maxlevels) = to_i64(obj_from_bits(maxlevels_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "maxlevels must be int");
+        };
+        MoltObject::from_bool(compileall_compile_dir_impl(&dir, maxlevels)).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_compileall_compile_path(
+    paths_bits: u64,
     skip_curdir_bits: u64,
     maxlevels_bits: u64,
 ) -> u64 {
@@ -2331,15 +3219,181 @@ pub extern "C" fn molt_py_compile_compile(file_bits: u64, cfile_bits: u64) -> u6
 }
 
 // --- Begin stdlib_ast-gated compile infrastructure ---
-// codeop extracted to functions_codeop.rs
-// codeop extracted to functions_codeop.rs
-// codeop extracted to functions_codeop.rs
-// codeop extracted to functions_codeop.rs
-// codeop extracted to functions_codeop.rs
-// codeop extracted to functions_codeop.rs
-// codeop extracted to functions_codeop.rs
-// codeop extracted to functions_codeop.rs
-// codeop extracted to functions_codeop.rs
+#[cfg(feature = "stdlib_ast")]
+fn compile_error_type(error: &ParseErrorType) -> &'static str {
+    if error.is_tab_error() {
+        "TabError"
+    } else if error.is_indentation_error() {
+        "IndentationError"
+    } else {
+        "SyntaxError"
+    }
+}
+
+#[cfg(feature = "stdlib_ast")]
+fn codeop_future_flag_for_name(name: &str) -> i64 {
+    match name {
+        "nested_scopes" => 0x0010,
+        "generators" => 0,
+        "division" => 0x20000,
+        "absolute_import" => 0x40000,
+        "with_statement" => 0x80000,
+        "print_function" => 0x100000,
+        "unicode_literals" => 0x200000,
+        "barry_as_FLUFL" => 0x400000,
+        "generator_stop" => 0x800000,
+        "annotations" => 0x1000000,
+        _ => 0,
+    }
+}
+
+#[cfg(feature = "stdlib_ast")]
+fn codeop_is_docstring_stmt(stmt: &pyast::Stmt) -> bool {
+    match stmt {
+        pyast::Stmt::Expr(node) => match node.value.as_ref() {
+            pyast::Expr::Constant(expr) => matches!(expr.value, pyast::Constant::Str(_)),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+#[cfg(feature = "stdlib_ast")]
+fn codeop_future_flags_from_stmts(stmts: &[pyast::Stmt]) -> i64 {
+    let mut idx = 0usize;
+    if let Some(first) = stmts.first()
+        && codeop_is_docstring_stmt(first)
+    {
+        idx = 1;
+    }
+    let mut out = 0i64;
+    for stmt in &stmts[idx..] {
+        let pyast::Stmt::ImportFrom(node) = stmt else {
+            break;
+        };
+        let Some(module) = node.module.as_ref() else {
+            break;
+        };
+        let level_is_zero = match node.level.as_ref() {
+            None => true,
+            Some(value) => value.to_u32() == 0,
+        };
+        if module.as_str() != "__future__" || !level_is_zero {
+            break;
+        }
+        for alias in &node.names {
+            out |= codeop_future_flag_for_name(alias.name.as_str());
+        }
+    }
+    out
+}
+
+#[cfg(feature = "stdlib_ast")]
+fn codeop_future_flags_from_parsed(parsed: &pyast::Mod) -> i64 {
+    match parsed {
+        pyast::Mod::Module(module) => codeop_future_flags_from_stmts(&module.body),
+        pyast::Mod::Interactive(module) => codeop_future_flags_from_stmts(&module.body),
+        _ => 0,
+    }
+}
+
+#[cfg(feature = "stdlib_ast")]
+fn codeop_stmt_is_compound(stmt: &pyast::Stmt) -> bool {
+    matches!(
+        stmt,
+        pyast::Stmt::FunctionDef(_)
+            | pyast::Stmt::AsyncFunctionDef(_)
+            | pyast::Stmt::ClassDef(_)
+            | pyast::Stmt::If(_)
+            | pyast::Stmt::For(_)
+            | pyast::Stmt::AsyncFor(_)
+            | pyast::Stmt::While(_)
+            | pyast::Stmt::With(_)
+            | pyast::Stmt::AsyncWith(_)
+            | pyast::Stmt::Try(_)
+            | pyast::Stmt::TryStar(_)
+            | pyast::Stmt::Match(_)
+    )
+}
+
+#[cfg(feature = "stdlib_ast")]
+fn codeop_source_incomplete_after_success(source: &str, mode: &str, parsed: &pyast::Mod) -> bool {
+    if mode != "single" {
+        return false;
+    }
+    if source.trim_end().ends_with(':') {
+        return true;
+    }
+    if source.contains('\n')
+        && !source.ends_with('\n')
+        && let pyast::Mod::Interactive(module) = parsed
+        && let Some(first) = module.body.first()
+    {
+        return codeop_stmt_is_compound(first);
+    }
+    false
+}
+
+#[cfg(feature = "stdlib_ast")]
+fn codeop_source_has_missing_indented_suite(source: &str) -> bool {
+    let lines: Vec<&str> = source.split('\n').collect();
+    let leading_indent = |line: &str| -> usize {
+        line.chars()
+            .take_while(|ch| *ch == ' ' || *ch == '\t')
+            .count()
+    };
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if !trimmed.ends_with(':') {
+            continue;
+        }
+        let indent = leading_indent(line);
+        let mut next_idx = idx + 1;
+        while next_idx < lines.len() {
+            let next_line = lines[next_idx];
+            let next_trimmed = next_line.trim();
+            if next_trimmed.is_empty() || next_trimmed.starts_with('#') {
+                next_idx += 1;
+                continue;
+            }
+            if leading_indent(next_line) <= indent {
+                return true;
+            }
+            break;
+        }
+    }
+    false
+}
+
+#[cfg(feature = "stdlib_ast")]
+fn codeop_parse_error_is_incomplete(error: &ParseErrorType, source: &str) -> bool {
+    let trimmed = source.trim_end();
+    let trailing_backslash_newline = source.ends_with("\\\n") || source.ends_with("\\\r\n");
+    match error {
+        ParseErrorType::Eof => !trailing_backslash_newline,
+        ParseErrorType::UnrecognizedToken(_, expected) => expected.as_deref() == Some("Indent"),
+        ParseErrorType::Lexical(lex) => {
+            let text = lex.to_string();
+            if text.contains("unexpected EOF") {
+                return true;
+            }
+            if text.contains("line continuation") {
+                return !trailing_backslash_newline;
+            }
+            if text.contains("unexpected string") {
+                return true;
+            }
+            (text.contains("expected an indented block")
+                || text.contains("unindent does not match any outer indentation level"))
+                && trimmed.ends_with(':')
+        }
+        _ => false,
+    }
+}
 
 #[cfg(feature = "stdlib_ast")]
 enum CodeopCompileStatus {
@@ -2352,7 +3406,10 @@ enum CodeopCompileStatus {
         message: String,
     },
 }
-// codeop extracted to functions_codeop.rs
+
+#[cfg(feature = "stdlib_ast")]
+fn codeop_compile_status(
+    source: &str,
     filename: &str,
     mode: &str,
     flags: i64,
@@ -2974,7 +4031,11 @@ fn compile_validate_source(
         Err(err) => Err((compile_error_type(&err.error), err.error.to_string())),
     }
 }
-// codeop extracted to functions_codeop.rs
+
+#[unsafe(no_mangle)]
+#[cfg(feature = "stdlib_ast")]
+pub extern "C" fn molt_compile_builtin(
+    source_bits: u64,
     filename_bits: u64,
     mode_bits: u64,
     flags_bits: u64,
@@ -3022,7 +4083,11 @@ fn compile_validate_source(
         codeobj_from_filename_bits(_py, filename_bits)
     })
 }
-// codeop extracted to functions_codeop.rs
+
+#[unsafe(no_mangle)]
+#[cfg(feature = "stdlib_ast")]
+pub extern "C" fn molt_codeop_compile(
+    source_bits: u64,
     filename_bits: u64,
     mode_bits: u64,
     flags_bits: u64,
@@ -3075,7 +4140,11 @@ fn compile_validate_source(
         }
     })
 }
-// codeop extracted to functions_codeop.rs
+
+#[unsafe(no_mangle)]
+#[cfg(feature = "stdlib_ast")]
+pub extern "C" fn molt_codeop_compile_command(
+    source_bits: u64,
     filename_bits: u64,
     mode_bits: u64,
     flags_bits: u64,
@@ -3189,7 +4258,11 @@ fn compile_validate_source(
 }
 
 // --- Stubs when stdlib_ast is disabled ---
-// codeop extracted to functions_codeop.rs
+
+#[cfg(not(feature = "stdlib_ast"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_compile_builtin(
+    _source_bits: u64,
     _filename_bits: u64,
     _mode_bits: u64,
     _flags_bits: u64,
@@ -3204,7 +4277,11 @@ fn compile_validate_source(
         )
     })
 }
-// codeop extracted to functions_codeop.rs
+
+#[cfg(not(feature = "stdlib_ast"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_codeop_compile(
+    _source_bits: u64,
     _filename_bits: u64,
     _mode_bits: u64,
     _flags_bits: u64,
@@ -3218,7 +4295,11 @@ fn compile_validate_source(
         )
     })
 }
-// codeop extracted to functions_codeop.rs
+
+#[cfg(not(feature = "stdlib_ast"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_codeop_compile_command(
+    _source_bits: u64,
     _filename_bits: u64,
     _mode_bits: u64,
     _flags_bits: u64,
