@@ -989,8 +989,9 @@ fn emit_terminator(
                 == Some(super::blocks::LoopRole::LoopHeader)
             {
                 // Structured loop entry falls through from the preheader into
-                // loop_start; emitting a jump here would reference a header
-                // label that we intentionally do not materialize.
+                // loop_start. The header label exists only for external
+                // references such as check_exception targets; the preheader
+                // itself must not jump to it or re-enter above loop setup.
                 emit_block_arg_stores(*target, args, block_param_vars, out);
             } else {
                 emit_block_arg_stores(*target, args, block_param_vars, out);
