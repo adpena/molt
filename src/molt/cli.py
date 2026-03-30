@@ -787,6 +787,13 @@ class _PersistedModuleGraphState(NamedTuple):
     dirty_modules: set[str]
 
 
+class _MaintenanceStep(NamedTuple):
+    name: str
+    cmd: list[str]
+    cwd: Path
+    category: Literal["toolchain", "lock", "manifest"]
+
+
 @dataclass(frozen=True)
 class _ScopedLoweringInputs:
     known_modules_by_module: dict[str, tuple[str, ...]]
@@ -13869,6 +13876,12 @@ def _build_native_link_command(
             # the dynamic symbol table, breaking dlsym resolution for
             # runtime intrinsics. strip-debug removes only debug info.
             link_cmd.append("-Wl,--strip-debug")
+            # Skip linking unused shared libraries.
+            link_cmd.append("-Wl,--as-needed")
+            # Identical code folding — deduplicates functions with same body.
+            link_cmd.append("-Wl,--icf=safe")
+            # Linker optimization level for layout and relaxation.
+            link_cmd.append("-Wl,-O2")
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
         elif "windows" in target_triple or "msvc" in target_triple:
@@ -13883,7 +13896,10 @@ def _build_native_link_command(
         elif sys.platform.startswith("linux"):
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
             link_cmd.append("-Wl,--gc-sections")
-            link_cmd.append("-Wl,--strip-all")
+            link_cmd.append("-Wl,--strip-debug")
+            link_cmd.append("-Wl,--as-needed")
+            link_cmd.append("-Wl,--icf=safe")
+            link_cmd.append("-Wl,-O2")
             link_cmd.append("-lstdc++")
             link_cmd.append("-lm")
         elif sys.platform == "win32":
@@ -15559,6 +15575,10 @@ def _prepare_backend_dispatch(
         backend_features = (*backend_features, "llvm")
     if deterministic or profile == "release":
         os.environ.setdefault("SOURCE_DATE_EPOCH", "315532800")
+    # Auto-set Cranelift optimization level based on profile for size-critical
+    # builds.  speed_and_size balances code quality with binary density.
+    if profile in ("release-size", "wasm-release"):
+        os.environ.setdefault("MOLT_BACKEND_OPT_LEVEL", "speed_and_size")
     reloc_requested = is_wasm and (linked or os.environ.get("MOLT_WASM_LINK") == "1")
     runtime_wasm = runtime_state.runtime_wasm
     runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
@@ -23167,6 +23187,312 @@ def profile(
     )
 
 
+def _required_llvm_backend_major(root: Path) -> int | None:
+    manifest = root / "runtime" / "molt-backend" / "Cargo.toml"
+    try:
+        text = manifest.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r'inkwell\s*=\s*\{[^}]*features\s*=\s*\[[^\]]*"llvm(\d+)-\d+"', text, re.DOTALL)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _detect_llvm_backend_toolchain(root: Path) -> tuple[int | None, str | None]:
+    major = _required_llvm_backend_major(root)
+    if major is None:
+        return None, None
+    candidates = [
+        f"llvm-config-{major}",
+        f"llvm-config{major}",
+        "llvm-config",
+    ]
+    if platform.system() == "Darwin":
+        candidates.extend(
+            [
+                f"/opt/homebrew/opt/llvm@{major}/bin/llvm-config",
+                f"/usr/local/opt/llvm@{major}/bin/llvm-config",
+            ]
+        )
+    for candidate in candidates:
+        path = Path(candidate)
+        if path.is_absolute():
+            if path.exists():
+                return major, str(path)
+            continue
+        resolved = shutil.which(candidate)
+        if resolved:
+            return major, resolved
+    return major, None
+
+
+def _llvm_backend_advice(major: int) -> list[str]:
+    system = platform.system()
+    if system == "Darwin":
+        return [
+            f"brew install llvm@{major} lld@{major}",
+            f"export PATH=/opt/homebrew/opt/llvm@{major}/bin:$PATH",
+        ]
+    if system == "Windows":
+        return [
+            f"Install LLVM {major} and ensure llvm-config is on PATH",
+            "Set LLVM_SYS_<ver>_PREFIX if llvm-sys cannot find the install",
+        ]
+    return [
+        f"Install llvm-{major} and lld-{major} via your package manager",
+        "Set LLVM_SYS_<ver>_PREFIX if llvm-sys cannot find the install",
+    ]
+
+
+def _planned_update_steps(
+    root: Path,
+    *,
+    include_toolchains: bool,
+    include_locks: bool,
+    include_manifests: bool,
+) -> tuple[list[_MaintenanceStep], list[str]]:
+    steps: list[_MaintenanceStep] = []
+    warnings: list[str] = []
+
+    if include_toolchains:
+        if shutil.which("rustup"):
+            steps.extend(
+                [
+                    _MaintenanceStep(
+                        "rustup-update-stable",
+                        ["rustup", "update", "stable"],
+                        root,
+                        "toolchain",
+                    ),
+                    _MaintenanceStep(
+                        "rustup-target-add-wasm32-unknown-unknown",
+                        ["rustup", "target", "add", "wasm32-unknown-unknown"],
+                        root,
+                        "toolchain",
+                    ),
+                    _MaintenanceStep(
+                        "rustup-target-add-wasm32-wasip1",
+                        ["rustup", "target", "add", "wasm32-wasip1"],
+                        root,
+                        "toolchain",
+                    ),
+                ]
+            )
+        else:
+            warnings.append(
+                "rustup is not installed; skipping Rust toolchain refresh steps"
+            )
+
+    if include_locks:
+        steps.extend(
+            [
+                _MaintenanceStep(
+                    "cargo-update-root",
+                    ["cargo", "update", "--manifest-path", "Cargo.toml"],
+                    root,
+                    "lock",
+                ),
+                _MaintenanceStep(
+                    "cargo-update-runtime",
+                    ["cargo", "update", "--manifest-path", "runtime/Cargo.toml"],
+                    root,
+                    "lock",
+                ),
+                _MaintenanceStep(
+                    "cargo-update-fuzz",
+                    ["cargo", "update", "--manifest-path", "fuzz/Cargo.toml"],
+                    root,
+                    "lock",
+                ),
+                _MaintenanceStep(
+                    "uv-lock-upgrade",
+                    ["uv", "lock", "-U"],
+                    root,
+                    "lock",
+                ),
+            ]
+        )
+
+    if include_manifests:
+        if shutil.which("cargo-upgrade") is None:
+            steps.append(
+                _MaintenanceStep(
+                    "cargo-edit-bootstrap",
+                    ["cargo", "install", "cargo-edit", "--locked"],
+                    root,
+                    "manifest",
+                )
+            )
+        steps.extend(
+            [
+                _MaintenanceStep(
+                    "cargo-upgrade-root",
+                    [
+                        "cargo",
+                        "upgrade",
+                        "--incompatible",
+                        "--manifest-path",
+                        "Cargo.toml",
+                    ],
+                    root,
+                    "manifest",
+                ),
+                _MaintenanceStep(
+                    "cargo-upgrade-runtime",
+                    [
+                        "cargo",
+                        "upgrade",
+                        "--incompatible",
+                        "--manifest-path",
+                        "runtime/Cargo.toml",
+                    ],
+                    root,
+                    "manifest",
+                ),
+                _MaintenanceStep(
+                    "cargo-upgrade-fuzz",
+                    [
+                        "cargo",
+                        "upgrade",
+                        "--incompatible",
+                        "--manifest-path",
+                        "fuzz/Cargo.toml",
+                    ],
+                    root,
+                    "manifest",
+                ),
+            ]
+        )
+
+    return steps, warnings
+
+
+def update_repo(
+    *,
+    json_output: bool = False,
+    verbose: bool = False,
+    check_only: bool = False,
+    include_toolchains: bool = True,
+    include_locks: bool = True,
+    include_manifests: bool = False,
+) -> int:
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "update")
+    if root_error is not None:
+        return root_error
+
+    steps, warnings = _planned_update_steps(
+        root,
+        include_toolchains=include_toolchains,
+        include_locks=include_locks,
+        include_manifests=include_manifests,
+    )
+    step_rows = [
+        {
+            "name": step.name,
+            "category": step.category,
+            "cwd": str(step.cwd),
+            "cmd": step.cmd,
+        }
+        for step in steps
+    ]
+
+    if check_only:
+        payload = _json_payload(
+            "update",
+            "ok",
+            data={
+                "root": str(root),
+                "check_only": True,
+                "steps": step_rows,
+            },
+            warnings=warnings,
+        )
+        if json_output:
+            _emit_json(payload, json_output=True)
+        else:
+            print(f"Update plan for {root}:")
+            for row in step_rows:
+                print(f"- [{row['category']}] {row['name']}: {shlex.join(row['cmd'])}")
+            for warning in warnings:
+                print(f"warning: {warning}", file=sys.stderr)
+        return 0
+
+    results: list[dict[str, Any]] = []
+    for step in steps:
+        if verbose and not json_output:
+            print(f"[molt update] {step.name}: {shlex.join(step.cmd)}", file=sys.stderr)
+        proc = subprocess.run(
+            step.cmd,
+            cwd=step.cwd,
+            capture_output=True,
+            text=True,
+        )
+        entry: dict[str, Any] = {
+            "name": step.name,
+            "category": step.category,
+            "cwd": str(step.cwd),
+            "cmd": step.cmd,
+            "returncode": proc.returncode,
+        }
+        if proc.stdout:
+            entry["stdout"] = proc.stdout
+        if proc.stderr:
+            entry["stderr"] = proc.stderr
+        results.append(entry)
+        if proc.returncode != 0:
+            payload = _json_payload(
+                "update",
+                "error",
+                data={
+                    "root": str(root),
+                    "check_only": False,
+                    "steps": step_rows,
+                    "results": results,
+                },
+                warnings=warnings,
+                errors=[
+                    f"{step.name} failed with exit code {proc.returncode}",
+                ],
+            )
+            if json_output:
+                _emit_json(payload, json_output=True)
+            else:
+                print(
+                    f"molt update failed at {step.name}: {shlex.join(step.cmd)}",
+                    file=sys.stderr,
+                )
+                if proc.stderr:
+                    print(proc.stderr, file=sys.stderr, end="")
+            return proc.returncode or 1
+
+    payload = _json_payload(
+        "update",
+        "ok",
+        data={
+            "root": str(root),
+            "check_only": False,
+            "steps": step_rows,
+            "results": results,
+        },
+        warnings=warnings,
+    )
+    if json_output:
+        _emit_json(payload, json_output=True)
+    else:
+        print(f"Updated toolchains/dependencies for {root}")
+        for result in results:
+            print(
+                f"- [{result['category']}] {result['name']} "
+                f"(rc={result['returncode']})"
+            )
+    return 0
+
+
 def doctor(
     json_output: bool = False,
     verbose: bool = False,
@@ -23284,6 +23610,17 @@ def doctor(
         advice=_rustup_advice() if not rustup_path else None,
     )
 
+    cargo_upgrade_path = shutil.which("cargo-upgrade")
+    record(
+        "cargo-upgrade",
+        bool(cargo_upgrade_path),
+        cargo_upgrade_path or "not found",
+        level="warning",
+        advice=["cargo install cargo-edit --locked", "Use `molt update --all`"]
+        if not cargo_upgrade_path
+        else None,
+    )
+
     cc = os.environ.get("CC", "clang")
     cc_path = shutil.which(cc) or shutil.which("clang")
     record(
@@ -23293,6 +23630,28 @@ def doctor(
         level="error",
         advice=_clang_advice() if not cc_path else None,
     )
+
+    llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
+    if llvm_major is None:
+        record(
+            "llvm-backend-toolchain",
+            True,
+            "no explicit LLVM backend version pin detected",
+        )
+    else:
+        record(
+            "llvm-backend-toolchain",
+            llvm_toolchain is not None,
+            (
+                f"LLVM {llvm_major} via {llvm_toolchain}"
+                if llvm_toolchain is not None
+                else f"LLVM {llvm_major} toolchain not found"
+            ),
+            level="warning",
+            advice=_llvm_backend_advice(llvm_major)
+            if llvm_toolchain is None
+            else None,
+        )
 
     zig_path = shutil.which("zig")
     record(
@@ -27010,7 +27369,7 @@ class _MoltHelpFormatter(argparse.RawDescriptionHelpFormatter):
             parts: list[str] = []
             _core = ["build", "run", "test", "bench", "check", "deploy"]
             _package = ["package", "publish", "deps", "vendor", "install"]
-            _toolchain = ["clean", "doctor", "config", "completion"]
+            _toolchain = ["clean", "doctor", "update", "config", "completion"]
             _dev = [
                 "compare", "diff", "parity-run", "profile",
                 "lint", "extension", "verify",
@@ -27961,6 +28320,50 @@ def main() -> int:
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     doctor_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
+    update_parser = subparsers.add_parser(
+        "update",
+        help="Refresh toolchains and dependency state",
+        description=(
+            "Refresh repo-level toolchains and dependency state.\n"
+            "By default this updates rustup-managed toolchains plus Cargo/uv lockfiles.\n"
+            "Use --all to also upgrade Rust dependency requirements in Cargo.toml."
+        ),
+    )
+    update_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Include manifest requirement upgrades (may be breaking).",
+    )
+    update_parser.add_argument(
+        "--toolchains",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Refresh rustup-managed toolchains and wasm targets (default: enabled).",
+    )
+    update_parser.add_argument(
+        "--locks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Refresh Cargo.lock and uv.lock (default: enabled).",
+    )
+    update_parser.add_argument(
+        "--manifests",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Upgrade Rust dependency requirements in Cargo.toml files.",
+    )
+    update_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Print the planned update steps without executing them.",
+    )
+    update_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    update_parser.add_argument(
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
@@ -29052,6 +29455,16 @@ def main() -> int:
         return lint(args.json, args.verbose)
     if args.command == "doctor":
         return doctor(args.json, args.verbose, args.strict)
+    if args.command == "update":
+        include_manifests = args.manifests or args.all
+        return update_repo(
+            json_output=args.json,
+            verbose=args.verbose,
+            check_only=args.check,
+            include_toolchains=args.toolchains,
+            include_locks=args.locks,
+            include_manifests=include_manifests,
+        )
     if args.command == "package":
         deterministic = args.deterministic
         if deterministic is None:
