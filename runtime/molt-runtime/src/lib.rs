@@ -416,8 +416,6 @@ pub use crate::builtins::functions_logging::*;
 pub use crate::builtins::functions_pickle::*;
 pub use crate::builtins::functions_stat::*;
 pub use crate::builtins::functions_re::*;
-pub use crate::builtins::functions_fnmatch::*;
-pub use crate::builtins::functions_textwrap::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::functions_zipfile::*;
 pub use crate::builtins::functools::*;

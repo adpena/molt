@@ -33,6 +33,7 @@ use std::fmt::Write as _;
 #[cfg(feature = "native-backend")]
 use std::sync::OnceLock;
 
+pub mod debug_artifacts;
 mod ir;
 mod ir_schema;
 mod json_boundary;
@@ -1910,6 +1911,10 @@ pub(crate) struct TrampolineSpec {
     /// Whether the target function returns a value. Trampolines use this
     /// to set the correct import signature — functions with ret_void only
     /// don't have a return in their signature.
+    #[cfg_attr(
+        not(any(feature = "native-backend", feature = "llvm")),
+        allow(dead_code)
+    )]
     pub(crate) target_has_ret: bool,
 }
 
@@ -2694,14 +2699,11 @@ impl SimpleBackend {
             let mut tir_cache = crate::tir::cache::CompilationCache::open(cache_dir);
 
             // Phase 1 (sequential): check cache for every function. For cache
-            // hits, apply immediately. For misses, collect the function index,
-            // content hash, and a clone of the original ops (for fallback).
+            // hits, apply immediately. For misses, collect the function index
+            // and content hash.
             struct TirWorkItem {
                 index: usize,
                 content_hash: String,
-                /// Original ops BEFORE phi rewrite — restored on TIR fallback
-                /// so the Cranelift backend receives the ops it expects.
-                original_ops: Vec<OpIR>,
             }
             let mut work_items: Vec<TirWorkItem> = Vec::new();
 
@@ -2716,7 +2718,6 @@ impl SimpleBackend {
                 // Dump raw ops to file for debugging TIR roundtrip issues.
                 if let Some(ref pattern) = dump_func_pattern
                     && func_ir.name.contains(pattern.as_str()) {
-                        let _ = std::fs::create_dir_all("/tmp/molt_ir");
                         let sanitized: String = func_ir.name.chars()
                             .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
                             .collect();
@@ -2732,15 +2733,12 @@ impl SimpleBackend {
                                 op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
                                 op.value, op.s_value, op.fast_int, op.fast_float));
                         }
-                        let path = format!("/tmp/molt_ir/{}.txt", sanitized);
-                        let _ = std::fs::write(&path, &dump);
+                        let _ = crate::debug_artifacts::write_debug_artifact(
+                            format!("ir/{sanitized}.txt"),
+                            dump,
+                        );
                     }
 
-                // Save original ops BEFORE phi rewrite. The Cranelift backend
-                // expects the original phi ops; the TIR pipeline needs
-                // store_var/load_var. If TIR verification fails, we must
-                // restore these originals — not the phi-rewritten versions.
-                let original_ops = func_ir.ops.clone();
                 // Rewrite phi ops to store_var/load_var before TIR so that SSA
                 // handles merge semantics correctly via block arguments.
                 rewrite_phi_to_store_load(&mut func_ir.ops);
@@ -2766,15 +2764,10 @@ impl SimpleBackend {
                 work_items.push(TirWorkItem {
                     index: i,
                     content_hash,
-                    original_ops,
                 });
             }
 
             let uncached_count = work_items.len();
-            // ALWAYS write diagnostic
-            let _ = std::fs::write("/tmp/molt_tir_diag_absolute.txt",
-                format!("functions={} uncached={}
-", ir.functions.len(), uncached_count));
             if uncached_count > 0 {
                 eprintln!(
                     "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions in parallel"
@@ -2797,8 +2790,6 @@ impl SimpleBackend {
                     params: Vec<String>,
                     ops: Vec<OpIR>,
                     param_types: Option<Vec<String>>,
-                    /// Pre-phi-rewrite ops for fallback to Cranelift.
-                    original_ops: Vec<OpIR>,
                 }
                 let inputs: Vec<TirInput> = work_items
                     .into_iter()
@@ -2811,20 +2802,16 @@ impl SimpleBackend {
                             params: func_ir.params.clone(),
                             ops: func_ir.ops.clone(),
                             param_types: func_ir.param_types.clone(),
-                            original_ops: wi.original_ops,
                         }
                     })
                     .collect();
 
-                // Each element: (index, original_ops)
-                // TIR result: (func_index, content_hash, optimized_ops_or_none, original_ops)
-                // None means TIR didn't produce valid output (panic, no changes, or validation failure).
-                let results: Vec<(usize, String, Option<Vec<OpIR>>, Vec<OpIR>)> = inputs
+                // Each element: (func_index, content_hash, optimized_ops)
+                let results: Vec<(usize, String, Vec<OpIR>)> = inputs
                     .into_par_iter()
                     .map(|input| {
                         let idx = input.index;
                         let content_hash = input.content_hash;
-                        let original_ops = input.original_ops;
                         // Build a temporary FunctionIR for the TIR pipeline.
                         let tmp_func = FunctionIR {
                             name: input.name,
@@ -2832,79 +2819,43 @@ impl SimpleBackend {
                             ops: input.ops,
                             param_types: input.param_types,
                         };
-                        let func_name = tmp_func.name.clone();
-                        let result =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                let mut tir_func =
-                                    crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
-                                crate::tir::type_refine::refine_types(&mut tir_func);
-                                let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
-                                        std::collections::HashMap::new()
-                                    } else {
-                                        crate::tir::type_refine::extract_type_map(&tir_func)
-                                    };
-                                let stats = crate::tir::passes::run_pipeline(&mut tir_func);
-                                if stats.is_empty() {
-                                    return None;
-                                }
-                                if tir_dump {
-                                    eprintln!(
-                                        "{}",
-                                        crate::tir::printer::print_function(&tir_func)
-                                    );
-                                }
-                                if tir_stats {
-                                    for s in &stats {
-                                        eprintln!(
-                                            "[TIR] {}: {} changed, {} removed, {} added",
-                                            s.name,
-                                            s.values_changed,
-                                            s.ops_removed,
-                                            s.ops_added
-                                        );
-                                    }
-                                }
-                                Some(crate::tir::lower_to_simple::lower_to_simple_ir(
-                                    &tir_func,
-                                    &type_map,
-                                ))
-                            }));
-
-                        // Return TIR result for Phase 3 application + caching.
-                        let optimized = match result {
-                            Ok(Some(ops)) => {
-                                if crate::tir::lower_to_simple::validate_labels(&ops) {
-                                    Some(ops)
-                                } else {
-                                    None
-                                }
-                            }
-                            Ok(None) => None,
-                            Err(_panic) => {
-                                eprintln!(
-                                    "[TIR] WARNING: optimization panicked on function '{}' — \
-                                     Set MOLT_TIR_OPT=0 to disable TIR, or report this bug.",
-                                    func_name
-                                );
-                                None
-                            }
+                        let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
+                        crate::tir::type_refine::refine_types(&mut tir_func);
+                        let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
+                            std::collections::HashMap::new()
+                        } else {
+                            crate::tir::type_refine::extract_type_map(&tir_func)
                         };
-                        (idx, content_hash, optimized, original_ops)
+                        let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                        if tir_dump {
+                            eprintln!("{}", crate::tir::printer::print_function(&tir_func));
+                        }
+                        if tir_stats {
+                            for s in &stats {
+                                eprintln!(
+                                    "[TIR] {}: {} changed, {} removed, {} added",
+                                    s.name, s.values_changed, s.ops_removed, s.ops_added
+                                );
+                            }
+                        }
+                        let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
+                            &tir_func, &type_map,
+                        );
+                        assert!(
+                            crate::tir::lower_to_simple::validate_labels(&ops),
+                            "TIR roundtrip emitted invalid labels for '{}'",
+                            tmp_func.name
+                        );
+                        (idx, content_hash, ops)
                     })
                     .collect();
 
-                // Phase 3 (sequential): apply TIR-optimized ops, cache, or
-                // fall back to original ops.
-                for (idx, content_hash, optimized, original_ops) in &results {
-                    if let Some(ops) = optimized {
-                        ir.functions[*idx].ops = ops.clone();
-                        tir_optimized_names.insert(ir.functions[*idx].name.clone());
-                        // Cache the validated optimized ops for future builds.
-                        let bytes = crate::tir::serialize::serialize_ops(ops);
-                        tir_cache.put(content_hash, &bytes, vec![]);
-                    } else {
-                        ir.functions[*idx].ops = original_ops.clone();
-                    }
+                // Phase 3 (sequential): apply validated TIR ops and cache them.
+                for (idx, content_hash, ops) in &results {
+                    ir.functions[*idx].ops = ops.clone();
+                    tir_optimized_names.insert(ir.functions[*idx].name.clone());
+                    let bytes = crate::tir::serialize::serialize_ops(ops);
+                    tir_cache.put(content_hash, &bytes, vec![]);
                 }
 
                 let tir_elapsed = tir_start.elapsed();
@@ -2987,43 +2938,36 @@ impl SimpleBackend {
                 crate::llvm_backend::lowering::lower_tir_to_llvm(&tir_func, &llvm);
             }
 
-            // Verify the module before optimization to catch lowering bugs early.
-            // If verification fails, skip the optimization pipeline and emit at
-            // O0 — this is the graceful-degradation path for complex programs
-            // with phi/domination issues from exception handlers, generators, etc.
-            let verification_ok = match llvm.module.verify() {
-                Ok(()) => true,
-                Err(msg) => {
-                    eprintln!(
-                        "LLVM module verification warning (skipping O3, emitting O0):\n{}",
-                        msg.to_string()
-                    );
-                    false
-                }
-            };
-
-            // Dump LLVM IR to /tmp for debugging when MOLT_LLVM_DUMP_IR=1.
+            // Dump LLVM IR under the repo-local debug artifact root when
+            // MOLT_LLVM_DUMP_IR=1.
             let dump_ir = env_setting("MOLT_LLVM_DUMP_IR").as_deref() == Some("1");
             if dump_ir {
-                let _ = std::fs::write("/tmp/molt_llvm_before_opt.ll", llvm.dump_ir());
+                let _ = crate::debug_artifacts::write_debug_artifact(
+                    "llvm/before_opt.ll",
+                    llvm.dump_ir(),
+                );
             }
 
-            // Only run the FULL LLVM O3 optimization pipeline when the module
-            // passes verification.  Malformed IR causes LLVM optimization
-            // passes to crash (assertion failures in phi/dominator analysis).
-            let emit_opt_level = if verification_ok {
-                llvm.optimize(MoltOptLevel::Aggressive);
-                MoltOptLevel::Aggressive
-            } else {
-                // Attempt a minimal O0 pass to at least clean up obviously dead
-                // code — this is much less likely to trigger assertions.
-                // If even O0 fails, we continue with the raw IR.
-                llvm.optimize(MoltOptLevel::None);
-                MoltOptLevel::None
-            };
+            llvm.module.verify().unwrap_or_else(|msg| {
+                panic!(
+                    "LLVM module verification failed before optimization:\n{}",
+                    msg.to_string()
+                )
+            });
+
+            llvm.optimize(MoltOptLevel::Aggressive);
+            llvm.module.verify().unwrap_or_else(|msg| {
+                panic!(
+                    "LLVM module verification failed after optimization:\n{}",
+                    msg.to_string()
+                )
+            });
 
             if dump_ir {
-                let _ = std::fs::write("/tmp/molt_llvm_after_opt.ll", llvm.dump_ir());
+                let _ = crate::debug_artifacts::write_debug_artifact(
+                    "llvm/after_opt.ll",
+                    llvm.dump_ir(),
+                );
             }
 
             if timing {
@@ -3033,10 +2977,11 @@ impl SimpleBackend {
                 );
             }
 
-            // Emit object file.  When verification failed, we emit at O0 to
-            // avoid machine-level passes that may also choke on malformed IR.
-            let tmp_obj = std::env::temp_dir().join("molt_llvm_output.o");
-            llvm.emit_object(&tmp_obj, emit_opt_level)
+            let tmp_obj = crate::debug_artifacts::prepare_debug_artifact_path(
+                "llvm/molt_llvm_output.o",
+            )
+            .expect("failed to prepare LLVM object path");
+            llvm.emit_object(&tmp_obj, MoltOptLevel::Aggressive)
                 .expect("LLVM object emission failed");
             let bytes = std::fs::read(&tmp_obj).expect("failed to read LLVM object file");
             let _ = std::fs::remove_file(&tmp_obj);
@@ -3120,6 +3065,22 @@ impl SimpleBackend {
             .as_ref()
             .map(|context| context.return_alias_summaries.clone())
             .unwrap_or(local_return_alias_summaries);
+        let function_has_ret: BTreeMap<String, bool> = ir
+            .functions
+            .iter()
+            .map(|func| {
+                // A function "has ret" if it contains a `ret` op (value-returning)
+                // OR a `ret_void` op that is called from a context expecting a value.
+                // Module chunk functions and __annotate__ functions use ret_void but
+                // are called via `call` ops that expect return values, so they must
+                // be treated as value-returning to avoid caller/callee ABI mismatch.
+                let has_ret = func.ops.iter().any(|op| op.kind == "ret")
+                    || func.name.contains("_molt_module_chunk_")
+                    || func.name.contains("__annotate__")
+                    || func.name.contains("_molt_globals_");
+                (func.name.clone(), has_ret)
+            })
+            .collect();
         let mut module_known_functions = ir_analysis.defined_functions.clone();
         module_known_functions.extend(self.external_function_names.iter().cloned());
         let mut compiled = 0u32;
@@ -3130,14 +3091,6 @@ impl SimpleBackend {
         // every 50 functions.
         let progress_interval = (func_count / 20).clamp(1, 50);
         let mut last_progress = std::time::Instant::now();
-
-        // Pre-scan: build function_name → has_ret map for trampoline signatures.
-        let function_has_ret: std::collections::BTreeMap<String, bool> = ir.functions.iter()
-            .map(|f| {
-                let has_ret = f.ops.iter().any(|op| op.kind == "ret");
-                (f.name.clone(), has_ret)
-            })
-            .collect();
 
         for func_ir in ir.functions {
             let func_name = func_ir.name.clone();
@@ -3153,6 +3106,7 @@ impl SimpleBackend {
                 emit_traces,
                 &effective_leaf_functions,
                 &effective_function_arities,
+                &function_has_ret,
             );
             let func_elapsed = func_start.elapsed();
             if timing && func_elapsed.as_millis() > 500 {
@@ -4071,6 +4025,46 @@ mod tests {
                 ],
                 param_types: None,
             }],
+            profile: None,
+        };
+
+        let bytes = SimpleBackend::new().compile(ir);
+
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn annotate_function_object_compiles_without_signature_mismatch() {
+        let ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "_sitebuiltins____annotate__".to_string(),
+                    params: vec!["format".to_string()],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                },
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![
+                        OpIR {
+                            kind: "func_new".to_string(),
+                            s_value: Some("_sitebuiltins____annotate__".to_string()),
+                            value: Some(1),
+                            out: Some("annotate_fn".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret_void".to_string(),
+                            ..OpIR::default()
+                        },
+                    ],
+                    param_types: None,
+                },
+            ],
             profile: None,
         };
 

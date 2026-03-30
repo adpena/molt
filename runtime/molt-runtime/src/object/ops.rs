@@ -28,7 +28,6 @@ pub(crate) use crate::object::ops_encoding::{
     normalize_encoding, unicode_escape,
 };
 
-use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::object::layout::{range_start_bits, range_step_bits, range_stop_bits};
 use crate::object::ops_bytes::{
     BytesCtorKind, bytes_ascii_space, bytes_item_to_u8, collect_bytearray_assign_bytes,
@@ -41,13 +40,12 @@ use num_bigint::{BigInt, Sign};
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ffi::CStr;
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::CString;
-use std::io::{BufRead, BufReader};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::OnceLock;
 
 use super::ops_string::{push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at};
 
@@ -1213,7 +1211,7 @@ pub(crate) unsafe fn sum_ints_trusted_simd_wasm32(elems: &[u64], acc: i64) -> i6
 }
 
 // Re-export slice indexing helpers from ops_sys (authoritative copy).
-pub(super) use super::ops_sys::{SliceError, decode_slice_bound, slice_error};
+pub(super) use super::ops_sys::slice_error;
 use super::ops_sys::{collect_iterable_values, collect_slice_indices, normalize_slice_indices};
 
 #[unsafe(no_mangle)]
@@ -2269,12 +2267,12 @@ pub extern "C" fn molt_time_time_ns() -> u64 {
 
 // Re-export time helpers from ops_sys (authoritative copy).
 use super::ops_sys::{
-    TimeParts, current_epoch_secs_i64, days_from_civil, parse_time_seconds, parse_time_tuple,
-    time_parts_to_tuple, time_t_bounds,
+    days_from_civil, parse_time_seconds, parse_time_tuple,
+    time_parts_to_tuple,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use super::ops_sys::{
-    offset_west_from_secs, time_parts_from_tm, tm_from_time_parts, tm_to_epoch_seconds,
+    time_parts_from_tm, tm_from_time_parts,
 };
 #[cfg(target_arch = "wasm32")]
 use super::ops_sys::{
@@ -2289,7 +2287,7 @@ use super::ops_sys::asctime_from_parts;
 // Re-export timezone/mktime helpers from ops_sys (authoritative copy).
 #[cfg(not(target_arch = "wasm32"))]
 use super::ops_sys::{
-    altzone_native, daylight_native, mktime_native, sample_offset_west_native,
+    altzone_native, daylight_native, mktime_native,
     timezone_native, tzname_native,
 };
 #[cfg(target_arch = "wasm32")]
@@ -2299,17 +2297,13 @@ use super::ops_sys::{
 
 // Re-export traceback helpers from ops_sys (authoritative copy).
 use super::ops_sys::{
-    TracebackExceptionChainNode, TracebackPayloadFrame, traceback_append_exception_chain_lines,
-    traceback_append_exception_single_lines, traceback_exception_chain_collect,
+    traceback_append_exception_chain_lines,
     traceback_exception_chain_payload_bits, traceback_exception_components_payload,
     traceback_exception_trace_bits, traceback_exception_type_bits,
     traceback_format_caret_line_native, traceback_format_exception_only_line, traceback_frames,
-    traceback_infer_column_offsets, traceback_limit_from_bits, traceback_line_trim_bounds,
-    traceback_lines_to_list, traceback_payload_frame_source_lines,
-    traceback_payload_from_entries, traceback_payload_from_entry,
-    traceback_payload_from_frame_chain, traceback_payload_from_source,
-    traceback_payload_from_traceback, traceback_payload_to_formatted_lines,
-    traceback_payload_to_list, traceback_source_line_native, traceback_split_molt_symbol,
+    traceback_infer_column_offsets, traceback_limit_from_bits,
+    traceback_lines_to_list, traceback_payload_from_source, traceback_payload_to_formatted_lines,
+    traceback_payload_to_list, traceback_source_line_native,
 };
 
 use super::ops_sys::parse_mktime_tuple;
