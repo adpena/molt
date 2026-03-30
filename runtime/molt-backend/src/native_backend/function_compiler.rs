@@ -882,21 +882,21 @@ impl SimpleBackend {
             .filter_map(|op| op.out.clone())
             .collect();
         {
-            let none_val = builder.ins().iconst(types::I64, box_none());
+            // Initialize ALL variables to raw 0 (not box_none).
+            // Raw 0 is a non-pointer NaN-box tag that is safe for
+            // dec_ref and comparison.  Using box_none (0x7FFB) causes
+            // Cranelift's SSA phi resolution at loop headers to pick up
+            // the entry-block definition instead of the pre-loop value
+            // when the back-edge path doesn't redefine the variable.
+            // This corrupts list cells (boxed locals), string pointers,
+            // and other heap references that are defined before a loop
+            // but read inside or after it.
+            let zero = builder.ins().iconst(types::I64, 0);
             for (name, var) in &vars {
                 if param_name_set.contains(name.as_str()) {
                     continue;
                 }
-                if const_str_out_names.contains(name) {
-                    // Initialize to raw 0 (not box_none). Raw 0 is safe
-                    // for dec_ref (non-pointer NaN-box tag) and avoids
-                    // Cranelift using box_none as the SSA reaching
-                    // definition at loop header phis.
-                    let zero = builder.ins().iconst(types::I64, 0);
-                    builder.def_var(*var, zero);
-                    continue;
-                }
-                builder.def_var(*var, none_val);
+                builder.def_var(*var, zero);
             }
         }
 
