@@ -259,23 +259,24 @@ strip = "symbols"
 panic = "unwind"
 
 # Size-optimized release profile for micro stdlib builds.
-# Uses opt-level "z" (minimize binary size) with full LTO.
+# Uses opt-level "z" (minimize binary size) with fat LTO and single codegen
+# unit for maximum cross-crate inlining and dead code elimination.
 [profile.release-size]
 inherits = "release"
 opt-level = "z"
-lto = "thin"
-codegen-units = 4
+lto = "fat"
+codegen-units = 1
 panic = "unwind"
 strip = true
 
-# WASM-optimized release profile: full LTO with single codegen unit for
+# WASM-optimized release profile: fat LTO with single codegen unit for
 # maximum cross-crate inlining and dead code elimination. Build time
 # increases but runtime wasm artifacts are cached and infrequently rebuilt.
 [profile.wasm-release]
 inherits = "release"
 opt-level = "z"  # minimize binary size for Cloudflare Workers 3MB limit
-lto = "thin"
-codegen-units = 4
+lto = "fat"
+codegen-units = 1
 panic = "unwind"
 strip = true
 
