@@ -1,3 +1,12 @@
+// NOTE: c_api tests share a single process-global RuntimeState.
+// The runtime is initialized once by the first test and reused.
+// Each test acquires TEST_MUTEX to serialize access, preventing
+// concurrent GIL re-entry from corrupting the slab allocator.
+//
+// Run with: cargo test -p molt-runtime --lib -- c_api::tests --test-threads=1
+// Individual tests pass; full suite may hit stack overflow from
+// deep GIL re-entry accumulation across tests.
+
 use super::*;
 use crate::builtins::exceptions::molt_exception_class;
 
