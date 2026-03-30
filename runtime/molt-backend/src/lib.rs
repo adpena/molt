@@ -2833,20 +2833,9 @@ impl SimpleBackend {
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
                         }
-                        // The native backend uses structured loop ops (loop_start,
-                        // loop_break_if_true, loop_continue, loop_end) that require
-                        // a specific sequential op ordering.  The TIR CFG splits
-                        // loops into many blocks at check_exception and br_if
-                        // boundaries, and lower_to_simple's block fusion produces
-                        // invalid Cranelift IR (unreachable blocks, broken value
-                        // liveness from exception handler blocks crossing loop
-                        // region boundaries).  Loop functions preserve original ops.
-                        //
-                        // Architecture note: the correct long-term fix is to teach
-                        // the native backend to handle CFG-style loops (blocks with
-                        // Branch/CondBranch terminators) in addition to structured
-                        // loops, so the TIR roundtrip doesn't need to reconstruct
-                        // structured markers from a CFG.
+                        // Loop functions preserve original ops — the TIR
+                        // lower_to_simple can't reconstruct structured loop
+                        // markers from CFG blocks.
                         if tmp_func.ops.iter().any(|op| {
                             matches!(op.kind.as_str(), "loop_start" | "for_iter")
                         }) {
@@ -2876,7 +2865,7 @@ impl SimpleBackend {
                         );
                         if !crate::tir::lower_to_simple::validate_labels(&ops) {
                             eprintln!(
-                                "MOLT_BACKEND: TIR roundtrip emitted invalid labels for '{}'; falling back to original ops",
+                                "MOLT_BACKEND: TIR roundtrip emitted invalid labels for '{}'; using original ops",
                                 tmp_func.name
                             );
                             (idx, content_hash, Vec::new())
