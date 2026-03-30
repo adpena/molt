@@ -551,8 +551,6 @@ impl SimpleBackend {
         // by various loop and exception handler initialization paths, corrupting
         // the string pointer across loop iterations. Stack slots are immune to
         // SSA phi merging and persist correctly across all control flow.
-        let mut const_str_slot_by_name: BTreeMap<String, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
-        let mut const_str_slot_by_data: BTreeMap<cranelift_module::DataId, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
         let mut const_str_slots: BTreeMap<cranelift_module::DataId, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
         let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
         for name in var_names.iter() {
@@ -1221,10 +1219,6 @@ impl SimpleBackend {
                     };
 
                     let out_name_clone = out_name.clone();
-                    // Register in slot-by-name for module_get/set_attr bypass.
-                    if let Some(&slot) = const_str_slots.get(&data_id) {
-                        const_str_slot_by_name.insert(out_name_clone.clone(), slot);
-                    }
                     def_var_named(&mut builder, &vars, out_name, boxed);
                     rc_skip_dec.insert(out_name_clone);
                 }
@@ -15402,6 +15396,8 @@ impl SimpleBackend {
             dump_ir_ops(&func_ir, &config.mode);
         }
 
+        let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_compiled_funcs.txt").and_then(|mut f| std::io::Write::write_all(&mut f, format!("compiled: {}
+", func_ir.name).as_bytes()));
         if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF")
             && (filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter))
         {
