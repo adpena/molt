@@ -1,20 +1,28 @@
 {
   "test_counts": {
-    "unit-rust": 375,
+    "unit-rust": 349,
     "unit-python": 69,
     "conformance_cpython": 385,
-    "conformance_molt_compile": 232,
-    "conformance_molt_runtime_pass": 67,
-    "conformance_molt_compat_reject": 18
+    "conformance_molt_compile": 272,
+    "conformance_molt_runtime_pass": 197,
+    "conformance_molt_compat_reject": 18,
+    "conformance_molt_runtime_mismatch": 55,
+    "conformance_molt_sigsegv": 0,
+    "conformance_molt_timeout": 2
   },
   "metrics": {
     "cpython_conformance_rate": 0.94,
-    "molt_compilation_rate": 0.57,
-    "molt_runtime_sample_parity": 0.60,
+    "molt_compilation_rate": 0.59,
+    "molt_runtime_parity": 0.78,
     "isinstance_exception_fixed": true,
     "range_equality_fixed": true,
     "function_repr_fixed": true,
     "str_object_kwarg_fixed": true,
-    "split_sep_kwarg_fixed": true
+    "split_sep_kwarg_fixed": true,
+    "recursion_error_catch_fixed": true,
+    "print_dynamic_kwargs_fixed": true,
+    "sigsegv_dec_ref_nan_boxed_fixed": true,
+    "gil_poison_recovery": true,
+    "stale_cache_auto_clear": true
   }
 }
