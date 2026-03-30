@@ -10227,6 +10227,9 @@ impl WasmBackend {
                         //   4. There are no cleanup ops (dec_ref) between call and return
                         //   5. We are not inside a try block (return_call would
                         //      skip the exception handler)
+                        //   6. Caller and callee have the same arity — return_call
+                        //      requires the stack to match the callee's full param
+                        //      list, which differs from call+return.
                         let is_tail_call = tail_call_eligible
                             && try_stack.is_empty()
                             && rel_idx + 1 < ops.len()
@@ -10235,7 +10238,14 @@ impl WasmBackend {
                             // Exclude calls to multi-return candidates: return_call
                             // would forward N values but the caller's type signature
                             // expects a single i64 return, causing an ABI mismatch.
-                            && !multi_return_candidates.contains_key(target_name);
+                            && !multi_return_candidates.contains_key(target_name)
+                            // Exclude chunk calls: the stub may pass fewer args than
+                            // the chunk expects, causing return_call stack underflow.
+                            && !target_name.contains("__molt_chunk_")
+                            // Exclude calls where caller arity != callee param count.
+                            // return_call requires exactly the callee's param count
+                            // on the stack; a regular call+return handles mismatches.
+                            && args_names.len() == func_ir.params.len();
 
                         for arg_name in args_names {
                             let arg = locals[arg_name];
