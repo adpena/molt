@@ -32192,7 +32192,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "CONST_BIGINT",
             "CONST_BOOL",
             "CONST_FLOAT",
-            "CONST_STR",
+            # CONST_STR is NOT pure: it allocates heap memory via
+            # molt_string_from_bytes. LICM must not hoist it out of
+            # loops — the Cranelift SSA variable for the string pointer
+            # gets corrupted by loop-header phi merges if defined once
+            # before the loop instead of on each iteration.
             "CONST_BYTES",
             "CONST_NONE",
             "CONST_NOT_IMPLEMENTED",
