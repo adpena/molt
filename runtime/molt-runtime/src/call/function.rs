@@ -68,12 +68,15 @@ fn is_void_wasm_call1_target(fn_ptr: u64) -> bool {
 }
 
 fn trace_call_vec_enabled() -> bool {
-    matches!(
-        std::env::var("MOLT_TRACE_CALL_FUNCTION_VEC")
-            .ok()
-            .as_deref(),
-        Some("1")
-    )
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_TRACE_CALL_FUNCTION_VEC")
+                .ok()
+                .as_deref(),
+            Some("1")
+        )
+    })
 }
 
 unsafe fn trace_function_vec_call(
