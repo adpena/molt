@@ -846,16 +846,15 @@ class _Path:
         second: Any = None,
         third: Any = None,
         fourth: Any = None,
+        fifth: Any = None,
+        sixth: Any = None,
+        seventh: Any = None,
+        eighth: Any = None,
     ) -> Any:
         parts: list[Any] = []
-        if first is not None:
-            parts.append(first)
-        if second is not None:
-            parts.append(second)
-        if third is not None:
-            parts.append(third)
-        if fourth is not None:
-            parts.append(fourth)
+        for arg in (first, second, third, fourth, fifth, sixth, seventh, eighth):
+            if arg is not None:
+                parts.append(arg)
         if not parts:
             return ""
         # Fast path: use the new 2-arg intrinsic for the common case.
