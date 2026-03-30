@@ -10499,17 +10499,16 @@ def _start_backend_daemon(
                 # the old runtime library.  Without this, stale .o files
                 # produce linker errors (duplicate symbols) or silent
                 # correctness regressions.
-                #
-                # IMPORTANT: Do NOT delete the bin directory — running
-                # binaries may live there.  Only remove .o/.wasm artifacts
-                # that will be re-generated on the next build.
                 import shutil
-                _project_cache = project_root / ".molt_cache"
-                if _project_cache.is_dir():
-                    shutil.rmtree(_project_cache, ignore_errors=True)
-                    _project_cache.mkdir(parents=True, exist_ok=True)
-                    if not json_output:
-                        print(f"  Cleared stale cache: {_project_cache}", file=sys.stderr)
+                for cache_dir in [
+                    project_root / ".molt_cache",
+                    Path.home() / "Library" / "Caches" / "molt" / "home" / "bin",
+                ]:
+                    if cache_dir.is_dir():
+                        shutil.rmtree(cache_dir, ignore_errors=True)
+                        cache_dir.mkdir(parents=True, exist_ok=True)
+                        if not json_output:
+                            print(f"  Cleared stale cache: {cache_dir}", file=sys.stderr)
                 _cache_root = _default_molt_cache()
                 if _cache_root.is_dir():
                     for _cached_file in _cache_root.iterdir():
@@ -19530,15 +19529,16 @@ def _ensure_backend_binary(
         # (~/Library/Caches/molt) — that also removes the build directory
         # structure (home/build/*) and other infrastructure that later build
         # steps depend on.  Only remove the specific artifact caches.
-        # Do NOT delete the bin directory — running binaries live there
-        # and concurrent builds would corrupt in-flight executions.
         import shutil
-        _project_cache = project_root / ".molt_cache"
-        if _project_cache.is_dir():
-            shutil.rmtree(_project_cache, ignore_errors=True)
-            _project_cache.mkdir(parents=True, exist_ok=True)
-            if not json_output:
-                print(f"  Cleared stale cache: {_project_cache}", file=sys.stderr)
+        for cache_dir in [
+            project_root / ".molt_cache",
+            Path.home() / "Library" / "Caches" / "molt" / "home" / "bin",
+        ]:
+            if cache_dir.is_dir():
+                shutil.rmtree(cache_dir, ignore_errors=True)
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                if not json_output:
+                    print(f"  Cleared stale cache: {cache_dir}", file=sys.stderr)
         # Remove cached .o and .wasm artifacts from the cache root without
         # destroying the directory tree (home/build/*, home/bin/, etc.).
         _cache_root = _default_molt_cache()
