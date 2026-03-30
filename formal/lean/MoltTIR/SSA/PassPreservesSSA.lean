@@ -799,18 +799,20 @@ theorem licm_preserves_ssa (f : Func) (loop : NaturalLoop) (pre : Block)
     -- (b) no new definitions are created
     -- This requires tracking the partition precisely through licmFunc.
     intro v lbl₁ lbl₂ hdef₁ hdef₂
-    -- The full proof requires showing that partitionInstrs + collectHoisted
-    -- form a permutation of the original instruction set, preserving the
-    -- bijection between variables and their defining blocks.
-    -- We use the fact that every definition in licmFunc f either came from
-    -- a body block (now in preheader) or was already outside the loop.
+    -- LICM unique_defs requires showing partitionInstrs + collectHoisted
+    -- form a permutation of the original instruction set. Key sub-lemmas:
+    -- (a) partitionInstrs is a partition: hoisted ++ remaining = original
+    -- (b) collectHoisted collects all hoisted from all body blocks
+    -- (c) Defs in licmFunc biject with defs in f (remapped labels for hoisted)
+    -- (d) Since original had unique defs, remapped defs are unique
+    -- These require ~4 helper lemmas about List.partition properties.
     sorry
-  · -- use_dom_def: For hoisted definitions now in the preheader:
-    -- preheader dominates loop.header (hpre_dom), and loop.header dominates
-    -- all loop body blocks (hloop.headerDominates). By Dom.trans, preheader
-    -- dominates all body blocks. Since uses of hoisted vars are in body
-    -- blocks, dominance is preserved. For non-hoisted definitions, the CFG
-    -- structure is unchanged so dominance is inherited from h.use_dom_def.
+  · -- use_dom_def: hoisted defs are in preheader which dominates all body
+    -- blocks. Non-hoisted defs maintain original dominance. Requires:
+    -- (a) Dom.trans: preheader → header → body blocks
+    -- (b) Tracking which defs moved to preheader vs stayed in body
+    -- (c) Uses in body blocks: their defs are either in the same/dominating
+    --     block (unchanged) or in preheader (dominates via loop structure)
     sorry
   · -- entry_exists: licmFunc preserves entry and label structure
     show ((licmFunc f loop pre).blocks (licmFunc f loop pre).entry).isSome
