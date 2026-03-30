@@ -933,6 +933,17 @@ impl SimpleBackend {
         } else {
             std::collections::HashSet::new()
         };
+        // Always-on debug: print for functions with loops
+        if first_loop_idx.is_some() {
+            eprintln!(
+                "ENTRY_INIT {}: first_loop={:?} affected={}/{} params={}",
+                func_ir.name,
+                first_loop_idx,
+                loop_affected_vars.len(),
+                vars.len(),
+                param_name_set.len(),
+            );
+        }
         {
             let none_val = builder.ins().iconst(types::I64, box_none());
             let zero = builder.ins().iconst(types::I64, 0);
@@ -1400,7 +1411,12 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false)
+                    let res = if op.raw_int.unwrap_or(false) {
+                        // raw_int: both operands are proven i64, no NaN-boxing.
+                        // Pure native add — no unbox, no rebox, no guards.
+                        let sum = builder.ins().iadd(*lhs, *rhs);
+                        box_int_value(&mut builder, sum, &nbc)
+                    } else if op.fast_float.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("float")
                     {
                         // Both operands known to be f64 — direct float arithmetic.
@@ -2350,7 +2366,10 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false)
+                    let res = if op.raw_int.unwrap_or(false) {
+                        let prod = builder.ins().imul(*lhs, *rhs);
+                        box_int_value(&mut builder, prod, &nbc)
+                    } else if op.fast_float.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("float")
                     {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
@@ -7475,7 +7494,10 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if op.raw_int.unwrap_or(false) {
+                        let cmp = builder.ins().icmp(IntCC::SignedLessThan, *lhs, *rhs);
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if op.fast_float.unwrap_or(false) {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::LessThan, lhs_f, rhs_f);
