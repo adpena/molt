@@ -1319,6 +1319,7 @@ class _PreparedBackendCompile:
     cache_enabled: bool
     cache_hit: bool
     cache_hit_tier: str | None
+    wasm_table_base: int | None
     backend_daemon_cached: bool | None
     backend_daemon_cache_tier: str | None
     backend_daemon_health: dict[str, Any] | None
@@ -13595,6 +13596,7 @@ extern unsigned long long molt_exception_pending();
 extern unsigned long long molt_exception_last();
 extern unsigned long long molt_raise(unsigned long long exc_bits);
 extern void molt_dec_ref(unsigned long long bits);
+extern void molt_dec_ref_obj(unsigned long long bits);
 extern int molt_json_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_msgpack_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_cbor_parse_scalar(const char* ptr, long len, unsigned long long* out);
@@ -13624,7 +13626,7 @@ static int molt_finish() {
     if (pending != 0) {
         unsigned long long exc = molt_exception_last();
         molt_raise(exc);
-        molt_dec_ref(exc);
+        molt_dec_ref_obj(exc);
         molt_runtime_shutdown();
         /* Bypass TLS/atexit destructor cleanup — runtime teardown already
            released all resources.  Returning normally would let Rust's
@@ -16063,6 +16065,7 @@ def _prepare_backend_compile(
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
     cache_enabled = cache_setup.cache_enabled
+    wasm_table_base: int | None = None
 
     if (verbose or cache_report) and not json_output:
         if not cache_enabled:
@@ -16126,6 +16129,16 @@ def _prepare_backend_compile(
             if prepared_backend_dispatch_error is not None:
                 return None, prepared_backend_dispatch_error
             assert prepared_backend_dispatch is not None
+            if is_wasm and prepared_backend_dispatch.backend_env is not None:
+                raw_table_base = prepared_backend_dispatch.backend_env.get(
+                    "MOLT_WASM_TABLE_BASE"
+                )
+                try:
+                    wasm_table_base = (
+                        int(raw_table_base) if raw_table_base is not None else None
+                    )
+                except ValueError:
+                    wasm_table_base = None
             if diagnostics_enabled and "backend_dispatch" not in phase_starts:
                 phase_starts["backend_dispatch"] = time.perf_counter()
             backend_execution_result, backend_execution_error = _execute_backend_compile(
@@ -16182,6 +16195,7 @@ def _prepare_backend_compile(
         cache_enabled=cache_enabled,
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,
+        wasm_table_base=wasm_table_base,
         backend_daemon_cached=backend_daemon_cached,
         backend_daemon_cache_tier=backend_daemon_cache_tier,
         backend_daemon_health=backend_daemon_health,
@@ -16458,6 +16472,7 @@ def _run_backend_pipeline(
     backend_daemon_config_digest = (
         prepared_backend_compile.backend_daemon_config_digest
     )
+    wasm_table_base = prepared_backend_compile.wasm_table_base
 
     if (
         output_layout.is_rust_transpile
@@ -16471,6 +16486,7 @@ def _run_backend_pipeline(
                 is_wasm=output_layout.is_wasm,
                 is_wasm_freestanding=output_layout.is_wasm_freestanding,
                 wasm_opt_level=wasm_opt_level,
+                wasm_table_base=wasm_table_base,
                 linked=output_layout.linked,
                 require_linked=require_linked,
                 linked_output_path=output_layout.linked_output_path,
@@ -16680,6 +16696,7 @@ def _prepare_non_native_build_result(
     is_wasm_freestanding: bool = False,
     wasm_opt_enabled: bool = True,
     wasm_opt_level: str = "Oz",
+    wasm_table_base: int | None = None,
     linked: bool,
     require_linked: bool,
     linked_output_path: Path | None,
@@ -16869,6 +16886,7 @@ def _prepare_non_native_build_result(
                 "tree_shaken": True,
                 "shared_memory_initial_pages": shared_memory_initial_pages,
                 "shared_table_initial": shared_table_initial,
+                "wasm_table_base": wasm_table_base,
                 "modules": {
                     "runtime": {
                         "path": "molt_runtime.wasm",
@@ -16892,7 +16910,7 @@ def _prepare_non_native_build_result(
                 _generate_split_worker_js(
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
-                    shared_table_base=app_table_min,
+                    shared_table_base=wasm_table_base,
                 )
             )
 
