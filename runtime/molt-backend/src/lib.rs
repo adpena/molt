@@ -1991,10 +1991,15 @@ fn compute_function_has_ret(functions: &[FunctionIR]) -> BTreeMap<String, bool> 
     functions
         .iter()
         .map(|func| {
-            // The backend ABI must reflect the function body's actual return
-            // shape, not naming heuristics. Call sites already box `None` when
-            // a direct call targets a void function and the result is ignored.
-            (func.name.clone(), func.ops.iter().any(|op| op.kind == "ret"))
+            // A function returns a value if it contains `ret` OR `ret_void`.
+            // Both produce a return instruction in the native backend — `ret`
+            // returns the specified value, `ret_void` returns None (box_none).
+            // The ABI must always include a return slot because callers may
+            // use the result (e.g., module chunk calls that check completion).
+            let has_ret = func.ops.iter().any(|op| {
+                matches!(op.kind.as_str(), "ret" | "ret_void")
+            });
+            (func.name.clone(), has_ret)
         })
         .collect()
 }

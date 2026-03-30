@@ -10645,7 +10645,12 @@ impl SimpleBackend {
                         let _ = builder.ins().call(trace_enter_local, &[*callee_bits]);
                     }
                     let direct_call = builder.ins().call(local_callee, &args);
-                    let direct_res = builder.inst_results(direct_call)[0];
+                    let direct_results = builder.inst_results(direct_call);
+                    let direct_res = if direct_results.is_empty() {
+                        builder.ins().iconst(types::I64, box_none())
+                    } else {
+                        direct_results[0]
+                    };
                     if emit_traces {
                         let _ = builder.ins().call(trace_exit_local, &[]);
                     }
