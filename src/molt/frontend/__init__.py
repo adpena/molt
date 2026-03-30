@@ -22875,7 +22875,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     # self.globals (SSA cache), and the post-if eviction
                     # removes the cache entry, so MODULE_GET_ATTR would find
                     # nothing in the module dict.
+                    #
+                    # IMPORTANT: skip the flush for variables already tracked
+                    # in module_global_mutations — they were flushed by a
+                    # parent for/while loop's _prepare_mutable_control_flow_bindings
+                    # and re-flushing the stale SSA value would overwrite the
+                    # loop-carried accumulation on every iteration.
                     for name in sorted(module_backed):
+                        if name in self.module_global_mutations:
+                            continue
                         existing = self.globals.get(name)
                         if existing is None:
                             existing = self.locals.get(name)
