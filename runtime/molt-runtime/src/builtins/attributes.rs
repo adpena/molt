@@ -1,5 +1,4 @@
 use crate::PyToken;
-use crate::object::ops_sys::molt_ord;
 use crate::object::{HEADER_FLAG_COROUTINE, NEWLINE_KIND_CR, NEWLINE_KIND_CRLF, NEWLINE_KIND_LF};
 use molt_obj_model::MoltObject;
 use std::borrow::Cow;
