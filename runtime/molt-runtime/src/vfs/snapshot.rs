@@ -70,7 +70,8 @@ impl SnapshotHeader {
         });
         let canonical_bytes = serde_json::to_vec(&canonical).unwrap_or_default();
         let hash = Sha256::digest(&canonical_bytes);
-        format!("sha256:{:x}", hash)
+        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        format!("sha256:{hex}")
     }
 
     /// Verify the integrity hash matches the header contents.
