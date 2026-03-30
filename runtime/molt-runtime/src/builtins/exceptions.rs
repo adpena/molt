@@ -262,11 +262,22 @@ pub(crate) fn exception_group_method_bits(_py: &PyToken<'_>, name: &str) -> Opti
 }
 
 #[track_caller]
+    #[track_caller]
 pub(crate) fn raise_exception<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
     kind: &str,
     message: &str,
 ) -> T {
+    if debug_exception_flow() && kind == "TypeError" {
+        let loc = std::panic::Location::caller();
+        eprintln!(
+            "molt exc RAISE_EXCEPTION TypeError at {}:{}:{} ({})",
+            loc.file(),
+            loc.line(),
+            loc.column(),
+            message
+        );
+    }
     if debug_oom() && kind == "MemoryError" {
         let loc = std::panic::Location::caller();
         eprintln!(
