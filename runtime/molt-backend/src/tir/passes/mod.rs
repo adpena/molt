@@ -15,6 +15,7 @@ pub mod refcount_elim;
 pub mod sccp;
 pub mod strength_reduction;
 pub mod type_guard_hoist;
+pub mod loop_narrow;
 pub mod unboxing;
 pub mod vectorize;
 
@@ -98,6 +99,7 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
         };
     }
 
+    run_pass!("loop_narrow", loop_narrow::run(func));
     run_pass!("unboxing", unboxing::run(func));
     run_pass!("escape_analysis", escape_analysis::run(func));
     run_pass!("refcount_elim", refcount_elim::run(func));
