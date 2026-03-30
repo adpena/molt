@@ -1322,7 +1322,10 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
     // Preserve original fast_int / fast_float / type_hint from the input IR
     // when the type refiner did not produce a more specific type.  This ensures
     // the round-trip is lossless even when type refinement yields DynBox.
-    if opir.fast_int.is_none() && attr_bool(&tir_op.attrs, "_fast_int") == Some(true) {
+    if opir.fast_int.is_none()
+        && (attr_bool(&tir_op.attrs, "_fast_int") == Some(true)
+            || attr_bool(&tir_op.attrs, "_narrowed_int") == Some(true))
+    {
         opir.fast_int = Some(true);
     }
     if opir.fast_float.is_none() && attr_bool(&tir_op.attrs, "_fast_float") == Some(true) {
