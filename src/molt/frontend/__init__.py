@@ -10188,6 +10188,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def _emit_loop_orelse(self, break_name: str, orelse: list[ast.stmt]) -> None:
         break_val = self._load_local_value(break_name)
+        if break_val is None and break_name in self.module_global_mutations:
+            break_val = self._emit_module_attr_get(break_name)
         if break_val is None:
             raise NotImplementedError("for-else break flag not initialized")
         should_run = self._emit_not(break_val)
@@ -23662,9 +23664,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     break
             break_init = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=break_init))
-            self._store_local_value(break_name, break_init)
-            if not self.is_async():
-                self._box_local(break_name)
+            if self.current_func_name == "molt_main" and hasattr(self, "module_obj") and self.module_obj is not None:
+                # At module scope, store the break flag in the module dict
+                # instead of a boxed local.  Boxed locals (list cells)
+                # suffer from SSA phi corruption in sequential while-else
+                # blocks because Cranelift resolves the cell pointer to the
+                # entry-block 0-init instead of the actual list_new output.
+                # The module dict is on the heap and immune to SSA issues.
+                self._emit_module_attr_set_on(self.module_obj, break_name, break_init)
+                self.module_global_mutations.add(break_name)
+                self.locals.pop(break_name, None)
+            else:
+                self._store_local_value(break_name, break_init)
+                if not self.is_async():
+                    self._box_local(break_name)
         counted = (
             None
             if break_name is not None or self.current_func_name == "molt_main"

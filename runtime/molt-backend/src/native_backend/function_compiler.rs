@@ -730,12 +730,12 @@ impl SimpleBackend {
             &[types::I64],
         );
         // Inline exception flag optimization: fetch the flag pointer once
-        // per block and inline a byte load at each check_exception site.
-        // Fetch the exception flag pointer once in the entry block via a
-        // Cranelift Variable (SSA propagates it automatically across all
-        // blocks, including stateful/poll functions).  The Variable-based
-        // approach uses declare_var/def_var/use_var which handles dominator
-        // propagation through Switch-generated intermediate blocks correctly.
+        // per function and keep it in a dedicated stack slot. Using a
+        // Cranelift Variable here let SSA repair synthesize zero-valued
+        // placeholder predecessors in nested if/check_exception shapes,
+        // which could drop the live flag pointer on one edge and corrupt
+        // exception propagation. A stack slot keeps the invariant pointer
+        // available across arbitrary CFG without introducing block params.
         let has_exc_handling = function_exception_label_id.is_some();
         static INLINE_EXC_DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let inline_exc_disabled = *INLINE_EXC_DISABLED.get_or_init(|| {
@@ -744,12 +744,6 @@ impl SimpleBackend {
                 .map(parse_truthy_env)
                 .unwrap_or(false)
         });
-        let exc_flag_ptr_var: Option<Variable> = if has_exc_handling && !inline_exc_disabled {
-            let var = builder.declare_var(types::I64);
-            Some(var)
-        } else {
-            None
-        };
         let exc_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
             Some(import_func_ref(
                 &mut self.module,
@@ -763,8 +757,15 @@ impl SimpleBackend {
         } else {
             None
         };
-        // Per-block cache for the flag pointer Value (stateful functions only).
-        let mut exc_flag_ptr_block_cache: BTreeMap<Block, Value> = BTreeMap::new();
+        let exc_flag_ptr_slot = if exc_flag_ptr_fn.is_some() {
+            Some(builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                3,
+            )))
+        } else {
+            None
+        };
         let local_profile_struct = has_store.then(|| {
             import_func_ref(
                 &mut self.module,
@@ -860,13 +861,13 @@ impl SimpleBackend {
             builder.inst_results(call)[0]
         });
 
-        // Fetch the exception flag pointer in the entry block and store it
-        // in a Cranelift Variable.  The SSA system propagates the definition
-        // across all blocks automatically (including stateful/poll functions).
-        if let (Some(var), Some(fn_ref)) = (exc_flag_ptr_var, exc_flag_ptr_fn) {
+        // Fetch the exception flag pointer once in the entry block and keep
+        // it in a stack slot so later check_exception sites can load it
+        // without re-entering Cranelift SSA variable repair.
+        if let (Some(slot), Some(fn_ref)) = (exc_flag_ptr_slot, exc_flag_ptr_fn) {
             let call = builder.ins().call(fn_ref, &[]);
             let ptr_val = builder.inst_results(call)[0];
-            builder.def_var(var, ptr_val);
+            builder.ins().stack_store(ptr_val, slot, 0);
         }
 
         // Initialize most variables to None (0x7ffb...) in the entry block.
@@ -3364,11 +3365,43 @@ impl SimpleBackend {
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.fast_float.unwrap_or(false) {
-                        // Both operands known to be f64 — direct float division.
+                        // Both operands known to be f64.  CPython raises
+                        // ZeroDivisionError for float division by zero, so
+                        // we must check before using fdiv (which produces
+                        // IEEE infinity/NaN instead of an exception).
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
+                        let zero_f = builder.ins().f64const(0.0);
+                        let is_zero = builder.ins().fcmp(FloatCC::Equal, rhs_f, zero_f);
+                        let ok_block = builder.create_block();
+                        let zero_block = builder.create_block();
+                        builder.set_cold_block(zero_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder.ins().brif(is_zero, zero_block, &[], ok_block, &[]);
+                        // Zero divisor → call runtime for ZeroDivisionError.
+                        builder.switch_to_block(zero_block);
+                        builder.seal_block(zero_block);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_div",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        // Non-zero → fast fdiv.
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
                         let result_f = builder.ins().fdiv(lhs_f, rhs_f);
-                        box_float_value(&mut builder, result_f, &nbc)
+                        let fast_res = box_float_value(&mut builder, result_f, &nbc);
+                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                        builder.block_params(merge_block)[0]
                     } else if op.fast_int.unwrap_or(false) {
                         // Python true division: int / int always returns float.
                         // Convert to f64 and do fdiv.
@@ -12471,33 +12504,11 @@ impl SimpleBackend {
                     // block and the byte load is ~1 cycle vs ~15-40 cycles for the
                     // function call.
                     //
-                    // The flag pointer lives in a Cranelift Variable (SSA
-                    // propagates it across all blocks automatically, including
-                    // stateful/poll functions).  The per-block cache is a
-                    // fallback for any edge case where the Variable is unavailable.
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
-                    // Resolve the flag pointer for this check_exception site.
-                    let flag_ptr_val: Option<Value> = if let Some(var) = exc_flag_ptr_var {
-                        // Non-stateful path: use the Cranelift Variable.
-                        Some(builder.use_var(var))
-                    } else if let Some(fn_ref) = exc_flag_ptr_fn {
-                        // Stateful path: fetch pointer once per block, cache it.
-                        let current_block = builder.current_block().unwrap();
-                        let ptr =
-                            if let Some(&cached) = exc_flag_ptr_block_cache.get(&current_block) {
-                                cached
-                            } else {
-                                let call = builder.ins().call(fn_ref, &[]);
-                                let ptr = builder.inst_results(call)[0];
-                                exc_flag_ptr_block_cache.insert(current_block, ptr);
-                                ptr
-                            };
-                        Some(ptr)
-                    } else {
-                        None
-                    };
+                    let flag_ptr_val: Option<Value> =
+                        exc_flag_ptr_slot.map(|slot| builder.ins().stack_load(types::I64, slot, 0));
                     if let Some(flag_ptr) = flag_ptr_val {
                         // Fast path: inline byte load from flag address
                         let pending_byte =
