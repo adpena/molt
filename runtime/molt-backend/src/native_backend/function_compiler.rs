@@ -11382,9 +11382,7 @@ impl SimpleBackend {
                             func_ir.name, op_idx, op.args
                         )
                     });
-                    // Load attr name from stack slot if this is a const_str,
-                    // bypassing the SSA variable which can be corrupted to None
-                    // by loop phi merging at check_exception boundaries.
+                    // Load attr name from stack slot if this is a const_str.
                     let attr_val = if let Some(&slot) = const_str_slot_by_name.get(&args[1]) {
                         builder.ins().stack_load(types::I64, slot, 0)
                     } else {
