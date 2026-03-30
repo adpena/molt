@@ -217,6 +217,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::Copy
                 | OpCode::GetIter
                 | OpCode::IterNext
+                | OpCode::IterNextUnboxed
                 | OpCode::ForIter
                 | OpCode::CheckException
                 | OpCode::Deopt
