@@ -13235,14 +13235,17 @@ impl SimpleBackend {
                     if both_filled {
                         is_block_filled = true;
                     } else if reachable_blocks.contains(&frame.merge_block) {
-                        // Do not seal the merge block here. Subsequent ops in the
-                        // merge block may still `use_var` values defined in predecessor
-                        // blocks (for example the exception-pending flag consumed by a
-                        // following `check_exception`). If we seal before those SSA
-                        // uses are established, Cranelift compensates by synthesizing
-                        // zero-valued predecessor trampolines, which drops live values
-                        // such as exception payloads on one edge.
                         ensure_block_in_layout(&mut builder, frame.merge_block);
+                        // Structured `if` predecessor discovery is complete at
+                        // `end_if`: all live edges into the merge block have
+                        // either been emitted or proven terminal. Seal the
+                        // merge block now so later `use_var` in the merge
+                        // block computes SSA values from the real predecessor
+                        // set instead of synthesizing placeholder zero-valued
+                        // predecessors for edges that will never exist.
+                        if sealed_blocks.insert(frame.merge_block) {
+                            builder.seal_block(frame.merge_block);
+                        }
                         switch_to_block_tracking(
                             &mut builder,
                             frame.merge_block,
