@@ -68,10 +68,12 @@ lean_lib MoltPython where
   srcDir := "."
   roots := #[`MoltPython.Syntax, `MoltPython.Values, `MoltPython.Env,
              `MoltPython.Semantics.EvalExpr, `MoltPython.Semantics.Determinism,
+             `MoltPython.Semantics.FuelMono,
              `MoltPython.Properties.TypeSafety]
 
 lean_lib MoltLowering where
   srcDir := "."
   roots := #[`MoltLowering.ASTtoTIR, `MoltLowering.Properties,
              `MoltLowering.EnvCorr,
+             `MoltLowering.LowerExprInv,
              `MoltLowering.Correct]
