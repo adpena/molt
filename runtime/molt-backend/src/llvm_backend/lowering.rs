@@ -590,9 +590,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // ── Arithmetic (type-specialized) ──
-            OpCode::Add => self.emit_binary_arith(op, "add"),
-            OpCode::Sub => self.emit_binary_arith(op, "sub"),
-            OpCode::Mul => self.emit_binary_arith(op, "mul"),
+            OpCode::Add | OpCode::InplaceAdd => self.emit_binary_arith(op, "add"),
+            OpCode::Sub | OpCode::InplaceSub => self.emit_binary_arith(op, "sub"),
+            OpCode::Mul | OpCode::InplaceMul => self.emit_binary_arith(op, "mul"),
             OpCode::Div => self.emit_binary_arith(op, "div"),
             OpCode::FloorDiv => self.emit_binary_arith(op, "floordiv"),
             OpCode::Mod => self.emit_binary_arith(op, "mod"),
@@ -1957,7 +1957,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // generator state boundaries.  Both are structural markers consumed
             // by the TIR passes (SCCP, escape analysis, DCE) but do not produce
             // LLVM IR — the actual exception dispatch is in CheckException above.
-            OpCode::TryStart | OpCode::TryEnd | OpCode::StateBlockStart | OpCode::StateBlockEnd => {
+            OpCode::TryStart | OpCode::TryEnd | OpCode::StateBlockStart | OpCode::StateBlockEnd | OpCode::IterNextUnboxed => {
             }
         }
     }
