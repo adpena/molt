@@ -1991,14 +1991,7 @@ fn compute_function_has_ret(functions: &[FunctionIR]) -> BTreeMap<String, bool> 
     functions
         .iter()
         .map(|func| {
-            // A function returns a value if it contains `ret` OR `ret_void`.
-            // Both produce a return instruction in the native backend — `ret`
-            // returns the specified value, `ret_void` returns None (box_none).
-            // The ABI must always include a return slot because callers may
-            // use the result (e.g., module chunk calls that check completion).
-            let has_ret = func.ops.iter().any(|op| {
-                matches!(op.kind.as_str(), "ret" | "ret_void")
-            });
+            let has_ret = func.ops.iter().any(|op| op.kind == "ret");
             (func.name.clone(), has_ret)
         })
         .collect()
@@ -4236,6 +4229,54 @@ mod tests {
                         },
                         OpIR {
                             kind: "ret_void".to_string(),
+                            ..OpIR::default()
+                        },
+                    ],
+                    param_types: None,
+                },
+            ],
+            profile: None,
+        };
+
+        let bytes = SimpleBackend::new().compile(ir);
+
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn guarded_void_function_object_compiles_without_result_panic() {
+        let ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "void_helper".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                },
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![
+                        OpIR {
+                            kind: "func_new".to_string(),
+                            s_value: Some("void_helper".to_string()),
+                            value: Some(0),
+                            out: Some("void_fn".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "call_guarded".to_string(),
+                            s_value: Some("void_helper".to_string()),
+                            args: Some(vec!["void_fn".to_string()]),
+                            out: Some("result".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".to_string(),
+                            var: Some("result".to_string()),
                             ..OpIR::default()
                         },
                     ],

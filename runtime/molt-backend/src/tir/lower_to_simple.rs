@@ -994,12 +994,22 @@ fn emit_terminator(
                 // itself must not jump to it or re-enter above loop setup.
                 emit_block_arg_stores(*target, args, block_param_vars, out);
             } else {
+                // If the block ends with a check_exception op, the native
+                // backend handles the fallthrough implicitly — suppress the
+                // jump so the next block's ops follow sequentially.  This
+                // prevents TIR block boundaries from fragmenting loop bodies
+                // with spurious jump/label pairs.
+                let last_op_is_check_exception = block.ops.last()
+                    .map(|op| op.opcode == OpCode::CheckException)
+                    .unwrap_or(false);
                 emit_block_arg_stores(*target, args, block_param_vars, out);
-                out.push(OpIR {
-                    kind: "jump".to_string(),
-                    value: Some(block_label_id(target)),
-                    ..OpIR::default()
-                });
+                if !last_op_is_check_exception {
+                    out.push(OpIR {
+                        kind: "jump".to_string(),
+                        value: Some(block_label_id(target)),
+                        ..OpIR::default()
+                    });
+                }
             }
         }
 
