@@ -161,8 +161,12 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             }
         }
 
-        // Emit terminator.
-        emit_terminator(block, &block_param_vars, &block_label_id, &mut out);
+        // Emit terminator — pass original_has_ret so the roundtrip preserves
+        // the function's return type (ret vs ret_void).
+        let original_has_ret = func.attrs.get("_original_has_ret")
+            .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
+            .unwrap_or(false);
+        emit_terminator(block, &block_param_vars, &block_label_id, &mut out, original_has_ret);
     }
 
     VALUE_NAME_OVERRIDES.with(|overrides| overrides.borrow_mut().clear());
