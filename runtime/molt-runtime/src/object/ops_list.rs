@@ -349,10 +349,18 @@ pub extern "C" fn molt_list_init_method(list_bits: u64, iterable_bits: u64) -> u
         };
         unsafe {
             let tid = object_type_id(list_ptr);
-            // Accept exact list AND subclasses of list (TYPE_ID_OBJECT
-            // instances whose class inherits from list).
-            if tid != TYPE_ID_LIST && tid != crate::object::TYPE_ID_OBJECT {
-                return raise_exception::<_>(_py, "TypeError", "list.__init__ expects list");
+            if tid != TYPE_ID_LIST {
+                // For TYPE_ID_OBJECT (user-defined subclasses), verify
+                // the class actually inherits from list via MRO check.
+                if tid == crate::object::TYPE_ID_OBJECT {
+                    let val_type = crate::builtins::type_ops::type_of_bits(_py, list_bits);
+                    let list_type = crate::builtins::classes::builtin_classes(_py).list;
+                    if !crate::builtins::type_ops::issubclass_bits(val_type, list_type) {
+                        return raise_exception::<_>(_py, "TypeError", "list.__init__ expects list");
+                    }
+                } else {
+                    return raise_exception::<_>(_py, "TypeError", "list.__init__ expects list");
+                }
             }
         }
         let _ = molt_list_clear(list_bits);

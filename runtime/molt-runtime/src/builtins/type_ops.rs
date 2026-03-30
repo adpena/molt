@@ -483,6 +483,11 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
                 if issubclass_bits(val_type, class_bits) {
                     return true;
                 }
+                // issubclass fast-path returned false.  Molt does not
+                // support custom metaclasses with __instancecheck__, so
+                // return false immediately — consistent with the tuple
+                // path below.
+                return false;
             } else if class_tid == TYPE_ID_TUPLE {
                 let items = unsafe { seq_vec_ref(class_ptr) };
                 let val_type = type_of_bits(_py, val_bits);

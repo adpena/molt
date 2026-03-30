@@ -816,9 +816,10 @@ def _init_metadata():
     """Initialize version/platform metadata as module globals."""
     global _SYS_FLAGS_GIL
     g = globals()
-    version_text = "3.12.0 (molt)"
-    version_values = (3, 12, 0, "final", 0)
-    hexversion_value = 0x030C00F0
+    # Use runtime intrinsics when available; fall back to compile-time defaults.
+    version_text = _MOLT_SYS_VERSION() or "3.12.0 (molt)"
+    version_values = _MOLT_SYS_VERSION_INFO() or (3, 12, 0, "final", 0)
+    hexversion_value = _MOLT_SYS_HEXVERSION() or 0x030C00F0
     api_version_value = 0
     abiflags_value = ""
     implementation_value = _ImplementationNamespace(

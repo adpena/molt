@@ -372,15 +372,6 @@ theorem lowered_eval_deterministic
 -- Backward operator correspondence
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- Helper: lowerValue reduces on concrete constructors (needed because
--- PyValue is a nested inductive and lowerValue can't be unfolded in proofs)
-private theorem lowerValue_strVal (s : String) :
-    lowerValue (.strVal s) = some (.str s) := rfl
-private theorem lowerValue_intVal (n : Int) :
-    lowerValue (.intVal n) = some (.int n) := rfl
-private theorem lowerValue_boolVal (b : Bool) :
-    lowerValue (.boolVal b) = some (.bool b) := rfl
-
 set_option maxHeartbeats 3200000 in
 private theorem evalBinOp_back (op : MoltPython.BinOp) (pvl pvr : MoltPython.PyValue)
     (tva tvb tv : MoltTIR.Value)
@@ -399,9 +390,13 @@ private theorem evalBinOp_back (op : MoltPython.BinOp) (pvl pvr : MoltPython.PyV
        <;> (intro h; omega))
     | (-- String repetition: split the if in htir, then match Python side
        split at htir <;> simp only [Option.some.injEq] at htir <;> subst htir
-       <;> first
-          | exact ⟨_, rfl, by simp [lowerValue]⟩
-          | sorry))
+       · -- n ≤ 0
+         change ∃ pv, _ = some pv ∧ lowerValue pv = _; simp_all
+       · -- ¬n ≤ 0
+         change ∃ pv, _ = some pv ∧ lowerValue pv = _
+         split
+         · omega
+         · exact ⟨_, rfl, by rfl⟩))
 
 private theorem evalUnaryOp_back (op : MoltPython.UnaryOp) (pv : MoltPython.PyValue)
     (tva tv : MoltTIR.Value)
@@ -415,7 +410,7 @@ private theorem evalUnaryOp_back (op : MoltPython.UnaryOp) (pv : MoltPython.PyVa
     | (subst htir; simp [lowerValue]; done)
     | (simp_all [lowerValue]; done)
     | (-- Truthiness: not on non-bool values
-       subst htir; exact ⟨_, rfl, by simp [lowerValue]⟩))
+       subst htir; exact ⟨_, MoltPython.evalUnaryOp_not _, lowerValue_boolVal _⟩))
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Backward direction (for completeness characterization)
