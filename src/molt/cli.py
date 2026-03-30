@@ -15886,6 +15886,9 @@ def _execute_backend_compile(
                     backend_env.setdefault("MOLT_STDLIB_OBJ", str(stdlib_obj_path))
             if not is_wasm and not _is_transpile and backend_env is not None:
                 backend_env.setdefault(ENTRY_OVERRIDE_ENV, entry_module)
+                # Limit rayon threads to prevent process explosion when
+                # multiple backend invocations run concurrently.
+                backend_env.setdefault("RAYON_NUM_THREADS", "4")
             cmd = [str(backend_bin)]
             if is_luau_transpile:
                 cmd.extend(["--target", "luau"])
