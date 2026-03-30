@@ -26,6 +26,56 @@ pub struct VerifyError {
     pub message: String,
 }
 
+#[derive(Debug, Default)]
+struct DominatorInfo {
+    preorder: HashMap<BlockId, usize>,
+    postorder: HashMap<BlockId, usize>,
+}
+
+impl DominatorInfo {
+    fn dominates(&self, a: BlockId, b: BlockId) -> bool {
+        if a == b {
+            return true;
+        }
+
+        match (
+            self.preorder.get(&a),
+            self.preorder.get(&b),
+            self.postorder.get(&a),
+            self.postorder.get(&b),
+        ) {
+            (Some(&a_pre), Some(&b_pre), Some(&a_post), Some(&b_post)) => {
+                a_pre <= b_pre && b_post <= a_post
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+fn dominates(idom: &HashMap<BlockId, Option<BlockId>>, a: BlockId, b: BlockId) -> bool {
+    if a == b {
+        return true;
+    }
+
+    let mut cur = b;
+    let mut seen: HashSet<BlockId> = HashSet::new();
+    loop {
+        if !seen.insert(cur) {
+            return false;
+        }
+        match idom.get(&cur).and_then(|x| *x) {
+            Some(parent) => {
+                if parent == a {
+                    return true;
+                }
+                cur = parent;
+            }
+            None => return false,
+        }
+    }
+}
+
 impl VerifyError {
     fn func(msg: impl Into<String>) -> Self {
         Self {
@@ -421,7 +471,7 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 
 fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
     // Compute block ordering (BFS from entry) and build dominator tree.
-    let dom = compute_dominators(func);
+    let dom = compute_dominator_tree(func);
 
     // Build a map: ValueId → BlockId where it is defined.
     let mut def_block: HashMap<ValueId, BlockId> = HashMap::new();
@@ -472,7 +522,7 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         // def_idx_opt == None means it's a block arg, always dominates.
                     } else {
                         // Different block: def_bid must dominate bid.
-                        if !dominates(&dom, def_bid, bid) {
+                        if !dom.dominates(def_bid, bid) {
                             let msg = format!(
                                 "{} defined in ^{} does not dominate use in ^{}",
                                 used, def_bid, bid
@@ -541,11 +591,11 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 }
 
 // ---------------------------------------------------------------------------
-// Dominator helpers (simple BFS-based for correctness over performance)
+// Dominator helpers
 // ---------------------------------------------------------------------------
 
-/// Compute immediate dominator for each block, returning a map
-/// `BlockId → Option<BlockId>` (None = entry block / no idom).
+/// Compute immediate dominator for each reachable block, returning a map
+/// `BlockId -> Option<BlockId>` (None = entry block / no idom).
 fn compute_dominators(func: &TirFunction) -> HashMap<BlockId, Option<BlockId>> {
     if func.blocks.is_empty() {
         return HashMap::new();
@@ -601,6 +651,60 @@ fn compute_dominators(func: &TirFunction) -> HashMap<BlockId, Option<BlockId>> {
     idom
 }
 
+/// Compute dominator-tree metadata for reachable blocks.
+fn compute_dominator_tree(func: &TirFunction) -> DominatorInfo {
+    let idom = compute_dominators(func);
+    if idom.is_empty() {
+        return DominatorInfo::default();
+    }
+
+    let mut children: HashMap<BlockId, Vec<BlockId>> = HashMap::with_capacity(idom.len());
+    for &block in idom.keys() {
+        children.entry(block).or_default();
+    }
+    for (&block, parent) in &idom {
+        if let Some(parent) = *parent {
+            children.entry(parent).or_default().push(block);
+        }
+    }
+
+    // Iterative DFS to assign preorder/postorder intervals for O(1) dominates checks.
+    let mut preorder: HashMap<BlockId, usize> = HashMap::with_capacity(idom.len());
+    let mut postorder: HashMap<BlockId, usize> = HashMap::with_capacity(idom.len());
+    let mut tick = 0usize;
+    let entry = func.entry_block;
+
+    if idom.contains_key(&entry) {
+        preorder.insert(entry, tick);
+        tick += 1;
+        let mut stack: Vec<(BlockId, usize)> = vec![(entry, 0)];
+        while let Some((node, child_idx)) = stack.last_mut() {
+            let next_child = children
+                .get(node)
+                .and_then(|child_list| child_list.get(*child_idx))
+                .copied();
+            if let Some(child) = next_child {
+                *child_idx += 1;
+                if preorder.contains_key(&child) {
+                    continue;
+                }
+                preorder.insert(child, tick);
+                tick += 1;
+                stack.push((child, 0));
+            } else {
+                postorder.insert(*node, tick);
+                tick += 1;
+                stack.pop();
+            }
+        }
+    }
+
+    DominatorInfo {
+        preorder,
+        postorder,
+    }
+}
+
 fn intersect_dom(
     idom: &HashMap<BlockId, Option<BlockId>>,
     rpo: &HashMap<BlockId, usize>,
@@ -637,30 +741,6 @@ fn intersect_dom(
         }
     }
     a
-}
-
-/// Returns true if `a` dominates `b` in the dominator tree.
-fn dominates(idom: &HashMap<BlockId, Option<BlockId>>, a: BlockId, b: BlockId) -> bool {
-    if a == b {
-        return true;
-    }
-    let mut cur = b;
-    let mut seen: HashSet<BlockId> = HashSet::new();
-    loop {
-        if !seen.insert(cur) {
-            // Cycle guard.
-            return false;
-        }
-        match idom.get(&cur).and_then(|x| *x) {
-            Some(parent) => {
-                if parent == a {
-                    return true;
-                }
-                cur = parent;
-            }
-            None => return false,
-        }
-    }
 }
 
 /// BFS from entry block, returning blocks in BFS (roughly RPO) order.
@@ -963,5 +1043,157 @@ mod tests {
             "multi-block branch function should pass: {:?}",
             verify_function(&func).err()
         );
+    }
+
+    #[test]
+    fn dominator_metadata_handles_reachable_and_unreachable_blocks() {
+        let mut func = TirFunction::new(
+            "dom_meta".into(),
+            vec![TirType::Bool, TirType::I64],
+            TirType::I64,
+        );
+        let bb_then = func.fresh_block();
+        let bb_else = func.fresh_block();
+        let bb_join = func.fresh_block();
+        let bb_dead = func.fresh_block();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.terminator = Terminator::CondBranch {
+            cond: ValueId(0),
+            then_block: bb_then,
+            then_args: vec![],
+            else_block: bb_else,
+            else_args: vec![],
+        };
+
+        func.blocks.insert(
+            bb_then,
+            TirBlock {
+                id: bb_then,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: bb_join,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            bb_else,
+            TirBlock {
+                id: bb_else,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: bb_join,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            bb_join,
+            TirBlock {
+                id: bb_join,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![ValueId(1)],
+                },
+            },
+        );
+        func.blocks.insert(
+            bb_dead,
+            TirBlock {
+                id: bb_dead,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Unreachable,
+            },
+        );
+
+        let dom_tree = compute_dominator_tree(&func);
+        assert!(dom_tree.dominates(func.entry_block, bb_then));
+        assert!(dom_tree.dominates(func.entry_block, bb_else));
+        assert!(dom_tree.dominates(func.entry_block, bb_join));
+        assert!(!dom_tree.dominates(bb_then, bb_join));
+        assert!(!dom_tree.dominates(bb_else, bb_join));
+        assert!(dom_tree.dominates(bb_dead, bb_dead));
+        assert!(!dom_tree.dominates(func.entry_block, bb_dead));
+    }
+
+    #[test]
+    fn dominator_metadata_matches_idom_chain_reference() {
+        let mut func = TirFunction::new("dom_ref".into(), vec![TirType::Bool], TirType::None);
+        let entry = func.entry_block;
+
+        let mut blocks = Vec::new();
+        for _ in 0..12 {
+            blocks.push(func.fresh_block());
+        }
+        let unreachable = func.fresh_block();
+
+        let entry_block = func.blocks.get_mut(&entry).unwrap();
+        entry_block.terminator = Terminator::CondBranch {
+            cond: ValueId(0),
+            then_block: blocks[0],
+            then_args: vec![],
+            else_block: blocks[1],
+            else_args: vec![],
+        };
+
+        for (idx, bid) in blocks.iter().enumerate() {
+            let terminator = if idx == blocks.len() - 1 {
+                Terminator::Return { values: vec![] }
+            } else if idx % 3 == 0 {
+                Terminator::CondBranch {
+                    cond: ValueId(0),
+                    then_block: blocks[idx + 1],
+                    then_args: vec![],
+                    else_block: blocks[(idx + 2).min(blocks.len() - 1)],
+                    else_args: vec![],
+                }
+            } else {
+                Terminator::Branch {
+                    target: blocks[idx + 1],
+                    args: vec![],
+                }
+            };
+            func.blocks.insert(
+                *bid,
+                TirBlock {
+                    id: *bid,
+                    args: vec![],
+                    ops: vec![],
+                    terminator,
+                },
+            );
+        }
+        func.blocks.insert(
+            unreachable,
+            TirBlock {
+                id: unreachable,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Unreachable,
+            },
+        );
+
+        let dom_tree = compute_dominator_tree(&func);
+        let idom = compute_dominators(&func);
+        let mut all_blocks = vec![entry];
+        all_blocks.extend(blocks.iter().copied());
+        all_blocks.push(unreachable);
+
+        for &a in &all_blocks {
+            for &b in &all_blocks {
+                assert_eq!(
+                    dom_tree.dominates(a, b),
+                    dominates(&idom, a, b),
+                    "dominance mismatch: {} -> {}",
+                    a,
+                    b
+                );
+            }
+        }
     }
 }
