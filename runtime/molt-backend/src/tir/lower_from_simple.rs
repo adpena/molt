@@ -3,6 +3,7 @@
 //! Chains together CFG extraction, SSA conversion, and TIR function assembly
 //! into a single `lower_to_tir` entry point.
 
+use std::any::Any;
 use std::collections::HashMap;
 
 use crate::ir::FunctionIR;
@@ -26,10 +27,29 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     let cfg = CFG::build(&ir.ops);
 
     // 2. Convert to SSA with block arguments (pass params for implicit entry defs).
-    let ssa = convert_to_ssa_with_params(&cfg, &ir.ops, &ir.params);
+    let ssa = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        convert_to_ssa_with_params(&cfg, &ir.ops, &ir.params)
+    }))
+    .unwrap_or_else(|payload| {
+        panic!(
+            "SSA conversion failed for '{}': {}",
+            ir.name,
+            panic_payload_message(payload.as_ref())
+        )
+    });
 
     // 3. Assemble the TirFunction from the SSA output.
     assemble_function(ir, &cfg, ssa)
+}
+
+fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(msg) = payload.downcast_ref::<String>() {
+        return msg.clone();
+    }
+    if let Some(msg) = payload.downcast_ref::<&'static str>() {
+        return (*msg).to_string();
+    }
+    "non-string panic payload".to_string()
 }
 
 /// Assemble a `TirFunction` from a `FunctionIR`, its `CFG`, and the `SsaOutput`.
