@@ -110,6 +110,8 @@ fn clone_function(func: &TirFunction, new_name: String) -> TirFunction {
         has_exception_handling: func.has_exception_handling,
         label_id_map: func.label_id_map.clone(),
         loop_roles: func.loop_roles.clone(),
+        loop_pairs: func.loop_pairs.clone(),
+        loop_break_kinds: func.loop_break_kinds.clone(),
     }
 }
 

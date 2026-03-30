@@ -18,6 +18,13 @@ pub enum LoopRole {
     LoopEnd,
 }
 
+/// Preserved polarity of the original structured loop exit op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopBreakKind {
+    BreakIfTrue,
+    BreakIfFalse,
+}
+
 /// A basic block in SSA form with block arguments (MLIR-style, no phi nodes).
 #[derive(Debug, Clone)]
 pub struct TirBlock {
