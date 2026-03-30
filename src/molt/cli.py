@@ -13358,9 +13358,21 @@ def _stdlib_object_cache_path(
     cache_path: Path | None,
     cache_key: str | None,
 ) -> Path | None:
-    if cache_path is None or not cache_key:
+    """Return a SHARED stdlib cache path.
+
+    The stdlib .o is shared across ALL programs — stdlib functions are
+    identical regardless of user code.  The backend invalidates the cache
+    automatically when the backend binary changes (different compilation
+    produces different object code).
+
+    Using a fixed name ensures that building `import math` creates a
+    stdlib cache that `import json` or `import click` can reuse instantly.
+    """
+    if cache_path is None:
         return None
-    return cache_path.parent / f"{cache_key}.stdlib.o"
+    cache_root = _default_molt_cache()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    return cache_root / "stdlib_shared.o"
 
 
 def _attach_build_metadata(
@@ -14190,7 +14202,22 @@ def _emit_native_link_result(
             )
             _emit_json(payload, json_output)
         else:
+            link_stderr = _subprocess_output_text(link_process.stderr) or ""
             print("Linking failed", file=sys.stderr)
+            # If linking failed due to undefined symbols AND a shared stdlib
+            # cache exists, delete it — the cache may be incomplete (built
+            # with fewer imports than the current program needs).
+            if "undefined symbol" in link_stderr:
+                stdlib_cache = _default_molt_cache() / "stdlib_shared.o"
+                if stdlib_cache.exists():
+                    try:
+                        stdlib_cache.unlink()
+                        print(
+                            "  Deleted incomplete stdlib cache — retry will rebuild it.",
+                            file=sys.stderr,
+                        )
+                    except OSError:
+                        pass
     _emit_build_diagnostics_if_present(
         diagnostics_payload=diagnostics_payload,
         diagnostics_path=diagnostics_path,
