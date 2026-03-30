@@ -11179,6 +11179,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         """
         comp = node.generators[0]
         target_name = comp.target.id  # type: ignore[union-attr]
+        # Collect walrus (:=) targets in the element expression and
+        # filters. These must leak to the enclosing scope per PEP 572.
+        walrus_names: set[str] = set()
+        walrus_names |= self._collect_namedexpr_names(node.elt)
+        for if_node in comp.ifs:
+            walrus_names |= self._collect_namedexpr_names(if_node)
+        # Box walrus targets so their values survive the loop boundary.
+        # The boxed cell lives on the heap, so store_index inside the
+        # loop persists and index after the loop reads the final value.
+        for wname in walrus_names:
+            if wname not in self.boxed_locals:
+                self._box_local(wname)
         iterable_val = self.visit(comp.iter)
         iter_obj = self._emit_iter_new(iterable_val)
         res = MoltValue(self.next_var(), type_hint="list")
@@ -11267,6 +11279,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
+        # Sync walrus (:=) targets to the enclosing scope.  The boxed
+        # cell was updated inside the loop; read the final value and
+        # store it as the local (and module attr at module scope) so
+        # subsequent code sees the walrus assignment.
+        for wname in walrus_names:
+            wcell = self._load_boxed_cell(wname)
+            if wcell is not None:
+                _widx = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[0], result=_widx))
+                wval = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(MoltOp(kind="INDEX", args=[wcell, _widx], result=wval))
+                self.locals[wname] = wval
+                if (
+                    self.current_func_name == "molt_main"
+                    and hasattr(self, "module_obj")
+                    and self.module_obj is not None
+                ):
+                    self._emit_module_attr_set_on(self.module_obj, wname, wval)
         return res
 
     def visit_ListComp(self, node: ast.ListComp) -> Any:
