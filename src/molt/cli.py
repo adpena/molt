@@ -10917,14 +10917,15 @@ def _native_stdlib_obj_path(
     profile: BuildProfile,
     target_triple: str | None,
 ) -> Path:
+    # Use a SHARED stdlib cache path keyed only on profile + target.
+    # This allows ALL programs to reuse the same compiled stdlib — the
+    # backend automatically invalidates when the backend binary or IR
+    # changes.  Previously, the path included output_artifact which made
+    # the cache per-program (defeating the purpose of caching).
     target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
-    return _artifact_state_path(
-        project_root,
-        output_artifact,
-        subdir="stdlib_objects",
-        stem_suffix=f"{profile}.{target}",
-        extension="o",
-    )
+    cache_root = _default_molt_cache()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    return cache_root / f"stdlib.{profile}.{target}.o"
 
 
 def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
