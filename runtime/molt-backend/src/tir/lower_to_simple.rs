@@ -570,6 +570,19 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // Iteration.
         OpCode::GetIter => Some(unary_op("get_iter", op, out_var)),
         OpCode::IterNext => Some(unary_op("iter_next", op, out_var)),
+        OpCode::IterNextUnboxed => {
+            // Emit as iter_next_unboxed with two output vars:
+            // results[0] = value, results[1] = done_flag.
+            let val_var = op.results.first().map(|v| value_var(*v));
+            let done_var = op.results.get(1).map(|v| value_var(*v));
+            Some(OpIR {
+                kind: "iter_next_unboxed".to_string(),
+                args: Some(operand_args(op)),
+                out: done_var,
+                var: val_var,
+                ..OpIR::default()
+            })
+        }
         OpCode::ForIter => Some(OpIR {
             kind: "for_iter".to_string(),
             args: Some(operand_args(op)),
@@ -680,6 +693,9 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
 
         // SCF ops — handled separately via terminators in Phase 2.
         OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield => None,
+
+        // Unboxed iterator next — lowered to for_iter_next in the SimpleIR layer.
+        OpCode::IterNextUnboxed => None,
 
         // Deopt — emit a hint but not critical.
         OpCode::Deopt => Some(OpIR {

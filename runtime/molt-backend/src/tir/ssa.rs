@@ -472,8 +472,107 @@ impl<'a> SsaContext<'a> {
                 });
             }
             let op_indices = self.block_info[bid].op_indices.clone();
-            for &op_idx in &op_indices {
+            // Track which op indices to skip (fused into IterNextUnboxed).
+            let mut skip_indices: HashSet<usize> = HashSet::new();
+
+            // Pre-scan for iter_next → index(pair,1) → index(pair,0) patterns.
+            // Collect (iter_next_idx, done_index_idx, val_index_idx, pair_var, done_var, val_var).
+            let mut fuse_map: HashMap<usize, (usize, usize, String, String)> = HashMap::new();
+            for (pos, &op_idx) in op_indices.iter().enumerate() {
                 let op = &self.ops[op_idx];
+                if op.kind != "iter_next" { continue; }
+                let pair_var = match &op.out {
+                    Some(v) if v != "none" => v.clone(),
+                    _ => continue,
+                };
+                // Scan ahead for index(pair, 1) and index(pair, 0).
+                let mut done_idx = None;
+                let mut val_idx = None;
+                let scan_end = (pos + 10).min(op_indices.len());
+                for scan_pos in (pos + 1)..scan_end {
+                    let scan_op = &self.ops[op_indices[scan_pos]];
+                    if scan_op.kind == "index" {
+                        if let Some(args) = &scan_op.args {
+                            if args.len() >= 2 && args[0] == pair_var {
+                                // Resolve the index constant.
+                                let idx_name = &args[1];
+                                let const_val = op_indices[..scan_pos].iter().rev()
+                                    .find_map(|&ci| {
+                                        let c = &self.ops[ci];
+                                        if c.kind == "const" && c.out.as_deref() == Some(idx_name) {
+                                            c.value
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                if const_val == Some(1) && done_idx.is_none() {
+                                    done_idx = Some(op_indices[scan_pos]);
+                                } else if const_val == Some(0) && val_idx.is_none() {
+                                    val_idx = Some(op_indices[scan_pos]);
+                                }
+                            }
+                        }
+                    }
+                }
+                if let (Some(di), Some(vi)) = (done_idx, val_idx) {
+                    let done_var = self.ops[di].out.clone().unwrap_or_default();
+                    let val_var = self.ops[vi].out.clone().unwrap_or_default();
+                    fuse_map.insert(op_idx, (di, vi, done_var, val_var));
+                    skip_indices.insert(di);
+                    skip_indices.insert(vi);
+                }
+            }
+
+            for &op_idx in &op_indices {
+                if skip_indices.contains(&op_idx) {
+                    continue;
+                }
+                let op = &self.ops[op_idx];
+
+                // Fused iter_next_unboxed: emit a single TIR op with two results
+                // (value, done_flag) instead of iter_next + 2x index.
+                if let Some((_, _, done_var, val_var)) = fuse_map.get(&op_idx) {
+                    let iter_vid = op.args.as_ref()
+                        .and_then(|a| a.first())
+                        .and_then(|a| Self::resolve_var(a, &var_stacks))
+                        .or(self.undef_value)
+                        .expect("iter arg not found");
+                    let val_vid = self.fresh_value_typed();
+                    let done_vid = self.fresh_value_typed();
+                    let mut attrs = AttrDict::new();
+                    attrs.insert("_original_kind".into(), AttrValue::Str("iter_next".into()));
+                    let tir_op = TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::IterNextUnboxed,
+                        operands: vec![iter_vid],
+                        results: vec![val_vid, done_vid],
+                        attrs,
+                        source_span: None,
+                    };
+                    // Push val and done onto their variable stacks.
+                    var_stacks.entry(val_var.clone()).or_default().push(val_vid);
+                    block_pushed.iter_mut().find(|(v,_)| v == val_var)
+                        .map(|(_,c)| *c += 1)
+                        .unwrap_or_else(|| block_pushed.push((val_var.clone(), 1)));
+                    var_stacks.entry(done_var.clone()).or_default().push(done_vid);
+                    block_pushed.iter_mut().find(|(v,_)| v == done_var)
+                        .map(|(_,c)| *c += 1)
+                        .unwrap_or_else(|| block_pushed.push((done_var.clone(), 1)));
+                    // Also push the pair var (referenced by loop_break_if_true).
+                    let pair_var = op.out.clone().unwrap_or_default();
+                    if !pair_var.is_empty() && pair_var != "none" {
+                        var_stacks.entry(pair_var.clone()).or_default().push(done_vid);
+                        block_pushed.iter_mut().find(|(v,_)| v == &pair_var)
+                            .map(|(_,c)| *c += 1)
+                            .unwrap_or_else(|| block_pushed.push((pair_var, 1)));
+                    }
+                    for const_op in self.pending_inline_consts.drain(..) {
+                        tir_blocks[bid].ops.push(const_op);
+                    }
+                    tir_blocks[bid].ops.push(tir_op);
+                    continue;
+                }
+
                 let tir_op = self.translate_op(op, &var_stacks);
 
                 for (idx, var) in self.get_def_vars(op).iter().enumerate() {
@@ -492,7 +591,6 @@ impl<'a> SsaContext<'a> {
                 }
 
                 // Push any inline constant ops generated for this op's args
-                // (e.g., "1" in "n <= 1" becomes a ConstInt op before the Le op)
                 for const_op in self.pending_inline_consts.drain(..) {
                     tir_blocks[bid].ops.push(const_op);
                 }

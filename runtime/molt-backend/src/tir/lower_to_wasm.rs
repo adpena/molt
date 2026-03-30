@@ -598,7 +598,7 @@ fn emit_op(ctx: &mut LowerCtx, op: &super::ops::TirOp) {
         }
 
         // --- Iteration ---
-        OpCode::GetIter | OpCode::IterNext | OpCode::ForIter => {
+        OpCode::GetIter | OpCode::IterNext | OpCode::IterNextUnboxed | OpCode::ForIter => {
             for &operand in &op.operands {
                 ctx.emit_get(operand);
             }
