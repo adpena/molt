@@ -198,7 +198,43 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         header_body_chain.insert(*bid, chain);
     }
 
+    // Build the emission order: RPO but with loop exit blocks deferred
+    // until after their loop region.  Without this, RPO can place the
+    // exit block before the loop body, causing the native backend to
+    // execute after-loop code before the loop body.
+    //
+    // We do NOT modify RPO.  Instead, during emission we skip exit blocks
+    // when encountered in RPO and emit them immediately after loop_end.
+    // This is tracked in `deferred_exits`: header_bid → exit_bid.
+    let mut deferred_exits: HashMap<BlockId, BlockId> = HashMap::new();
+    // Re-scan to build exit map.
     for bid in &rpo {
+        let role = func.loop_roles.get(bid).cloned()
+            .unwrap_or(super::blocks::LoopRole::None);
+        if role != super::blocks::LoopRole::LoopHeader { continue; }
+        let Some(block) = func.blocks.get(bid) else { continue; };
+        let break_kind = func.loop_break_kinds.get(bid).copied()
+            .unwrap_or(LoopBreakKind::BreakIfTrue);
+        match &block.terminator {
+            Terminator::CondBranch { then_block, else_block, .. } => {
+                let exit = match break_kind {
+                    LoopBreakKind::BreakIfTrue => *then_block,
+                    LoopBreakKind::BreakIfFalse => *else_block,
+                };
+                deferred_exits.insert(*bid, exit);
+            }
+            _ => {}
+        }
+    }
+    // Set of exit blocks that should be deferred.
+    let deferred_exit_set: HashSet<BlockId> = deferred_exits.values().copied().collect();
+
+    for bid in &rpo {
+        // Skip deferred exit blocks — they'll be emitted after loop_end.
+        if deferred_exit_set.contains(bid) && !loop_region_blocks.contains(bid) {
+            continue;
+        }
+
         // Skip blocks in loop regions — they're emitted inline within
         // the loop header's loop_start/loop_end region.
         let loop_role = func
@@ -284,12 +320,20 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             // Helper: emit a block's ops inline, mapping block args to predecessor values.
             let emit_block_inline = |blk: &TirBlock, pred_args: &[ValueId], out: &mut Vec<OpIR>| {
                 // Map block arg ValueIds to predecessor branch arg values.
+                // Resolve value_var names BEFORE taking the mutable borrow
+                // to avoid RefCell double-borrow panics.
+                let resolved: Vec<(ValueId, String)> = blk
+                    .args
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, arg)| {
+                        pred_args.get(i).map(|&pred| (arg.id, value_var(pred)))
+                    })
+                    .collect();
                 VALUE_NAME_OVERRIDES.with(|overrides| {
                     let mut map = overrides.borrow_mut();
-                    for (i, arg) in blk.args.iter().enumerate() {
-                        if i < pred_args.len() {
-                            map.insert(arg.id, value_var(pred_args[i]));
-                        }
+                    for (id, name) in &resolved {
+                        map.insert(*id, name.clone());
                     }
                 });
                 for op in &blk.ops {
@@ -421,6 +465,48 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     kind: "loop_end".to_string(),
                     ..OpIR::default()
                 });
+
+                // Emit the deferred exit block immediately after loop_end
+                // so the after-loop code follows the loop body, not precedes it.
+                if let Some(exit_bid) = deferred_exits.get(bid) {
+                    if let Some(exit_block) = func.blocks.get(exit_bid) {
+                        // Emit exit block label.
+                        out.push(OpIR {
+                            kind: "label".to_string(),
+                            value: Some(block_label_id(exit_bid)),
+                            ..OpIR::default()
+                        });
+                        if let Some(param_vars) = block_param_vars.get(exit_bid) {
+                            for (i, var_name) in param_vars.iter().enumerate() {
+                                if i < exit_block.args.len() {
+                                    out.push(OpIR {
+                                        kind: "load_var".to_string(),
+                                        var: Some(var_name.clone()),
+                                        out: Some(value_var(exit_block.args[i].id)),
+                                        ..OpIR::default()
+                                    });
+                                }
+                            }
+                        }
+                        // Emit exit block ops.
+                        emit_block_ops(exit_block, &mut out);
+                        // Emit exit block terminator.
+                        let original_has_ret = func.attrs.get("_original_has_ret")
+                            .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
+                            .unwrap_or(false);
+                        let exit_role = func.loop_roles.get(exit_bid).cloned()
+                            .unwrap_or(super::blocks::LoopRole::None);
+                        emit_terminator(
+                            exit_block,
+                            &block_param_vars,
+                            &block_label_id,
+                            &func.loop_roles,
+                            &mut out,
+                            original_has_ret,
+                            exit_role,
+                        );
+                    }
+                }
             } else {
                 let original_has_ret = func.attrs.get("_original_has_ret")
                     .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
