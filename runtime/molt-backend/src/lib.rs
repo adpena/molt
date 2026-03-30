@@ -2872,8 +2872,7 @@ impl SimpleBackend {
                 for (idx, content_hash, ops) in &results {
                     if !ops.is_empty() {
                         // Dump roundtripped ops for user module chunks.
-                        if ir.functions[*idx].name.contains("tfor")
-                            || ir.functions[*idx].name.contains("test__molt")
+                        if ir.functions[*idx].name.contains("tfor_dump__molt")
                         {
                             let mut dump = format!("// {}\n", ir.functions[*idx].name);
                             for (i, op) in ops.iter().enumerate() {
@@ -4302,5 +4301,117 @@ mod tests {
         let bytes = SimpleBackend::new().compile(ir);
 
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
+        let clif = compile_function_to_clif_text(
+            vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const_bool".to_string(),
+                        value: Some(0),
+                        out: Some("flag".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "if".to_string(),
+                        args: Some(vec!["flag".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "else".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_last".to_string(),
+                        out: Some("exc".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_none".to_string(),
+                        out: Some("nonev".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "is".to_string(),
+                        args: Some(vec!["exc".to_string(), "nonev".to_string()]),
+                        out: Some("is_none".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "not".to_string(),
+                        args: Some(vec!["is_none".to_string()]),
+                        out: Some("has_exc".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "if".to_string(),
+                        args: Some(vec!["has_exc".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_stack_clear".to_string(),
+                        out: Some("none".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "raise".to_string(),
+                        args: Some(vec!["exc".to_string()]),
+                        out: Some("none".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "check_exception".to_string(),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "jump".to_string(),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "end_if".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "check_exception".to_string(),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "end_if".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "label".to_string(),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+            }],
+            "molt_main",
+        );
+
+        let suspicious: Vec<&str> = clif
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("jump block") && line.contains(" = 0"))
+            .collect();
+
+        assert!(
+            suspicious.is_empty(),
+            "nested exception raise CFG synthesized zero-valued predecessors:\n{}\n\nCLIF:\n{}",
+            suspicious.join("\n"),
+            clif
+        );
     }
 }
