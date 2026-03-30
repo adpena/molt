@@ -36,11 +36,10 @@ use super::types::cell_class;
 use crate::builtins::numbers::index_i64_with_overflow;
 use crate::builtins::platform::env_state_get;
 use crate::{
-    TYPE_ID_BOUND_METHOD, TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_LIST,
+    TYPE_ID_BOUND_METHOD, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_LIST,
     TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_bytes,
     alloc_code_obj, alloc_dict_with_pairs, alloc_function_obj, alloc_list_with_capacity,
-    alloc_string, alloc_tuple, attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes,
-    bytes_like_slice, call_callable1, call_callable2, dec_ref_bits, dict_get_in_place,
+    alloc_string, alloc_tuple, attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes, call_callable1, call_callable2, dec_ref_bits, dict_get_in_place,
     ensure_function_code_bits, exception_pending, function_dict_bits, function_set_closure_bits,
     function_set_trampoline_ptr, inc_ref_bits, is_truthy, missing_bits, module_dict_bits,
     molt_getattr_builtin, molt_getitem_method, molt_iter, molt_iter_next, molt_trace_enter_slot,

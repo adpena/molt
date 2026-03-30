@@ -5,14 +5,13 @@ use crate::libc_compat as libc;
 // Re-export path/glob/os functions so that `io::*` includes them
 #[allow(unused_imports)]
 pub use super::io_path::*;
-use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::object::{
     MoltFileBackend, MoltMemoryBackend, MoltTextBackend, NEWLINE_KIND_CR, NEWLINE_KIND_CRLF,
     NEWLINE_KIND_LF,
 };
 use crate::*;
 use num_bigint::{BigInt, Sign};
-use num_traits::{ToPrimitive, Zero};
+use num_traits::Zero;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Read, Seek, Write};

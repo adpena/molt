@@ -51,11 +51,6 @@ pub(crate) fn this_build_rot13_text() -> String {
     THIS_ENCODED.chars().map(this_rot13_char).collect()
 }
 
-const OPCODE_PAYLOAD_312_JSON: &str = include_str!("../intrinsics/data/opcode_payload_312.json");
-const OPCODE_METADATA_PAYLOAD_314_JSON: &str =
-    include_str!("../intrinsics/data/opcode_metadata_payload_314.json");
-const TOKEN_PAYLOAD_312_JSON: &str = include_str!("../intrinsics/data/token_payload_312.json");
-
 const RE_IGNORECASE: i64 = 2;
 const RE_DOTALL: i64 = 16;
 const RE_MULTILINE: i64 = 8;
