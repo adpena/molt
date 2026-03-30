@@ -18558,6 +18558,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if func_id == "len":
                 if node.keywords:
                     raise NotImplementedError("len does not support keywords")
+                if len(node.args) != 1:
+                    from molt.compat import CompatibilityIssue
+                    issue = CompatibilityIssue(
+                        feature="len() argument count",
+                        tier="unsupported",
+                        impact="high",
+                        location=f"line {node.lineno}",
+                        detail=f"len() takes exactly one argument ({len(node.args)} given)",
+                    )
+                    raise NotImplementedError(issue.format_error())
                 # Constant-fold len() on string/bytes literals and
                 # list/tuple literals with all-constant elements.
                 raw_arg = node.args[0]
