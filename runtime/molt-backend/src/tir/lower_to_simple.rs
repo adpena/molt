@@ -226,6 +226,15 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
 
         // Emit loop_start before loop header blocks.
         if loop_role == super::blocks::LoopRole::LoopHeader {
+            // Emit a label for the loop header so that check_exception
+            // targets referencing this block's label ID remain valid.
+            if *bid != func.entry_block {
+                out.push(OpIR {
+                    kind: "label".to_string(),
+                    value: Some(block_label_id(bid)),
+                    ..OpIR::default()
+                });
+            }
             out.push(OpIR {
                 kind: "loop_start".to_string(),
                 ..OpIR::default()
@@ -885,9 +894,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
 
         // SCF ops — handled separately via terminators in Phase 2.
         OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield => None,
-
-        // Unboxed iterator next — lowered to for_iter_next in the SimpleIR layer.
-        OpCode::IterNextUnboxed => None,
 
         // Deopt — emit a hint but not critical.
         OpCode::Deopt => Some(OpIR {
