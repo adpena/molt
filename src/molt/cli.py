@@ -21921,7 +21921,7 @@ def build(
     file_path: str | None,
     target: Target = "native",
     parse_codec: ParseCodec = "msgpack",
-    type_hint_policy: TypeHintPolicy = "ignore",
+    type_hint_policy: TypeHintPolicy = "check",
     fallback_policy: FallbackPolicy = "error",
     type_facts_path: str | None = None,
     pgo_profile: str | None = None,

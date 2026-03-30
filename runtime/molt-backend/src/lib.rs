@@ -2871,6 +2871,19 @@ impl SimpleBackend {
                 // Empty ops = TIR roundtrip failed validation; keep original ops.
                 for (idx, content_hash, ops) in &results {
                     if !ops.is_empty() {
+                        // Dump roundtripped ops for user module chunks.
+                        if ir.functions[*idx].name.contains("tfor")
+                            || ir.functions[*idx].name.contains("test__molt")
+                        {
+                            let mut dump = format!("// {}\n", ir.functions[*idx].name);
+                            for (i, op) in ops.iter().enumerate() {
+                                dump.push_str(&format!(
+                                    "{:3}: {:25} args={:?} out={:?} var={:?} val={:?}\n",
+                                    i, op.kind, op.args, op.out, op.var, op.value
+                                ));
+                            }
+                            let _ = std::fs::write("/tmp/molt_tir_roundtrip.txt", &dump);
+                        }
                         ir.functions[*idx].ops = ops.clone();
                         tir_optimized_names.insert(ir.functions[*idx].name.clone());
                         let bytes = crate::tir::serialize::serialize_ops(ops);
