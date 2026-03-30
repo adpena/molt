@@ -25454,7 +25454,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         if self.current_func_name == "molt_main":
-            self.module_global_mutations.update(self._collect_global_decls(node.body))
+            new_globals = self._collect_global_decls(node.body)
+            self.module_global_mutations.update(new_globals)
+            for gname in new_globals:
+                self.locals.pop(gname, None)
         needs_locals_cache = self._function_contains_locals_call(node)
         if self._function_contains_yield(node):
             if self._async_generator_contains_yield_from(node):
@@ -26063,7 +26066,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._maybe_record_local_intrinsic_wrapper(node)
         if self.current_func_name == "molt_main":
-            self.module_global_mutations.update(self._collect_global_decls(node.body))
+            new_globals = self._collect_global_decls(node.body)
+            self.module_global_mutations.update(new_globals)
+            # Evict cached locals for names declared `global` in this
+            # function so that subsequent module-level reads go through
+            # module_get_attr and see the mutation.
+            for gname in new_globals:
+                self.locals.pop(gname, None)
         is_generator = self._function_contains_yield(node)
         needs_locals_cache = self._function_contains_locals_call(node)
         has_return = self._function_contains_return(node)
