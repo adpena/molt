@@ -4055,18 +4055,6 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
 pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(obj_bits);
-        if debug_store_index_enabled() {
-            let type_str = if let Some(ptr) = obj.as_ptr() {
-                unsafe { format!("type_id={}", object_type_id(ptr)) }
-            } else if obj.is_none() {
-                "None".to_string()
-            } else if obj.as_int().is_some() {
-                "int".to_string()
-            } else {
-                format!("bits=0x{:x}", obj_bits)
-            };
-            eprintln!("molt_store_index obj={} key=0x{:x} val=0x{:x}", type_str, key_bits, val_bits);
-        }
         // Fast path: dict[key] = val — skips type dispatch chain.
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
