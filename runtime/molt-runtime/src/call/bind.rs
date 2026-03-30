@@ -2244,6 +2244,9 @@ unsafe fn bind_builtin_call(
         if fn_ptr == fn_addr!(molt_open_builtin) {
             return bind_builtin_open(_py, args);
         }
+        if fn_ptr == fn_addr!(crate::object::ops_builtins::molt_print_builtin) {
+            return bind_builtin_print(_py, args);
+        }
         if fn_ptr == fn_addr!(molt_type_new) || fn_ptr == fn_addr!(molt_type_init) {
             if matches!(
                 std::env::var("MOLT_TRACE_TYPE_NEW_INIT").ok().as_deref(),
@@ -3112,6 +3115,51 @@ unsafe fn bind_builtin_class_string_io(_py: &PyToken<'_>, args: &CallArgs) -> Op
         values[1] = Some(MoltObject::none().bits());
     }
     Some(values.into_iter().flatten().collect())
+}
+
+/// Bind `print(*args, sep=' ', end='\n', file=None, flush=False)`.
+///
+/// `molt_print_builtin` takes 5 positional C params:
+///   (args_tuple, sep, end, file, flush)
+/// The first param is a tuple of the `*args` vararg.
+unsafe fn bind_builtin_print(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
+    unsafe {
+        // Build the *args tuple from positional arguments.
+        let args_ptr = crate::object::builders::alloc_tuple(_py, &args.pos);
+        let args_tuple = MoltObject::from_ptr(args_ptr).bits();
+        // Keyword-only defaults.
+        let default_sep = crate::object::builders::alloc_string(_py, b" ");
+        let default_end = crate::object::builders::alloc_string(_py, b"\n");
+        let sep_default = MoltObject::from_ptr(default_sep).bits();
+        let end_default = MoltObject::from_ptr(default_end).bits();
+        let file_default = MoltObject::none().bits();
+        let flush_default = MoltObject::from_bool(false).bits();
+        let mut sep = sep_default;
+        let mut end = end_default;
+        let mut file = file_default;
+        let mut flush = flush_default;
+        // Match keywords.
+        for (name_bits, val_bits) in args
+            .kw_names
+            .iter()
+            .copied()
+            .zip(args.kw_values.iter().copied())
+        {
+            let name_obj = obj_from_bits(name_bits);
+            let name_str = string_obj_to_owned(name_obj).unwrap_or_default();
+            match name_str.as_str() {
+                "sep" => sep = val_bits,
+                "end" => end = val_bits,
+                "file" => file = val_bits,
+                "flush" => flush = val_bits,
+                _ => {
+                    let msg = format!("'{}' is an invalid keyword argument for print", name_str);
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            }
+        }
+        Some(vec![args_tuple, sep, end, file, flush])
+    }
 }
 
 unsafe fn bind_builtin_open(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
