@@ -2653,6 +2653,7 @@ pub extern "C" fn molt_open_builtin(
     })
 }
 
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct DecodeError {
@@ -3377,6 +3378,7 @@ fn translate_write_newlines_str(text: &str, newline: Option<&str>) -> String {
     }
     text.replace('\n', target)
 }
+
 
 unsafe fn text_backend_read(
     _py: &PyToken<'_>,
