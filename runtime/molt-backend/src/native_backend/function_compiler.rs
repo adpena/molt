@@ -9050,6 +9050,7 @@ impl SimpleBackend {
                             has_closure: false,
                             kind: TrampolineKind::Plain,
                             closure_size: 0,
+                            target_has_ret: true,
                         },
                     );
                     let tramp_ref = self.module.declare_func_in_func(tramp_id, builder.func);
@@ -9130,6 +9131,7 @@ impl SimpleBackend {
                             has_closure: false,
                             kind,
                             closure_size,
+                            target_has_ret: true,
                         },
                     );
                     let tramp_ref = self.module.declare_func_in_func(tramp_id, builder.func);
@@ -9237,6 +9239,7 @@ impl SimpleBackend {
                             has_closure: true,
                             kind,
                             closure_size,
+                            target_has_ret: true,
                         },
                     );
                     let tramp_ref = self.module.declare_func_in_func(tramp_id, builder.func);
