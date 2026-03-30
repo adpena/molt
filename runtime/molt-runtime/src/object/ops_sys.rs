@@ -2,8 +2,7 @@
 // Split from ops.rs for compilation-unit size reduction.
 
 use crate::audit::{AuditArgs, audit_capability_decision};
-use crate::object::ops::{range_components_bigint, range_len_bigint};
-use crate::object::ops_string::{push_wtf8_codepoint, wtf8_codepoint_at};
+use crate::object::ops_string::wtf8_codepoint_at;
 use crate::state::runtime_state::PythonVersionInfo;
 use crate::*;
 use molt_obj_model::MoltObject;
@@ -12,10 +11,8 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::CStr;
-#[cfg(not(target_arch = "wasm32"))]
-use std::ffi::CString;
 use std::io::{BufRead, BufReader};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, OnceLock};
 // Vector aggregate operations (molt_vec_*) live in ops_vec.rs.
 pub(crate) enum SliceError {
