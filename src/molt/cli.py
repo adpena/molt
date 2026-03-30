@@ -17184,6 +17184,18 @@ def _prepare_native_link(
         link_fingerprint,
         stored_link_fingerprint,
     )
+    # Guard: if the runtime library is newer than the cached binary, force
+    # a relink. This catches backend rebuilds that produce identical .o files
+    # (e.g. from TIR cache) but changed the runtime's compiled functions.
+    # Without this, a stale binary from before a backend fix would be reused.
+    if link_skipped and output_binary.exists():
+        try:
+            binary_mtime = output_binary.stat().st_mtime
+            runtime_mtime = resolved_runtime_lib.stat().st_mtime
+            if runtime_mtime > binary_mtime:
+                link_skipped = False
+        except OSError:
+            pass
     if link_skipped:
         link_process = subprocess.CompletedProcess(
             args=link_cmd,
