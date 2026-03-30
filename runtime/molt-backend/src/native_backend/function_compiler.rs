@@ -10452,11 +10452,17 @@ impl SimpleBackend {
                         .copied()
                         .or_else(|| known_function_arities.get(target_name.as_str()).copied())
                         .unwrap_or(args.len());
+                    let target_returns = function_has_ret
+                        .get(target_name.as_str())
+                        .copied()
+                        .unwrap_or(true);
                     let mut sig = self.module.make_signature();
                     for _ in 0..sig_arity {
                         sig.params.push(AbiParam::new(types::I64));
                     }
-                    sig.returns.push(AbiParam::new(types::I64));
+                    if target_returns {
+                        sig.returns.push(AbiParam::new(types::I64));
+                    }
                     let linkage = if defined_functions.contains(target_name) {
                         Linkage::Export
                     } else {
@@ -10689,7 +10695,12 @@ impl SimpleBackend {
                     }
                     let sig_ref = builder.import_signature(sig);
                     let fallback_call = builder.ins().call_indirect(sig_ref, fn_ptr, &args);
-                    let fallback_res = builder.inst_results(fallback_call)[0];
+                    let fallback_results = builder.inst_results(fallback_call);
+                    let fallback_res = if fallback_results.is_empty() {
+                        builder.ins().iconst(types::I64, box_none())
+                    } else {
+                        fallback_results[0]
+                    };
                     if emit_traces {
                         let _ = builder.ins().call(trace_exit_local, &[]);
                     }
