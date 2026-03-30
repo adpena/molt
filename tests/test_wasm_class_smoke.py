@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from tests.wasm_linked_runner import (
@@ -145,6 +146,47 @@ def test_wasm_linked_tuple_subclass_constructor_receives_argument(
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)
+    run = run_wasm_linked(root, output_wasm)
+
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.splitlines() == ["(0, 1)"]
+
+
+def test_wasm_linked_tuple_subclass_constructor_preserves_boxed_local_after_join(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    require_wasm_toolchain()
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "tuple_subclass_boxed_probe.py"
+    src.write_text(
+        "class F(tuple):\n"
+        "    def __new__(cls, values):\n"
+        "        if len(values) != 2:\n"
+        '            raise RuntimeError("bad")\n'
+        "        return tuple.__new__(cls, values)\n\n"
+        "def f():\n"
+        "    x = (0, 1)\n"
+        "    try:\n"
+        "        y = None\n"
+        "    except Exception:\n"
+        "        y = None\n"
+        "    if y is not None:\n"
+        "        x, z = ((2, 3), 4)\n"
+        "    print(F(x))\n\n"
+        "f()\n",
+        encoding="utf-8",
+    )
+
+    prior_tir_opt = os.environ.get("MOLT_TIR_OPT")
+    monkeypatch.setenv("MOLT_TIR_OPT", "0")
+    try:
+        output_wasm = build_wasm_linked(root, src, tmp_path)
+    finally:
+        if prior_tir_opt is None:
+            monkeypatch.delenv("MOLT_TIR_OPT", raising=False)
+        else:
+            monkeypatch.setenv("MOLT_TIR_OPT", prior_tir_opt)
     run = run_wasm_linked(root, output_wasm)
 
     assert run.returncode == 0, run.stderr

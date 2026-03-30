@@ -313,6 +313,30 @@ fn err_pending_peek_restore_roundtrip() {
 }
 
 #[test]
+fn err_clear_resets_last_exception_slot() {
+    let _ = molt_runtime_init();
+    let runtime_error = crate::with_gil_entry!(_py, { runtime_error_type_bits(_py) });
+    let msg = b"boom";
+    let rc = unsafe { molt_err_set(runtime_error, msg.as_ptr(), msg.len() as u64) };
+    assert_eq!(rc, 0);
+    assert_eq!(molt_exception_pending(), 1);
+
+    let peek_bits = molt_exception_last();
+    assert!(!obj_from_bits(peek_bits).is_none());
+
+    let _ = molt_exception_clear();
+    assert_eq!(molt_exception_pending(), 0);
+
+    let after_clear_bits = molt_exception_last();
+    assert!(obj_from_bits(after_clear_bits).is_none());
+    assert_eq!(molt_exception_pending(), 0);
+
+    crate::with_gil_entry!(_py, {
+        dec_ref_bits(_py, peek_bits);
+    });
+}
+
+#[test]
 fn mapping_length_success_and_failure_paths() {
     let _ = molt_runtime_init();
     crate::with_gil_entry!(_py, {

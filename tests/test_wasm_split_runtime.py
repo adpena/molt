@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,25 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
     )
 
 
+def _run_split_direct(
+    output_dir: Path,
+    *argv: str,
+    timeout: int = 60,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["MOLT_WASM_DIRECT_LINK"] = "1"
+    env["MOLT_WASM_PREFER_LINKED"] = "0"
+    env["MOLT_RUNTIME_WASM"] = str(output_dir / "molt_runtime.wasm")
+    return subprocess.run(
+        ["node", "wasm/run_wasm.js", str(output_dir / "app.wasm"), *argv],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(ROOT),
+        timeout=timeout,
+    )
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -134,6 +154,60 @@ def _collect_module_imports(path: Path, module_name: str) -> list[str]:
         name, _, _ = remainder.partition('"')
         imports.append(name)
     return imports
+
+
+def _collect_export_names(path: Path) -> list[str]:
+    text = subprocess.check_output(
+        ["wasm-tools", "print", str(path)],
+        cwd=str(ROOT),
+        text=True,
+    )
+    exports: list[str] = []
+    prefix = '(export "'
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(prefix):
+            continue
+        remainder = stripped[len(prefix) :]
+        name, _, _ = remainder.partition('"')
+        exports.append(name)
+    return exports
+
+
+def _reserved_runtime_callable_indices() -> list[int]:
+    include_path = ROOT / "runtime" / "wasm_runtime_callables.inc"
+    indices: list[int] = []
+    pattern = re.compile(r"^\s*\((\d+),")
+    for line in include_path.read_text().splitlines():
+        match = pattern.match(line)
+        if match:
+            indices.append(int(match.group(1)))
+    return indices
+
+
+def _infer_wasm_table_base_from_reserved_refs(path: Path) -> int | None:
+    export_names = _collect_export_names(path)
+    ref_indices = sorted(
+        int(name.removeprefix("__molt_table_ref_"))
+        for name in export_names
+        if name.startswith("__molt_table_ref_")
+    )
+    if not ref_indices:
+        return None
+
+    reserved_indices = _reserved_runtime_callable_indices()
+    reserved_count = len(reserved_indices)
+    ref_set = set(ref_indices)
+    shared_abi_prefix_len = 33 + reserved_count * 2
+
+    for ref_index in ref_indices:
+        expected = {
+            ref_index + offset for offset in range(shared_abi_prefix_len)
+        }
+        if expected.issubset(ref_set):
+            return ref_index
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +300,53 @@ class TestSplitRuntimeArtifacts:
         assert runtime_imports, "app.wasm must retain molt_runtime imports in split mode"
         assert "molt_string_from_bytes" in runtime_imports
         assert "molt_module_import" in runtime_imports
+
+    def test_worker_uses_backend_wasm_table_base(self, split_build_a):
+        out_dir, result = split_build_a
+        if result.returncode != 0:
+            pytest.skip("build failed")
+        app_wasm = out_dir / "app.wasm"
+        worker_js = out_dir / "worker.js"
+        if not app_wasm.exists() or not worker_js.exists():
+            pytest.skip("split-runtime artifacts not produced")
+
+        wasm_table_base = _infer_wasm_table_base_from_reserved_refs(app_wasm)
+        assert wasm_table_base is not None, (
+            "app.wasm must export a canonical reserved runtime callable/trampoline "
+            "ref block so the split-runtime worker can recover wasm_table_base"
+        )
+
+        worker_content = worker_js.read_text()
+        assert (
+            f"molt_set_wasm_table_base(BigInt({wasm_table_base}))" in worker_content
+        ), (
+            "worker.js must propagate the backend's wasm_table_base into the runtime; "
+            f"expected {wasm_table_base}"
+        )
+
+
+@pytest.mark.slow
+def test_cloudflare_demo_root_route_completes_under_split_runtime(
+    tmp_path: Path,
+) -> None:
+    source = ROOT / "examples" / "cloudflare-demo" / "src" / "app.py"
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    build = _build_split(source, out_dir)
+    assert build.returncode == 0, (
+        f"split build failed (rc={build.returncode}).\n"
+        f"stdout:\n{build.stdout[-2000:]}\n"
+        f"stderr:\n{build.stderr[-2000:]}"
+    )
+
+    run = _run_split_direct(out_dir, "/", timeout=45)
+    assert run.returncode == 0, (
+        f"direct-link run failed (rc={run.returncode}).\n"
+        f"stdout:\n{run.stdout[-2000:]}\n"
+        f"stderr:\n{run.stderr[-2000:]}"
+    )
+    assert "Python compiled to WebAssembly." in run.stdout
 
 
 @pytest.mark.slow
