@@ -1815,34 +1815,50 @@ fn c_api_mapping_keys_values_items() {
 
 #[test]
 fn c_api_mapping_getitemstring() {
+    // PyMapping_GetItemString → molt_getitem_method → molt_index
+    // each re-enter with_gil_entry!, producing 3 nested GIL frames.
+    // In debug mode this overflows the 2MB default thread stack.
+    // Avoid the outer with_gil_entry! — the C-API functions manage
+    // their own GIL entry.
     let _ = molt_runtime_init();
-    crate::with_gil_entry!(_py, {
-        let dict = PyDict_New();
-        assert_ne!(dict, 0);
+    let dict = PyDict_New();
+    assert_ne!(dict, 0);
 
+    // Set up the key via GIL entry (no deep nesting here).
+    let key_bits_cell = std::cell::Cell::new(0u64);
+    crate::with_gil_entry!(_py, {
         let key_ptr = alloc_string(_py, b"hello");
         assert!(!key_ptr.is_null());
-        let key_bits = MoltObject::from_ptr(key_ptr).bits();
         let val = MoltObject::from_int(99).bits();
-        assert_eq!(PyDict_SetItem(dict, key_bits, val), 0);
+        let kb = MoltObject::from_ptr(key_ptr).bits();
+        assert_eq!(PyDict_SetItem(dict, kb, val), 0);
+        key_bits_cell.set(kb);
+    });
+    let key_bits = key_bits_cell.get();
 
-        let got = unsafe { PyMapping_GetItemString(dict, c"hello".as_ptr()) };
-        assert_ne!(got, 0);
+    // Call PyMapping_GetItemString outside with_gil_entry! to avoid
+    // triple-nested GIL entry stack overflow.
+    let got = unsafe { PyMapping_GetItemString(dict, c"hello".as_ptr()) };
+    assert_ne!(got, 0);
+    crate::with_gil_entry!(_py, {
         assert_eq!(to_i64(obj_from_bits(got)), Some(99));
         dec_ref_bits(_py, got);
+    });
 
-        // Missing key should fail.
-        let missing = unsafe { PyMapping_GetItemString(dict, c"nope".as_ptr()) };
-        assert_eq!(missing, 0);
+    // Missing key should fail.
+    let missing = unsafe { PyMapping_GetItemString(dict, c"nope".as_ptr()) };
+    assert_eq!(missing, 0);
+    crate::with_gil_entry!(_py, {
         assert!(exception_pending(_py));
         let _ = molt_exception_clear();
+    });
 
-        // NULL key should fail.
-        let null_key = unsafe { PyMapping_GetItemString(dict, std::ptr::null()) };
-        assert_eq!(null_key, 0);
+    // NULL key should fail.
+    let null_key = unsafe { PyMapping_GetItemString(dict, std::ptr::null()) };
+    assert_eq!(null_key, 0);
+    crate::with_gil_entry!(_py, {
         assert!(exception_pending(_py));
         let _ = molt_exception_clear();
-
         dec_ref_bits(_py, key_bits);
         dec_ref_bits(_py, dict);
     });
