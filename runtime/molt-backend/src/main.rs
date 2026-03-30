@@ -1249,7 +1249,10 @@ fn main() -> io::Result<()> {
                     eprintln!("MOLT_BACKEND: warning: failed to create stdlib parent: {e}");
                 });
                 if stdlib_path.exists() {
-                    // Cached stdlib exists — compile only user functions
+                    // Cached stdlib exists — compile only user functions.
+                    // If the cache is incomplete (missing functions from a
+                    // larger import set), the link step will fail and the CLI
+                    // should delete the cache and retry.
                     let total = ir.functions.len();
                     ir.functions
                         .retain(|f| is_user_owned_symbol(&f.name, &entry_module));
