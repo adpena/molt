@@ -2833,14 +2833,14 @@ impl SimpleBackend {
                                         );
                                     }
                                 }
-                                // Always skip the TIR→SimpleIR roundtrip. The roundtrip
-                                // produces linearized control flow (br_if/jump/label)
-                                // that Cranelift handles incorrectly in exception +
-                                // loop contexts (comprehensions, while-loops). The
-                                // original structured SimpleIR ops are always correct.
-                                // TIR analysis runs for verification but results are
-                                // not applied.
-                                None::<Vec<crate::ir::OpIR>>
+                                // TIR→SimpleIR roundtrip: convert optimized TIR back
+                                // to linear ops for the Cranelift/WASM backends.
+                                // The sprint's fixes (phi rewrite, check_exception
+                                // terminator, if/end_if forbidden ranges, loop IR
+                                // restructuring) make this roundtrip safe.
+                                Some(crate::tir::lower_to_simple::lower_to_simple_ir(
+                                    &tir_func, &type_map,
+                                ))
                             }));
 
                         // Return TIR result for Phase 3 application + caching.
