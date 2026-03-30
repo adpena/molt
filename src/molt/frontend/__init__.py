@@ -25257,6 +25257,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.active_exceptions = prior_active
 
     def visit_Break(self, node: ast.Break) -> None:
+        if not self.loop_break_flags:
+            raise SyntaxError(f"'break' outside loop (line {node.lineno})")
         del node
         if self.loop_break_flags:
             break_slot = self.loop_break_flags[-1]
@@ -25279,6 +25281,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return None
 
     def visit_Continue(self, node: ast.Continue) -> None:
+        if not self.loop_break_flags:
+            raise SyntaxError(f"'continue' not properly in loop (line {node.lineno})")
         del node
         self._emit_loop_unwind()
         if self.async_index_loop_stack:
