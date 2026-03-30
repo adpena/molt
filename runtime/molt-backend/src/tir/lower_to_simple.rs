@@ -1292,18 +1292,13 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
         if let Some(&result_id) = tir_op.results.first() {
             match types.get(&result_id) {
                 Some(TirType::I64) => {
-                    // If ALL operands are also I64, use raw_int (no unbox needed).
-                    // Otherwise fast_int (NaN-boxed but known int, needs unbox).
-                    let all_operands_i64 = !tir_op.operands.is_empty()
-                        && tir_op
-                            .operands
-                            .iter()
-                            .all(|op_id| matches!(types.get(op_id), Some(TirType::I64)));
-                    if all_operands_i64 {
-                        opir.raw_int = Some(true);
-                    } else {
-                        opir.fast_int = Some(true);
-                    }
+                    // TIR I64 means the value is known to be an integer, but
+                    // at the SimpleIR level values are still NaN-boxed. Use
+                    // fast_int (unbox → native op → rebox) not raw_int (which
+                    // assumes values are already raw i64 registers).
+                    // raw_int is only safe for loop_index_start/next counters
+                    // that the backend explicitly manages as raw i64.
+                    opir.fast_int = Some(true);
                 }
                 Some(TirType::F64) => {
                     opir.fast_float = Some(true);
