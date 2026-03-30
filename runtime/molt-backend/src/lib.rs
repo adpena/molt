@@ -2833,14 +2833,19 @@ impl SimpleBackend {
                                         );
                                     }
                                 }
-                                // TIR→SimpleIR roundtrip: convert optimized TIR back
-                                // to linear ops for the Cranelift/WASM backends.
-                                // The sprint's fixes (phi rewrite, check_exception
-                                // terminator, if/end_if forbidden ranges, loop IR
-                                // restructuring) make this roundtrip safe.
-                                Some(crate::tir::lower_to_simple::lower_to_simple_ir(
-                                    &tir_func, &type_map,
-                                ))
+                                // Skip roundtrip for functions with exception handling —
+                                // the TIR roundtrip is safe for simple functions but
+                                // still produces incorrect code for complex exception
+                                // handler patterns (check_exception + state blocks).
+                                // Functions WITHOUT exception handling get the full
+                                // optimization benefit.
+                                if tir_func.has_exception_handling {
+                                    None
+                                } else {
+                                    Some(crate::tir::lower_to_simple::lower_to_simple_ir(
+                                        &tir_func, &type_map,
+                                    ))
+                                }
                             }));
 
                         // Return TIR result for Phase 3 application + caching.
