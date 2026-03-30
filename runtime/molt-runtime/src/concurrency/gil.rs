@@ -206,7 +206,7 @@ impl GilGuard {
             Err(_) => return Self::fallback_new(),
         };
         if needs_lock {
-            let guard = molt_gil().lock().unwrap();
+            let guard = molt_gil().lock().unwrap_or_else(|e| e.into_inner());
             let stored = GIL_GUARD
                 .try_with(|slot| {
                     *slot.borrow_mut() = Some(guard);
@@ -242,7 +242,7 @@ impl GilGuard {
                 fallback_depth: true,
             };
         }
-        let guard = molt_gil().lock().unwrap();
+        let guard = molt_gil().lock().unwrap_or_else(|e| e.into_inner());
         GIL_FALLBACK_OWNER.store(tid, AtomicOrdering::Release);
         GIL_FALLBACK_DEPTH.store(1, AtomicOrdering::Release);
         Self {
@@ -336,7 +336,7 @@ impl Drop for GilReleaseGuard {
             let _ = GIL_DEPTH.try_with(|d| d.set(self.depth));
             return;
         }
-        let guard = molt_gil().lock().unwrap();
+        let guard = molt_gil().lock().unwrap_or_else(|e| e.into_inner());
         let stored = GIL_GUARD
             .try_with(|slot| {
                 *slot.borrow_mut() = Some(guard);
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn gil_depth_tracks_nesting() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let start = GIL_DEPTH.with(|depth| depth.get());
         assert_eq!(gil_held(), start > 0);
 
@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn gil_release_guard_drops_runtime_lock_temporarily() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         super::release_runtime_gil();
         GIL_DEPTH.with(|depth| depth.set(0));
 

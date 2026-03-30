@@ -896,7 +896,26 @@ pub unsafe extern "C" fn PyMapping_GetItemString(o: u64, key: *const std::ffi::c
             return 0;
         }
         let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        let res = molt_getitem_method(o, key_bits);
+        // Inline dict fast-path to avoid triple-nested with_gil_entry!
+        // (this fn → molt_getitem_method → molt_index) which overflows
+        // the 2MB debug-mode thread stack.
+        let res = if let Some(obj_ptr) = obj_from_bits(o).as_ptr() {
+            unsafe {
+                if crate::object::object_type_id(obj_ptr) == 204 /* TYPE_ID_DICT */ {
+                    if let Some(val) = crate::object::ops::dict_get_in_place(_py, obj_ptr, key_bits) {
+                        inc_ref_bits(_py, val);
+                        val
+                    } else {
+                        let _ = raise_exception::<u64>(_py, "KeyError", "key not found");
+                        MoltObject::none().bits()
+                    }
+                } else {
+                    molt_getitem_method(o, key_bits)
+                }
+            }
+        } else {
+            molt_getitem_method(o, key_bits)
+        };
         dec_ref_bits(_py, key_bits);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
