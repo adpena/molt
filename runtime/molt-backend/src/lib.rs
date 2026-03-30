@@ -2642,6 +2642,8 @@ impl SimpleBackend {
         // all uncached functions.  The cache is consulted sequentially first,
         // then uncached functions are optimized in parallel, and finally results
         // are written back to the cache sequentially.
+        let mut tir_optimized_names: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
         if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
@@ -2664,7 +2666,7 @@ impl SimpleBackend {
                 let hash = std::hash::Hasher::finish(&hasher);
                 std::path::PathBuf::from(format!(".molt_cache/{:016x}", hash))
             };
-            let tir_cache = crate::tir::cache::CompilationCache::open(cache_dir);
+            let mut tir_cache = crate::tir::cache::CompilationCache::open(cache_dir);
 
             // Phase 1 (sequential): check cache for every function. For cache
             // hits, apply immediately. For misses, collect the function index,
@@ -2784,11 +2786,13 @@ impl SimpleBackend {
                     .collect();
 
                 // Each element: (index, original_ops)
-                let results: Vec<(usize, Vec<OpIR>)> = inputs
+                // TIR result: (func_index, content_hash, optimized_ops_or_none, original_ops)
+                // None means TIR didn't produce valid output (panic, no changes, or validation failure).
+                let results: Vec<(usize, String, Option<Vec<OpIR>>, Vec<OpIR>)> = inputs
                     .into_par_iter()
                     .map(|input| {
                         let idx = input.index;
-                        let _content_hash = input.content_hash;
+                        let content_hash = input.content_hash;
                         let original_ops = input.original_ops;
                         // Build a temporary FunctionIR for the TIR pipeline.
                         let tmp_func = FunctionIR {
@@ -2843,26 +2847,41 @@ impl SimpleBackend {
                                 ))
                             }));
 
-                        if let Err(_panic) = result {
-                            eprintln!(
-                                "[TIR] WARNING: optimization panicked on function '{}' — \
-                                 Set MOLT_TIR_OPT=0 to disable TIR, or report this bug.",
-                                func_name
-                            );
-                        }
-                        // Always restore original ops — TIR roundtrip is analysis-only.
-                        (idx, original_ops)
+                        // Return TIR result for Phase 3 application + caching.
+                        let optimized = match result {
+                            Ok(Some(ops)) => {
+                                if crate::tir::lower_to_simple::validate_labels(&ops) {
+                                    Some(ops)
+                                } else {
+                                    None
+                                }
+                            }
+                            Ok(None) => None,
+                            Err(_panic) => {
+                                eprintln!(
+                                    "[TIR] WARNING: optimization panicked on function '{}' — \
+                                     Set MOLT_TIR_OPT=0 to disable TIR, or report this bug.",
+                                    func_name
+                                );
+                                None
+                            }
+                        };
+                        (idx, content_hash, optimized, original_ops)
                     })
                     .collect();
 
-                // Phase 3 (sequential): restore original ops.
-                // TIR analysis runs for verification and type annotation but
-                // the roundtripped ops are not used — the original structured
-                // SimpleIR is preserved for Cranelift correctness.
-                let _ = std::fs::write("/tmp/molt_tir_phase3.txt",
-                    format!("Phase 3: {} results\n", results.len()));
-                for (idx, original_ops) in &results {
-                    ir.functions[*idx].ops = original_ops.clone();
+                // Phase 3 (sequential): apply TIR-optimized ops, cache, or
+                // fall back to original ops.
+                for (idx, content_hash, optimized, original_ops) in &results {
+                    if let Some(ops) = optimized {
+                        ir.functions[*idx].ops = ops.clone();
+                        tir_optimized_names.insert(ir.functions[*idx].name.clone());
+                        // Cache the validated optimized ops for future builds.
+                        let bytes = crate::tir::serialize::serialize_ops(ops);
+                        tir_cache.put(content_hash, &bytes, vec![]);
+                    } else {
+                        ir.functions[*idx].ops = original_ops.clone();
+                    }
                 }
 
                 let tir_elapsed = tir_start.elapsed();
