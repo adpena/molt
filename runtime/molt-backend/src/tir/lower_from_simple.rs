@@ -115,7 +115,13 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         entry_block,
         next_value,
         next_block,
-        attrs: super::ops::AttrDict::new(),
+        attrs: {
+            let mut a = super::ops::AttrDict::new();
+            if ir.ops.iter().any(|op| op.kind == "ret") {
+                a.insert("_original_has_ret".into(), super::ops::AttrValue::Bool(true));
+            }
+            a
+        },
         has_exception_handling,
         label_id_map,
         loop_roles,
