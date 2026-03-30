@@ -122,10 +122,6 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
         .map(|s| s.values_changed + s.ops_removed + s.ops_added)
         .sum();
     if total_changes == 0 {
-        let _ = std::fs::write(
-            "/tmp/molt_zero_delta.txt",
-            format!("zero_delta restore for func={}\n", func.name),
-        );
         *func = snapshot;
         return Vec::new();  // Signal caller to use original ops
     }
