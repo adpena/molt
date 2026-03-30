@@ -1,5 +1,16 @@
 # Repository Guidelines
 
+## ABSOLUTE NON-NEGOTIABLE: Zero Workarounds Policy (Turn Blocker)
+- This is an early alpha project. We are the sole users and developers.
+- ZERO tolerance for workarounds, hacky fixes, partial fixes, TODO-as-excuse, "simpler fix" that avoids the real problem, technical debt, code smell, silent failures, or divergences.
+- When you identify the correct fix and feel tempted to do something "simpler" instead — STOP. That temptation IS the signal you're about to create a workaround. Do the correct fix.
+- If a fix requires refactoring, do the refactoring. If it requires a new abstraction, build it. If it requires research, do the research.
+- No `catch_unwind` to swallow panics. No `if has_loop { return original_ops }` bypasses. No "preserve original ops until Phase N". Implement Phase N now.
+- Full deterministic CPython >= 3.12 parity (except: no exec/eval/compile, no runtime monkeypatching, no unrestricted reflection).
+- All backends (native/Cranelift, WASM, LLVM) must have parity.
+- NEVER revert or discard unstaged partner changes. Pause and wait.
+- Always `git add` immediately after writing files (linter hooks revert unstaged changes).
+
 ## Top Priority: Chris Lattner Compiler Engineering Standards (Feb 18, 2026) (Non-Negotiable, Turn Blocker)
 - This section is a top-of-file hard gate and applies to every compiler/runtime/tooling turn; violations block merge and must be fixed before completion.
 - AI acceleration is expected, but ownership cannot be delegated: humans and agents remain fully accountable for architecture quality, correctness, maintainability, and long-term evolution.
