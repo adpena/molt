@@ -889,7 +889,6 @@ impl SimpleBackend {
         let heap_alloc_out_names: std::collections::HashSet<String> = func_ir.ops.iter()
             .filter(|op| matches!(op.kind.as_str(),
                 "list_new" | "tuple_new" | "dict_new" | "set_new" | "frozenset_new"
-                | "module_new" | "module_cache_get"
             ))
             .filter_map(|op| op.out.clone())
             .collect();
@@ -5707,10 +5706,17 @@ impl SimpleBackend {
                     let val_bits = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
                         panic!("Value not found in {} op {}", func_ir.name, op_idx)
                     });
+                    // fast_int: when the index is a known int, use the
+                    // list-specific fast path that skips type dispatch.
+                    let fn_name = if op.fast_int.unwrap_or(false) {
+                        "molt_list_setitem_int_fast"
+                    } else {
+                        "molt_dict_set"
+                    };
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
-                        "molt_dict_set",
+                        fn_name,
                         &[types::I64, types::I64, types::I64],
                         &[types::I64],
                     );

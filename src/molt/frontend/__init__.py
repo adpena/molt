@@ -30000,13 +30000,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "DICT_SET":
-                json_ops.append(
-                    {
-                        "kind": "dict_set",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                ds_entry: dict[str, Any] = {
+                    "kind": "dict_set",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                # fast_int: when the key is a known int (list subscript store),
+                # use molt_list_setitem_int_fast in the backend.
+                if (
+                    len(op.args) >= 2
+                    and self._hints_enabled()
+                    and isinstance(op.args[1], MoltValue)
+                    and op.args[1].type_hint in {"int", "bool"}
+                ):
+                    ds_entry["fast_int"] = True
+                json_ops.append(ds_entry)
             elif op.kind == "DICT_SETDEFAULT":
                 json_ops.append(
                     {
@@ -30225,13 +30233,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "INDEX":
-                json_ops.append(
-                    {
-                        "kind": "index",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                index_entry: dict[str, Any] = {
+                    "kind": "index",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                # fast_int: when the index argument is a known int,
+                # the backend can use molt_list_getitem_int_fast which
+                # skips full type dispatch and bounds-checks directly.
+                if (
+                    len(op.args) == 2
+                    and self._hints_enabled()
+                    and isinstance(op.args[1], MoltValue)
+                    and op.args[1].type_hint in {"int", "bool"}
+                ):
+                    index_entry["fast_int"] = True
+                json_ops.append(index_entry)
             elif op.kind == "UNPACK_SEQUENCE":
                 # args[0] is the sequence, args[1:] are output variable names
                 json_ops.append(
