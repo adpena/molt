@@ -165,7 +165,7 @@ fn preanalyze_function_ir(
 
     for (idx, op) in func_ir.ops.iter().enumerate() {
         match op.kind.as_str() {
-            "ret" | "ret_void" => has_ret = true,
+            "ret" => has_ret = true,
             "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
             | "chan_recv_yield" => stateful = true,
             "store" => has_store = true,
@@ -15560,10 +15560,36 @@ mod tests {
         assert_eq!(analysis.last_use.get("msg"), Some(&9));
         assert_eq!(analysis.last_use.get("out"), Some(&9));
     }
+
+    #[test]
+    fn preanalysis_distinguishes_ret_from_ret_void() {
+        let value_ret = FunctionIR {
+            name: "value_ret".to_string(),
+            params: vec![],
+            ops: vec![OpIR {
+                kind: "ret".to_string(),
+                var: Some("out".to_string()),
+                ..OpIR::default()
+            }],
+            param_types: None,
+        };
+        let void_ret = FunctionIR {
+            name: "void_ret".to_string(),
+            params: vec![],
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            }],
+            param_types: None,
+        };
+
+        assert!(
+            preanalyze_function_ir(&value_ret, &BTreeMap::new()).has_ret,
+            "`ret` should mark the function as value-returning"
+        );
+        assert!(
+            !preanalyze_function_ir(&void_ret, &BTreeMap::new()).has_ret,
+            "`ret_void` must not mark the function as value-returning"
+        );
+    }
 }
-
-
-
-
-
-
