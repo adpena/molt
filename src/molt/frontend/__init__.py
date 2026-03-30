@@ -23758,10 +23758,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.visit(stmt)
             if self.block_terminated:
                 break
-            clear_handlers = (
-                self.current_func_name == "molt_main" and not self.try_end_labels
-            )
-            self._emit_raise_if_pending(emit_exit=True, clear_handlers=clear_handlers)
+            # Emit a check_exception after each statement to catch any
+            # pending exception from the preceding ops.  This uses the
+            # same fast inline flag check as all other check_exception
+            # sites, avoiding the broken exception_last → is → not → if
+            # → raise pattern that produced stale-exception re-raise bugs.
+            handler_label: int | None
+            if self.try_end_labels:
+                handler_label = self.try_end_labels[-1]
+            else:
+                handler_label = self.function_exception_label
+            if handler_label is not None:
+                self.emit(
+                    MoltOp(
+                        kind="CHECK_EXCEPTION",
+                        args=[handler_label],
+                        result=MoltValue("none"),
+                    )
+                )
         self.block_terminated = prior
 
     def _visit_loop_body(
@@ -23923,68 +23937,34 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         clear_handlers: bool = False,
         force_exit: bool = False,
     ) -> None:
-        with self._suppress_check_exception():
+        # Use the same fast inline flag check as check_exception instead
+        # of the exception_last → is → not → if → raise pattern.  The old
+        # pattern produced stale-exception re-raise bugs because
+        # exception_last() and the inline flag byte could disagree, and
+        # the Cranelift-compiled if/raise/end_if sometimes executed the
+        # raise unconditionally.
+        handler_label: int | None
+        if self.try_end_labels:
+            handler_label = self.try_end_labels[-1]
+        else:
+            handler_label = self.function_exception_label
+        if handler_label is not None:
             if (
                 self.current_func_name == "molt_main"
                 or self.current_func_name.startswith("molt_init_")
             ):
                 self._emit_line_marker_force()
-            exc_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_after))
-            none_after = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
-            is_none_after = MoltValue(self.next_var(), type_hint="bool")
             self.emit(
-                MoltOp(kind="IS", args=[exc_after, none_after], result=is_none_after)
+                MoltOp(
+                    kind="CHECK_EXCEPTION",
+                    args=[handler_label],
+                    result=MoltValue("none"),
+                )
             )
-            pending_after = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="NOT", args=[is_none_after], result=pending_after))
-            self.emit(MoltOp(kind="IF", args=[pending_after], result=MoltValue("none")))
-            if clear_handlers:
-                self.emit(
-                    MoltOp(
-                        kind="EXCEPTION_STACK_CLEAR",
-                        args=[],
-                        result=MoltValue("none"),
-                    )
-                )
-            if self.in_generator and not self.async_context:
-                kind_after = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(kind="EXCEPTION_KIND", args=[exc_after], result=kind_after)
-                )
-                gen_exit = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(kind="CONST_STR", args=["GeneratorExit"], result=gen_exit)
-                )
-                is_gen_exit = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(kind="EQ", args=[kind_after, gen_exit], result=is_gen_exit)
-                )
-                self.emit(
-                    MoltOp(kind="IF", args=[is_gen_exit], result=MoltValue("none"))
-                )
-                self.emit(
-                    MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
-                )
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                self.emit(
-                    MoltOp(kind="RAISE", args=[exc_after], result=MoltValue("none"))
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            else:
-                self.emit(
-                    MoltOp(kind="RAISE", args=[exc_after], result=MoltValue("none"))
-                )
-                if emit_exit:
-                    if force_exit or self.try_suppress_depth is not None:
-                        prior = self.try_suppress_depth
-                        self.try_suppress_depth = None
-                        self._emit_raise_exit()
-                        self.try_suppress_depth = prior
-                    else:
-                        self._emit_raise_exit()
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        # The CHECK_EXCEPTION above handles all exception propagation.
+        # Generator-specific GeneratorExit detection is handled by the
+        # exception handler label target, which routes to the appropriate
+        # cleanup code.
 
     def _emit_call_bound_or_func(
         self, callee: MoltValue, args: list[MoltValue]
