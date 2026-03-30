@@ -409,7 +409,7 @@ private theorem evalUnaryOp_back (op : MoltPython.UnaryOp) (pv : MoltPython.PyVa
   all_goals (first
     | (subst htir; simp [lowerValue]; done)
     | (simp_all [lowerValue]; done)
-    | sorry)
+    | (subst htir; simp [MoltPython.PyValue.truthy, bne, Bool.not_not]; done))
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Backward direction (for completeness characterization)
