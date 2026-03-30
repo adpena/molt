@@ -870,29 +870,69 @@ impl SimpleBackend {
             builder.ins().stack_store(ptr_val, slot, 0);
         }
 
-        // Initialize most variables to None (0x7ffb...) in the entry block.
-        // This ensures that exception handler state blocks have valid
-        // NaN-boxed None values instead of 0 (raw float) for undefined
-        // variables. However, const_str output variables are EXCLUDED
-        // because the None initialization corrupts loop header SSA phis:
-        // the phi merges entry(None) with back-edge(const_str), and on
-        // the second iteration the phi picks None instead of the valid
-        // string, breaking module_get_attr/module_set_attr attr names.
-        let const_str_out_names: std::collections::HashSet<String> = func_ir.ops.iter()
-            .filter(|op| op.kind == "const_str" || op.kind == "const_bytes")
-            .filter_map(|op| op.out.clone())
-            .collect();
-        // Collect output names of ops that produce heap pointers (list_new,
-        // tuple_new, dict_new, etc.). These must NOT be initialized to
-        // box_none because Cranelift phi resolution at loop headers can
-        // pick up the entry-block value instead of the pre-loop definition,
-        // causing runtime operations to receive box_none as a pointer.
-        let heap_alloc_out_names: std::collections::HashSet<String> = func_ir.ops.iter()
-            .filter(|op| matches!(op.kind.as_str(),
-                "list_new" | "tuple_new" | "dict_new" | "set_new" | "frozenset_new"
-            ))
-            .filter_map(|op| op.out.clone())
-            .collect();
+        // ── Entry-block variable initialization ──────────────────────────
+        //
+        // Cranelift requires every Variable to have a def_var that
+        // dominates all uses.  The standard pattern is a blanket def_var
+        // in the entry block.
+        //
+        // CRITICAL: box_none (0x7FFB — NaN-boxed None) as the entry-block
+        // default corrupts Cranelift SSA phi resolution.  On the first
+        // loop iteration, variables defined INSIDE the loop body resolve
+        // through the dominator tree to the entry-block definition.  If
+        // that definition is box_none, runtime functions receive None
+        // instead of the intended value:
+        //   • CONST 1 → None: eq(n, None) = False, break never fires
+        //   • list_new → None: store_index(None, 0, v) = crash
+        //   • const_str → None: module_get_attr(mod, None) = crash
+        //
+        // FIX: Variables defined inside or after the first loop get raw 0
+        // (0x0000) as their entry-block default.  Raw 0 is:
+        //   • Safe for dec_ref (non-pointer NaN tag → no-op)
+        //   • Never mistaken for a valid Python object
+        //   • Detectable as "uninitialized" by runtime checks
+        //
+        // Variables defined ONLY before any loop (or when no loops exist)
+        // keep box_none because they are genuinely None-initialized
+        // locals that exception handlers may read.
+        let first_loop_idx = func_ir.ops.iter()
+            .position(|op| matches!(op.kind.as_str(),
+                "loop_start" | "loop_index_start" | "for_iter_start"
+                | "while_start" | "async_for_start"
+            ));
+        let loop_affected_vars: std::collections::HashSet<String> = if let Some(idx) = first_loop_idx {
+            // All variables defined at or after the first loop marker.
+            // Also include variables defined BEFORE the loop that are
+            // used inside it (they transit through the loop header phi).
+            let after_loop: std::collections::HashSet<String> = func_ir.ops[idx..]
+                .iter()
+                .filter_map(|op| op.out.clone())
+                .collect();
+            let before_loop: std::collections::HashSet<String> = func_ir.ops[..idx]
+                .iter()
+                .filter_map(|op| op.out.clone())
+                .collect();
+            // Variables used inside the loop body (after loop_start).
+            let used_in_loop: std::collections::HashSet<String> = func_ir.ops[idx..]
+                .iter()
+                .flat_map(|op| {
+                    let mut names = Vec::new();
+                    if let Some(args) = &op.args {
+                        names.extend(args.iter().cloned());
+                    }
+                    names
+                })
+                .collect();
+            let mut affected = after_loop;
+            for name in &before_loop {
+                if used_in_loop.contains(name) {
+                    affected.insert(name.clone());
+                }
+            }
+            affected
+        } else {
+            std::collections::HashSet::new()
+        };
         {
             let none_val = builder.ins().iconst(types::I64, box_none());
             let zero = builder.ins().iconst(types::I64, 0);
@@ -900,15 +940,11 @@ impl SimpleBackend {
                 if param_name_set.contains(name.as_str()) {
                     continue;
                 }
-                if const_str_out_names.contains(name) || heap_alloc_out_names.contains(name) {
-                    // Initialize to raw 0 (not box_none). Raw 0 is safe
-                    // for dec_ref (non-pointer NaN-box tag) and avoids
-                    // Cranelift using box_none as the SSA reaching
-                    // definition at loop header phis.
+                if loop_affected_vars.contains(name) {
                     builder.def_var(*var, zero);
-                    continue;
+                } else {
+                    builder.def_var(*var, none_val);
                 }
-                builder.def_var(*var, none_val);
             }
         }
 

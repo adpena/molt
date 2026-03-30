@@ -793,6 +793,9 @@ pub extern "C" fn molt_ge(a: u64, b: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_eq(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if std::env::var("MOLT_TRACE_EQ").is_ok() {
+            eprintln!("molt_eq: a=0x{:016x} b=0x{:016x}", a, b);
+        }
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         let ellipsis = ellipsis_bits(_py);
