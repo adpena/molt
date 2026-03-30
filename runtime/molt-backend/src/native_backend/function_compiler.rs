@@ -804,10 +804,6 @@ impl SimpleBackend {
             .collect();
         {
             let none_val = builder.ins().iconst(types::I64, box_none());
-            let _ = std::fs::write("/tmp/molt_init_diag.txt",
-                format!("func={} const_str_outs={:?} total_vars={}
-",
-                    func_ir.name, const_str_out_names, vars.len()));
             for (name, var) in &vars {
                 if param_name_set.contains(name.as_str()) {
                     continue;
@@ -819,6 +815,102 @@ impl SimpleBackend {
             }
         }
 
+        // ── Const-string prologue hoisting ──────────────────────────────
+        //
+        // Hoist ALL const_str allocations to the entry block. Each unique
+        // string is allocated once via molt_string_from_bytes and stored in
+        // a dedicated stack slot. Subsequent const_str ops with the same
+        // content load from the slot instead of re-allocating.
+        //
+        // This is the correct fix for the while-loop module-scope bug:
+        // Cranelift SSA variables for string constants are corrupted to
+        // None by loop-header phi merges (entry-block None init vs
+        // back-edge value). Stack slots are immune to SSA phi because
+        // they are physical memory, not SSA values. By allocating all
+        // strings before the entry block is sealed, the string pointers
+        // are valid for the entire function lifetime.
+        let mut const_str_hoisted_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
+        {
+            // Collect unique (bytes, first_out_name) pairs.
+            let mut unique_strs: Vec<(Vec<u8>, String)> = Vec::new();
+            let mut seen_bytes: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+            for op in &func_ir.ops {
+                if op.kind != "const_str" {
+                    continue;
+                }
+                let bytes = op.bytes.as_deref()
+                    .unwrap_or_else(|| op.s_value.as_deref().unwrap_or("").as_bytes())
+                    .to_vec();
+                let out_name = match &op.out {
+                    Some(n) => n.clone(),
+                    None => continue,
+                };
+                if seen_bytes.insert(bytes.clone()) {
+                    unique_strs.push((bytes, out_name));
+                }
+            }
+
+            for (bytes, ref_name) in &unique_strs {
+                let data_id = Self::intern_data_segment(
+                    &mut self.module,
+                    &mut self.data_pool,
+                    &mut self.next_data_id,
+                    bytes,
+                );
+                let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+                let ptr = builder.ins().symbol_value(types::I64, global_ptr);
+                let len = builder.ins().iconst(types::I64, bytes.len() as i64);
+
+                // Auxiliary ptr/len variables for debugging.
+                def_var_named(&mut builder, &vars, format!("{}_ptr", ref_name), ptr);
+                def_var_named(&mut builder, &vars, format!("{}_len", ref_name), len);
+
+                let callee = Self::import_func_id_split(
+                    &mut self.module,
+                    &mut self.import_ids,
+                    "molt_string_from_bytes",
+                    &[types::I64, types::I64, types::I64],
+                    &[types::I32],
+                );
+                let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
+                let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                builder.ins().call(local_callee, &[ptr, len, out_ptr]);
+
+                const_str_hoisted_slots.insert(bytes.clone(), out_slot);
+            }
+        }
+
+        // Map every const_str output name to its hoisted stack slot.
+        let mut const_str_name_to_slot: BTreeMap<String, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
+        for op in &func_ir.ops {
+            if op.kind == "const_str" {
+                let bytes = op.bytes.as_deref()
+                    .unwrap_or_else(|| op.s_value.as_deref().unwrap_or("").as_bytes());
+                if let Some(ref out) = op.out {
+                    if let Some(&slot) = const_str_hoisted_slots.get(bytes) {
+                        const_str_name_to_slot.insert(out.clone(), slot);
+                    }
+                }
+            }
+        }
+
+        // Diagnostic: dump ops for the target function
+        if func_ir.name.contains("molt_module_chunk_1") && func_ir.name.contains("tw_final") {
+            let mut dump = String::new();
+            for (i, op) in func_ir.ops.iter().enumerate() {
+                if i < 50 {
+                    dump.push_str(&format!("{}: {} out={:?} args={:?} sval={:?}
+",
+                        i, op.kind, op.out, op.args, op.s_value));
+                }
+            }
+            let _ = std::fs::write("/tmp/molt_chunk_ops.txt", &dump);
+        }
         builder.seal_block(entry_block);
         sealed_blocks.insert(entry_block);
 
@@ -9863,7 +9955,16 @@ impl SimpleBackend {
                     // None value, producing misleading TypeErrors downstream
                     // instead of surfacing the real exception.  Leaf functions
                     // cannot raise, so they are exempt.
-                    let res = if !is_leaf_call {
+                    //
+                    // IMPORTANT: Skip this check when the function has its own
+                    // exception handling (try/except/with).  Those functions
+                    // already have IR-level check_exception ops emitted by the
+                    // frontend that route exceptions to the correct handler.
+                    // Returning early here would bypass the handler, causing
+                    // the exception to propagate uncaught and leading to
+                    // use-after-free / SIGSEGV when cleanup code dec_refs the
+                    // NaN-boxed None sentinel as a raw pointer.
+                    let res = if !is_leaf_call && !has_exc_handling {
                         let exc_check = builder.ins().call(local_exc_pending_fast, &[]);
                         let exc_pending = builder.inst_results(exc_check)[0];
                         let has_exc = builder.ins().icmp_imm(IntCC::NotEqual, exc_pending, 0);
@@ -15454,3 +15555,4 @@ mod tests {
         assert_eq!(analysis.last_use.get("out"), Some(&9));
     }
 }
+
