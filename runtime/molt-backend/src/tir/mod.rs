@@ -59,6 +59,7 @@ pub(crate) fn is_structural(kind: &str) -> bool {
             | "br_if"
             | "loop_break_if_true"
             | "loop_break_if_false"
+            | "check_exception"
             | "ret"
             | "ret_void"
             | "return"

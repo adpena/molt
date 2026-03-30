@@ -267,6 +267,10 @@ mod tests {
         assert!(verify_function(&tir).is_ok());
         let result = lower_to_simple_ir(&tir, &type_map);
         assert!(!result.is_empty());
+        assert!(
+            result.iter().all(|op| op.kind != "load_param"),
+            "round-trip must preserve FunctionIR.params instead of synthesizing load_param ops"
+        );
     }
 
     // ---------------------------------------------------------------------------

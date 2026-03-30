@@ -111,18 +111,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         })
         .collect();
 
-    // Emit the function prologue: map entry block args → parameter variables.
-    if let Some(entry_block) = func.blocks.get(&func.entry_block) {
-        for (i, arg) in entry_block.args.iter().enumerate() {
-            out.push(OpIR {
-                kind: "load_param".to_string(),
-                value: Some(i as i64),
-                out: Some(value_var(arg.id)),
-                ..OpIR::default()
-            });
-        }
-    }
-
     // Identify loop body blocks: blocks that are the else-target of a
     // LoopHeader CondBranch.  These get fused into the header's loop region
     // rather than emitted as separate labelled blocks.
@@ -264,21 +252,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     }
 
     VALUE_NAME_OVERRIDES.with(|overrides| overrides.borrow_mut().clear());
-
-    // Dump roundtripped loop ops to file for debugging.
-    {
-        let has_loop = out.iter().any(|o| o.kind == "loop_start");
-        if has_loop {
-            let mut dump = String::new();
-            for (i, op) in out.iter().enumerate() {
-                dump.push_str(&format!(
-                    "{:3}: {:25} args={:?} out={:?} var={:?} val={:?}\n",
-                    i, op.kind, op.args, op.out, op.var, op.value
-                ));
-            }
-            let _ = std::fs::write("/tmp/molt_loop_rt.txt", &dump);
-        }
-    }
 
     out
 }

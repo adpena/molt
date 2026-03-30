@@ -290,7 +290,6 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::ScfWhile => "while",
         OpCode::ScfYield => "yield",
         OpCode::Deopt => "deopt",
-        OpCode::IterNextUnboxed => "iter_next_unboxed",
     }
 }
 
