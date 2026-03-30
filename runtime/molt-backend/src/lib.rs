@@ -1986,6 +1986,32 @@ fn parse_truthy_env(raw: &str) -> bool {
     matches!(norm.as_str(), "1" | "true" | "yes" | "on")
 }
 
+#[cfg(feature = "native-backend")]
+fn compute_function_has_ret(functions: &[FunctionIR]) -> BTreeMap<String, bool> {
+    functions
+        .iter()
+        .map(|func| {
+            let is_split_helper = func.name.starts_with("__molt_chunk_");
+            // A function "has ret" if it contains a `ret` op (value-returning)
+            // OR a `ret_void` op that is called from a context expecting a value.
+            // Module chunk functions and __annotate__ functions use ret_void but
+            // are called via `call` ops that expect return values, so they must
+            // be treated as value-returning to avoid caller/callee ABI mismatch.
+            // Synthetic megafunction split helpers inherit the original name in
+            // `__molt_chunk_*`, but they are internal implementation details and
+            // must keep their actual ABI. Otherwise a void helper can be
+            // misdeclared as returning a value and its call site gets dropped on
+            // signature mismatch.
+            let has_ret = func.ops.iter().any(|op| op.kind == "ret")
+                || (!is_split_helper
+                    && (func.name.contains("_molt_module_chunk_")
+                        || func.name.contains("__annotate__")
+                        || func.name.contains("_molt_globals_")));
+            (func.name.clone(), has_ret)
+        })
+        .collect()
+}
+
 pub(crate) fn env_setting(var: &str) -> Option<String> {
     std::env::var(var)
         .ok()
@@ -2819,6 +2845,14 @@ impl SimpleBackend {
                             ops: input.ops,
                             param_types: input.param_types,
                         };
+                        // Skip TIR roundtrip for functions with loops — the
+                        // linearization does not preserve loop_start/loop_end/
+                        // loop_break_if_true/loop_continue structural markers
+                        // that the native backend requires for Cranelift loop blocks.
+                        let has_loop = tmp_func.ops.iter().any(|op| op.kind == "loop_start");
+                        if has_loop {
+                            return (idx, content_hash, tmp_func.ops);
+                        }
                         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                         crate::tir::type_refine::refine_types(&mut tir_func);
                         let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
@@ -3065,22 +3099,7 @@ impl SimpleBackend {
             .as_ref()
             .map(|context| context.return_alias_summaries.clone())
             .unwrap_or(local_return_alias_summaries);
-        let function_has_ret: BTreeMap<String, bool> = ir
-            .functions
-            .iter()
-            .map(|func| {
-                // A function "has ret" if it contains a `ret` op (value-returning)
-                // OR a `ret_void` op that is called from a context expecting a value.
-                // Module chunk functions and __annotate__ functions use ret_void but
-                // are called via `call` ops that expect return values, so they must
-                // be treated as value-returning to avoid caller/callee ABI mismatch.
-                let has_ret = func.ops.iter().any(|op| op.kind == "ret")
-                    || func.name.contains("_molt_module_chunk_")
-                    || func.name.contains("__annotate__")
-                    || func.name.contains("_molt_globals_");
-                (func.name.clone(), has_ret)
-            })
-            .collect();
+        let function_has_ret = compute_function_has_ret(&ir.functions);
         let mut module_known_functions = ir_analysis.defined_functions.clone();
         module_known_functions.extend(self.external_function_names.iter().cloned());
         let mut compiled = 0u32;
@@ -3608,6 +3627,7 @@ impl SimpleBackend {
 mod tests {
     use super::{
         FunctionIR, OpIR, SimpleBackend, SimpleIR, TrampolineKind, analyze_native_backend_ir,
+        compute_function_has_ret,
     };
     use crate::passes::ReturnAliasSummary;
     use cranelift_codegen::ir::types;
@@ -3654,6 +3674,48 @@ mod tests {
         unsafe { std::env::remove_var("MOLT_BACKEND_EMIT_TRACES") };
         unsafe { std::env::remove_var("MOLT_TIR_OPT") };
         bytes
+    }
+
+    fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) -> String {
+        let ir = SimpleIR {
+            functions,
+            profile: None,
+        };
+        let analysis = analyze_native_backend_ir(&ir);
+        let function_has_ret = compute_function_has_ret(&ir.functions);
+        let function_arities = ir
+            .functions
+            .iter()
+            .map(|func| (func.name.clone(), func.params.len()))
+            .collect();
+        let return_alias_summaries = crate::passes::compute_return_alias_summaries(&ir.functions);
+        let target_func = ir
+            .functions
+            .into_iter()
+            .find(|func| func.name == target_name)
+            .unwrap_or_else(|| panic!("missing target function `{target_name}`"));
+        let mut backend = SimpleBackend::new();
+        backend.compile_func(
+            target_func,
+            &analysis.task_kinds,
+            &analysis.task_closure_sizes,
+            &analysis.defined_functions,
+            &analysis.defined_functions,
+            &analysis.closure_functions,
+            &return_alias_summaries,
+            false,
+            &analysis.leaf_functions,
+            &function_arities,
+            &function_has_ret,
+        );
+        backend
+            .deferred_defines
+            .iter()
+            .find(|deferred| deferred.name == target_name)
+            .unwrap_or_else(|| panic!("missing deferred function `{target_name}`"))
+            .func
+            .display()
+            .to_string()
     }
 
     #[test]
@@ -3796,6 +3858,89 @@ mod tests {
         );
         assert!(context.leaf_functions.contains("helper"));
         assert!(context.leaf_functions.contains("helper_poll"));
+    }
+
+    #[test]
+    fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
+        let chunk0 = "__molt_chunk_demo__molt_module_chunk_1_0".to_string();
+        let chunk1 = "__molt_chunk_demo__molt_module_chunk_1_1".to_string();
+        let stub = "demo__molt_module_chunk_1".to_string();
+        let clif = compile_function_to_clif_text(
+            vec![
+                FunctionIR {
+                    name: chunk0,
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                },
+                FunctionIR {
+                    name: chunk1,
+                    params: vec![],
+                    ops: vec![
+                        OpIR {
+                            kind: "const".to_string(),
+                            out: Some("chunk_ret".to_string()),
+                            value: Some(7),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".to_string(),
+                            var: Some("chunk_ret".to_string()),
+                            ..OpIR::default()
+                        },
+                    ],
+                    param_types: None,
+                },
+                FunctionIR {
+                    name: stub.clone(),
+                    params: vec![],
+                    ops: vec![
+                        OpIR {
+                            kind: "call_internal".to_string(),
+                            s_value: Some("__molt_chunk_demo__molt_module_chunk_1_0".to_string()),
+                            out: Some("__chunk_discard_0".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "call_internal".to_string(),
+                            s_value: Some("__molt_chunk_demo__molt_module_chunk_1_1".to_string()),
+                            out: Some("__chunk_ret".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".to_string(),
+                            var: Some("__chunk_ret".to_string()),
+                            ..OpIR::default()
+                        },
+                    ],
+                    param_types: None,
+                },
+            ],
+            &stub,
+        );
+        let local_callees: Vec<String> = clif
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| line.split_once(" = colocated").map(|(name, _)| name.to_string()))
+            .collect();
+        assert_eq!(
+            local_callees.len(),
+            2,
+            "stub CLIF should reference exactly two local chunk callees:\n{clif}",
+        );
+        assert!(
+            local_callees.iter().any(|callee| clif.contains(&format!("call {callee}("))),
+            "split stub must retain the direct call to the first void-returning chunk:\n{clif}",
+        );
+        assert!(
+            local_callees
+                .iter()
+                .any(|callee| clif.contains(&format!("= call {callee}("))),
+            "split stub must retain the direct call to the final value-returning chunk:\n{clif}",
+        );
     }
 
     #[test]
