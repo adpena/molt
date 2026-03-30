@@ -439,6 +439,8 @@ mod tests {
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
         }
     }
 
@@ -665,6 +667,8 @@ mod tests {
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
         };
 
         let refined = refine_types(&mut func);
@@ -768,6 +772,8 @@ mod tests {
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
         };
 
         let refined = refine_types(&mut func);
@@ -850,6 +856,8 @@ mod tests {
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
         };
         let refined = refine_types(&mut func);
         assert_eq!(refined, 0);
