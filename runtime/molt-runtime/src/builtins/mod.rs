@@ -68,13 +68,6 @@ pub(crate) mod functions_stat;
 pub(crate) mod functions_re;
 pub(crate) mod functions_fnmatch;
 pub(crate) mod functions_textwrap;
-pub(crate) mod functions_shlex;
-pub(crate) mod functions_opcode;
-pub(crate) mod functions_bisect;
-pub(crate) mod functions_codeop;
-pub(crate) mod functions_argparse;
-pub(crate) mod functions_pkgutil;
-pub(crate) mod functions_compileall;
 #[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod functions_zipfile;
 pub(crate) mod functools;
