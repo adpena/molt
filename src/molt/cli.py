@@ -19421,6 +19421,11 @@ def _ensure_backend_binary(
         _cache_root = _default_molt_cache()
         if _cache_root.is_dir():
             for _cached_file in _cache_root.iterdir():
+                # Preserve stdlib compilation cache (.stdlib.o) — these are
+                # expensive to rebuild and automatically invalidated when the
+                # backend binary or IR content changes.
+                if _cached_file.name.endswith(".stdlib.o"):
+                    continue
                 if _cached_file.is_file() and _cached_file.suffix in {
                     ".o", ".wasm", ".fingerprint",
                 }:

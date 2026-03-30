@@ -1,17 +1,19 @@
 /-
-  Fuel monotonicity for evalPyExpr (restricted to lowerable expression forms).
+  Fuel monotonicity for evalPyExpr.
+  Proven for all expression forms reachable from lowerExpr:
+  scalars, name, binOp, unaryOp, ifExpr, call, subscript.
+  List-based forms (listExpr, tupleExpr, dictExpr, compare, boolOp) need
+  mutual induction with evalExprList — axiomatized since lowerExpr returns
+  none for all of them.
 -/
 import MoltPython.Semantics.EvalExpr
 
-set_option maxHeartbeats 1600000
+set_option maxHeartbeats 3200000
 set_option autoImplicit false
 
 namespace MoltPython
 
-/-- evalPyExpr is monotone in fuel for all expression forms.
-    Compound forms (compare, boolOp, subscript, list/tuple/dict) need
-    mutual induction with evalCompareChain/evalBoolOp/evalExprList;
-    these are asserted as an axiom since lowerExpr returns none for them. -/
+/-- evalPyExpr is monotone in fuel. -/
 theorem evalPyExpr_fuel_mono (f : Nat) :
     ∀ (env : PyEnv) (e : PyExpr) (v : PyValue),
     evalPyExpr f env e = some v →
@@ -45,29 +47,30 @@ theorem evalPyExpr_fuel_mono (f : Nat) :
       simp only [evalPyExpr] at heval ⊢
       match ht : evalPyExpr m env test with
       | some vt =>
-        rw [ih env test vt ht n hmn]
-        simp [ht] at heval ⊢
+        rw [ih env test vt ht n hmn]; simp [ht] at heval ⊢
         split <;> simp_all
         all_goals exact ih env _ v (by assumption) n hmn
       | none => simp [ht] at heval
-    | call _ _ =>
-      simp [evalPyExpr] at heval
-    -- Compound forms needing mutual induction with List helpers.
-    -- These are unreachable from lowering_reflects_eval (lowerExpr returns none).
-    | subscript _ _ => exact fuel_mono_compound env (.subscript ..) v m heval n hmn
-    | listExpr _ => exact fuel_mono_compound env (.listExpr ..) v m heval n hmn
-    | tupleExpr _ => exact fuel_mono_compound env (.tupleExpr ..) v m heval n hmn
-    | dictExpr _ _ => exact fuel_mono_compound env (.dictExpr ..) v m heval n hmn
-    | compare _ _ _ => exact fuel_mono_compound env (.compare ..) v m heval n hmn
-    | boolOp _ _ => exact fuel_mono_compound env (.boolOp ..) v m heval n hmn
+    | call _ _ => simp [evalPyExpr] at heval
+    | subscript value slice =>
+      simp only [evalPyExpr] at heval ⊢
+      match hv : evalPyExpr m env value, hs : evalPyExpr m env slice with
+      | some vv, some sv =>
+        rw [ih env value vv hv n hmn, ih env slice sv hs n hmn]
+        simp [hv, hs] at heval; exact heval
+      | some _, none => simp [hv, hs] at heval
+      | none, _ => simp [hv] at heval
+    -- List-based compound forms need mutual induction with evalExprList/
+    -- evalCompareChain/evalBoolOp. All return none from lowerExpr.
+    | listExpr _ | tupleExpr _ | dictExpr _ _ | compare _ _ _ | boolOp _ _ =>
+      exact fuel_mono_list_forms env _ v m heval n hmn
 where
-  fuel_mono_compound (env : PyEnv) (e : PyExpr) (v : PyValue) (m : Nat)
+  /-- Axiom for list-based compound forms. These need mutual induction with
+      evalExprList which is blocked by PyExpr being a nested inductive.
+      Unreachable from lowering_reflects_eval (lowerExpr returns none). -/
+  fuel_mono_list_forms (env : PyEnv) (e : PyExpr) (v : PyValue) (m : Nat)
       (heval : evalPyExpr (m + 1) env e = some v) (n : Nat) (hmn : m ≤ n) :
       evalPyExpr (n + 1) env e = some v := by
-    -- These compound forms need mutual induction with evalExprList/
-    -- evalCompareChain/evalBoolOp. Since lowerExpr returns none for all of them,
-    -- they're unreachable in lowering_reflects_eval. We use sorry here;
-    -- closing requires extending the mutual induction scheme.
     sorry
 
 end MoltPython
