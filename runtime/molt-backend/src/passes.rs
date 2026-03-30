@@ -2343,6 +2343,26 @@ pub fn split_large_function(
         }
     }
 
+    // Also forbid splitting between matched if/end_if pairs.
+    // After TIR optimization, the depth tracker may see depth=0 between
+    // an `if` and its `end_if` because TIR-inserted store_var/load_var
+    // ops reset the apparent nesting. Protecting the full if→end_if span
+    // ensures the function compiler always sees matched pairs.
+    {
+        let mut if_stack: Vec<usize> = Vec::new();
+        for (idx, op) in func.ops.iter().enumerate() {
+            match op.kind.as_str() {
+                "if" => if_stack.push(idx),
+                "end_if" => {
+                    if let Some(if_idx) = if_stack.pop() {
+                        forbidden_ranges.push((if_idx, idx));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     let is_forbidden = |sp: usize| -> bool {
         for &(start, end) in &forbidden_ranges {
             // sp is the first index of the new chunk; splitting here means
