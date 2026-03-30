@@ -545,6 +545,7 @@ impl SimpleBackend {
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut builder_ctx);
 
         let mut vars: BTreeMap<String, Variable> = BTreeMap::new();
+        let mut hoisted_str_slot: BTreeMap<String, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
         // const_str outputs are stored in dedicated stack slots instead of
         // relying on Cranelift SSA variables. SSA variables get reset to None
         // by various loop and exception handler initialization paths, corrupting
@@ -872,53 +873,40 @@ impl SimpleBackend {
                     &[types::I64, types::I64, types::I64],
                     &[types::I32],
                 );
-                let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
                     8,
                     3,
                 ));
-                let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
+                let tmp_ptr = builder.ins().stack_addr(types::I64, tmp_slot, 0);
                 let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                builder.ins().call(local_callee, &[ptr, len, out_ptr]);
+                builder.ins().call(local_callee, &[ptr, len, tmp_ptr]);
+                // Load from tmp slot and explicitly store to the hoisted slot.
+                let hoisted_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let val = builder.ins().stack_load(types::I64, tmp_slot, 0);
+                builder.ins().stack_store(val, hoisted_slot, 0);
 
-                const_str_hoisted_slots.insert(bytes.clone(), out_slot);
+                const_str_hoisted_slots.insert(bytes.clone(), hoisted_slot);
             }
         }
 
         // Map every const_str output name to its hoisted stack slot.
-        let mut const_str_name_to_slot: BTreeMap<String, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
         for op in &func_ir.ops {
             if op.kind == "const_str" {
                 let bytes = op.bytes.as_deref()
                     .unwrap_or_else(|| op.s_value.as_deref().unwrap_or("").as_bytes());
                 if let Some(ref out) = op.out {
                     if let Some(&slot) = const_str_hoisted_slots.get(bytes) {
-                        const_str_name_to_slot.insert(out.clone(), slot);
+                        hoisted_str_slot.insert(out.clone(), slot);
                     }
                 }
             }
         }
 
-        // Diagnostic: dump ops for the target function
-        if func_ir.name.contains("molt_module_chunk_1") && func_ir.name.contains("tw_final") {
-            let mut dump = String::new();
-            for (i, op) in func_ir.ops.iter().enumerate() {
-                if i < 50 {
-                    dump.push_str(&format!("{}: {} out={:?} args={:?} sval={:?}
-",
-                        i, op.kind, op.out, op.args, op.s_value));
-                }
-            }
-            let _ = std::fs::write("/tmp/molt_chunk_ops.txt", &dump);
-        }
-        if func_ir.name.contains("chunk_1") {
-            let _ = std::fs::write("/tmp/molt_name_to_slot.txt",
-                format!("func={} name_to_slot={:?} hoisted_slots={:?}
-",
-                    func_ir.name,
-                    const_str_name_to_slot.keys().collect::<Vec<_>>(),
-                    const_str_hoisted_slots.keys().map(|b| String::from_utf8_lossy(b).to_string()).collect::<Vec<_>>()));
-        }
         builder.seal_block(entry_block);
         sealed_blocks.insert(entry_block);
 
@@ -936,11 +924,6 @@ impl SimpleBackend {
         // `len`/`index` can fold without touching the runtime. The tuple
         // object itself must still use the canonical runtime layout.
         let mut scalarized_tuples: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-        let is_target_func = func_ir.name.contains("chunk_1") && func_ir.name.contains("tw_final");
-        if is_target_func {
-            let _ = std::fs::write("/tmp/molt_oploop_start.txt",
-                format!("Starting op loop for {} with {} ops\n", func_ir.name, ops.len()));
-        }
         for op_idx in 0..ops.len() {
             if skip_ops.contains(&op_idx) {
                 continue;
@@ -950,13 +933,6 @@ impl SimpleBackend {
             // block with a terminator, including legitimate fallthrough blocks.
             // Instead, only detect filled blocks when switching to them (in
             // switch_to_block_tracking).
-            if is_target_func && op.kind == "module_get_attr" {
-                let _ = std::fs::OpenOptions::new().create(true).append(true)
-                    .open("/tmp/molt_block_filled.txt")
-                    .and_then(|mut f| std::io::Write::write_all(&mut f,
-                        format!("op={} kind={} is_block_filled={}\n",
-                            op_idx, op.kind, is_block_filled).as_bytes()));
-            }
             if is_block_filled {
                 if op.kind == "if"
                     && let Some(&end_if_idx) = if_to_end_if.get(&op_idx)
@@ -11506,7 +11482,7 @@ impl SimpleBackend {
                         )
                     });
                     // Load attr name from stack slot if this is a const_str.
-                    let attr_val = if let Some(&slot) = const_str_name_to_slot.get(&args[1]) {
+                    let attr_val = if let Some(&slot) = hoisted_str_slot.get(&args[1]) {
                         builder.ins().stack_load(types::I64, slot, 0)
                     } else {
                         *var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
@@ -11601,7 +11577,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
-                    let attr_bits = if let Some(&slot) = const_str_name_to_slot.get(&args[1]) {
+                    let attr_bits = if let Some(&slot) = hoisted_str_slot.get(&args[1]) {
                         builder.ins().stack_load(types::I64, slot, 0)
                     } else {
                         *var_get(&mut builder, &vars, &args[1]).expect("Attr not found")
