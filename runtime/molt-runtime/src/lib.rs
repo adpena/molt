@@ -418,6 +418,13 @@ pub use crate::builtins::functions_stat::*;
 pub use crate::builtins::functions_re::*;
 pub use crate::builtins::functions_fnmatch::*;
 pub use crate::builtins::functions_textwrap::*;
+pub use crate::builtins::functions_shlex::*;
+pub use crate::builtins::functions_opcode::*;
+pub use crate::builtins::functions_bisect::*;
+pub use crate::builtins::functions_codeop::*;
+pub use crate::builtins::functions_argparse::*;
+pub use crate::builtins::functions_pkgutil::*;
+pub use crate::builtins::functions_compileall::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::functions_zipfile::*;
 pub use crate::builtins::functools::*;
