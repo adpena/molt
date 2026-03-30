@@ -2728,9 +2728,15 @@ impl SimpleBackend {
                     func_ir.param_types.as_deref(),
                     &body_bytes,
                 );
-                // Cache disabled — always process through TIR pipeline.
-                // (TIR roundtrip has a lossy linearization bug; cached ops
-                // from previous runs with roundtrip enabled would be broken.)
+                // Check TIR cache: if we have validated optimized ops from a
+                // previous build with the same content hash, reuse them.
+                if let Some(cached_bytes) = tir_cache.get(&content_hash) {
+                    if let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes) {
+                        func_ir.ops = cached_ops;
+                        tir_optimized_names.insert(func_ir.name.clone());
+                        continue;
+                    }
+                }
                 work_items.push(TirWorkItem {
                     index: i,
                     content_hash,
