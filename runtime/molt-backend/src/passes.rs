@@ -1732,8 +1732,8 @@ mod tests {
             "split stub must return the propagated chunk result",
         );
         assert_eq!(
-            stub.ops.last().and_then(|op| op.args.as_ref()),
-            Some(&vec!["__chunk_ret".to_string()]),
+            stub.ops.last().and_then(|op| op.var.as_deref()),
+            Some("__chunk_ret"),
             "split stub must return the named propagated chunk result",
         );
         assert!(
@@ -2547,7 +2547,7 @@ pub fn split_large_function(
     if has_returning_chunk {
         stub_ops.push(OpIR {
             kind: "ret".to_string(),
-            args: Some(vec!["__chunk_ret".to_string()]),
+            var: Some("__chunk_ret".to_string()),
             ..OpIR::default()
         });
     }
