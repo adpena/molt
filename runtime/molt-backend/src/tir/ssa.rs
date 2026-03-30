@@ -479,6 +479,9 @@ impl<'a> SsaContext<'a> {
         // Map: block_id → vec of (var_name, count_pushed).
         let mut pushed: Vec<Vec<(String, usize)>> = vec![Vec::new(); n];
 
+        // Per-block exit variable snapshots for second-pass branch arg resolution.
+        let mut block_exit_vars: HashMap<usize, HashMap<String, ValueId>> = HashMap::new();
+
         // Iterative dominator-tree walk (pre-order DFS).
         let mut stack: Vec<(usize, bool)> = vec![(self.cfg.entry, false)];
 
@@ -613,12 +616,63 @@ impl<'a> SsaContext<'a> {
             let terminator = self.build_terminator(bid, &var_stacks);
             tir_blocks[bid].terminator = terminator;
 
+            // Save the variable stacks snapshot for this block (used in
+            // the second pass to resolve branch args from sibling branches).
+            let mut block_vars: HashMap<String, ValueId> = HashMap::new();
+            for (var, stack) in &var_stacks {
+                if let Some(&top) = stack.last() {
+                    block_vars.insert(var.clone(), top);
+                }
+            }
+
             // Save pushed counts for cleanup.
             pushed[bid] = block_pushed;
 
             // Push dominator-tree children in reverse order for correct DFS.
             for &child in dom_children[bid].iter().rev() {
                 stack.push((child, false));
+            }
+
+            // Store the block's exit variable state for second-pass resolution.
+            block_exit_vars.insert(bid, block_vars);
+        }
+
+        // ── Second pass: fix branch args that used undef_value ──
+        // The dom-tree walk may have produced undef_value for branch args
+        // when a sibling predecessor hadn't been visited yet.  Now that all
+        // blocks are processed, resolve them using predecessor exit states.
+        for bid in 0..n {
+            let terminator = &mut tir_blocks[bid].terminator;
+            let fix_args = |args: &mut Vec<ValueId>, target_bid: usize| {
+                let target_vars = &self.block_arg_vars[target_bid];
+                for (i, arg) in args.iter_mut().enumerate() {
+                    if *arg == undef_vid {
+                        // Try to resolve from predecessor exit vars.
+                        if let Some(var_name) = target_vars.get(i) {
+                            // Check all predecessors of target_bid for this var.
+                            for &pred_bid in &self.cfg.predecessors[target_bid] {
+                                if let Some(pred_vars) = block_exit_vars.get(&pred_bid) {
+                                    if let Some(&val) = pred_vars.get(var_name) {
+                                        if val != undef_vid {
+                                            *arg = val;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            match terminator {
+                Terminator::Branch { target, args } => {
+                    fix_args(args, target.0 as usize);
+                }
+                Terminator::CondBranch { then_block, then_args, else_block, else_args, .. } => {
+                    fix_args(then_args, then_block.0 as usize);
+                    fix_args(else_args, else_block.0 as usize);
+                }
+                _ => {}
             }
         }
 
