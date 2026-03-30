@@ -65,6 +65,7 @@ fn may_throw(opcode: OpCode) -> bool {
             | OpCode::Mod
             | OpCode::GetIter
             | OpCode::IterNext
+            | OpCode::IterNextUnboxed
             | OpCode::ForIter
     )
 }

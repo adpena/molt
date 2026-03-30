@@ -266,6 +266,7 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::BuildSlice => "build_slice",
         OpCode::GetIter => "get_iter",
         OpCode::IterNext => "iter_next",
+        OpCode::IterNextUnboxed => "iter_next_unboxed",
         OpCode::ForIter => "for_iter",
         OpCode::Yield => "yield",
         OpCode::YieldFrom => "yield_from",
@@ -289,6 +290,7 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::ScfWhile => "while",
         OpCode::ScfYield => "yield",
         OpCode::Deopt => "deopt",
+        OpCode::IterNextUnboxed => "iter_next_unboxed",
     }
 }
 

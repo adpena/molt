@@ -5326,6 +5326,38 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
+                "iter_next_unboxed" => {
+                    // TIR-fused iter_next that produces (value, done_flag)
+                    // directly.  op.args[0] = iterator, op.var = value output,
+                    // op.out = done_flag output.
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let iter = var_get(&mut builder, &vars, &args[0]).expect("Iter not found");
+                    let val_name = op.var.clone().unwrap_or_default();
+                    let done_name = op.out.clone().unwrap_or_default();
+
+                    let val_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, 8, 3,
+                    ));
+                    let val_ptr = builder.ins().stack_addr(types::I64, val_slot, 0);
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_iter_next_unboxed",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*iter, val_ptr]);
+                    let done_bits = builder.inst_results(call)[0];
+                    let loaded_val = builder.ins().load(types::I64, MemFlags::trusted(), val_ptr, 0);
+
+                    if !done_name.is_empty() && done_name != "none" {
+                        def_var_named(&mut builder, &vars, done_name, done_bits);
+                    }
+                    if !val_name.is_empty() && val_name != "none" {
+                        def_var_named(&mut builder, &vars, val_name, loaded_val);
+                    }
+                }
                 "iter_next" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let iter = var_get(&mut builder, &vars, &args[0]).expect("Iter not found");

@@ -2835,6 +2835,11 @@ impl SimpleBackend {
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
                         }
+                        // Loop functions now go through TIR: the SSA lift fuses
+                        // iter_next + index(pair,1) + index(pair,0) into a single
+                        // IterNextUnboxed op, and lower_to_simple emits
+                        // iter_next_unboxed which the native backend handles
+                        // directly without the fragile peephole scan.
                         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                         crate::tir::type_refine::refine_types(&mut tir_func);
                         let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {

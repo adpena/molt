@@ -86,6 +86,10 @@ pub enum OpCode {
     // Iteration
     GetIter,
     IterNext,
+    /// Fused iter_next that produces (value, done_flag) directly,
+    /// bypassing the tuple allocation + index ops.  Two results:
+    /// results[0] = value, results[1] = done_flag.
+    IterNextUnboxed,
     ForIter,
     // Generator
     Yield,
