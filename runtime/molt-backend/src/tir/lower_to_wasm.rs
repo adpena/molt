@@ -427,9 +427,9 @@ fn emit_op(ctx: &mut LowerCtx, op: &super::ops::TirOp) {
         }
 
         // --- Arithmetic (type-specialized) ---
-        OpCode::Add => emit_binary_arith(ctx, op, ArithOp::Add),
-        OpCode::Sub => emit_binary_arith(ctx, op, ArithOp::Sub),
-        OpCode::Mul => emit_binary_arith(ctx, op, ArithOp::Mul),
+        OpCode::Add | OpCode::InplaceAdd => emit_binary_arith(ctx, op, ArithOp::Add),
+        OpCode::Sub | OpCode::InplaceSub => emit_binary_arith(ctx, op, ArithOp::Sub),
+        OpCode::Mul | OpCode::InplaceMul => emit_binary_arith(ctx, op, ArithOp::Mul),
         OpCode::Div => emit_binary_arith(ctx, op, ArithOp::Div),
         OpCode::FloorDiv => emit_binary_arith(ctx, op, ArithOp::FloorDiv),
         OpCode::Mod => emit_binary_arith(ctx, op, ArithOp::Mod),
@@ -1072,6 +1072,9 @@ fn infer_result_type(op: &super::ops::TirOp, ctx: &LowerCtx) -> TirType {
         OpCode::Add
         | OpCode::Sub
         | OpCode::Mul
+        | OpCode::InplaceAdd
+        | OpCode::InplaceSub
+        | OpCode::InplaceMul
         | OpCode::Div
         | OpCode::FloorDiv
         | OpCode::Mod
