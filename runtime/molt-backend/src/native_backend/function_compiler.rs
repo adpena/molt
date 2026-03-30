@@ -911,6 +911,14 @@ impl SimpleBackend {
             }
             let _ = std::fs::write("/tmp/molt_chunk_ops.txt", &dump);
         }
+        if func_ir.name.contains("chunk_1") {
+            let _ = std::fs::write("/tmp/molt_name_to_slot.txt",
+                format!("func={} name_to_slot={:?} hoisted_slots={:?}
+",
+                    func_ir.name,
+                    const_str_name_to_slot.keys().collect::<Vec<_>>(),
+                    const_str_hoisted_slots.keys().map(|b| String::from_utf8_lossy(b).to_string()).collect::<Vec<_>>()));
+        }
         builder.seal_block(entry_block);
         sealed_blocks.insert(entry_block);
 
@@ -928,6 +936,11 @@ impl SimpleBackend {
         // `len`/`index` can fold without touching the runtime. The tuple
         // object itself must still use the canonical runtime layout.
         let mut scalarized_tuples: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        let is_target_func = func_ir.name.contains("chunk_1") && func_ir.name.contains("tw_final");
+        if is_target_func {
+            let _ = std::fs::write("/tmp/molt_oploop_start.txt",
+                format!("Starting op loop for {} with {} ops\n", func_ir.name, ops.len()));
+        }
         for op_idx in 0..ops.len() {
             if skip_ops.contains(&op_idx) {
                 continue;
@@ -937,6 +950,13 @@ impl SimpleBackend {
             // block with a terminator, including legitimate fallthrough blocks.
             // Instead, only detect filled blocks when switching to them (in
             // switch_to_block_tracking).
+            if is_target_func && op.kind == "module_get_attr" {
+                let _ = std::fs::OpenOptions::new().create(true).append(true)
+                    .open("/tmp/molt_block_filled.txt")
+                    .and_then(|mut f| std::io::Write::write_all(&mut f,
+                        format!("op={} kind={} is_block_filled={}\n",
+                            op_idx, op.kind, is_block_filled).as_bytes()));
+            }
             if is_block_filled {
                 if op.kind == "if"
                     && let Some(&end_if_idx) = if_to_end_if.get(&op_idx)
@@ -1184,7 +1204,9 @@ impl SimpleBackend {
                     // boundaries, unlike Cranelift variables which can be reset
                     // by check_exception cleanup. This fixes the while-loop
                     // module-scope bug where const_str attr names were corrupted.
-                    let boxed = if let Some(&slot) = const_str_slots.get(&data_id) {
+                    let boxed = if let Some(slot) = const_str_hoisted_slots.get(bytes) {
+                        builder.ins().stack_load(types::I64, *slot, 0)
+                    } else if let Some(&slot) = const_str_slots.get(&data_id) {
                         builder.ins().stack_load(types::I64, slot, 0)
                     } else {
                         let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
@@ -11484,7 +11506,7 @@ impl SimpleBackend {
                         )
                     });
                     // Load attr name from stack slot if this is a const_str.
-                    let attr_val = if let Some(&slot) = const_str_slot_by_name.get(&args[1]) {
+                    let attr_val = if let Some(&slot) = const_str_name_to_slot.get(&args[1]) {
                         builder.ins().stack_load(types::I64, slot, 0)
                     } else {
                         *var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
@@ -11579,7 +11601,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let module_bits =
                         var_get(&mut builder, &vars, &args[0]).expect("Module not found");
-                    let attr_bits = if let Some(&slot) = const_str_slot_by_name.get(&args[1]) {
+                    let attr_bits = if let Some(&slot) = const_str_name_to_slot.get(&args[1]) {
                         builder.ins().stack_load(types::I64, slot, 0)
                     } else {
                         *var_get(&mut builder, &vars, &args[1]).expect("Attr not found")
@@ -15555,4 +15577,9 @@ mod tests {
         assert_eq!(analysis.last_use.get("out"), Some(&9));
     }
 }
+
+
+
+
+
 
