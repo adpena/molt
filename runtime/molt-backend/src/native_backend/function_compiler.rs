@@ -461,6 +461,7 @@ impl SimpleBackend {
         emit_traces: bool,
         leaf_functions: &BTreeSet<String>,
         known_function_arities: &BTreeMap<String, usize>,
+        function_has_ret: &BTreeMap<String, bool>,
     ) {
         self.compile_func_inner(
             func_ir,
@@ -475,6 +476,7 @@ impl SimpleBackend {
             &BTreeSet::new(),
             leaf_functions,
             known_function_arities,
+            function_has_ret,
         );
     }
 
@@ -496,6 +498,7 @@ impl SimpleBackend {
         _typed_int_functions: &BTreeSet<String>,
         leaf_functions: &BTreeSet<String>,
         known_function_arities: &BTreeMap<String, usize>,
+        function_has_ret: &BTreeMap<String, bool>,
     ) {
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
@@ -9091,6 +9094,10 @@ impl SimpleBackend {
                     } else {
                         *task_closure_sizes.get(func_name).unwrap_or(&0)
                     };
+                    let target_ret = function_has_ret
+                        .get(func_name.as_str())
+                        .copied()
+                        .unwrap_or(true);
                     let mut func_sig = self.module.make_signature();
                     if kind != TrampolineKind::Plain {
                         func_sig.params.push(AbiParam::new(types::I64));
@@ -9099,7 +9106,9 @@ impl SimpleBackend {
                             func_sig.params.push(AbiParam::new(types::I64));
                         }
                     }
-                    func_sig.returns.push(AbiParam::new(types::I64));
+                    if target_ret {
+                        func_sig.returns.push(AbiParam::new(types::I64));
+                    }
                     self.declared_func_arities
                         .insert(func_name.clone(), func_sig.params.len());
                     // func_new references an existing function. If the symbol is
@@ -9121,6 +9130,10 @@ impl SimpleBackend {
                     };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
+                    let target_has_ret = function_has_ret
+                        .get(func_name.as_str())
+                        .copied()
+                        .unwrap_or(true);
                     let tramp_id = Self::ensure_trampoline(
                         &mut self.module,
                         &mut self.trampoline_ids,
@@ -9131,7 +9144,7 @@ impl SimpleBackend {
                             has_closure: false,
                             kind,
                             closure_size,
-                            target_has_ret: true,
+                            target_has_ret,
                         },
                     );
                     let tramp_ref = self.module.declare_func_in_func(tramp_id, builder.func);
@@ -9179,6 +9192,10 @@ impl SimpleBackend {
                         .expect("func_new_closure expects closure arg");
                     let closure_bits =
                         *var_get(&mut builder, &vars, closure_name).expect("closure arg not found");
+                    let target_ret = function_has_ret
+                        .get(func_name.as_str())
+                        .copied()
+                        .unwrap_or(true);
                     let mut func_sig = self.module.make_signature();
                     if kind != TrampolineKind::Plain {
                         func_sig.params.push(AbiParam::new(types::I64));
@@ -9188,7 +9205,9 @@ impl SimpleBackend {
                             func_sig.params.push(AbiParam::new(types::I64));
                         }
                     }
-                    func_sig.returns.push(AbiParam::new(types::I64));
+                    if target_ret {
+                        func_sig.returns.push(AbiParam::new(types::I64));
+                    }
                     self.declared_func_arities
                         .insert(func_name.clone(), func_sig.params.len());
                     let mut actual_closure_name = func_name.clone();
@@ -9229,6 +9248,10 @@ impl SimpleBackend {
                     };
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     let func_addr = builder.ins().func_addr(types::I64, func_ref);
+                    let target_has_ret = function_has_ret
+                        .get(func_name.as_str())
+                        .copied()
+                        .unwrap_or(true);
                     let tramp_id = Self::ensure_trampoline(
                         &mut self.module,
                         &mut self.trampoline_ids,
@@ -9239,7 +9262,7 @@ impl SimpleBackend {
                             has_closure: true,
                             kind,
                             closure_size,
-                            target_has_ret: true,
+                            target_has_ret,
                         },
                     );
                     let tramp_ref = self.module.declare_func_in_func(tramp_id, builder.func);
@@ -9753,11 +9776,17 @@ impl SimpleBackend {
                         .copied()
                         .or_else(|| known_function_arities.get(target_name.as_str()).copied())
                         .unwrap_or(args.len());
+                    let target_ret = function_has_ret
+                        .get(target_name.as_str())
+                        .copied()
+                        .unwrap_or(true);
                     let mut target_sig = self.module.make_signature();
                     for _ in 0..sig_arity {
                         target_sig.params.push(AbiParam::new(types::I64));
                     }
-                    target_sig.returns.push(AbiParam::new(types::I64));
+                    if target_ret {
+                        target_sig.returns.push(AbiParam::new(types::I64));
+                    }
                     let linkage = if defined_functions.contains(target_name) {
                         Linkage::Export
                     } else {
@@ -9826,12 +9855,21 @@ impl SimpleBackend {
                     }
 
                     let is_leaf_call = use_direct_call && leaf_functions.contains(target_name);
+                    let _callee_has_ret = function_has_ret
+                        .get(target_name.as_str())
+                        .copied()
+                        .unwrap_or(true);
                     let res = if is_leaf_call {
                         // Leaf function: no user-level calls inside, so it
                         // cannot recurse.  Skip the recursion guard entirely
                         // (saves 2 atomic ops + 2 extern-C calls per call).
                         let direct_call = builder.ins().call(local_callee, &args);
-                        builder.inst_results(direct_call)[0]
+                        let results = builder.inst_results(direct_call);
+                        if results.is_empty() {
+                            builder.ins().iconst(types::I64, box_none())
+                        } else {
+                            results[0]
+                        }
                     } else if use_direct_call {
                         // Lightweight recursion guard using global atomics
                         // (no TLS on the hot path). The data-symbol inline
@@ -10108,11 +10146,17 @@ impl SimpleBackend {
                         let env_bits = builder.inst_results(extract_call)[0];
                         args.insert(0, env_bits);
                     }
+                    let target_returns = function_has_ret
+                        .get(target_name.as_str())
+                        .copied()
+                        .unwrap_or(true);
                     let mut sig = self.module.make_signature();
                     for _ in 0..args.len() {
                         sig.params.push(AbiParam::new(types::I64));
                     }
-                    sig.returns.push(AbiParam::new(types::I64));
+                    if target_returns {
+                        sig.returns.push(AbiParam::new(types::I64));
+                    }
                     let linkage = if defined_functions.contains(target_name) {
                         Linkage::Export
                     } else {
@@ -10148,15 +10192,23 @@ impl SimpleBackend {
                     };
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &args);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(crate::passes::ReturnAliasSummary::Param(param_idx)) =
-                        return_alias_summaries.get(target_name)
-                        && *param_idx < args.len()
-                    {
-                        emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
-                    }
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
+                    if target_returns {
+                        let res = builder.inst_results(call)[0];
+                        if let Some(crate::passes::ReturnAliasSummary::Param(param_idx)) =
+                            return_alias_summaries.get(target_name)
+                            && *param_idx < args.len()
+                        {
+                            emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
+                        }
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
+                    } else {
+                        // Target doesn't return — assign None if output var requested.
+                        if let Some(out__) = op.out {
+                            let none_val = builder.ins().iconst(types::I64, box_none());
+                            def_var_named(&mut builder, &vars, out__, none_val);
+                        }
                     }
                 }
                 "inc_ref" | "borrow" => {
@@ -11490,7 +11542,19 @@ impl SimpleBackend {
                     });
                     // Load attr name from stack slot if this is a const_str.
                     let _has = hoisted_str_slot.contains_key(&args[1]);
-                    let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_mga_diag.txt").and_then(|mut f| std::io::Write::write_all(&mut f, format!("mga: func={} op={} arg1={} has_slot={} slot_count={}\n", func_ir.name, op_idx, &args[1], _has, hoisted_str_slot.len()).as_bytes()));
+                    if std::env::var("MOLT_DEBUG_MODULE_GET_ATTR").as_deref() == Ok("1") {
+                        let _ = crate::debug_artifacts::append_debug_artifact(
+                            "native/module_get_attr_diag.txt",
+                            format!(
+                                "mga: func={} op={} arg1={} has_slot={} slot_count={}\n",
+                                func_ir.name,
+                                op_idx,
+                                &args[1],
+                                _has,
+                                hoisted_str_slot.len()
+                            ),
+                        );
+                    }
                     let attr_val = if let Some(&slot) = hoisted_str_slot.get(&args[1]) {
                         builder.ins().stack_load(types::I64, slot, 0)
                     } else {
@@ -15411,8 +15475,12 @@ impl SimpleBackend {
             dump_ir_ops(&func_ir, &config.mode);
         }
 
-        let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_compiled_funcs.txt").and_then(|mut f| std::io::Write::write_all(&mut f, format!("compiled: {}
-", func_ir.name).as_bytes()));
+        if std::env::var("MOLT_DEBUG_COMPILED_FUNCS").as_deref() == Ok("1") {
+            let _ = crate::debug_artifacts::append_debug_artifact(
+                "native/compiled_funcs.txt",
+                format!("compiled: {}\n", func_ir.name),
+            );
+        }
         if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF")
             && (filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter))
         {
