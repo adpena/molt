@@ -4,13 +4,9 @@
 use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::*;
 use molt_obj_model::MoltObject;
-use num_bigint::{BigInt, Sign};
+use num_bigint::Sign;
 use num_traits::ToPrimitive;
-use std::collections::HashSet;
 use std::io::ErrorKind;
-
-#[cfg(unix)]
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PathFlavor {
