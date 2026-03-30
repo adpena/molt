@@ -20,6 +20,8 @@
 import MoltLowering.ASTtoTIR
 import MoltLowering.Properties
 import MoltLowering.EnvCorr
+import MoltLowering.LowerExprInv
+import MoltPython.Semantics.FuelMono
 
 set_option autoImplicit false
 
@@ -412,13 +414,31 @@ theorem lowering_reflects_eval
     obtain ⟨pv, hpv_lookup, hpv_lower⟩ := hback x n tv hnm htir
     exact ⟨1, pv, by simp [MoltPython.evalPyExpr, hpv_lookup], hpv_lower⟩
   | binOp op left right =>
-    -- Recursive case: lowerExpr requires both sub-exprs to lower.
-    -- Without structural induction on PyExpr, we cannot recurse.
-    -- The backward simulation for compound expressions requires fuel
-    -- monotonicity (evalPyExpr at fuel f implies evalPyExpr at fuel f+k)
-    -- which is not yet formalized. We use sorry for the recursive cases.
-    sorry
-  | unaryOp op operand => sorry
+    obtain ⟨la, ra, hl, hr, rfl⟩ := lowerExpr_binOp_inv nm op left right te hlower
+    simp only [MoltTIR.evalExpr] at htir
+    match hla : MoltTIR.evalExpr tirEnv la, hra : MoltTIR.evalExpr tirEnv ra with
+    | some tva, some tvb =>
+      simp [hla, hra] at htir
+      have ⟨fl, pvl, hel, hll⟩ := lowering_reflects_eval nm pyEnv tirEnv henv hback left la hl tva hla
+      have ⟨fr, pvr, her, hlr⟩ := lowering_reflects_eval nm pyEnv tirEnv henv hback right ra hr tvb hra
+      let f := max fl fr
+      have hel' := MoltPython.evalPyExpr_fuel_mono fl pyEnv left pvl hel f (Nat.le_max_left fl fr)
+      have her' := MoltPython.evalPyExpr_fuel_mono fr pyEnv right pvr her f (Nat.le_max_right fl fr)
+      -- Need backward op correspondence: given TIR evalBinOp succeeds,
+      -- Python evalBinOp with the corresponding values also succeeds.
+      sorry
+    | some _, none => simp [hla, hra] at htir
+    | none, _ => simp [hla] at htir
+  | unaryOp op operand =>
+    obtain ⟨a, ho, rfl⟩ := lowerExpr_unaryOp_inv nm op operand te hlower
+    simp only [MoltTIR.evalExpr] at htir
+    match ha : MoltTIR.evalExpr tirEnv a with
+    | some tva =>
+      simp [ha] at htir
+      have ⟨f, pv, heval, hlv⟩ := lowering_reflects_eval nm pyEnv tirEnv henv hback operand a ho tva ha
+      -- Need backward op correspondence for unary
+      sorry
+    | none => simp [ha] at htir
   -- Unsupported expression forms return none from lowerExpr
   | compare _ _ _ => simp [lowerExpr] at hlower
   | boolOp _ _ => simp [lowerExpr] at hlower
