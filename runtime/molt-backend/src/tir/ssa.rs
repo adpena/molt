@@ -91,6 +91,12 @@ struct SsaContext<'a> {
     params: Vec<String>,
     /// Shared `None` value used for known variables without a reaching def.
     undef_value: Option<ValueId>,
+    /// Global iter_next fusion map: op_idx → (done_index_idx, val_index_idx,
+    /// done_var, val_var).  Built by scanning the raw op stream BEFORE the
+    /// CFG splits blocks, so the pattern spans across check_exception boundaries.
+    iter_fuse_map: HashMap<usize, (usize, usize, String, String)>,
+    /// Op indices to skip globally (fused into IterNextUnboxed).
+    iter_fuse_skip: HashSet<usize>,
 }
 
 impl<'a> SsaContext<'a> {
@@ -109,6 +115,8 @@ impl<'a> SsaContext<'a> {
             pending_inline_consts: Vec::new(),
             params: params.to_vec(),
             undef_value: None,
+            iter_fuse_map: HashMap::new(),
+            iter_fuse_skip: HashSet::new(),
         }
     }
 
@@ -128,11 +136,62 @@ impl<'a> SsaContext<'a> {
         if self.cfg.blocks.is_empty() {
             return;
         }
+        self.build_iter_fuse_map();
         self.gather_defs_uses();
         self.compute_dominance_frontiers();
         self.insert_block_arguments();
         self.insert_exception_handler_arguments();
         self.rename_and_emit();
+    }
+
+    /// Scan the raw linear op stream for iter_next → index(pair,1) →
+    /// index(pair,0) patterns.  This runs BEFORE the CFG splits blocks at
+    /// check_exception boundaries, so the pattern can span across them.
+    fn build_iter_fuse_map(&mut self) {
+        let ops = self.ops;
+        for (i, op) in ops.iter().enumerate() {
+            if op.kind != "iter_next" { continue; }
+            let pair_var = match &op.out {
+                Some(v) if v != "none" => v.clone(),
+                _ => continue,
+            };
+            let mut done_idx = None;
+            let mut val_idx = None;
+            let scan_end = (i + 20).min(ops.len());
+            for j in (i + 1)..scan_end {
+                let scan_op = &ops[j];
+                if scan_op.kind == "index" {
+                    if let Some(args) = &scan_op.args {
+                        if args.len() >= 2 && args[0] == pair_var {
+                            let idx_name = &args[1];
+                            let const_val = ops[..j].iter().rev().take(20)
+                                .find_map(|c| {
+                                    if c.kind == "const" && c.out.as_deref() == Some(idx_name) {
+                                        c.value
+                                    } else {
+                                        None
+                                    }
+                                });
+                            if const_val == Some(1) && done_idx.is_none() {
+                                done_idx = Some(j);
+                            } else if const_val == Some(0) && val_idx.is_none() {
+                                val_idx = Some(j);
+                            }
+                        }
+                    }
+                }
+            }
+            if let (Some(di), Some(vi)) = (done_idx, val_idx) {
+                let done_var = ops[di].out.clone().unwrap_or_default();
+                let val_var = ops[vi].out.clone().unwrap_or_default();
+                self.iter_fuse_map.insert(i, (di, vi, done_var, val_var));
+                // Skip all ops between iter_next and the value index.
+                let skip_end = di.max(vi);
+                for skip in (i + 1)..=skip_end {
+                    self.iter_fuse_skip.insert(skip);
+                }
+            }
+        }
     }
 
     // -- Phase 1: gather variable defs and uses per block --------------------
@@ -472,76 +531,19 @@ impl<'a> SsaContext<'a> {
                 });
             }
             let op_indices = self.block_info[bid].op_indices.clone();
-            // Track which op indices to skip (fused into IterNextUnboxed).
-            let mut skip_indices: HashSet<usize> = HashSet::new();
-
-            // Pre-scan for iter_next → index(pair,1) → index(pair,0) patterns.
-            // Collect (iter_next_idx, done_index_idx, val_index_idx, pair_var, done_var, val_var).
-            let mut fuse_map: HashMap<usize, (usize, usize, String, String)> = HashMap::new();
-            for (pos, &op_idx) in op_indices.iter().enumerate() {
-                let op = &self.ops[op_idx];
-                if op.kind != "iter_next" { continue; }
-                let pair_var = match &op.out {
-                    Some(v) if v != "none" => v.clone(),
-                    _ => continue,
-                };
-                // Scan ahead for index(pair, 1) and index(pair, 0).
-                let mut done_idx = None;
-                let mut val_idx = None;
-                let scan_end = (pos + 10).min(op_indices.len());
-                for scan_pos in (pos + 1)..scan_end {
-                    let scan_op = &self.ops[op_indices[scan_pos]];
-                    if scan_op.kind == "index" {
-                        if let Some(args) = &scan_op.args {
-                            if args.len() >= 2 && args[0] == pair_var {
-                                // Resolve the index constant.
-                                let idx_name = &args[1];
-                                let const_val = op_indices[..scan_pos].iter().rev()
-                                    .find_map(|&ci| {
-                                        let c = &self.ops[ci];
-                                        if c.kind == "const" && c.out.as_deref() == Some(idx_name) {
-                                            c.value
-                                        } else {
-                                            None
-                                        }
-                                    });
-                                if const_val == Some(1) && done_idx.is_none() {
-                                    done_idx = Some(op_indices[scan_pos]);
-                                } else if const_val == Some(0) && val_idx.is_none() {
-                                    val_idx = Some(op_indices[scan_pos]);
-                                }
-                            }
-                        }
-                    }
-                }
-                if let (Some(di), Some(vi)) = (done_idx, val_idx) {
-                    let done_var = self.ops[di].out.clone().unwrap_or_default();
-                    let val_var = self.ops[vi].out.clone().unwrap_or_default();
-                    fuse_map.insert(op_idx, (di, vi, done_var, val_var));
-                    // Skip the two index ops AND all ops between iter_next
-                    // and the value index.  These are exception-checking
-                    // boilerplate (check_exception, exception_last, is, not,
-                    // line) that is handled internally by iter_next_unboxed.
-                    let di_pos = op_indices.iter().position(|&x| x == di).unwrap_or(0);
-                    let vi_pos = op_indices.iter().position(|&x| x == vi).unwrap_or(0);
-                    let skip_end = di_pos.max(vi_pos);
-                    for skip_pos in (pos + 1)..=skip_end {
-                        if skip_pos < op_indices.len() {
-                            skip_indices.insert(op_indices[skip_pos]);
-                        }
-                    }
-                }
-            }
 
             for &op_idx in &op_indices {
-                if skip_indices.contains(&op_idx) {
+                // Skip ops globally fused into IterNextUnboxed.
+                if self.iter_fuse_skip.contains(&op_idx) {
                     continue;
                 }
                 let op = &self.ops[op_idx];
 
                 // Fused iter_next_unboxed: emit a single TIR op with two results
                 // (value, done_flag) instead of iter_next + 2x index.
-                if let Some((_, _, done_var, val_var)) = fuse_map.get(&op_idx) {
+                if let Some(fuse_entry) = self.iter_fuse_map.get(&op_idx) {
+                    let done_var = fuse_entry.2.clone();
+                    let val_var = fuse_entry.3.clone();
                     let iter_vid = op.args.as_ref()
                         .and_then(|a| a.first())
                         .and_then(|a| Self::resolve_var(a, &var_stacks))
@@ -561,11 +563,11 @@ impl<'a> SsaContext<'a> {
                     };
                     // Push val and done onto their variable stacks.
                     var_stacks.entry(val_var.clone()).or_default().push(val_vid);
-                    block_pushed.iter_mut().find(|(v,_)| v == val_var)
+                    block_pushed.iter_mut().find(|(v,_)| v == &val_var)
                         .map(|(_,c)| *c += 1)
                         .unwrap_or_else(|| block_pushed.push((val_var.clone(), 1)));
                     var_stacks.entry(done_var.clone()).or_default().push(done_vid);
-                    block_pushed.iter_mut().find(|(v,_)| v == done_var)
+                    block_pushed.iter_mut().find(|(v,_)| v == &done_var)
                         .map(|(_,c)| *c += 1)
                         .unwrap_or_else(|| block_pushed.push((done_var.clone(), 1)));
                     // Also push the pair var (referenced by loop_break_if_true).
