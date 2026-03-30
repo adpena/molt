@@ -1,4 +1,3 @@
-// TODO: fix in dedicated cleanup pass
 #![allow(clippy::needless_range_loop)] // index vars used in mutation / skip-set patterns
 #![allow(clippy::too_many_arguments)] // refactoring signatures risks breaking callers
 #![allow(clippy::type_complexity)] // complex return types in TIR CFG helpers
@@ -2833,17 +2832,10 @@ impl SimpleBackend {
                                         );
                                     }
                                 }
-                                // TIR→SimpleIR roundtrip: currently disabled because
-                                // the linearized control flow from lower_to_simple
-                                // produces incorrect code for some stdlib function
-                                // patterns. The caching infrastructure is ready —
-                                // enable by replacing this with:
-                                //   Some(lower_to_simple_ir(&tir_func, &type_map))
-                                // once the roundtrip is fixed for all patterns.
-                                //
-                                // The TIR passes still run for analysis/verification
-                                // even when the roundtrip is skipped.
-                                None::<Vec<crate::ir::OpIR>>
+                                Some(crate::tir::lower_to_simple::lower_to_simple_ir(
+                                    &tir_func,
+                                    &type_map,
+                                ))
                             }));
 
                         // Return TIR result for Phase 3 application + caching.

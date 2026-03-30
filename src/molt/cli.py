@@ -15909,9 +15909,12 @@ def _execute_backend_compile(
                     backend_env.setdefault("MOLT_STDLIB_OBJ", str(stdlib_obj_path))
             if not is_wasm and not _is_transpile and backend_env is not None:
                 backend_env.setdefault(ENTRY_OVERRIDE_ENV, entry_module)
-                # Limit rayon threads to prevent process explosion when
-                # multiple backend invocations run concurrently.
-                backend_env.setdefault("RAYON_NUM_THREADS", "4")
+                # Limit rayon threads to a fraction of available cores.
+                # The batched compilation pipeline may run multiple backend
+                # processes; each process's thread pool must share the CPU
+                # fairly. Default: half of available cores, minimum 2.
+                _default_threads = str(max(2, (os.cpu_count() or 4) // 2))
+                backend_env.setdefault("RAYON_NUM_THREADS", _default_threads)
             cmd = [str(backend_bin)]
             if is_luau_transpile:
                 cmd.extend(["--target", "luau"])
@@ -21906,9 +21909,9 @@ def build(
     if profile not in {"dev", "release"}:
         return _fail(f"Invalid build profile: {profile}", json_output, command="build")
     # --audit-log: propagate audit config via environment variables.
-    # TODO(review-I2): build() mutates os.environ globally; should use a local
-    # env dict like _run_script_cross(). Deferred: requires refactoring the
-    # entire build() env handling (MOLT_PORTABLE, MOLT_SPLIT_RUNTIME, etc.).
+    # NOTE: build() mutates os.environ for MOLT_PORTABLE, MOLT_SPLIT_RUNTIME,
+    # and audit config. A local env dict (like _run_script_cross) would be
+    # cleaner but requires refactoring the entire build() env handling chain.
     if audit_log is not None:
         os.environ.update(_parse_audit_log_flag(audit_log))
     # --io-mode: propagate IO mode via environment variable.
