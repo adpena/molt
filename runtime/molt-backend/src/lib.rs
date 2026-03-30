@@ -2835,11 +2835,19 @@ impl SimpleBackend {
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
                         }
-                        // Loop functions now go through TIR: the SSA lift fuses
-                        // iter_next + index(pair,1) + index(pair,0) into a single
-                        // IterNextUnboxed op, and lower_to_simple emits
-                        // iter_next_unboxed which the native backend handles
-                        // directly without the fragile peephole scan.
+                        // The TIR SSA lift fuses iter_next + index patterns into
+                        // IterNextUnboxed, and lower_to_simple emits loop markers
+                        // from LoopRole metadata.  However, the native backend's
+                        // loop codegen still requires the exact sequential op
+                        // pattern (loop_start → body → loop_continue → loop_end)
+                        // without intervening labels/jumps from block transitions.
+                        // Loop functions preserve original ops until lower_to_simple
+                        // fully fuses header + body blocks into a single loop region.
+                        if tmp_func.ops.iter().any(|op| {
+                            matches!(op.kind.as_str(), "loop_start" | "for_iter")
+                        }) {
+                            return (idx, content_hash, tmp_func.ops);
+                        }
                         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                         crate::tir::type_refine::refine_types(&mut tir_func);
                         let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
