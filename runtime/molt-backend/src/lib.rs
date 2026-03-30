@@ -2833,6 +2833,25 @@ impl SimpleBackend {
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
                         }
+                        // The native backend uses structured loop ops (loop_start,
+                        // loop_break_if_true, loop_continue, loop_end) that require
+                        // a specific sequential op ordering.  The TIR CFG splits
+                        // loops into many blocks at check_exception and br_if
+                        // boundaries, and lower_to_simple's block fusion produces
+                        // invalid Cranelift IR (unreachable blocks, broken value
+                        // liveness from exception handler blocks crossing loop
+                        // region boundaries).  Loop functions preserve original ops.
+                        //
+                        // Architecture note: the correct long-term fix is to teach
+                        // the native backend to handle CFG-style loops (blocks with
+                        // Branch/CondBranch terminators) in addition to structured
+                        // loops, so the TIR roundtrip doesn't need to reconstruct
+                        // structured markers from a CFG.
+                        if tmp_func.ops.iter().any(|op| {
+                            matches!(op.kind.as_str(), "loop_start" | "for_iter")
+                        }) {
+                            return (idx, content_hash, tmp_func.ops);
+                        }
                         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                         crate::tir::type_refine::refine_types(&mut tir_func);
                         let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
@@ -2871,18 +2890,7 @@ impl SimpleBackend {
                 // Empty ops = TIR roundtrip failed validation; keep original ops.
                 for (idx, content_hash, ops) in &results {
                     if !ops.is_empty() {
-                        // Loop functions: validate that the roundtrip preserved
-                        // structural loop markers.  If loop_start count doesn't
-                        // match, fall back to original ops.
-                        let orig_loops = ir.functions[*idx].ops.iter()
-                            .filter(|o| o.kind == "loop_start").count();
-                        let rt_loops = ops.iter()
-                            .filter(|o| o.kind == "loop_start").count();
-                        if orig_loops > 0 && rt_loops != orig_loops {
-                            // Loop structure not preserved — keep originals.
-                        } else {
-                            ir.functions[*idx].ops = ops.clone();
-                        }
+                        ir.functions[*idx].ops = ops.clone();
                         tir_optimized_names.insert(ir.functions[*idx].name.clone());
                         let bytes = crate::tir::serialize::serialize_ops(ops);
                         tir_cache.put(content_hash, &bytes, vec![]);
@@ -3705,12 +3713,6 @@ mod tests {
             &function_arities,
             &function_has_ret,
         );
-        if std::env::var_os("MOLT_DEBUG_IMPORT_MAP").is_some() {
-            eprintln!("IMPORT_MAP {target_name}:");
-            for (name, (func_id, shape)) in &backend.import_ids {
-                eprintln!("  {name} => {:?} {:?}", func_id, shape);
-            }
-        }
         backend
             .deferred_defines
             .iter()
