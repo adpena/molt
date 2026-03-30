@@ -641,24 +641,35 @@ impl<'a> SsaContext<'a> {
         // The dom-tree walk may have produced undef_value for branch args
         // when a sibling predecessor hadn't been visited yet.  Now that all
         // blocks are processed, resolve them using predecessor exit states.
+        // Second pass: resolve undef branch args by walking the dominator
+        // tree from each block upward.  The block_exit_vars snapshot contains
+        // all variables visible at each block's exit (which dominate the block).
         for bid in 0..n {
             let terminator = &mut tir_blocks[bid].terminator;
             let fix_args = |args: &mut Vec<ValueId>, target_bid: usize| {
                 let target_vars = &self.block_arg_vars[target_bid];
                 for (i, arg) in args.iter_mut().enumerate() {
                     if *arg == undef_vid {
-                        // Try to resolve from predecessor exit vars.
                         if let Some(var_name) = target_vars.get(i) {
-                            // Check all predecessors of target_bid for this var.
-                            for &pred_bid in &self.cfg.predecessors[target_bid] {
-                                if let Some(pred_vars) = block_exit_vars.get(&pred_bid) {
-                                    if let Some(&val) = pred_vars.get(var_name) {
+                            // Walk dominator chain from bid upward to find
+                            // the nearest dominator that defines this variable.
+                            // Values in block_exit_vars[d] dominate d, and
+                            // since d dominates bid, they also dominate bid.
+                            let mut d = Some(bid);
+                            while let Some(dom_bid) = d {
+                                if let Some(vars) = block_exit_vars.get(&dom_bid) {
+                                    if let Some(&val) = vars.get(var_name) {
                                         if val != undef_vid {
                                             *arg = val;
                                             break;
                                         }
                                     }
                                 }
+                                let next = self.cfg.dominators[dom_bid];
+                                if next == Some(dom_bid) || next == d {
+                                    break; // entry block or cycle
+                                }
+                                d = next;
                             }
                         }
                     }
