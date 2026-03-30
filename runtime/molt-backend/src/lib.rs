@@ -2832,6 +2832,9 @@ impl SimpleBackend {
                             ops: input.ops,
                             param_types: input.param_types,
                         };
+                        if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
+                            eprintln!("[TIR-TRACE] {}", tmp_func.name);
+                        }
                         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                         crate::tir::type_refine::refine_types(&mut tir_func);
                         let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
