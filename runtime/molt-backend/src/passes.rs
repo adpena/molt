@@ -2498,6 +2498,20 @@ pub fn split_large_function(
             true
         });
 
+        // Ensure the chunk has a terminator — without a ret/ret_void at
+        // the end, Cranelift emits trap padding (UDF) which causes SIGILL
+        // at runtime when the chunk falls through.
+        let needs_terminator = chunk_ops
+            .last()
+            .map(|op| !matches!(op.kind.as_str(), "ret" | "ret_void"))
+            .unwrap_or(true);
+        if needs_terminator {
+            chunk_ops.push(OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            });
+        }
+
         let chunk_name = format!("__molt_chunk_{sanitized_name}_{i}");
         chunks.push(FunctionIR {
             name: chunk_name,
