@@ -2857,21 +2857,27 @@ impl SimpleBackend {
                         let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
                             &tir_func, &type_map,
                         );
-                        assert!(
-                            crate::tir::lower_to_simple::validate_labels(&ops),
-                            "TIR roundtrip emitted invalid labels for '{}'",
-                            tmp_func.name
-                        );
-                        (idx, content_hash, ops)
+                        if !crate::tir::lower_to_simple::validate_labels(&ops) {
+                            eprintln!(
+                                "MOLT_BACKEND: TIR roundtrip emitted invalid labels for '{}'; falling back to original ops",
+                                tmp_func.name
+                            );
+                            (idx, content_hash, Vec::new())
+                        } else {
+                            (idx, content_hash, ops)
+                        }
                     })
                     .collect();
 
                 // Phase 3 (sequential): apply validated TIR ops and cache them.
+                // Empty ops = TIR roundtrip failed validation; keep original ops.
                 for (idx, content_hash, ops) in &results {
-                    ir.functions[*idx].ops = ops.clone();
-                    tir_optimized_names.insert(ir.functions[*idx].name.clone());
-                    let bytes = crate::tir::serialize::serialize_ops(ops);
-                    tir_cache.put(content_hash, &bytes, vec![]);
+                    if !ops.is_empty() {
+                        ir.functions[*idx].ops = ops.clone();
+                        tir_optimized_names.insert(ir.functions[*idx].name.clone());
+                        let bytes = crate::tir::serialize::serialize_ops(ops);
+                        tir_cache.put(content_hash, &bytes, vec![]);
+                    }
                 }
 
                 let tir_elapsed = tir_start.elapsed();

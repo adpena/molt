@@ -111,29 +111,91 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         })
         .collect();
 
-    // Use the original structured loop pairing from SimpleIR so counted loops
-    // and while loops both reconstruct a loop region even when the TIR header
-    // block is just a trivial branch into the real condition block.
-    let rpo_pos: HashMap<BlockId, usize> = rpo
-        .iter()
-        .enumerate()
-        .map(|(idx, bid)| (*bid, idx))
-        .collect();
     let mut loop_region_blocks: HashSet<BlockId> = HashSet::new();
     let mut header_body_chain: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for (header_bid, end_bid) in &func.loop_pairs {
-        let Some(&header_pos) = rpo_pos.get(header_bid) else {
-            continue;
-        };
-        let Some(&end_pos) = rpo_pos.get(end_bid) else {
-            continue;
-        };
-        if end_pos <= header_pos {
+    for bid in &rpo {
+        let role = func
+            .loop_roles
+            .get(bid)
+            .cloned()
+            .unwrap_or(super::blocks::LoopRole::None);
+        if role != super::blocks::LoopRole::LoopHeader {
             continue;
         }
-        let chain = rpo[header_pos + 1..=end_pos].to_vec();
+        let Some(block) = func.blocks.get(bid) else {
+            continue;
+        };
+        let break_kind = func
+            .loop_break_kinds
+            .get(bid)
+            .copied()
+            .unwrap_or(LoopBreakKind::BreakIfTrue);
+
+        let mut region: HashSet<BlockId> = HashSet::new();
+        let mut stack: Vec<BlockId> = Vec::new();
+        let mut exit_block: Option<BlockId> = None;
+
+        match &block.terminator {
+            Terminator::CondBranch {
+                then_block,
+                else_block,
+                ..
+            } => {
+                let body_seed = match break_kind {
+                    LoopBreakKind::BreakIfTrue => *else_block,
+                    LoopBreakKind::BreakIfFalse => *then_block,
+                };
+                exit_block = Some(match break_kind {
+                    LoopBreakKind::BreakIfTrue => *then_block,
+                    LoopBreakKind::BreakIfFalse => *else_block,
+                });
+                stack.push(body_seed);
+            }
+            Terminator::Branch { target, .. } => {
+                if let Some(cond_block) = func.blocks.get(target)
+                    && let Terminator::CondBranch {
+                        then_block,
+                        else_block,
+                        ..
+                    } = &cond_block.terminator
+                {
+                    let body_seed = match break_kind {
+                        LoopBreakKind::BreakIfTrue => *else_block,
+                        LoopBreakKind::BreakIfFalse => *then_block,
+                    };
+                    exit_block = Some(match break_kind {
+                        LoopBreakKind::BreakIfTrue => *then_block,
+                        LoopBreakKind::BreakIfFalse => *else_block,
+                    });
+                    stack.push(*target);
+                    stack.push(body_seed);
+                }
+            }
+            _ => {}
+        }
+
+        while let Some(region_bid) = stack.pop() {
+            if !region.insert(region_bid) {
+                continue;
+            }
+            let Some(region_block) = func.blocks.get(&region_bid) else {
+                continue;
+            };
+            for succ in block_successors(region_block) {
+                if Some(succ) == exit_block || succ == *bid {
+                    continue;
+                }
+                stack.push(succ);
+            }
+        }
+
+        let chain: Vec<BlockId> = rpo
+            .iter()
+            .filter(|candidate| region.contains(candidate))
+            .copied()
+            .collect();
         loop_region_blocks.extend(chain.iter().copied());
-        header_body_chain.insert(*header_bid, chain);
+        header_body_chain.insert(*bid, chain);
     }
 
     for bid in &rpo {
@@ -145,6 +207,15 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             .cloned()
             .unwrap_or(super::blocks::LoopRole::None);
         if loop_region_blocks.contains(bid) && loop_role != super::blocks::LoopRole::LoopHeader {
+            // Emit only the label for external references (check_exception
+            // targets etc), but skip ops (already inlined in the header).
+            if *bid != func.entry_block {
+                out.push(OpIR {
+                    kind: "label".to_string(),
+                    value: Some(block_label_id(bid)),
+                    ..OpIR::default()
+                });
+            }
             continue;
         }
 
@@ -349,6 +420,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     block,
                     &block_param_vars,
                     &block_label_id,
+                    &func.loop_roles,
                     &mut out,
                     original_has_ret,
                     loop_role,
@@ -361,7 +433,15 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             let original_has_ret = func.attrs.get("_original_has_ret")
                 .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
                 .unwrap_or(false);
-            emit_terminator(block, &block_param_vars, &block_label_id, &mut out, original_has_ret, loop_role);
+            emit_terminator(
+                block,
+                &block_param_vars,
+                &block_label_id,
+                &func.loop_roles,
+                &mut out,
+                original_has_ret,
+                loop_role,
+            );
         }
     }
 
@@ -846,6 +926,7 @@ fn emit_terminator(
     block: &TirBlock,
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
+    loop_roles: &HashMap<BlockId, super::blocks::LoopRole>,
     out: &mut Vec<OpIR>,
     original_has_ret: bool,
     loop_role: super::blocks::LoopRole,
@@ -898,6 +979,13 @@ fn emit_terminator(
                     kind: "loop_end".to_string(),
                     ..OpIR::default()
                 });
+            } else if loop_roles.get(target).cloned()
+                == Some(super::blocks::LoopRole::LoopHeader)
+            {
+                // Structured loop entry falls through from the preheader into
+                // loop_start; emitting a jump here would reference a header
+                // label that we intentionally do not materialize.
+                emit_block_arg_stores(*target, args, block_param_vars, out);
             } else {
                 emit_block_arg_stores(*target, args, block_param_vars, out);
                 out.push(OpIR {
@@ -1962,7 +2050,14 @@ mod tests {
 
         // Must still have a ret op.
         let has_ret = round_tripped.iter().any(|o| o.kind == "ret");
-        assert!(has_ret, "round-tripped ops must contain ret");
+        assert!(
+            has_ret,
+            "round-tripped ops must contain ret; ops: {:?}",
+            round_tripped
+                .iter()
+                .map(|o| o.kind.as_str())
+                .collect::<Vec<_>>()
+        );
 
         // Label validation must pass.
         assert!(
