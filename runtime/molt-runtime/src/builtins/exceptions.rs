@@ -5156,6 +5156,20 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_last() -> u64 {
     crate::with_gil_entry!(_py, {
+        // Fast path: if neither the global nor task pending flag is set,
+        // there is no live exception — return None immediately.  This
+        // keeps `exception_last` in sync with the inline `check_exception`
+        // flag byte that the Cranelift backend uses.
+        let state = runtime_state(_py);
+        let task_pending = state
+            .task_last_exception_pending
+            .load(AtomicOrdering::Relaxed);
+        let global_pending = state
+            .last_exception_pending
+            .load(AtomicOrdering::Relaxed);
+        if !task_pending && !global_pending {
+            return MoltObject::none().bits();
+        }
         let debug_flow = debug_exception_flow();
         if let Some(task_key) = current_task_key() {
             let ptr = {
