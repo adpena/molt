@@ -213,6 +213,27 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
     }
 }
 
+/// Replace typing-only `__annotate__` stubs with a deterministic empty-dict
+/// return so all backend entrypoints preserve matching callable signatures and
+/// a usable `__annotations__` value.
+pub fn rewrite_annotate_stubs(ir: &mut SimpleIR) {
+    for func in ir.functions.iter_mut() {
+        if func.name.contains("__annotate__") {
+            func.ops.clear();
+            func.ops.push(OpIR {
+                kind: "dict_new".to_string(),
+                out: Some("__ret".to_string()),
+                ..OpIR::default()
+            });
+            func.ops.push(OpIR {
+                kind: "ret".to_string(),
+                var: Some("__ret".to_string()),
+                ..OpIR::default()
+            });
+        }
+    }
+}
+
 #[cfg(feature = "native-backend")]
 mod native_backend_consts {
     pub(super) const QNAN: u64 = 0x7ff8_0000_0000_0000;
@@ -1886,6 +1907,10 @@ pub(crate) struct TrampolineSpec {
     pub(crate) has_closure: bool,
     pub(crate) kind: TrampolineKind,
     pub(crate) closure_size: i64,
+    /// Whether the target function returns a value. Trampolines use this
+    /// to set the correct import signature — functions with ret_void only
+    /// don't have a return in their signature.
+    pub(crate) target_has_ret: bool,
 }
 
 #[cfg(feature = "native-backend")]
@@ -2263,6 +2288,7 @@ impl SimpleBackend {
     /// `opt_level=none`; if that also fails, a trap stub is emitted.
     fn flush_deferred_defines(&mut self) {
         use cranelift_codegen::control::ControlPlane;
+        use rayon::prelude::*;
 
         let deferred: Vec<DeferredDefine> = std::mem::take(&mut self.deferred_defines);
         if deferred.is_empty() {
@@ -2293,80 +2319,80 @@ impl SimpleBackend {
             .unwrap_or_else(|err| panic!("failed to rebuild TargetIsa for deferred flush: {err}"));
 
         let results: Vec<CompileResult> = {
-            // Wrap ISA in a Send-safe newtype for rayon::scope + catch_unwind.
-            // Arc<dyn TargetIsa> contains a raw pointer that isn't Send, but
-            // Cranelift's ISA is immutable and safe to share across threads.
+            // Arc<dyn TargetIsa> contains a raw pointer that isn't marked
+            // Send/Sync, but the target ISA is immutable after construction and
+            // safe to share across parallel Cranelift compilation workers.
+            #[derive(Clone)]
             struct SendIsa(std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>);
             unsafe impl Send for SendIsa {}
             unsafe impl Sync for SendIsa {}
-            let mut results: Vec<CompileResult> = Vec::with_capacity(deferred.len());
-            rayon::scope(|s| {
-                let (tx, rx) = std::sync::mpsc::channel::<(usize, CompileResult)>();
-                for (idx, item) in deferred.into_iter().enumerate() {
-                    let tx = tx.clone();
-                    let isa = SendIsa(compile_isa.clone());
-                    s.spawn(move |_| {
-                        let isa = isa.0;
-                        let mut ctx = Context::for_function(item.func);
-                        let mut ctrl = ControlPlane::default();
-                        let result = std::panic::catch_unwind(
-                            std::panic::AssertUnwindSafe(|| {
-                                ctx.compile(&*isa, &mut ctrl)
-                                    .map(|_| ())
-                                    .map_err(|e| format!("{e:?}"))
-                            }),
-                        );
-                        match result {
-                            Ok(Ok(())) => {
-                                let compiled = ctx.compiled_code().unwrap();
-                                let alignment = compiled.buffer.alignment as u64;
-                                let code = compiled.buffer.data().to_vec();
-                                let relocs: Vec<cranelift_module::ModuleReloc> =
-                                    compiled.buffer.relocs().iter().map(|r| {
-                                        cranelift_module::ModuleReloc::from_mach_reloc(
-                                            r, &ctx.func, item.func_id,
-                                        )
-                                    }).collect();
-                                let _ = tx.send((idx, CompileResult::Ok(CompiledFunc {
-                                    func_id: item.func_id,
-                                    name: item.name,
-                                    alignment,
-                                    code,
-                                    relocs,
-                                })));
-                            }
-                            Ok(Err(err)) => {
-                                eprintln!(
-                                    "WARNING: Cranelift compilation error in `{}`; will retry: {err}",
-                                    item.name
-                                );
-                                let _ = tx.send((idx, CompileResult::NeedsRetry {
-                                    func_id: item.func_id,
-                                    func: Box::new(ctx.func),
-                                    name: item.name,
-                                }));
-                            }
-                            Err(_panic) => {
-                                eprintln!(
-                                    "WARNING: Cranelift optimizer panic in `{}`; will retry at opt_level=none",
-                                    item.name
-                                );
-                                let _ = tx.send((idx, CompileResult::NeedsRetry {
-                                    func_id: item.func_id,
-                                    func: Box::new(ctx.func),
-                                    name: item.name,
-                                }));
+
+            let compile_isa = SendIsa(compile_isa);
+            let mut indexed: Vec<(usize, CompileResult)> = deferred
+                .into_par_iter()
+                .enumerate()
+                .map(|(idx, item)| {
+                    let isa = compile_isa.clone().0;
+                    let mut ctx = Context::for_function(item.func);
+                    let mut ctrl = ControlPlane::default();
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        ctx.compile(&*isa, &mut ctrl)
+                            .map(|_| ())
+                            .map_err(|e| format!("{e:?}"))
+                    }));
+                    let compile_result = match result {
+                        Ok(Ok(())) => {
+                            let compiled = ctx.compiled_code().unwrap();
+                            let alignment = compiled.buffer.alignment as u64;
+                            let code = compiled.buffer.data().to_vec();
+                            let relocs: Vec<cranelift_module::ModuleReloc> = compiled
+                                .buffer
+                                .relocs()
+                                .iter()
+                                .map(|r| {
+                                    cranelift_module::ModuleReloc::from_mach_reloc(
+                                        r,
+                                        &ctx.func,
+                                        item.func_id,
+                                    )
+                                })
+                                .collect();
+                            CompileResult::Ok(CompiledFunc {
+                                func_id: item.func_id,
+                                name: item.name,
+                                alignment,
+                                code,
+                                relocs,
+                            })
+                        }
+                        Ok(Err(err)) => {
+                            eprintln!(
+                                "WARNING: Cranelift compilation error in `{}`; will retry: {err}",
+                                item.name
+                            );
+                            CompileResult::NeedsRetry {
+                                func_id: item.func_id,
+                                func: Box::new(ctx.func),
+                                name: item.name,
                             }
                         }
-                    });
-                }
-                drop(tx);
-                // Collect and sort by original index to maintain deterministic order.
-                let mut indexed: Vec<(usize, CompileResult)> = rx.into_iter().collect();
-                indexed.sort_by_key(|(idx, _)| *idx);
-                results = indexed.into_iter().map(|(_, r)| r).collect();
-            });
-            results
+                        Err(_panic) => {
+                            eprintln!(
+                                "WARNING: Cranelift optimizer panic in `{}`; will retry at opt_level=none",
+                                item.name
+                            );
+                            CompileResult::NeedsRetry {
+                                func_id: item.func_id,
+                                func: Box::new(ctx.func),
+                                name: item.name,
+                            }
+                        }
+                    };
+                    (idx, compile_result)
+                })
+                .collect();
+            indexed.sort_by_key(|(idx, _)| *idx);
+            indexed.into_iter().map(|(_, result)| result).collect()
         };
 
         // Sequential phase: define compiled functions and handle retries.
@@ -2916,19 +2942,7 @@ impl SimpleBackend {
         // MOLT_MAX_FUNCTION_OPS) into private chunk functions to avoid
         // Cranelift's O(n²) register allocator blowup.
         split_megafunctions(&mut ir);
-        // Replace __annotate__ functions with trivial ret_void stubs.
-        // These are typing metadata that we don't need to compile fully,
-        // but their symbols must exist for trampolines and def_function refs.
-        // We keep the params so the Cranelift signature matches the declaration.
-        for func_ir in ir.functions.iter_mut() {
-            if func_ir.name.contains("__annotate__") {
-                func_ir.ops.clear();
-                func_ir.ops.push(crate::OpIR {
-                    kind: "ret_void".to_string(),
-                    ..crate::OpIR::default()
-                });
-            }
-        }
+        rewrite_annotate_stubs(&mut ir);
         if timing {
             let passes_elapsed = compile_start.elapsed();
             eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");
@@ -3116,6 +3130,15 @@ impl SimpleBackend {
         // every 50 functions.
         let progress_interval = (func_count / 20).clamp(1, 50);
         let mut last_progress = std::time::Instant::now();
+
+        // Pre-scan: build function_name → has_ret map for trampoline signatures.
+        let function_has_ret: std::collections::BTreeMap<String, bool> = ir.functions.iter()
+            .map(|f| {
+                let has_ret = f.ops.iter().any(|op| op.kind == "ret");
+                (f.name.clone(), has_ret)
+            })
+            .collect();
+
         for func_ir in ir.functions {
             let func_name = func_ir.name.clone();
             let func_start = std::time::Instant::now();
@@ -3282,6 +3305,7 @@ impl SimpleBackend {
             has_closure,
             kind,
             closure_size,
+            target_has_ret,
         } = spec;
         let is_import = matches!(linkage, Linkage::Import);
         let key = TrampolineKey {
@@ -3590,7 +3614,9 @@ impl SimpleBackend {
                 for _ in 0..arity {
                     target_sig.params.push(AbiParam::new(types::I64));
                 }
-                target_sig.returns.push(AbiParam::new(types::I64));
+                if target_has_ret {
+                    target_sig.returns.push(AbiParam::new(types::I64));
+                }
                 // Always use Import for the target function inside
                 // trampolines: the target is defined by its own
                 // compile_func call (Export), and in batched compilation
@@ -3600,8 +3626,13 @@ impl SimpleBackend {
                     .unwrap();
                 let target_ref = module.declare_func_in_func(target_id, builder.func);
                 let call = builder.ins().call(target_ref, &call_args);
-                let res = builder.inst_results(call)[0];
-                builder.ins().return_(&[res]);
+                if target_has_ret {
+                    let res = builder.inst_results(call)[0];
+                    builder.ins().return_(&[res]);
+                } else {
+                    let none_val = builder.ins().iconst(types::I64, box_none());
+                    builder.ins().return_(&[none_val]);
+                }
             }
         }
 
