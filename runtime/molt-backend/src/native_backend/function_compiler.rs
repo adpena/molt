@@ -11482,6 +11482,8 @@ impl SimpleBackend {
                         )
                     });
                     // Load attr name from stack slot if this is a const_str.
+                    let _has = hoisted_str_slot.contains_key(&args[1]);
+                    let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_mga_diag.txt").and_then(|mut f| std::io::Write::write_all(&mut f, format!("mga: func={} op={} arg1={} has_slot={} slot_count={}\n", func_ir.name, op_idx, &args[1], _has, hoisted_str_slot.len()).as_bytes()));
                     let attr_val = if let Some(&slot) = hoisted_str_slot.get(&args[1]) {
                         builder.ins().stack_load(types::I64, slot, 0)
                     } else {
