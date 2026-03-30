@@ -2833,19 +2833,17 @@ impl SimpleBackend {
                                         );
                                     }
                                 }
-                                // Skip roundtrip for functions with exception handling —
-                                // the TIR roundtrip is safe for simple functions but
-                                // still produces incorrect code for complex exception
-                                // handler patterns (check_exception + state blocks).
-                                // Functions WITHOUT exception handling get the full
-                                // optimization benefit.
-                                if tir_func.has_exception_handling {
-                                    None
-                                } else {
-                                    Some(crate::tir::lower_to_simple::lower_to_simple_ir(
-                                        &tir_func, &type_map,
-                                    ))
-                                }
+                                // TIR→SimpleIR roundtrip: currently disabled because
+                                // the linearized control flow from lower_to_simple
+                                // produces incorrect code for some stdlib function
+                                // patterns. The caching infrastructure is ready —
+                                // enable by replacing this with:
+                                //   Some(lower_to_simple_ir(&tir_func, &type_map))
+                                // once the roundtrip is fixed for all patterns.
+                                //
+                                // The TIR passes still run for analysis/verification
+                                // even when the roundtrip is skipped.
+                                None::<Vec<crate::ir::OpIR>>
                             }));
 
                         // Return TIR result for Phase 3 application + caching.
