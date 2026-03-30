@@ -2,8 +2,7 @@
 
 This file is the fast resume point for continuing Molt development on `Primary`.
 
-The detailed canonical handoff for the latest CLI/build-contract work is:
-- [docs/superpowers/plans/2026-03-27-wrapper-artifact-contract.md](/Users/adpena/Projects/molt/docs/superpowers/plans/2026-03-27-wrapper-artifact-contract.md)
+The wrapper/build-contract work referenced here was audited complete on 2026-03-30. This handoff file is now the canonical resume point for that slice.
 
 ## Current State
 
@@ -96,5 +95,4 @@ Recommended next task order:
 
 ## Canonical Detailed Handoff
 
-For exact implementation notes, evidence, and the active roadmap, start with:
-- [docs/superpowers/plans/2026-03-27-wrapper-artifact-contract.md](/Users/adpena/Projects/molt/docs/superpowers/plans/2026-03-27-wrapper-artifact-contract.md)
+For exact implementation notes, evidence, and the active roadmap, start with this handoff plus `src/molt/cli.py` and `tests/cli/test_cli_import_collection.py`, which now hold the canonical wrapper-contract behavior.

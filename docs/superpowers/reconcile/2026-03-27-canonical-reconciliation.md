@@ -37,12 +37,12 @@ Accordingly, canonical `main` stays on the current local/GitHub lineage, while n
 ## Signal Preserved On Canonical `main`
 
 - Imported from `Primary`:
-  - `docs/superpowers/plans/2026-03-27-branch-integration-into-main.md`
-  - `docs/superpowers/plans/2026-03-27-molt-stabilization-and-roadmap-continuation.md`
+  - `docs/superpowers/plans/2026-03-27-branch-integration-into-main.md` (removed after the 2026-03-30 audit)
+  - `docs/superpowers/plans/2026-03-27-molt-stabilization-and-roadmap-continuation.md` (removed after the 2026-03-30 audit)
   - `bench/results/primary_pre_sync_20260325T172924-0500.json`
 - Already present on local/GitHub `main`:
   - `PRIMARY_HANDOFF.md`
-  - `docs/superpowers/plans/2026-03-27-wrapper-artifact-contract.md`
+  - `docs/superpowers/plans/2026-03-27-wrapper-artifact-contract.md` (removed after the 2026-03-30 audit)
 
 ## Dirty Working Tree Interpretation On `Primary`
 
@@ -52,9 +52,9 @@ Accordingly, canonical `main` stays on the current local/GitHub lineage, while n
 - deleted `SESSION_CHANGES.md`
 - modified `bench/results.json`
 - untracked `PRIMARY_HANDOFF.md`
-- untracked `docs/superpowers/plans/2026-03-27-branch-integration-into-main.md`
-- untracked `docs/superpowers/plans/2026-03-27-molt-stabilization-and-roadmap-continuation.md`
-- untracked `docs/superpowers/plans/2026-03-27-wrapper-artifact-contract.md`
+- untracked `docs/superpowers/plans/2026-03-27-branch-integration-into-main.md` (removed after the 2026-03-30 audit)
+- untracked `docs/superpowers/plans/2026-03-27-molt-stabilization-and-roadmap-continuation.md` (removed after the 2026-03-30 audit)
+- untracked `docs/superpowers/plans/2026-03-27-wrapper-artifact-contract.md` (removed after the 2026-03-30 audit)
 
 Reconciliation treatment:
 

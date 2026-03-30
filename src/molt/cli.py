@@ -19423,32 +19423,62 @@ def _ensure_backend_binary(
             _codesign_binary(backend_bin)
             return backend_bin.exists()
 
+        def _probe_backend_binary_support(probe_target: str) -> tuple[bool, str]:
+            probe_ir = json.dumps(
+                {
+                    "functions": [],
+                    "module": "__probe__",
+                    "entry": "main",
+                    "metadata": {"target": probe_target, "deterministic": True},
+                }
+            ).encode()
+            probe_suffix = ".wasm" if probe_target == "wasm" else ".o"
+            if probe_target == "luau":
+                probe_suffix = ".luau"
+            probe_tmp = tempfile.NamedTemporaryFile(
+                prefix="molt_backend_probe_",
+                suffix=probe_suffix,
+                delete=False,
+            )
+            probe_path = Path(probe_tmp.name)
+            probe_tmp.close()
+            probe_cmd = [str(backend_bin), "--output", str(probe_path)]
+            if probe_target == "wasm":
+                probe_cmd.extend(["--target", "wasm"])
+            elif probe_target == "luau":
+                probe_cmd.extend(["--target", "luau"])
+            try:
+                probe = subprocess.run(
+                    probe_cmd,
+                    input=probe_ir,
+                    capture_output=True,
+                    timeout=10,
+                )
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                return False, str(exc)
+            finally:
+                try:
+                    probe_path.unlink()
+                except OSError:
+                    pass
+            stderr = probe.stderr.decode(errors="replace")
+            stdout = probe.stdout.decode(errors="replace")
+            return probe.returncode == 0, (stderr or stdout).strip()
+
         if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         if not _artifact_needs_rebuild(backend_bin, fingerprint, stored_fingerprint):
-            # Quick probe: verify the cached binary actually supports the
-            # requested target.  Cargo feature collisions can leave a binary
-            # with the right fingerprint but wrong compiled features.
-            _quick_target = "wasm" if "wasm-backend" in backend_features else ("luau" if "luau-backend" in backend_features else "native")
-            _quick_ir = json.dumps({
-                "functions": [], "module": "__probe__", "entry": "main",
-                "metadata": {"target": _quick_target, "deterministic": True},
-            }).encode()
-            try:
-                _qp = subprocess.run(
-                    [str(backend_bin)], input=_quick_ir,
-                    capture_output=True, timeout=10,
-                )
-                if (
-                    _qp.returncode != 0
-                    and b"without" in _qp.stderr
-                    and b"support" in _qp.stderr
-                ):
-                    pass  # Fall through to rebuild
-                else:
-                    return True
-            except (subprocess.TimeoutExpired, OSError):
-                return True  # Probe failed; trust fingerprint
+            # Force a real compile-path probe. An empty stdin-only probe can
+            # miss feature-lane poisoning because it never exercises output
+            # emission for the requested target.
+            _quick_target = (
+                "wasm"
+                if "wasm-backend" in backend_features
+                else ("luau" if "luau-backend" in backend_features else "native")
+            )
+            _probe_ok, _probe_detail = _probe_backend_binary_support(_quick_target)
+            if _probe_ok:
+                return True
         canonical_target_root = _canonical_target_root(project_root)
         canonical_backend_bin = canonical_target_root / _cargo_profile_dir(
             cargo_profile
@@ -19524,12 +19554,17 @@ def _ensure_backend_binary(
             cmd.append("--no-default-features")
             cmd.extend(["--features", ",".join(backend_features)])
         build_env = os.environ.copy()
-        # When building with the LLVM feature, ensure LLVM_SYS_191_PREFIX
-        # points to the LLVM 19 installation so inkwell/llvm-sys can link.
-        if "llvm" in backend_features and "LLVM_SYS_191_PREFIX" not in build_env:
-            _llvm_prefix = "/opt/homebrew/opt/llvm@19"
-            if os.path.isdir(_llvm_prefix):
-                build_env["LLVM_SYS_191_PREFIX"] = _llvm_prefix
+        # When building with the LLVM feature, ensure the pinned llvm-sys
+        # prefix env var points at the matching Homebrew install so
+        # inkwell/llvm-sys can link without extra shell setup.
+        if "llvm" in backend_features:
+            llvm_major = _required_llvm_backend_major(project_root)
+            if llvm_major is not None:
+                llvm_prefix_env = _llvm_sys_prefix_env_var(llvm_major)
+                if llvm_prefix_env not in build_env:
+                    llvm_prefix = f"/opt/homebrew/opt/llvm@{llvm_major}"
+                    if os.path.isdir(llvm_prefix):
+                        build_env[llvm_prefix_env] = llvm_prefix
         _maybe_enable_sccache(build_env)
         _maybe_enable_native_cpu(build_env)
         try:
@@ -19569,61 +19604,50 @@ def _ensure_backend_binary(
         # Cargo's incremental cache may skip recompilation when only
         # features change, leaving a binary built for the wrong target.
         # Probe the binary and, on mismatch, clean + rebuild once.
-        _probe_target = "wasm" if "wasm-backend" in backend_features else ("luau" if "luau-backend" in backend_features else "native")
-        _probe_ir = json.dumps({
-            "functions": [], "module": "__probe__", "entry": "main",
-            "metadata": {"target": _probe_target, "deterministic": True},
-        }).encode()
-        _probe_cmd = [str(backend_bin)]
-        if _probe_target == "wasm":
-            _probe_cmd.extend(["--target", "wasm"])
-        elif _probe_target == "luau":
-            _probe_cmd.extend(["--target", "luau"])
-        try:
-            _probe = subprocess.run(
-                _probe_cmd, input=_probe_ir,
-                capture_output=True, timeout=10,
-            )
-            _probe_err = _probe.stderr.decode(errors="replace")
-            if (
-                _probe.returncode != 0
-                and "without" in _probe_err
-                and "support" in _probe_err
-            ):
-                if not json_output:
-                    print(
-                        "Backend feature mismatch detected; cleaning and rebuilding...",
-                        file=sys.stderr,
-                    )
-                subprocess.run(
-                    ["cargo", "clean", "-p", "molt-backend", "--profile", cargo_profile],
-                    cwd=project_root, env=build_env, capture_output=True, timeout=30,
+        _probe_target = (
+            "wasm"
+            if "wasm-backend" in backend_features
+            else ("luau" if "luau-backend" in backend_features else "native")
+        )
+        _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
+        if not _probe_ok:
+            if not json_output:
+                print(
+                    "Backend feature mismatch detected; cleaning and rebuilding...",
+                    file=sys.stderr,
                 )
-                try:
-                    rebuild = _run_cargo_with_sccache_retry(
-                        cmd, cwd=project_root, env=build_env,
-                        timeout=cargo_timeout, json_output=json_output,
-                        label="Backend rebuild (feature fix)",
-                    )
-                except subprocess.TimeoutExpired:
-                    if not json_output:
-                        print("Backend rebuild timed out.", file=sys.stderr)
-                    return False
-                if rebuild.returncode != 0:
-                    if not json_output:
-                        err = rebuild.stderr.strip() or rebuild.stdout.strip()
-                        if err:
-                            print(err, file=sys.stderr)
-                    return False
-                if not _materialize_rebuilt_backend_binary():
-                    if not json_output:
-                        print(
-                            "Backend binary missing after rebuild.",
-                            file=sys.stderr,
-                        )
-                    return False
-        except (subprocess.TimeoutExpired, OSError):
-            pass  # Probe failed; proceed optimistically
+            subprocess.run(
+                ["cargo", "clean", "-p", "molt-backend", "--profile", cargo_profile],
+                cwd=project_root, env=build_env, capture_output=True, timeout=30,
+            )
+            try:
+                rebuild = _run_cargo_with_sccache_retry(
+                    cmd,
+                    cwd=project_root,
+                    env=build_env,
+                    timeout=cargo_timeout,
+                    json_output=json_output,
+                    label="Backend rebuild (feature fix)",
+                )
+            except subprocess.TimeoutExpired:
+                if not json_output:
+                    print("Backend rebuild timed out.", file=sys.stderr)
+                return False
+            if rebuild.returncode != 0:
+                if not json_output:
+                    err = rebuild.stderr.strip() or rebuild.stdout.strip()
+                    if err:
+                        print(err, file=sys.stderr)
+                return False
+            if not _materialize_rebuilt_backend_binary():
+                if not json_output:
+                    print("Backend binary missing after rebuild.", file=sys.stderr)
+                return False
+            _reprobe_ok, _reprobe_detail = _probe_backend_binary_support(_probe_target)
+            if not _reprobe_ok:
+                if not json_output and _reprobe_detail:
+                    print(_reprobe_detail, file=sys.stderr)
+                return False
         # -- End post-build feature probe --------------------------------
         if fingerprint is not None:
             try:
@@ -23200,6 +23224,10 @@ def _required_llvm_backend_major(root: Path) -> int | None:
         return int(match.group(1))
     except ValueError:
         return None
+
+
+def _llvm_sys_prefix_env_var(major: int) -> str:
+    return f"LLVM_SYS_{major * 10 + 1}_PREFIX"
 
 
 def _detect_llvm_backend_toolchain(root: Path) -> tuple[int | None, str | None]:
@@ -27637,7 +27665,7 @@ def main() -> int:
         "--backend",
         choices=["cranelift", "llvm", "auto"],
         default="auto",
-        help="Compilation backend (auto=cranelift; llvm is experimental).",
+        help="Compilation backend (auto=cranelift; llvm is opt-in and requires an LLVM toolchain).",
     )
     build_parser.add_argument(
         "--profile",
@@ -28034,7 +28062,7 @@ def main() -> int:
         "--backend",
         choices=["cranelift", "llvm", "auto"],
         default=None,
-        help="Compilation backend passed to `molt build` (auto=cranelift; llvm is experimental).",
+        help="Compilation backend passed to `molt build` (auto=cranelift; llvm is opt-in and requires an LLVM toolchain).",
     )
     run_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
@@ -29105,9 +29133,9 @@ def main() -> int:
                 stdlib_profile = defaults["stdlib_profile"]
 
         # --backend: resolve effective backend and propagate via MOLT_BACKEND.
-        # "auto" defaults to cranelift for all builds.  The LLVM backend is
-        # still MVP (e.g. check_exception is a no-op) and must be requested
-        # explicitly via --backend llvm or MOLT_BACKEND=llvm.
+        # "auto" defaults to cranelift for all builds. LLVM remains opt-in
+        # until its end-to-end parity and operational tooling are on the same
+        # footing as the default Cranelift lane.
         effective_backend = backend_choice
         if effective_backend == "auto":
             effective_backend = "cranelift"

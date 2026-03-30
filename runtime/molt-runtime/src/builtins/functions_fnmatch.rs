@@ -2,8 +2,6 @@
 // Extracted from functions.rs for compilation-unit size reduction and tree shaking.
 
 use crate::*;
-use molt_obj_model::MoltObject;
-use super::functions::*;
 
 pub(crate) fn fnmatch_parse_char_class(pat: &[char], mut idx: usize) -> Option<CharClassParse> {
     if idx >= pat.len() || pat[idx] != '[' {

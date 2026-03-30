@@ -27,11 +27,6 @@ pub struct PassStats {
     pub ops_added: usize,
 }
 
-/// Sentinel value: when `run_pipeline` returns exactly this many stats
-/// with all zeroes, it means verification failed and the caller should
-/// fall back to unoptimized code.
-pub const VERIFICATION_FAILED_SENTINEL: usize = 0;
-
 /// Run the full TIR optimization pipeline on a function.
 ///
 /// Pass order is critical -- each pass feeds into the next:
@@ -44,13 +39,12 @@ pub const VERIFICATION_FAILED_SENTINEL: usize = 0;
 /// 7. BCE (after SCCP/SR simplify loop bounds)
 /// 8. DCE (cleans up dead code from all prior passes)
 ///
-/// If post-pipeline verification fails, restores the pre-optimization
-/// snapshot and returns an empty Vec to signal the caller should use
-/// unoptimized code.  This avoids panicking (fatal under panic=abort).
+/// If the optimized function violates TIR invariants, this is a compiler bug
+/// and the pipeline panics immediately. Zero-delta pipelines still return
+/// per-pass stats; they simply restore the original snapshot before lowering.
 pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
-    // Snapshot the function BEFORE any mutation so we can restore on
-    // verification failure.  Without this, a corrupting pass would leave
-    // `func` in an invalid state with no recovery path.
+    // Snapshot the function BEFORE any mutation so unchanged pipelines can
+    // lower the original IR structurally without pass-induced metadata drift.
     let snapshot = func.clone();
 
     let mut stats = Vec::with_capacity(8);
@@ -66,7 +60,6 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     // Dump TIR for loop-bearing functions when MOLT_DUMP_IR or TIR_DUMP is set.
     let dump_tir = std::env::var("MOLT_DUMP_IR").is_ok() || std::env::var("TIR_DUMP").is_ok();
     if has_loop_role && dump_tir {
-        let _ = std::fs::create_dir_all("/tmp/molt_tir");
         let sanitized: String = func.name.chars()
             .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
             .collect();
@@ -91,8 +84,10 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
                 _ => {}
             }
         }
-        let path = format!("/tmp/molt_tir/{}_pre.txt", sanitized);
-        let _ = std::fs::write(&path, &dump);
+        let _ = crate::debug_artifacts::write_debug_artifact(
+            format!("tir/{}_pre.txt", sanitized),
+            dump,
+        );
     }
 
     macro_rules! run_pass {
@@ -113,17 +108,15 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     run_pass!("dce", dce::run(func));
 
     // If no pass changed anything, restore the snapshot to avoid any
-    // incidental TIR structure mutation from pass traversals.  The
-    // lower_to_simple_ir roundtrip on an unmodified snapshot is known-good;
-    // passes that report zero changes should be identity transforms but
-    // in practice may reorder blocks or invalidate metadata.
+    // incidental TIR structure mutation from pass traversals. The pipeline
+    // still returns stats and downstream lowering still roundtrips the
+    // restored TIR instead of silently bypassing TIR.
     let total_changes: usize = stats
         .iter()
         .map(|s| s.values_changed + s.ops_removed + s.ops_added)
         .sum();
     if total_changes == 0 {
-        *func = snapshot;
-        return Vec::new();  // Signal caller to use original ops
+        *func = snapshot.clone();
     }
 
     // Dump post-optimization TIR for loop-bearing functions.
@@ -151,22 +144,18 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
                 _ => dump.push_str("  TERM: other\n"),
             }
         }
-        let path = format!("/tmp/molt_tir/{}_post.txt", sanitized);
-        let _ = std::fs::write(&path, &dump);
+        let _ = crate::debug_artifacts::write_debug_artifact(
+            format!("tir/{}_post.txt", sanitized),
+            dump,
+        );
     }
 
-    // Verify TIR invariants after all passes.  On failure, restore the
-    // pre-optimization snapshot so callers get valid (unoptimized) IR
-    // instead of corrupted output.
     if let Err(errors) = super::verify::verify_function(func) {
-        eprintln!(
-            "[TIR] WARNING: verification found {} error(s) after optimization — \
-             restoring pre-optimization snapshot: {:?}",
-            errors.len(),
+        panic!(
+            "[TIR] verification failed after optimization of '{}': {:?}",
+            func.name,
             errors
         );
-        *func = snapshot;
-        return Vec::new(); // signal: verification failed
     }
 
     // Print stats if TIR_OPT_STATS=1

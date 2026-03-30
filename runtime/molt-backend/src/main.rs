@@ -6,7 +6,7 @@ use molt_backend::luau::LuauBackend;
 use molt_backend::rust::RustBackend;
 #[cfg(feature = "wasm-backend")]
 use molt_backend::wasm::{WasmBackend, WasmCompileOptions};
-use molt_backend::{OpIR, SimpleIR};
+use molt_backend::{SimpleIR, rewrite_annotate_stubs};
 use serde_json::Value as JsonValue;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -880,21 +880,67 @@ fn run_daemon(_socket_path: &str) -> io::Result<()> {
     ))
 }
 
+const GIB: u64 = 1024 * 1024 * 1024;
+
+fn default_backend_max_rss_gb_from_physical_mem_bytes(bytes: Option<u64>) -> u64 {
+    match bytes.map(|raw| raw / GIB).unwrap_or(0) {
+        gib if gib >= 64 => 16,
+        gib if gib >= 32 => 12,
+        gib if gib >= 16 => 8,
+        _ => 4,
+    }
+}
+
+#[cfg(unix)]
+fn detect_physical_memory_bytes() -> Option<u64> {
+    unsafe {
+        let pages = libc::sysconf(libc::_SC_PHYS_PAGES);
+        let page_size = libc::sysconf(libc::_SC_PAGESIZE);
+        if pages <= 0 || page_size <= 0 {
+            return None;
+        }
+        Some((pages as u64).saturating_mul(page_size as u64))
+    }
+}
+
+#[cfg(windows)]
+fn detect_physical_memory_bytes() -> Option<u64> {
+    unsafe {
+        use windows_sys::Win32::System::SystemInformation::{
+            GlobalMemoryStatusEx, MEMORYSTATUSEX,
+        };
+        let mut status: MEMORYSTATUSEX = core::mem::zeroed();
+        status.dwLength = core::mem::size_of::<MEMORYSTATUSEX>() as u32;
+        if GlobalMemoryStatusEx(&mut status) == 0 {
+            return None;
+        }
+        Some(status.ullTotalPhys)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn detect_physical_memory_bytes() -> Option<u64> {
+    None
+}
+
+fn default_backend_max_rss_gb() -> u64 {
+    default_backend_max_rss_gb_from_physical_mem_bytes(detect_physical_memory_bytes())
+}
+
 #[allow(clippy::vec_init_then_push)] // pushes are behind #[cfg] feature gates
 fn main() -> io::Result<()> {
-    // TIR optimization is ON by default. The pipeline has catch_unwind +
-    // validate_labels fallback per-function, so broken roundtrips degrade
-    // gracefully to unoptimized IR. Disable with MOLT_TIR_OPT=0 if needed.
+    // TIR optimization is ON by default. Invalid roundtrips are fatal
+    // compiler bugs; disable with MOLT_TIR_OPT=0 only for targeted bisects.
 
     // Hard memory guard: set rlimit on virtual memory to prevent OOM
-    // from crashing the entire machine.  Default 4GB, override with
-    // MOLT_BACKEND_MAX_RSS_GB env var.
+    // from crashing the entire machine. The default scales with host memory
+    // so large TIR-enabled stdlib builds do not trip an artificially tiny cap.
     #[cfg(unix)]
     {
         let max_gb: u64 = std::env::var("MOLT_BACKEND_MAX_RSS_GB")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(4);
+            .unwrap_or_else(default_backend_max_rss_gb);
         let max_bytes = max_gb * 1024 * 1024 * 1024;
         unsafe {
             let rlim = libc::rlimit {
@@ -919,7 +965,7 @@ fn main() -> io::Result<()> {
         let max_gb: u64 = std::env::var("MOLT_BACKEND_MAX_RSS_GB")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(4);
+            .unwrap_or_else(default_backend_max_rss_gb);
         let max_bytes = max_gb * 1024 * 1024 * 1024;
         unsafe {
             use windows_sys::Win32::System::JobObjects::*;
@@ -1120,27 +1166,7 @@ fn main() -> io::Result<()> {
         }
     };
 
-    // Replace __annotate__ typing stubs with trivial empty-dict bodies.
-    // The symbols must exist (trampolines and module chunks reference them)
-    // but the bodies are typing metadata not needed at runtime.
-    // We return an empty dict (not None) so that callers using
-    // future_annotations=True can do SETATTR(__annotations__, {}) safely.
-    for func in ir.functions.iter_mut() {
-        if func.name.contains("__annotate__") {
-            func.ops.clear();
-            // Keep params unchanged so the function signature matches callers.
-            func.ops.push(OpIR {
-                kind: "dict_new".to_string(),
-                out: Some("__ret".to_string()),
-                ..OpIR::default()
-            });
-            func.ops.push(OpIR {
-                kind: "ret".to_string(),
-                var: Some("__ret".to_string()),
-                ..OpIR::default()
-            });
-        }
-    }
+    rewrite_annotate_stubs(&mut ir);
 
     // Tree-shake for Luau: remove unreachable stdlib functions.
     if is_luau {
@@ -1562,9 +1588,10 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse, compile_single_job,
-        daemon_response_payload, ensure_output_parent_dir, is_user_owned_symbol,
-        read_daemon_request_bytes, write_cached_output,
+        GIB, DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse, compile_single_job,
+        daemon_response_payload, default_backend_max_rss_gb_from_physical_mem_bytes,
+        ensure_output_parent_dir, is_user_owned_symbol, read_daemon_request_bytes,
+        write_cached_output,
     };
     use std::io::Cursor;
     use std::sync::Arc;
@@ -1758,5 +1785,25 @@ mod tests {
         assert!(!is_user_owned_symbol("molt_init_sys", "app"));
         assert!(!is_user_owned_symbol("molt_init_json", "app"));
         assert!(!is_user_owned_symbol("molt_init_app_helper", "app"));
+    }
+
+    #[test]
+    fn backend_rss_default_scales_with_host_memory() {
+        assert_eq!(
+            default_backend_max_rss_gb_from_physical_mem_bytes(Some(8 * GIB)),
+            4
+        );
+        assert_eq!(
+            default_backend_max_rss_gb_from_physical_mem_bytes(Some(16 * GIB)),
+            8
+        );
+        assert_eq!(
+            default_backend_max_rss_gb_from_physical_mem_bytes(Some(32 * GIB)),
+            12
+        );
+        assert_eq!(
+            default_backend_max_rss_gb_from_physical_mem_bytes(Some(64 * GIB)),
+            16
+        );
     }
 }

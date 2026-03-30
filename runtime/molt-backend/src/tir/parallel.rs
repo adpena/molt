@@ -148,12 +148,9 @@ mod tests {
 
         let stats = compile_module_parallel(&mut module);
 
-        // run_pipeline returns an empty Vec when no pass changes anything
-        // (zero-delta optimization restores the snapshot and signals the
-        // caller to use original ops).  For trivial test functions, all 8
-        // passes report zero changes, so the combined stats are empty.
-        // The key invariant: no panic, no data race, functions intact.
-        assert!(stats.len() <= 3 * 8, "stats should not exceed 3 funcs × 8 passes");
+        // Zero-delta pipelines now restore the original snapshot but still
+        // return per-pass stats so the caller keeps the strict TIR roundtrip.
+        assert_eq!(stats.len(), 3 * 8, "expected 8 pass stats per function");
 
         // Verify all functions still have their entry blocks intact.
         for func in &module.functions {

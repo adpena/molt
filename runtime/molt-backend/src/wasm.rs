@@ -28,7 +28,6 @@ const INT_MASK: u64 = (1 << 47) - 1;
 const INT_SHIFT: i64 = 17;
 const INT_MIN_INLINE: i64 = -(1 << 46);
 const INT_MAX_INLINE: i64 = (1 << 46) - 1;
-const HEADER_SIZE_BYTES: i32 = 16;
 const GEN_CONTROL_SIZE: i32 = 48;
 const TASK_KIND_FUTURE: i64 = 0;
 const TASK_KIND_GENERATOR: i64 = 1;
@@ -1595,9 +1594,6 @@ impl WasmBackend {
             let mut tir_cache =
                 crate::tir::cache::CompilationCache::open(std::path::PathBuf::from(".molt_cache"));
             for func_ir in &mut ir.functions {
-                let func_name = func_ir.name.clone();
-                let original_ops = func_ir.ops.clone();
-
                 // Compute a stable content hash from the function name + input ops.
                 let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
                 let content_hash = crate::tir::cache::CompilationCache::compute_hash_with_signature(
@@ -1616,68 +1612,31 @@ impl WasmBackend {
                     }
                 }
 
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
-                    crate::tir::type_refine::refine_types(&mut tir_func);
-                    let type_map = crate::tir::type_refine::extract_type_map(&tir_func);
-                    let stats = crate::tir::passes::run_pipeline(&mut tir_func);
-                    // Empty stats = verification failed; skip lowering to
-                    // avoid producing corrupted IR that crashes wasm codegen.
-                    if stats.is_empty() {
-                        return None;
-                    }
-                    if tir_dump {
-                        eprintln!("{}", crate::tir::printer::print_function(&tir_func));
-                    }
-                    if tir_stats {
-                        for s in &stats {
-                            eprintln!(
-                                "[TIR] {}: {} changed, {} removed, {} added",
-                                s.name, s.values_changed, s.ops_removed, s.ops_added
-                            );
-                        }
-                    }
-                    // If no pass changed anything, skip the lower_to_simple roundtrip.
-                    // The roundtrip through TIR -> SimpleIR can introduce subtle codegen
-                    // differences even when the IR is semantically identical (see issue:
-                    // comprehensions return empty when roundtrip runs on unchanged functions).
-                    let any_changed = stats
-                        .iter()
-                        .any(|s| s.values_changed > 0 || s.ops_removed > 0 || s.ops_added > 0);
-                    if !any_changed {
-                        return None; // Use original ops; roundtrip is lossy.
-                    }
-                    Some(crate::tir::lower_to_simple::lower_to_simple_ir(
-                        &tir_func, &type_map,
-                    ))
-                }));
-
-                match result {
-                    Ok(Some(optimized_ops)) => {
-                        let valid = crate::tir::lower_to_simple::validate_labels(&optimized_ops);
-                        if valid {
-                            let serialized = crate::tir::serialize::serialize_ops(&optimized_ops);
-                            tir_cache.put(&content_hash, &serialized, vec![]);
-                            func_ir.ops = optimized_ops;
-                        } else {
-                            func_ir.ops = original_ops;
-                        }
-                    }
-                    Ok(None) => {
+                let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
+                crate::tir::type_refine::refine_types(&mut tir_func);
+                let type_map = crate::tir::type_refine::extract_type_map(&tir_func);
+                let stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                if tir_dump {
+                    eprintln!("{}", crate::tir::printer::print_function(&tir_func));
+                }
+                if tir_stats {
+                    for s in &stats {
                         eprintln!(
-                            "[TIR] WARNING: verification failed on function '{}' (WASM); falling back to unoptimized.",
-                            func_name
+                            "[TIR] {}: {} changed, {} removed, {} added",
+                            s.name, s.values_changed, s.ops_removed, s.ops_added
                         );
-                        func_ir.ops = original_ops;
-                    }
-                    Err(_panic) => {
-                        eprintln!(
-                            "[TIR] WARNING: optimization panicked on function '{}' (WASM) — falling back to unoptimized.",
-                            func_name
-                        );
-                        func_ir.ops = original_ops;
                     }
                 }
+                let optimized_ops =
+                    crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map);
+                assert!(
+                    crate::tir::lower_to_simple::validate_labels(&optimized_ops),
+                    "TIR roundtrip emitted invalid labels for '{}' (WASM)",
+                    func_ir.name
+                );
+                let serialized = crate::tir::serialize::serialize_ops(&optimized_ops);
+                tir_cache.put(&content_hash, &serialized, vec![]);
+                func_ir.ops = optimized_ops;
             }
             // Persist the updated cache index so future runs benefit.
             tir_cache.save_index();
@@ -1830,6 +1789,7 @@ impl WasmBackend {
         }
         // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
         let mut default_trampoline_spec: BTreeMap<String, (usize, bool)> = BTreeMap::new();
+        let mut function_has_ret: BTreeMap<String, bool> = BTreeMap::new();
         for func_ir in &ir.functions {
             let default_has_closure = func_ir
                 .params
@@ -1844,6 +1804,10 @@ impl WasmBackend {
                 .copied()
                 .unwrap_or((default_arity, default_has_closure));
             default_trampoline_spec.insert(func_ir.name.clone(), spec);
+            function_has_ret.insert(
+                func_ir.name.clone(),
+                func_ir.ops.iter().any(|op| op.kind == "ret"),
+            );
         }
 
         // Trampolines now handle multi-value return callees by reconstructing
@@ -3634,6 +3598,7 @@ impl WasmBackend {
                     has_closure: false,
                     kind: TrampolineKind::Plain,
                     closure_size: 0,
+                    target_has_ret: true,
                 },
                 None,
             );
@@ -3661,6 +3626,7 @@ impl WasmBackend {
                     has_closure: false,
                     kind: TrampolineKind::Plain,
                     closure_size: 0,
+                    target_has_ret: true,
                 },
                 None,
             );
@@ -3720,6 +3686,7 @@ impl WasmBackend {
                     has_closure,
                     kind,
                     closure_size,
+                    target_has_ret: *function_has_ret.get(target_name).unwrap_or(&true),
                 },
                 mr_count,
             );
@@ -3981,6 +3948,7 @@ impl WasmBackend {
             has_closure,
             kind,
             closure_size,
+            target_has_ret: _,
         } = spec;
         self.funcs.function(5);
         self.func_count += 1;

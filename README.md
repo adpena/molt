@@ -234,9 +234,42 @@ Expected: compiled binary under `%MOLT_BIN%` (defaults to `%USERPROFILE%\\.molt\
   - macOS: `xcode-select --install`
   - Linux: `sudo apt-get update && sudo apt-get install -y clang lld`
   - Windows: `winget install LLVM.LLVM` and set `CC=clang`
+- **cargo-upgrade** (for repo-wide manifest upgrades): install cargo-edit.
+  - All platforms: `cargo install cargo-edit --locked`
+- **llvm-backend-toolchain**: install the LLVM version required by `runtime/molt-backend/Cargo.toml`.
+  - macOS (current backend pin): `brew install llvm@21 lld@21`
+  - Linux: install the matching `llvm-<major>` / `lld-<major>` packages and ensure `llvm-config` is on `PATH`
+  - Windows: install the matching LLVM release and ensure `llvm-config` is discoverable
 - **wasm-target** (optional): `rustup target add wasm32-wasip1`
 - **uv.lock** / **uv.lock_fresh**: run `uv sync` or `uv lock`
 - **molt-runtime**: run `cargo build --release --package molt-runtime`
+
+## Bootstrap And Upgrades
+
+Use the CLI for both diagnosis and repo maintenance. The intended flow is:
+
+```bash
+molt doctor
+molt update --check
+```
+
+`molt doctor` tells you exactly which toolchain/dependency lanes are missing and prints platform-specific advice. `molt update --check` prints the concrete commands Molt would run without mutating anything, which makes it safe for CI, bug reports, and onboarding.
+
+To refresh the normal source-build toolchain state:
+
+```bash
+molt update
+```
+
+That updates the Rust stable toolchain, ensures the wasm Rust targets are present, and refreshes the repo lockfiles (`Cargo.lock`, `runtime/Cargo.lock`, `fuzz/Cargo.lock`, and `uv.lock`).
+
+To do a full repo-maintainer refresh, including direct Rust dependency requirement upgrades in manifests:
+
+```bash
+molt update --all
+```
+
+This is intentionally broader and may be breaking. Use it when you are doing a deliberate repo-wide dependency/toolchain sweep, then rebuild and run the backend/runtime matrix.
 
 ## Quick start (source)
 
@@ -336,6 +369,7 @@ See `AGENTS.md` for the full capability system and `docs/cli-reference.md` for a
 - `molt build --target <triple> --cache --deterministic --capabilities <file|profile> --sysroot <path>`: cross-target builds with lockfile + capability checks (`--trusted` for trusted native deployments). Use `MOLT_SYSROOT` / `MOLT_CROSS_SYSROOT` for defaults.
 - `molt bench` / `molt profile`: wrappers over `tools/bench.py` and `tools/profile.py` (`molt bench --script <path>` for one-off scripts).
 - `molt doctor`: toolchain readiness checks (uv/cargo/clang/locks).
+- `molt update`: refresh rustup-managed toolchains, wasm targets, and repo lockfiles; add `--check` to preview and `--all` for full manifest upgrades.
 - `molt vendor --extras <name>`: materialize Tier A sources into `vendor/` with a manifest.
 - `molt package --sign --signer cosign --signing-key <key>`: sign artifacts and emit SBOM/signature sidecars with `.moltpkg` bundles (`--signer codesign` on macOS).
 - `molt package --sbom-format spdx`: emit SPDX SBOM sidecars (`cyclonedx` is the default).

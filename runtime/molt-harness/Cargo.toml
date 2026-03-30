@@ -6,4 +6,4 @@ license = "Apache-2.0"
 description = "Quality enforcement test library for Molt"
 
 [dependencies]
-sha2 = "0.10"
+sha2 = "0.11"
