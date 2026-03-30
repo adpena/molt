@@ -373,12 +373,60 @@ theorem lowered_eval_deterministic
 theorem lowering_reflects_eval
     (nm : NameMap) (pyEnv : MoltPython.PyEnv) (tirEnv : MoltTIR.Env)
     (henv : envCorr nm pyEnv tirEnv)
+    (hback : ∀ x n tv, nm.lookup x = some n → tirEnv n = some tv →
+      ∃ pv, pyEnv.lookup x = some pv ∧ lowerValue pv = some tv)
     (e : MoltPython.PyExpr)
     (te : MoltTIR.Expr) (hlower : lowerExpr nm e = some te)
     (tv : MoltTIR.Value) (htir : MoltTIR.evalExpr tirEnv te = some tv) :
     ∃ (fuel : Nat) (pv : MoltPython.PyValue),
       MoltPython.evalPyExpr fuel pyEnv e = some pv ∧
       lowerValue pv = some tv := by
-  sorry
+  -- PyExpr is a nested inductive; use cases instead of induction.
+  -- Only scalar cases succeed with lowerExpr (returns none for compound forms).
+  cases e with
+  | intLit n =>
+    simp [lowerExpr] at hlower; subst hlower
+    simp [MoltTIR.evalExpr] at htir; subst htir
+    exact ⟨1, .intVal n, rfl, rfl⟩
+  | floatLit f =>
+    simp [lowerExpr] at hlower; subst hlower
+    simp [MoltTIR.evalExpr] at htir; subst htir
+    exact ⟨1, .floatVal f, rfl, rfl⟩
+  | boolLit b =>
+    simp [lowerExpr] at hlower; subst hlower
+    simp [MoltTIR.evalExpr] at htir; subst htir
+    exact ⟨1, .boolVal b, rfl, rfl⟩
+  | strLit s =>
+    simp [lowerExpr] at hlower; subst hlower
+    simp [MoltTIR.evalExpr] at htir; subst htir
+    exact ⟨1, .strVal s, rfl, rfl⟩
+  | noneLit =>
+    simp [lowerExpr] at hlower; subst hlower
+    simp [MoltTIR.evalExpr] at htir; subst htir
+    exact ⟨1, .noneVal, rfl, rfl⟩
+  | name x =>
+    simp [lowerExpr] at hlower
+    split at hlower <;> simp_all
+    rename_i n hnm; subst hlower
+    simp [MoltTIR.evalExpr] at htir
+    obtain ⟨pv, hpv_lookup, hpv_lower⟩ := hback x n tv hnm htir
+    exact ⟨1, pv, by simp [MoltPython.evalPyExpr, hpv_lookup], hpv_lower⟩
+  | binOp op left right =>
+    -- Recursive case: lowerExpr requires both sub-exprs to lower.
+    -- Without structural induction on PyExpr, we cannot recurse.
+    -- The backward simulation for compound expressions requires fuel
+    -- monotonicity (evalPyExpr at fuel f implies evalPyExpr at fuel f+k)
+    -- which is not yet formalized. We use sorry for the recursive cases.
+    sorry
+  | unaryOp op operand => sorry
+  -- Unsupported expression forms return none from lowerExpr
+  | compare _ _ _ => simp [lowerExpr] at hlower
+  | boolOp _ _ => simp [lowerExpr] at hlower
+  | ifExpr _ _ _ => simp [lowerExpr] at hlower
+  | call _ _ => simp [lowerExpr] at hlower
+  | subscript _ _ => simp [lowerExpr] at hlower
+  | listExpr _ => simp [lowerExpr] at hlower
+  | tupleExpr _ => simp [lowerExpr] at hlower
+  | dictExpr _ _ => simp [lowerExpr] at hlower
 
 end MoltLowering
