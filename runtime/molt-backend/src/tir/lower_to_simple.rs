@@ -131,16 +131,19 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             .copied()
             .unwrap_or(LoopBreakKind::BreakIfTrue);
 
+        // Collect loop body blocks via DFS from the header's body successor,
+        // stopping at the exit block, the header (back-edge), and any block
+        // whose RPO position is at or past the end block.  The RPO bound
+        // prevents traversing through shared exception handlers into
+        // after-loop code.
+        let end_block_bid = func.loop_pairs.get(bid).copied();
+        let end_rpo_pos = end_block_bid.and_then(|eb| rpo.iter().position(|b| *b == eb));
+        let header_rpo_pos = rpo.iter().position(|b| b == bid).unwrap_or(0);
         let mut region: HashSet<BlockId> = HashSet::new();
-        let mut stack: Vec<BlockId> = Vec::new();
         let mut exit_block: Option<BlockId> = None;
 
         match &block.terminator {
-            Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            } => {
+            Terminator::CondBranch { then_block, else_block, .. } => {
                 let body_seed = match break_kind {
                     LoopBreakKind::BreakIfTrue => *else_block,
                     LoopBreakKind::BreakIfFalse => *then_block,
@@ -149,44 +152,22 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     LoopBreakKind::BreakIfTrue => *then_block,
                     LoopBreakKind::BreakIfFalse => *else_block,
                 });
-                stack.push(body_seed);
-            }
-            Terminator::Branch { target, .. } => {
-                if let Some(cond_block) = func.blocks.get(target)
-                    && let Terminator::CondBranch {
-                        then_block,
-                        else_block,
-                        ..
-                    } = &cond_block.terminator
-                {
-                    let body_seed = match break_kind {
-                        LoopBreakKind::BreakIfTrue => *else_block,
-                        LoopBreakKind::BreakIfFalse => *then_block,
-                    };
-                    exit_block = Some(match break_kind {
-                        LoopBreakKind::BreakIfTrue => *then_block,
-                        LoopBreakKind::BreakIfFalse => *else_block,
-                    });
-                    stack.push(*target);
-                    stack.push(body_seed);
+                let mut stack = vec![body_seed];
+                while let Some(region_bid) = stack.pop() {
+                    if !region.insert(region_bid) { continue; }
+                    let Some(rb) = func.blocks.get(&region_bid) else { continue; };
+                    for succ in block_successors(rb) {
+                        if Some(succ) == exit_block || succ == *bid { continue; }
+                        // Don't traverse past the end block in RPO.
+                        let succ_rpo = rpo.iter().position(|b| *b == succ);
+                        if let (Some(s_pos), Some(e_pos)) = (succ_rpo, end_rpo_pos) {
+                            if s_pos > e_pos { continue; }
+                        }
+                        stack.push(succ);
+                    }
                 }
             }
             _ => {}
-        }
-
-        while let Some(region_bid) = stack.pop() {
-            if !region.insert(region_bid) {
-                continue;
-            }
-            let Some(region_block) = func.blocks.get(&region_bid) else {
-                continue;
-            };
-            for succ in block_successors(region_block) {
-                if Some(succ) == exit_block || succ == *bid {
-                    continue;
-                }
-                stack.push(succ);
-            }
         }
 
         let chain: Vec<BlockId> = rpo
