@@ -895,67 +895,53 @@ impl SimpleBackend {
         // Variables defined ONLY before any loop (or when no loops exist)
         // keep box_none because they are genuinely None-initialized
         // locals that exception handlers may read.
-        let first_loop_idx = func_ir.ops.iter()
-            .position(|op| matches!(op.kind.as_str(),
-                "loop_start" | "loop_index_start" | "for_iter_start"
-                | "while_start" | "async_for_start"
-            ));
-        let loop_affected_vars: std::collections::HashSet<String> = if let Some(idx) = first_loop_idx {
-            // All variables defined at or after the first loop marker.
-            // Also include variables defined BEFORE the loop that are
-            // used inside it (they transit through the loop header phi).
-            let after_loop: std::collections::HashSet<String> = func_ir.ops[idx..]
-                .iter()
-                .filter_map(|op| op.out.clone())
-                .collect();
-            let before_loop: std::collections::HashSet<String> = func_ir.ops[..idx]
-                .iter()
-                .filter_map(|op| op.out.clone())
-                .collect();
-            // Variables used inside the loop body (after loop_start).
-            let used_in_loop: std::collections::HashSet<String> = func_ir.ops[idx..]
-                .iter()
-                .flat_map(|op| {
-                    let mut names = Vec::new();
-                    if let Some(args) = &op.args {
-                        names.extend(args.iter().cloned());
+        // Detect whether the function contains any loop or back-edge.
+        // After TIR optimization, structured loop markers (loop_start etc.)
+        // are replaced with linearized label/jump/br_if ops.  A back-edge
+        // exists when a jump or br_if targets a label defined earlier.
+        let has_loop_or_backedge = {
+            let mut defined_labels = std::collections::HashSet::new();
+            let mut found = false;
+            for op in &func_ir.ops {
+                match op.kind.as_str() {
+                    "loop_start" | "loop_index_start" | "for_iter_start"
+                    | "while_start" | "async_for_start" => { found = true; break; }
+                    "label" | "state_label" => {
+                        if let Some(id) = op.value { defined_labels.insert(id); }
                     }
-                    names
-                })
-                .collect();
-            let mut affected = after_loop;
-            for name in &before_loop {
-                if used_in_loop.contains(name) {
-                    affected.insert(name.clone());
+                    "jump" | "br_if" | "loop_continue" => {
+                        if let Some(id) = op.value {
+                            if defined_labels.contains(&id) { found = true; break; }
+                        }
+                    }
+                    _ => {}
                 }
             }
-            affected
-        } else {
-            std::collections::HashSet::new()
+            found
         };
-        // Always-on debug: print for functions with loops
-        if first_loop_idx.is_some() {
-            eprintln!(
-                "ENTRY_INIT {}: first_loop={:?} affected={}/{} params={}",
-                func_ir.name,
-                first_loop_idx,
-                loop_affected_vars.len(),
-                vars.len(),
-                param_name_set.len(),
-            );
-        }
         {
-            let none_val = builder.ins().iconst(types::I64, box_none());
-            let zero = builder.ins().iconst(types::I64, 0);
+            // Functions with loops: use raw 0 for ALL non-param variables.
+            // Functions without loops: use box_none for clean exception
+            // handler semantics (undefined variables read as Python None).
+            //
+            // box_none (0x7FFB) is unsafe in loop-bearing functions because
+            // Cranelift's SSA phi at loop headers picks the entry-block
+            // definition as the reaching value on the first iteration.
+            // Runtime functions then receive None instead of the intended
+            // value (constants, heap pointers, comparison results).
+            //
+            // Raw 0 is safe: dec_ref no-ops, comparisons detect it as
+            // non-equal to any valid object, is_truthy returns false.
+            let init_val = if has_loop_or_backedge {
+                builder.ins().iconst(types::I64, 0)
+            } else {
+                builder.ins().iconst(types::I64, box_none())
+            };
             for (name, var) in &vars {
                 if param_name_set.contains(name.as_str()) {
                     continue;
                 }
-                if loop_affected_vars.contains(name) {
-                    builder.def_var(*var, zero);
-                } else {
-                    builder.def_var(*var, none_val);
-                }
+                builder.def_var(*var, init_val);
             }
         }
 
@@ -15908,3 +15894,5 @@ mod tests {
         );
     }
 }
+
+ 
