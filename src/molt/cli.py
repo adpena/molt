@@ -10488,6 +10488,29 @@ def _start_backend_daemon(
                         socket_path.unlink()
                 except OSError:
                     pass
+                # Clear cached build artifacts that were linked against
+                # the old runtime library.  Without this, stale .o files
+                # produce linker errors (duplicate symbols) or silent
+                # correctness regressions.
+                import shutil
+                for cache_dir in [
+                    project_root / ".molt_cache",
+                    Path.home() / "Library" / "Caches" / "molt" / "home" / "bin",
+                ]:
+                    if cache_dir.is_dir():
+                        shutil.rmtree(cache_dir, ignore_errors=True)
+                        cache_dir.mkdir(parents=True, exist_ok=True)
+                        if not json_output:
+                            print(f"  Cleared stale cache: {cache_dir}", file=sys.stderr)
+                _cache_root = _default_molt_cache()
+                if _cache_root.is_dir():
+                    for _cached_file in _cache_root.iterdir():
+                        if _cached_file.name.endswith(".stdlib.o"):
+                            continue
+                        if _cached_file.is_file():
+                            _cached_file.unlink(missing_ok=True)
+                    if not json_output:
+                        print(f"  Cleared cached artifacts in: {_cache_root}", file=sys.stderr)
                 existing_pid = None
             else:
                 if socket_path.exists():
