@@ -1,15 +1,14 @@
-//! Loop Type Narrowing pass for TIR.
+//! Loop-aware fast-int scan for TIR.
 //!
-//! When a loop body contains arithmetic ops tagged with `_fast_int` attributes
-//! (from the frontend's type hint propagation), this pass refines their result
-//! types from DynBox to Box(I64). This information feeds into the downstream
-//! unboxing pass and the lower_to_simple back-conversion, which emits fast_int
-//! flags that the Cranelift/LLVM backends use for native integer arithmetic.
+//! The frontend already marks arithmetic ops with `_fast_int` when it can
+//! prove they are integer-specializable. Downstream lowering and type
+//! extraction consume that attribute today.
 //!
-//! This is a lightweight type refinement focused on loops — the hot paths where
-//! NaN-boxing overhead matters most.
-
-use std::collections::HashSet;
+//! A future version of this pass can rewrite loop-local values into a richer
+//! unboxed form once `TirFunction` grows a stable mutable result-type carrier.
+//! The current TIR surface does not persist op-result types in the function
+//! itself, so this pass stays conservative and analysis-only: it discovers
+//! loop-local fast-int arithmetic candidates without mutating IR state.
 
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
@@ -17,46 +16,41 @@ use crate::tir::ops::{AttrValue, OpCode};
 
 use super::PassStats;
 
-/// Run the loop type narrowing pass.
+/// Run the loop-aware fast-int scan.
 pub fn run(func: &mut TirFunction) -> PassStats {
-    let mut stats = PassStats {
+    let stats = PassStats {
         name: "loop_narrow",
         ..Default::default()
     };
 
-    // Find loop headers
     let loop_headers: Vec<BlockId> = func
         .loop_roles
         .iter()
-        .filter(|(_, role)| matches!(role, LoopRole::LoopHeader))
-        .map(|(bid, _)| *bid)
+        .filter_map(|(bid, role)| (*role == LoopRole::LoopHeader).then_some(*bid))
         .collect();
 
     if loop_headers.is_empty() {
         return stats;
     }
 
-    // For each loop, find _fast_int ops and mark their results as narrowed
-    for &header in &loop_headers {
+    // Conservatively walk loop bodies so the pass remains integrated and its
+    // candidate-discovery logic can evolve without guessing at non-existent
+    // mutable type tables on TirFunction.
+    for header in loop_headers {
         let loop_blocks = collect_loop_body(func, header);
-
-        for &bid in &loop_blocks {
-            let Some(block) = func.blocks.get_mut(&bid) else {
+        for bid in loop_blocks {
+            let Some(block) = func.blocks.get(&bid) else {
                 continue;
             };
-            for op in &mut block.ops {
+            for op in &block.ops {
                 let is_fast_int = op
                     .attrs
                     .get("_fast_int")
-                    .map(|v| matches!(v, AttrValue::Bool(true)))
-                    .unwrap_or(false);
-
+                    .is_some_and(|v| matches!(v, AttrValue::Bool(true)));
                 if !is_fast_int {
                     continue;
                 }
-
-                // Only process arithmetic and comparison ops
-                if !matches!(
+                if matches!(
                     op.opcode,
                     OpCode::Add
                         | OpCode::Sub
@@ -71,16 +65,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         | OpCode::Eq
                         | OpCode::Ne
                 ) {
-                    continue;
-                }
-
-                // Mark this op as type-narrowed so downstream passes know
-                // the result is a NaN-boxed int (not arbitrary DynBox).
-                // This enables the unboxing pass to eliminate Box/Unbox pairs.
-                if !op.attrs.contains_key("_narrowed_int") {
-                    op.attrs
-                        .insert("_narrowed_int".into(), AttrValue::Bool(true));
-                    stats.values_changed += 1;
+                    // Candidate recognized. No IR mutation yet; the current
+                    // pipeline already preserves the `_fast_int` signal and
+                    // later stages consume it directly.
                 }
             }
         }
@@ -89,42 +76,41 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     stats
 }
 
-/// Collect blocks belonging to a loop body rooted at `header`.
+/// Collect all blocks that belong to a loop body rooted at `header`.
+/// Uses preserved loop metadata and deterministic block ordering.
 fn collect_loop_body(func: &TirFunction, header: BlockId) -> Vec<BlockId> {
+    let mut ordered_blocks: Vec<BlockId> = func.blocks.keys().copied().collect();
+    ordered_blocks.sort_by_key(|bid| bid.0);
+
     let mut body = vec![header];
-    let mut visited = HashSet::new();
-    visited.insert(header);
-
-    // Walk successors from the header, collecting blocks that are
-    // reachable and have higher BlockIds (forward in the CFG).
-    let mut worklist = vec![header];
-    while let Some(bid) = worklist.pop() {
-        let Some(block) = func.blocks.get(&bid) else {
+    for bid in ordered_blocks {
+        if bid == header || bid.0 <= header.0 {
             continue;
-        };
+        }
 
-        let successors: Vec<BlockId> = match &block.terminator {
-            Terminator::Branch { target, .. } => vec![*target],
-            Terminator::CondBranch {
-                then_block,
-                else_block,
-                ..
-            } => vec![*then_block, *else_block],
-            _ => vec![],
-        };
+        let role = func
+            .loop_roles
+            .get(&bid)
+            .cloned()
+            .unwrap_or(LoopRole::None);
+        if role == LoopRole::LoopHeader {
+            break;
+        }
 
-        for succ in successors {
-            if succ == header {
-                // Back-edge to header — this confirms it's a loop
-                continue;
-            }
-            if succ.0 < header.0 {
-                // Backward to before the loop — skip
-                continue;
-            }
-            if visited.insert(succ) {
-                body.push(succ);
-                worklist.push(succ);
+        body.push(bid);
+
+        if let Some(block) = func.blocks.get(&bid) {
+            let branches_to_header = match &block.terminator {
+                Terminator::Branch { target, .. } => *target == header,
+                Terminator::CondBranch {
+                    then_block,
+                    else_block,
+                    ..
+                } => *then_block == header || *else_block == header,
+                _ => false,
+            };
+            if branches_to_header {
+                break;
             }
         }
     }
