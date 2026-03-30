@@ -67,6 +67,50 @@ fn is_void_wasm_call1_target(fn_ptr: u64) -> bool {
     false
 }
 
+fn trace_call_vec_enabled() -> bool {
+    matches!(
+        std::env::var("MOLT_TRACE_CALL_FUNCTION_VEC")
+            .ok()
+            .as_deref(),
+        Some("1")
+    )
+}
+
+unsafe fn trace_function_vec_call(
+    _py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    args: &[u64],
+    lane: &str,
+) {
+    unsafe {
+        if !trace_call_vec_enabled() {
+            return;
+        }
+        let name_bits = function_name_bits(_py, func_ptr);
+        let name = if name_bits != 0 {
+            string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<unnamed>".to_string())
+        } else {
+            "<unnamed>".to_string()
+        };
+        let fn_ptr = function_fn_ptr(func_ptr);
+        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let closure_bits = function_closure_bits(func_ptr);
+        let arity = function_arity(func_ptr);
+        eprintln!(
+            "[molt call_function_vec] lane={lane} name={name} fn_ptr=0x{fn_ptr:x} tramp_ptr=0x{tramp_ptr:x} closure_bits=0x{closure_bits:x} arity={arity} argc={}",
+            args.len()
+        );
+        for (idx, &arg_bits) in args.iter().enumerate() {
+            let arg_obj = obj_from_bits(arg_bits);
+            eprintln!(
+                "  arg[{idx}] type={} bits=0x{:x}",
+                crate::type_name(_py, arg_obj),
+                arg_bits
+            );
+        }
+    }
+}
+
 unsafe fn raise_call_arity_mismatch(
     _py: &PyToken<'_>,
     func_ptr: *mut u8,
@@ -1991,6 +2035,7 @@ unsafe fn call_function_obj_trampoline(_py: &PyToken<'_>, func_bits: u64, args: 
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
         }
+        trace_function_vec_call(_py, func_ptr, args, "trampoline");
         let arity = function_arity(func_ptr);
         if arity != args.len() as u64 {
             // Arity mismatch: the caller provided a different number of args
@@ -2086,6 +2131,7 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
         if let Some(func_ptr) = func_obj.as_ptr()
             && object_type_id(func_ptr) == TYPE_ID_FUNCTION
         {
+            trace_function_vec_call(_py, func_ptr, args, "vec");
             let tramp_ptr = function_trampoline_ptr(func_ptr);
             if tramp_ptr != 0 {
                 return call_function_obj_trampoline(_py, func_bits, args);
