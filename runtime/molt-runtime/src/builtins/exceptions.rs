@@ -1145,6 +1145,12 @@ pub(crate) fn task_last_exception_drop(_py: &PyToken<'_>, ptr: *mut u8) {
 
 pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
     crate::gil_assert();
+    if debug_exception_flow() {
+        let kind_bits = unsafe { exception_kind_bits(ptr) };
+        let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        eprintln!("molt exc SET kind={} ptr=0x{:x}", kind, ptr as usize);
+    }
     let state = runtime_state(_py);
     let task_key = current_task_key();
     let mut prior_ptr = None;
