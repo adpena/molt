@@ -450,6 +450,7 @@ fn object_setattr_symbol_roundtrip() {
 fn attr_object_ic_keeps_type_objects_distinct_per_site() {
     let _ = molt_runtime_init();
     crate::with_gil_entry!(_py, {
+        crate::object::bump_type_version();
         let class_a_bits = create_test_heap_class(_py, b"A", &[]);
         let class_b_bits = create_test_heap_class(_py, b"B", &[]);
         let site_bits = MoltObject::from_int(37).bits();
@@ -498,6 +499,9 @@ fn attr_object_ic_keeps_type_objects_distinct_per_site() {
 fn attr_object_ic_keeps_class_attrs_distinct_per_site() {
     let _ = molt_runtime_init();
     crate::with_gil_entry!(_py, {
+        // Invalidate stale IC entries from prior tests that may hold
+        // dangling pointers to freed heap objects.
+        crate::object::bump_type_version();
         let class_a_bits =
             create_test_heap_class(_py, b"A", &[(b"x", MoltObject::from_int(1).bits())]);
         let class_b_bits =

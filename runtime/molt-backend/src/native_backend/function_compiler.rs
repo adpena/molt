@@ -808,6 +808,12 @@ impl SimpleBackend {
                     continue;
                 }
                 if const_str_out_names.contains(name) {
+                    // Initialize to raw 0 (not box_none). Raw 0 is safe
+                    // for dec_ref (non-pointer NaN-box tag) and avoids
+                    // Cranelift using box_none as the SSA reaching
+                    // definition at loop header phis.
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    builder.def_var(*var, zero);
                     continue;
                 }
                 builder.def_var(*var, none_val);
