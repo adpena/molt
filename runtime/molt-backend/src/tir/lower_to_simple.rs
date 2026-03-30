@@ -625,6 +625,7 @@ fn emit_terminator(
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
     out: &mut Vec<OpIR>,
+    original_has_ret: bool,
 ) {
     match &block.terminator {
         Terminator::Return { values } => {
