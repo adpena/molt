@@ -123,14 +123,39 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         }
     }
 
+    // Identify loop body blocks: blocks that are the else-target of a
+    // LoopHeader CondBranch.  These get fused into the header's loop region
+    // rather than emitted as separate labelled blocks.
+    let mut loop_body_blocks: HashSet<BlockId> = HashSet::new();
+    // Map: header_bid → body_bid
+    let mut header_to_body: HashMap<BlockId, BlockId> = HashMap::new();
     for bid in &rpo {
+        let role = func.loop_roles.get(bid).cloned().unwrap_or(super::blocks::LoopRole::None);
+        if role == super::blocks::LoopRole::LoopHeader {
+            if let Some(block) = func.blocks.get(bid) {
+                if let Terminator::CondBranch { else_block, .. } = &block.terminator {
+                    loop_body_blocks.insert(*else_block);
+                    header_to_body.insert(*bid, *else_block);
+                }
+            }
+        }
+    }
+
+    for bid in &rpo {
+        // Skip blocks that are loop bodies — they're emitted inline
+        // after their loop header's loop_break_if_true.
+        if loop_body_blocks.contains(bid) {
+            continue;
+        }
+
         let block = match func.blocks.get(bid) {
             Some(b) => b,
             None => continue,
         };
 
-        // Emit loop_start before loop header blocks.
         let loop_role = func.loop_roles.get(bid).cloned().unwrap_or(super::blocks::LoopRole::None);
+
+        // Emit loop_start before loop header blocks.
         if loop_role == super::blocks::LoopRole::LoopHeader {
             out.push(OpIR {
                 kind: "loop_start".to_string(),
@@ -164,18 +189,69 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         // Emit ops.
         for op in &block.ops {
             if let Some(mut opir) = lower_op(op) {
-                // Propagate TIR type refinement results to SimpleIR fast-path flags.
                 annotate_type_flags(&mut opir, op, types);
                 out.push(opir);
             }
         }
 
-        // Emit terminator — pass original_has_ret so the roundtrip preserves
-        // the function's return type (ret vs ret_void).
-        let original_has_ret = func.attrs.get("_original_has_ret")
-            .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
-            .unwrap_or(false);
-        emit_terminator(block, &block_param_vars, &block_label_id, &mut out, original_has_ret, loop_role);
+        // For loop headers: emit loop_break_if_true + inline body + loop_continue + loop_end
+        if loop_role == super::blocks::LoopRole::LoopHeader {
+            if let Terminator::CondBranch { cond, then_block, then_args, else_block, else_args, .. } = &block.terminator {
+                // Store then-args (for after-loop block when break is taken).
+                emit_block_arg_stores(*then_block, then_args, &block_param_vars, &mut out);
+                // Emit loop_break_if_true.
+                out.push(OpIR {
+                    kind: "loop_break_if_true".to_string(),
+                    args: Some(vec![value_var(*cond)]),
+                    ..OpIR::default()
+                });
+                // Map body block arg ValueIds directly to the header's
+                // else-arg values.  This avoids store/load indirection
+                // that breaks the native backend's iter_next peephole.
+                if let Some(body_block) = func.blocks.get(else_block) {
+                    VALUE_NAME_OVERRIDES.with(|overrides| {
+                        let mut map = overrides.borrow_mut();
+                        for (i, arg) in body_block.args.iter().enumerate() {
+                            if i < else_args.len() {
+                                // Body arg i gets the same name as header's else-arg i.
+                                map.insert(arg.id, value_var(else_args[i]));
+                            }
+                        }
+                    });
+                    // Emit body ops.
+                    for op in &body_block.ops {
+                        if let Some(mut opir) = lower_op(op) {
+                            annotate_type_flags(&mut opir, op, types);
+                            out.push(opir);
+                        }
+                    }
+                    // Emit body terminator as loop_continue + loop_end.
+                    if let Terminator::Branch { target, args } = &body_block.terminator {
+                        emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
+                    }
+                    out.push(OpIR {
+                        kind: "loop_continue".to_string(),
+                        ..OpIR::default()
+                    });
+                    out.push(OpIR {
+                        kind: "loop_end".to_string(),
+                        ..OpIR::default()
+                    });
+                }
+            } else {
+                // Non-CondBranch header (e.g., while loop with different structure).
+                let original_has_ret = func.attrs.get("_original_has_ret")
+                    .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
+                    .unwrap_or(false);
+                emit_terminator(block, &block_param_vars, &block_label_id, &mut out, original_has_ret, loop_role);
+            }
+        } else {
+            // Non-loop block: emit terminator normally.
+            let original_has_ret = func.attrs.get("_original_has_ret")
+                .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
+                .unwrap_or(false);
+            emit_terminator(block, &block_param_vars, &block_label_id, &mut out, original_has_ret, loop_role);
+        }
     }
 
     VALUE_NAME_OVERRIDES.with(|overrides| overrides.borrow_mut().clear());
