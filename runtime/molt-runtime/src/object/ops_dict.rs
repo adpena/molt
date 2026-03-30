@@ -156,7 +156,7 @@ pub(crate) unsafe fn dict_update_apply(
                         }
                         Err(DictSeqError::NotIterable) => {
                             let msg = format!(
-                                "cannot convert dictionary update sequence element #{elem_index} to a sequence"
+                                "object is not iterable"
                             );
                             return raise_exception::<_>(_py, "TypeError", &msg);
                         }
@@ -275,7 +275,7 @@ pub(crate) unsafe fn dict_update_apply(
                 }
                 Err(DictSeqError::NotIterable) => {
                     let msg = format!(
-                        "cannot convert dictionary update sequence element #{elem_index} to a sequence"
+                        "object is not iterable"
                     );
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
