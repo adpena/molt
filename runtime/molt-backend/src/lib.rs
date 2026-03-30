@@ -2833,18 +2833,14 @@ impl SimpleBackend {
                                         );
                                     }
                                 }
-                                // Skip lossy roundtrip when passes didn't change anything.
-                                let any_changed = stats.iter().any(|s| {
-                                    s.values_changed > 0
-                                        || s.ops_removed > 0
-                                        || s.ops_added > 0
-                                });
-                                if !any_changed {
-                                    return None;
-                                }
-                                Some(crate::tir::lower_to_simple::lower_to_simple_ir(
-                                    &tir_func, &type_map,
-                                ))
+                                // Always skip the TIR→SimpleIR roundtrip. The roundtrip
+                                // produces linearized control flow (br_if/jump/label)
+                                // that Cranelift handles incorrectly in exception +
+                                // loop contexts (comprehensions, while-loops). The
+                                // original structured SimpleIR ops are always correct.
+                                // TIR analysis runs for verification but results are
+                                // not applied.
+                                None::<Vec<crate::ir::OpIR>>
                             }));
 
                         // Return TIR result for Phase 3 application + caching.
