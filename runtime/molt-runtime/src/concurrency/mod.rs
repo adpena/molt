@@ -57,11 +57,22 @@ macro_rules! with_gil_entry {
                 } else {
                     "unknown panic in FFI boundary".to_string()
                 };
-                // Set the pending RuntimeError flag.  The <u64> type parameter
-                // only affects the returned sentinel (which we discard) — the
-                // exception flag is set regardless of the type parameter.
-                let _ =
-                    $crate::builtins::exceptions::raise_exception::<u64>($py, "RuntimeError", &msg);
+                // Only attempt to raise a Python exception if the panic
+                // was NOT from the allocation/refcount system itself.
+                // Otherwise raise_exception would re-enter the corrupted
+                // allocator, trigger another panic, and cause infinite
+                // recursion via catch_unwind → raise_exception → panic → ...
+                let is_alloc_panic = msg.contains("use-after-free")
+                    || msg.contains("invalid type_id")
+                    || msg.contains("double free")
+                    || msg.contains("slab");
+                if !is_alloc_panic {
+                    let _ = $crate::builtins::exceptions::raise_exception::<u64>(
+                        $py,
+                        "RuntimeError",
+                        &msg,
+                    );
+                }
                 // SAFETY: All FFI return types used with this macro (u64, i64,
                 // i32, f64, *mut u8, *const u8, bool, ()) are safely zero-
                 // initializable. The caller will check for the pending

@@ -1826,9 +1826,23 @@ fn c_api_mapping_keys_values_items() {
 fn c_api_mapping_getitemstring() {
     // PyMapping_GetItemString → molt_getitem_method → molt_index
     // each re-enter with_gil_entry!, producing 3 nested GIL frames.
-    // In debug mode this overflows the 2MB default thread stack.
-    // Avoid the outer with_gil_entry! — the C-API functions manage
-    // their own GIL entry.
+    // In debug mode this overflows the 2MB default thread stack when
+    // prior tests have consumed stack budget.  Run on a dedicated
+    // thread with 8MB stack.
+    let r = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .name("c_api_mapping_test".into())
+        .spawn(|| {
+            c_api_mapping_getitemstring_body();
+        })
+        .expect("spawn mapping test thread")
+        .join();
+    if let Err(e) = r {
+        std::panic::resume_unwind(e);
+    }
+}
+
+fn c_api_mapping_getitemstring_body() {
     let _ = molt_runtime_init();
     let dict = PyDict_New();
     assert_ne!(dict, 0);
