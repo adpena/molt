@@ -24,6 +24,10 @@ pub enum OpCode {
     Add,
     Sub,
     Mul,
+    // In-place arithmetic (must roundtrip as inplace_* to preserve semantics)
+    InplaceAdd,
+    InplaceSub,
+    InplaceMul,
     Div,
     FloorDiv,
     Mod,
