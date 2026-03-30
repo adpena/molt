@@ -965,6 +965,7 @@ impl SimpleBackend {
                 BTreeMap::new()
             };
             let none_val = builder.ins().iconst(types::I64, box_none());
+            let zero_val = builder.ins().iconst(types::I64, 0);
             for (name, var) in &vars {
                 if param_name_set.contains(name.as_str()) {
                     continue;
@@ -973,6 +974,13 @@ impl SimpleBackend {
                     // Pre-materialize constant in entry block.
                     let val = builder.ins().iconst(types::I64, bits);
                     builder.def_var(*var, val);
+                } else if has_loop_or_backedge {
+                    // Loop-bearing: use raw 0 as default. box_none is
+                    // unsafe because TIR may fold constants, removing
+                    // their CONST ops from the final IR. The variable
+                    // then has only the entry-block def, and box_none
+                    // (valid NaN-boxed None) corrupts runtime operations.
+                    builder.def_var(*var, zero_val);
                 } else {
                     builder.def_var(*var, none_val);
                 }
@@ -15931,3 +15939,4 @@ mod tests {
 
  
 
+ 
