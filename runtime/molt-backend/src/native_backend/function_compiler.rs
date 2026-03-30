@@ -165,7 +165,7 @@ fn preanalyze_function_ir(
 
     for (idx, op) in func_ir.ops.iter().enumerate() {
         match op.kind.as_str() {
-            "ret" | "ret_void" => has_ret = true,
+            "ret" => has_ret = true,
             "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
             | "chan_recv_yield" => stateful = true,
             "store" => has_store = true,
@@ -463,6 +463,31 @@ impl SimpleBackend {
         known_function_arities: &BTreeMap<String, usize>,
         function_has_ret: &BTreeMap<String, bool>,
     ) {
+        let trace_compile = env_setting("MOLT_TRACE_COMPILE_FUNC")
+            .as_deref()
+            .map(parse_truthy_env)
+            .unwrap_or(false);
+        let compile_started = std::time::Instant::now();
+        let trace_name = func_ir.name.clone();
+        let trace_ops = func_ir.ops.len();
+        let trace_params = func_ir.params.len();
+        if trace_compile {
+            eprintln!(
+                "[molt-native-compile] start {} ops={} params={}",
+                trace_name,
+                trace_ops,
+                trace_params
+            );
+            let _ = crate::debug_artifacts::append_debug_artifact(
+                "native/compile_trace.txt",
+                format!(
+                    "start name={} ops={} params={}\n",
+                    trace_name,
+                    trace_ops,
+                    trace_params
+                ),
+            );
+        }
         self.compile_func_inner(
             func_ir,
             task_kinds,
@@ -478,6 +503,21 @@ impl SimpleBackend {
             known_function_arities,
             function_has_ret,
         );
+        if trace_compile {
+            eprintln!(
+                "[molt-native-compile] done {} after {:.2?}",
+                trace_name,
+                compile_started.elapsed()
+            );
+            let _ = crate::debug_artifacts::append_debug_artifact(
+                "native/compile_trace.txt",
+                format!(
+                    "done name={} elapsed={:.2?}\n",
+                    trace_name,
+                    compile_started.elapsed()
+                ),
+            );
+        }
     }
 
     /// Inner compilation with optional `raw_int_mode` for typed-int twin
