@@ -518,8 +518,18 @@ impl<'a> SsaContext<'a> {
                     let done_var = self.ops[di].out.clone().unwrap_or_default();
                     let val_var = self.ops[vi].out.clone().unwrap_or_default();
                     fuse_map.insert(op_idx, (di, vi, done_var, val_var));
-                    skip_indices.insert(di);
-                    skip_indices.insert(vi);
+                    // Skip the two index ops AND all ops between iter_next
+                    // and the value index.  These are exception-checking
+                    // boilerplate (check_exception, exception_last, is, not,
+                    // line) that is handled internally by iter_next_unboxed.
+                    let di_pos = op_indices.iter().position(|&x| x == di).unwrap_or(0);
+                    let vi_pos = op_indices.iter().position(|&x| x == vi).unwrap_or(0);
+                    let skip_end = di_pos.max(vi_pos);
+                    for skip_pos in (pos + 1)..=skip_end {
+                        if skip_pos < op_indices.len() {
+                            skip_indices.insert(op_indices[skip_pos]);
+                        }
+                    }
                 }
             }
 
