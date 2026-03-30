@@ -75,6 +75,14 @@ def lowerValue : MoltPython.PyValue → Option MoltTIR.Value
   | .funcVal _ _ _ => Option.none
   | .classVal _ => Option.none
 
+-- Equation lemmas for lowerValue (needed because PyValue is a nested inductive
+-- and simp/unfold can't reduce lowerValue in downstream proof contexts).
+@[simp] theorem lowerValue_intVal (n : Int) : lowerValue (.intVal n) = some (.int n) := rfl
+@[simp] theorem lowerValue_floatVal (f : Int) : lowerValue (.floatVal f) = some (.float f) := rfl
+@[simp] theorem lowerValue_boolVal (b : Bool) : lowerValue (.boolVal b) = some (.bool b) := rfl
+@[simp] theorem lowerValue_strVal (s : String) : lowerValue (.strVal s) = some (.str s) := rfl
+@[simp] theorem lowerValue_noneVal : lowerValue .noneVal = some .none := rfl
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Operator correspondence
 -- ═══════════════════════════════════════════════════════════════════════════

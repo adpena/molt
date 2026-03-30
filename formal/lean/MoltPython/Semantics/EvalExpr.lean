@@ -65,6 +65,10 @@ def evalUnaryOp (op : UnaryOp) (a : PyValue) : Option PyValue :=
   | .not, v => some (.boolVal (!v.truthy))
   | _, _ => none
 
+-- Equation lemmas for evalUnaryOp (needed for nested inductive reduction)
+@[simp] theorem evalUnaryOp_not (v : PyValue) :
+    evalUnaryOp .not v = some (.boolVal (!v.truthy)) := rfl
+
 /-- Evaluate a single comparison operator. -/
 def evalCompareOp (op : CompareOp) (a b : PyValue) : Option Bool :=
   match op with
