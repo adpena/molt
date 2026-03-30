@@ -63,7 +63,7 @@ pub(crate) unsafe fn resolved_new_is_default_object_new(new_bits: Option<u64>) -
 
 #[inline]
 pub(crate) unsafe fn resolved_constructor_init_policy(
-    new_bits: Option<u64>,
+    _new_bits: Option<u64>,
     init_bits: Option<u64>,
 ) -> InitArgPolicy {
     unsafe {
