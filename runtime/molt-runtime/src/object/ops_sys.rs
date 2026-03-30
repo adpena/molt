@@ -60,7 +60,7 @@ pub(crate) fn decode_slice_bound(
     Ok(idx.to_isize().unwrap_or(len))
 }
 
-fn decode_slice_bound_neg(
+pub(crate) fn decode_slice_bound_neg(
     _py: &PyToken<'_>,
     obj: MoltObject,
     len: isize,
@@ -87,7 +87,7 @@ fn decode_slice_bound_neg(
     Ok(idx.to_isize().unwrap_or(len - 1))
 }
 
-fn decode_slice_step(_py: &PyToken<'_>, obj: MoltObject) -> Result<isize, SliceError> {
+pub(crate) fn decode_slice_step(_py: &PyToken<'_>, obj: MoltObject) -> Result<isize, SliceError> {
     if obj.is_none() {
         return Ok(1);
     }
@@ -188,7 +188,7 @@ pub(crate) fn collect_iterable_values(
     Some(out)
 }
 
-fn ord_length_error(_py: &PyToken<'_>, len: usize) -> u64 {
+pub(crate) fn ord_length_error(_py: &PyToken<'_>, len: usize) -> u64 {
     let msg = format!("ord() expected a character, but string of length {len} found");
     raise_exception::<_>(_py, "TypeError", &msg)
 }
@@ -228,14 +228,14 @@ pub extern "C" fn molt_ord(val: u64) -> u64 {
 }
 
 #[derive(Clone, Copy)]
-struct GcState {
-    enabled: bool,
-    thresholds: (i64, i64, i64),
-    debug_flags: i64,
-    count: (i64, i64, i64),
+pub(crate) struct GcState {
+    pub(crate) enabled: bool,
+    pub(crate) thresholds: (i64, i64, i64),
+    pub(crate) debug_flags: i64,
+    pub(crate) count: (i64, i64, i64),
 }
 
-fn gc_state() -> &'static Mutex<GcState> {
+pub(crate) fn gc_state() -> &'static Mutex<GcState> {
     static GC_STATE: OnceLock<Mutex<GcState>> = OnceLock::new();
     GC_STATE.get_or_init(|| {
         Mutex::new(GcState {
@@ -247,7 +247,7 @@ fn gc_state() -> &'static Mutex<GcState> {
     })
 }
 
-fn gc_int_arg(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<i64, u64> {
+pub(crate) fn gc_int_arg(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<i64, u64> {
     if let Some(value) = to_i64(obj_from_bits(bits)) {
         return Ok(value);
     }
@@ -264,12 +264,12 @@ fn gc_int_arg(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<i64, u64> {
     Err(raise_exception::<_>(_py, "TypeError", &msg))
 }
 
-fn trace_sys_version() -> bool {
+pub(crate) fn trace_sys_version() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
     *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_SYS_VERSION").as_deref() == Ok("1"))
 }
 
-fn env_sys_version_info() -> Option<PythonVersionInfo> {
+pub(crate) fn env_sys_version_info() -> Option<PythonVersionInfo> {
     let raw = std::env::var("MOLT_SYS_VERSION_INFO").ok()?;
     if trace_sys_version() {
         eprintln!("molt sys version: env raw={raw}");
@@ -302,7 +302,7 @@ fn env_sys_version_info() -> Option<PythonVersionInfo> {
     Some(info)
 }
 
-fn default_sys_version_info() -> PythonVersionInfo {
+pub(crate) fn default_sys_version_info() -> PythonVersionInfo {
     env_sys_version_info().unwrap_or_else(|| PythonVersionInfo {
         major: 3,
         minor: 12,
@@ -312,7 +312,7 @@ fn default_sys_version_info() -> PythonVersionInfo {
     })
 }
 
-fn format_sys_version(info: &PythonVersionInfo) -> String {
+pub(crate) fn format_sys_version(info: &PythonVersionInfo) -> String {
     let base = format!("{}.{}.{}", info.major, info.minor, info.micro);
     let suffix = match info.releaselevel.as_str() {
         "alpha" => format!("a{}", info.serial),
@@ -328,13 +328,13 @@ fn format_sys_version(info: &PythonVersionInfo) -> String {
     }
 }
 
-const DEFAULT_SYS_API_VERSION: i64 = 1013;
-const SYS_HEX_RELEASELEVEL_ALPHA: i64 = 0xA;
-const SYS_HEX_RELEASELEVEL_BETA: i64 = 0xB;
-const SYS_HEX_RELEASELEVEL_CANDIDATE: i64 = 0xC;
-const SYS_HEX_RELEASELEVEL_FINAL: i64 = 0xF;
+pub(crate) const DEFAULT_SYS_API_VERSION: i64 = 1013;
+pub(crate) const SYS_HEX_RELEASELEVEL_ALPHA: i64 = 0xA;
+pub(crate) const SYS_HEX_RELEASELEVEL_BETA: i64 = 0xB;
+pub(crate) const SYS_HEX_RELEASELEVEL_CANDIDATE: i64 = 0xC;
+pub(crate) const SYS_HEX_RELEASELEVEL_FINAL: i64 = 0xF;
 
-fn releaselevel_hex_nibble(releaselevel: &str) -> i64 {
+pub(crate) fn releaselevel_hex_nibble(releaselevel: &str) -> i64 {
     match releaselevel {
         "alpha" => SYS_HEX_RELEASELEVEL_ALPHA,
         "beta" => SYS_HEX_RELEASELEVEL_BETA,
@@ -344,7 +344,7 @@ fn releaselevel_hex_nibble(releaselevel: &str) -> i64 {
     }
 }
 
-fn sys_hexversion_from_info(info: &PythonVersionInfo) -> i64 {
+pub(crate) fn sys_hexversion_from_info(info: &PythonVersionInfo) -> i64 {
     let major = (info.major & 0xFF) << 24;
     let minor = (info.minor & 0xFF) << 16;
     let micro = (info.micro & 0xFF) << 8;
@@ -353,7 +353,7 @@ fn sys_hexversion_from_info(info: &PythonVersionInfo) -> i64 {
     major | minor | micro | releaselevel | serial
 }
 
-fn sys_api_version() -> i64 {
+pub(crate) fn sys_api_version() -> i64 {
     std::env::var("MOLT_SYS_API_VERSION")
         .ok()
         .and_then(|raw| raw.trim().parse::<i64>().ok())
@@ -361,27 +361,27 @@ fn sys_api_version() -> i64 {
         .unwrap_or(DEFAULT_SYS_API_VERSION)
 }
 
-fn sys_abiflags() -> String {
+pub(crate) fn sys_abiflags() -> String {
     std::env::var("MOLT_SYS_ABIFLAGS").unwrap_or_default()
 }
 
-fn sys_implementation_name() -> String {
+pub(crate) fn sys_implementation_name() -> String {
     match std::env::var("MOLT_SYS_IMPLEMENTATION_NAME") {
         Ok(raw) if !raw.trim().is_empty() => raw,
         _ => "molt".to_string(),
     }
 }
 
-fn sys_cache_tag(name: &str, info: &PythonVersionInfo) -> String {
+pub(crate) fn sys_cache_tag(name: &str, info: &PythonVersionInfo) -> String {
     match std::env::var("MOLT_SYS_CACHE_TAG") {
         Ok(raw) if !raw.is_empty() => raw,
         _ => format!("{name}-{}{}", info.major, info.minor),
     }
 }
 
-const DEFAULT_SYS_FLAGS_INT_MAX_STR_DIGITS: i64 = 0;
+pub(crate) const DEFAULT_SYS_FLAGS_INT_MAX_STR_DIGITS: i64 = 0;
 
-fn env_flag_level(var: &str) -> Option<i64> {
+pub(crate) fn env_flag_level(var: &str) -> Option<i64> {
     let raw = std::env::var(var).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -394,18 +394,18 @@ fn env_flag_level(var: &str) -> Option<i64> {
     }
 }
 
-fn env_flag_bool(var: &str) -> Option<i64> {
+pub(crate) fn env_flag_bool(var: &str) -> Option<i64> {
     env_flag_level(var).map(|value| if value == 0 { 0 } else { 1 })
 }
 
-fn env_non_negative_i64(var: &str) -> Option<i64> {
+pub(crate) fn env_non_negative_i64(var: &str) -> Option<i64> {
     std::env::var(var)
         .ok()
         .and_then(|raw| raw.trim().parse::<i64>().ok())
         .filter(|value| *value >= 0)
 }
 
-fn sys_flags_hash_randomization() -> i64 {
+pub(crate) fn sys_flags_hash_randomization() -> i64 {
     match std::env::var("PYTHONHASHSEED") {
         Ok(value) => {
             if value == "random" {
@@ -418,7 +418,7 @@ fn sys_flags_hash_randomization() -> i64 {
     }
 }
 
-fn current_sys_version_info(state: &RuntimeState) -> (PythonVersionInfo, bool) {
+pub(crate) fn current_sys_version_info(state: &RuntimeState) -> (PythonVersionInfo, bool) {
     let mut guard = state.sys_version_info.lock().unwrap();
     if let Some(existing) = guard.as_ref() {
         (existing.clone(), false)
@@ -429,7 +429,7 @@ fn current_sys_version_info(state: &RuntimeState) -> (PythonVersionInfo, bool) {
     }
 }
 
-fn alloc_sys_version_info_tuple(_py: &PyToken<'_>, info: &PythonVersionInfo) -> Option<u64> {
+pub(crate) fn alloc_sys_version_info_tuple(_py: &PyToken<'_>, info: &PythonVersionInfo) -> Option<u64> {
     let release_ptr = alloc_string(_py, info.releaselevel.as_bytes());
     if release_ptr.is_null() {
         return None;
@@ -453,7 +453,7 @@ fn alloc_sys_version_info_tuple(_py: &PyToken<'_>, info: &PythonVersionInfo) -> 
     Some(MoltObject::from_ptr(tuple_ptr).bits())
 }
 
-fn dict_set_bytes_key(_py: &PyToken<'_>, dict_ptr: *mut u8, key: &[u8], value_bits: u64) -> bool {
+pub(crate) fn dict_set_bytes_key(_py: &PyToken<'_>, dict_ptr: *mut u8, key: &[u8], value_bits: u64) -> bool {
     let key_ptr = alloc_string(_py, key);
     if key_ptr.is_null() {
         return false;
@@ -469,7 +469,7 @@ fn dict_set_bytes_key(_py: &PyToken<'_>, dict_ptr: *mut u8, key: &[u8], value_bi
 // molt_set_argv, molt_set_argv_utf16 live in ops.rs
 
 #[cfg(all(not(target_arch = "wasm32"), unix))]
-fn process_time_duration() -> Result<std::time::Duration, String> {
+pub(crate) fn process_time_duration() -> Result<std::time::Duration, String> {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
@@ -488,7 +488,7 @@ fn process_time_duration() -> Result<std::time::Duration, String> {
 }
 
 #[cfg(all(not(target_arch = "wasm32"), windows))]
-fn process_time_duration() -> Result<std::time::Duration, String> {
+pub(crate) fn process_time_duration() -> Result<std::time::Duration, String> {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
 
@@ -522,24 +522,24 @@ fn process_time_duration() -> Result<std::time::Duration, String> {
 }
 
 #[cfg(any(target_arch = "wasm32", not(any(unix, windows))))]
-fn process_time_duration() -> Result<std::time::Duration, String> {
+pub(crate) fn process_time_duration() -> Result<std::time::Duration, String> {
     Err("process_time unavailable".to_string())
 }
 
 #[derive(Clone, Copy, Debug)]
-struct TimeParts {
-    year: i32,
-    month: i32,
-    day: i32,
-    hour: i32,
-    minute: i32,
-    second: i32,
-    wday: i32,
-    yday: i32,
-    isdst: i32,
+pub(crate) struct TimeParts {
+    pub(crate) year: i32,
+    pub(crate) month: i32,
+    pub(crate) day: i32,
+    pub(crate) hour: i32,
+    pub(crate) minute: i32,
+    pub(crate) second: i32,
+    pub(crate) wday: i32,
+    pub(crate) yday: i32,
+    pub(crate) isdst: i32,
 }
 
-fn time_parts_to_tuple(_py: &PyToken<'_>, parts: TimeParts) -> u64 {
+pub(crate) fn time_parts_to_tuple(_py: &PyToken<'_>, parts: TimeParts) -> u64 {
     let elems = [
         MoltObject::from_int(parts.year as i64).bits(),
         MoltObject::from_int(parts.month as i64).bits(),
@@ -560,7 +560,7 @@ fn time_parts_to_tuple(_py: &PyToken<'_>, parts: TimeParts) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn time_parts_from_tm(tm: &libc::tm) -> TimeParts {
+pub(crate) fn time_parts_from_tm(tm: &libc::tm) -> TimeParts {
     let wday = (tm.tm_wday + 6).rem_euclid(7);
     TimeParts {
         year: tm.tm_year + 1900,
@@ -576,7 +576,7 @@ fn time_parts_from_tm(tm: &libc::tm) -> TimeParts {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn tm_from_time_parts(_py: &PyToken<'_>, parts: TimeParts) -> Result<libc::tm, u64> {
+pub(crate) fn tm_from_time_parts(_py: &PyToken<'_>, parts: TimeParts) -> Result<libc::tm, u64> {
     let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
     tm.tm_sec = parts.second;
     tm.tm_min = parts.minute;
@@ -598,12 +598,12 @@ fn tm_from_time_parts(_py: &PyToken<'_>, parts: TimeParts) -> Result<libc::tm, u
 }
 
 #[cfg(target_arch = "wasm32")]
-fn is_leap_year(year: i32) -> bool {
+pub(crate) fn is_leap_year(year: i32) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn day_of_year(year: i32, month: i32, day: i32) -> i32 {
+pub(crate) fn day_of_year(year: i32, month: i32, day: i32) -> i32 {
     const DAYS_BEFORE_MONTH: [[i32; 13]; 2] = [
         [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334],
         [0, 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335],
@@ -614,7 +614,7 @@ fn day_of_year(year: i32, month: i32, day: i32) -> i32 {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn civil_from_days(days: i64) -> (i32, i32, i32) {
+pub(crate) fn civil_from_days(days: i64) -> (i32, i32, i32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097;
@@ -631,7 +631,7 @@ fn civil_from_days(days: i64) -> (i32, i32, i32) {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn time_parts_from_epoch_utc(secs: i64) -> TimeParts {
+pub(crate) fn time_parts_from_epoch_utc(secs: i64) -> TimeParts {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
     let hour = (rem / 3600) as i32;
@@ -654,7 +654,7 @@ fn time_parts_from_epoch_utc(secs: i64) -> TimeParts {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn timezone_west_wasm() -> Result<i64, String> {
+pub(crate) fn timezone_west_wasm() -> Result<i64, String> {
     let offset = unsafe { crate::molt_time_timezone_host() };
     if offset == i64::MIN {
         return Err("timezone unavailable".to_string());
@@ -663,7 +663,7 @@ fn timezone_west_wasm() -> Result<i64, String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn local_offset_west_wasm(secs: i64) -> Result<i64, String> {
+pub(crate) fn local_offset_west_wasm(secs: i64) -> Result<i64, String> {
     let offset = unsafe { crate::molt_time_local_offset_host(secs) };
     if offset == i64::MIN {
         return Err("localtime failed".to_string());
@@ -672,7 +672,7 @@ fn local_offset_west_wasm(secs: i64) -> Result<i64, String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn tzname_label_wasm(which: i32) -> Result<String, String> {
+pub(crate) fn tzname_label_wasm(which: i32) -> Result<String, String> {
     let mut buf = vec![0u8; 256];
     let mut out_len: u32 = 0;
     let status = unsafe {
@@ -695,20 +695,20 @@ fn tzname_label_wasm(which: i32) -> Result<String, String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn tzname_wasm() -> Result<(String, String), String> {
+pub(crate) fn tzname_wasm() -> Result<(String, String), String> {
     let std_name = tzname_label_wasm(0)?;
     let dst_name = tzname_label_wasm(1)?;
     Ok((std_name, dst_name))
 }
 
-fn current_epoch_secs_i64() -> Result<i64, String> {
+pub(crate) fn current_epoch_secs_i64() -> Result<i64, String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| "system time before epoch".to_string())?;
     Ok(i64::try_from(now.as_secs()).unwrap_or(i64::MAX))
 }
 
-fn parse_time_seconds(_py: &PyToken<'_>, secs_bits: u64) -> Result<i64, u64> {
+pub(crate) fn parse_time_seconds(_py: &PyToken<'_>, secs_bits: u64) -> Result<i64, u64> {
     let obj = obj_from_bits(secs_bits);
     if obj.is_none() {
         let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
@@ -750,7 +750,7 @@ fn parse_time_seconds(_py: &PyToken<'_>, secs_bits: u64) -> Result<i64, u64> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn time_t_bounds() -> (i128, i128) {
+pub(crate) fn time_t_bounds() -> (i128, i128) {
     let size = std::mem::size_of::<libc::time_t>();
     if size == 4 {
         (i32::MIN as i128, i32::MAX as i128)
@@ -760,11 +760,11 @@ fn time_t_bounds() -> (i128, i128) {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn time_t_bounds() -> (i128, i128) {
+pub(crate) fn time_t_bounds() -> (i128, i128) {
     (i64::MIN as i128, i64::MAX as i128)
 }
 
-fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
+pub(crate) fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
     let mut y = year as i64;
     let m = month as i64;
     let d = day as i64;
@@ -778,7 +778,7 @@ fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn tm_to_epoch_seconds(tm: &libc::tm) -> i64 {
+pub(crate) fn tm_to_epoch_seconds(tm: &libc::tm) -> i64 {
     let year = tm.tm_year + 1900;
     let month = tm.tm_mon + 1;
     let day = tm.tm_mday;
@@ -788,7 +788,7 @@ fn tm_to_epoch_seconds(tm: &libc::tm) -> i64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn offset_west_from_secs(secs: i64) -> Result<i64, String> {
+pub(crate) fn offset_west_from_secs(secs: i64) -> Result<i64, String> {
     let secs = secs as libc::time_t;
     let local_tm = localtime_tm(secs)?;
     let utc_tm = gmtime_tm(secs)?;
@@ -797,7 +797,7 @@ fn offset_west_from_secs(secs: i64) -> Result<i64, String> {
     Ok(utc_secs.saturating_sub(local_secs))
 }
 
-fn parse_time_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64> {
+pub(crate) fn parse_time_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64> {
     let obj = obj_from_bits(tuple_bits);
     let Some(ptr) = obj.as_ptr() else {
         return Err(raise_exception::<_>(
@@ -881,7 +881,7 @@ fn parse_time_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64
     }
 }
 
-fn asctime_from_parts(parts: TimeParts) -> Result<String, String> {
+pub(crate) fn asctime_from_parts(parts: TimeParts) -> Result<String, String> {
     const WEEKDAY_ABBR: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const MONTH_ABBR: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -900,7 +900,7 @@ fn asctime_from_parts(parts: TimeParts) -> Result<String, String> {
     ))
 }
 
-fn parse_mktime_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64> {
+pub(crate) fn parse_mktime_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64> {
     let obj = obj_from_bits(tuple_bits);
     let Some(ptr) = obj.as_ptr() else {
         return Err(raise_exception::<_>(
@@ -956,7 +956,7 @@ fn parse_mktime_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u
     }
 }
 
-fn parse_timegm_tuple(
+pub(crate) fn parse_timegm_tuple(
     _py: &PyToken<'_>,
     tuple_bits: u64,
 ) -> Result<(i32, i32, i32, i32, i32, i32), u64> {
@@ -1013,7 +1013,7 @@ fn parse_timegm_tuple(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn localtime_tm(secs: libc::time_t) -> Result<libc::tm, String> {
+pub(crate) fn localtime_tm(secs: libc::time_t) -> Result<libc::tm, String> {
     #[cfg(unix)]
     unsafe {
         let mut out = std::mem::zeroed::<libc::tm>();
@@ -1034,7 +1034,7 @@ fn localtime_tm(secs: libc::time_t) -> Result<libc::tm, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn gmtime_tm(secs: libc::time_t) -> Result<libc::tm, String> {
+pub(crate) fn gmtime_tm(secs: libc::time_t) -> Result<libc::tm, String> {
     #[cfg(unix)]
     unsafe {
         let mut out = std::mem::zeroed::<libc::tm>();
@@ -1055,7 +1055,7 @@ fn gmtime_tm(secs: libc::time_t) -> Result<libc::tm, String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn strftime_wasm(format: &str, parts: TimeParts) -> Result<String, String> {
+pub(crate) fn strftime_wasm(format: &str, parts: TimeParts) -> Result<String, String> {
     const WEEKDAY_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const WEEKDAY_LONG: [&str; 7] = [
         "Monday",
