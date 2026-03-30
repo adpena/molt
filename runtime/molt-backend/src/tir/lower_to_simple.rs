@@ -1809,17 +1809,25 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        // Must contain a back-edge: a jump to the header label.
+        // Structured loop round-trips must use loop_continue/loop_end for the
+        // back-edge rather than a state-machine jump to the header label.
+        let has_loop_continue = round_tripped.iter().any(|o| o.kind == "loop_continue");
+        assert!(
+            has_loop_continue,
+            "round-tripped while loop must contain loop_continue"
+        );
         let header_label = round_tripped
             .iter()
             .find(|o| o.kind == "label")
             .and_then(|o| o.value);
-        let has_back_edge = round_tripped
-            .iter()
-            .any(|o| o.kind == "jump" && o.value == header_label);
+        let has_back_edge_jump = header_label.is_some_and(|label| {
+            round_tripped
+                .iter()
+                .any(|o| o.kind == "jump" && o.value == Some(label))
+        });
         assert!(
-            has_back_edge,
-            "round-tripped while loop must contain a back-edge jump to header"
+            !has_back_edge_jump,
+            "round-tripped while loop must not lower the back-edge as jump-to-header"
         );
 
         // Must still have a ret op.
@@ -1830,6 +1838,107 @@ mod tests {
         assert!(
             validate_labels(&round_tripped),
             "label validation failed on round-tripped while loop"
+        );
+    }
+
+    /// Regression test: counted loops must not re-enter above loop_index_start.
+    /// Otherwise the induction variable resets every iteration and the loop hangs.
+    #[test]
+    fn tir_round_trip_keeps_loop_index_start_out_of_backedge_path() {
+        use crate::ir::{FunctionIR, OpIR};
+        use crate::tir::lower_from_simple::lower_to_tir;
+
+        let func_ir = FunctionIR {
+            name: "counted_loop".into(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(3),
+                    out: Some("limit".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(0),
+                    out: Some("zero".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(1),
+                    out: Some("one".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_start".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_index_start".into(),
+                    args: Some(vec!["zero".into()]),
+                    out: Some("i".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "lt".into(),
+                    args: Some(vec!["i".into(), "limit".into()]),
+                    out: Some("cond".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_break_if_false".into(),
+                    args: Some(vec!["cond".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "add".into(),
+                    args: Some(vec!["i".into(), "one".into()]),
+                    out: Some("next_i".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_index_next".into(),
+                    args: Some(vec!["next_i".into()]),
+                    out: Some("i".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_continue".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_end".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+        };
+
+        let tir_func = lower_to_tir(&func_ir);
+        let round_tripped = lower_to_simple_ir(&tir_func, &HashMap::new());
+
+        let loop_start_idx = round_tripped
+            .iter()
+            .position(|op| op.kind == "loop_start")
+            .expect("expected loop_start after round-trip");
+        let loop_index_start_idx = round_tripped
+            .iter()
+            .position(|op| op.kind == "loop_index_start")
+            .expect("expected loop_index_start after round-trip");
+        assert!(
+            round_tripped[loop_start_idx + 1..loop_index_start_idx]
+                .iter()
+                .all(|op| op.kind != "label" && op.kind != "jump" && op.kind != "br_if"),
+            "counted loop must not place control-flow re-entry before loop_index_start; ops: {:?}",
+            round_tripped
+                .iter()
+                .map(|op| op.kind.as_str())
+                .collect::<Vec<_>>()
         );
     }
 }
