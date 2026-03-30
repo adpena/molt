@@ -1249,19 +1249,39 @@ fn main() -> io::Result<()> {
                     eprintln!("MOLT_BACKEND: warning: failed to create stdlib parent: {e}");
                 });
                 if stdlib_path.exists() {
-                    // Cached stdlib exists — compile only user functions.
-                    // If the cache is incomplete (missing functions from a
-                    // larger import set), the link step will fail and the CLI
-                    // should delete the cache and retry.
+                    // Cached stdlib exists — check if it covers the current
+                    // stdlib function set by comparing function counts.
                     let total = ir.functions.len();
-                    ir.functions
-                        .retain(|f| is_user_owned_symbol(&f.name, &entry_module));
-                    let kept = ir.functions.len();
-                    eprintln!(
-                        "MOLT_BACKEND: incremental — compiling {kept} user functions (cached {} stdlib in {})",
-                        total - kept,
-                        stdlib_path.display()
-                    );
+                    let current_stdlib_count = ir
+                        .functions
+                        .iter()
+                        .filter(|f| !is_user_owned_symbol(&f.name, &entry_module))
+                        .count();
+                    let count_path = stdlib_path.with_extension("count");
+                    let cached_count: usize = std::fs::read_to_string(&count_path)
+                        .ok()
+                        .and_then(|s| s.trim().parse().ok())
+                        .unwrap_or(0);
+                    if cached_count >= current_stdlib_count {
+                        // Cache covers all needed stdlib functions — use it
+                        ir.functions
+                            .retain(|f| is_user_owned_symbol(&f.name, &entry_module));
+                        let kept = ir.functions.len();
+                        eprintln!(
+                            "MOLT_BACKEND: incremental — compiling {kept} user functions (cached {} stdlib in {})",
+                            total - kept,
+                            stdlib_path.display()
+                        );
+                    } else {
+                        // Cache is incomplete — delete and rebuild with full set
+                        eprintln!(
+                            "MOLT_BACKEND: stdlib cache incomplete (cached {} functions, need {}) — rebuilding",
+                            cached_count,
+                            current_stdlib_count,
+                        );
+                        let _ = std::fs::remove_file(stdlib_path);
+                        let _ = std::fs::remove_file(&count_path);
+                    }
                 } else {
                     // First build — compile stdlib separately, cache it
                     // Ensure the parent directory exists — it may have been
@@ -1315,6 +1335,9 @@ fn main() -> io::Result<()> {
                         let stdlib_bytes = stdlib_backend.compile(stdlib_ir);
                         std::fs::write(stdlib_path, &stdlib_bytes)
                             .expect("failed to write cached stdlib .o");
+                        // Write function count sidecar for cache validity checking
+                        let count_path = stdlib_path.with_extension("count");
+                        let _ = std::fs::write(&count_path, stdlib_count.to_string());
                     } else {
                         // Batched stdlib compilation
                         let all_stdlib_names: std::collections::BTreeSet<String> =
@@ -1380,6 +1403,9 @@ fn main() -> io::Result<()> {
                             );
                         }
                         let _ = std::fs::remove_dir_all(&stdlib_tmp_dir);
+                        // Write function count sidecar for cache validity checking
+                        let count_path = stdlib_path.with_extension("count");
+                        let _ = std::fs::write(&count_path, stdlib_count.to_string());
                     }
                     // Now compile user functions only
                     ir.functions = user_remaining;
