@@ -2835,19 +2835,6 @@ impl SimpleBackend {
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
                         }
-                        // The TIR CFG builder splits loops into many blocks
-                        // at every br_if (exception-checking boilerplate).
-                        // lower_to_simple fuses header + body blocks but the
-                        // intermediate blocks from exception checks produce
-                        // jump/label ops that break the native backend's
-                        // sequential loop structure.  Requires collecting ALL
-                        // blocks in the loop region and fusing them, which is
-                        // tracked as a follow-up.
-                        if tmp_func.ops.iter().any(|op| {
-                            matches!(op.kind.as_str(), "loop_start" | "for_iter")
-                        }) {
-                            return (idx, content_hash, tmp_func.ops);
-                        }
                         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                         crate::tir::type_refine::refine_types(&mut tir_func);
                         let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {

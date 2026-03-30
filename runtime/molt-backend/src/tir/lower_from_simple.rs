@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::ir::FunctionIR;
 
-use super::blocks::{BlockId, LoopRole, TirBlock};
+use super::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
 use super::cfg::CFG;
 use super::function::TirFunction;
 use super::ssa::{SsaOutput, convert_to_ssa_with_params};
@@ -124,7 +124,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
     }
 
     // Detect loop structural roles from the original SimpleIR ops.
-    let loop_roles = detect_loop_roles(ir, cfg, &block_map);
+    let (loop_roles, loop_pairs, loop_break_kinds) = detect_loop_structure(ir, cfg, &block_map);
 
     TirFunction {
         name: ir.name.clone(),
@@ -145,18 +145,32 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         has_exception_handling,
         label_id_map,
         loop_roles,
+        loop_pairs,
+        loop_break_kinds,
     }
 }
 
 /// Scan the original SimpleIR ops and CFG to detect which TIR blocks correspond
-/// to `loop_start` and `loop_end` structural markers.  Returns a map from
-/// BlockId to LoopRole for every block that has a loop-structural role.
-fn detect_loop_roles(
+/// to `loop_start` and `loop_end` structural markers, which loop-end pairs with
+/// each header, and what the original loop-break polarity was.
+fn detect_loop_structure(
     ir: &FunctionIR,
     cfg: &CFG,
     _block_map: &HashMap<BlockId, TirBlock>,
-) -> HashMap<BlockId, LoopRole> {
+) -> (
+    HashMap<BlockId, LoopRole>,
+    HashMap<BlockId, BlockId>,
+    HashMap<BlockId, LoopBreakKind>,
+) {
     let mut roles = HashMap::new();
+    let mut loop_pairs = HashMap::new();
+    let mut loop_break_kinds = HashMap::new();
+    let block_containing = |op_idx: usize| -> Option<BlockId> {
+        cfg.blocks
+            .iter()
+            .position(|bb| bb.start_op <= op_idx && op_idx < bb.end_op)
+            .map(|bid| BlockId(bid as u32))
+    };
     for (bid, bb) in cfg.blocks.iter().enumerate() {
         if bb.start_op >= ir.ops.len() {
             continue;
@@ -172,7 +186,44 @@ fn detect_loop_roles(
             _ => {}
         }
     }
-    roles
+    let mut loop_stack: Vec<(usize, BlockId)> = Vec::new();
+    for (op_idx, op) in ir.ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "loop_start" => {
+                if let Some(header_bid) = block_containing(op_idx) {
+                    loop_stack.push((op_idx, header_bid));
+                }
+            }
+            "loop_end" => {
+                let Some((header_op_idx, header_bid)) = loop_stack.pop() else {
+                    continue;
+                };
+                let Some(end_bid) = block_containing(op_idx) else {
+                    continue;
+                };
+                loop_pairs.insert(header_bid, end_bid);
+
+                let mut nested_depth = 0usize;
+                for inner_idx in (header_op_idx + 1)..op_idx {
+                    match ir.ops[inner_idx].kind.as_str() {
+                        "loop_start" => nested_depth += 1,
+                        "loop_end" => nested_depth = nested_depth.saturating_sub(1),
+                        "loop_break_if_true" if nested_depth == 0 => {
+                            loop_break_kinds.insert(header_bid, LoopBreakKind::BreakIfTrue);
+                            break;
+                        }
+                        "loop_break_if_false" if nested_depth == 0 => {
+                            loop_break_kinds.insert(header_bid, LoopBreakKind::BreakIfFalse);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (roles, loop_pairs, loop_break_kinds)
 }
 
 /// Walk the original ops and propagate `fast_int` / `fast_float` / `type_hint`

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::blocks::{BlockId, LoopRole, TirBlock};
+use super::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
 use super::ops::AttrDict;
 use super::types::TirType;
 use super::values::ValueId;
@@ -43,6 +43,11 @@ pub struct TirFunction {
     /// headers (`loop_start`) or loop ends (`loop_end`) so the back-conversion
     /// can re-emit these markers for downstream backends (Cranelift, WASM).
     pub loop_roles: HashMap<BlockId, LoopRole>,
+    /// Mapping from loop header block -> matching loop-end block from the
+    /// original structured SimpleIR.
+    pub loop_pairs: HashMap<BlockId, BlockId>,
+    /// Mapping from loop header block -> original loop-break polarity.
+    pub loop_break_kinds: HashMap<BlockId, LoopBreakKind>,
 }
 
 impl TirFunction {
@@ -91,6 +96,8 @@ impl TirFunction {
             has_exception_handling: false,
             label_id_map: HashMap::new(),
             loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
         }
     }
 
