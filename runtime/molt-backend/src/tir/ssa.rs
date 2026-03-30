@@ -1072,12 +1072,16 @@ impl<'a> SsaContext<'a> {
         self.block_arg_vars[target_bid]
             .iter()
             .map(|var| {
-                self.resolve_known_var(var, var_stacks).unwrap_or_else(|| {
-                    panic!(
-                        "unresolved SSA branch arg '{}' for target block {}",
-                        var, target_bid
-                    )
-                })
+                // Use the current stack-top definition for this variable.
+                // If the variable has no reaching definition on this path
+                // (e.g., a loop-body variable at the loop entry edge), use
+                // the shared undef value.  This is correct SSA semantics:
+                // on the first iteration the value is undefined, and the
+                // loop header's phi merges undef (entry edge) with the
+                // actual value (back-edge).
+                self.resolve_known_var(var, var_stacks)
+                    .or(self.undef_value)
+                    .expect("SSA undef value must be initialized")
             })
             .collect()
     }

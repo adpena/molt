@@ -2835,23 +2835,23 @@ impl SimpleBackend {
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
                         }
-                        // The TIR SSA converter does not yet implement the
-                        // Braun et al. (2013) incomplete-phi protocol for loop
-                        // headers.  Loop-carried values (variables defined in the
-                        // body and used at the header via back-edges) cause
-                        // "unresolved SSA branch arg" panics, and the
-                        // lower_to_simple linearization cannot yet reconstruct
-                        // the structural loop markers (loop_start, loop_end,
-                        // loop_break_if_true, loop_continue) that the native
-                        // backend requires.
+                        // Loop-bearing functions bypass TIR optimization because
+                        // lower_to_simple cannot yet reconstruct the structural
+                        // loop markers (loop_start/loop_end/loop_break_if_true/
+                        // loop_continue) with correct SSA value references.
+                        // The SSA converter now handles loop phis (undef on entry
+                        // edge), and lower_to_simple emits loop markers from
+                        // LoopRole metadata — but the iter_next peephole in the
+                        // native backend requires the original op ordering which
+                        // TIR block linearization doesn't preserve.
                         //
-                        // Until Phase 2 (loop-aware SSA + proper marker emission),
-                        // preserve original ops for loop-bearing functions.
-                        // Non-loop functions still benefit from TIR optimization.
-                        let has_loop = tmp_func.ops.iter().any(|op| {
+                        // TODO: teach lower_to_simple to emit the full for-loop
+                        // pattern (iter_next → index(pair,1) → loop_break_if_true
+                        // → index(pair,0)) that the native backend's peephole
+                        // optimizer expects.
+                        if tmp_func.ops.iter().any(|op| {
                             matches!(op.kind.as_str(), "loop_start" | "for_iter")
-                        });
-                        if has_loop {
+                        }) {
                             return (idx, content_hash, tmp_func.ops);
                         }
                         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
