@@ -157,6 +157,23 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             if let Some(mut opir) = lower_op(op) {
                 // Propagate TIR type refinement results to SimpleIR fast-path flags.
                 annotate_type_flags(&mut opir, op, types);
+                // Debug: trace type_hint preservation for list/comprehension ops
+                if std::env::var("MOLT_DEBUG_TYPE_HINT").is_ok()
+                    && matches!(opir.kind.as_str(), "list_new" | "list_append" | "iter" | "iter_next" | "inplace_add" | "inplace_sub" | "inplace_mul")
+                {
+                    let th = opir.type_hint.as_deref().unwrap_or("NONE");
+                    let fi = opir.fast_int.unwrap_or(false);
+                    let attr_th = attr_str(&op.attrs, "_type_hint").unwrap_or_default();
+                    let result_ty = op.results.first()
+                        .and_then(|r| types.get(r))
+                        .map(|t| format!("{:?}", t))
+                        .unwrap_or_else(|| "NO_RESULT".into());
+                    let all_attrs: Vec<_> = op.attrs.iter().map(|(k, v)| format!("{}={:?}", k, v)).collect();
+                    eprintln!(
+                        "[TIR→SimpleIR] kind={} type_hint={} fast_int={} attr_type_hint={} result_type={} attrs=[{}]",
+                        opir.kind, th, fi, attr_th, result_ty, all_attrs.join(", ")
+                    );
+                }
                 out.push(opir);
             }
         }
@@ -405,6 +422,9 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                         s_value: attr_str(&op.attrs, "s_value"),
                         bytes: attr_bytes(&op.attrs, "bytes"),
                         var: attr_str(&op.attrs, "_var"),
+                        fast_int: attr_bool(&op.attrs, "_fast_int"),
+                        fast_float: attr_bool(&op.attrs, "_fast_float"),
+                        type_hint: attr_str(&op.attrs, "_type_hint"),
                         task_kind: attr_str(&op.attrs, "task_kind"),
                         container_type: attr_str(&op.attrs, "container_type"),
                         ic_index: attr_int(&op.attrs, "ic_index"),
@@ -426,6 +446,9 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                     s_value: attr_str(&op.attrs, "s_value"),
                     bytes: attr_bytes(&op.attrs, "bytes"),
                     var: attr_str(&op.attrs, "_var"),
+                    fast_int: attr_bool(&op.attrs, "_fast_int"),
+                    fast_float: attr_bool(&op.attrs, "_fast_float"),
+                    type_hint: attr_str(&op.attrs, "_type_hint"),
                     task_kind: attr_str(&op.attrs, "task_kind"),
                     container_type: attr_str(&op.attrs, "container_type"),
                     ic_index: attr_int(&op.attrs, "ic_index"),

@@ -29714,6 +29714,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "kind": "list_new",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
+                        "type_hint": "list",
                     }
                 )
             elif op.kind == "RANGE_NEW":
@@ -29738,6 +29739,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "kind": "tuple_new",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
+                        "type_hint": "tuple",
                     }
                 )
             elif op.kind == "LIST_APPEND":
@@ -29746,6 +29748,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "kind": "list_append",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
+                        "type_hint": "list",
                     }
                 )
             elif op.kind == "LIST_POP":
@@ -29922,6 +29925,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "kind": "dict_new",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
+                        "type_hint": "dict",
                     }
                 )
             elif op.kind == "DICT_FROM_OBJ":
@@ -29938,6 +29942,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "kind": "set_new",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
+                        "type_hint": "set",
                     }
                 )
             elif op.kind == "FROZENSET_NEW":
@@ -29946,6 +29951,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "kind": "frozenset_new",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
+                        "type_hint": "frozenset",
                     }
                 )
             elif op.kind == "DICT_GET":
@@ -30194,6 +30200,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "kind": "iter",
                         "args": [arg.name for arg in op.args],
                         "out": op.result.name,
+                        "type_hint": "iter",
                     }
                 )
             elif op.kind == "ENUMERATE":
