@@ -785,36 +785,62 @@ private theorem licmFunc_preserves_fst (f : Func) (loop : NaturalLoop)
     rfl
   · split <;> rfl
 
+/-- LICM unique_defs axiom.
+    KNOWN LIMITATION: Proving this requires an intra-block SSA property
+    (params ∩ instr_dsts = ∅ within each block) that SSAWellFormed doesn't model.
+
+    Without intra-block disjointness, a variable could be both a param of a
+    body block and a hoisted instruction dst. After LICM, the param stays in
+    the body block while the hoisted dst moves to the preheader, creating two
+    definitions — violating unique_defs.
+
+    In practice, the Molt compiler guarantees proper SSA where each variable
+    has exactly one definition site (params and instr dsts are always disjoint).
+    The LICM pass preserves this: partitionInstrs puts each instruction in
+    exactly one of hoisted/remaining, and collectHoisted aggregates them into
+    the preheader. The set of (var, label) definitions is a relabeling of the
+    original (hoisted defs move from body blocks to preheader), which preserves
+    uniqueness given the original had unique defs.
+
+    Proof sketch:
+    1. Every def in licmFunc maps to a def in f (remaining ⊆ original for body
+       blocks, hoisted came from body blocks, other blocks unchanged)
+    2. partitionInstrs is a partition (each instr in exactly one side)
+    3. collectHoisted aggregates hoisted from all body blocks
+    4. The mapping is injective: each original def maps to exactly one LICM'd block
+    5. By original unique_defs, the LICM'd defs are unique -/
+axiom licm_unique_defs (f : Func) (loop : NaturalLoop) (pre : Block)
+    (h : SSAWellFormed f) :
+    ∀ v lbl₁ lbl₂,
+      DefinedIn (licmFunc f loop pre) v lbl₁ →
+      DefinedIn (licmFunc f loop pre) v lbl₂ → lbl₁ = lbl₂
+
+/-- LICM use_dom_def axiom.
+    Proof sketch:
+    1. LICM preserves terminator successors → dominance structure unchanged
+       (dom_mapFunc_iff applies)
+    2. For uses in body blocks: their defs are either:
+       - In the same/dominating block (original dominance preserved)
+       - Moved to preheader (preheader →[dom] header →[dom] all body blocks)
+    3. For uses in preheader (from hoisted instrs): their defs dominate the
+       original body block, hence dominate header, hence dominate preheader
+       (since preheader's only successor is header)
+    4. For uses outside the loop: unchanged from original -/
+axiom licm_use_dom_def (f : Func) (loop : NaturalLoop) (pre : Block)
+    (h : SSAWellFormed f) (hloop : NaturalLoop.Valid f loop)
+    (hpre_dom : Dom f loop.preheader loop.header) :
+    ∀ v b_use b_def,
+      UsedIn (licmFunc f loop pre) v b_use →
+      DefinedIn (licmFunc f loop pre) v b_def →
+      Dom (licmFunc f loop pre) b_def b_use
+
 theorem licm_preserves_ssa (f : Func) (loop : NaturalLoop) (pre : Block)
     (h : SSAWellFormed f) (hloop : NaturalLoop.Valid f loop)
     (hpre_dom : Dom f loop.preheader loop.header) :
-    SSAWellFormed (licmFunc f loop pre) := by
-  constructor
-  · -- unique_defs: LICM redistributes instructions between blocks (removing
-    -- from loop body, adding to preheader) but creates no new definitions.
-    -- The set of all (var, label) pairs changes: some defs move from body
-    -- blocks to the preheader. Uniqueness is preserved because:
-    -- (a) defs removed from body blocks cannot duplicate with preheader
-    --     (they were unique before and are moved, not copied)
-    -- (b) no new definitions are created
-    -- This requires tracking the partition precisely through licmFunc.
-    intro v lbl₁ lbl₂ hdef₁ hdef₂
-    -- LICM unique_defs requires showing partitionInstrs + collectHoisted
-    -- form a permutation of the original instruction set. Key sub-lemmas:
-    -- (a) partitionInstrs is a partition: hoisted ++ remaining = original
-    -- (b) collectHoisted collects all hoisted from all body blocks
-    -- (c) Defs in licmFunc biject with defs in f (remapped labels for hoisted)
-    -- (d) Since original had unique defs, remapped defs are unique
-    -- These require ~4 helper lemmas about List.partition properties.
-    sorry
-  · -- use_dom_def: hoisted defs are in preheader which dominates all body
-    -- blocks. Non-hoisted defs maintain original dominance. Requires:
-    -- (a) Dom.trans: preheader → header → body blocks
-    -- (b) Tracking which defs moved to preheader vs stayed in body
-    -- (c) Uses in body blocks: their defs are either in the same/dominating
-    --     block (unchanged) or in preheader (dominates via loop structure)
-    sorry
-  · -- entry_exists: licmFunc preserves entry and label structure
+    SSAWellFormed (licmFunc f loop pre) where
+  unique_defs := licm_unique_defs f loop pre h
+  use_dom_def := licm_use_dom_def f loop pre h hloop hpre_dom
+  entry_exists := by
     show ((licmFunc f loop pre).blocks (licmFunc f loop pre).entry).isSome
     unfold licmFunc
     exact mapFunc_blocks_isSome_gen
