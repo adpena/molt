@@ -849,27 +849,55 @@ fn successors_of(block: &TirBlock) -> Vec<BlockId> {
 /// refinement results.  This is the critical bridge that makes TIR type
 /// analysis visible to downstream backends (Cranelift, WASM, Luau).
 fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId, TirType>) {
+    // If the op already has type metadata from the original IR (preserved
+    // through the passthrough path), respect it — the original frontend
+    // annotation is authoritative for ops the type refiner doesn't understand
+    // (iter, list_new, etc.).  Only apply type refinement when there's no
+    // existing annotation or when the op is a known arithmetic/comparison op.
+    let has_original_hint = opir.type_hint.is_some()
+        || opir.fast_int.is_some()
+        || opir.fast_float.is_some();
+
+    // Only apply TIR type refinement to ops where the refiner's inference is
+    // trustworthy.  For passthrough ops (iter, iter_next, list_new, etc.) the
+    // refiner may incorrectly infer I64 for results that are actually tuples
+    // or lists.  Restrict refinement to known arithmetic/comparison/const ops.
+    let is_refinable = matches!(
+        tir_op.opcode,
+        OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div
+        | OpCode::FloorDiv | OpCode::Mod | OpCode::Pow | OpCode::Neg | OpCode::Pos
+        | OpCode::InplaceAdd | OpCode::InplaceSub | OpCode::InplaceMul
+        | OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge
+        | OpCode::ConstInt | OpCode::ConstFloat | OpCode::ConstBool
+        | OpCode::BoxVal | OpCode::UnboxVal
+        | OpCode::Not | OpCode::And | OpCode::Or
+        | OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor
+        | OpCode::Shl | OpCode::Shr
+    );
+
     // Look up the type of the first result value (most ops have 0 or 1 result).
-    if let Some(&result_id) = tir_op.results.first() {
-        match types.get(&result_id) {
-            Some(TirType::I64) => {
-                opir.fast_int = Some(true);
+    if !has_original_hint && is_refinable {
+        if let Some(&result_id) = tir_op.results.first() {
+            match types.get(&result_id) {
+                Some(TirType::I64) => {
+                    opir.fast_int = Some(true);
+                }
+                Some(TirType::F64) => {
+                    opir.fast_float = Some(true);
+                }
+                Some(ty @ TirType::Bool)
+                | Some(ty @ TirType::Str)
+                | Some(ty @ TirType::Bytes)
+                | Some(ty @ TirType::List(_))
+                | Some(ty @ TirType::Dict(_, _))
+                | Some(ty @ TirType::Set(_))
+                | Some(ty @ TirType::Tuple(_))
+                | Some(ty @ TirType::BigInt) => {
+                    opir.type_hint = Some(type_to_hint_string(ty));
+                }
+                // DynBox, Never, Union, Box, Func, Ptr — no hint to propagate.
+                _ => {}
             }
-            Some(TirType::F64) => {
-                opir.fast_float = Some(true);
-            }
-            Some(ty @ TirType::Bool)
-            | Some(ty @ TirType::Str)
-            | Some(ty @ TirType::Bytes)
-            | Some(ty @ TirType::List(_))
-            | Some(ty @ TirType::Dict(_, _))
-            | Some(ty @ TirType::Set(_))
-            | Some(ty @ TirType::Tuple(_))
-            | Some(ty @ TirType::BigInt) => {
-                opir.type_hint = Some(type_to_hint_string(ty));
-            }
-            // DynBox, Never, Union, Box, Func, Ptr — no hint to propagate.
-            _ => {}
         }
     }
 
