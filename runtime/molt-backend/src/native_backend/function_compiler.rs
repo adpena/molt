@@ -14054,7 +14054,7 @@ impl SimpleBackend {
                         .module
                         .declare_data(
                             &format!("attr_{}_{}", func_ir.name, op_idx),
-                            Linkage::Export,
+                            Linkage::Local,
                             false,
                             false,
                         )
@@ -14115,7 +14115,7 @@ impl SimpleBackend {
                         .module
                         .declare_data(
                             &format!("attr_{}_{}", func_ir.name, op_idx),
-                            Linkage::Export,
+                            Linkage::Local,
                             false,
                             false,
                         )
@@ -14179,7 +14179,7 @@ impl SimpleBackend {
                         .module
                         .declare_data(
                             &format!("attr_{}_{}", func_ir.name, op_idx),
-                            Linkage::Export,
+                            Linkage::Local,
                             false,
                             false,
                         )
@@ -14281,7 +14281,7 @@ impl SimpleBackend {
                         .module
                         .declare_data(
                             &format!("attr_{}_{}", func_ir.name, op_idx),
-                            Linkage::Export,
+                            Linkage::Local,
                             false,
                             false,
                         )
@@ -14401,7 +14401,7 @@ impl SimpleBackend {
                         .module
                         .declare_data(
                             &format!("attr_{}_{}", func_ir.name, op_idx),
-                            Linkage::Export,
+                            Linkage::Local,
                             false,
                             false,
                         )
@@ -14452,7 +14452,7 @@ impl SimpleBackend {
                         .module
                         .declare_data(
                             &format!("attr_{}_{}", func_ir.name, op_idx),
-                            Linkage::Export,
+                            Linkage::Local,
                             false,
                             false,
                         )
@@ -14585,7 +14585,7 @@ impl SimpleBackend {
                         .module
                         .declare_data(
                             &format!("attr_{}_{}", func_ir.name, op_idx),
-                            Linkage::Export,
+                            Linkage::Local,
                             false,
                             false,
                         )
@@ -14626,7 +14626,7 @@ impl SimpleBackend {
                         .module
                         .declare_data(
                             &format!("attr_{}_{}", func_ir.name, op_idx),
-                            Linkage::Export,
+                            Linkage::Local,
                             false,
                             false,
                         )
@@ -14667,7 +14667,7 @@ impl SimpleBackend {
                         .module
                         .declare_data(
                             &format!("attr_{}_{}", func_ir.name, op_idx),
-                            Linkage::Export,
+                            Linkage::Local,
                             false,
                             false,
                         )
@@ -14707,7 +14707,7 @@ impl SimpleBackend {
                         .module
                         .declare_data(
                             &format!("attr_{}_{}", func_ir.name, op_idx),
-                            Linkage::Export,
+                            Linkage::Local,
                             false,
                             false,
                         )
