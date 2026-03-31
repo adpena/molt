@@ -1452,7 +1452,20 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.raw_int.unwrap_or(false) {
+                    let res = if op.type_hint.as_deref() == Some("str") {
+                        // Both operands known to be strings — direct concat,
+                        // skips the 8-branch dispatch in molt_add.
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_str_concat",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        builder.inst_results(call)[0]
+                    } else if op.raw_int.unwrap_or(false) {
                         // raw_int: both operands are proven i64 — iadd + overflow guard
                         let sum = builder.ins().iadd(*lhs, *rhs);
                         let fits_inline = int_value_fits_inline(&mut builder, sum);
@@ -1666,7 +1679,19 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false)
+                    let res = if op.type_hint.as_deref() == Some("str") {
+                        // Both operands known to be strings — direct concat.
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_str_concat",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        builder.inst_results(call)[0]
+                    } else if op.fast_float.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("float")
                     {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
@@ -4720,10 +4745,25 @@ impl SimpleBackend {
                     } else {
                         let val =
                             var_get(&mut builder, &vars, &args[0]).expect("Len arg not found");
+                        // Dispatch to specialized fast-path len when container
+                        // type is known, skipping the 18-type dispatch in molt_len.
+                        let fn_name = match op.container_type.as_deref() {
+                            Some("list") | Some("list_int") => "molt_len_list",
+                            Some("str") => "molt_len_str",
+                            Some("dict") => "molt_len_dict",
+                            Some("tuple") => "molt_len_tuple",
+                            Some("set") | Some("frozenset") => "molt_len_set",
+                            _ => match op.type_hint.as_deref() {
+                                Some("str") => "molt_len_str",
+                                Some("dict") => "molt_len_dict",
+                                Some("set") | Some("frozenset") => "molt_len_set",
+                                _ => "molt_len",
+                            },
+                        };
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_len",
+                            fn_name,
                             &[types::I64],
                             &[types::I64],
                         );
@@ -13422,10 +13462,17 @@ impl SimpleBackend {
                     raw_int_shadow.clear(); // CF boundary invalidates shadows
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
+                    let truthy_fn_name = if op.type_hint.as_deref() == Some("bool") {
+                        "molt_is_truthy_bool"
+                    } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                        "molt_is_truthy_int"
+                    } else {
+                        "molt_is_truthy"
+                    };
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
-                        "molt_is_truthy",
+                        truthy_fn_name,
                         &[types::I64],
                         &[types::I64],
                     );

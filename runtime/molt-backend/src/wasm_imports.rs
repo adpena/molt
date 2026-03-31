@@ -115,6 +115,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     // ── INTERNAL: Arithmetic ──
     ("abs_builtin", 2),
     ("add", 3),
+    ("str_concat", 3),
     ("bit_and", 3),
     ("bit_or", 3),
     ("bit_xor", 3),
@@ -155,6 +156,8 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("is_callable", 2),
     ("is_generator", 2),
     ("is_truthy", 2),
+    ("is_truthy_bool", 2),
+    ("is_truthy_int", 2),
     ("not", 2),
     // ── INTERNAL: Context managers ──
     ("context_closing", 2),
@@ -255,6 +258,11 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("iter_next", 2),
     ("iter_sentinel", 3),
     ("len", 2),
+    ("len_dict", 2),
+    ("len_list", 2),
+    ("len_set", 2),
+    ("len_str", 2),
+    ("len_tuple", 2),
     ("list_append", 3),
     ("list_builder_append", 6),
     ("list_builder_finish", 2),
@@ -910,6 +918,11 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
             "sys_set_version_info",
         ],
     ),
+    // ── On-demand: fast-path truthiness ──
+    // Pulled in when if/while_test ops exist; the codegen selects the
+    // specialised variant based on type_hint / fast_int.
+    ("if", &["is_truthy_int", "is_truthy_bool"]),
+    ("while_test", &["is_truthy_int", "is_truthy_bool"]),
     // ── On-demand: comparison ops ──
     // Pulled in when comparison ops appear in IR.
     ("eq", &["eq"]),
@@ -1049,7 +1062,8 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     // ── Arithmetic ops ──
     // Auto-discovered by kind match, declared here for completeness
     // so the scanner has explicit dep table hits.
-    ("add", &["add"]),
+    ("add", &["add", "str_concat"]),
+    ("str_concat", &["str_concat"]),
     ("sub", &["sub"]),
     ("mul", &["mul"]),
     ("div", &["div"]),
@@ -1064,7 +1078,7 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("bit_xor", &["bit_xor"]),
     ("invert", &["invert"]),
     ("matmul", &["matmul"]),
-    ("inplace_add", &["inplace_add"]),
+    ("inplace_add", &["inplace_add", "str_concat"]),
     ("inplace_sub", &["inplace_sub"]),
     ("inplace_mul", &["inplace_mul"]),
     ("inplace_bit_and", &["inplace_bit_and"]),

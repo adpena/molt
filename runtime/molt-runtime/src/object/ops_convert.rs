@@ -1536,6 +1536,34 @@ pub extern "C" fn molt_is_truthy(val: u64) -> i64 {
     })
 }
 
+/// Fast truthy check for known-int values. Zero is falsy, everything else is truthy.
+/// Skips the 24-type dispatch chain in molt_is_truthy.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_is_truthy_int(bits: u64) -> i64 {
+    let obj = obj_from_bits(bits);
+    if let Some(i) = crate::to_i64(obj) {
+        if i != 0 { 1 } else { 0 }
+    } else if obj.is_bool() {
+        if obj.as_bool().unwrap_or(false) { 1 } else { 0 }
+    } else {
+        // Fallback for unexpected types (e.g. runtime type widening)
+        molt_is_truthy(bits)
+    }
+}
+
+/// Fast truthy check for known-bool values. False is falsy, True is truthy.
+/// Skips the 24-type dispatch chain in molt_is_truthy.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_is_truthy_bool(bits: u64) -> i64 {
+    let obj = obj_from_bits(bits);
+    if obj.is_bool() {
+        if obj.as_bool().unwrap_or(false) { 1 } else { 0 }
+    } else {
+        // Fallback for unexpected types (e.g. runtime type widening)
+        molt_is_truthy(bits)
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_not(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {

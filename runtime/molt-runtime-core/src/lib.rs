@@ -416,6 +416,14 @@ pub mod ffi {
         /// Returns 1 if the value is truthy, 0 otherwise, -1 on error.
         pub fn molt_is_truthy(val: u64) -> i64;
 
+        /// Fast truthy check for known-int values.  Zero is falsy.
+        /// Falls back to `molt_is_truthy` for unexpected types.
+        pub fn molt_is_truthy_int(bits: u64) -> i64;
+
+        /// Fast truthy check for known-bool values.  `False` is falsy.
+        /// Falls back to `molt_is_truthy` for unexpected types.
+        pub fn molt_is_truthy_bool(bits: u64) -> i64;
+
         /// Returns a NaN-boxed `type` object for the given value.
         pub fn molt_type_of(val_bits: u64) -> u64;
 

@@ -25,6 +25,34 @@ fn is_number_for_concat(obj: MoltObject) -> bool {
     false
 }
 
+/// Fast string concatenation for known-str operands.
+/// Skips the 8-branch type dispatch in `molt_add`.
+/// Falls back to `molt_add` if either operand is not actually a string
+/// (defensive: the frontend may have mis-inferred the type hint).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_str_concat(lhs_bits: u64, rhs_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let lhs = obj_from_bits(lhs_bits);
+        let rhs = obj_from_bits(rhs_bits);
+        if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
+            unsafe {
+                if object_type_id(lp) == TYPE_ID_STRING && object_type_id(rp) == TYPE_ID_STRING {
+                    let l_len = string_len(lp);
+                    let r_len = string_len(rp);
+                    let l_bytes = std::slice::from_raw_parts(string_bytes(lp), l_len);
+                    let r_bytes = std::slice::from_raw_parts(string_bytes(rp), r_len);
+                    if let Some(bits) = concat_bytes_like(_py, l_bytes, r_bytes, TYPE_ID_STRING) {
+                        return bits;
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+        // Fallback: type hint was wrong, delegate to full dispatch.
+        molt_add(lhs_bits, rhs_bits)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {

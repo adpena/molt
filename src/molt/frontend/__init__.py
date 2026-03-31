@@ -20638,6 +20638,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self._store_local_value(node.target.id, value_node)
             else:
                 self._store_local_value(node.target.id, value_node)
+                if value_node is not None:
+                    self._propagate_container_hints(node.target.id, value_node)
                 self._emit_module_attr_set(node.target.id, value_node)
                 if self.current_func_name == "molt_main":
                     self.globals[node.target.id] = value_node
