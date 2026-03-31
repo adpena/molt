@@ -2750,9 +2750,12 @@ impl SimpleBackend {
                         );
                     }
 
-                // Rewrite phi ops to store_var/load_var before TIR so that SSA
-                // handles merge semantics correctly via block arguments.
-                rewrite_phi_to_store_load(&mut func_ir.ops);
+                // NOTE: phi rewrite is DISABLED because TIR roundtrip is
+                // disabled.  The native backend handles phi ops directly
+                // via the if/end_if handler.  The store_var/load_var rewrite
+                // interferes with the native backend's phi handling when TIR
+                // is not performing the full SSA→lowering roundtrip.
+                // rewrite_phi_to_store_load(&mut func_ir.ops);
                 // Loop markers (loop_start, loop_end) are now preserved through
                 // the TIR roundtrip via LoopRole metadata on TirFunction, so
                 // functions with loops benefit from TIR optimization.
@@ -2833,6 +2836,19 @@ impl SimpleBackend {
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
                         }
+                        // Skip TIR roundtrip for ALL functions until the
+                        // lower_to_simple CondBranch → br_if/label lowering is
+                        // fixed to emit structured if/else/end_if.
+                        //
+                        // The br_if/label pattern creates extra Cranelift block
+                        // boundaries. At seal_all_blocks(), Cranelift's SSA
+                        // construction synthesizes zero-valued block parameters
+                        // for variables without reaching definitions on dead or
+                        // exception paths, causing null-pointer crashes at runtime.
+                        //
+                        // TODO: teach lower_to_simple to reconstruct if/else/end_if
+                        // from CondBranch terminators, then re-enable TIR.
+                        return (idx, content_hash, tmp_func.ops);
                         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                         crate::tir::type_refine::refine_types(&mut tir_func);
                         let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
