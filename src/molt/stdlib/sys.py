@@ -1221,14 +1221,33 @@ def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
         _MOLT_SYS_EXCEPTHOOK_WRITE("".join(lines))
         return
 
+    # Fallback: emit a minimal CPython-compatible traceback.
+    # The full traceback formatter failed, so we emit at least the
+    # standard header + file/line frame + error line.
     type_name = getattr(exc_type, "__name__", None)
     if not isinstance(type_name, str):
         type_name = str(exc_type)
     detail = str(exc_value) if exc_value is not None else ""
+
+    # Emit traceback header and frame info from exc_tb if available.
+    header = "Traceback (most recent call last):\n"
+    frame_line = ""
+    if exc_tb is not None:
+        tb_filename = getattr(exc_tb, "tb_filename", None) or getattr(exc_tb, "filename", None)
+        tb_lineno = getattr(exc_tb, "tb_lineno", None) or getattr(exc_tb, "lineno", None)
+        tb_name = getattr(exc_tb, "tb_name", None) or getattr(exc_tb, "name", None) or "<module>"
+        if tb_filename and tb_lineno:
+            frame_line = f'  File "{tb_filename}", line {tb_lineno}, in {tb_name}\n'
+        elif tb_lineno:
+            frame_line = f'  File "<module>", line {tb_lineno}, in {tb_name}\n'
+
+    _MOLT_SYS_EXCEPTHOOK_WRITE(header)
+    if frame_line:
+        _MOLT_SYS_EXCEPTHOOK_WRITE(frame_line)
     if detail:
         _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}: {detail}\n")
-        return
-    _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}\n")
+    else:
+        _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}\n")
 
 
 def unraisablehook(unraisable: object) -> None:
