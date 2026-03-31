@@ -1453,10 +1453,35 @@ impl SimpleBackend {
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.raw_int.unwrap_or(false) {
-                        // raw_int: both operands are proven i64, no NaN-boxing.
-                        // Pure native add — no unbox, no rebox, no guards.
+                        // raw_int: both operands are proven i64 — iadd + overflow guard
                         let sum = builder.ins().iadd(*lhs, *rhs);
-                        box_int_value(&mut builder, sum, &nbc)
+                        let fits_inline = int_value_fits_inline(&mut builder, sum);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_add",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder.ins().brif(fits_inline, fast_block, &[], slow_block, &[]);
+                        builder.switch_to_block(fast_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                        let fast_res = box_int_value(&mut builder, sum, &nbc);
+                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        builder.switch_to_block(slow_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        builder.switch_to_block(merge_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                        builder.block_params(merge_block)[0]
                     } else if op.fast_float.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("float")
                     {
@@ -1467,20 +1492,14 @@ impl SimpleBackend {
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
-                        // Raw chain: if both operands have raw i64 shadows (from
-                        // a previous fast_int op), use native iadd directly —
-                        // zero overhead. LuaJIT-style unboxed arithmetic chain.
+                        // LuaJIT-style unboxed arithmetic chain with overflow guard.
+                        // If both operands have raw i64 shadows, skip tag check + unbox.
+                        // If result overflows 47-bit inline range, fall to slow path.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
                         let lhs_raw = raw_int_shadow.get(lhs_name).copied();
                         let rhs_raw = raw_int_shadow.get(rhs_name).copied();
-                        // NOTE: raw arithmetic chain disabled — box_int_value
-                        // truncates to 47 bits without overflow detection.
-                        // Comparison chains (lt/le/gt/ge) remain safe.
-                        // TODO: re-enable with int_value_fits_inline guard.
 
-                        // One-operand shadow: if one operand is raw, unbox
-                        // NOTE: one-operand raw chain also disabled (same truncation issue).
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -1489,44 +1508,80 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let lhs_is_int = is_int_or_bool_tag(&mut builder, *lhs, &nbc);
-                        let rhs_is_int = is_int_or_bool_tag(&mut builder, *rhs, &nbc);
-                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
-                        let guard_fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-                        builder
-                            .ins()
-                            .brif(both_inline, guard_fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(guard_fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, guard_fast_block);
-                        let fast_block = builder.create_block();
-                        // Use unbox_int_or_bool: Python booleans are ints (True+True==2).
-                        let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
-                        let sum = builder.ins().iadd(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, sum, &nbc);
-                        let fits_inline = int_value_fits_inline(&mut builder, sum);
-                        builder
-                            .ins()
-                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+                        if lhs_raw.is_some() && rhs_raw.is_some() {
+                            // Both-shadow chain: zero-overhead iadd + overflow guard
+                            let sum = builder.ins().iadd(lhs_raw.unwrap(), rhs_raw.unwrap());
+                            let fits_inline = int_value_fits_inline(&mut builder, sum);
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64);
+                            builder
+                                .ins()
+                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
+                            builder.switch_to_block(fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let fast_res = box_int_value(&mut builder, sum, &nbc);
+                            if let Some(out__) = &op.out {
+                                raw_int_shadow.insert(out__.clone(), sum);
+                            }
+                            jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                            builder.switch_to_block(slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                            let slow_res = builder.inst_results(call)[0];
+                            jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
+                            builder.switch_to_block(merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            builder.block_params(merge_block)[0]
+                        } else {
+                            // Tag-check + unbox path (one or both operands not in shadow)
+                            let lhs_is_int = is_int_or_bool_tag(&mut builder, *lhs, &nbc);
+                            let rhs_is_int = is_int_or_bool_tag(&mut builder, *rhs, &nbc);
+                            let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                            let guard_fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.append_block_param(merge_block, types::I64);
+                            builder
+                                .ins()
+                                .brif(both_inline, guard_fast_block, &[], slow_block, &[]);
+
+                            builder.switch_to_block(guard_fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, guard_fast_block);
+                            let fast_block = builder.create_block();
+                            let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
+                            let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
+                            let sum = builder.ins().iadd(lhs_val, rhs_val);
+                            let fast_res = box_int_value(&mut builder, sum, &nbc);
+                            let fits_inline = int_value_fits_inline(&mut builder, sum);
+                            builder
+                                .ins()
+                                .brif(fits_inline, fast_block, &[], slow_block, &[]);
+
+                            builder.switch_to_block(fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            if let Some(out__) = &op.out {
+                                raw_int_shadow.insert(out__.clone(), sum);
+                            }
+                            jump_block(&mut builder, merge_block, &[fast_res]);
+
+                            builder.switch_to_block(slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                            let slow_res = builder.inst_results(call)[0];
+                            jump_block(&mut builder, merge_block, &[slow_res]);
+
+                            builder.switch_to_block(merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            builder.block_params(merge_block)[0]
+                        }
                     } else {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -1619,14 +1674,47 @@ impl SimpleBackend {
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
-                        // Raw chain: both operands already unboxed
+                        // Raw chain: both operands already unboxed + overflow guard
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
                         let raw_result = builder.ins().iadd(lhs_val, rhs_val);
+                        let fits_inline = int_value_fits_inline(&mut builder, raw_result);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_add",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, boxed);
                             raw_int_shadow.insert(out_name.clone(), raw_result);
+                        }
+                        jump_block(&mut builder, merge_block, &[boxed]);
+
+                        builder.switch_to_block(slow_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                        let merge_res = builder.block_params(merge_block)[0];
+                        if let Some(ref out_name) = op.out {
+                            def_var_named(&mut builder, &vars, out_name, merge_res);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -1644,7 +1732,6 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
-                        // Use unbox_int_or_bool: Python booleans are ints.
                         let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int_or_bool(&mut builder, *rhs, &nbc);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
@@ -1656,6 +1743,9 @@ impl SimpleBackend {
 
                         builder.switch_to_block(fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                        if let Some(ref out_name) = op.out {
+                            raw_int_shadow.insert(out_name.clone(), sum);
+                        }
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         builder.switch_to_block(slow_block);
@@ -2213,14 +2303,47 @@ impl SimpleBackend {
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
-                        // Raw chain: both operands already unboxed
+                        // Raw chain: both operands already unboxed + overflow guard
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
+                        let fits_inline = int_value_fits_inline(&mut builder, raw_result);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_sub",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, boxed);
                             raw_int_shadow.insert(out_name.clone(), raw_result);
+                        }
+                        jump_block(&mut builder, merge_block, &[boxed]);
+
+                        builder.switch_to_block(slow_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                        let merge_res = builder.block_params(merge_block)[0];
+                        if let Some(ref out_name) = op.out {
+                            def_var_named(&mut builder, &vars, out_name, merge_res);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2239,6 +2362,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
@@ -2352,14 +2488,47 @@ impl SimpleBackend {
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
-                        // Raw chain: both operands already unboxed
+                        // Raw chain: both operands already unboxed + overflow guard
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
+                        let fits_inline = int_value_fits_inline(&mut builder, raw_result);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_sub",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(fits_inline, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, boxed);
                             raw_int_shadow.insert(out_name.clone(), raw_result);
+                        }
+                        jump_block(&mut builder, merge_block, &[boxed]);
+
+                        builder.switch_to_block(slow_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                        let merge_res = builder.block_params(merge_block)[0];
+                        if let Some(ref out_name) = op.out {
+                            def_var_named(&mut builder, &vars, out_name, merge_res);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2378,6 +2547,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
@@ -2480,8 +2662,34 @@ impl SimpleBackend {
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let res = if op.raw_int.unwrap_or(false) {
-                        let prod = builder.ins().imul(*lhs, *rhs);
-                        box_int_value(&mut builder, prod, &nbc)
+                        // raw_int TIR path: operands are already i64 — use checked mul
+                        let (prod, fits) = imul_checked_inline(&mut builder, *lhs, *rhs);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_mul",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
+                        builder.switch_to_block(fast_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                        let fast_res = box_int_value(&mut builder, prod, &nbc);
+                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        builder.switch_to_block(slow_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        builder.switch_to_block(merge_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                        builder.block_params(merge_block)[0]
                     } else if op.fast_float.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("float")
                     {
@@ -2490,14 +2698,46 @@ impl SimpleBackend {
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
-                        // Raw chain: both operands already unboxed
+                        // Raw chain: both operands already unboxed + overflow guard
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
-                        let raw_result = builder.ins().imul(lhs_val, rhs_val);
+                        let (raw_result, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_mul",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(fits, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, boxed);
                             raw_int_shadow.insert(out_name.clone(), raw_result);
+                        }
+                        jump_block(&mut builder, merge_block, &[boxed]);
+
+                        builder.switch_to_block(slow_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                        let merge_res = builder.block_params(merge_block)[0];
+                        if let Some(ref out_name) = op.out {
+                            def_var_named(&mut builder, &vars, out_name, merge_res);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2515,6 +2755,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
@@ -2623,14 +2876,46 @@ impl SimpleBackend {
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
-                        // Raw chain: both operands already unboxed
+                        // Raw chain: both operands already unboxed + overflow guard
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
-                        let raw_result = builder.ins().imul(lhs_val, rhs_val);
+                        let (raw_result, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inplace_mul",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder
+                            .ins()
+                            .brif(fits, fast_block, &[], slow_block, &[]);
+
+                        builder.switch_to_block(fast_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, boxed);
                             raw_int_shadow.insert(out_name.clone(), raw_result);
+                        }
+                        jump_block(&mut builder, merge_block, &[boxed]);
+
+                        builder.switch_to_block(slow_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+
+                        builder.switch_to_block(merge_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                        let merge_res = builder.block_params(merge_block)[0];
+                        if let Some(ref out_name) = op.out {
+                            def_var_named(&mut builder, &vars, out_name, merge_res);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2648,6 +2933,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
@@ -2762,6 +3060,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let raw = builder.ins().bor(lhs_val, rhs_val);
@@ -2854,6 +3165,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let raw = builder.ins().bor(lhs_val, rhs_val);
@@ -2946,6 +3270,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let raw = builder.ins().band(lhs_val, rhs_val);
@@ -3038,6 +3375,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let raw = builder.ins().band(lhs_val, rhs_val);
@@ -3130,6 +3480,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let raw = builder.ins().bxor(lhs_val, rhs_val);
@@ -3222,6 +3585,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let raw = builder.ins().bxor(lhs_val, rhs_val);
@@ -3315,6 +3691,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
@@ -3452,6 +3841,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let zero = builder.ins().iconst(types::I64, 0);
@@ -3622,6 +4024,19 @@ impl SimpleBackend {
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
+
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
@@ -4045,6 +4460,19 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
 
+                        // Guard: verify both operands are inline TAG_INT.
+                        // Heap bigints have type_hint="int" but unbox_int
+                        // on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_guard_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_guard_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let zero = builder.ins().iconst(types::I64, 0);
@@ -4429,6 +4857,28 @@ impl SimpleBackend {
                     let finish_call = builder.ins().call(finish_local, &[builder_ptr]);
                     let list_bits = builder.inst_results(finish_call)[0];
                     def_var_named(&mut builder, &vars, out_name, list_bits);
+                }
+                "list_int_new" => {
+                    // Specialized flat i64 list: args = [count, fill_value]
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let count = var_get(&mut builder, &vars, &args[0])
+                        .expect("list_int_new: count not found");
+                    let fill = var_get(&mut builder, &vars, &args[1])
+                        .expect("list_int_new: fill_value not found");
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_list_int_new",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee =
+                        self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*count, *fill]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
                 }
                 "callargs_push_pos" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5915,9 +6365,13 @@ impl SimpleBackend {
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
-                        // fast_int: index is a known NaN-boxed int; use the
-                        // list-specific fast path which avoids full type dispatch.
-                        let fn_name = if op.fast_int.unwrap_or(false) {
+                        // Dispatch based on container specialization:
+                        // - list_int: flat i64 storage, no refcount (Codon-style)
+                        // - fast_int: generic list but index is known int
+                        // - default: full type dispatch
+                        let fn_name = if op.container_type.as_deref() == Some("list_int") {
+                            "molt_list_int_getitem"
+                        } else if op.fast_int.unwrap_or(false) {
                             "molt_list_getitem_int_fast"
                         } else {
                             "molt_index"
@@ -5945,10 +6399,16 @@ impl SimpleBackend {
                     let val = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
                         panic!("Value not found in {} op {}", func_ir.name, op_idx)
                     });
+                    // list_int: flat i64 storage — use specialized setitem
+                    let fn_name = if op.container_type.as_deref() == Some("list_int") {
+                        "molt_list_int_setitem"
+                    } else {
+                        "molt_store_index"
+                    };
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
-                        "molt_store_index",
+                        fn_name,
                         &[types::I64, types::I64, types::I64],
                         &[types::I64],
                     );
@@ -5970,9 +6430,13 @@ impl SimpleBackend {
                     let val_bits = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
                         panic!("Value not found in {} op {}", func_ir.name, op_idx)
                     });
-                    // fast_int: when the index is a known int, use the
-                    // list-specific fast path that skips type dispatch.
-                    let fn_name = if op.fast_int.unwrap_or(false) {
+                    // Dispatch based on container specialization:
+                    // - list_int: flat i64 storage (Codon-style)
+                    // - fast_int: generic list but key is known int
+                    // - default: full dict/generic dispatch
+                    let fn_name = if op.container_type.as_deref() == Some("list_int") {
+                        "molt_list_int_setitem"
+                    } else if op.fast_int.unwrap_or(false) {
                         "molt_list_setitem_int_fast"
                     } else {
                         "molt_dict_set"
