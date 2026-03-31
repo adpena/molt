@@ -3137,6 +3137,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if not self.deferred_module_attrs or self.module_obj is None:
             return
         for name in sorted(self.deferred_module_attrs):
+            # Skip variables that are live in the module dict via
+            # module_global_mutations (loop-carried variables).
+            # Their current value is in the module dict, not in a
+            # local SSA variable.  Writing back the stale SSA value
+            # would overwrite the accumulated loop result.
+            if name in self.module_global_mutations:
+                continue
             val = self._load_local_value(name)
             if val is None:
                 val = self.globals.get(name)
@@ -10203,6 +10210,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 # the loop would lose its initial value when module_get_attr
                 # reads find nothing in the module dict.
                 for name in sorted(module_backed):
+                    # Skip variables already flushed to the module dict
+                    # by an enclosing loop.  Re-flushing would overwrite
+                    # the current dynamic value with the stale SSA value
+                    # from the original definition, resetting accumulators
+                    # on every outer loop iteration.
+                    if name in self.module_global_mutations:
+                        continue
                     existing = self.globals.get(name)
                     if existing is None:
                         existing = self.locals.get(name)
