@@ -108,3 +108,7 @@ pub(crate) fn size_class_for(size: usize) -> u16 {
     }
     0 // oversized
 }
+
+/// Specialized list of raw i64 values — no NaN-boxing, no refcounting.
+/// Created when list elements are all known ints at compile time.
+pub(crate) const TYPE_ID_LIST_INT: u32 = 248;
