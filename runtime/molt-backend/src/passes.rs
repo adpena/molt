@@ -1301,6 +1301,7 @@ mod tests {
             name: "test".to_string(),
             params: vec![],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_const_int("total_init", 0),                               // 0
                 make_const_int("start", 0),                                    // 1
@@ -1334,6 +1335,7 @@ mod tests {
             name: "test".to_string(),
             params: vec![],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_const_int("a", 1),
                 make_const_int("b", 2),
@@ -1359,6 +1361,7 @@ mod tests {
             name: "test".to_string(),
             params: vec![],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_const_int("a", 1),
                 make_const_int("b", 2),
@@ -1380,6 +1383,7 @@ mod tests {
             name: "test".to_string(),
             params: vec![],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_const_int("a", 1),
                 make_op("loop_start"),
@@ -1404,6 +1408,7 @@ mod tests {
             name: "test".to_string(),
             params: vec![],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_const_int("a", 1),
                 make_const_int("b", 2),
@@ -1435,6 +1440,7 @@ mod tests {
             name: "test".to_string(),
             params: vec![],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_const_int("a", 1),
                 {
@@ -1474,6 +1480,7 @@ mod tests {
             name: "test".to_string(),
             params: vec!["x".to_string()],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_ref_op("inc_ref", "x"),
                 make_ref_op("dec_ref", "x"),
@@ -1494,6 +1501,7 @@ mod tests {
             name: "test".to_string(),
             params: vec!["x".to_string()],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_ref_op("inc_ref", "x"),
                 make_op("if"),
@@ -1514,6 +1522,7 @@ mod tests {
             name: "test".to_string(),
             params: vec!["y".to_string()],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_ref_op("borrow", "y"),
                 make_ref_op("release", "y"),
@@ -1533,6 +1542,7 @@ mod tests {
             name: "test".to_string(),
             params: vec!["x".to_string()],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_ref_op("inc_ref", "x"),
                 // An op that uses x as an argument — breaks the window.
@@ -1554,6 +1564,7 @@ mod tests {
             name: "test".to_string(),
             params: vec!["a".to_string(), "b".to_string()],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_ref_op("inc_ref", "a"),
                 make_ref_op("inc_ref", "b"),
@@ -1651,6 +1662,7 @@ mod tests {
             name: "molt_isolate_import".to_string(),
             params: vec!["p0".to_string()],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_const_int("v0", 1),
                 make_const_int("v1", 2),
@@ -1678,6 +1690,7 @@ mod tests {
             name: "molt_isolate_bootstrap".to_string(),
             params: vec![],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_op("const_none"),
                 make_op("const_none"),
@@ -1701,6 +1714,7 @@ mod tests {
             name: "user_large".to_string(),
             params: vec!["p0".to_string()],
             param_types: None,
+            source_file: None,
             ops: vec![
                 make_const_int("v0", 1),
                 make_const_int("v1", 2),

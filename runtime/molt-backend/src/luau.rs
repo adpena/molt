@@ -8582,6 +8582,7 @@ mod tests {
                 name: "molt_main".to_string(),
                 params: vec![],
                 param_types: None,
+                source_file: None,
                 ops: vec![
                     OpIR {
                         kind: "const".to_string(),
@@ -8637,6 +8638,7 @@ mod tests {
                 name: "test_func".to_string(),
                 params: vec!["p0".to_string()],
                 param_types: None,
+                source_file: None,
                 ops: vec![
                     OpIR {
                         kind: "const_float".to_string(),
@@ -8756,6 +8758,7 @@ mod tests {
                 name: "flow_test".to_string(),
                 params: vec![],
                 param_types: None,
+                source_file: None,
                 ops: vec![
                     OpIR {
                         kind: "label".to_string(),
@@ -8937,6 +8940,7 @@ mod tests {
                 name: "flow_test".to_string(),
                 params: vec![],
                 param_types: None,
+                source_file: None,
                 ops: vec![
                     OpIR {
                         kind: "label".to_string(),
@@ -8975,6 +8979,7 @@ mod tests {
                 name: "append_to".to_string(),
                 params: vec!["xs".to_string(), "v".to_string()],
                 param_types: Some(vec!["list[int]".to_string(), "int".to_string()]),
+                source_file: None,
                 ops: vec![
                     OpIR {
                         kind: "call_method".to_string(),
@@ -9078,6 +9083,7 @@ mod tests {
                 name: "try_except_test".into(),
                 params: vec![],
                 param_types: None,
+                source_file: None,
                 ops: vec![
                     OpIR {
                         kind: "try_start".into(),
@@ -9162,6 +9168,7 @@ mod tests {
                 name: "dup_local_test".into(),
                 params: vec![],
                 param_types: None,
+                source_file: None,
                 ops: vec![
                     // First definition of v0 — should get `local v0 = 1`
                     OpIR {
