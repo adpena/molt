@@ -3668,6 +3668,25 @@ struct FrameField {
     owned: bool,
 }
 
+/// Push a frame entry onto the frame stack.  Called by native-backend
+/// module chunk functions at entry to populate traceback file/line info.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_frame_push(code_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        frame_stack_push(_py, code_bits);
+        MoltObject::none().bits()
+    })
+}
+
+/// Pop a frame entry from the frame stack.  Called at module chunk exit.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_frame_pop() -> u64 {
+    crate::with_gil_entry!(_py, {
+        frame_stack_pop(_py);
+        MoltObject::none().bits()
+    })
+}
+
 unsafe fn alloc_empty_dict_field(_py: &PyToken<'_>) -> Option<FrameField> {
     let ptr = alloc_dict_with_pairs(_py, &[]);
     if ptr.is_null() {
