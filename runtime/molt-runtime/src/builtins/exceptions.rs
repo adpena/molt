@@ -3267,11 +3267,13 @@ pub(crate) fn format_exception_with_traceback(_py: &PyToken<'_>, ptr: *mut u8) -
         out.push_str(&trace);
     } else {
         // No traceback object attached — emit a minimal CPython-compatible
-        // header.  Most module-level exceptions in AOT-compiled code lack
-        // traceback objects because the frame stack is not fully populated.
-        // Emitting the header ensures byte-exact parity with CPython's
-        // unhandled-exception output format.
+        // header from the frame stack.  Most module-level exceptions in
+        // AOT-compiled code lack traceback objects because they're raised
+        // by runtime intrinsics, not Python-level raise statements.
         out.push_str("Traceback (most recent call last):\n");
+        if let Some((file, line, name)) = frame_stack_top_info(_py) {
+            out.push_str(&format!("  File \"{file}\", line {line}, in {name}\n"));
+        }
     }
     let kind = exception_class_name(ptr);
     let message = format_exception_message(_py, ptr);
@@ -3588,6 +3590,30 @@ pub(crate) fn frame_stack_pop(_py: &PyToken<'_>) {
             dec_ref_bits(_py, entry.locals_bits);
         }
     }
+}
+
+/// Return (filename, lineno, function_name) from the top frame, if available.
+pub(crate) fn frame_stack_top_info(_py: &PyToken<'_>) -> Option<(String, i64, String)> {
+    FRAME_STACK.with(|stack| {
+        let stack = stack.borrow();
+        let entry = stack.last()?;
+        if entry.code_bits == 0 {
+            return None;
+        }
+        let ptr = obj_from_bits(entry.code_bits).as_ptr()?;
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_CODE {
+                return None;
+            }
+            let filename_bits = code_filename_bits(ptr);
+            let filename = string_obj_to_owned(obj_from_bits(filename_bits))
+                .unwrap_or_else(|| "<unknown>".to_string());
+            let name_bits = code_name_bits(ptr);
+            let name = string_obj_to_owned(obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<module>".to_string());
+            Some((filename, entry.line, name))
+        }
+    })
 }
 
 pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
