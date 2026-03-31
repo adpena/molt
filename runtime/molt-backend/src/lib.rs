@@ -2711,15 +2711,14 @@ impl SimpleBackend {
             );
         }
 
-        // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
-        // For modules with many functions, this uses rayon to run the expensive
-        // lower → refine → optimize → lower-back pipeline in parallel across
-        // all uncached functions.  The cache is consulted sequentially first,
-        // then uncached functions are optimized in parallel, and finally results
-        // are written back to the cache sequentially.
+        // ── TIR optimization pipeline (default OFF; set MOLT_TIR_OPT=1 to enable) ──
+        // The CondBranch → if/else/end_if lowering is generalized but some loop
+        // patterns still produce incorrect IR (infinite loops). Enable with
+        // MOLT_TIR_OPT=1 for testing; will become default once loop lowering
+        // is fully validated.
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             use rayon::prelude::*;
 
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
@@ -2871,11 +2870,16 @@ impl SimpleBackend {
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
                         }
-                        // Skip TIR for module chunks (complex megafunction splits)
-                        // and very large functions where the roundtrip is most
-                        // likely to produce Cranelift-incompatible IR.
+                        // Skip TIR for module chunks (complex megafunction splits),
+                        // very large functions, and functions with complex control
+                        // flow (many nested if/else) where the TIR roundtrip is
+                        // most likely to produce Cranelift-incompatible IR.
+                        let cf_complexity = tmp_func.ops.iter()
+                            .filter(|op| matches!(op.kind.as_str(), "if" | "br_if" | "check_exception"))
+                            .count();
                         if tmp_func.name.contains("__molt_module_chunk_")
-                            || tmp_func.ops.len() > 4000
+                            || tmp_func.ops.len() > 2000
+                            || cf_complexity > 30
                         {
                             return (idx, content_hash, Vec::new());
                         }
@@ -2924,9 +2928,14 @@ impl SimpleBackend {
 
                 // Phase 3 (sequential): apply validated TIR ops and cache them.
                 // Empty ops = TIR roundtrip failed validation; keep original ops.
+                // Save original ops so we can fall back if Cranelift compilation fails.
+                let mut tir_original_ops: std::collections::HashMap<String, Vec<OpIR>> = std::collections::HashMap::new();
                 for (idx, content_hash, ops) in &results {
                     if !ops.is_empty() {
-                        ir.functions[*idx].ops = ops.clone();
+                        tir_original_ops.insert(
+                            ir.functions[*idx].name.clone(),
+                            std::mem::replace(&mut ir.functions[*idx].ops, ops.clone()),
+                        );
                         tir_optimized_names.insert(ir.functions[*idx].name.clone());
                         let bytes = crate::tir::serialize::serialize_ops(ops);
                         tir_cache.put(content_hash, &bytes, vec![]);

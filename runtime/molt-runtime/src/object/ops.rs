@@ -3352,6 +3352,10 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     }
                     return raise_key_error_with_key(_py, key_bits);
                 }
+                // list_int: flat i64 storage — delegate to specialized getitem
+                if object_type_id(obj_ptr) == TYPE_ID_LIST_INT {
+                    return molt_list_int_getitem(obj_bits, key_bits);
+                }
             }
         }
         if exception_pending(_py) {
@@ -4064,6 +4068,10 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         return MoltObject::none().bits();
                     }
                     return obj_bits;
+                }
+                // list_int: flat i64 storage — delegate to specialized setitem
+                if object_type_id(ptr) == TYPE_ID_LIST_INT {
+                    return molt_list_int_setitem(obj_bits, key_bits, val_bits);
                 }
             }
         }
