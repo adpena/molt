@@ -1614,6 +1614,17 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
+                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
+                        // Raw chain: both operands already unboxed
+                        let lhs_val = raw_int_shadow[&args[0]];
+                        let rhs_val = raw_int_shadow[&args[1]];
+                        let raw_result = builder.ins().iadd(lhs_val, rhs_val);
+                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
+                        if let Some(ref out_name) = op.out {
+                            def_var_named(&mut builder, &vars, out_name, boxed);
+                            raw_int_shadow.insert(out_name.clone(), raw_result);
+                        }
+                        continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
                         let callee = Self::import_func_id_split(
@@ -2190,6 +2201,17 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
+                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
+                        // Raw chain: both operands already unboxed
+                        let lhs_val = raw_int_shadow[&args[0]];
+                        let rhs_val = raw_int_shadow[&args[1]];
+                        let raw_result = builder.ins().isub(lhs_val, rhs_val);
+                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
+                        if let Some(ref out_name) = op.out {
+                            def_var_named(&mut builder, &vars, out_name, boxed);
+                            raw_int_shadow.insert(out_name.clone(), raw_result);
+                        }
+                        continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
                         // Inline isub with overflow check + BigInt fallback.
@@ -2311,6 +2333,17 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
+                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
+                        // Raw chain: both operands already unboxed
+                        let lhs_val = raw_int_shadow[&args[0]];
+                        let rhs_val = raw_int_shadow[&args[1]];
+                        let raw_result = builder.ins().isub(lhs_val, rhs_val);
+                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
+                        if let Some(ref out_name) = op.out {
+                            def_var_named(&mut builder, &vars, out_name, boxed);
+                            raw_int_shadow.insert(out_name.clone(), raw_result);
+                        }
+                        continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
                         // Inline isub with overflow check + BigInt fallback.
@@ -2431,6 +2464,17 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
+                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
+                        // Raw chain: both operands already unboxed
+                        let lhs_val = raw_int_shadow[&args[0]];
+                        let rhs_val = raw_int_shadow[&args[1]];
+                        let raw_result = builder.ins().imul(lhs_val, rhs_val);
+                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
+                        if let Some(ref out_name) = op.out {
+                            def_var_named(&mut builder, &vars, out_name, boxed);
+                            raw_int_shadow.insert(out_name.clone(), raw_result);
+                        }
+                        continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
                         let callee = Self::import_func_id_split(
@@ -2546,6 +2590,17 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
+                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
+                        // Raw chain: both operands already unboxed
+                        let lhs_val = raw_int_shadow[&args[0]];
+                        let rhs_val = raw_int_shadow[&args[1]];
+                        let raw_result = builder.ins().imul(lhs_val, rhs_val);
+                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
+                        if let Some(ref out_name) = op.out {
+                            def_var_named(&mut builder, &vars, out_name, boxed);
+                            raw_int_shadow.insert(out_name.clone(), raw_result);
+                        }
+                        continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
                         let callee = Self::import_func_id_split(
