@@ -592,7 +592,7 @@ impl SimpleBackend {
             state_ids,
             resume_states,
             function_exception_label_id,
-            exception_label_ids: _exception_label_ids,
+            exception_label_ids,
             const_int_map: _const_int_map,
             loop_body_out_vars,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries);
@@ -678,6 +678,13 @@ impl SimpleBackend {
         // values are cloned to multiple blocks by if/check_exception/br_if.
         let mut already_decrefed: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
+
+        // Shadow map: raw (unboxed) i64 values for fast_int variables.
+        // When a fast_int op produces a result, it stores the raw i64 here
+        // alongside the boxed value in the SSA variable. Subsequent fast_int
+        // consumers read from this map (skipping unbox). Non-fast_int consumers
+        // use the normal SSA variable (boxed). LuaJIT-style optimization.
+        let mut raw_int_shadow: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -1454,6 +1461,22 @@ impl SimpleBackend {
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
+                        // Raw chain: if both operands have raw i64 shadows (from
+                        // a previous fast_int op), use native iadd directly —
+                        // zero overhead. LuaJIT-style unboxed arithmetic chain.
+                        let lhs_name = &args[0];
+                        let rhs_name = &args[1];
+                        let lhs_raw = raw_int_shadow.get(lhs_name).copied();
+                        let rhs_raw = raw_int_shadow.get(rhs_name).copied();
+                        if let (Some(lhs_val), Some(rhs_val)) = (lhs_raw, rhs_raw) {
+                            let sum = builder.ins().iadd(lhs_val, rhs_val);
+                            let boxed = box_int_value(&mut builder, sum, &nbc);
+                            if let Some(ref out_name) = op.out {
+                                def_var_named(&mut builder, &vars, out_name, boxed);
+                                raw_int_shadow.insert(out_name.clone(), sum);
+                            }
+                            continue;
+                        }
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -1462,10 +1485,6 @@ impl SimpleBackend {
                             &[types::I64],
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        // Guard: both operands must be inline ints (not bigint pointers).
-                        // fast_int assumes NaN-boxed inline ints, but bigints are heap-
-                        // allocated pointers with a different tag. Unboxing a pointer as
-                        // an inline int produces garbage.
                         let lhs_is_int = is_int_or_bool_tag(&mut builder, *lhs, &nbc);
                         let rhs_is_int = is_int_or_bool_tag(&mut builder, *rhs, &nbc);
                         let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
@@ -1572,8 +1591,16 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        // Shadow the raw i64 for chain optimization: unbox
+                        // the boxed result so the next fast_int op can skip
+                        // its unbox step. Cost: 2 extra instructions (ishl+sshr)
+                        // but saves 4+ instructions on the next consumer.
+                        if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                            let raw = unbox_int(&mut builder, res, &nbc);
+                            raw_int_shadow.insert(out__.clone(), raw);
+                        }
                     }
                 }
                 "inplace_add" => {
@@ -15495,8 +15522,23 @@ impl SimpleBackend {
                     } else if !is_block_filled {
                         reachable_blocks.insert(block);
                         jump_block(&mut builder, block, &[]);
+                        // Seal the label block: all predecessors are now
+                        // connected.  Predecessors from jump/br_if ops are
+                        // forward references (emitted before this label in
+                        // the linear sequence).  The fallthrough edge was
+                        // just emitted above.  Exception handler labels are
+                        // excluded (they receive check_exception edges from
+                        // later code and are sealed by seal_all_blocks).
+                        if !exception_label_ids.contains(&label_id) {
+                            seal_block_once(&mut builder, &mut sealed_blocks, block);
+                        }
                         switch_to_block_tracking(&mut builder, block, &mut is_block_filled);
                     } else if reachable_blocks.contains(&block) {
+                        // Block was already terminated — no fallthrough edge.
+                        // Seal if all predecessors are from earlier code.
+                        if !exception_label_ids.contains(&label_id) {
+                            seal_block_once(&mut builder, &mut sealed_blocks, block);
+                        }
                         switch_to_block_tracking(&mut builder, block, &mut is_block_filled);
                     } else {
                         is_block_filled = true;
