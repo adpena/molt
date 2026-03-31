@@ -1,4 +1,5 @@
 """Purpose: differential coverage for exec with explicit locals mapping."""
+# MOLT_META: expect_fail=molt expect_fail_reason=too_dynamic_policy
 
 
 def main():

@@ -1,4 +1,5 @@
 # MOLT_ENV: MOLT_CAPABILITIES=net.listen,net.outbound
+# MOLT_META: expect_fail=molt expect_fail_reason=requires_network_capability
 """Purpose: differential coverage for unmasked client WebSocket frame."""
 
 import base64

@@ -1,4 +1,5 @@
 """Purpose: differential coverage for breakpoint() builtin."""
+# MOLT_META: expect_fail=molt expect_fail_reason=too_dynamic_policy
 import sys
 
 
