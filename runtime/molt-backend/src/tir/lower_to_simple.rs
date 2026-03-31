@@ -648,6 +648,36 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 let mut emitted_loop_end = false;
 
                 for region_bid in &body_blocks {
+                    let nested_role = func.loop_roles.get(region_bid).cloned()
+                        .unwrap_or(super::blocks::LoopRole::None);
+                    if nested_role == super::blocks::LoopRole::LoopHeader {
+                        // Nested loop header: emit the FULL loop structure
+                        // inline within the outer loop's body.  The RPO loop
+                        // at line 334 skips this block because it's in
+                        // loop_region_blocks AND is a LoopHeader of the inner
+                        // loop — but it's also part of the outer loop's body
+                        // chain.  We must NOT skip it here; instead we let
+                        // the RPO handle it.  But the RPO won't reach it
+                        // because the outer loop header has already claimed
+                        // this block in its body chain.
+                        //
+                        // The solution: don't emit it here — the RPO loop
+                        // processes LoopHeader blocks even if they're in
+                        // loop_region_blocks (line 334).  Just ensure the
+                        // flow reaches the inner header via its label.
+                        continue;
+                    }
+                    // Skip blocks that are in a nested loop's body chain —
+                    // they're emitted by the nested loop header in the RPO.
+                    let mut in_nested_body = false;
+                    for (hdr, chain) in &header_body_chain {
+                        if *hdr != *bid && chain.contains(region_bid) {
+                            in_nested_body = true;
+                            break;
+                        }
+                    }
+                    if in_nested_body { continue; }
+
                     if let Some(region_block) = func.blocks.get(region_bid) {
                         emit_block_header(region_bid, region_block, &mut out);
                         emit_block_ops(region_block, &mut out);
