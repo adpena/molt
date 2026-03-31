@@ -1,4 +1,5 @@
 """Purpose: CPython 3.12+ builtins semantic probe for symbol `NameError`."""
+# MOLT_META: expect_fail=molt expect_fail_reason=requires_inspect_json_contextlib
 import builtins
 import contextlib
 import hashlib
