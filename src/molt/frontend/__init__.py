@@ -37298,7 +37298,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
             # 5) verifier
             pass_start = time.perf_counter()
-            round_predefined = self._infer_predefined_value_names(step_ops)
+            # Compute predefined from the ORIGINAL ops at round start, not the
+            # current ops.  If LICM+CSE eliminated a variable's definition,
+            # that variable is NOT predefined — it's a dangling reference that
+            # must be caught.  Using step_ops here masks the bug because
+            # _infer_predefined_value_names treats "used but not defined" as
+            # predefined (assumed to be a function parameter).
+            round_predefined = self._infer_predefined_value_names(step_before)
             round_failures = self._verify_definite_assignment_in_ops(
                 step_ops, predefined_value_names=round_predefined
             )
