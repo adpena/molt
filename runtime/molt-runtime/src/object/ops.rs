@@ -10324,6 +10324,155 @@ pub extern "C" fn molt_list_getitem_int_fast(list_bits: u64, index_bits: u64) ->
     }
 }
 
+// ── Specialized list[int] operations ────────────────────────────────
+//
+// When the compiler proves a list contains only integers, it uses these
+// specialized functions that store raw i64 values without NaN-boxing.
+// Element access is a single array load + box_int on return.
+// No refcounting needed (ints are NaN-boxed inline, not heap-allocated).
+
+/// Allocate a specialized list[int] with raw i64 storage.
+/// Elements are stored as raw i64 (NOT NaN-boxed).
+/// Returns a NaN-boxed pointer to the list object.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let n = count as usize;
+        // Extract raw int from the NaN-boxed fill value
+        let fill_obj = obj_from_bits(fill_value);
+        let fill_raw = if fill_obj.is_none() {
+            0i64
+        } else if fill_obj.is_int() {
+            fill_obj.as_int_unchecked()
+        } else if fill_obj.is_bool() {
+            if fill_obj.as_bool().unwrap_or(false) { 1i64 } else { 0i64 }
+        } else {
+            // Not an int — fall back to regular list
+            return MoltObject::none().bits();
+        };
+
+        let total = std::mem::size_of::<crate::object::MoltHeader>()
+            + std::mem::size_of::<*mut Vec<i64>>()  // Vec pointer
+            + std::mem::size_of::<u64>();            // padding
+        let ptr = alloc_object(_py, total, TYPE_ID_LIST_INT);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        unsafe {
+            let mut vec = Vec::with_capacity(n);
+            vec.resize(n, fill_raw);
+            let vec_ptr = Box::into_raw(Box::new(vec));
+            *(ptr as *mut *mut Vec<i64>) = vec_ptr;
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+/// Get element from a specialized list[int].
+/// Returns a NaN-boxed int (boxes the raw i64 on return).
+/// No refcounting needed — ints are inline NaN-boxed values.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_int_getitem(list_bits: u64, index_bits: u64) -> u64 {
+    let index_obj = obj_from_bits(index_bits);
+    let list_obj = obj_from_bits(list_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    unsafe {
+        let mut idx = if index_obj.is_int() {
+            index_obj.as_int_unchecked()
+        } else {
+            return molt_index(list_bits, index_bits);
+        };
+        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
+        let data = (*vec_ptr).as_ptr();
+        let len = (*vec_ptr).len() as i64;
+        if idx < 0 { idx += len; }
+        if idx < 0 || idx >= len {
+            return molt_index(list_bits, index_bits);
+        }
+        let raw_val = *data.add(idx as usize);
+        // Box the raw i64 into a NaN-boxed int — no heap allocation, no refcount
+        MoltObject::from_int(raw_val).bits()
+    }
+}
+
+/// Set element in a specialized list[int].
+/// Expects a NaN-boxed int value — extracts raw i64 and stores directly.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_int_setitem(list_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
+    let index_obj = obj_from_bits(index_bits);
+    let list_obj = obj_from_bits(list_bits);
+    let value_obj = obj_from_bits(value_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    unsafe {
+        let mut idx = if index_obj.is_int() {
+            index_obj.as_int_unchecked()
+        } else {
+            return MoltObject::none().bits();
+        };
+        let raw_value = if value_obj.is_int() {
+            value_obj.as_int_unchecked()
+        } else if value_obj.is_bool() {
+            if value_obj.as_bool().unwrap_or(false) { 1i64 } else { 0i64 }
+        } else {
+            0i64 // store 0 for non-int values (False → 0)
+        };
+        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
+        let vec = &mut *vec_ptr;
+        let len = vec.len() as i64;
+        if idx < 0 { idx += len; }
+        if idx < 0 || idx >= len {
+            return MoltObject::none().bits();
+        }
+        vec[idx as usize] = raw_value;
+        // No refcount changes — raw i64 values have no heap allocation
+        MoltObject::none().bits()
+    }
+}
+
+/// Get length of a specialized list[int].
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_int_len(list_bits: u64) -> u64 {
+    let list_obj = obj_from_bits(list_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        return MoltObject::from_int(0).bits();
+    };
+    unsafe {
+        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
+        MoltObject::from_int((*vec_ptr).len() as i64).bits()
+    }
+}
+
+/// Check if value is truthy in a specialized list[int] element context.
+/// Raw i64: 0 is falsy, everything else is truthy.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_int_getitem_truthy(list_bits: u64, index_bits: u64) -> u64 {
+    let index_obj = obj_from_bits(index_bits);
+    let list_obj = obj_from_bits(list_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        return MoltObject::from_bool(false).bits();
+    };
+    unsafe {
+        let mut idx = if index_obj.is_int() {
+            index_obj.as_int_unchecked()
+        } else {
+            return MoltObject::from_bool(false).bits();
+        };
+        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
+        let data = (*vec_ptr).as_ptr();
+        let len = (*vec_ptr).len() as i64;
+        if idx < 0 { idx += len; }
+        if idx < 0 || idx >= len {
+            return MoltObject::from_bool(false).bits();
+        }
+        let raw_val = *data.add(idx as usize);
+        MoltObject::from_bool(raw_val != 0).bits()
+    }
+}
+
 /// Fast path: integer index store into a list (STORE_SUBSCR_LIST_INT).
 ///
 /// On any failure falls through to the full `molt_store_index` slow path.
