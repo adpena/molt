@@ -1426,6 +1426,23 @@ fn def_var_named(
     builder.def_var(var, val);
 }
 
+/// Seal a block only if it hasn't been sealed yet. Prevents the
+/// `!self.is_sealed(block)` assertion panic in Cranelift's SSA builder
+/// when multiple code paths attempt to seal the same block.
+#[cfg(feature = "native-backend")]
+#[inline]
+fn seal_block_once(
+    builder: &mut FunctionBuilder,
+    sealed: &mut std::collections::BTreeSet<Block>,
+    block: Block,
+) {
+    if sealed.insert(block) {
+        if builder.func.layout.is_block_inserted(block) {
+            builder.seal_block(block);
+        }
+    }
+}
+
 #[cfg(feature = "native-backend")]
 fn jump_block(builder: &mut FunctionBuilder, target: Block, args: &[Value]) {
     let block_args: Vec<BlockArg> = args.iter().copied().map(BlockArg::from).collect();
