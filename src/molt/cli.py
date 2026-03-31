@@ -10573,6 +10573,11 @@ def _start_backend_daemon(
     daemon_pid: int | None = None
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Propagate all environment variables to the daemon so that
+        # debug env vars (MOLT_TRACE_EQ, MOLT_DEBUG_EXCEPTION_FLOW etc.)
+        # reach the backend process.  Daemon stderr goes to the log file
+        # so it's always available for post-mortem debugging.
+        daemon_env = dict(os.environ)
         with log_path.open("ab") as log_file:
             daemon = subprocess.Popen(
                 [str(backend_bin), "--daemon", "--socket", str(socket_path)],
@@ -10580,6 +10585,7 @@ def _start_backend_daemon(
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
+                env=daemon_env,
             )
             daemon_pid = daemon.pid
             _write_backend_daemon_pid(pid_path, daemon_pid)
@@ -17184,16 +17190,18 @@ def _prepare_native_link(
         link_fingerprint,
         stored_link_fingerprint,
     )
-    # Guard: if the runtime library is newer than the cached binary, force
-    # a relink. This catches backend rebuilds that produce identical .o files
-    # (e.g. from TIR cache) but changed the runtime's compiled functions.
-    # Without this, a stale binary from before a backend fix would be reused.
+    # Staleness guard: even when the fingerprint matches, the cached binary
+    # may be stale if ANY link input was rebuilt after the binary was linked.
+    # This catches backend changes that produce identical .o files (from TIR
+    # cache) but changed runtime internals. Comparing mtimes is O(1) and
+    # eliminates the entire class of stale-binary bugs.
     if link_skipped and output_binary.exists():
         try:
             binary_mtime = output_binary.stat().st_mtime
-            runtime_mtime = resolved_runtime_lib.stat().st_mtime
-            if runtime_mtime > binary_mtime:
-                link_skipped = False
+            for dep in [resolved_runtime_lib, output_obj, stub_path]:
+                if dep.exists() and dep.stat().st_mtime > binary_mtime:
+                    link_skipped = False
+                    break
         except OSError:
             pass
     if link_skipped:
