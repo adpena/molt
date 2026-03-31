@@ -905,6 +905,23 @@ fn unbox_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> V
     builder.ins().sshr(shifted, shift)
 }
 
+/// Check if a NaN-boxed value is an inline integer (TAG_INT).
+/// Returns a Cranelift boolean value: true if the value has TAG_INT,
+/// false for TAG_BOOL, TAG_NONE, TAG_PTR, floats, or anything else.
+/// Used by fast_int paths to guard against heap bigint pointers that
+/// would be corrupted by unbox_int.
+#[cfg(feature = "native-backend")]
+pub(crate) fn is_inline_int_value(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    nbc: &NanBoxConsts,
+) -> Value {
+    let mask = builder.use_var(nbc.qnan_tag_mask);
+    let expected = builder.use_var(nbc.qnan_tag_int);
+    let masked = builder.ins().band(val, mask);
+    builder.ins().icmp(IntCC::Equal, masked, expected)
+}
+
 /// Unbox a NaN-boxed value that is either TAG_INT or TAG_BOOL to an i64.
 ///
 /// Booleans are coerced to 0/1 (matching Python's `bool` subclass of `int`).
