@@ -10507,6 +10507,38 @@ def _start_backend_daemon(
     if existing_pid is not None:
         if _pid_alive(existing_pid):
             if _backend_daemon_binary_is_newer(backend_bin, pid_path):
+                # Trigger cargo rebuild to ensure the binary reflects
+                # source changes. Cargo incremental may skip the link
+                # step if the content hash is unchanged, but a clean
+                # build of the specific crate guarantees freshness.
+                import shutil
+                if not json_output:
+                    print(
+                        "Source changed; rebuilding backend...",
+                        file=sys.stderr,
+                    )
+                _cargo = shutil.which("cargo")
+                if _cargo:
+                    _profile_flag = (
+                        ["--profile", cargo_profile]
+                        if cargo_profile not in ("dev", "release")
+                        else (["--release"] if cargo_profile == "release" else [])
+                    )
+                    _rebuild_cmd = [
+                        _cargo, "build", "-p", "molt-backend",
+                        *_profile_flag,
+                    ]
+                    _rebuild = subprocess.run(
+                        _rebuild_cmd,
+                        capture_output=True,
+                        cwd=project_root,
+                        timeout=300,
+                    )
+                    if _rebuild.returncode != 0 and not json_output:
+                        print(
+                            f"  cargo rebuild failed (exit {_rebuild.returncode})",
+                            file=sys.stderr,
+                        )
                 print(
                     "Backend or runtime rebuilt; restarting daemon...",
                     file=sys.stderr,
