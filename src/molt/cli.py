@@ -10524,8 +10524,24 @@ def _start_backend_daemon(
                         if cargo_profile not in ("dev", "release")
                         else (["--release"] if cargo_profile == "release" else [])
                     )
+                    # Clean the crate first to force a full rebuild.
+                    # cargo's incremental compilation uses content hashing
+                    # and may skip the link step even when source changed.
+                    subprocess.run(
+                        [_cargo, "clean", "-p", "molt-backend", *_profile_flag],
+                        capture_output=True,
+                        cwd=project_root,
+                        timeout=30,
+                    )
+                    subprocess.run(
+                        [_cargo, "clean", "-p", "molt-runtime", *_profile_flag],
+                        capture_output=True,
+                        cwd=project_root,
+                        timeout=30,
+                    )
                     _rebuild_cmd = [
                         _cargo, "build", "-p", "molt-backend",
+                        "-p", "molt-runtime",
                         *_profile_flag,
                     ]
                     _rebuild = subprocess.run(
