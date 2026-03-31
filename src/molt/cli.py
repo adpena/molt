@@ -17270,9 +17270,7 @@ def _prepare_native_link(
             # the backend is rebuilt, which changes how .o files are generated.
             # Even if the .o content is identical (TIR cache), the binary must
             # be relinked because the runtime library was also rebuilt.
-            backend_bin = _backend_bin_path(
-                molt_root, runtime_cargo_profile, None
-            )
+            backend_bin = _backend_bin_path(molt_root, runtime_cargo_profile)
             deps = [resolved_runtime_lib, output_obj, stub_path, backend_bin]
             for dep in deps:
                 if dep.exists() and dep.stat().st_mtime > binary_mtime:
