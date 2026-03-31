@@ -1050,6 +1050,7 @@ class ClassInfo(TypedDict, total=False):
 
 class FuncInfo(TypedDict):
     params: list[str]
+    param_types: list[str]  # type hints from annotations ("int", "float", "Any", ...)
     ops: list[MoltOp]
 
 
@@ -1627,6 +1628,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._register_code_symbol(symbol)
         self.funcs_map[symbol] = FuncInfo(
             params=[_MOLT_MODULE_CHUNK_PARAM],
+            param_types=[],
             ops=self._new_tracked_ops(count_function=True),
         )
         self.module_chunk_symbols.append(symbol)
@@ -2524,6 +2526,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self,
         name: str,
         params: list[str] | None = None,
+        param_types: list[str] | None = None,
         type_facts_name: str | None = None,
         needs_return_slot: bool = False,
         needs_exception_stack: bool = True,
@@ -2531,14 +2534,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if name not in self.funcs_map:
             self.funcs_map[name] = FuncInfo(
                 params=params or [],
+                param_types=param_types or [],
                 ops=self._new_tracked_ops(count_function=True),
             )
         else:
-            # A re-definition of the same symbol (e.g. @typing.overload stubs
-            # followed by the real implementation all share one reserved symbol
-            # at module level).  Update the params and discard the stale body
-            # so the backend sees the real implementation's signature/code.
             self.funcs_map[name]["params"] = params or []
+            self.funcs_map[name]["param_types"] = param_types or []
             self.funcs_map[name]["ops"].clear()
         self.current_func_name = name
         self.current_ops = self.funcs_map[name]["ops"]
@@ -26526,9 +26527,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         prev_state = self._capture_function_state()
         self.current_class = None
         prev_first_param = self.current_method_first_param
+        # Extract type hints from parameter annotations for fast-path codegen.
+        _param_type_hints = []
+        if self._hints_enabled():
+            for arg in node.args.posonlyargs + node.args.args:
+                hint = self._annotation_to_hint(arg.annotation) if arg.annotation else None
+                _param_type_hints.append(hint or "Any")
         self.start_function(
             func_symbol,
             params=func_params,
+            param_types=_param_type_hints if _param_type_hints else None,
             type_facts_name=func_name,
             needs_return_slot=has_return and needs_exc_stack,
             needs_exception_stack=needs_exc_stack,
@@ -38080,6 +38088,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "params": data["params"],
                 "ops": json_ops,
             }
+            if data.get("param_types"):
+                func_entry["param_types"] = data["param_types"]
             # Perceus-style borrowing analysis: identify parameters that can
             # be treated as borrowed (no inc_ref on entry, no dec_ref on exit).
             if data["params"]:
