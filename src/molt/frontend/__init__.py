@@ -36651,6 +36651,39 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         canonicalized_ops: list[MoltOp] = []
         for block_id in range(len(round_cfg.blocks)):
             canonicalized_ops.extend(block_canonical_ops[block_id])
+
+        # ── Global alias resolution ─────────────────────────────────────
+        # CSE creates aliases when merging duplicate ops within a block.
+        # When allow_cross_block_const_dedupe is False, these aliases are
+        # NOT propagated to successor blocks — a variable eliminated in
+        # block A can still be referenced in block B.  Collect the union
+        # of all aliases from every block's output state and apply them
+        # to the reassembled ops so that no dangling references remain.
+        global_aliases: dict[str, MoltValue] = {}
+        for block_id in range(len(round_cfg.blocks)):
+            for alias_name, alias_target in block_outputs[block_id]["aliases"].items():
+                if alias_name not in global_aliases:
+                    global_aliases[alias_name] = alias_target
+        if global_aliases:
+            resolved_ops: list[MoltOp] = []
+            for op in canonicalized_ops:
+                new_args = [
+                    self._rewrite_aliases_in_arg(arg, global_aliases)
+                    for arg in op.args
+                ]
+                if new_args != op.args:
+                    resolved_ops.append(
+                        MoltOp(
+                            kind=op.kind,
+                            args=new_args,
+                            result=op.result,
+                            metadata=op.metadata,
+                        )
+                    )
+                else:
+                    resolved_ops.append(op)
+            canonicalized_ops = resolved_ops
+
         return canonicalized_ops, phi_trims
 
     def _canonicalize_control_aware_ops_impl(
