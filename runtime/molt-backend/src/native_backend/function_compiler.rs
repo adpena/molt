@@ -1730,8 +1730,15 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        // Shadow raw value for chain optimization
+                        if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                            if let Some(ref out_name) = op.out {
+                                let raw = unbox_int(&mut builder, res, &nbc);
+                                raw_int_shadow.insert(out_name.clone(), raw);
+                            }
+                        }
                     }
                 }
                 "vec_sum_int" => {
@@ -2314,8 +2321,15 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        // Shadow raw value for chain optimization
+                        if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                            if let Some(ref out_name) = op.out {
+                                let raw = unbox_int(&mut builder, res, &nbc);
+                                raw_int_shadow.insert(out_name.clone(), raw);
+                            }
+                        }
                     }
                 }
                 "inplace_sub" => {
@@ -2446,8 +2460,15 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        // Shadow raw value for chain optimization
+                        if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                            if let Some(ref out_name) = op.out {
+                                let raw = unbox_int(&mut builder, res, &nbc);
+                                raw_int_shadow.insert(out_name.clone(), raw);
+                            }
+                        }
                     }
                 }
                 "mul" => {
@@ -2575,8 +2596,15 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        // Shadow raw value for chain optimization
+                        if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                            if let Some(ref out_name) = op.out {
+                                let raw = unbox_int(&mut builder, res, &nbc);
+                                raw_int_shadow.insert(out_name.clone(), raw);
+                            }
+                        }
                     }
                 }
                 "inplace_mul" => {
@@ -2701,8 +2729,15 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
+                        // Shadow raw value for chain optimization
+                        if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                            if let Some(ref out_name) = op.out {
+                                let raw = unbox_int(&mut builder, res, &nbc);
+                                raw_int_shadow.insert(out_name.clone(), raw);
+                            }
+                        }
                     }
                 }
                 "bit_or" => {
