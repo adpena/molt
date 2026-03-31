@@ -260,6 +260,12 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("list_builder_finish", 2),
     ("list_builder_new", 2),
     ("list_clear", 2),
+    // Specialized flat i64 list (Codon-style type-specialized container)
+    ("list_int_getitem", 3),
+    ("list_int_getitem_truthy", 3),
+    ("list_int_len", 2),
+    ("list_int_new", 3),
+    ("list_int_setitem", 5),
     ("list_copy", 2),
     ("list_count", 3),
     ("list_extend", 3),
@@ -1252,6 +1258,10 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
             "json_parse_scalar",
             "json_parse_scalar_obj",
         ],
+    ),
+    (
+        "list_int_new",
+        &["list_int_new"],
     ),
     (
         "list_new",

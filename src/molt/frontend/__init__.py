@@ -3906,6 +3906,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             key_map.pop(dest, None)
             val_map.pop(dest, None)
+        # Propagate list_int container tracking across assignments
+        li_set = getattr(self, "_list_int_containers", set())
+        if src.name in li_set:
+            li_set.add(dest)
+        else:
+            li_set.discard(dest)
 
     def _copy_container_hints_for_boxed(self, var_name: str, ssa_name: str) -> None:
         """Copy container element/dict hints from a Python variable name to a
@@ -3924,6 +3930,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             key_map[ssa_name] = key_map[var_name]
         if var_name in val_map:
             val_map[ssa_name] = val_map[var_name]
+        # Propagate list_int container tracking to boxed reload
+        li_set = getattr(self, "_list_int_containers", set())
+        if var_name in li_set:
+            li_set.add(ssa_name)
 
     def _container_elem_hint(self, value: MoltValue) -> str | None:
         if value.name in self.container_elem_hints:
@@ -10468,6 +10478,53 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[folded_str], result=res))
                 return res
+        # Specialized list[int] detection: [bool/int_literal] * count
+        # Emits LIST_INT_NEW for flat i64 storage (Codon-style) instead of
+        # generic LIST_NEW + MUL which creates NaN-boxed elements.
+        if isinstance(node.op, ast.Mult):
+            list_node = count_node = None
+            if (
+                isinstance(node.left, ast.List)
+                and len(node.left.elts) == 1
+                and isinstance(node.left.elts[0], ast.Constant)
+                and isinstance(node.left.elts[0].value, (bool, int))
+            ):
+                list_node, count_node = node.left, node.right
+            elif (
+                isinstance(node.right, ast.List)
+                and len(node.right.elts) == 1
+                and isinstance(node.right.elts[0], ast.Constant)
+                and isinstance(node.right.elts[0].value, (bool, int))
+            ):
+                list_node, count_node = node.right, node.left
+            if list_node is not None and count_node is not None:
+                fill_val = list_node.elts[0].value
+                # Convert bool to int for storage (True=1, False=0)
+                fill_int = int(fill_val)
+                fill_res = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[fill_int], result=fill_res))
+                count_res = self.visit(count_node)
+                if count_res is None:
+                    raise NotImplementedError("Unsupported list repeat count")
+                res = MoltValue(self.next_var(), type_hint="list")
+                self.emit(
+                    MoltOp(
+                        kind="LIST_INT_NEW",
+                        args=[count_res, fill_res],
+                        result=res,
+                    )
+                )
+                # Track container type for downstream INDEX/DICT_SET dispatch
+                if self.current_func_name == "molt_main":
+                    self.global_elem_hints[res.name] = "int"
+                else:
+                    self.container_elem_hints[res.name] = "int"
+                self._list_int_containers = getattr(
+                    self, "_list_int_containers", set()
+                )
+                self._list_int_containers.add(res.name)
+                return res
+
         left = self.visit(node.left)
         if left is None:
             raise NotImplementedError("Unsupported binary operator left operand")
@@ -29788,6 +29845,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "type_hint": "list",
                     }
                 )
+            elif op.kind == "LIST_INT_NEW":
+                # Specialized flat i64 list: args are [count, fill_value]
+                json_ops.append(
+                    {
+                        "kind": "list_int_new",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                        "container_type": "list_int",
+                    }
+                )
             elif op.kind == "RANGE_NEW":
                 json_ops.append(
                     {
@@ -30096,6 +30163,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and op.args[1].type_hint in {"int", "bool"}
                 ):
                     ds_entry["fast_int"] = True
+                # list_int: container is a specialized flat i64 list —
+                # backend dispatches to molt_list_int_setitem.
+                li_set = getattr(self, "_list_int_containers", set())
+                if (
+                    len(op.args) >= 1
+                    and isinstance(op.args[0], MoltValue)
+                    and op.args[0].name in li_set
+                ):
+                    ds_entry["container_type"] = "list_int"
                 json_ops.append(ds_entry)
             elif op.kind == "DICT_SETDEFAULT":
                 json_ops.append(
@@ -30330,6 +30406,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and op.args[1].type_hint in {"int", "bool"}
                 ):
                     index_entry["fast_int"] = True
+                # list_int: container is a specialized flat i64 list —
+                # backend dispatches to molt_list_int_getitem for O(1)
+                # unboxed access without refcounting.
+                li_set = getattr(self, "_list_int_containers", set())
+                if (
+                    len(op.args) >= 1
+                    and isinstance(op.args[0], MoltValue)
+                    and op.args[0].name in li_set
+                ):
+                    index_entry["container_type"] = "list_int"
                 json_ops.append(index_entry)
             elif op.kind == "UNPACK_SEQUENCE":
                 # args[0] is the sequence, args[1:] are output variable names
@@ -30341,13 +30427,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "STORE_INDEX":
-                json_ops.append(
-                    {
-                        "kind": "store_index",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                si_entry: dict[str, Any] = {
+                    "kind": "store_index",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                # list_int: container is a specialized flat i64 list —
+                # backend dispatches to molt_list_int_setitem.
+                li_set = getattr(self, "_list_int_containers", set())
+                if (
+                    len(op.args) >= 1
+                    and isinstance(op.args[0], MoltValue)
+                    and op.args[0].name in li_set
+                ):
+                    si_entry["container_type"] = "list_int"
+                json_ops.append(si_entry)
             elif op.kind == "DEL_INDEX":
                 json_ops.append(
                     {
