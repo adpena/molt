@@ -13459,27 +13459,52 @@ impl SimpleBackend {
                     }
                 }
                 "if" => {
-                    raw_int_shadow.clear(); // CF boundary invalidates shadows
+                    // Preserve raw_int_shadow across if-boundaries for
+                    // variables NOT defined inside the if/else body.
+                    // Only invalidate shadows for vars assigned in the branch.
+                    if let Some(&end_idx) = if_to_end_if.get(&op_idx) {
+                        let else_idx = if_to_else.get(&op_idx).copied();
+                        let body_start = op_idx + 1;
+                        let body_end = end_idx;
+                        let mut modified_vars: HashSet<String> = HashSet::new();
+                        for scan in body_start..body_end {
+                            if let Some(ref out_name) = func_ir.ops[scan].out {
+                                modified_vars.insert(out_name.clone());
+                            }
+                        }
+                        raw_int_shadow.retain(|k, _| !modified_vars.contains(k));
+                        let _ = else_idx; // suppress unused warning
+                    } else {
+                        raw_int_shadow.clear(); // fallback: no structural info
+                    }
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
-                    let truthy_fn_name = if op.type_hint.as_deref() == Some("bool") {
-                        "molt_is_truthy_bool"
+                    // Inline truthiness for bool/int types to avoid function call overhead.
+                    let cond_bool = if op.type_hint.as_deref() == Some("bool") {
+                        // NaN-boxed bool: bit 0 is the boolean value.
+                        let one = builder.ins().iconst(types::I64, 1);
+                        let bit0 = builder.ins().band(*cond, one);
+                        builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
-                        "molt_is_truthy_int"
+                        // NaN-boxed int: unbox and check != 0.
+                        // If we have a raw shadow, use that directly.
+                        let raw_val = raw_int_shadow.get(&args[0]).copied()
+                            .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
+                        builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else {
-                        "molt_is_truthy"
+                        let truthy_fn_name = "molt_is_truthy";
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            truthy_fn_name,
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder.ins().call(local_callee, &[*cond]);
+                        let truthy = builder.inst_results(call)[0];
+                        builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
                     };
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        truthy_fn_name,
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*cond]);
-                    let truthy = builder.inst_results(call)[0];
-                    let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
                     // `if` terminates the current block (brif) into then/else blocks. Any live
                     // tracked values must be carried into both successors; otherwise they leak
                     // when the predecessor block is never revisited.
@@ -14506,11 +14531,20 @@ impl SimpleBackend {
                                     "lt" | "le" | "gt" | "ge" | "eq" | "ne"
                                 )
                         };
-                        let cond_bool = if prev_is_fast_bool {
+                        let cond_type_hint = op.type_hint.as_deref();
+                        let cond_is_bool_typed = cond_type_hint == Some("bool") || prev_is_fast_bool;
+                        let cond_is_int_typed = !cond_is_bool_typed
+                            && (op.fast_int.unwrap_or(false) || cond_type_hint == Some("int"));
+                        let cond_bool = if cond_is_bool_typed {
                             // Condition is QNAN|TAG_BOOL|{0,1}: low bit is the bool.
                             let one = builder.ins().iconst(types::I64, 1);
                             let payload = builder.ins().band(*cond, one);
                             builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
+                        } else if cond_is_int_typed {
+                            // NaN-boxed int: unbox and check != 0.
+                            let raw_val = raw_int_shadow.get(&args[0]).copied()
+                                .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
+                            builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
                             let callee = Self::import_func_id_split(
                                 &mut self.module,

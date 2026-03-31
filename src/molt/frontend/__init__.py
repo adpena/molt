@@ -28536,7 +28536,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     entry["container_type"] = container_arg.type_hint
                 json_ops.append(entry)
             elif op.kind == "IF":
-                json_ops.append({"kind": "if", "args": [op.args[0].name]})
+                _if_entry: dict[str, Any] = {"kind": "if", "args": [op.args[0].name]}
+                _if_cond = op.args[0]
+                if isinstance(_if_cond, MoltValue) and _if_cond.type_hint in {"int", "bool"}:
+                    _if_entry["type_hint"] = _if_cond.type_hint
+                json_ops.append(_if_entry)
             elif op.kind == "ELSE":
                 json_ops.append({"kind": "else"})
             elif op.kind == "END_IF":
@@ -29770,16 +29774,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "LEN":
-                json_ops.append(
-                    {
-                        "kind": "len",
-                        "args": [
-                            arg.name if hasattr(arg, "name") else str(arg)
-                            for arg in op.args
-                        ],
-                        "out": op.result.name,
-                    }
-                )
+                len_entry: dict[str, object] = {
+                    "kind": "len",
+                    "args": [
+                        arg.name if hasattr(arg, "name") else str(arg)
+                        for arg in op.args
+                    ],
+                    "out": op.result.name,
+                }
+                len_arg = op.args[0]
+                if isinstance(len_arg, MoltValue) and len_arg.type_hint in {
+                    "list",
+                    "str",
+                    "dict",
+                    "tuple",
+                    "set",
+                    "frozenset",
+                    "bytes",
+                }:
+                    len_entry["container_type"] = len_arg.type_hint
+                json_ops.append(len_entry)
             elif op.kind == "ID":
                 json_ops.append(
                     {
@@ -30485,13 +30499,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "LOOP_BREAK_IF_TRUE":
-                json_ops.append(
-                    {"kind": "loop_break_if_true", "args": [op.args[0].name]}
-                )
+                _lbit_entry: dict[str, Any] = {"kind": "loop_break_if_true", "args": [op.args[0].name]}
+                _lbit_cond = op.args[0]
+                if isinstance(_lbit_cond, MoltValue) and _lbit_cond.type_hint in {"int", "bool"}:
+                    _lbit_entry["type_hint"] = _lbit_cond.type_hint
+                json_ops.append(_lbit_entry)
             elif op.kind == "LOOP_BREAK_IF_FALSE":
-                json_ops.append(
-                    {"kind": "loop_break_if_false", "args": [op.args[0].name]}
-                )
+                _lbif_entry: dict[str, Any] = {"kind": "loop_break_if_false", "args": [op.args[0].name]}
+                _lbif_cond = op.args[0]
+                if isinstance(_lbif_cond, MoltValue) and _lbif_cond.type_hint in {"int", "bool"}:
+                    _lbif_entry["type_hint"] = _lbif_cond.type_hint
+                json_ops.append(_lbif_entry)
             elif op.kind == "LOOP_BREAK":
                 json_ops.append({"kind": "loop_break"})
             elif op.kind == "LOOP_CONTINUE":
