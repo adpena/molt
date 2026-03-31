@@ -3134,6 +3134,7 @@ mod tests {
                         ..OpIR::default()
                     }],
                     param_types: None,
+                    source_file: None,
                 },
                 FunctionIR {
                     name: "molt_main".to_string(),
@@ -3143,6 +3144,7 @@ mod tests {
                         ..OpIR::default()
                     }],
                     param_types: None,
+                    source_file: None,
                 },
             ],
             profile: None,
@@ -3166,6 +3168,7 @@ mod tests {
                     ..OpIR::default()
                 }],
                 param_types: None,
+                source_file: None,
             }],
             profile: None,
         };
@@ -3202,6 +3205,7 @@ mod tests {
                         },
                     ],
                     param_types: None,
+                    source_file: None,
                 },
                 FunctionIR {
                     name: "molt_main".to_string(),
@@ -3211,6 +3215,7 @@ mod tests {
                         ..OpIR::default()
                     }],
                     param_types: None,
+                    source_file: None,
                 },
             ],
             profile: None,
@@ -3248,6 +3253,7 @@ mod tests {
                     },
                 ],
                 param_types: None,
+                source_file: None,
             }],
             profile: None,
         };

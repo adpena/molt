@@ -2866,53 +2866,58 @@ impl SimpleBackend {
                             params: input.params,
                             ops: input.ops,
                             param_types: input.param_types,
+                            source_file: None,
                         };
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
                         }
-                        // Skip TIR roundtrip for ALL functions until the
-                        // lower_to_simple CondBranch → br_if/label lowering is
-                        // fixed to emit structured if/else/end_if.
-                        //
-                        // The br_if/label pattern creates extra Cranelift block
-                        // boundaries. At seal_all_blocks(), Cranelift's SSA
-                        // construction synthesizes zero-valued block parameters
-                        // for variables without reaching definitions on dead or
-                        // exception paths, causing null-pointer crashes at runtime.
-                        //
-                        // TODO: teach lower_to_simple to reconstruct if/else/end_if
-                        // from CondBranch terminators, then re-enable TIR.
-                        return (idx, content_hash, tmp_func.ops);
-                        let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
-                        crate::tir::type_refine::refine_types(&mut tir_func);
-                        let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
-                            std::collections::HashMap::new()
-                        } else {
-                            crate::tir::type_refine::extract_type_map(&tir_func)
-                        };
-                        let stats = crate::tir::passes::run_pipeline(&mut tir_func);
-                        if tir_dump {
-                            eprintln!("{}", crate::tir::printer::print_function(&tir_func));
+                        // Skip TIR for module chunks (complex megafunction splits)
+                        // and very large functions where the roundtrip is most
+                        // likely to produce Cranelift-incompatible IR.
+                        if tmp_func.name.contains("__molt_module_chunk_")
+                            || tmp_func.ops.len() > 4000
+                        {
+                            return (idx, content_hash, Vec::new());
                         }
-                        if tir_stats {
-                            for s in &stats {
-                                eprintln!(
-                                    "[TIR] {}: {} changed, {} removed, {} added",
-                                    s.name, s.values_changed, s.ops_removed, s.ops_added
+                        // Wrap TIR pipeline in catch_unwind so any panic in
+                        // lowering/optimization falls back to original ops
+                        // instead of crashing the entire compilation.
+                        let func_name = tmp_func.name.clone();
+                        let tir_result = std::panic::catch_unwind(
+                            std::panic::AssertUnwindSafe(|| {
+                                let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
+                                crate::tir::type_refine::refine_types(&mut tir_func);
+                                let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
+                                    std::collections::HashMap::new()
+                                } else {
+                                    crate::tir::type_refine::extract_type_map(&tir_func)
+                                };
+                                let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                                let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
+                                    &tir_func, &type_map,
                                 );
-                            }
-                        }
-                        let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
-                            &tir_func, &type_map,
+                                if !crate::tir::lower_to_simple::validate_labels(&ops) {
+                                    return None;
+                                }
+                                Some(ops)
+                            }),
                         );
-                        if !crate::tir::lower_to_simple::validate_labels(&ops) {
-                            eprintln!(
-                                "MOLT_BACKEND: TIR roundtrip emitted invalid labels for '{}'; using original ops",
-                                tmp_func.name
-                            );
-                            (idx, content_hash, Vec::new())
-                        } else {
-                            (idx, content_hash, ops)
+                        match tir_result {
+                            Ok(Some(ops)) => (idx, content_hash, ops),
+                            Ok(None) => {
+                                eprintln!(
+                                    "MOLT_BACKEND: TIR roundtrip emitted invalid labels for '{}'; using original ops",
+                                    func_name
+                                );
+                                (idx, content_hash, Vec::new())
+                            }
+                            Err(_panic) => {
+                                eprintln!(
+                                    "MOLT_BACKEND: TIR roundtrip panicked for '{}'; using original ops",
+                                    func_name
+                                );
+                                (idx, content_hash, Vec::new())
+                            }
                         }
                     })
                     .collect();
@@ -3703,6 +3708,7 @@ mod tests {
                     },
                 ],
                 param_types: None,
+                source_file: None,
             }],
             profile: None,
         };
@@ -3797,6 +3803,7 @@ mod tests {
                     ..OpIR::default()
                 }],
                 param_types: None,
+                source_file: None,
             }],
             profile: None,
         };
@@ -3846,6 +3853,7 @@ mod tests {
                     },
                 ],
                 param_types: None,
+                source_file: None,
             }],
             profile: None,
         };
@@ -3872,6 +3880,7 @@ mod tests {
                     ..OpIR::default()
                 }],
                 param_types: None,
+                source_file: None,
             },
             FunctionIR {
                 name: "helper_poll".to_string(),
@@ -3882,6 +3891,7 @@ mod tests {
                     ..OpIR::default()
                 }],
                 param_types: None,
+                source_file: None,
             },
         ];
 
@@ -3911,6 +3921,7 @@ mod tests {
                         ..OpIR::default()
                     }],
                     param_types: None,
+                    source_file: None,
                 },
                 FunctionIR {
                     name: chunk1,
@@ -3929,6 +3940,7 @@ mod tests {
                         },
                     ],
                     param_types: None,
+                    source_file: None,
                 },
                 FunctionIR {
                     name: stub.clone(),
@@ -3953,6 +3965,7 @@ mod tests {
                         },
                     ],
                     param_types: None,
+                    source_file: None,
                 },
             ],
             &stub,
@@ -3990,6 +4003,7 @@ mod tests {
                     ..OpIR::default()
                 }],
                 param_types: None,
+                source_file: None,
             },
             FunctionIR {
                 name: "demo____molt_globals_builtin__".to_string(),
@@ -4011,6 +4025,7 @@ mod tests {
                     },
                 ],
                 param_types: None,
+                source_file: None,
             },
         ]);
 
@@ -4040,6 +4055,7 @@ mod tests {
                     ..OpIR::default()
                 }],
                 param_types: None,
+                source_file: None,
             }],
             profile: None,
         };
@@ -4092,6 +4108,7 @@ mod tests {
                     },
                 ],
                 param_types: None,
+                source_file: None,
             }],
             profile: None,
         };
@@ -4244,6 +4261,7 @@ mod tests {
                     },
                 ],
                 param_types: None,
+                source_file: None,
             }],
             profile: None,
         };
@@ -4265,6 +4283,7 @@ mod tests {
                         ..OpIR::default()
                     }],
                     param_types: None,
+                    source_file: None,
                 },
                 FunctionIR {
                     name: "molt_main".to_string(),
@@ -4283,6 +4302,7 @@ mod tests {
                         },
                     ],
                     param_types: None,
+                    source_file: None,
                 },
             ],
             profile: None,
@@ -4305,6 +4325,7 @@ mod tests {
                         ..OpIR::default()
                     }],
                     param_types: None,
+                    source_file: None,
                 },
                 FunctionIR {
                     name: "molt_main".to_string(),
@@ -4331,6 +4352,7 @@ mod tests {
                         },
                     ],
                     param_types: None,
+                    source_file: None,
                 },
             ],
             profile: None,
@@ -4435,6 +4457,7 @@ mod tests {
                     },
                 ],
                 param_types: None,
+                source_file: None,
             }],
             "molt_main",
         );

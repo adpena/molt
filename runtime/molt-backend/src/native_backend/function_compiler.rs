@@ -16543,6 +16543,7 @@ mod tests {
                 },
             ],
             param_types: None,
+            source_file: None,
         };
 
         let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
@@ -16576,6 +16577,7 @@ mod tests {
                 ..OpIR::default()
             }],
             param_types: None,
+            source_file: None,
         };
         let void_ret = FunctionIR {
             name: "void_ret".to_string(),
@@ -16585,6 +16587,7 @@ mod tests {
                 ..OpIR::default()
             }],
             param_types: None,
+            source_file: None,
         };
 
         assert!(

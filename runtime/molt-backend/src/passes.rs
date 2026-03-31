@@ -321,6 +321,7 @@ pub fn inline_functions(ir: &mut SimpleIR) {
             params: func.params.clone(),
             ops: func.ops.clone(),
             param_types: func.param_types.clone(),
+            source_file: None,
         };
         if is_inlineable_with_limit(&func_copy, &defined_functions, effective_limit) {
             inlineable.insert(
@@ -1593,6 +1594,7 @@ mod tests {
                     params: vec![],
                     ops: vec![make_op("ret_void")],
                     param_types: None,
+                    source_file: None,
                 },
                 FunctionIR {
                     name: "molt_isolate_import".to_string(),
@@ -1611,12 +1613,14 @@ mod tests {
                         },
                     ],
                     param_types: None,
+                    source_file: None,
                 },
                 FunctionIR {
                     name: "molt_init_math".to_string(),
                     params: vec![],
                     ops: vec![make_op("ret_void")],
                     param_types: None,
+                    source_file: None,
                 },
             ],
             profile: None,
@@ -2518,6 +2522,7 @@ pub fn split_large_function(
             params: func.params.clone(),
             ops: chunk_ops,
             param_types: func.param_types.clone(),
+        source_file: None,
         });
     }
 
@@ -2557,6 +2562,7 @@ pub fn split_large_function(
         params: func.params,
         ops: stub_ops,
         param_types: func.param_types,
+        source_file: None,
     };
 
     Ok((stub, chunks))
