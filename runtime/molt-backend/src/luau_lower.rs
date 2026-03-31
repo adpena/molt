@@ -736,6 +736,7 @@ mod tests {
                 name: "molt_main".to_string(),
                 params: vec![],
                 param_types: None,
+                source_file: None,
                 ops: vec![
                     OpIR {
                         kind: "const".to_string(),
@@ -766,6 +767,7 @@ mod tests {
                 name: "molt_main".to_string(),
                 params: vec!["x".to_string()],
                 param_types: Some(vec!["int".to_string()]),
+                source_file: None,
                 ops: vec![
                     OpIR {
                         kind: "add".to_string(),
@@ -798,6 +800,7 @@ mod tests {
                 name: "molt_main".to_string(),
                 params: vec![],
                 param_types: None,
+                source_file: None,
                 ops: vec![
                     OpIR {
                         kind: "const_bool".to_string(),
@@ -847,6 +850,7 @@ mod tests {
                 name: "molt_main".to_string(),
                 params: vec![],
                 param_types: None,
+                source_file: None,
                 ops: vec![
                     OpIR {
                         kind: "loop_start".to_string(),
