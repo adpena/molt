@@ -2750,9 +2750,12 @@ impl SimpleBackend {
                         );
                     }
 
-                // Rewrite phi ops to store_var/load_var before TIR so that SSA
-                // handles merge semantics correctly via block arguments.
-                rewrite_phi_to_store_load(&mut func_ir.ops);
+                // NOTE: rewrite_phi_to_store_load is skipped because TIR is
+                // currently disabled (all functions return original ops).
+                // The phi rewrite converts phi ops to store_var/load_var pairs,
+                // but without TIR the native backend handles phi ops directly
+                // via the if/end_if handler.  Re-enable if TIR is re-enabled.
+                // rewrite_phi_to_store_load(&mut func_ir.ops);
                 // Loop markers (loop_start, loop_end) are now preserved through
                 // the TIR roundtrip via LoopRole metadata on TirFunction, so
                 // functions with loops benefit from TIR optimization.
