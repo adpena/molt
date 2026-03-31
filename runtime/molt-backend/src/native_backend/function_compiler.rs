@@ -35,6 +35,10 @@ struct FunctionPreanalysis {
     resume_states: BTreeSet<i64>,
     function_exception_label_id: Option<i64>,
     exception_label_ids: BTreeSet<i64>,
+    /// Labels that have at least one backward-jump predecessor (a jump/br_if
+    /// from a later op index targeting this label).  Such labels cannot be
+    /// sealed eagerly because not all predecessors are connected yet.
+    backward_jump_targets: BTreeSet<i64>,
     /// Pre-built map from variable name -> constant integer value for O(1) lookups.
     /// Only the first definition of each name is stored (SSA correctness).
     const_int_map: BTreeMap<String, i64>,
@@ -428,6 +432,33 @@ fn preanalyze_function_ir(
 
     let const_int_map = crate::build_const_int_map(&func_ir.ops);
 
+    // Detect labels that have backward-jump predecessors (a jump/br_if from
+    // a later op index targeting the label).  These labels cannot be sealed
+    // eagerly because the backward predecessor hasn't been connected yet
+    // when we encounter the label during the forward compilation pass.
+    let mut backward_jump_targets: BTreeSet<i64> = BTreeSet::new();
+    {
+        let mut label_op_idx: BTreeMap<i64, usize> = BTreeMap::new();
+        for (idx, op) in func_ir.ops.iter().enumerate() {
+            if matches!(op.kind.as_str(), "label" | "state_label") {
+                if let Some(id) = op.value {
+                    label_op_idx.insert(id, idx);
+                }
+            }
+        }
+        for (idx, op) in func_ir.ops.iter().enumerate() {
+            if matches!(op.kind.as_str(), "jump" | "br_if") {
+                if let Some(target_id) = op.value {
+                    if let Some(&label_idx) = label_op_idx.get(&target_id) {
+                        if label_idx < idx {
+                            backward_jump_targets.insert(target_id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     FunctionPreanalysis {
         has_ret,
         stateful,
@@ -442,6 +473,7 @@ fn preanalyze_function_ir(
         resume_states,
         function_exception_label_id,
         exception_label_ids,
+        backward_jump_targets,
         const_int_map,
         loop_body_out_vars,
     }
@@ -592,7 +624,8 @@ impl SimpleBackend {
             state_ids,
             resume_states,
             function_exception_label_id,
-            exception_label_ids: _exception_label_ids,
+            exception_label_ids,
+            backward_jump_targets,
             const_int_map: _const_int_map,
             loop_body_out_vars,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries);
