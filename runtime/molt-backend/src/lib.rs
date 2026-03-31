@@ -2867,6 +2867,20 @@ impl SimpleBackend {
                             param_types: input.param_types,
                             source_file: None,
                         };
+                        // Log all TIR-candidate function names to a trace
+                        // file for debugging which function causes hangs.
+                        if let Ok(trace_path) = std::env::var("MOLT_TIR_TRACE_FILE") {
+                            use std::io::Write;
+                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                .create(true).append(true).open(&trace_path)
+                            {
+                                let _ = writeln!(f, "[TIR] {} (ops={}, cf={})",
+                                    tmp_func.name, tmp_func.ops.len(),
+                                    tmp_func.ops.iter()
+                                        .filter(|op| matches!(op.kind.as_str(), "if" | "br_if" | "check_exception"))
+                                        .count());
+                            }
+                        }
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
                         }
@@ -2882,6 +2896,20 @@ impl SimpleBackend {
                             || cf_complexity > 30
                         {
                             return (idx, content_hash, Vec::new());
+                        }
+                        // Debug skip: MOLT_TIR_SKIP_PATTERN=<substring> skips
+                        // TIR for any function whose name contains that substring.
+                        if let Ok(skip_pat) = std::env::var("MOLT_TIR_SKIP_PATTERN") {
+                            if !skip_pat.is_empty() && tmp_func.name.contains(&skip_pat) {
+                                return (idx, content_hash, Vec::new());
+                            }
+                        }
+                        // Debug: MOLT_TIR_ONLY_PATTERN=<substring> runs TIR ONLY
+                        // on functions matching the pattern, skip all others.
+                        if let Ok(only_pat) = std::env::var("MOLT_TIR_ONLY_PATTERN") {
+                            if !only_pat.is_empty() && !tmp_func.name.contains(&only_pat) {
+                                return (idx, content_hash, Vec::new());
+                            }
                         }
                         // Wrap TIR pipeline in catch_unwind so any panic in
                         // lowering/optimization falls back to original ops
