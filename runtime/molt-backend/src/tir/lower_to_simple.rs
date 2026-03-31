@@ -1764,6 +1764,7 @@ mod tests {
                 },
             ],
             param_types: None,
+            source_file: None,
         };
 
         let mut tir_func = lower_to_tir(&func_ir);
@@ -2138,6 +2139,7 @@ mod tests {
                 ..OpIR::default()
             }],
             param_types: None,
+            source_file: None,
         };
 
         let tir_func = lower_to_tir(&func_ir);
@@ -2168,6 +2170,7 @@ mod tests {
                 ..OpIR::default()
             }],
             param_types: None,
+            source_file: None,
         };
 
         let tir_func = lower_to_tir(&func_ir);
@@ -2258,6 +2261,7 @@ mod tests {
                 },
             ],
             param_types: None,
+            source_file: None,
         };
 
         let tir_func = lower_to_tir(&func_ir);
@@ -2413,6 +2417,7 @@ mod tests {
                 },
             ],
             param_types: None,
+            source_file: None,
         };
 
         let tir_func = lower_to_tir(&func_ir);
