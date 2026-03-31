@@ -328,7 +328,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Execution assumption: optimization execution is active; Wave 0 baseline refresh + doc alignment is mandatory before broad Wave 2 rollout slices.
 - Canonical optimization scope: [OPTIMIZATIONS_PLAN.md](../../OPTIMIZATIONS_PLAN.md).
 - Canonical optimization execution log: [docs/benchmarks/optimization_progress.md](docs/benchmarks/optimization_progress.md).
-- Current progress: runtime instrumentation + benchmark diff tooling are landed, baseline lock summary remains published at [bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md](bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md), and compile-time recovery policy/tiering/budgets/telemetry slices are partially implemented in frontend/CLI.
+- Current progress: runtime instrumentation + benchmark diff tooling are landed, and compile-time recovery policy/tiering/budgets/telemetry slices are partially implemented in frontend/CLI. The old `bench/results/optimization_progress/2026-02-11_week0_baseline_lock/baseline_lock_summary.md` reference is no longer present in the repository, so `docs/benchmarks/optimization_progress.md` is the canonical execution log.
 - 2026-02-25 Wave 0 release-lane triage: fixed release-runtime compile regression in `_asyncio` scheduler task-entry/task-exit helpers (`runtime/molt-runtime/src/async_rt/scheduler.rs`) by restoring correct `raise_exception` API usage; targeted validation is green (`cargo check -p molt-runtime`, `tests/test_tkinter_phase0_wrappers.py`).
 - Active risk signal: frontend/mid-end compile throughput regressed on stdlib-heavy module graphs; deterministic wasm benchmark builds can timeout before runtime execution.
 - Active Wave 0 blocker signal: native benchmark harness runs remain sensitive to interpreter environment and long-tail release-runtime rebuild churn (`uv` lane missing `packaging.markers`, repeated release rebuild stalls under contention); treat this as a tooling/perf-gate blocker until the refresh workflow is stabilized.
@@ -363,8 +363,14 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - Implemented: pickle parity tranche advanced in runtime core (`runtime/molt-runtime/src/builtins/functions.rs`) with reducer 6-tuple `state_setter` lowering plus VM `POP`/`POP_MARK` support; targeted native differential tranche is green (`10/10`) including new regressions `tests/differential/stdlib/pickle_reduce_state_setter.py` and `tests/differential/stdlib/pickle_main_function_global_resolution.py`.
 - Implemented: pickle core now preserves default-instance graph semantics for class layout fields (`__molt_field_offsets__`) and CPython-like `BUILD` state ordering (`__dict__` merge + slot-state setattr), with reducer/copyreg precedence fixed before default-instance fallback. New regressions are green in native + wasm lanes: `tests/differential/stdlib/pickle_class_dataclass_roundtrip.py` and `tests/test_wasm_pickle_class_dataclass_roundtrip.py`.
 - Implemented: capability-enabled runtime-heavy wasm blocker tranche is green in targeted regression lane (`tests/test_wasm_runtime_heavy_regressions.py`: `3/3` pass for asyncio task table-ref path, zipimport failure-shape parity, and deterministic smtplib wasm thread fail-fast).
-- Implemented: native runtime-heavy cluster differential sweep is green (`119/119` pass across `_asyncio`, `smtplib`, `zipfile`, and `zipimport`) with RSS profiling + memory caps enforced.
-- Implemented: native strict-closure differential slices for `re`/`pathlib`/`socket` are green (`102/102` pass) with RSS profiling + memory caps enforced.
+- Implemented: native runtime-heavy cluster differential sweep was green for the
+  tracked `_asyncio` / `smtplib` / `zipfile` / `zipimport` slice with RSS
+  profiling + memory caps enforced. The older exact snapshot count is no longer
+  treated as canonical because the differential suite layout has changed.
+- Implemented: native strict-closure differential slices for `re` /
+  `pathlib` / `socket` were green for the tracked slice with RSS profiling +
+  memory caps enforced. The older exact snapshot count is no longer treated as
+  canonical because the differential suite layout has changed.
 - Implemented: targeted compression differential smoke (`bz2_basic`,
   `gzip_basic`, `lzma_basic`, `zlib_basic`) is green (`4/4`) with
   `MOLT_DIFF_MEASURE_RSS=1`, external-volume artifact roots, and per-process
@@ -2040,7 +2046,7 @@ README and [ROADMAP.md](../../ROADMAP.md) in sync.
 - TODO(wasm-db-parity, owner:runtime, milestone:DB2, priority:P2, status:planned): ship additional production host adapters (CF Workers) and wasm parity tests that exercise real DB backends with cancellation.
 - TODO(wasm-host, owner:runtime, milestone:RT3, priority:P3, status:planned): component model target support).
 - TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P0, status:partial): expand browser socket coverage (UDP/listen/server sockets) + parity tests.)
-- TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial): capability-enabled runtime-heavy wasm tranche (`/Volumes/APDataStore/Molt/wasm_runtime_heavy_tranche_20260213c/summary.json`) is still blocked (`1/5` pass): `asyncio__asyncio_running_loop_intrinsic.py` event-loop-policy parity mismatch, `asyncio_task_basic.py` table-ref trap in linked wasm runtime, `zipimport_basic.py` zipimport module-lookup parity gap, and `smtplib_basic.py` thread-unavailable wasm limitation. Keep this as a blocker before promoting runtime-heavy cluster completion.
+- TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial): widen runtime-heavy wasm coverage beyond the old runtime-heavy blocker set. The earlier targeted blocker snapshot is stale: `tests/test_wasm_runtime_heavy_regressions.py` is now green for the asyncio task table-ref path, zipimport failure-shape parity, and deterministic smtplib wasm thread fail-fast, but broader runtime-heavy promotion still needs wider wasm parity coverage.
 - TODO(wasm-parity, owner:runtime, milestone:RT2, priority:P1, status:partial): wire local timezone + locale on wasm hosts). (TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): deterministic clock policy) |
 - TODO(wasm-parity, owner:runtime, milestone:RT3, priority:P1, status:planned): wasm host parity for the asyncio runtime loop, poller, sockets, and subprocess I/O.
 - TODO(wasm-parity, owner:runtime, milestone:RT3, priority:P2, status:planned): zero-copy string passing for WASM).
