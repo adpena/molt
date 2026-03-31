@@ -17266,7 +17266,15 @@ def _prepare_native_link(
     if link_skipped and output_binary.exists():
         try:
             binary_mtime = output_binary.stat().st_mtime
-            for dep in [resolved_runtime_lib, output_obj, stub_path]:
+            # Include the backend binary: when function_compiler.rs changes,
+            # the backend is rebuilt, which changes how .o files are generated.
+            # Even if the .o content is identical (TIR cache), the binary must
+            # be relinked because the runtime library was also rebuilt.
+            backend_bin = _backend_bin_path(
+                molt_root, runtime_cargo_profile, None
+            )
+            deps = [resolved_runtime_lib, output_obj, stub_path, backend_bin]
+            for dep in deps:
                 if dep.exists() and dep.stat().st_mtime > binary_mtime:
                     link_skipped = False
                     break
