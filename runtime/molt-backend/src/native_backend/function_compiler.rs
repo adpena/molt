@@ -7639,7 +7639,10 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.raw_int.unwrap_or(false) {
+                    let res = if let (Some(&lr), Some(&rr)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
+                        let cmp = builder.ins().icmp(IntCC::SignedLessThan, lr, rr);
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if op.raw_int.unwrap_or(false) {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, *lhs, *rhs);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_float.unwrap_or(false) {
@@ -7718,7 +7721,10 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if let (Some(&lr), Some(&rr)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
+                        let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr, rr);
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if op.fast_float.unwrap_or(false) {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_f, rhs_f);
@@ -7800,7 +7806,10 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if let (Some(&lr), Some(&rr)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
+                        let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if op.fast_float.unwrap_or(false) {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::GreaterThan, lhs_f, rhs_f);
@@ -7880,7 +7889,10 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if let (Some(&lr), Some(&rr)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
+                        let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if op.fast_float.unwrap_or(false) {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder
@@ -8900,6 +8912,7 @@ impl SimpleBackend {
                     );
 
                     switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
+                    seal_block_once(&mut builder, &mut sealed_blocks, ready_path);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
                     let set_state_csend2 = import_func_ref(
                         &mut self.module,
@@ -8977,6 +8990,7 @@ impl SimpleBackend {
                     );
 
                     switch_to_block_tracking(&mut builder, ready_path, &mut is_block_filled);
+                    seal_block_once(&mut builder, &mut sealed_blocks, ready_path);
                     let state_val = builder.ins().iconst(types::I64, next_state_id);
                     let set_state_crecv2 = import_func_ref(
                         &mut self.module,
@@ -12614,6 +12628,7 @@ impl SimpleBackend {
                     }
                 }
                 "check_exception" => {
+
                     let target_id = op.value.unwrap_or(0);
                     let Some(&target_block) = state_blocks.get(&target_id) else {
                         // Orphaned check_exception (handler stripped by IR pass) — skip.
@@ -12895,6 +12910,7 @@ impl SimpleBackend {
                     }
                 }
                 "if" => {
+                    raw_int_shadow.clear(); // CF boundary invalidates shadows
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                     let callee = Self::import_func_id_split(
@@ -13048,6 +13064,7 @@ impl SimpleBackend {
                     });
                 }
                 "else" => {
+                    raw_int_shadow.clear();
                     let frame = if_stack.last_mut().expect("No if on stack");
                     frame.then_terminal = is_block_filled;
                     if frame.phi_ops.is_empty() {
@@ -13166,6 +13183,7 @@ impl SimpleBackend {
                     frame.has_else = true;
                 }
                 "end_if" => {
+                    raw_int_shadow.clear();
                     let mut frame = if_stack.pop().expect("No if on stack");
                     if frame.phi_ops.is_empty() {
                         let mut phi_ops: Vec<(String, String, String)> = Vec::new();
@@ -13505,6 +13523,7 @@ impl SimpleBackend {
                     }
                 }
                 "loop_start" => {
+                    raw_int_shadow.clear();
                     let indexed_loop_follows = loop_start_has_index_prelude(&func_ir.ops, op_idx);
                     if indexed_loop_follows {
                         // Indexed loops may carry a constant-materialization
@@ -13573,6 +13592,7 @@ impl SimpleBackend {
                                         depth -= 1;
                                     }
                                     "loop_end" => {
+                    raw_int_shadow.clear();
                                         found_backedge = true;
                                         break;
                                     }
