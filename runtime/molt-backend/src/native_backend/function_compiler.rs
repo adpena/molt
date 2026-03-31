@@ -3904,6 +3904,19 @@ impl SimpleBackend {
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
 
+                        // Guard: verify both operands are inline TAG_INT before
+                        // unboxing.  Heap bigints have type_hint="int" but
+                        // unbox_int on a pointer extracts garbage.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let inline_check_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(both_inline, inline_check_block, &[], slow_block, &[]);
+                        builder.switch_to_block(inline_check_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inline_check_block);
+
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let zero = builder.ins().iconst(types::I64, 0);
