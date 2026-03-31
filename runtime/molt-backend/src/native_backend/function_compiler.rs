@@ -1224,8 +1224,14 @@ impl SimpleBackend {
                     if (INLINE_MIN..=INLINE_MAX).contains(&val) {
                         let boxed = box_int(val);
                         let iconst = builder.ins().iconst(types::I64, boxed);
-                        if let Some(out__) = op.out {
+                        if let Some(ref out__) = op.out {
                             def_var_named(&mut builder, &vars, out__, iconst);
+                            // Seed raw shadow for consts used by fast_int ops.
+                            // Only seed when type hints are active (fast_int likely).
+                            if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                                let raw_val = builder.ins().iconst(types::I64, val);
+                                raw_int_shadow.insert(out__.clone(), raw_val);
+                            }
                         }
                     } else {
                         // Value exceeds 47-bit signed inline range — use bigint path.
@@ -1470,6 +1476,19 @@ impl SimpleBackend {
                         let rhs_raw = raw_int_shadow.get(rhs_name).copied();
                         if let (Some(lhs_val), Some(rhs_val)) = (lhs_raw, rhs_raw) {
                             let sum = builder.ins().iadd(lhs_val, rhs_val);
+                            let boxed = box_int_value(&mut builder, sum, &nbc);
+                            if let Some(ref out_name) = op.out {
+                                def_var_named(&mut builder, &vars, out_name, boxed);
+                                raw_int_shadow.insert(out_name.clone(), sum);
+                            }
+                            continue;
+                        }
+                        // One-operand shadow: if one operand is raw, unbox
+                        // only the other. Saves ~2 instructions vs full path.
+                        if lhs_raw.is_some() || rhs_raw.is_some() {
+                            let lv = lhs_raw.unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
+                            let rv = rhs_raw.unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
+                            let sum = builder.ins().iadd(lv, rv);
                             let boxed = box_int_value(&mut builder, sum, &nbc);
                             if let Some(ref out_name) = op.out {
                                 def_var_named(&mut builder, &vars, out_name, boxed);
@@ -7639,8 +7658,16 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if let (Some(&lr), Some(&rr)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
-                        let cmp = builder.ins().icmp(IntCC::SignedLessThan, lr, rr);
+                    let lr = raw_int_shadow.get(&args[0]).copied();
+                    let rr = raw_int_shadow.get(&args[1]).copied();
+                    let res = if lr.is_some() && rr.is_some() {
+                        let cmp = builder.ins().icmp(IntCC::SignedLessThan, lr.unwrap(), rr.unwrap());
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if lr.is_some() || rr.is_some() {
+                        // One-operand: unbox only the non-raw side
+                        let lv = lr.unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
+                        let rv = rr.unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
+                        let cmp = builder.ins().icmp(IntCC::SignedLessThan, lv, rv);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.raw_int.unwrap_or(false) {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, *lhs, *rhs);
@@ -7721,8 +7748,15 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if let (Some(&lr), Some(&rr)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
-                        let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr, rr);
+                    let lr = raw_int_shadow.get(&args[0]).copied();
+                    let rr = raw_int_shadow.get(&args[1]).copied();
+                    let res = if lr.is_some() && rr.is_some() {
+                        let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr.unwrap(), rr.unwrap());
+                        box_bool_value(&mut builder, cmp, &nbc)
+                    } else if lr.is_some() || rr.is_some() {
+                        let lv = lr.unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
+                        let rv = rr.unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
+                        let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lv, rv);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_float.unwrap_or(false) {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
@@ -13523,7 +13557,7 @@ impl SimpleBackend {
                     }
                 }
                 "loop_start" => {
-                    raw_int_shadow.clear();
+                    // raw_int_shadow preserved across loop iterations (LuaJIT-style)
                     let indexed_loop_follows = loop_start_has_index_prelude(&func_ir.ops, op_idx);
                     if indexed_loop_follows {
                         // Indexed loops may carry a constant-materialization
@@ -13592,7 +13626,7 @@ impl SimpleBackend {
                                         depth -= 1;
                                     }
                                     "loop_end" => {
-                    raw_int_shadow.clear();
+                    // raw_int_shadow preserved across loop iterations (LuaJIT-style)
                                         found_backedge = true;
                                         break;
                                     }
