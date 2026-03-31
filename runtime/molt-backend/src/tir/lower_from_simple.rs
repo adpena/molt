@@ -544,7 +544,8 @@ mod tests {
 
         // Entry block should have 2 ops (const + add; ret is structural).
         let entry = &tir.blocks[&tir.entry_block];
-        assert_eq!(entry.ops.len(), 2, "entry should have const and add ops");
+        // 3 ops: ConstNone (SSA undef sentinel) + ConstInt + Add; ret is structural.
+        assert_eq!(entry.ops.len(), 3, "entry should have undef sentinel, const, and add ops");
 
         // Terminator should be Return.
         assert!(

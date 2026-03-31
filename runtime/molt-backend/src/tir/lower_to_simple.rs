@@ -111,11 +111,105 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         })
         .collect();
 
+    // ── Loop region detection (must run before if-pattern detection) ──
+    // Compute loop_region_blocks first so that the if-pattern detector can
+    // refuse to inline blocks that belong to a loop body.  Inlining loop
+    // body blocks as if/else/end_if corrupts the loop back-edge because the
+    // inlined blocks lose their labels and the loop_continue/loop_end
+    // markers can no longer reach them.
+    let mut loop_region_blocks: HashSet<BlockId> = HashSet::new();
+    let mut header_body_chain: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+    for bid in &rpo {
+        let role = func
+            .loop_roles
+            .get(bid)
+            .cloned()
+            .unwrap_or(super::blocks::LoopRole::None);
+        if role != super::blocks::LoopRole::LoopHeader {
+            continue;
+        }
+        let Some(block) = func.blocks.get(bid) else {
+            continue;
+        };
+        let break_kind = func
+            .loop_break_kinds
+            .get(bid)
+            .copied()
+            .unwrap_or(LoopBreakKind::BreakIfTrue);
+
+        // Collect loop body blocks via DFS from the header's body successor,
+        // stopping at the exit block, the header (back-edge), and any block
+        // whose RPO position is at or past the end block.  The RPO bound
+        // prevents traversing through shared exception handlers into
+        // after-loop code.
+        let end_block_bid = func.loop_pairs.get(bid).copied();
+        let end_rpo_pos = end_block_bid.and_then(|eb| rpo.iter().position(|b| *b == eb));
+        let mut region: HashSet<BlockId> = HashSet::new();
+        let mut exit_block: Option<BlockId> = None;
+
+        // Determine the CondBranch that guards the loop exit.  It may live
+        // directly in the header block, or the header may Branch to a separate
+        // condition-test block that holds the CondBranch.
+        let cond_terminator: Option<(&Terminator, BlockId)> = match &block.terminator {
+            t @ Terminator::CondBranch { .. } => Some((t, *bid)),
+            Terminator::Branch { target, .. } => {
+                func.blocks.get(target).and_then(|cond_blk| {
+                    if matches!(&cond_blk.terminator, Terminator::CondBranch { .. }) {
+                        Some((&cond_blk.terminator, *target))
+                    } else {
+                        None
+                    }
+                })
+            }
+            _ => None,
+        };
+
+        if let Some((Terminator::CondBranch { then_block, else_block, .. }, cond_bid)) = cond_terminator {
+            let body_seed = match break_kind {
+                LoopBreakKind::BreakIfTrue => *else_block,
+                LoopBreakKind::BreakIfFalse => *then_block,
+            };
+            exit_block = Some(match break_kind {
+                LoopBreakKind::BreakIfTrue => *then_block,
+                LoopBreakKind::BreakIfFalse => *else_block,
+            });
+            // Include the condition block itself in the region when it
+            // differs from the header (Branch→CondBranch pattern).
+            if cond_bid != *bid {
+                region.insert(cond_bid);
+            }
+            let mut stack = vec![body_seed];
+            while let Some(region_bid) = stack.pop() {
+                if !region.insert(region_bid) { continue; }
+                let Some(rb) = func.blocks.get(&region_bid) else { continue; };
+                for succ in block_successors(rb) {
+                    if Some(succ) == exit_block || succ == *bid { continue; }
+                    // Don't traverse past the end block in RPO.
+                    let succ_rpo = rpo.iter().position(|b| *b == succ);
+                    if let (Some(s_pos), Some(e_pos)) = (succ_rpo, end_rpo_pos) {
+                        if s_pos > e_pos { continue; }
+                    }
+                    stack.push(succ);
+                }
+            }
+        }
+
+        let chain: Vec<BlockId> = rpo
+            .iter()
+            .filter(|candidate| region.contains(candidate))
+            .copied()
+            .collect();
+        loop_region_blocks.extend(chain.iter().copied());
+        header_body_chain.insert(*bid, chain);
+    }
+
     // ── Structured if/else/end_if detection ──
     // Detect simple CondBranch patterns where both successors:
     //   (a) have no check_exception ops (which require label blocks for implicit edges)
     //   (b) have simple terminators (Branch to same join block, or Return/Unreachable)
     //   (c) are not claimed by another pattern or loop region
+    //   (d) neither successor is part of a loop region (loop body blocks need
+    //       their own labels for back-edge resolution)
     //
     // These patterns are emitted as if/else/end_if + phi ops, producing
     // cleaner CLIF without extra unsealed label blocks.
@@ -131,10 +225,26 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         let role = func.loop_roles.get(bid).cloned()
             .unwrap_or(super::blocks::LoopRole::None);
         if role != super::blocks::LoopRole::None { continue; }
+        // Skip blocks that are inside a loop region — their CondBranch
+        // successors are part of the loop body and must keep their labels.
+        if loop_region_blocks.contains(bid) { continue; }
         let Some(block) = func.blocks.get(bid) else { continue };
         let Terminator::CondBranch { then_block, else_block, .. } = &block.terminator else { continue };
         let (then_bid, else_bid) = (*then_block, *else_block);
         if then_bid == else_bid { continue; }
+        // Successor blocks that are part of a loop region must not be
+        // inlined — they need their own labels for loop back-edges.
+        let then_role = func.loop_roles.get(&then_bid).cloned()
+            .unwrap_or(super::blocks::LoopRole::None);
+        let else_role = func.loop_roles.get(&else_bid).cloned()
+            .unwrap_or(super::blocks::LoopRole::None);
+        if then_role != super::blocks::LoopRole::None
+            || else_role != super::blocks::LoopRole::None
+            || loop_region_blocks.contains(&then_bid)
+            || loop_region_blocks.contains(&else_bid)
+        {
+            continue;
+        }
         let Some(then_blk) = func.blocks.get(&then_bid) else { continue };
         let Some(else_blk) = func.blocks.get(&else_bid) else { continue };
         if if_inlined_blocks.contains(&then_bid) || if_inlined_blocks.contains(&else_bid) { continue; }
@@ -164,74 +274,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         if_inlined_blocks.insert(else_bid);
     }
 
-    let mut loop_region_blocks: HashSet<BlockId> = HashSet::new();
-    let mut header_body_chain: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for bid in &rpo {
-        let role = func
-            .loop_roles
-            .get(bid)
-            .cloned()
-            .unwrap_or(super::blocks::LoopRole::None);
-        if role != super::blocks::LoopRole::LoopHeader {
-            continue;
-        }
-        let Some(block) = func.blocks.get(bid) else {
-            continue;
-        };
-        let break_kind = func
-            .loop_break_kinds
-            .get(bid)
-            .copied()
-            .unwrap_or(LoopBreakKind::BreakIfTrue);
-
-        // Collect loop body blocks via DFS from the header's body successor,
-        // stopping at the exit block, the header (back-edge), and any block
-        // whose RPO position is at or past the end block.  The RPO bound
-        // prevents traversing through shared exception handlers into
-        // after-loop code.
-        let end_block_bid = func.loop_pairs.get(bid).copied();
-        let end_rpo_pos = end_block_bid.and_then(|eb| rpo.iter().position(|b| *b == eb));
-        let header_rpo_pos = rpo.iter().position(|b| b == bid).unwrap_or(0);
-        let mut region: HashSet<BlockId> = HashSet::new();
-        let mut exit_block: Option<BlockId> = None;
-
-        match &block.terminator {
-            Terminator::CondBranch { then_block, else_block, .. } => {
-                let body_seed = match break_kind {
-                    LoopBreakKind::BreakIfTrue => *else_block,
-                    LoopBreakKind::BreakIfFalse => *then_block,
-                };
-                exit_block = Some(match break_kind {
-                    LoopBreakKind::BreakIfTrue => *then_block,
-                    LoopBreakKind::BreakIfFalse => *else_block,
-                });
-                let mut stack = vec![body_seed];
-                while let Some(region_bid) = stack.pop() {
-                    if !region.insert(region_bid) { continue; }
-                    let Some(rb) = func.blocks.get(&region_bid) else { continue; };
-                    for succ in block_successors(rb) {
-                        if Some(succ) == exit_block || succ == *bid { continue; }
-                        // Don't traverse past the end block in RPO.
-                        let succ_rpo = rpo.iter().position(|b| *b == succ);
-                        if let (Some(s_pos), Some(e_pos)) = (succ_rpo, end_rpo_pos) {
-                            if s_pos > e_pos { continue; }
-                        }
-                        stack.push(succ);
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        let chain: Vec<BlockId> = rpo
-            .iter()
-            .filter(|candidate| region.contains(candidate))
-            .copied()
-            .collect();
-        loop_region_blocks.extend(chain.iter().copied());
-        header_body_chain.insert(*bid, chain);
-    }
-
     // Build the emission order: RPO but with loop exit blocks deferred
     // until after their loop region.  Without this, RPO can place the
     // exit block before the loop body, causing the native backend to
@@ -249,15 +291,27 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         let Some(block) = func.blocks.get(bid) else { continue; };
         let break_kind = func.loop_break_kinds.get(bid).copied()
             .unwrap_or(LoopBreakKind::BreakIfTrue);
-        match &block.terminator {
-            Terminator::CondBranch { then_block, else_block, .. } => {
-                let exit = match break_kind {
-                    LoopBreakKind::BreakIfTrue => *then_block,
-                    LoopBreakKind::BreakIfFalse => *else_block,
-                };
-                deferred_exits.insert(*bid, exit);
+        // Find the CondBranch — may be on the header directly, or on
+        // a condition-test block the header branches to.
+        let cond_term = match &block.terminator {
+            t @ Terminator::CondBranch { .. } => Some(t),
+            Terminator::Branch { target, .. } => {
+                func.blocks.get(target).and_then(|cb| {
+                    if matches!(&cb.terminator, Terminator::CondBranch { .. }) {
+                        Some(&cb.terminator)
+                    } else {
+                        None
+                    }
+                })
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(Terminator::CondBranch { then_block, else_block, .. }) = cond_term {
+            let exit = match break_kind {
+                LoopBreakKind::BreakIfTrue => *then_block,
+                LoopBreakKind::BreakIfFalse => *else_block,
+            };
+            deferred_exits.insert(*bid, exit);
         }
     }
     // Set of exit blocks that should be deferred.
@@ -269,23 +323,15 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             continue;
         }
 
-        // Skip blocks in loop regions — they're emitted inline within
-        // the loop header's loop_start/loop_end region.
+        // Skip blocks in loop regions — they're emitted with proper
+        // labels, ops, and terminators inside the header's
+        // loop_start/loop_end region.
         let loop_role = func
             .loop_roles
             .get(bid)
             .cloned()
             .unwrap_or(super::blocks::LoopRole::None);
         if loop_region_blocks.contains(bid) && loop_role != super::blocks::LoopRole::LoopHeader {
-            // Emit only the label for external references (check_exception
-            // targets etc), but skip ops (already inlined in the header).
-            if *bid != func.entry_block {
-                out.push(OpIR {
-                    kind: "label".to_string(),
-                    value: Some(block_label_id(bid)),
-                    ..OpIR::default()
-                });
-            }
             continue;
         }
 
@@ -353,45 +399,140 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             }
         };
 
-        // For loop headers: emit ALL blocks in the loop region as a fused
-        // sequential region: loop_start → [all region ops] → loop_continue → loop_end.
-        // Block args are threaded via VALUE_NAME_OVERRIDES so ops reference
-        // predecessor values directly, avoiding label/jump/store_var/load_var.
+        // For loop headers: emit the header's ops and loop break condition,
+        // then emit each body block with proper labels, ops, and terminators
+        // (including br_if/jump for CondBranch) inside the loop_start/loop_end
+        // region.  Blocks that branch back to the header emit loop_continue +
+        // loop_end instead of a jump.
+        //
+        // Previous approach tried to inline all body blocks linearly, which
+        // broke when a loop body contained CondBranch terminators (e.g.
+        // if-statements inside while loops) — the conditional was silently
+        // dropped, causing infinite loops or wrong results.
         if loop_role == super::blocks::LoopRole::LoopHeader {
-            // Helper: emit a block's ops inline, mapping block args to predecessor values.
-            let emit_block_inline = |blk: &TirBlock, pred_args: &[ValueId], out: &mut Vec<OpIR>| {
-                // Map block arg ValueIds to predecessor branch arg values.
-                // Resolve value_var names BEFORE taking the mutable borrow
-                // to avoid RefCell double-borrow panics.
-                let resolved: Vec<(ValueId, String)> = blk
-                    .args
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, arg)| {
-                        pred_args.get(i).map(|&pred| (arg.id, value_var(pred)))
-                    })
-                    .collect();
-                VALUE_NAME_OVERRIDES.with(|overrides| {
-                    let mut map = overrides.borrow_mut();
-                    for (id, name) in &resolved {
-                        map.insert(*id, name.clone());
-                    }
-                });
-                for op in &blk.ops {
-                    if let Some(mut opir) = lower_op(op) {
-                        annotate_type_flags(&mut opir, op, types);
-                        out.push(opir);
-                    }
-                }
-            };
-
             let break_kind = func
                 .loop_break_kinds
                 .get(bid)
                 .copied()
                 .unwrap_or(LoopBreakKind::BreakIfTrue);
-            let mut region_chain = header_body_chain.get(bid).cloned().unwrap_or_default();
+            let region_chain = header_body_chain.get(bid).cloned().unwrap_or_default();
+            let original_has_ret = func.attrs.get("_original_has_ret")
+                .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
+                .unwrap_or(false);
+
+            // Helper: emit a block's label and load its block arguments
+            // from store_var slots.
+            let emit_block_header = |rbid: &BlockId, rblock: &TirBlock, out: &mut Vec<OpIR>| {
+                out.push(OpIR {
+                    kind: "label".to_string(),
+                    value: Some(block_label_id(rbid)),
+                    ..OpIR::default()
+                });
+                if let Some(param_vars) = block_param_vars.get(rbid) {
+                    for (i, var_name) in param_vars.iter().enumerate() {
+                        if i < rblock.args.len() {
+                            out.push(OpIR {
+                                kind: "load_var".to_string(),
+                                var: Some(var_name.clone()),
+                                out: Some(value_var(rblock.args[i].id)),
+                                ..OpIR::default()
+                            });
+                        }
+                    }
+                }
+            };
+
+            // Helper: emit a block's terminator, but replace branches back
+            // to the loop header with loop_continue + loop_end.
+            let emit_body_terminator = |rblock: &TirBlock, header_bid: &BlockId, out: &mut Vec<OpIR>| {
+                match &rblock.terminator {
+                    Terminator::Branch { target, args } => {
+                        emit_block_arg_stores(*target, args, &block_param_vars, out);
+                        if target == header_bid {
+                            // Back-edge to loop header: loop_continue + loop_end.
+                            out.push(OpIR {
+                                kind: "loop_continue".to_string(),
+                                ..OpIR::default()
+                            });
+                            out.push(OpIR {
+                                kind: "loop_end".to_string(),
+                                ..OpIR::default()
+                            });
+                        } else {
+                            let last_op_is_check_exception = rblock.ops.last()
+                                .map(|op| op.opcode == OpCode::CheckException)
+                                .unwrap_or(false);
+                            if !last_op_is_check_exception {
+                                out.push(OpIR {
+                                    kind: "jump".to_string(),
+                                    value: Some(block_label_id(target)),
+                                    ..OpIR::default()
+                                });
+                            }
+                        }
+                    }
+                    Terminator::CondBranch {
+                        cond,
+                        then_block,
+                        then_args,
+                        else_block,
+                        else_args,
+                    } => {
+                        // Check if this CondBranch is itself a nested loop header.
+                        let block_loop_role = func.loop_roles.get(&rblock.id).cloned()
+                            .unwrap_or(super::blocks::LoopRole::None);
+                        if block_loop_role == super::blocks::LoopRole::LoopHeader {
+                            // Nested loop header: handled by recursive loop emission.
+                            // This shouldn't happen since nested loop headers are
+                            // separate entries in the RPO, but handle defensively.
+                            emit_block_arg_stores(*then_block, then_args, &block_param_vars, out);
+                            out.push(OpIR {
+                                kind: "br_if".to_string(),
+                                args: Some(vec![value_var(*cond)]),
+                                value: Some(block_label_id(then_block)),
+                                ..OpIR::default()
+                            });
+                            emit_block_arg_stores(*else_block, else_args, &block_param_vars, out);
+                            out.push(OpIR {
+                                kind: "jump".to_string(),
+                                value: Some(block_label_id(else_block)),
+                                ..OpIR::default()
+                            });
+                        } else {
+                            // Generic conditional branch inside loop body.
+                            emit_block_arg_stores(*then_block, then_args, &block_param_vars, out);
+                            out.push(OpIR {
+                                kind: "br_if".to_string(),
+                                args: Some(vec![value_var(*cond)]),
+                                value: Some(block_label_id(then_block)),
+                                ..OpIR::default()
+                            });
+                            emit_block_arg_stores(*else_block, else_args, &block_param_vars, out);
+                            out.push(OpIR {
+                                kind: "jump".to_string(),
+                                value: Some(block_label_id(else_block)),
+                                ..OpIR::default()
+                            });
+                        }
+                    }
+                    Terminator::Return { values } => {
+                        emit_return_ops(values, original_has_ret, out);
+                    }
+                    Terminator::Unreachable => {
+                        out.push(OpIR {
+                            kind: "unreachable".to_string(),
+                            ..OpIR::default()
+                        });
+                    }
+                    _ => {}
+                }
+            };
+
+            // Determine loop condition data from the header's terminator.
+            // The header may have a direct CondBranch, or it may Branch to
+            // the first region block which then has the CondBranch.
             let mut cond_data: Option<(ValueId, BlockId, Vec<ValueId>, BlockId, Vec<ValueId>)> = None;
+            let mut first_body_block_inlined = false;
 
             match &block.terminator {
                 Terminator::CondBranch {
@@ -412,6 +553,10 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 }
                 Terminator::Branch { target, args } => {
                     emit_block_ops(block, &mut out);
+                    // If the header branches to the first region block and
+                    // that block has a CondBranch, inline it as the loop
+                    // condition (the condition-test block is part of the
+                    // loop header, not a separate body block).
                     if region_chain.first() == Some(target)
                         && let Some(cond_block) = func.blocks.get(target)
                         && let Terminator::CondBranch {
@@ -422,8 +567,28 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                             else_args,
                         } = &cond_block.terminator
                     {
-                        emit_block_inline(cond_block, args, &mut out);
-                        region_chain.remove(0);
+                        // Emit the cond block's ops inline with arg mapping.
+                        let resolved: Vec<(ValueId, String)> = cond_block
+                            .args
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, arg)| {
+                                args.get(i).map(|&pred| (arg.id, value_var(pred)))
+                            })
+                            .collect();
+                        VALUE_NAME_OVERRIDES.with(|overrides| {
+                            let mut map = overrides.borrow_mut();
+                            for (id, name) in &resolved {
+                                map.insert(*id, name.clone());
+                            }
+                        });
+                        for op in &cond_block.ops {
+                            if let Some(mut opir) = lower_op(op) {
+                                annotate_type_flags(&mut opir, op, types);
+                                out.push(opir);
+                            }
+                        }
+                        first_body_block_inlined = true;
                         cond_data = Some((
                             *cond,
                             *then_block,
@@ -448,6 +613,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     }
                 };
 
+                // Emit loop break condition.
                 emit_block_arg_stores(after_block, &after_args, &block_param_vars, &mut out);
                 out.push(OpIR {
                     kind: match break_kind {
@@ -458,60 +624,90 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     ..OpIR::default()
                 });
 
-                let mut prev_args: Vec<ValueId> = body_args.clone();
-                if region_chain.is_empty() {
-                    if let Some(body_block_ir) = func.blocks.get(&body_block) {
-                        emit_block_inline(body_block_ir, &prev_args, &mut out);
-                        if let Terminator::Branch { target, args } = &body_block_ir.terminator {
-                            emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
-                        }
-                    }
+                // Store args for the first body block entry.
+                emit_block_arg_stores(body_block, &body_args, &block_param_vars, &mut out);
+
+                // Emit each body block in the region chain with proper
+                // labels, ops, and terminators.  This preserves control
+                // flow for CondBranch terminators (if-statements) inside
+                // the loop body.
+                let body_blocks: Vec<BlockId> = if first_body_block_inlined {
+                    // Skip the first block — it was inlined as the loop condition.
+                    region_chain.iter().skip(1).copied().collect()
                 } else {
-                    for region_bid in &region_chain {
-                        if let Some(region_block) = func.blocks.get(region_bid) {
-                            emit_block_inline(region_block, &prev_args, &mut out);
-                            prev_args = match &region_block.terminator {
-                                Terminator::Branch { args, .. } => args.clone(),
-                                Terminator::CondBranch { then_args, else_args, .. } => {
-                                    if body_block == *region_bid {
-                                        body_args.clone()
-                                    } else if region_chain
-                                        .iter()
-                                        .position(|candidate| candidate == region_bid)
-                                        .and_then(|idx| region_chain.get(idx + 1))
-                                        == Some(&body_block)
-                                    {
-                                        then_args.clone()
-                                    } else {
-                                        else_args.clone()
-                                    }
-                                }
-                                _ => vec![],
-                            };
+                    region_chain.clone()
+                };
+
+                // Track whether we've emitted loop_end yet.
+                let mut emitted_loop_end = false;
+
+                for region_bid in &body_blocks {
+                    if let Some(region_block) = func.blocks.get(region_bid) {
+                        emit_block_header(region_bid, region_block, &mut out);
+                        emit_block_ops(region_block, &mut out);
+                        emit_body_terminator(region_block, bid, &mut out);
+                        // Check if this block's terminator emitted loop_end
+                        // (i.e. it branches back to the header).
+                        if let Terminator::Branch { target, .. } = &region_block.terminator {
+                            if *target == *bid {
+                                emitted_loop_end = true;
+                            }
                         }
-                    }
-                    if let Some(last_bid) = region_chain.last()
-                        && let Some(last_block) = func.blocks.get(last_bid)
-                        && let Terminator::Branch { target, args } = &last_block.terminator
-                    {
-                        emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
                     }
                 }
 
-                out.push(OpIR {
-                    kind: "loop_continue".to_string(),
-                    ..OpIR::default()
-                });
-                out.push(OpIR {
-                    kind: "loop_end".to_string(),
-                    ..OpIR::default()
-                });
+                // If no body block branched back to the header (e.g. the
+                // body_block itself is the only block and was handled above,
+                // or the region chain is empty), emit the body block directly
+                // and close the loop.
+                if !emitted_loop_end {
+                    if body_blocks.is_empty() {
+                        // The body is a single block not in the region chain.
+                        if let Some(body_block_ir) = func.blocks.get(&body_block) {
+                            emit_block_header(&body_block, body_block_ir, &mut out);
+                            emit_block_ops(body_block_ir, &mut out);
+                            emit_body_terminator(body_block_ir, bid, &mut out);
+                            // If it still didn't emit loop_end, force it.
+                            if !matches!(&body_block_ir.terminator, Terminator::Branch { target, .. } if *target == *bid) {
+                                out.push(OpIR {
+                                    kind: "loop_continue".to_string(),
+                                    ..OpIR::default()
+                                });
+                                out.push(OpIR {
+                                    kind: "loop_end".to_string(),
+                                    ..OpIR::default()
+                                });
+                            }
+                        } else {
+                            out.push(OpIR {
+                                kind: "loop_continue".to_string(),
+                                ..OpIR::default()
+                            });
+                            out.push(OpIR {
+                                kind: "loop_end".to_string(),
+                                ..OpIR::default()
+                            });
+                        }
+                    } else {
+                        // Region chain blocks didn't branch back to header.
+                        // This can happen when the back-edge goes through a
+                        // block not in the region chain.  Emit fallback
+                        // loop_continue + loop_end.
+                        out.push(OpIR {
+                            kind: "loop_continue".to_string(),
+                            ..OpIR::default()
+                        });
+                        out.push(OpIR {
+                            kind: "loop_end".to_string(),
+                            ..OpIR::default()
+                        });
+                    }
+                }
 
                 // Emit the deferred exit block immediately after loop_end
                 // so the after-loop code follows the loop body, not precedes it.
                 if let Some(exit_bid) = deferred_exits.get(bid) {
                     if let Some(exit_block) = func.blocks.get(exit_bid) {
-                        // Emit exit block label.
                         out.push(OpIR {
                             kind: "label".to_string(),
                             value: Some(block_label_id(exit_bid)),
@@ -529,12 +725,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                                 }
                             }
                         }
-                        // Emit exit block ops.
                         emit_block_ops(exit_block, &mut out);
-                        // Emit exit block terminator.
-                        let original_has_ret = func.attrs.get("_original_has_ret")
-                            .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
-                            .unwrap_or(false);
                         let exit_role = func.loop_roles.get(exit_bid).cloned()
                             .unwrap_or(super::blocks::LoopRole::None);
                         emit_terminator(
@@ -1849,13 +2040,31 @@ mod tests {
         );
 
         let ops = lower_to_simple_ir(&func, &HashMap::new());
-        let label_count = ops.iter().filter(|o| o.kind == "label").count();
-        // Should have labels for bb1 and bb2.
+        let kinds: Vec<&str> = ops.iter().map(|o| o.kind.as_str()).collect();
+        // Simple CondBranch with both successors returning is now emitted
+        // as structured if/else/end_if instead of labels + jumps.
         assert!(
-            label_count >= 2,
-            "expected >=2 labels for multi-block function, got {}: {:?}",
-            label_count,
-            ops
+            kinds.contains(&"if"),
+            "expected structured 'if' op for simple CondBranch, got: {:?}",
+            kinds
+        );
+        assert!(
+            kinds.contains(&"else"),
+            "expected structured 'else' op for simple CondBranch, got: {:?}",
+            kinds
+        );
+        assert!(
+            kinds.contains(&"end_if"),
+            "expected structured 'end_if' op for simple CondBranch, got: {:?}",
+            kinds
+        );
+        // Both branches should have const + ret.
+        let ret_count = kinds.iter().filter(|k| **k == "ret").count();
+        assert!(
+            ret_count >= 2,
+            "expected >=2 ret ops (one per branch), got {}: {:?}",
+            ret_count,
+            kinds
         );
     }
 

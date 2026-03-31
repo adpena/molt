@@ -48,7 +48,7 @@ pub fn run_pipeline(func: &mut super::function::TirFunction) -> Vec<PassStats> {
     // lower the original IR structurally without pass-induced metadata drift.
     let snapshot = func.clone();
 
-    let mut stats = Vec::with_capacity(8);
+    let mut stats = Vec::with_capacity(9);
 
     // Each pass can be individually disabled for debugging:
     //   MOLT_TIR_SKIP=unboxing,sccp,dce (comma-separated pass names)
