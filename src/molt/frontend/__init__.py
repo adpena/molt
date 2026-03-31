@@ -33522,6 +33522,55 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         const_int_values[result_name] = folded
                         state_dirty = True
 
+            # Constant-fold bitwise operations: when both operands are
+            # known integer constants, compute the result at compile time.
+            if (
+                not _folded_to_bigint
+                and canonical_op.kind in {
+                    "BIT_AND", "BIT_OR", "BIT_XOR",
+                    "LSHIFT", "RSHIFT", "INVERT",
+                }
+                and len(canonical_op.args) >= 1
+            ):
+                args = canonical_op.args
+                if canonical_op.kind == "INVERT" and len(args) == 1:
+                    arg = args[0]
+                    if isinstance(arg, MoltValue):
+                        arg_const = const_int_values.get(arg.name)
+                        if arg_const is not None:
+                            folded_bw = ~arg_const
+                            if _INLINE_INT_MIN <= folded_bw <= _INLINE_INT_MAX:
+                                const_int_values[result_name] = folded_bw
+                                state_dirty = True
+                elif len(args) == 2:
+                    lhs_bw, rhs_bw = args
+                    if isinstance(lhs_bw, MoltValue) and isinstance(rhs_bw, MoltValue):
+                        lc = const_int_values.get(lhs_bw.name)
+                        rc = const_int_values.get(rhs_bw.name)
+                        if lc is not None and rc is not None:
+                            if canonical_op.kind == "BIT_AND":
+                                folded_bw = lc & rc
+                            elif canonical_op.kind == "BIT_OR":
+                                folded_bw = lc | rc
+                            elif canonical_op.kind == "BIT_XOR":
+                                folded_bw = lc ^ rc
+                            elif canonical_op.kind == "LSHIFT":
+                                folded_bw = lc << rc if 0 <= rc <= 128 else None
+                            elif canonical_op.kind == "RSHIFT":
+                                folded_bw = lc >> rc if 0 <= rc <= 128 else None
+                            else:
+                                folded_bw = None
+                            if folded_bw is not None:
+                                if not (_INLINE_INT_MIN <= folded_bw <= _INLINE_INT_MAX):
+                                    canonical_op = MoltOp(
+                                        kind="CONST_BIGINT",
+                                        args=[str(folded_bw)],
+                                        result=canonical_op.result,
+                                    )
+                                    _folded_to_bigint = True
+                                const_int_values[result_name] = folded_bw
+                                state_dirty = True
+
             out.append(canonical_op)
 
             if not _folded_to_bigint and canonical_op.kind == "CONST":
