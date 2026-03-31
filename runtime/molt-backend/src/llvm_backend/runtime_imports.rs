@@ -21,6 +21,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
     // ── Arithmetic (DynBox dispatch: (u64, u64) -> u64) ──
     for name in &[
         "molt_add",
+        "molt_str_concat",
         "molt_sub",
         "molt_mul",
         "molt_div",
@@ -33,12 +34,19 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
     }
 
     // ── Unary (u64) -> u64 ──
-    for name in &["molt_neg", "molt_not", "molt_invert", "molt_is_truthy"] {
+    for name in &[
+        "molt_neg",
+        "molt_not",
+        "molt_invert",
+        "molt_is_truthy",
+        "molt_is_truthy_int",
+        "molt_is_truthy_bool",
+    ] {
         let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
         module.add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
     }
 
-    // Note: molt_is_truthy returns i64 (0 or 1), not u64.
+    // Note: molt_is_truthy / molt_is_truthy_int / molt_is_truthy_bool return i64 (0 or 1), not u64.
 
     // ── Comparison (u64, u64) -> u64 ──
     for name in &[

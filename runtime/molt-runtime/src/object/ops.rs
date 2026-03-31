@@ -1335,6 +1335,93 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
     })
 }
 
+/// Fast len for known-list values. Single type check, no 18-type dispatch.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_len_list(bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                let tid = object_type_id(ptr);
+                if tid == TYPE_ID_LIST || tid == TYPE_ID_LIST_INT {
+                    return MoltObject::from_int(list_len(ptr) as i64).bits();
+                }
+            }
+        }
+        molt_len(bits)
+    })
+}
+
+/// Fast len for known-str values. Single type check, no 18-type dispatch.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_len_str(bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_STRING {
+                    let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
+                    let count = utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize));
+                    return MoltObject::from_int(count).bits();
+                }
+            }
+        }
+        molt_len(bits)
+    })
+}
+
+/// Fast len for known-dict values. Single type check, no 18-type dispatch.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_len_dict(bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
+                    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                        return MoltObject::none().bits();
+                    };
+                    return MoltObject::from_int(dict_len(dict_ptr) as i64).bits();
+                }
+            }
+        }
+        molt_len(bits)
+    })
+}
+
+/// Fast len for known-tuple values. Single type check, no 18-type dispatch.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_len_tuple(bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_TUPLE {
+                    return MoltObject::from_int(tuple_len(ptr) as i64).bits();
+                }
+            }
+        }
+        molt_len(bits)
+    })
+}
+
+/// Fast len for known-set values. Single type check, no 18-type dispatch.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_len_set(bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(bits);
+        if let Some(ptr) = obj.as_ptr() {
+            unsafe {
+                let tid = object_type_id(ptr);
+                if tid == TYPE_ID_SET || tid == TYPE_ID_FROZENSET {
+                    return MoltObject::from_int(set_len(ptr) as i64).bits();
+                }
+            }
+        }
+        molt_len(bits)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_hash_builtin(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {

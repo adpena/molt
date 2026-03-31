@@ -2455,6 +2455,11 @@ impl WasmBackend {
             ("molt_isinstance", "isinstance", 2),
             ("molt_issubclass", "issubclass", 2),
             ("molt_len", "len", 1),
+            ("molt_len_dict", "len_dict", 1),
+            ("molt_len_list", "len_list", 1),
+            ("molt_len_set", "len_set", 1),
+            ("molt_len_str", "len_str", 1),
+            ("molt_len_tuple", "len_tuple", 1),
             ("molt_id", "id", 1),
             ("molt_hash_builtin", "hash_builtin", 1),
             ("molt_ord", "ord", 1),
@@ -5094,7 +5099,13 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if op.type_hint.as_deref() == Some("str") {
+                            // Both operands known to be strings — direct concat,
+                            // skips the 8-branch dispatch in add.
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["str_concat"]);
+                        } else if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -5165,7 +5176,12 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
-                        if op.fast_int.unwrap_or(false) {
+                        if op.type_hint.as_deref() == Some("str") {
+                            // Both operands known to be strings — direct concat.
+                            func.instruction(&Instruction::LocalGet(lhs));
+                            func.instruction(&Instruction::LocalGet(rhs));
+                            emit_call(func, reloc_enabled, import_ids["str_concat"]);
+                        } else if op.fast_int.unwrap_or(false) {
                             let tmp_lhs = locals["__molt_tmp0"];
                             let tmp_rhs = locals["__molt_tmp1"];
                             let tmp_raw = locals["__molt_tmp2"];
@@ -6869,7 +6885,22 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let arg = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(arg));
-                        emit_call(func, reloc_enabled, import_ids["len"]);
+                        // Dispatch to specialized fast-path len when container
+                        // type is known, skipping the 18-type dispatch.
+                        let import_key = match op.container_type.as_deref() {
+                            Some("list") | Some("list_int") => "len_list",
+                            Some("str") => "len_str",
+                            Some("dict") => "len_dict",
+                            Some("tuple") => "len_tuple",
+                            Some("set") | Some("frozenset") => "len_set",
+                            _ => match op.type_hint.as_deref() {
+                                Some("str") => "len_str",
+                                Some("dict") => "len_dict",
+                                Some("set") | Some("frozenset") => "len_set",
+                                _ => "len",
+                            },
+                        };
+                        emit_call(func, reloc_enabled, import_ids[import_key]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
@@ -11738,8 +11769,15 @@ impl WasmBackend {
                     "if" => {
                         let args = op.args.as_ref().unwrap();
                         let cond = locals[&args[0]];
+                        let truthy_import = if op.type_hint.as_deref() == Some("bool") {
+                            "is_truthy_bool"
+                        } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                            "is_truthy_int"
+                        } else {
+                            "is_truthy"
+                        };
                         func.instruction(&Instruction::LocalGet(cond));
-                        emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                        emit_call(func, reloc_enabled, import_ids[truthy_import]);
                         func.instruction(&Instruction::I64Const(0));
                         func.instruction(&Instruction::I64Ne);
                         func.instruction(&Instruction::If(BlockType::Empty));
@@ -12369,8 +12407,15 @@ impl WasmBackend {
                             };
                             let true_block = idx + 1;
                             let false_block = false_target;
+                            let truthy_import = if op.type_hint.as_deref() == Some("bool") {
+                                "is_truthy_bool"
+                            } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                                "is_truthy_int"
+                            } else {
+                                "is_truthy"
+                            };
                             func.instruction(&Instruction::LocalGet(cond));
-                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            emit_call(func, reloc_enabled, import_ids[truthy_import]);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Empty));
@@ -12812,8 +12857,15 @@ impl WasmBackend {
                             };
                             let true_block = idx + 1;
                             let false_block = false_target;
+                            let truthy_import = if op.type_hint.as_deref() == Some("bool") {
+                                "is_truthy_bool"
+                            } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                                "is_truthy_int"
+                            } else {
+                                "is_truthy"
+                            };
                             func.instruction(&Instruction::LocalGet(cond));
-                            emit_call(func, reloc_enabled, import_ids["is_truthy"]);
+                            emit_call(func, reloc_enabled, import_ids[truthy_import]);
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::I64Ne);
                             func.instruction(&Instruction::If(BlockType::Empty));
