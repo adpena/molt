@@ -334,6 +334,12 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         if loop_region_blocks.contains(bid) && loop_role != super::blocks::LoopRole::LoopHeader {
             continue;
         }
+        // Skip LoopEnd blocks — structural markers from the original
+        // SimpleIR.  The TIR roundtrip emits loop_continue + loop_end
+        // via back-edge detection in the loop body handler.
+        if loop_role == super::blocks::LoopRole::LoopEnd {
+            continue;
+        }
 
         // Skip blocks inlined inside structured if/else/end_if regions.
         // No labels needed: these blocks have no check_exception ops
