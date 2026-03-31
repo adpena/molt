@@ -687,6 +687,33 @@ impl<'a> SsaContext<'a> {
             }
         }
 
+        // Diagnostic: log any remaining undef branch args after second pass.
+        if std::env::var("MOLT_SSA_DIAG").is_ok() {
+            for bid in 0..n {
+                let check_args = |args: &[ValueId], target_bid: usize, label: &str| {
+                    let target_vars = &self.block_arg_vars[target_bid];
+                    for (i, arg) in args.iter().enumerate() {
+                        if *arg == undef_vid {
+                            let var_name = target_vars.get(i).map(|s| s.as_str()).unwrap_or("?");
+                            eprintln!(
+                                "[SSA-DIAG] UNDEF remains: bb{bid} → {label} bb{target_bid} arg#{i} var={var_name}"
+                            );
+                        }
+                    }
+                };
+                match &tir_blocks[bid].terminator {
+                    Terminator::Branch { target, args } => {
+                        check_args(args, target.0 as usize, "branch");
+                    }
+                    Terminator::CondBranch { then_block, then_args, else_block, else_args, .. } => {
+                        check_args(then_args, then_block.0 as usize, "then");
+                        check_args(else_args, else_block.0 as usize, "else");
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // Fill unreachable blocks (not visited during dom-tree walk) by
         // translating their ops without SSA renaming.  These are typically
         // exception handler blocks only reachable via implicit edges (e.g.
