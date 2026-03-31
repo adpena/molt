@@ -1,4 +1,5 @@
 # MOLT_ENV: MOLT_CAPABILITIES=
+# MOLT_META: expect_fail=molt expect_fail_reason=requires_network_capability
 """Purpose: differential coverage for net capability denied getaddrinfo."""
 
 import socket

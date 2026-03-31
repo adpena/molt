@@ -1,4 +1,5 @@
 # MOLT_ENV: MOLT_TRUSTED=0 MOLT_CAPABILITIES=fs.read
+# MOLT_META: expect_fail=molt expect_fail_reason=requires_ffi
 """Purpose: differential coverage for invoke_ffi bridge lane capability denial."""
 
 import os
