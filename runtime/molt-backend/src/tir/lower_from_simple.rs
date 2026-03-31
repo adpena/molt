@@ -63,6 +63,12 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
     // Apply initial type hints from fast_int / fast_float / type_hint metadata.
     apply_type_hints(ir, cfg, &tir_blocks, &mut types);
 
+    // Forward type propagation: when all operands of an arithmetic op are
+    // known-typed (e.g., I64), infer the result type. This closes the gap
+    // where the frontend doesn't set fast_int but the operands are typed
+    // (e.g., from param_types or const type hints).
+    propagate_arithmetic_types(&tir_blocks, &mut types);
+
     // Determine parameter types — default to DynBox, but honour param_types if
     // the frontend provided string annotations.
     let param_types: Vec<TirType> = if let Some(ref pt) = ir.param_types {
@@ -70,6 +76,19 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
     } else {
         ir.params.iter().map(|_| TirType::DynBox).collect()
     };
+
+    // Propagate parameter types to the entry block arguments in the types map.
+    // This is critical for SCCP: without it, parameters default to DynBox and
+    // the type inference can't prove that `n + 1` produces I64 even when
+    // the function signature says `n: int`. Entry block args correspond 1:1
+    // to function parameters.
+    if let Some(entry) = tir_blocks.first() {
+        for (arg_val, param_ty) in entry.args.iter().zip(param_types.iter()) {
+            if *param_ty != TirType::DynBox {
+                types.insert(arg_val.id, param_ty.clone());
+            }
+        }
+    }
 
     // Infer a return type from the SSA output by inspecting return terminators.
     let return_type = infer_return_type(&tir_blocks, &types);
@@ -272,6 +291,78 @@ fn apply_type_hints(
             }
 
             non_structural_idx += 1;
+        }
+    }
+}
+
+/// Forward type propagation for arithmetic and comparison ops.
+///
+/// When all operands of an Add/Sub/Mul/etc. are I64 (from param_types,
+/// const hints, or prior propagation), the result is also I64.
+/// This runs iteratively until no new types are discovered.
+fn propagate_arithmetic_types(
+    blocks: &[TirBlock],
+    types: &mut HashMap<ValueId, TirType>,
+) {
+    use super::ops::OpCode;
+    let arithmetic_ops = [
+        OpCode::Add, OpCode::Sub, OpCode::Mul,
+        OpCode::InplaceAdd, OpCode::InplaceSub, OpCode::InplaceMul,
+    ];
+    let comparison_ops = [
+        OpCode::Lt, OpCode::Le, OpCode::Gt, OpCode::Ge,
+        OpCode::Eq, OpCode::Ne,
+    ];
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in blocks {
+            for op in &block.ops {
+                if op.results.is_empty() {
+                    continue;
+                }
+                let result_id = op.results[0];
+                // Skip if already typed
+                if types.get(&result_id).is_some_and(|t| *t != TirType::DynBox) {
+                    continue;
+                }
+
+                if arithmetic_ops.contains(&op.opcode) && op.operands.len() == 2 {
+                    let lhs_ty = types.get(&op.operands[0]);
+                    let rhs_ty = types.get(&op.operands[1]);
+                    match (lhs_ty, rhs_ty) {
+                        (Some(TirType::I64), Some(TirType::I64)) => {
+                            types.insert(result_id, TirType::I64);
+                            changed = true;
+                        }
+                        (Some(TirType::F64), _) | (_, Some(TirType::F64)) => {
+                            types.insert(result_id, TirType::F64);
+                            changed = true;
+                        }
+                        _ => {}
+                    }
+                } else if comparison_ops.contains(&op.opcode) && op.operands.len() == 2 {
+                    // Comparison results are always Bool
+                    let lhs_ty = types.get(&op.operands[0]);
+                    let rhs_ty = types.get(&op.operands[1]);
+                    if lhs_ty.is_some_and(|t| t.is_numeric())
+                        && rhs_ty.is_some_and(|t| t.is_numeric())
+                    {
+                        types.insert(result_id, TirType::Bool);
+                        changed = true;
+                    }
+                } else if op.opcode == OpCode::ConstInt {
+                    types.insert(result_id, TirType::I64);
+                    changed = true;
+                } else if op.opcode == OpCode::ConstFloat {
+                    types.insert(result_id, TirType::F64);
+                    changed = true;
+                } else if op.opcode == OpCode::ConstBool {
+                    types.insert(result_id, TirType::Bool);
+                    changed = true;
+                }
+            }
         }
     }
 }
