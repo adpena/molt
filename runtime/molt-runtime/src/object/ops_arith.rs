@@ -2256,7 +2256,7 @@ pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
             } else {
                 mod_pow_i128(_py, base, exp, modulus)
             };
-            return MoltObject::from_int(result as i64).bits();
+            return int_bits_from_i128(_py, result);
         }
         if let (Some(base), Some(exp), Some(modulus)) =
             (to_bigint(lhs), to_bigint(rhs), to_bigint(mod_obj))
@@ -2406,7 +2406,7 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
                 rounded += if value >= 0 { 1 } else { -1 };
             }
             let result = rounded.saturating_mul(pow);
-            return MoltObject::from_int(result as i64).bits();
+            return int_bits_from_i128(_py, result);
         }
         if let Some(f) = to_f64(val) {
             if !has_ndigits {
