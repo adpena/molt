@@ -844,8 +844,6 @@ class _Path:
     def join(first: Any, *rest: Any) -> Any:
         parts: list[Any] = [first]
         parts.extend(rest)
-        if not parts:
-            return ""
         # Fast path: use the new 2-arg intrinsic for the common case.
         if len(parts) == 2 and callable(_MOLT_OS_PATH_JOIN):
             result = _MOLT_OS_PATH_JOIN(parts[0], parts[1])
