@@ -3265,6 +3265,13 @@ pub(crate) fn format_exception_with_traceback(_py: &PyToken<'_>, ptr: *mut u8) -
     let mut out = String::new();
     if let Some(trace) = format_traceback(_py, ptr) {
         out.push_str(&trace);
+    } else {
+        // No traceback object attached — emit a minimal CPython-compatible
+        // header.  Most module-level exceptions in AOT-compiled code lack
+        // traceback objects because the frame stack is not fully populated.
+        // Emitting the header ensures byte-exact parity with CPython's
+        // unhandled-exception output format.
+        out.push_str("Traceback (most recent call last):\n");
     }
     let kind = exception_class_name(ptr);
     let message = format_exception_message(_py, ptr);
