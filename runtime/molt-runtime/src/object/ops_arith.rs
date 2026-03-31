@@ -869,7 +869,7 @@ pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
                 } else {
                     q
                 };
-                return MoltObject::from_int(res).bits();
+                return int_bits_from_i64(_py, res);
             }
         }
         if !either_float && let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
@@ -2142,7 +2142,7 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
         {
             if ri >= 0 {
                 if let Some(res) = pow_i64_checked(li, ri) {
-                    return MoltObject::from_int(res).bits();
+                    return int_bits_from_i64(_py, res);
                 }
                 let res = BigInt::from(li).pow(ri as u32);
                 if let Some(i) = bigint_to_inline(&res) {
@@ -2858,7 +2858,7 @@ pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
             }
             let res = li | ri;
             if inline_int_from_i128(res as i128).is_some() {
-                return MoltObject::from_int(res).bits();
+                return int_bits_from_i64(_py, res);
             }
             return bigint_bits(_py, BigInt::from(li) | BigInt::from(ri));
         }
@@ -3034,7 +3034,7 @@ pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
             }
             let res = li & ri;
             if inline_int_from_i128(res as i128).is_some() {
-                return MoltObject::from_int(res).bits();
+                return int_bits_from_i64(_py, res);
             }
             return bigint_bits(_py, BigInt::from(li) & BigInt::from(ri));
         }
@@ -3159,7 +3159,7 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
             }
             let res = li ^ ri;
             if inline_int_from_i128(res as i128).is_some() {
-                return MoltObject::from_int(res).bits();
+                return int_bits_from_i64(_py, res);
             }
             return bigint_bits(_py, BigInt::from(li) ^ BigInt::from(ri));
         }
@@ -3345,7 +3345,7 @@ pub extern "C" fn molt_lshift(a: u64, b: u64) -> u64 {
             }
             let res = value << shift_u;
             if inline_int_from_i128(res as i128).is_some() {
-                return MoltObject::from_int(res).bits();
+                return int_bits_from_i64(_py, res);
             }
             return bigint_bits(_py, BigInt::from(value) << shift_u);
         }
@@ -3393,7 +3393,7 @@ pub extern "C" fn molt_rshift(a: u64, b: u64) -> u64 {
             } else {
                 value >> shift_u
             };
-            return MoltObject::from_int(res).bits();
+            return int_bits_from_i64(_py, res);
         }
         if let Some(value) = to_bigint(lhs) {
             let res = value >> shift_u;
