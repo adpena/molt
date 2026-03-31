@@ -1223,6 +1223,59 @@ fn box_ptr_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) 
     builder.ins().bor(tag, masked)
 }
 
+/// Prepare for inline list_int access via stable FFI helpers.
+///
+/// Calls `molt_list_int_data` and `molt_list_int_len_raw` to obtain the
+/// backing store data pointer and length without relying on Vec<i64> memory
+/// layout (which is not guaranteed by Rust and varies across platforms).
+///
+/// Returns (data_ptr, in_bounds) — the caller must branch on in_bounds
+/// BEFORE loading/storing the element.
+#[cfg(feature = "native-backend")]
+fn emit_list_int_bounds_check(
+    builder: &mut FunctionBuilder,
+    list_bits: Value,
+    index_raw: Value,
+    data_fn: FuncRef,
+    len_fn: FuncRef,
+) -> (Value, Value) {
+    let data_call = builder.ins().call(data_fn, &[list_bits]);
+    let data_ptr = builder.inst_results(data_call)[0];
+    let len_call = builder.ins().call(len_fn, &[list_bits]);
+    let len = builder.inst_results(len_call)[0];
+    let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, index_raw, len);
+    (data_ptr, in_bounds)
+}
+
+/// Load element from list_int data pointer at given index.
+/// MUST only be called after bounds check passes (i.e., inside the fast block).
+#[cfg(feature = "native-backend")]
+fn emit_list_int_load(
+    builder: &mut FunctionBuilder,
+    data_ptr: Value,
+    index_raw: Value,
+    nbc: &NanBoxConsts,
+) -> Value {
+    let offset = builder.ins().imul_imm(index_raw, 8);
+    let elem_addr = builder.ins().iadd(data_ptr, offset);
+    let raw_val = builder.ins().load(types::I64, MemFlags::trusted(), elem_addr, 0);
+    box_int_value(builder, raw_val, nbc)
+}
+
+/// Store element into list_int data pointer at given index.
+/// MUST only be called after bounds check passes (i.e., inside the fast block).
+#[cfg(feature = "native-backend")]
+fn emit_list_int_store(
+    builder: &mut FunctionBuilder,
+    data_ptr: Value,
+    index_raw: Value,
+    value_raw: Value,
+) {
+    let offset = builder.ins().imul_imm(index_raw, 8);
+    let elem_addr = builder.ins().iadd(data_ptr, offset);
+    builder.ins().store(MemFlags::trusted(), value_raw, elem_addr, 0);
+}
+
 #[allow(dead_code)]
 #[cfg(feature = "native-backend")]
 fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: FuncRef) {

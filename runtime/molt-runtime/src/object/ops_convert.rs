@@ -1528,11 +1528,11 @@ pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_is_truthy(val: u64) -> i64 {
     crate::with_gil_entry!(_py, {
-        if is_truthy(_py, obj_from_bits(val)) {
-            1
-        } else {
-            0
+        let result = is_truthy(_py, obj_from_bits(val));
+        if exception_pending(_py) {
+            return 0;
         }
+        if result { 1 } else { 0 }
     })
 }
 
@@ -1567,7 +1567,11 @@ pub extern "C" fn molt_is_truthy_bool(bits: u64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_not(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        MoltObject::from_bool(!is_truthy(_py, obj_from_bits(val))).bits()
+        let result = is_truthy(_py, obj_from_bits(val));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_bool(!result).bits()
     })
 }
 

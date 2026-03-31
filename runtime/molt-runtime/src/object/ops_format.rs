@@ -797,6 +797,28 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 out.push(']');
                 return out;
             }
+            if type_id == TYPE_ID_LIST_INT {
+                // Specialized list[int]: flat Vec<i64> storage.
+                // Format as a regular Python list for display parity.
+                let guard = ReprGuard::new(_py, ptr);
+                if !guard.active() {
+                    return "[...]".to_string();
+                }
+                let vec_ptr = *(ptr as *const *const Vec<i64>);
+                if !vec_ptr.is_null() {
+                    let vec = &*vec_ptr;
+                    let mut out = String::from("[");
+                    for (idx, val) in vec.iter().enumerate() {
+                        if idx > 0 {
+                            out.push_str(", ");
+                        }
+                        out.push_str(&val.to_string());
+                    }
+                    out.push(']');
+                    return out;
+                }
+                return "[]".to_string();
+            }
             if type_id == TYPE_ID_TUPLE {
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
@@ -1011,7 +1033,7 @@ fn type_name_for_format_error(obj: MoltObject) -> &'static str {
             match object_type_id(ptr) {
                 TYPE_ID_STRING => "str",
                 TYPE_ID_BYTES => "bytes",
-                TYPE_ID_LIST => "list",
+                TYPE_ID_LIST | TYPE_ID_LIST_INT => "list",
                 TYPE_ID_TUPLE => "tuple",
                 TYPE_ID_DICT => "dict",
                 TYPE_ID_SET => "set",
