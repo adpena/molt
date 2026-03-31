@@ -2846,18 +2846,6 @@ impl SimpleBackend {
                         // TODO: teach lower_to_simple to reconstruct if/else/end_if
                         // from CondBranch terminators, then re-enable TIR.
                         return (idx, content_hash, tmp_func.ops);
-                        // Debug: skip TIR for functions NOT matching MOLT_TIR_ONLY,
-                        // or skip functions matching MOLT_TIR_SKIP.
-                        if let Ok(only_pat) = std::env::var("MOLT_TIR_ONLY") {
-                            if !tmp_func.name.contains(&only_pat) {
-                                return (idx, content_hash, tmp_func.ops);
-                            }
-                        }
-                        if let Ok(skip_pat) = std::env::var("MOLT_TIR_SKIP_FUNC") {
-                            if tmp_func.name.contains(&skip_pat) {
-                                return (idx, content_hash, tmp_func.ops);
-                            }
-                        }
                         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                         crate::tir::type_refine::refine_types(&mut tir_func);
                         let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
@@ -2896,28 +2884,6 @@ impl SimpleBackend {
                 // Empty ops = TIR roundtrip failed validation; keep original ops.
                 for (idx, content_hash, ops) in &results {
                     if !ops.is_empty() {
-                        // Diagnostic: dump post-TIR ops for functions matching pattern.
-                        if let Some(ref pattern) = dump_func_pattern
-                            && ir.functions[*idx].name.contains(pattern.as_str())
-                        {
-                            let sanitized: String = ir.functions[*idx].name.chars()
-                                .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
-                                .collect();
-                            let mut dump = String::new();
-                            dump.push_str(&format!("// POST-TIR func: {} ({} ops)\n", ir.functions[*idx].name, ops.len()));
-                            for (oidx, op) in ops.iter().enumerate() {
-                                dump.push_str(&format!("{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?}\n",
-                                    oidx, op.kind,
-                                    op.out.as_deref().unwrap_or(""),
-                                    op.var.as_deref().unwrap_or(""),
-                                    op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
-                                    op.value, op.s_value, op.fast_int, op.fast_float));
-                            }
-                            let _ = crate::debug_artifacts::write_debug_artifact(
-                                format!("ir/POST_{sanitized}.txt"),
-                                dump,
-                            );
-                        }
                         ir.functions[*idx].ops = ops.clone();
                         tir_optimized_names.insert(ir.functions[*idx].name.clone());
                         let bytes = crate::tir::serialize::serialize_ops(ops);
