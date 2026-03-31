@@ -24,13 +24,16 @@ pub struct SimpleIR {
     pub profile: Option<PgoProfileIR>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[cfg_attr(feature = "cbor", derive(serde::Serialize))]
 pub struct FunctionIR {
     pub name: String,
     pub params: Vec<String>,
     pub ops: Vec<OpIR>,
     pub param_types: Option<Vec<String>>,
+    /// Source file path for traceback formatting.
+    #[serde(default)]
+    pub source_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
@@ -206,6 +209,7 @@ impl FunctionIR {
             params: required_string_list(obj, "params", ctx)?,
             ops,
             param_types: optional_string_list(obj, "param_types", ctx)?,
+            source_file: obj.get("source_file").and_then(|v| v.as_str()).map(|s| s.to_string()),
         })
     }
 }

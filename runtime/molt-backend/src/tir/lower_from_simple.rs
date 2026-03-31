@@ -455,6 +455,7 @@ mod tests {
             params: params.iter().map(|s| s.to_string()).collect(),
             ops,
             param_types: None,
+            source_file: None,
         }
     }
 
@@ -689,6 +690,7 @@ mod tests {
             params: vec!["a".to_string(), "b".to_string()],
             ops: vec![op_args_out("add", &["a", "b"], "c"), op_args("ret", &["c"])],
             param_types: Some(vec!["int".to_string(), "float".to_string()]),
+            source_file: None,
         };
 
         let tir = lower_to_tir(&func_ir);

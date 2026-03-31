@@ -38249,6 +38249,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             }
             if data.get("param_types"):
                 func_entry["param_types"] = data["param_types"]
+            if self.source_path:
+                func_entry["source_file"] = self.source_path
             # Perceus-style borrowing analysis: identify parameters that can
             # be treated as borrowed (no inc_ref on entry, no dec_ref on exit).
             if data["params"]:
