@@ -852,7 +852,7 @@ pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        raise_exception::<_>(_py, "TypeError", "unsupported operand type(s) for /")
+        binary_type_error(_py, lhs, rhs, "/")
     })
 }
 
@@ -939,7 +939,7 @@ pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
                 return res_bits;
             }
         }
-        raise_exception::<_>(_py, "TypeError", "unsupported operand type(s) for //")
+        binary_type_error(_py, lhs, rhs, "//")
     })
 }
 
@@ -1990,7 +1990,22 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
             }
             return MoltObject::from_float(rem).bits();
         }
-        raise_exception::<_>(_py, "TypeError", "unsupported operand type(s) for %")
+        unsafe {
+            let mod_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.mod_name,
+                b"__mod__",
+            );
+            let rmod_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.rmod_name,
+                b"__rmod__",
+            );
+            if let Some(res_bits) = call_binary_dunder(_py, a, b, mod_name_bits, rmod_name_bits) {
+                return res_bits;
+            }
+        }
+        binary_type_error(_py, lhs, rhs, "%")
     })
 }
 

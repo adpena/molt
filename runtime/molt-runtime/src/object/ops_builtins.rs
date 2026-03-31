@@ -4257,7 +4257,11 @@ pub extern "C" fn molt_bool_builtin(val_bits: u64) -> u64 {
         if val_bits == missing {
             return MoltObject::from_bool(false).bits();
         }
-        MoltObject::from_bool(is_truthy(_py, obj_from_bits(val_bits))).bits()
+        let result = is_truthy(_py, obj_from_bits(val_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_bool(result).bits()
     })
 }
 
