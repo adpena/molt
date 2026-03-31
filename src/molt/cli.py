@@ -9900,6 +9900,29 @@ def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
                 return True
         except OSError:
             pass
+        # Check backend Rust source files — cargo's incremental compilation
+        # may NOT update the binary mtime when it determines the output is
+        # equivalent (content hash match).  But if any .rs source in the
+        # backend crate is newer than the daemon PID, the daemon may be
+        # stale.  This is a defence-in-depth check that catches the case
+        # where the developer edits backend source, runs cargo build (which
+        # skips the link step due to hash match), and expects the daemon to
+        # pick up the change.
+        backend_src = candidate / "runtime" / "molt-backend" / "src"
+        runtime_src = candidate / "runtime" / "molt-runtime" / "src"
+        for src_dir in (backend_src, runtime_src):
+            try:
+                if not src_dir.is_dir():
+                    continue
+                # Check the newest .rs file in the source tree.
+                newest_rs = max(
+                    (f.stat().st_mtime for f in src_dir.rglob("*.rs") if f.is_file()),
+                    default=0.0,
+                )
+                if newest_rs > pid_mtime:
+                    return True
+            except OSError:
+                continue
         return False
     except OSError:
         return False
@@ -15882,6 +15905,13 @@ def _execute_backend_compile(
             backend_output_written = daemon_compile.output_written
             daemon_error = daemon_compile.error
             backend_output_exists = daemon_compile.output_exists
+            # Show daemon log tail on verbose — essential for debugging
+            # backend issues (the daemon captures all stderr to log).
+            if verbose and not json_output:
+                _daemon_log = _backend_daemon_log_path(molt_root, backend_cargo_profile)
+                _log_tail = _backend_daemon_log_tail(_daemon_log, max_lines=50)
+                if _log_tail:
+                    print(_log_tail, file=sys.stderr)
             if daemon_compile.cached is not None:
                 backend_daemon_cached = daemon_compile.cached
             if daemon_compile.cache_tier is not None:
@@ -16032,10 +16062,16 @@ def _execute_backend_compile(
                         os.unlink(ir_file_path)
                     except OSError:
                         pass
+            # Always surface backend stderr when verbose — debug
+            # env vars like MOLT_TRACE_EQ and MOLT_DEBUG_ENTRY_INIT
+            # emit to stderr and are invisible without this.
+            backend_stderr = _subprocess_output_text(backend_process.stderr)
+            backend_stdout = _subprocess_output_text(backend_process.stdout)
+            if verbose and not json_output:
+                if backend_stderr:
+                    print(backend_stderr, end="", file=sys.stderr)
             if backend_process.returncode != 0:
-                backend_stderr = _subprocess_output_text(backend_process.stderr)
-                backend_stdout = _subprocess_output_text(backend_process.stdout)
-                if not json_output:
+                if not json_output and not verbose:
                     if backend_stderr:
                         print(backend_stderr, end="", file=sys.stderr)
                     if backend_stdout:
