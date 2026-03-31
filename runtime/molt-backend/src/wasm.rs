@@ -6937,6 +6937,17 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["list_builder_finish"]);
                         func.instruction(&Instruction::LocalSet(out));
                     }
+                    "list_int_new" => {
+                        // Specialized flat i64 list: args = [count, fill_value]
+                        let args = op.args.as_ref().unwrap();
+                        let out = locals[op.out.as_ref().unwrap()];
+                        let count = locals[&args[0]];
+                        let fill = locals[&args[1]];
+                        func.instruction(&Instruction::LocalGet(count));
+                        func.instruction(&Instruction::LocalGet(fill));
+                        emit_call(func, reloc_enabled, import_ids["list_int_new"]);
+                        func.instruction(&Instruction::LocalSet(out));
+                    }
                     "range_new" => {
                         let args = op.args.as_ref().unwrap();
                         let out = locals[op.out.as_ref().unwrap()];
@@ -7880,7 +7891,13 @@ impl WasmBackend {
                         let idx = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(obj));
                         func.instruction(&Instruction::LocalGet(idx));
-                        emit_call(func, reloc_enabled, import_ids["index"]);
+                        // Dispatch: list_int (flat i64) → generic
+                        let import_key = if op.container_type.as_deref() == Some("list_int") {
+                            "list_int_getitem"
+                        } else {
+                            "index"
+                        };
+                        emit_call(func, reloc_enabled, import_ids[import_key]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
@@ -7896,7 +7913,13 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(obj));
                         func.instruction(&Instruction::LocalGet(idx));
                         func.instruction(&Instruction::LocalGet(val));
-                        emit_call(func, reloc_enabled, import_ids["store_index"]);
+                        // Dispatch: list_int (flat i64) → generic
+                        let import_key = if op.container_type.as_deref() == Some("list_int") {
+                            "list_int_setitem"
+                        } else {
+                            "store_index"
+                        };
+                        emit_call(func, reloc_enabled, import_ids[import_key]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));

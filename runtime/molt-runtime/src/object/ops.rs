@@ -10337,7 +10337,16 @@ pub extern "C" fn molt_list_getitem_int_fast(list_bits: u64, index_bits: u64) ->
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let n = count as usize;
+        // Both arguments are NaN-boxed — unbox the count
+        let count_obj = obj_from_bits(count);
+        let n = if count_obj.is_int() {
+            let v = count_obj.as_int_unchecked();
+            if v < 0 { 0usize } else { v as usize }
+        } else if count_obj.is_bool() {
+            if count_obj.as_bool().unwrap_or(false) { 1 } else { 0 }
+        } else {
+            return MoltObject::none().bits();
+        };
         // Extract raw int from the NaN-boxed fill value
         let fill_obj = obj_from_bits(fill_value);
         let fill_raw = if fill_obj.is_none() {
