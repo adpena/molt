@@ -1198,6 +1198,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.module_defined_funcs: set[str] = set()
         self.class_definition_pending: set[str] = set()
         self.module_global_mutations: set[str] = set()
+        # Track the last-known type hint for module-scope attributes.
+        # Populated by _emit_module_attr_set_on and read by _emit_module_attr_get.
+        # Enables fast_int/fast_float paths for module-scope loop variables.
+        self._module_attr_type_hints: dict[str, str] = {}
         self.mutated_classes: set[str] = set()
         self.instance_attr_mutations: dict[str, set[str]] = {}
         self.imported_names: dict[str, str] = {}
@@ -4575,6 +4579,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 result=MoltValue("none"),
             )
         )
+        # Track the value's type hint so _emit_module_attr_get can propagate
+        # it to downstream consumers (enabling fast_int/fast_float paths).
+        if isinstance(value, MoltValue) and value.type_hint and value.type_hint != "Any":
+            self._module_attr_type_hints[name] = value.type_hint
 
     def _emit_module_global_del(self, name: str) -> None:
         name_val = MoltValue(self.next_var(), type_hint="str")
@@ -4965,7 +4973,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             module_val = self.module_obj
         else:
             module_val = self._get_or_emit_module_cache(self.module_name)
-        res = MoltValue(self.next_var(), type_hint="Any")
+        # Propagate the last-known type hint for this module attribute.
+        # When a module-scope variable was assigned from a typed expression
+        # (e.g., count = 0 → int), the MODULE_GET_ATTR result inherits
+        # that type so downstream _should_fast_int checks can fire.
+        attr_hint = self._module_attr_type_hints.get(name, "Any")
+        res = MoltValue(self.next_var(), type_hint=attr_hint)
         self.emit(
             MoltOp(kind="MODULE_GET_ATTR", args=[module_val, name_val], result=res)
         )
