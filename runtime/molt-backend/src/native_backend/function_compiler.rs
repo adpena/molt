@@ -1474,28 +1474,13 @@ impl SimpleBackend {
                         let rhs_name = &args[1];
                         let lhs_raw = raw_int_shadow.get(lhs_name).copied();
                         let rhs_raw = raw_int_shadow.get(rhs_name).copied();
-                        if let (Some(lhs_val), Some(rhs_val)) = (lhs_raw, rhs_raw) {
-                            let sum = builder.ins().iadd(lhs_val, rhs_val);
-                            let boxed = box_int_value(&mut builder, sum, &nbc);
-                            if let Some(ref out_name) = op.out {
-                                def_var_named(&mut builder, &vars, out_name, boxed);
-                                raw_int_shadow.insert(out_name.clone(), sum);
-                            }
-                            continue;
-                        }
+                        // NOTE: raw arithmetic chain disabled — box_int_value
+                        // truncates to 47 bits without overflow detection.
+                        // Comparison chains (lt/le/gt/ge) remain safe.
+                        // TODO: re-enable with int_value_fits_inline guard.
+
                         // One-operand shadow: if one operand is raw, unbox
-                        // only the other. Saves ~2 instructions vs full path.
-                        if lhs_raw.is_some() || rhs_raw.is_some() {
-                            let lv = lhs_raw.unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
-                            let rv = rhs_raw.unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
-                            let sum = builder.ins().iadd(lv, rv);
-                            let boxed = box_int_value(&mut builder, sum, &nbc);
-                            if let Some(ref out_name) = op.out {
-                                def_var_named(&mut builder, &vars, out_name, boxed);
-                                raw_int_shadow.insert(out_name.clone(), sum);
-                            }
-                            continue;
-                        }
+                        // NOTE: one-operand raw chain also disabled (same truncation issue).
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -1638,17 +1623,6 @@ impl SimpleBackend {
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
                         let raw_result = builder.ins().iadd(lhs_val, rhs_val);
-                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, boxed);
-                            raw_int_shadow.insert(out_name.clone(), raw_result);
-                        }
-                        continue;
-                    } else if raw_int_shadow.get(&args[0]).is_some() || raw_int_shadow.get(&args[1]).is_some() {
-                        // One-operand shadow: unbox only the non-raw side
-                        let lv = raw_int_shadow.get(&args[0]).copied().unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
-                        let rv = raw_int_shadow.get(&args[1]).copied().unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
-                        let raw_result = builder.ins().iadd(lv, rv);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, boxed);
@@ -2249,17 +2223,6 @@ impl SimpleBackend {
                             raw_int_shadow.insert(out_name.clone(), raw_result);
                         }
                         continue;
-                    } else if raw_int_shadow.get(&args[0]).is_some() || raw_int_shadow.get(&args[1]).is_some() {
-                        // One-operand shadow: unbox only the non-raw side
-                        let lv = raw_int_shadow.get(&args[0]).copied().unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
-                        let rv = raw_int_shadow.get(&args[1]).copied().unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
-                        let raw_result = builder.ins().isub(lv, rv);
-                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, boxed);
-                            raw_int_shadow.insert(out_name.clone(), raw_result);
-                        }
-                        continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
                         // Inline isub with overflow check + BigInt fallback.
@@ -2393,17 +2356,6 @@ impl SimpleBackend {
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
-                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, boxed);
-                            raw_int_shadow.insert(out_name.clone(), raw_result);
-                        }
-                        continue;
-                    } else if raw_int_shadow.get(&args[0]).is_some() || raw_int_shadow.get(&args[1]).is_some() {
-                        // One-operand shadow: unbox only the non-raw side
-                        let lv = raw_int_shadow.get(&args[0]).copied().unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
-                        let rv = raw_int_shadow.get(&args[1]).copied().unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
-                        let raw_result = builder.ins().isub(lv, rv);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, boxed);
@@ -2548,17 +2500,6 @@ impl SimpleBackend {
                             raw_int_shadow.insert(out_name.clone(), raw_result);
                         }
                         continue;
-                    } else if raw_int_shadow.get(&args[0]).is_some() || raw_int_shadow.get(&args[1]).is_some() {
-                        // One-operand shadow: unbox only the non-raw side
-                        let lv = raw_int_shadow.get(&args[0]).copied().unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
-                        let rv = raw_int_shadow.get(&args[1]).copied().unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
-                        let raw_result = builder.ins().imul(lv, rv);
-                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, boxed);
-                            raw_int_shadow.insert(out_name.clone(), raw_result);
-                        }
-                        continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
                     {
                         let callee = Self::import_func_id_split(
@@ -2686,17 +2627,6 @@ impl SimpleBackend {
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
                         let raw_result = builder.ins().imul(lhs_val, rhs_val);
-                        let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        if let Some(ref out_name) = op.out {
-                            def_var_named(&mut builder, &vars, out_name, boxed);
-                            raw_int_shadow.insert(out_name.clone(), raw_result);
-                        }
-                        continue;
-                    } else if raw_int_shadow.get(&args[0]).is_some() || raw_int_shadow.get(&args[1]).is_some() {
-                        // One-operand shadow: unbox only the non-raw side
-                        let lv = raw_int_shadow.get(&args[0]).copied().unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
-                        let rv = raw_int_shadow.get(&args[1]).copied().unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
-                        let raw_result = builder.ins().imul(lv, rv);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, boxed);
@@ -7895,16 +7825,8 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let lr = raw_int_shadow.get(&args[0]).copied();
-                    let rr = raw_int_shadow.get(&args[1]).copied();
-                    let res = if lr.is_some() && rr.is_some() {
-                        let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr.unwrap(), rr.unwrap());
-                        box_bool_value(&mut builder, cmp, &nbc)
-                    } else if lr.is_some() || rr.is_some() {
-                        // One-operand: unbox only the non-raw side
-                        let lv = lr.unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
-                        let rv = rr.unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
-                        let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lv, rv);
+                    let res = if let (Some(&lr), Some(&rr)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
+                        let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_float.unwrap_or(false) {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
@@ -7986,16 +7908,8 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let lr = raw_int_shadow.get(&args[0]).copied();
-                    let rr = raw_int_shadow.get(&args[1]).copied();
-                    let res = if lr.is_some() && rr.is_some() {
-                        let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr.unwrap(), rr.unwrap());
-                        box_bool_value(&mut builder, cmp, &nbc)
-                    } else if lr.is_some() || rr.is_some() {
-                        // One-operand: unbox only the non-raw side
-                        let lv = lr.unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
-                        let rv = rr.unwrap_or_else(|| unbox_int(&mut builder, *rhs, &nbc));
-                        let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lv, rv);
+                    let res = if let (Some(&lr), Some(&rr)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
+                        let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_float.unwrap_or(false) {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
