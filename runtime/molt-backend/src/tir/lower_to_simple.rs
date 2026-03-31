@@ -111,6 +111,73 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         })
         .collect();
 
+    // ── Structured if/else/end_if detection ──
+    // For non-loop CondBranch blocks where both successors are "simple"
+    // (single Branch to a common join or terminal), we can emit structured
+    // if/else/end_if + phi ops instead of br_if/jump/label.  This avoids
+    // creating extra Cranelift block boundaries that cause zero-valued phis
+    // at seal_all_blocks().
+    //
+    // An IfPattern records the block IDs involved so the RPO loop can
+    // inline the then/else blocks and skip their standalone emission.
+    struct IfPattern {
+        then_bid: BlockId,
+        else_bid: BlockId,
+        /// The join block both branches converge to (None if both are terminal).
+        join_bid: Option<BlockId>,
+    }
+    let mut if_patterns: HashMap<BlockId, IfPattern> = HashMap::new();
+    // Blocks that will be emitted inline inside an if/else/end_if region.
+    let mut if_inlined_blocks: HashSet<BlockId> = HashSet::new();
+
+    for bid in &rpo {
+        let role = func.loop_roles.get(bid).cloned()
+            .unwrap_or(super::blocks::LoopRole::None);
+        if role != super::blocks::LoopRole::None {
+            continue; // loops are handled separately
+        }
+        let Some(block) = func.blocks.get(bid) else { continue };
+        let Terminator::CondBranch { then_block, else_block, .. } = &block.terminator else {
+            continue;
+        };
+        let then_bid = *then_block;
+        let else_bid = *else_block;
+        // Both successors must be distinct, non-loop, present in the function.
+        if then_bid == else_bid { continue; }
+        let Some(then_blk) = func.blocks.get(&then_bid) else { continue };
+        let Some(else_blk) = func.blocks.get(&else_bid) else { continue };
+        // Neither successor should already be claimed by another pattern or loop.
+        if if_inlined_blocks.contains(&then_bid) || if_inlined_blocks.contains(&else_bid) {
+            continue;
+        }
+        // Both successors must have simple terminators (Branch or Return/Unreachable).
+        // Nested CondBranch in a successor cannot be inlined (would need recursive handling).
+        let then_target = match &then_blk.terminator {
+            Terminator::Branch { target, .. } => Some(*target),
+            Terminator::Return { .. } | Terminator::Unreachable => None,
+            _ => { continue; } // CondBranch, Switch, etc. — not inlineable
+        };
+        let else_target = match &else_blk.terminator {
+            Terminator::Branch { target, .. } => Some(*target),
+            Terminator::Return { .. } | Terminator::Unreachable => None,
+            _ => { continue; }
+        };
+        // Determine the join block:
+        // - Both branch to the same block → that's the join
+        // - One is terminal, the other branches → that branch target is the join
+        // - Both are terminal → no join (both paths diverge)
+        let join_bid = match (then_target, else_target) {
+            (Some(t), Some(e)) if t == e => Some(t),
+            (Some(t), None) => Some(t),
+            (None, Some(e)) => Some(e),
+            (None, None) => None,
+            _ => { continue; } // Different join targets — can't use structured if/else
+        };
+        if_patterns.insert(*bid, IfPattern { then_bid, else_bid, join_bid });
+        if_inlined_blocks.insert(then_bid);
+        if_inlined_blocks.insert(else_bid);
+    }
+
     let mut loop_region_blocks: HashSet<BlockId> = HashSet::new();
     let mut header_body_chain: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
     for bid in &rpo {
@@ -226,6 +293,19 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         if loop_region_blocks.contains(bid) && loop_role != super::blocks::LoopRole::LoopHeader {
             // Emit only the label for external references (check_exception
             // targets etc), but skip ops (already inlined in the header).
+            if *bid != func.entry_block {
+                out.push(OpIR {
+                    kind: "label".to_string(),
+                    value: Some(block_label_id(bid)),
+                    ..OpIR::default()
+                });
+            }
+            continue;
+        }
+
+        // Skip blocks inlined inside structured if/else/end_if regions.
+        // Emit their labels for check_exception targets but skip ops.
+        if if_inlined_blocks.contains(bid) {
             if *bid != func.entry_block {
                 out.push(OpIR {
                     kind: "label".to_string(),
@@ -502,10 +582,184 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     loop_role,
                 );
             }
-        } else {
-            // Non-loop block: emit ops normally.
+        } else if let Some(pattern) = if_patterns.get(bid) {
+            // ── Structured if/else/end_if emission ──
+            // Emit the current block's ops, then inline the then/else
+            // blocks between if/else/end_if markers with phi ops at the join.
             emit_block_ops(block, &mut out);
-            // Non-loop block: emit terminator normally.
+
+            let Terminator::CondBranch { cond, then_args, else_args, .. } = &block.terminator else {
+                unreachable!("if_pattern block must have CondBranch terminator");
+            };
+
+            let then_blk = func.blocks.get(&pattern.then_bid).expect("then block missing");
+            let else_blk = func.blocks.get(&pattern.else_bid).expect("else block missing");
+
+            // Determine if the then-branch is terminal (Return/Unreachable).
+            let then_terminal = matches!(
+                then_blk.terminator,
+                Terminator::Return { .. } | Terminator::Unreachable
+            );
+            let else_terminal = matches!(
+                else_blk.terminator,
+                Terminator::Return { .. } | Terminator::Unreachable
+            );
+
+            // Build phi ops for the join block's block arguments.
+            // Each phi merges the then-path value with the else-path value.
+            let phi_ops: Vec<(String, String, String)> = if let Some(join_bid) = pattern.join_bid {
+                let join_blk = func.blocks.get(&join_bid);
+                let join_param_count = join_blk.map(|b| b.args.len()).unwrap_or(0);
+                let then_branch_args = match &then_blk.terminator {
+                    Terminator::Branch { args, .. } => args.as_slice(),
+                    _ => &[],
+                };
+                let else_branch_args = match &else_blk.terminator {
+                    Terminator::Branch { args, .. } => args.as_slice(),
+                    _ => &[],
+                };
+                (0..join_param_count)
+                    .filter_map(|i| {
+                        let join_arg_name = join_blk
+                            .and_then(|b| b.args.get(i))
+                            .map(|a| value_var(a.id))?;
+                        let then_val = then_branch_args.get(i).map(|v| value_var(*v))
+                            .unwrap_or_else(|| join_arg_name.clone());
+                        let else_val = else_branch_args.get(i).map(|v| value_var(*v))
+                            .unwrap_or_else(|| join_arg_name.clone());
+                        Some((join_arg_name, then_val, else_val))
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+
+            // Emit: if cond
+            out.push(OpIR {
+                kind: "if".to_string(),
+                args: Some(vec![value_var(*cond)]),
+                ..OpIR::default()
+            });
+
+            // Emit then-block ops inline.
+            for op in &then_blk.ops {
+                if let Some(mut opir) = lower_op(op) {
+                    annotate_type_flags(&mut opir, op, types);
+                    out.push(opir);
+                }
+            }
+            // Emit then-block terminator if it's a Return.
+            if let Terminator::Return { values } = &then_blk.terminator {
+                let original_has_ret = func.attrs.get("_original_has_ret")
+                    .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
+                    .unwrap_or(false);
+                if values.is_empty() {
+                    if original_has_ret {
+                        let ret_name = format!("_ret_none_{}", out.len());
+                        out.push(OpIR {
+                            kind: "const_none".to_string(),
+                            out: Some(ret_name.clone()),
+                            ..OpIR::default()
+                        });
+                        out.push(OpIR {
+                            kind: "ret".to_string(),
+                            var: Some(ret_name.clone()),
+                            args: Some(vec![ret_name]),
+                            ..OpIR::default()
+                        });
+                    } else {
+                        out.push(OpIR {
+                            kind: "ret_void".to_string(),
+                            ..OpIR::default()
+                        });
+                    }
+                } else {
+                    out.push(OpIR {
+                        kind: "ret".to_string(),
+                        var: Some(value_var(values[0])),
+                        args: Some(values.iter().map(|v| value_var(*v)).collect()),
+                        ..OpIR::default()
+                    });
+                }
+            }
+
+            // Emit: else (always emit else for proper phi handling)
+            out.push(OpIR {
+                kind: "else".to_string(),
+                ..OpIR::default()
+            });
+
+            // Emit else-block ops inline.
+            for op in &else_blk.ops {
+                if let Some(mut opir) = lower_op(op) {
+                    annotate_type_flags(&mut opir, op, types);
+                    out.push(opir);
+                }
+            }
+            // Emit else-block terminator if it's a Return.
+            if let Terminator::Return { values } = &else_blk.terminator {
+                let original_has_ret = func.attrs.get("_original_has_ret")
+                    .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
+                    .unwrap_or(false);
+                if values.is_empty() {
+                    if original_has_ret {
+                        let ret_name = format!("_ret_none_{}", out.len());
+                        out.push(OpIR {
+                            kind: "const_none".to_string(),
+                            out: Some(ret_name.clone()),
+                            ..OpIR::default()
+                        });
+                        out.push(OpIR {
+                            kind: "ret".to_string(),
+                            var: Some(ret_name.clone()),
+                            args: Some(vec![ret_name]),
+                            ..OpIR::default()
+                        });
+                    } else {
+                        out.push(OpIR {
+                            kind: "ret_void".to_string(),
+                            ..OpIR::default()
+                        });
+                    }
+                } else {
+                    out.push(OpIR {
+                        kind: "ret".to_string(),
+                        var: Some(value_var(values[0])),
+                        args: Some(values.iter().map(|v| value_var(*v)).collect()),
+                        ..OpIR::default()
+                    });
+                }
+            }
+
+            // Emit: end_if
+            out.push(OpIR {
+                kind: "end_if".to_string(),
+                ..OpIR::default()
+            });
+
+            // Emit phi ops immediately after end_if.
+            // Format: phi out=<join_arg_name> args=[<then_value>, <else_value>]
+            for (join_arg_name, then_val, else_val) in &phi_ops {
+                out.push(OpIR {
+                    kind: "phi".to_string(),
+                    out: Some(join_arg_name.clone()),
+                    args: Some(vec![then_val.clone(), else_val.clone()]),
+                    ..OpIR::default()
+                });
+            }
+
+            // If there's a join block and not both branches are terminal,
+            // emit a jump to the join block so that subsequent blocks in
+            // the RPO correctly follow the join point.  The join block's
+            // label and load_var ops will be emitted by the RPO loop.
+            // Note: block arg stores are NOT needed here because the phi
+            // ops above handle the value merging.  The join block's
+            // load_var ops will read from the param_vars that were
+            // populated by emit_block_arg_stores in the old code path;
+            // with structured if/else, the phi ops replace that mechanism.
+        } else {
+            // Non-loop, non-if-pattern block: emit ops and terminator normally.
+            emit_block_ops(block, &mut out);
             let original_has_ret = func.attrs.get("_original_has_ret")
                 .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
                 .unwrap_or(false);
