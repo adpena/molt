@@ -2038,6 +2038,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _should_fast_int(self, op: MoltOp) -> bool:
         if op.kind not in _FAST_ARITH_OPS:
             return False
+        # Bitwise ops on bools must NOT use the fast_int path because the
+        # backend's inline band/bor/bxor + box_int_value always returns an
+        # int, losing the bool type.  CPython preserves bool: True & False
+        # returns False (bool), not 0 (int).  The slow path (runtime call)
+        # handles bool operands correctly via from_bool.
+        if op.kind in {"BIT_AND", "BIT_OR", "BIT_XOR"} and any(
+            isinstance(arg, MoltValue) and arg.type_hint == "bool"
+            for arg in op.args
+        ):
+            return False
         return all(
             isinstance(arg, MoltValue) and arg.type_hint in {"int", "bool"}
             for arg in op.args
