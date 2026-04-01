@@ -3589,6 +3589,14 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
             (filename, func_name, frame_line)
         };
         let final_line = if line > 0 { line } else { frame_line };
+        // Skip the synthetic <module> wrapper frame that molt_main pushes.
+        // CPython doesn't have this frame — it goes directly to the module
+        // chunk which has the real filename and line number.
+        if filename == "<module>" && func_name == "<module>" {
+            current_bits = next_bits;
+            depth += 1;
+            continue;
+        }
         out.push_str(&format!(
             "  File \"{filename}\", line {final_line}, in {func_name}\n"
         ));
