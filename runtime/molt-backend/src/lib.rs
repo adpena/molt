@@ -2736,7 +2736,10 @@ impl SimpleBackend {
         // against sieve, fib, and nested while+if patterns.
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        // TIR default OFF pending body/exit block mapping fix for sieve.
+        // The body/exit swap (commit 50c5aa2eb) was reverted but the sieve
+        // still crashes Cranelift. Set MOLT_TIR_OPT=1 to enable.
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
