@@ -17295,6 +17295,7 @@ def _prepare_native_link(
             profile=profile,
             target_triple=target_triple,
         )
+    _invalidate_stale_stdlib_cache(stdlib_obj_path, project_root)
     main_c_content = _render_native_main_stub(
         trusted=trusted,
         capabilities_list=capabilities_list,
