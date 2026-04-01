@@ -6428,22 +6428,80 @@ impl SimpleBackend {
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
                         if op.container_type.as_deref() == Some("list_int") {
-                            // Direct call to specialized list_int getitem.
-                            // Inline codegen is disabled pending loop body/exit
-                            // block mapping fix (commit 50c5aa2eb inverted the
-                            // semantics that the inline path relied on).
-                            let callee = Self::import_func_id_split(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                "molt_list_int_getitem",
-                                &[types::I64, types::I64],
-                                &[types::I64],
-                            );
-                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                            let call = builder.ins().call(local_callee, &[*obj, *idx]);
-                            let res = builder.inst_results(call)[0];
-                            if let Some(out__) = op.out {
-                                def_var_named(&mut builder, &vars, out__, res);
+                            // raw_int_shadow fast path: if index is already a raw i64,
+                            // inline the entire pointer chase + bounds check + load.
+                            // Zero function calls on the hot path — only the cold
+                            // out-of-bounds fallback calls the runtime.
+                            if let Some(&raw_idx) = raw_int_shadow.get(&args[1]) {
+                                // Inline bounds check: extract vec ptr, data ptr, length
+                                // directly from the NaN-boxed list object — all in the
+                                // current block, no extra blocks yet.
+                                let (data_ptr, in_bounds) = emit_list_int_bounds_check(
+                                    &mut builder, *obj, raw_idx, &nbc,
+                                );
+                                // Fast block: inline load (no function call)
+                                let fast_block = builder.create_block();
+                                let slow_block = builder.create_block();
+                                builder.set_cold_block(slow_block);
+                                let merge_block = builder.create_block();
+                                // merge receives raw i64 result
+                                builder.append_block_param(merge_block, types::I64);
+                                builder.ins().brif(
+                                    in_bounds,
+                                    fast_block, &[],
+                                    slow_block, &[],
+                                );
+                                // --- fast path: inline memory load ---
+                                builder.switch_to_block(fast_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                                let offset = builder.ins().imul_imm(raw_idx, 8);
+                                let elem_addr = builder.ins().iadd(data_ptr, offset);
+                                let fast_raw = builder.ins().load(
+                                    types::I64, MemFlags::trusted(), elem_addr, 0,
+                                );
+                                jump_block(&mut builder, merge_block, &[fast_raw]);
+                                // --- slow path: runtime fallback ---
+                                builder.switch_to_block(slow_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                                let callee = Self::import_func_id_split(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    "molt_list_int_getitem_raw",
+                                    &[types::I64, types::I64],
+                                    &[types::I64],
+                                );
+                                let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                                let call = builder.ins().call(local_callee, &[*obj, raw_idx]);
+                                let slow_raw = builder.inst_results(call)[0];
+                                jump_block(&mut builder, merge_block, &[slow_raw]);
+                                // --- merge ---
+                                builder.switch_to_block(merge_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                                let raw_res = builder.block_params(merge_block)[0];
+                                // Box the result for the NaN-boxed world (variables must
+                                // hold NaN-boxed values for interop with generic ops).
+                                let boxed_res = box_int_value(&mut builder, raw_res, &nbc);
+                                if let Some(ref out__) = op.out {
+                                    def_var_named(&mut builder, &vars, out__, boxed_res);
+                                    // Keep the raw result in shadow so downstream
+                                    // arithmetic / truthiness checks skip unboxing.
+                                    raw_int_shadow.insert(out__.clone(), raw_res);
+                                }
+                            } else {
+                                // Fallback: NaN-boxed index, call the standard variant.
+                                let callee = Self::import_func_id_split(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    "molt_list_int_getitem",
+                                    &[types::I64, types::I64],
+                                    &[types::I64],
+                                );
+                                let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                                let call = builder.ins().call(local_callee, &[*obj, *idx]);
+                                let res = builder.inst_results(call)[0];
+                                if let Some(out__) = op.out {
+                                    def_var_named(&mut builder, &vars, out__, res);
+                                }
                             }
                         } else {
                             // Dispatch based on container specialization:
@@ -6485,19 +6543,71 @@ impl SimpleBackend {
                         panic!("Value not found in {} op {}", func_ir.name, op_idx)
                     });
                     if op.container_type.as_deref() == Some("list_int") {
-                        // Direct call to specialized list_int setitem.
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_list_int_setitem",
-                            &[types::I64, types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder.ins().call(local_callee, &[*obj, *idx, *val]);
-                        let res = builder.inst_results(call)[0];
-                        if let Some(out__) = op.out {
-                            def_var_named(&mut builder, &vars, out__, res);
+                        // raw_int_shadow fast path: if both index and value are raw i64,
+                        // inline the entire pointer chase + bounds check + store.
+                        // Zero function calls on the hot path.
+                        let raw_idx_opt = raw_int_shadow.get(&args[1]).copied();
+                        let raw_val_opt = raw_int_shadow.get(&args[2]).copied();
+                        if let (Some(raw_idx), Some(raw_val)) = (raw_idx_opt, raw_val_opt) {
+                            // Inline bounds check in the current block
+                            let (data_ptr, in_bounds) = emit_list_int_bounds_check(
+                                &mut builder, *obj, raw_idx, &nbc,
+                            );
+                            // Fast block: inline store (no function call)
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            // merge receives list_bits (passthrough)
+                            builder.append_block_param(merge_block, types::I64);
+                            builder.ins().brif(
+                                in_bounds,
+                                fast_block, &[],
+                                slow_block, &[],
+                            );
+                            // --- fast path: inline memory store ---
+                            builder.switch_to_block(fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let offset = builder.ins().imul_imm(raw_idx, 8);
+                            let elem_addr = builder.ins().iadd(data_ptr, offset);
+                            builder.ins().store(MemFlags::trusted(), raw_val, elem_addr, 0);
+                            jump_block(&mut builder, merge_block, &[*obj]);
+                            // --- slow path: runtime fallback ---
+                            builder.switch_to_block(slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_list_int_setitem_raw",
+                                &[types::I64, types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                            let call = builder.ins().call(local_callee, &[*obj, raw_idx, raw_val]);
+                            let slow_res = builder.inst_results(call)[0];
+                            jump_block(&mut builder, merge_block, &[slow_res]);
+                            // --- merge ---
+                            builder.switch_to_block(merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                            let res = builder.block_params(merge_block)[0];
+                            if let Some(out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, res);
+                            }
+                        } else {
+                            // Fallback: at least one arg is NaN-boxed, use standard variant.
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_list_int_setitem",
+                                &[types::I64, types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                            let call = builder.ins().call(local_callee, &[*obj, *idx, *val]);
+                            let res = builder.inst_results(call)[0];
+                            if let Some(out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, res);
+                            }
                         }
                     } else {
                         // Dispatch based on container specialization:
@@ -6537,27 +6647,64 @@ impl SimpleBackend {
                     // - list_int: flat i64 storage (Codon-style)
                     // - fast_int: generic list but key is known int
                     // - default: full dict/generic dispatch
-                    let fn_name = if op.container_type.as_deref() == Some("list_int") {
-                        "molt_list_int_setitem"
-                    } else if op.fast_int.unwrap_or(false) {
-                        "molt_list_setitem_int_fast"
+                    if op.container_type.as_deref() == Some("list_int") {
+                        // raw_int_shadow fast path for list_int dict_set
+                        let raw_key_opt = raw_int_shadow.get(&args[1]).copied();
+                        let raw_val_opt = raw_int_shadow.get(&args[2]).copied();
+                        if let (Some(raw_key), Some(raw_val)) = (raw_key_opt, raw_val_opt) {
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_list_int_setitem_raw",
+                                &[types::I64, types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                            let call = builder
+                                .ins()
+                                .call(local_callee, &[*dict_bits, raw_key, raw_val]);
+                            let res = builder.inst_results(call)[0];
+                            if let Some(out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, res);
+                            }
+                        } else {
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_list_int_setitem",
+                                &[types::I64, types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                            let call = builder
+                                .ins()
+                                .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
+                            let res = builder.inst_results(call)[0];
+                            if let Some(out__) = op.out {
+                                def_var_named(&mut builder, &vars, out__, res);
+                            }
+                        }
                     } else {
-                        "molt_dict_set"
-                    };
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        fn_name,
-                        &[types::I64, types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder
-                        .ins()
-                        .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
+                        let fn_name = if op.fast_int.unwrap_or(false) {
+                            "molt_list_setitem_int_fast"
+                        } else {
+                            "molt_dict_set"
+                        };
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            fn_name,
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        let call = builder
+                            .ins()
+                            .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
+                        let res = builder.inst_results(call)[0];
+                        if let Some(out__) = op.out {
+                            def_var_named(&mut builder, &vars, out__, res);
+                        }
                     }
                 }
                 "dict_update_missing" => {
@@ -8904,11 +9051,19 @@ impl SimpleBackend {
                 "bool" | "cast_bool" | "builtin_bool" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
                         // For known ints, bool(x) is simply x != 0.
-                        let int_val = unbox_int(&mut builder, *val, &nbc);
+                        // Use raw shadow if available to skip unboxing.
+                        let int_val = raw_int_shadow.get(&args[0]).copied()
+                            .unwrap_or_else(|| unbox_int(&mut builder, *val, &nbc));
                         let zero = builder.ins().iconst(types::I64, 0);
                         let is_nonzero = builder.ins().icmp(IntCC::NotEqual, int_val, zero);
+                        box_bool_value(&mut builder, is_nonzero, &nbc)
+                    } else if op.type_hint.as_deref() == Some("bool") {
+                        // For known bools, extract bit 0 directly — no function call.
+                        let one = builder.ins().iconst(types::I64, 1);
+                        let bit0 = builder.ins().band(*val, one);
+                        let is_nonzero = builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0);
                         box_bool_value(&mut builder, is_nonzero, &nbc)
                     } else {
                         let callee = Self::import_func_id_split(
@@ -8932,17 +9087,30 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let truthy = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_is_truthy",
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    let truthy_ref = self.module.declare_func_in_func(truthy, builder.func);
-                    let lhs_call = builder.ins().call(truthy_ref, &[*lhs]);
-                    let lhs_val = builder.inst_results(lhs_call)[0];
-                    let cond = builder.ins().icmp_imm(IntCC::NotEqual, lhs_val, 0);
+                    let cond = if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                        // Known int: inline unbox + compare, no function call.
+                        let raw_val = raw_int_shadow.get(&args[0]).copied()
+                            .unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
+                        builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                    } else if op.type_hint.as_deref() == Some("bool") {
+                        // Known bool: extract bit 0.
+                        let one = builder.ins().iconst(types::I64, 1);
+                        let bit0 = builder.ins().band(*lhs, one);
+                        builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
+                    } else {
+                        // Unknown type: GIL-wrapped truthy check.
+                        let truthy = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_is_truthy",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let truthy_ref = self.module.declare_func_in_func(truthy, builder.func);
+                        let lhs_call = builder.ins().call(truthy_ref, &[*lhs]);
+                        let lhs_val = builder.inst_results(lhs_call)[0];
+                        builder.ins().icmp_imm(IntCC::NotEqual, lhs_val, 0)
+                    };
                     let res = builder.ins().select(cond, *rhs, *lhs);
                     // The `select` result aliases one of the inputs (same NaN-boxed
                     // bits).  The tracking system will eventually dec_ref the input
@@ -8958,17 +9126,30 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let truthy = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_is_truthy",
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    let truthy_ref = self.module.declare_func_in_func(truthy, builder.func);
-                    let lhs_call = builder.ins().call(truthy_ref, &[*lhs]);
-                    let lhs_val = builder.inst_results(lhs_call)[0];
-                    let cond = builder.ins().icmp_imm(IntCC::NotEqual, lhs_val, 0);
+                    let cond = if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                        // Known int: inline unbox + compare, no function call.
+                        let raw_val = raw_int_shadow.get(&args[0]).copied()
+                            .unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
+                        builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                    } else if op.type_hint.as_deref() == Some("bool") {
+                        // Known bool: extract bit 0.
+                        let one = builder.ins().iconst(types::I64, 1);
+                        let bit0 = builder.ins().band(*lhs, one);
+                        builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
+                    } else {
+                        // Unknown type: GIL-wrapped truthy check.
+                        let truthy = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_is_truthy",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let truthy_ref = self.module.declare_func_in_func(truthy, builder.func);
+                        let lhs_call = builder.ins().call(truthy_ref, &[*lhs]);
+                        let lhs_val = builder.inst_results(lhs_call)[0];
+                        builder.ins().icmp_imm(IntCC::NotEqual, lhs_val, 0)
+                    };
                     let res = builder.ins().select(cond, *lhs, *rhs);
                     // Same aliasing hazard as `and` — see comment above.
                     emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
@@ -14530,7 +14711,7 @@ impl SimpleBackend {
                             Some(&mut already_decrefed),
                         );
                         // Fast path: extract bool payload directly for NaN-boxed
-                        // booleans from fast_int comparisons (mirrors loop_break_if_false).
+                        // booleans from fast_int comparisons or type hints.
                         let prev_is_fast_bool = op_idx > 0 && {
                             let prev = &func_ir.ops[op_idx - 1];
                             prev.fast_int.unwrap_or(false)
@@ -14539,10 +14720,20 @@ impl SimpleBackend {
                                     "lt" | "le" | "gt" | "ge" | "eq" | "ne"
                                 )
                         };
-                        let cond_bool = if prev_is_fast_bool {
+                        let cond_type_hint = op.type_hint.as_deref();
+                        let cond_is_bool_typed = cond_type_hint == Some("bool") || prev_is_fast_bool;
+                        let cond_is_int_typed = !cond_is_bool_typed
+                            && (op.fast_int.unwrap_or(false) || cond_type_hint == Some("int"));
+                        let cond_bool = if cond_is_bool_typed {
+                            // NaN-boxed bool: bit 0 is the boolean value.
                             let one = builder.ins().iconst(types::I64, 1);
                             let payload = builder.ins().band(*cond, one);
                             builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
+                        } else if cond_is_int_typed {
+                            // NaN-boxed int: unbox and check != 0.
+                            let raw_val = raw_int_shadow.get(&args[0]).copied()
+                                .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
+                            builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
@@ -16249,20 +16440,36 @@ impl SimpleBackend {
                         .expect("br_if requires an active block");
 
                     let fallthrough_block = builder.create_block();
-                    // cond is NaN-boxed — must call molt_is_truthy to extract
-                    // the boolean. NaN-boxed False is 0x7ffa000000000000 (nonzero),
-                    // so a raw icmp_imm(!=0) always evaluates true.
-                    let truthy_fn = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_is_truthy",
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    let truthy_ref = self.module.declare_func_in_func(truthy_fn, builder.func);
-                    let truthy_call = builder.ins().call(truthy_ref, &[*cond]);
-                    let truthy_val = builder.inst_results(truthy_call)[0];
-                    let cond_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy_val, 0);
+                    // cond is NaN-boxed — dispatch based on type hint to avoid
+                    // unnecessary GIL-wrapped molt_is_truthy calls.
+                    let cond_type_hint = op.type_hint.as_deref();
+                    let cond_bool = if cond_type_hint == Some("bool") {
+                        // NaN-boxed bool: bit 0 is the boolean value.
+                        let one = builder.ins().iconst(types::I64, 1);
+                        let bit0 = builder.ins().band(*cond, one);
+                        builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
+                    } else if op.fast_int.unwrap_or(false) || cond_type_hint == Some("int") {
+                        // NaN-boxed int: unbox and check != 0.
+                        let raw_val = raw_int_shadow.get(&args[0]).copied()
+                            .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
+                        builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                    } else {
+                        // Unknown type: must call molt_is_truthy (GIL-wrapped).
+                        // NaN-boxed False is 0x7ffa000000000000 (nonzero),
+                        // so a raw icmp_imm(!=0) always evaluates true — we need
+                        // the runtime to decode the type tag.
+                        let truthy_fn = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_is_truthy",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        let truthy_ref = self.module.declare_func_in_func(truthy_fn, builder.func);
+                        let truthy_call = builder.ins().call(truthy_ref, &[*cond]);
+                        let truthy_val = builder.inst_results(truthy_call)[0];
+                        builder.ins().icmp_imm(IntCC::NotEqual, truthy_val, 0)
+                    };
 
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough_block);

@@ -10501,6 +10501,74 @@ pub extern "C" fn molt_list_int_getitem(list_bits: u64, index_bits: u64) -> u64 
     }
 }
 
+/// Raw-register fast path for list[int] getitem.
+/// Takes a raw i64 index (NOT NaN-boxed) and returns a raw i64 value (NOT NaN-boxed).
+/// Eliminates NaN-box/unbox round-trips when both index and result stay in raw_int_shadow.
+/// Returns 0 on out-of-bounds (matching Python's behavior for sieve-like patterns where
+/// the caller checks truthiness — 0 is falsy).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i64 {
+    let list_obj = obj_from_bits(list_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        return 0;
+    };
+    unsafe {
+        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
+        let data = (*vec_ptr).as_ptr();
+        let len = (*vec_ptr).len() as i64;
+        let mut idx = raw_index;
+        if idx < 0 { idx += len; }
+        if idx < 0 || idx >= len {
+            return 0;
+        }
+        *data.add(idx as usize)
+    }
+}
+
+/// Raw-register fast path for list[int] setitem.
+/// Takes raw i64 index and value (NOT NaN-boxed). Stores value directly into the flat i64 array.
+/// Returns list_bits unchanged (matching molt_list_int_setitem contract).
+/// No-op on out-of-bounds.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_int_setitem_raw(list_bits: u64, raw_index: i64, raw_value: i64) -> u64 {
+    let list_obj = obj_from_bits(list_bits);
+    let Some(ptr) = list_obj.as_ptr() else {
+        return list_bits;
+    };
+    unsafe {
+        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
+        let vec = &mut *vec_ptr;
+        let len = vec.len() as i64;
+        let mut idx = raw_index;
+        if idx < 0 { idx += len; }
+        if idx < 0 || idx >= len {
+            return list_bits;
+        }
+        vec[idx as usize] = raw_value;
+        list_bits
+    }
+}
+
+/// GIL-free list[int] getitem with NaN-boxed interface.
+///
+/// Identical to `molt_list_int_getitem` (which already skips GIL), but named
+/// `_nogil` to make the contract explicit for the compiler backend.
+/// No GIL acquisition, no catch_unwind, no signal checks.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_int_getitem_nogil(list_bits: u64, index_bits: u64) -> u64 {
+    molt_list_int_getitem(list_bits, index_bits)
+}
+
+/// GIL-free list[int] setitem with NaN-boxed interface.
+///
+/// Identical to `molt_list_int_setitem` (which already skips GIL), but named
+/// `_nogil` to make the contract explicit for the compiler backend.
+/// No GIL acquisition, no catch_unwind, no signal checks.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_list_int_setitem_nogil(list_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
+    molt_list_int_setitem(list_bits, index_bits, value_bits)
+}
+
 /// Set element in a specialized list[int].
 /// Expects a NaN-boxed int value — extracts raw i64 and stores directly.
 #[unsafe(no_mangle)]

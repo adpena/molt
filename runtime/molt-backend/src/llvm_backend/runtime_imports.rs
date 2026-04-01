@@ -40,7 +40,9 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         "molt_invert",
         "molt_is_truthy",
         "molt_is_truthy_int",
+        "molt_is_truthy_int_nogil",
         "molt_is_truthy_bool",
+        "molt_is_truthy_bool_nogil",
     ] {
         let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
         module.add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
