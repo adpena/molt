@@ -6431,26 +6431,10 @@ impl SimpleBackend {
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
                         if op.container_type.as_deref() == Some("list_int") {
-                            // Inline list_int getitem: bounds check then direct
-                            // memory load, falling to runtime call on failure.
-                            let idx_raw = raw_int_shadow.get(&args[1]).copied()
-                                .unwrap_or_else(|| unbox_int(&mut builder, *idx, &nbc));
-                            let (data_ptr, in_bounds) =
-                                emit_list_int_bounds_check(&mut builder, *obj, idx_raw, &nbc);
-                            let fast_block = builder.create_block();
-                            let slow_block = builder.create_block();
-                            builder.set_cold_block(slow_block);
-                            let merge_block = builder.create_block();
-                            builder.append_block_param(merge_block, types::I64);
-                            builder.ins().brif(in_bounds, fast_block, &[], slow_block, &[]);
-
-                            builder.switch_to_block(fast_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                            let fast_res = emit_list_int_load(&mut builder, data_ptr, idx_raw, &nbc);
-                            jump_block(&mut builder, merge_block, &[fast_res]);
-
-                            builder.switch_to_block(slow_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            // Direct call to specialized list_int getitem.
+                            // Inline codegen is disabled pending loop body/exit
+                            // block mapping fix (commit 50c5aa2eb inverted the
+                            // semantics that the inline path relied on).
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
                                 &mut self.import_ids,
@@ -6460,12 +6444,7 @@ impl SimpleBackend {
                             );
                             let local_callee = self.module.declare_func_in_func(callee, builder.func);
                             let call = builder.ins().call(local_callee, &[*obj, *idx]);
-                            let slow_res = builder.inst_results(call)[0];
-                            jump_block(&mut builder, merge_block, &[slow_res]);
-
-                            builder.switch_to_block(merge_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                            let res = builder.block_params(merge_block)[0];
+                            let res = builder.inst_results(call)[0];
                             if let Some(out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, res);
                             }
@@ -6509,29 +6488,7 @@ impl SimpleBackend {
                         panic!("Value not found in {} op {}", func_ir.name, op_idx)
                     });
                     if op.container_type.as_deref() == Some("list_int") {
-                        // Inline list_int setitem: bounds check then direct
-                        // memory store, falling to runtime call on failure.
-                        let idx_raw = raw_int_shadow.get(&args[1]).copied()
-                            .unwrap_or_else(|| unbox_int(&mut builder, *idx, &nbc));
-                        // For list_int values: unbox int or bool to raw i64.
-                        let val_raw = raw_int_shadow.get(&args[2]).copied()
-                            .unwrap_or_else(|| unbox_int_or_bool(&mut builder, *val, &nbc));
-                        let (data_ptr, in_bounds) =
-                            emit_list_int_bounds_check(&mut builder, *obj, idx_raw, &nbc);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-                        builder.ins().brif(in_bounds, fast_block, &[], slow_block, &[]);
-
-                        builder.switch_to_block(fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        emit_list_int_store(&mut builder, data_ptr, idx_raw, val_raw);
-                        jump_block(&mut builder, merge_block, &[*obj]);
-
-                        builder.switch_to_block(slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                        // Direct call to specialized list_int setitem.
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -6541,12 +6498,7 @@ impl SimpleBackend {
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*obj, *idx, *val]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-
-                        builder.switch_to_block(merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        let res = builder.block_params(merge_block)[0];
+                        let res = builder.inst_results(call)[0];
                         if let Some(out__) = op.out {
                             def_var_named(&mut builder, &vars, out__, res);
                         }
