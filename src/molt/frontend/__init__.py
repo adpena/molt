@@ -23181,16 +23181,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         err.filename = self.source_path or "<unknown>"
         err.lineno = getattr(node, "lineno", None)
         err.offset = getattr(node, "col_offset", 0) + 1  # 1-based
-        err.end_offset = getattr(node, "end_col_offset", err.offset)
-        # Read source line if possible
+        err.end_offset = getattr(node, "end_col_offset", 0) + 1  # 1-based
+        # Set text so traceback.format_exception_only can show the source
+        # line and carets. We read directly to avoid linecache issues.
         if self.source_path:
-            try:
-                with open(self.source_path) as f:
-                    lines = f.readlines()
-                    if err.lineno and err.lineno <= len(lines):
-                        err.text = lines[err.lineno - 1]
-            except OSError:
-                pass
+            import linecache
+            line = linecache.getline(self.source_path, err.lineno or 0)
+            if line:
+                err.text = line
         raise err
 
     def visit_Match(self, node: ast.Match) -> None:

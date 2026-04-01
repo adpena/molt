@@ -479,7 +479,7 @@ def _emit_wrapper_build_failure(
         )
         return returncode
     detail_parts: list[str] = []
-    detail = "\n".join(errors).strip()
+    detail = "\n".join(errors).strip("\n")
     if detail:
         detail_parts.append(detail)
     nested_stderr = nested_data.get("stderr")
@@ -492,7 +492,7 @@ def _emit_wrapper_build_failure(
         detail_parts.append(stderr.strip())
     if nested_payload is None and stdout.strip():
         detail_parts.append(stdout.strip())
-    detail = "\n".join(part for part in detail_parts if part).strip()
+    detail = "\n".join(part for part in detail_parts if part).strip("\n")
     if not detail:
         detail = "Build failed"
     return _fail(detail, json_output=False, code=returncode, command=command)
@@ -12503,25 +12503,21 @@ def _lower_module_serial_with_context(
     except NotImplementedError as exc:
         raise _ModuleLowerError(f"NotImplementedError in {module_name}: {exc}") from exc
     except SyntaxError as exc:
-        # Format SyntaxError like CPython: show file, line, and caret.
-        # The SyntaxError is raised during AST visiting (e.g. match pattern
-        # validation) and should produce the same output as CPython.
-        parts = []
-        if hasattr(exc, "filename") and exc.filename:
-            parts.append(f'  File "{exc.filename}", line {exc.lineno}')
-        elif module_path:
-            parts.append(f'  File "{module_path}"')
-        if hasattr(exc, "text") and exc.text:
-            # CPython strips leading whitespace from the source line and
-            # adjusts the caret offset to match the stripped version.
-            raw_text = exc.text.rstrip("\n")
-            stripped = raw_text.lstrip()
-            indent_removed = len(raw_text) - len(stripped)
+        # Format SyntaxError to match CPython's compile-time output exactly.
+        # We manually format because traceback.format_exception_only produces
+        # slightly different caret counts when text is set vs None.
+        parts: list[str] = []
+        fname = exc.filename or (str(module_path) if module_path else "<unknown>")
+        parts.append(f'  File "{fname}", line {exc.lineno}')
+        if exc.text:
+            raw = exc.text.rstrip("\n")
+            stripped = raw.lstrip()
+            indent_removed = len(raw) - len(stripped)
             parts.append(f"    {stripped}")
-            if hasattr(exc, "offset") and exc.offset:
-                adj_offset = max(1, exc.offset - indent_removed)
-                adj_end = max(adj_offset, getattr(exc, "end_offset", exc.offset) - indent_removed)
-                parts.append(" " * (adj_offset + 3) + "^" * max(1, adj_end - adj_offset))
+            if exc.offset and exc.end_offset:
+                adj_start = max(0, exc.offset - 1 - indent_removed)
+                adj_end = max(adj_start, exc.end_offset - 1 - indent_removed)
+                parts.append(" " * (adj_start + 4) + "^" * max(1, adj_end - adj_start))
         parts.append(f"SyntaxError: {exc.msg}")
         raise _ModuleLowerError("\n".join(parts)) from exc
     total_s = time.perf_counter() - module_frontend_start
