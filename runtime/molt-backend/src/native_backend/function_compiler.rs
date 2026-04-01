@@ -111,7 +111,13 @@ fn preanalyze_alias_source<'a>(
     return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
 ) -> Option<&'a str> {
     match op.kind.as_str() {
-        "copy" | "copy_var" | "box" | "unbox" | "cast" | "widen" | "identity_alias" => op
+        "copy" | "copy_var" => op.var.as_deref().or_else(|| {
+            op.args
+                .as_ref()
+                .and_then(|args| args.first())
+                .map(String::as_str)
+        }),
+        "box" | "unbox" | "cast" | "widen" | "identity_alias" | "store_var" => op
             .args
             .as_ref()
             .and_then(|args| args.first())
@@ -172,7 +178,14 @@ fn preanalyze_function_ir(
             _ => {}
         }
 
-        if let Some(out) = &op.out
+        let logical_out = op.out.as_ref().or_else(|| {
+            if op.kind == "store_var" {
+                op.var.as_ref()
+            } else {
+                None
+            }
+        });
+        if let Some(out) = logical_out
             && out != "none"
         {
             var_names.insert(out.clone());
@@ -445,6 +458,62 @@ fn preanalyze_function_ir(
         const_int_map,
         loop_body_out_vars,
     }
+}
+
+#[cfg(feature = "native-backend")]
+fn remove_tracked_name(tracked: &mut Vec<String>, name: &str) {
+    tracked.retain(|tracked_name| tracked_name != name);
+}
+
+#[cfg(feature = "native-backend")]
+fn is_join_slot_name(name: &str) -> bool {
+    name.starts_with("_bb") && name.contains("_arg")
+}
+
+#[cfg(feature = "native-backend")]
+fn remove_tracked_alias_group(
+    tracked: &mut Vec<String>,
+    alias_roots: &BTreeMap<String, String>,
+    root: &str,
+) {
+    tracked.retain(|name| alias_roots.get(name).map(String::as_str) != Some(root));
+}
+
+#[cfg(feature = "native-backend")]
+fn alias_root_name<'a>(alias_roots: &'a BTreeMap<String, String>, name: &'a str) -> &'a str {
+    alias_roots.get(name).map(String::as_str).unwrap_or(name)
+}
+
+#[cfg(feature = "native-backend")]
+fn cleanup_roots_for_names(
+    alias_roots: &BTreeMap<String, String>,
+    names: impl IntoIterator<Item = String>,
+) -> BTreeSet<String> {
+    names.into_iter()
+        .map(|name| alias_root_name(alias_roots, &name).to_string())
+        .collect()
+}
+
+#[cfg(feature = "native-backend")]
+fn protect_cleanup_names<'a>(
+    carry: &mut Vec<String>,
+    cleanup: Vec<String>,
+    protected: &BTreeSet<&'a str>,
+) -> Vec<String> {
+    if protected.is_empty() {
+        return cleanup;
+    }
+    let mut preserved = Vec::new();
+    let mut actual = Vec::new();
+    for name in cleanup {
+        if protected.contains(name.as_str()) {
+            preserved.push(name);
+        } else {
+            actual.push(name);
+        }
+    }
+    crate::extend_unique_tracked(carry, preserved);
+    actual
 }
 
 #[cfg(feature = "native-backend")]
@@ -1178,7 +1247,19 @@ impl SimpleBackend {
                     .ins()
                     .call(trace_fn, &[name_bits, len_bits, idx_bits]);
             }
-            let out_name = op.out.clone();
+            // `store_var` defines the target slot just like `out`-producing ops
+            // define their result name. Treat the destination variable as the
+            // logical definition site so RC/liveness tracking preserves values
+            // across structured joins emitted by the TIR roundtrip.
+            let out_name = op.out.clone().or_else(|| {
+                if op.kind == "store_var" {
+                    op.var.clone()
+                } else {
+                    None
+                }
+            });
+            let alias_src_name =
+                preanalyze_alias_source(&ops[op_idx], return_alias_summaries).map(str::to_string);
             let mut output_is_ptr = false;
 
             // ── Per-iteration dec_ref for loop-body reassigned variables ──
@@ -10752,7 +10833,14 @@ impl SimpleBackend {
                     let _ = builder.ins().call(local_callee, &[line_val]);
                     if !is_block_filled && let Some(block) = builder.current_block() {
                         if let Some(names) = block_tracked_obj.get_mut(&block) {
-                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            let cleanup = drain_cleanup_tracked_dedup(
+                                names,
+                                &last_use,
+                                &alias_roots,
+                                op_idx,
+                                None,
+                                Some(&mut already_decrefed),
+                            );
                             for name in cleanup {
                                 // Use entry_vars (definition-time Value) for dec_ref,
                                 // not var_get (current SSA Value). If the variable was
@@ -10772,7 +10860,14 @@ impl SimpleBackend {
                             }
                         }
                         if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            let cleanup = drain_cleanup_tracked_dedup(
+                                names,
+                                &last_use,
+                                &alias_roots,
+                                op_idx,
+                                None,
+                                Some(&mut already_decrefed),
+                            );
                             for name in cleanup {
                                 let val = entry_vars
                                     .get(&name)
@@ -10864,6 +10959,8 @@ impl SimpleBackend {
                             arg_cleanup_names.insert(name.clone());
                         }
                     }
+                    let arg_cleanup_roots =
+                        cleanup_roots_for_names(&alias_roots, arg_cleanup_names.iter().cloned());
 
                     // `call` lowers to a multi-block control-flow sequence (recursion guard +
                     // call block + fail block + merge block). If the call happens in a non-entry
@@ -10879,6 +10976,7 @@ impl SimpleBackend {
                     let origin_obj_cleanup = drain_cleanup_tracked_dedup(
                         &mut origin_obj_live,
                         &last_use,
+                        &alias_roots,
                         op_idx,
                         None,
                         Some(&mut already_decrefed),
@@ -10888,34 +10986,11 @@ impl SimpleBackend {
                     let origin_ptr_cleanup = drain_cleanup_tracked_dedup(
                         &mut origin_ptr_live,
                         &last_use,
+                        &alias_roots,
                         op_idx,
                         None,
                         Some(&mut already_decrefed),
                     );
-                    if std::env::var("MOLT_DEBUG_CALL_CLEANUP").as_deref() == Ok("1")
-                        && std::env::var("MOLT_DEBUG_FUNC_FILTER")
-                            .ok()
-                            .is_none_or(|f| func_ir.name.contains(&f))
-                    {
-                        let obj_names: Vec<&str> =
-                            origin_obj_cleanup.iter().map(|t| t.as_str()).collect();
-                        let ptr_names: Vec<&str> =
-                            origin_ptr_cleanup.iter().map(|t| t.as_str()).collect();
-                        eprintln!(
-                            "debug call cleanup func={} op_idx={} origin_block={:?} obj_cleanup={} ptr_cleanup={}",
-                            func_ir.name,
-                            op_idx,
-                            origin_block,
-                            obj_names.len(),
-                            ptr_names.len(),
-                        );
-                        if !obj_names.is_empty() {
-                            eprintln!("debug call cleanup obj_names={:?}", obj_names);
-                        }
-                        if !ptr_names.is_empty() {
-                            eprintln!("debug call cleanup ptr_names={:?}", ptr_names);
-                        }
-                    }
 
                     // For direct calls to closures, extract env from function object
                     if closure_functions.contains(target_name.as_str())
@@ -11239,7 +11314,7 @@ impl SimpleBackend {
                         }
                     }
                     for name in &origin_obj_cleanup {
-                        if arg_cleanup_names.contains(name) {
+                        if arg_cleanup_roots.contains(alias_root_name(&alias_roots, name)) {
                             continue;
                         }
                         // Use entry_vars (definition-time Value) for dec_ref,
@@ -11255,6 +11330,9 @@ impl SimpleBackend {
                         builder.ins().call(local_dec_ref_obj, &[val]);
                     }
                     for name in &origin_ptr_cleanup {
+                        if arg_cleanup_roots.contains(alias_root_name(&alias_roots, name)) {
+                            continue;
+                        }
                         let val = entry_vars
                             .get(name)
                             .copied()
@@ -11271,26 +11349,65 @@ impl SimpleBackend {
                     // function-return cleanup does not dec-ref them a second
                     // time (the `call` op changes blocks, so the normal
                     // entry-tracked drain no longer runs for these variables).
-                    if !arg_cleanup_names.is_empty() {
-                        tracked_obj_vars.retain(|n| !arg_cleanup_names.contains(n));
-                        tracked_vars.retain(|n| !arg_cleanup_names.contains(n));
-                        for name in &arg_cleanup_names {
-                            tracked_obj_vars_set.remove(name);
-                            tracked_vars_set.remove(name);
-                            entry_vars.remove(name);
-                        }
+                    if !arg_cleanup_roots.is_empty() {
+                        tracked_obj_vars.retain(|n: &String| {
+                            !arg_cleanup_roots.contains(alias_root_name(&alias_roots, n.as_str()))
+                        });
+                        tracked_vars.retain(|n: &String| {
+                            !arg_cleanup_roots.contains(alias_root_name(&alias_roots, n.as_str()))
+                        });
+                        tracked_obj_vars_set.retain(|n| {
+                            !arg_cleanup_roots.contains(alias_root_name(&alias_roots, n.as_str()))
+                        });
+                        tracked_vars_set.retain(|n| {
+                            !arg_cleanup_roots.contains(alias_root_name(&alias_roots, n.as_str()))
+                        });
+                        entry_vars
+                            .retain(|name, _| !arg_cleanup_roots.contains(alias_root_name(&alias_roots, name)));
                     }
-                    for name in &origin_obj_cleanup {
-                        if !arg_cleanup_names.contains(name) {
-                            tracked_obj_vars.retain(|n| n != name);
-                            tracked_obj_vars_set.remove(name);
-                            entry_vars.remove(name);
-                        }
+                    let origin_obj_cleanup_roots = cleanup_roots_for_names(
+                        &alias_roots,
+                        origin_obj_cleanup
+                            .iter()
+                            .filter(|name| {
+                                !arg_cleanup_roots.contains(alias_root_name(&alias_roots, name))
+                            })
+                            .cloned(),
+                    );
+                    if !origin_obj_cleanup_roots.is_empty() {
+                        tracked_obj_vars.retain(|n: &String| {
+                            !origin_obj_cleanup_roots
+                                .contains(alias_root_name(&alias_roots, n.as_str()))
+                        });
+                        tracked_obj_vars_set.retain(|n| {
+                            !origin_obj_cleanup_roots
+                                .contains(alias_root_name(&alias_roots, n.as_str()))
+                        });
+                        entry_vars.retain(|name, _| {
+                            !origin_obj_cleanup_roots.contains(alias_root_name(&alias_roots, name))
+                        });
                     }
-                    for name in &origin_ptr_cleanup {
-                        tracked_vars.retain(|n| n != name);
-                        tracked_vars_set.remove(name);
-                        entry_vars.remove(name);
+                    let origin_ptr_cleanup_roots = cleanup_roots_for_names(
+                        &alias_roots,
+                        origin_ptr_cleanup
+                            .iter()
+                            .filter(|name| {
+                                !arg_cleanup_roots.contains(alias_root_name(&alias_roots, name))
+                            })
+                            .cloned(),
+                    );
+                    if !origin_ptr_cleanup_roots.is_empty() {
+                        tracked_vars.retain(|n: &String| {
+                            !origin_ptr_cleanup_roots
+                                .contains(alias_root_name(&alias_roots, n.as_str()))
+                        });
+                        tracked_vars_set.retain(|n| {
+                            !origin_ptr_cleanup_roots
+                                .contains(alias_root_name(&alias_roots, n.as_str()))
+                        });
+                        entry_vars.retain(|name, _| {
+                            !origin_ptr_cleanup_roots.contains(alias_root_name(&alias_roots, name))
+                        });
                     }
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
@@ -13533,6 +13650,7 @@ impl SimpleBackend {
                         let cleanup = drain_cleanup_tracked_dedup(
                             &mut carry_obj,
                             &last_use,
+                            &alias_roots,
                             op_idx,
                             None,
                             Some(&mut already_decrefed),
@@ -13554,6 +13672,7 @@ impl SimpleBackend {
                         let cleanup = drain_cleanup_tracked_dedup(
                             &mut carry_ptr,
                             &last_use,
+                            &alias_roots,
                             op_idx,
                             None,
                             Some(&mut already_decrefed),
@@ -13829,6 +13948,7 @@ impl SimpleBackend {
                     let cleanup_obj = drain_cleanup_tracked_dedup(
                         &mut carry_obj,
                         &last_use,
+                        &alias_roots,
                         op_idx,
                         None,
                         Some(&mut already_decrefed),
@@ -13847,6 +13967,7 @@ impl SimpleBackend {
                     let cleanup_ptr = drain_cleanup_tracked_dedup(
                         &mut carry_ptr,
                         &last_use,
+                        &alias_roots,
                         op_idx,
                         None,
                         Some(&mut already_decrefed),
@@ -14015,15 +14136,23 @@ impl SimpleBackend {
                             }
                         }
                         if let Some(block) = builder.current_block() {
+                            let protected_phi_inputs: BTreeSet<&str> = frame
+                                .phi_ops
+                                .iter()
+                                .map(|(_, then_name, _)| then_name.as_str())
+                                .collect();
                             let mut carry_obj =
                                 block_tracked_obj.remove(&block).unwrap_or_default();
                             let cleanup = drain_cleanup_tracked_dedup(
                                 &mut carry_obj,
                                 &last_use,
+                                &alias_roots,
                                 op_idx,
                                 None,
                                 Some(&mut already_decrefed),
                             );
+                            let cleanup =
+                                protect_cleanup_names(&mut carry_obj, cleanup, &protected_phi_inputs);
                             for name in cleanup {
                                 let val =
                                     resolve_cleanup_value(&mut builder, &vars, &entry_vars, &name)
@@ -14047,10 +14176,13 @@ impl SimpleBackend {
                             let cleanup = drain_cleanup_tracked_dedup(
                                 &mut carry_ptr,
                                 &last_use,
+                                &alias_roots,
                                 op_idx,
                                 None,
                                 Some(&mut already_decrefed),
                             );
+                            let cleanup =
+                                protect_cleanup_names(&mut carry_ptr, cleanup, &protected_phi_inputs);
                             for name in cleanup {
                                 let val =
                                     resolve_cleanup_value(&mut builder, &vars, &entry_vars, &name)
@@ -14132,14 +14264,25 @@ impl SimpleBackend {
                                 }
                             }
                             if let Some(block) = builder.current_block() {
+                                let protected_phi_inputs: BTreeSet<&str> = frame
+                                    .phi_ops
+                                    .iter()
+                                    .map(|(_, _, else_name)| else_name.as_str())
+                                    .collect();
                                 let mut carry_obj =
                                     block_tracked_obj.remove(&block).unwrap_or_default();
                                 let cleanup = drain_cleanup_tracked_dedup(
                                     &mut carry_obj,
                                     &last_use,
+                                    &alias_roots,
                                     op_idx,
                                     None,
                                     Some(&mut already_decrefed),
+                                );
+                                let cleanup = protect_cleanup_names(
+                                    &mut carry_obj,
+                                    cleanup,
+                                    &protected_phi_inputs,
                                 );
                                 for name in cleanup {
                                     let val =
@@ -14169,9 +14312,15 @@ impl SimpleBackend {
                                 let cleanup = drain_cleanup_tracked_dedup(
                                     &mut carry_ptr,
                                     &last_use,
+                                    &alias_roots,
                                     op_idx,
                                     None,
                                     Some(&mut already_decrefed),
+                                );
+                                let cleanup = protect_cleanup_names(
+                                    &mut carry_ptr,
+                                    cleanup,
+                                    &protected_phi_inputs,
                                 );
                                 for name in cleanup {
                                     let val =
@@ -14229,14 +14378,25 @@ impl SimpleBackend {
                                 }
                             }
                             if let Some(block) = builder.current_block() {
+                                let protected_phi_inputs: BTreeSet<&str> = frame
+                                    .phi_ops
+                                    .iter()
+                                    .map(|(_, then_name, _)| then_name.as_str())
+                                    .collect();
                                 let mut carry_obj =
                                     block_tracked_obj.remove(&block).unwrap_or_default();
                                 let cleanup = drain_cleanup_tracked_dedup(
                                     &mut carry_obj,
                                     &last_use,
+                                    &alias_roots,
                                     op_idx,
                                     None,
                                     Some(&mut already_decrefed),
+                                );
+                                let cleanup = protect_cleanup_names(
+                                    &mut carry_obj,
+                                    cleanup,
+                                    &protected_phi_inputs,
                                 );
                                 for name in cleanup {
                                     let val =
@@ -14266,9 +14426,15 @@ impl SimpleBackend {
                                 let cleanup = drain_cleanup_tracked_dedup(
                                     &mut carry_ptr,
                                     &last_use,
+                                    &alias_roots,
                                     op_idx,
                                     None,
                                     Some(&mut already_decrefed),
+                                );
+                                let cleanup = protect_cleanup_names(
+                                    &mut carry_ptr,
+                                    cleanup,
+                                    &protected_phi_inputs,
                                 );
                                 for name in cleanup {
                                     let val =
@@ -14334,6 +14500,7 @@ impl SimpleBackend {
                                 let cleanup = drain_cleanup_tracked_dedup(
                                     &mut carry_obj,
                                     &last_use,
+                                    &alias_roots,
                                     op_idx,
                                     None,
                                     Some(&mut already_decrefed),
@@ -14366,6 +14533,7 @@ impl SimpleBackend {
                                 let cleanup = drain_cleanup_tracked_dedup(
                                     &mut carry_ptr,
                                     &last_use,
+                                    &alias_roots,
                                     op_idx,
                                     None,
                                     Some(&mut already_decrefed),
@@ -14423,6 +14591,7 @@ impl SimpleBackend {
                         // merge-block parameters to their output variable names.
                         // Guard: skip if the merge block was already filled (can't emit defs).
                         if !is_block_filled && !frame.phi_ops.is_empty() {
+                            let mut remove_names: BTreeSet<&str> = BTreeSet::new();
                             for (idx, (out, _then_name, _else_name)) in
                                 frame.phi_ops.iter().enumerate()
                             {
@@ -14437,12 +14606,29 @@ impl SimpleBackend {
                             // transfer tracking to the output name, the predecessor name can be
                             // decref'd at the phi boundary while the output is still live,
                             // leading to UAF/segfaults for object-valued if-expressions.
+                            for (_out, then_name, else_name) in &frame.phi_ops {
+                                remove_names.insert(then_name.as_str());
+                                remove_names.insert(else_name.as_str());
+                            }
+                            tracked_vars
+                                .retain(|name: &String| !remove_names.contains(name.as_str()));
+                            tracked_vars_set.retain(|name| !remove_names.contains(name.as_str()));
+                            tracked_obj_vars
+                                .retain(|name: &String| !remove_names.contains(name.as_str()));
+                            tracked_obj_vars_set
+                                .retain(|name| !remove_names.contains(name.as_str()));
+                            entry_vars.retain(|name, _| !remove_names.contains(name.as_str()));
                             if let Some(tracked) = block_tracked_obj.get_mut(&frame.merge_block) {
-                                let mut remove_names: BTreeSet<&str> = BTreeSet::new();
-                                for (_out, then_name, else_name) in &frame.phi_ops {
-                                    remove_names.insert(then_name.as_str());
-                                    remove_names.insert(else_name.as_str());
+                                tracked.retain(|name| !remove_names.contains(name.as_str()));
+                                let mut present: BTreeSet<String> =
+                                    tracked.iter().cloned().collect();
+                                for (out, _then_name, _else_name) in &frame.phi_ops {
+                                    if present.insert(out.clone()) {
+                                        tracked.push(out.clone());
+                                    }
                                 }
+                            }
+                            if let Some(tracked) = block_tracked_ptr.get_mut(&frame.merge_block) {
                                 tracked.retain(|name| !remove_names.contains(name.as_str()));
                                 let mut present: BTreeSet<String> =
                                     tracked.iter().cloned().collect();
@@ -14737,6 +14923,7 @@ impl SimpleBackend {
                         let tracked_obj_snapshot = drain_cleanup_tracked_dedup(
                             &mut carry_obj_lb,
                             &last_use,
+                            &alias_roots,
                             op_idx,
                             None,
                             Some(&mut already_decrefed),
@@ -14746,6 +14933,7 @@ impl SimpleBackend {
                         let tracked_ptr_snapshot = drain_cleanup_tracked_dedup(
                             &mut carry_ptr_lb,
                             &last_use,
+                            &alias_roots,
                             op_idx,
                             None,
                             Some(&mut already_decrefed),
@@ -14868,6 +15056,7 @@ impl SimpleBackend {
                         let tracked_obj_snapshot = drain_cleanup_tracked_dedup(
                             &mut carry_obj_lb,
                             &last_use,
+                            &alias_roots,
                             op_idx,
                             None,
                             Some(&mut already_decrefed),
@@ -14877,6 +15066,7 @@ impl SimpleBackend {
                         let tracked_ptr_snapshot = drain_cleanup_tracked_dedup(
                             &mut carry_ptr_lb,
                             &last_use,
+                            &alias_roots,
                             op_idx,
                             None,
                             Some(&mut already_decrefed),
@@ -14992,7 +15182,14 @@ impl SimpleBackend {
                             .current_block()
                             .expect("loop_break requires an active block");
                         if let Some(names) = block_tracked_obj.get_mut(&current_block) {
-                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            let cleanup = drain_cleanup_tracked_dedup(
+                                names,
+                                &last_use,
+                                &alias_roots,
+                                op_idx,
+                                None,
+                                Some(&mut already_decrefed),
+                            );
                             for name in cleanup {
                                 // Use entry_vars (definition-time Value) for dec_ref,
                                 // not var_get (current SSA Value). If the variable was
@@ -15008,7 +15205,14 @@ impl SimpleBackend {
                             }
                         }
                         if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
-                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            let cleanup = drain_cleanup_tracked_dedup(
+                                names,
+                                &last_use,
+                                &alias_roots,
+                                op_idx,
+                                None,
+                                Some(&mut already_decrefed),
+                            );
                             for name in cleanup {
                                 let val = entry_vars
                                     .get(&name)
@@ -15056,7 +15260,14 @@ impl SimpleBackend {
                             .current_block()
                             .expect("loop_continue requires an active block");
                         if let Some(names) = block_tracked_obj.get_mut(&current_block) {
-                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            let cleanup = drain_cleanup_tracked_dedup(
+                                names,
+                                &last_use,
+                                &alias_roots,
+                                op_idx,
+                                None,
+                                Some(&mut already_decrefed),
+                            );
                             for name in cleanup {
                                 // Use entry_vars (definition-time Value) for dec_ref,
                                 // not var_get (current SSA Value). If the variable was
@@ -15072,7 +15283,14 @@ impl SimpleBackend {
                             }
                         }
                         if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
-                            let cleanup = drain_cleanup_tracked(names, &last_use, op_idx, None);
+                            let cleanup = drain_cleanup_tracked_dedup(
+                                names,
+                                &last_use,
+                                &alias_roots,
+                                op_idx,
+                                None,
+                                Some(&mut already_decrefed),
+                            );
                             for name in cleanup {
                                 let val = entry_vars
                                     .get(&name)
@@ -16219,7 +16437,9 @@ impl SimpleBackend {
                             // Function return: fully drain per-block tracked values.
                             if let Some(names) = block_tracked_obj.remove(&block) {
                                 for name in names {
-                                    if already_decrefed.contains(&name) {
+                                    if already_decrefed
+                                        .contains(alias_root_name(&alias_roots, &name))
+                                    {
                                         continue;
                                     }
                                     let val = resolve_cleanup_value(
@@ -16235,12 +16455,15 @@ impl SimpleBackend {
                                         )
                                     });
                                     builder.ins().call(local_dec_ref_obj, &[val]);
-                                    already_decrefed.insert(name);
+                                    already_decrefed
+                                        .insert(alias_root_name(&alias_roots, &name).to_string());
                                 }
                             }
                             if let Some(names) = block_tracked_ptr.remove(&block) {
                                 for name in names {
-                                    if already_decrefed.contains(&name) {
+                                    if already_decrefed
+                                        .contains(alias_root_name(&alias_roots, &name))
+                                    {
                                         continue;
                                     }
                                     let val = resolve_cleanup_value(
@@ -16256,12 +16479,13 @@ impl SimpleBackend {
                                         )
                                     });
                                     builder.ins().call(local_dec_ref_obj, &[val]);
-                                    already_decrefed.insert(name);
+                                    already_decrefed
+                                        .insert(alias_root_name(&alias_roots, &name).to_string());
                                 }
                             }
                         }
                         for name in &tracked_vars {
-                            if already_decrefed.contains(name) {
+                            if already_decrefed.contains(alias_root_name(&alias_roots, name)) {
                                 continue;
                             }
                             if let Some(val) = var_get(&mut builder, &vars, name) {
@@ -16269,7 +16493,7 @@ impl SimpleBackend {
                             }
                         }
                         for name in &tracked_obj_vars {
-                            if already_decrefed.contains(name) {
+                            if already_decrefed.contains(alias_root_name(&alias_roots, name)) {
                                 continue;
                             }
                             if let Some(val) = var_get(&mut builder, &vars, name) {
@@ -16304,7 +16528,8 @@ impl SimpleBackend {
                         if let Some(names) = block_tracked_obj.remove(&block) {
                             for name in names {
                                 if protected_return_aliases.contains(&name)
-                                    || already_decrefed.contains(&name)
+                                    || already_decrefed
+                                        .contains(alias_root_name(&alias_roots, &name))
                                 {
                                     continue;
                                 }
@@ -16316,13 +16541,15 @@ impl SimpleBackend {
                                     continue;
                                 };
                                 builder.ins().call(local_dec_ref_obj, &[val]);
-                                already_decrefed.insert(name);
+                                already_decrefed
+                                    .insert(alias_root_name(&alias_roots, &name).to_string());
                             }
                         }
                         if let Some(names) = block_tracked_ptr.remove(&block) {
                             for name in names {
                                 if protected_return_aliases.contains(&name)
-                                    || already_decrefed.contains(&name)
+                                    || already_decrefed
+                                        .contains(alias_root_name(&alias_roots, &name))
                                 {
                                     continue;
                                 }
@@ -16334,7 +16561,8 @@ impl SimpleBackend {
                                     continue;
                                 };
                                 builder.ins().call(local_dec_ref_obj, &[val]);
-                                already_decrefed.insert(name);
+                                already_decrefed
+                                    .insert(alias_root_name(&alias_roots, &name).to_string());
                             }
                         }
                     }
@@ -16345,7 +16573,7 @@ impl SimpleBackend {
                         tracked_obj_vars_set.remove(protected);
                     }
                     for name in &tracked_vars {
-                        if already_decrefed.contains(name) {
+                        if already_decrefed.contains(alias_root_name(&alias_roots, name)) {
                             continue;
                         }
                         let val = entry_vars
@@ -16357,7 +16585,7 @@ impl SimpleBackend {
                         }
                     }
                     for name in &tracked_obj_vars {
-                        if already_decrefed.contains(name) {
+                        if already_decrefed.contains(alias_root_name(&alias_roots, name)) {
                             continue;
                         }
                         let val = entry_vars
@@ -16438,13 +16666,14 @@ impl SimpleBackend {
                     let target_block = state_blocks[&target_id];
                     if let Some(block) = builder.current_block() {
                         let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
-                        let cleanup = drain_cleanup_tracked_dedup(
-                            &mut carry_obj,
-                            &last_use,
-                            op_idx,
-                            None,
-                            Some(&mut already_decrefed),
-                        );
+                                let cleanup = drain_cleanup_tracked_dedup(
+                                    &mut carry_obj,
+                                    &last_use,
+                                    &alias_roots,
+                                    op_idx,
+                                    None,
+                                    Some(&mut already_decrefed),
+                                );
                         for name in cleanup {
                             // Use entry_vars (definition-time Value) for dec_ref,
                             // not var_get (current SSA Value). If the variable was
@@ -16466,13 +16695,14 @@ impl SimpleBackend {
                         }
 
                         let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
-                        let cleanup = drain_cleanup_tracked_dedup(
-                            &mut carry_ptr,
-                            &last_use,
-                            op_idx,
-                            None,
-                            Some(&mut already_decrefed),
-                        );
+                                let cleanup = drain_cleanup_tracked_dedup(
+                                    &mut carry_ptr,
+                                    &last_use,
+                                    &alias_roots,
+                                    op_idx,
+                                    None,
+                                    Some(&mut already_decrefed),
+                                );
                         for name in cleanup {
                             let val = entry_vars
                                 .get(&name)
@@ -16543,6 +16773,7 @@ impl SimpleBackend {
                     let cleanup = drain_cleanup_tracked_dedup(
                         &mut carry_obj,
                         &last_use,
+                        &alias_roots,
                         op_idx,
                         None,
                         Some(&mut already_decrefed),
@@ -16570,8 +16801,9 @@ impl SimpleBackend {
                     let mut carry_ptr = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
                     let cleanup = drain_cleanup_tracked_dedup(
                         &mut carry_ptr,
-                        &last_use,
-                        op_idx,
+                            &last_use,
+                            &alias_roots,
+                            op_idx,
                         None,
                         Some(&mut already_decrefed),
                     );
@@ -16730,11 +16962,48 @@ impl SimpleBackend {
             // We therefore only drain entry-tracked cleanup while still emitting the entry block.
             // Values whose "last use" happens exclusively in a non-entry block remain live until
             // the function-level return cleanup, which is emitted on all paths.
+            if std::env::var("MOLT_DEBUG_TRACKED_CLEANUP").as_deref() == Ok("1")
+                && std::env::var("MOLT_DEBUG_FUNC_FILTER")
+                    .ok()
+                    .is_none_or(|f| func_ir.name.contains(&f))
+            {
+                let block = builder.current_block();
+                let obj_tracked = block
+                    .and_then(|b| block_tracked_obj.get(&b))
+                    .cloned()
+                    .unwrap_or_default();
+                let ptr_tracked = block
+                    .and_then(|b| block_tracked_ptr.get(&b))
+                    .cloned()
+                    .unwrap_or_default();
+                let write_enabled = std::env::var("MOLT_DEBUG_OP_INDEX")
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .is_none_or(|target| target == op_idx);
+                if write_enabled {
+                    let _ = crate::debug_artifacts::append_debug_artifact(
+                        "native/tracked_cleanup_debug.txt",
+                        format!(
+                            "func={} op_idx={} kind={} block={:?} obj_tracked={:?} ptr_tracked={:?} entry_obj={:?} entry_ptr={:?}\n",
+                            func_ir.name,
+                            op_idx,
+                            op.kind,
+                            block,
+                            obj_tracked,
+                            ptr_tracked,
+                            tracked_obj_vars,
+                            tracked_vars,
+                        ),
+                    );
+                }
+            }
             if !is_block_filled && loop_depth == 0 && builder.current_block() == Some(entry_block) {
                 let cleanup = drain_cleanup_entry_tracked(
                     &mut tracked_obj_vars,
                     &mut entry_vars,
                     &last_use,
+                    &alias_roots,
+                    &mut already_decrefed,
                     op_idx,
                 );
                 for val in cleanup {
@@ -16744,6 +17013,8 @@ impl SimpleBackend {
                     &mut tracked_vars,
                     &mut entry_vars,
                     &last_use,
+                    &alias_roots,
+                    &mut already_decrefed,
                     op_idx,
                 );
                 for val in cleanup {
@@ -16753,6 +17024,53 @@ impl SimpleBackend {
                     // dereferencing.  Using raw dec_ref here would SIGSEGV for
                     // any non-pointer NaN-boxed value (floats, inline ints, etc.).
                     builder.ins().call(local_dec_ref_obj, &[val]);
+                }
+            }
+
+            if !is_block_filled
+                && let Some(dst_name) = out_name.as_ref()
+                && dst_name != "none"
+                && let Some(src_name) = alias_src_name.as_deref()
+                && src_name != dst_name
+            {
+                let join_slot_transfer = op.kind == "store_var" && is_join_slot_name(dst_name);
+                if join_slot_transfer {
+                    let root = alias_roots
+                        .get(src_name)
+                        .map(String::as_str)
+                        .unwrap_or(src_name);
+                    if builder.current_block() == Some(entry_block) && loop_depth == 0 {
+                        remove_tracked_alias_group(&mut tracked_vars, &alias_roots, root);
+                        tracked_vars_set
+                            .retain(|name| alias_roots.get(name).map(String::as_str) != Some(root));
+                        remove_tracked_alias_group(&mut tracked_obj_vars, &alias_roots, root);
+                        tracked_obj_vars_set
+                            .retain(|name| alias_roots.get(name).map(String::as_str) != Some(root));
+                        entry_vars
+                            .retain(|name, _| alias_roots.get(name).map(String::as_str) != Some(root));
+                    } else if let Some(block) = builder.current_block() {
+                        if let Some(tracked) = block_tracked_ptr.get_mut(&block) {
+                            remove_tracked_alias_group(tracked, &alias_roots, root);
+                        }
+                        if let Some(tracked) = block_tracked_obj.get_mut(&block) {
+                            remove_tracked_alias_group(tracked, &alias_roots, root);
+                        }
+                    }
+                } else if last_use.get(src_name).copied() == Some(op_idx) {
+                    if builder.current_block() == Some(entry_block) && loop_depth == 0 {
+                        remove_tracked_name(&mut tracked_vars, src_name);
+                        tracked_vars_set.remove(src_name);
+                        remove_tracked_name(&mut tracked_obj_vars, src_name);
+                        tracked_obj_vars_set.remove(src_name);
+                        entry_vars.remove(src_name);
+                    } else if let Some(block) = builder.current_block() {
+                        if let Some(tracked) = block_tracked_ptr.get_mut(&block) {
+                            remove_tracked_name(tracked, src_name);
+                        }
+                        if let Some(tracked) = block_tracked_obj.get_mut(&block) {
+                            remove_tracked_name(tracked, src_name);
+                        }
+                    }
                 }
             }
 
@@ -16975,9 +17293,9 @@ impl SimpleBackend {
 
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
-    use super::preanalyze_function_ir;
+    use super::{alias_root_name, cleanup_roots_for_names, preanalyze_function_ir};
     use crate::{FunctionIR, OpIR};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
@@ -17092,6 +17410,116 @@ mod tests {
             !preanalyze_function_ir(&void_ret, &BTreeMap::new()).has_ret,
             "`ret_void` must not mark the function as value-returning"
         );
+    }
+
+    #[test]
+    fn preanalysis_treats_store_var_join_slot_as_alias_definition() {
+        let func = FunctionIR {
+            name: "join_alias".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const_str".to_string(),
+                    out: Some("src".to_string()),
+                    s_value: Some("hi".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("_bb4_arg0".to_string()),
+                    args: Some(vec!["src".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "load_var".to_string(),
+                    var: Some("_bb4_arg0".to_string()),
+                    out: Some("joined".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("joined".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+
+        assert_eq!(
+            analysis.alias_roots.get("_bb4_arg0").map(String::as_str),
+            Some("src")
+        );
+        assert_eq!(
+            analysis.alias_roots.get("joined").map(String::as_str),
+            Some("src")
+        );
+        assert_eq!(analysis.last_use.get("src"), Some(&3));
+        assert_eq!(analysis.last_use.get("_bb4_arg0"), Some(&3));
+    }
+
+    #[test]
+    fn cleanup_roots_collapse_join_alias_duplicates() {
+        let func = FunctionIR {
+            name: "join_alias_cleanup".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const_str".to_string(),
+                    out: Some("src".to_string()),
+                    s_value: Some("hi".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("_bb4_arg0".to_string()),
+                    args: Some(vec!["src".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "load_var".to_string(),
+                    var: Some("_bb4_arg0".to_string()),
+                    out: Some("joined".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy_var".to_string(),
+                    var: Some("joined".to_string()),
+                    out: Some("arg_alias".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call".to_string(),
+                    s_value: Some("callee".to_string()),
+                    args: Some(vec!["arg_alias".to_string()]),
+                    out: Some("out".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("out".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+        let arg_cleanup_roots =
+            cleanup_roots_for_names(&analysis.alias_roots, ["arg_alias".to_string()]);
+
+        assert_eq!(arg_cleanup_roots, BTreeSet::from(["src".to_string()]));
+        assert!(arg_cleanup_roots.contains(alias_root_name(
+            &analysis.alias_roots,
+            "_bb4_arg0"
+        )));
+        assert!(arg_cleanup_roots.contains(alias_root_name(
+            &analysis.alias_roots,
+            "joined"
+        )));
     }
 }
 
