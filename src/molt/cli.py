@@ -17511,7 +17511,7 @@ def _prepare_native_link(
             stub_path,
             output_obj,
             resolved_runtime_lib,
-            *([stdlib_obj_path] if stdlib_obj_path.exists() else []),
+            *([stdlib_obj_path] if stdlib_obj_path is not None and stdlib_obj_path.exists() else []),
         ],
         link_cmd=link_cmd,
         stored_fingerprint=stored_link_fingerprint,
