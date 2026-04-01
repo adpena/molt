@@ -6030,6 +6030,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[0], result=res))
             return res
+        # Restore the original exception after evaluating the handler type.
+        # EXCEPTION_CLEAR above was needed so the type lookup (e.g.
+        # `ZeroDivisionError`) doesn't fail with an active exception, but
+        # we need the exception back for the isinstance check and for
+        # detecting if the evaluation itself raised.
+        self.emit(
+            MoltOp(
+                kind="EXCEPTION_SET_LAST",
+                args=[exc_val],
+                result=MoltValue("none"),
+            )
+        )
         eval_exc = MoltValue(self.next_var(), type_hint="exception")
         self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=eval_exc))
         none_val = MoltValue(self.next_var(), type_hint="None")
