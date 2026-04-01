@@ -514,8 +514,9 @@ pub use crate::builtins::zoneinfo::*;
 #[allow(unused_imports)]
 pub(crate) use crate::call::bind::molt_callargs_push_kw;
 pub(crate) use crate::call::bind::{
-    callargs_dec_ref_all, callargs_ptr, molt_call_bind, molt_callargs_expand_kwstar,
-    molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos,
+    callargs_dec_ref_all, callargs_ptr, molt_call_bind, molt_call_bind_ic,
+    molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
+    molt_callargs_push_pos,
 };
 pub(crate) use crate::call::class_init::{
     alloc_instance_for_class, alloc_instance_for_class_no_pool,

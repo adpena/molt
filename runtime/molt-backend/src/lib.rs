@@ -1223,11 +1223,15 @@ fn box_ptr_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) 
     builder.ins().bor(tag, masked)
 }
 
-/// Prepare for inline list_int access via stable FFI helpers.
+/// Fully inline list_int bounds check — zero FFI calls.
 ///
-/// Calls `molt_list_int_data` and `molt_list_int_len_raw` to obtain the
-/// backing store data pointer and length without relying on Vec<i64> memory
-/// layout (which is not guaranteed by Rust and varies across platforms).
+/// Extracts the raw heap pointer from the NaN-boxed list value, then
+/// dereferences the object layout directly:
+///
+///   obj_ptr  = unbox_ptr(list_bits)   // past MoltHeader
+///   vec_ptr  = *(obj_ptr as *const *const Vec<i64>)   // offset 0
+///   data_ptr = *(vec_ptr + 0)         // Vec::ptr  (offset 0)
+///   len      = *(vec_ptr + 8)         // Vec::len  (offset 8)
 ///
 /// Returns (data_ptr, in_bounds) — the caller must branch on in_bounds
 /// BEFORE loading/storing the element.
@@ -1236,13 +1240,16 @@ fn emit_list_int_bounds_check(
     builder: &mut FunctionBuilder,
     list_bits: Value,
     index_raw: Value,
-    data_fn: FuncRef,
-    len_fn: FuncRef,
+    nbc: &NanBoxConsts,
 ) -> (Value, Value) {
-    let data_call = builder.ins().call(data_fn, &[list_bits]);
-    let data_ptr = builder.inst_results(data_call)[0];
-    let len_call = builder.ins().call(len_fn, &[list_bits]);
-    let len = builder.inst_results(len_call)[0];
+    // Step 1: extract raw pointer from NaN-boxed value
+    let obj_ptr = unbox_ptr_value(builder, list_bits, nbc);
+    // Step 2: load *mut Vec<i64> from offset 0 of the object payload
+    let vec_ptr = builder.ins().load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+    // Step 3: load data pointer from Vec (offset 0) and length (offset 8)
+    let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), vec_ptr, 0);
+    let len = builder.ins().load(types::I64, MemFlags::trusted(), vec_ptr, 8);
+    // Step 4: unsigned compare index < length
     let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, index_raw, len);
     (data_ptr, in_bounds)
 }

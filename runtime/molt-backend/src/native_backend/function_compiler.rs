@@ -593,7 +593,7 @@ impl SimpleBackend {
             resume_states,
             function_exception_label_id,
             exception_label_ids,
-            const_int_map,
+            const_int_map: _const_int_map,
             loop_body_out_vars,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries);
         let (rc_skip_inc, mut rc_skip_dec) =
@@ -6405,26 +6405,13 @@ impl SimpleBackend {
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
-
                         if op.container_type.as_deref() == Some("list_int") {
                             // Inline list_int getitem: bounds check then direct
                             // memory load, falling to runtime call on failure.
                             let idx_raw = raw_int_shadow.get(&args[1]).copied()
                                 .unwrap_or_else(|| unbox_int(&mut builder, *idx, &nbc));
-                            let data_fn_id = Self::import_func_id_split(
-                                &mut self.module, &mut self.import_ids,
-                                "molt_list_int_data",
-                                &[types::I64], &[types::I64],
-                            );
-                            let data_fn = self.module.declare_func_in_func(data_fn_id, builder.func);
-                            let len_fn_id = Self::import_func_id_split(
-                                &mut self.module, &mut self.import_ids,
-                                "molt_list_int_len_raw",
-                                &[types::I64], &[types::I64],
-                            );
-                            let len_fn = self.module.declare_func_in_func(len_fn_id, builder.func);
                             let (data_ptr, in_bounds) =
-                                emit_list_int_bounds_check(&mut builder, *obj, idx_raw, data_fn, len_fn);
+                                emit_list_int_bounds_check(&mut builder, *obj, idx_raw, &nbc);
                             let fast_block = builder.create_block();
                             let slow_block = builder.create_block();
                             builder.set_cold_block(slow_block);
@@ -6459,12 +6446,15 @@ impl SimpleBackend {
                             }
                         } else {
                             // Dispatch based on container specialization:
+                            // - dict: direct hash-table lookup
+                            // - tuple: direct element access
                             // - fast_int: generic list but index is known int
                             // - default: full type dispatch
-                            let fn_name = if op.fast_int.unwrap_or(false) {
-                                "molt_list_getitem_int_fast"
-                            } else {
-                                "molt_index"
+                            let fn_name = match op.container_type.as_deref() {
+                                Some("dict") => "molt_dict_getitem",
+                                Some("tuple") => "molt_tuple_getitem",
+                                _ if op.fast_int.unwrap_or(false) => "molt_list_getitem_int_fast",
+                                _ => "molt_index",
                             };
                             let callee = self
                                 .module
@@ -6498,20 +6488,8 @@ impl SimpleBackend {
                         // For list_int values: unbox int or bool to raw i64.
                         let val_raw = raw_int_shadow.get(&args[2]).copied()
                             .unwrap_or_else(|| unbox_int_or_bool(&mut builder, *val, &nbc));
-                        let data_fn_id = Self::import_func_id_split(
-                            &mut self.module, &mut self.import_ids,
-                            "molt_list_int_data",
-                            &[types::I64], &[types::I64],
-                        );
-                        let data_fn = self.module.declare_func_in_func(data_fn_id, builder.func);
-                        let len_fn_id = Self::import_func_id_split(
-                            &mut self.module, &mut self.import_ids,
-                            "molt_list_int_len_raw",
-                            &[types::I64], &[types::I64],
-                        );
-                        let len_fn = self.module.declare_func_in_func(len_fn_id, builder.func);
                         let (data_ptr, in_bounds) =
-                            emit_list_int_bounds_check(&mut builder, *obj, idx_raw, data_fn, len_fn);
+                            emit_list_int_bounds_check(&mut builder, *obj, idx_raw, &nbc);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
@@ -6545,10 +6523,17 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out__, res);
                         }
                     } else {
+                        // Dispatch based on container specialization:
+                        // - dict: direct hash-table set
+                        // - default: full type dispatch
+                        let fn_name = match op.container_type.as_deref() {
+                            Some("dict") => "molt_dict_setitem",
+                            _ => "molt_store_index",
+                        };
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_store_index",
+                            fn_name,
                             &[types::I64, types::I64, types::I64],
                             &[types::I64],
                         );
@@ -12062,56 +12047,120 @@ impl SimpleBackend {
                         extra_args
                             .push(*var_get(&mut builder, &vars, name).expect("Arg not found"));
                     }
-                    let callargs_new_local = import_func_ref(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        "molt_callargs_new",
-                        &[types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let pos_capacity = builder.ins().iconst(types::I64, extra_args.len() as i64);
-                    let kw_capacity = builder.ins().iconst(types::I64, 0);
-                    let callargs_call = builder
-                        .ins()
-                        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-                    let callargs_ptr = builder.inst_results(callargs_call)[0];
-                    let callargs_push_local = import_func_ref(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        "molt_callargs_push_pos",
-                        &[types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    for arg in &extra_args {
-                        builder
+
+                    // --- Fast-path: dispatch known bound-method patterns
+                    // directly without callargs allocation or IC lookup. ---
+                    let fast_dispatched = if let Some(sv) = op.s_value.as_deref() {
+                        match sv {
+                            // list.append(elem) — 1 extra arg
+                            "BoundMethod:list:append" if extra_args.len() == 1 => {
+                                let callee = Self::import_func_id_split(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    "molt_fast_list_append",
+                                    &[types::I64, types::I64],
+                                    &[types::I64],
+                                );
+                                let local =
+                                    self.module.declare_func_in_func(callee, builder.func);
+                                let call =
+                                    builder.ins().call(local, &[*method_bits, extra_args[0]]);
+                                Some(builder.inst_results(call)[0])
+                            }
+                            // str.join(iterable) — 1 extra arg
+                            "BoundMethod:str:join" if extra_args.len() == 1 => {
+                                let callee = Self::import_func_id_split(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    "molt_fast_str_join",
+                                    &[types::I64, types::I64],
+                                    &[types::I64],
+                                );
+                                let local =
+                                    self.module.declare_func_in_func(callee, builder.func);
+                                let call =
+                                    builder.ins().call(local, &[*method_bits, extra_args[0]]);
+                                Some(builder.inst_results(call)[0])
+                            }
+                            // dict.get(key, default) — 2 extra args
+                            "BoundMethod:dict:get" if extra_args.len() == 2 => {
+                                let callee = Self::import_func_id_split(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    "molt_fast_dict_get",
+                                    &[types::I64, types::I64, types::I64],
+                                    &[types::I64],
+                                );
+                                let local =
+                                    self.module.declare_func_in_func(callee, builder.func);
+                                let call = builder.ins().call(
+                                    local,
+                                    &[*method_bits, extra_args[0], extra_args[1]],
+                                );
+                                Some(builder.inst_results(call)[0])
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+
+                    let res = if let Some(fast_res) = fast_dispatched {
+                        fast_res
+                    } else {
+                        // Generic path: allocate callargs and dispatch via IC.
+                        let callargs_new_local = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_callargs_new",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let pos_capacity =
+                            builder.ins().iconst(types::I64, extra_args.len() as i64);
+                        let kw_capacity = builder.ins().iconst(types::I64, 0);
+                        let callargs_call = builder
                             .ins()
-                            .call(callargs_push_local, &[callargs_ptr, *arg]);
-                    }
-                    let call_bind_local = import_func_ref(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        "molt_call_bind_ic",
-                        &[types::I64, types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let site_bits = builder.ins().iconst(
-                        types::I64,
-                        box_int(stable_ic_site_id(
-                            func_ir.name.as_str(),
-                            op_idx,
-                            "call_method",
-                        )),
-                    );
-                    let call = builder
-                        .ins()
-                        .call(call_bind_local, &[site_bits, *method_bits, callargs_ptr]);
-                    let res = builder.inst_results(call)[0];
+                            .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+                        let callargs_ptr = builder.inst_results(callargs_call)[0];
+                        let callargs_push_local = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_callargs_push_pos",
+                            &[types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        for arg in &extra_args {
+                            builder
+                                .ins()
+                                .call(callargs_push_local, &[callargs_ptr, *arg]);
+                        }
+                        let call_bind_local = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_call_bind_ic",
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let site_bits = builder.ins().iconst(
+                            types::I64,
+                            box_int(stable_ic_site_id(
+                                func_ir.name.as_str(),
+                                op_idx,
+                                "call_method",
+                            )),
+                        );
+                        let call = builder
+                            .ins()
+                            .call(call_bind_local, &[site_bits, *method_bits, callargs_ptr]);
+                        builder.inst_results(call)[0]
+                    };
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
