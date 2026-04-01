@@ -1929,6 +1929,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         "INPLACE_ADD", "INPLACE_SUB", "INPLACE_MUL",
         "EQ", "NE", "LT", "LE", "GT", "GE",
         "GET_ATTR", "SET_ATTR", "DEL_ATTR",
+        "GETATTR_GENERIC_OBJ", "GETATTR_GENERIC_PTR",
+        "GUARDED_GETATTR", "MODULE_GET_ATTR",
+        "SETATTR_GENERIC_OBJ", "SETATTR_GENERIC_PTR",
         "INDEX", "STORE_INDEX", "DEL_INDEX",
         "CALL", "CALL_FUNC", "CALL_METHOD", "CALL_BUILTIN",
         "CALL_INDIRECT", "CALL_GUARDED", "CALL_BIND",
@@ -1941,8 +1944,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if (
             op.col_offset is None
             and op.kind in self._RAISING_OP_KINDS
-            and hasattr(self, "_expr_col")
-            and self._expr_col is not None
+            and getattr(self, "_expr_col", None) is not None
         ):
             op.col_offset, op.end_col_offset = self._expr_col
         if (
