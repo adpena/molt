@@ -1570,10 +1570,15 @@ pub extern "C" fn molt_is_truthy_bool(bits: u64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_not(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        // NOTE: Do NOT check exception_pending here.  `not` may be
+        // called inside an exception handler where a pending exception
+        // is expected (e.g. the `not(is(exception_last, None))` idiom
+        // that checks whether an exception was raised).  Short-circuiting
+        // on the stale pending flag returns None instead of the correct
+        // boolean, breaking the handler's control flow.  If is_truthy
+        // itself raises (custom __bool__), the caller's check_exception
+        // op will propagate it.
         let result = is_truthy(_py, obj_from_bits(val));
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
         MoltObject::from_bool(!result).bits()
     })
 }

@@ -1319,6 +1319,9 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
         }
     }
     if let Some(task_key) = task_key {
+        // Inc-ref for task exception slot (same rationale as global slot).
+        let bits = MoltObject::from_ptr(ptr).bits();
+        inc_ref_bits(_py, bits);
         task_last_exceptions(_py)
             .lock()
             .unwrap()
@@ -1328,6 +1331,13 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
             .store(true, AtomicOrdering::Relaxed);
     } else {
         let mut guard = state.last_exception.lock().unwrap();
+        // Inc-ref the exception so the slot holds a strong reference.
+        // Without this, Cranelift's dec_ref cleanup in check_exception
+        // handlers can free the exception object between record_exception
+        // and exception_last, causing exception_slot_is_valid to fail
+        // and silently clearing the pending flag.
+        let bits = MoltObject::from_ptr(ptr).bits();
+        inc_ref_bits(_py, bits);
         *guard = Some(PtrSlot(ptr));
         state
             .last_exception_pending
@@ -5232,13 +5242,6 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_last() -> u64 {
-    // TEMPORARY TRACE
-    {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
-            let _ = writeln!(f, "[EXC_LAST] called");
-        }
-    }
     crate::with_gil_entry!(_py, {
         // Fast path: if neither the global nor task pending flag is set,
         // there is no live exception — return None immediately.  This
@@ -5321,24 +5324,10 @@ pub extern "C" fn molt_exception_last() -> u64 {
             }
             let bits = MoltObject::from_ptr(ptr.0).bits();
             inc_ref_bits(_py, bits);
-            // TEMPORARY TRACE
-            {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
-                    let _ = writeln!(f, "[EXC_LAST] returning exception bits=0x{:x}", bits);
-                }
-            }
             return bits;
         }
         if debug_flow {
             eprintln!("molt exc last task=0x0 kind=none");
-        }
-        // TEMPORARY TRACE
-        {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
-                let _ = writeln!(f, "[EXC_LAST] returning None");
-            }
         }
         MoltObject::none().bits()
     })
@@ -5357,13 +5346,6 @@ pub extern "C" fn molt_exception_active() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_clear() -> u64 {
-    // TEMPORARY TRACE
-    {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
-            let _ = writeln!(f, "[EXC_CLEAR] called");
-        }
-    }
     crate::with_gil_entry!(_py, {
         let debug_clear = debug_exception_clear();
         let reason = exception_clear_reason_take();
@@ -5442,18 +5424,6 @@ pub extern "C" fn molt_exception_pending() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_pending_fast() -> u64 {
-    // TEMPORARY TRACE
-    {
-        use std::io::Write;
-        let global_pending = crate::state::runtime_state::runtime_state_for_gil()
-            .map(|s| s.last_exception_pending.load(std::sync::atomic::Ordering::Relaxed))
-            .unwrap_or(false);
-        if global_pending {
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
-                let _ = writeln!(f, "[PENDING_FAST] global_pending={}", global_pending);
-            }
-        }
-    }
     let Some(state) = crate::state::runtime_state::runtime_state_for_gil() else {
         return 0;
     };
@@ -5485,41 +5455,8 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
     let result = if state.last_exception_pending.load(AtomicOrdering::Relaxed) {
         let mut guard = state.last_exception.lock().unwrap();
         match *guard {
-            Some(ptr) if exception_slot_is_valid(ptr) => {
-                // TEMPORARY TRACE
-                {
-                    use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
-                        let _ = writeln!(f, "[PENDING_FAST] VALID slot, returning 1");
-                    }
-                }
-                1
-            }
-            Some(ptr) => {
-                // TEMPORARY TRACE
-                {
-                    use std::io::Write;
-                    let bits = MoltObject::from_ptr(ptr.0).bits();
-                    let live_ptr = maybe_ptr_from_bits(bits);
-                    let type_id = live_ptr.map(|p| unsafe { object_type_id(p) }).unwrap_or(0);
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
-                        let _ = writeln!(f, "[PENDING_FAST] INVALID slot! ptr=0x{:x} bits=0x{:x} live_ptr={:?} type_id={}", ptr.0 as usize, bits, live_ptr.map(|p| p as usize), type_id);
-                    }
-                }
-                *guard = None;
-                state
-                    .last_exception_pending
-                    .store(false, AtomicOrdering::Relaxed);
-                0
-            }
-            None => {
-                // TEMPORARY TRACE
-                {
-                    use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
-                        let _ = writeln!(f, "[PENDING_FAST] slot is None, clearing");
-                    }
-                }
+            Some(ptr) if exception_slot_is_valid(ptr) => 1,
+            _ => {
                 *guard = None;
                 state
                     .last_exception_pending
