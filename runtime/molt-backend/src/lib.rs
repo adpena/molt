@@ -284,120 +284,59 @@ use native_backend_consts::*;
 /// the five most-repeated tag-mask constants once in the entry block and
 /// storing them in Cranelift `Variable`s, every subsequent helper call
 /// (`is_int_tag`, `unbox_int`, `box_int_value`, `emit_inline_inc_ref_obj`, etc.)
-/// reuses the same SSA value instead of materialising a fresh `iconst`.
+/// materialises nanbox helper constants directly instead of threading them
+/// through Cranelift SSA variables.
 #[cfg(feature = "native-backend")]
 #[derive(Clone, Copy)]
 struct NanBoxConsts {
     /// `(QNAN | TAG_MASK) as i64`
-    qnan_tag_mask: Variable,
+    qnan_tag_mask: i64,
     /// `(QNAN | TAG_INT) as i64`
-    qnan_tag_int: Variable,
+    qnan_tag_int: i64,
     /// `(QNAN | TAG_PTR) as i64`
-    qnan_tag_ptr: Variable,
+    qnan_tag_ptr: i64,
     /// `INT_SHIFT` (17)
-    int_shift: Variable,
+    int_shift: i64,
     /// `POINTER_MASK as i64`
-    pointer_mask: Variable,
+    pointer_mask: i64,
     /// `(QNAN | TAG_BOOL) as i64`
-    qnan_tag_bool: Variable,
+    qnan_tag_bool: i64,
     /// `INT_WIDTH as i64` (47) — used in fused_both_int_check
-    int_width: Variable,
+    int_width: i64,
     /// `48i64` — shift to isolate tag field for nanboxed-special / int checks
-    shift_48: Variable,
+    shift_48: i64,
     /// `0x7FF9i64` — base of special-tag range
-    special_base: Variable,
+    special_base: i64,
     /// `5i64` — width of special-tag range
-    special_limit: Variable,
+    special_limit: i64,
     /// `((QNAN | TAG_INT) >> 48) as i64` — 16-bit tag for nanboxed int check
-    int_tag_16: Variable,
+    int_tag_16: i64,
     /// `INT_MASK as i64` — mask for box_int_value
-    int_mask: Variable,
+    int_mask: i64,
     /// `16i64` — sign-extension shift for unbox_ptr_value
-    shift_16: Variable,
+    shift_16: i64,
     /// `CANONICAL_NAN_BITS as i64` — canonical NaN for box_float_value
-    canonical_nan: Variable,
+    canonical_nan: i64,
 }
 
 #[cfg(feature = "native-backend")]
 impl NanBoxConsts {
-    /// Declare and define the five tag-mask variables in the current (entry) block.
-    /// Must be called while the entry block is the active block and **before** it
-    /// is sealed.
-    fn new(builder: &mut FunctionBuilder) -> Self {
-        let qnan_tag_mask_var = builder.declare_var(types::I64);
-        let qnan_tag_int_var = builder.declare_var(types::I64);
-        let qnan_tag_ptr_var = builder.declare_var(types::I64);
-        let int_shift_var = builder.declare_var(types::I64);
-        let pointer_mask_var = builder.declare_var(types::I64);
-        let qnan_tag_bool_var = builder.declare_var(types::I64);
-        let int_width_var = builder.declare_var(types::I64);
-        let shift_48_var = builder.declare_var(types::I64);
-        let special_base_var = builder.declare_var(types::I64);
-        let special_limit_var = builder.declare_var(types::I64);
-        let int_tag_16_var = builder.declare_var(types::I64);
-        let int_mask_var = builder.declare_var(types::I64);
-        let shift_16_var = builder.declare_var(types::I64);
-        let canonical_nan_var = builder.declare_var(types::I64);
-
-        let v = builder.ins().iconst(types::I64, (QNAN | TAG_MASK) as i64);
-        builder.def_var(qnan_tag_mask_var, v);
-
-        let v = builder.ins().iconst(types::I64, (QNAN | TAG_INT) as i64);
-        builder.def_var(qnan_tag_int_var, v);
-
-        let v = builder.ins().iconst(types::I64, (QNAN | TAG_PTR) as i64);
-        builder.def_var(qnan_tag_ptr_var, v);
-
-        let v = builder.ins().iconst(types::I64, INT_SHIFT);
-        builder.def_var(int_shift_var, v);
-
-        let v = builder.ins().iconst(types::I64, POINTER_MASK as i64);
-        builder.def_var(pointer_mask_var, v);
-
-        let v = builder.ins().iconst(types::I64, (QNAN | TAG_BOOL) as i64);
-        builder.def_var(qnan_tag_bool_var, v);
-
-        let v = builder.ins().iconst(types::I64, INT_WIDTH as i64);
-        builder.def_var(int_width_var, v);
-
-        let v = builder.ins().iconst(types::I64, 48);
-        builder.def_var(shift_48_var, v);
-
-        let v = builder.ins().iconst(types::I64, 0x7FF9);
-        builder.def_var(special_base_var, v);
-
-        let v = builder.ins().iconst(types::I64, 5);
-        builder.def_var(special_limit_var, v);
-
-        let v = builder
-            .ins()
-            .iconst(types::I64, ((QNAN | TAG_INT) >> 48) as i64);
-        builder.def_var(int_tag_16_var, v);
-
-        let v = builder.ins().iconst(types::I64, INT_MASK as i64);
-        builder.def_var(int_mask_var, v);
-
-        let v = builder.ins().iconst(types::I64, 16);
-        builder.def_var(shift_16_var, v);
-
-        let v = builder.ins().iconst(types::I64, CANONICAL_NAN_BITS as i64);
-        builder.def_var(canonical_nan_var, v);
-
+    fn new(_builder: &mut FunctionBuilder) -> Self {
         Self {
-            qnan_tag_mask: qnan_tag_mask_var,
-            qnan_tag_int: qnan_tag_int_var,
-            qnan_tag_ptr: qnan_tag_ptr_var,
-            int_shift: int_shift_var,
-            pointer_mask: pointer_mask_var,
-            qnan_tag_bool: qnan_tag_bool_var,
-            int_width: int_width_var,
-            shift_48: shift_48_var,
-            special_base: special_base_var,
-            special_limit: special_limit_var,
-            int_tag_16: int_tag_16_var,
-            int_mask: int_mask_var,
-            shift_16: shift_16_var,
-            canonical_nan: canonical_nan_var,
+            qnan_tag_mask: (QNAN | TAG_MASK) as i64,
+            qnan_tag_int: (QNAN | TAG_INT) as i64,
+            qnan_tag_ptr: (QNAN | TAG_PTR) as i64,
+            int_shift: INT_SHIFT,
+            pointer_mask: POINTER_MASK as i64,
+            qnan_tag_bool: (QNAN | TAG_BOOL) as i64,
+            int_width: INT_WIDTH as i64,
+            shift_48: 48,
+            special_base: 0x7FF9,
+            special_limit: 5,
+            int_tag_16: ((QNAN | TAG_INT) >> 48) as i64,
+            int_mask: INT_MASK as i64,
+            shift_16: 16,
+            canonical_nan: CANONICAL_NAN_BITS as i64,
         }
     }
 }
@@ -441,6 +380,7 @@ struct NativeBackendIrAnalysis {
 #[derive(Clone, Default)]
 pub struct NativeBackendModuleContext {
     function_arities: BTreeMap<String, usize>,
+    function_has_ret: BTreeMap<String, bool>,
     closure_functions: BTreeSet<String>,
     task_kinds: BTreeMap<String, TrampolineKind>,
     task_closure_sizes: BTreeMap<String, i64>,
@@ -457,6 +397,7 @@ impl NativeBackendModuleContext {
                 .iter()
                 .map(|func| (func.name.clone(), func.params.len()))
                 .collect(),
+            function_has_ret: compute_function_has_ret(functions),
             closure_functions: analysis.closure_functions,
             task_kinds: analysis.task_kinds,
             task_closure_sizes: analysis.task_closure_sizes,
@@ -901,8 +842,8 @@ fn unbox_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> V
     // trap fires immediately if a non-int value reaches this path.
     #[cfg(debug_assertions)]
     {
-        let mask = builder.use_var(nbc.qnan_tag_mask);
-        let expected = builder.use_var(nbc.qnan_tag_int);
+        let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+        let expected = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
         let masked = builder.ins().band(val, mask);
         let is_int = builder.ins().icmp(IntCC::Equal, masked, expected);
         builder
@@ -913,7 +854,7 @@ fn unbox_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> V
     // The ishl by INT_SHIFT (17) shifts out the upper 17 tag bits (QNAN+TAG),
     // then sshr sign-extends the 47-bit payload. No separate band with INT_MASK
     // is needed — the shift pair implicitly strips the tag.
-    let shift = builder.use_var(nbc.int_shift);
+    let shift = builder.ins().iconst(types::I64, nbc.int_shift);
     let shifted = builder.ins().ishl(val, shift);
     builder.ins().sshr(shifted, shift)
 }
@@ -929,8 +870,8 @@ pub(crate) fn is_inline_int_value(
     val: Value,
     nbc: &NanBoxConsts,
 ) -> Value {
-    let mask = builder.use_var(nbc.qnan_tag_mask);
-    let expected = builder.use_var(nbc.qnan_tag_int);
+    let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+    let expected = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
     let masked = builder.ins().band(val, mask);
     builder.ins().icmp(IntCC::Equal, masked, expected)
 }
@@ -942,8 +883,8 @@ pub(crate) fn is_inline_int_value(
 /// mark an op as `fast_int` even when one or both operands are booleans.
 #[cfg(feature = "native-backend")]
 fn unbox_int_or_bool(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
-    let mask = builder.use_var(nbc.qnan_tag_mask);
-    let bool_tag = builder.use_var(nbc.qnan_tag_bool);
+    let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+    let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
     let masked = builder.ins().band(val, mask);
     let is_bool = builder.ins().icmp(IntCC::Equal, masked, bool_tag);
 
@@ -964,7 +905,7 @@ fn unbox_int_or_bool(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxCons
     // Int path: normal unbox_int shift pair.
     builder.switch_to_block(int_block);
     builder.seal_block(int_block);
-    let shift = builder.use_var(nbc.int_shift);
+    let shift = builder.ins().iconst(types::I64, nbc.int_shift);
     let shifted = builder.ins().ishl(val, shift);
     let int_val = builder.ins().sshr(shifted, shift);
     jump_block(builder, merge_block, &[int_val]);
@@ -977,8 +918,8 @@ fn unbox_int_or_bool(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxCons
 #[allow(dead_code)]
 #[cfg(feature = "native-backend")]
 fn is_int_tag(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
-    let mask = builder.use_var(nbc.qnan_tag_mask);
-    let tag = builder.use_var(nbc.qnan_tag_int);
+    let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+    let tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
     let masked = builder.ins().band(val, mask);
     builder.ins().icmp(IntCC::Equal, masked, tag)
 }
@@ -989,10 +930,10 @@ fn is_int_tag(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> 
 /// slow `molt_add` / `molt_sub` / etc. call.
 #[cfg(feature = "native-backend")]
 fn is_int_or_bool_tag(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
-    let mask = builder.use_var(nbc.qnan_tag_mask);
+    let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
     let masked = builder.ins().band(val, mask);
-    let int_tag = builder.use_var(nbc.qnan_tag_int);
-    let bool_tag = builder.use_var(nbc.qnan_tag_bool);
+    let int_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
+    let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
     let is_int = builder.ins().icmp(IntCC::Equal, masked, int_tag);
     let is_bool = builder.ins().icmp(IntCC::Equal, masked, bool_tag);
     builder.ins().bor(is_int, is_bool)
@@ -1015,9 +956,9 @@ fn fused_tag_check_and_unbox_int(
     val: Value,
     nbc: &NanBoxConsts,
 ) -> (Value, Value) {
-    let expected_tag = builder.use_var(nbc.qnan_tag_int);
+    let expected_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
     let xored = builder.ins().bxor(val, expected_tag);
-    let shift = builder.use_var(nbc.int_shift);
+    let shift = builder.ins().iconst(types::I64, nbc.int_shift);
     let shifted = builder.ins().ishl(xored, shift);
     let unboxed = builder.ins().sshr(shifted, shift);
     (xored, unboxed)
@@ -1037,7 +978,7 @@ fn fused_both_int_check(
     nbc: &NanBoxConsts,
 ) -> Value {
     let combined = builder.ins().bor(lhs_xored, rhs_xored);
-    let tag_shift = builder.use_var(nbc.int_width);
+    let tag_shift = builder.ins().iconst(types::I64, nbc.int_width);
     let upper = builder.ins().ushr(combined, tag_shift);
     builder.ins().icmp_imm(IntCC::Equal, upper, 0)
 }
@@ -1050,12 +991,12 @@ fn fused_both_int_check(
 #[cfg(feature = "native-backend")]
 fn is_nanboxed_special(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
     // Shift right by 48 to isolate the tag field, then check range [0x7FF9, 0x7FFD].
-    let shift48 = builder.use_var(nbc.shift_48);
+    let shift48 = builder.ins().iconst(types::I64, nbc.shift_48);
     let tag16 = builder.ins().ushr(val, shift48);
     // tag16 - 0x7FF9; result < 5 means it's a tagged special
-    let base = builder.use_var(nbc.special_base);
+    let base = builder.ins().iconst(types::I64, nbc.special_base);
     let adjusted = builder.ins().isub(tag16, base);
-    let limit = builder.use_var(nbc.special_limit);
+    let limit = builder.ins().iconst(types::I64, nbc.special_limit);
     builder.ins().icmp(IntCC::UnsignedLessThan, adjusted, limit)
 }
 
@@ -1078,9 +1019,9 @@ fn both_float_check(
 /// Check whether a NaN-boxed value carries the int tag.
 #[cfg(feature = "native-backend")]
 fn is_nanboxed_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
-    let shift48 = builder.use_var(nbc.shift_48);
+    let shift48 = builder.ins().iconst(types::I64, nbc.shift_48);
     let tag16 = builder.ins().ushr(val, shift48);
-    let expected = builder.use_var(nbc.int_tag_16);
+    let expected = builder.ins().iconst(types::I64, nbc.int_tag_16);
     builder.ins().icmp(IntCC::Equal, tag16, expected)
 }
 
@@ -1155,9 +1096,9 @@ pub(crate) fn emit_mixed_int_float_op(
 
 #[cfg(feature = "native-backend")]
 fn box_int_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
-    let mask = builder.use_var(nbc.int_mask);
+    let mask = builder.ins().iconst(types::I64, nbc.int_mask);
     let masked = builder.ins().band(val, mask);
-    let tag = builder.use_var(nbc.qnan_tag_int);
+    let tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
     builder.ins().bor(tag, masked)
 }
 
@@ -1167,7 +1108,7 @@ fn box_float_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts
     // to avoid collision with the QNAN tag prefix used by NaN-boxing.
     let raw_bits = builder.ins().bitcast(types::I64, MemFlags::new(), val);
     let is_nan = builder.ins().fcmp(FloatCC::Unordered, val, val);
-    let canonical = builder.use_var(nbc.canonical_nan);
+    let canonical = builder.ins().iconst(types::I64, nbc.canonical_nan);
     builder.ins().select(is_nan, canonical, raw_bits)
 }
 
@@ -1215,24 +1156,24 @@ fn box_bool_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts)
     let one = builder.ins().iconst(types::I64, 1);
     let zero = builder.ins().iconst(types::I64, 0);
     let bool_val = builder.ins().select(val, one, zero);
-    let tag = builder.use_var(nbc.qnan_tag_bool);
+    let tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
     builder.ins().bor(tag, bool_val)
 }
 
 #[cfg(feature = "native-backend")]
 fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
-    let mask = builder.use_var(nbc.pointer_mask);
+    let mask = builder.ins().iconst(types::I64, nbc.pointer_mask);
     let masked = builder.ins().band(val, mask);
-    let shift = builder.use_var(nbc.shift_16);
+    let shift = builder.ins().iconst(types::I64, nbc.shift_16);
     let shifted = builder.ins().ishl(masked, shift);
     builder.ins().sshr(shifted, shift)
 }
 
 #[cfg(feature = "native-backend")]
 fn box_ptr_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
-    let mask = builder.use_var(nbc.pointer_mask);
+    let mask = builder.ins().iconst(types::I64, nbc.pointer_mask);
     let masked = builder.ins().band(val, mask);
-    let tag = builder.use_var(nbc.qnan_tag_ptr);
+    let tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
     builder.ins().bor(tag, masked)
 }
 
@@ -1363,9 +1304,9 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, nbc: &NanB
     let merge_block = builder.create_block();
 
     // 1. Check if val is a heap pointer: (val & (QNAN | TAG_MASK)) == (QNAN | TAG_PTR)
-    let tag_check_mask = builder.use_var(nbc.qnan_tag_mask);
+    let tag_check_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
     let tag_bits = builder.ins().band(val, tag_check_mask);
-    let ptr_tag = builder.use_var(nbc.qnan_tag_ptr);
+    let ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
     let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
     builder
         .ins()
@@ -1473,9 +1414,9 @@ fn emit_dec_ref_obj(
     let call_block = builder.create_block();
     let merge_block = builder.create_block();
 
-    let tag_check_mask = builder.use_var(nbc.qnan_tag_mask);
+    let tag_check_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
     let tag_bits = builder.ins().band(val, tag_check_mask);
-    let ptr_tag = builder.use_var(nbc.qnan_tag_ptr);
+    let ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
     let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
     brif_block(builder, is_ptr, call_block, &[], merge_block, &[]);
 
@@ -3011,12 +2952,13 @@ impl SimpleBackend {
                             std::panic::AssertUnwindSafe(|| {
                                 let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                                 crate::tir::type_refine::refine_types(&mut tir_func);
+                                let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                                crate::tir::type_refine::refine_types(&mut tir_func);
                                 let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
                                     std::collections::HashMap::new()
                                 } else {
                                     crate::tir::type_refine::extract_type_map(&tir_func)
                                 };
-                                let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
                                 let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
                                     &tir_func, &type_map,
                                 );
@@ -3295,7 +3237,11 @@ impl SimpleBackend {
             .as_ref()
             .map(|context| context.return_alias_summaries.clone())
             .unwrap_or(local_return_alias_summaries);
-        let function_has_ret = compute_function_has_ret(&ir.functions);
+        let local_function_has_ret = compute_function_has_ret(&ir.functions);
+        let effective_function_has_ret = module_context
+            .as_ref()
+            .map(|context| context.function_has_ret.clone())
+            .unwrap_or(local_function_has_ret);
         let mut module_known_functions = ir_analysis.defined_functions.clone();
         module_known_functions.extend(self.external_function_names.iter().cloned());
         let mut compiled = 0u32;
@@ -3321,7 +3267,7 @@ impl SimpleBackend {
                 emit_traces,
                 &effective_leaf_functions,
                 &effective_function_arities,
-                &function_has_ret,
+                &effective_function_has_ret,
             );
             let func_elapsed = func_start.elapsed();
             if timing && func_elapsed.as_millis() > 500 {
@@ -3484,12 +3430,14 @@ impl SimpleBackend {
             is_import,
             kind,
             closure_size,
+            target_has_ret,
         };
         if let Some(id) = trampoline_ids.get(&key) {
             return *id;
         }
         let closure_suffix = if has_closure { "_closure" } else { "" };
         let import_suffix = if is_import { "_import" } else { "" };
+        let ret_suffix = if target_has_ret { "" } else { "_void" };
         let kind_suffix = match kind {
             TrampolineKind::Plain => "",
             TrampolineKind::Generator => "_gen",
@@ -3497,7 +3445,7 @@ impl SimpleBackend {
             TrampolineKind::AsyncGen => "_asyncgen",
         };
         let trampoline_name = format!(
-            "{func_name}__molt_trampoline_{arity}{closure_suffix}{kind_suffix}{import_suffix}"
+            "{func_name}__molt_trampoline_{arity}{closure_suffix}{kind_suffix}{ret_suffix}{import_suffix}"
         );
         let mut ctx = module.make_context();
         ctx.func.signature.params.push(AbiParam::new(types::I64));
@@ -4054,12 +4002,64 @@ mod tests {
         let context = SimpleBackend::build_module_context(&functions);
 
         assert_eq!(context.function_arities.get("helper"), Some(&2));
+        assert_eq!(context.function_has_ret.get("helper"), Some(&true));
         assert_eq!(
             context.return_alias_summaries.get("helper"),
             Some(&ReturnAliasSummary::Param(0))
         );
         assert!(context.leaf_functions.contains("helper"));
         assert!(context.leaf_functions.contains("helper_poll"));
+    }
+
+    #[test]
+    fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
+        let functions = vec![
+            FunctionIR {
+                name: "value_helper".to_string(),
+                params: vec!["value".to_string()],
+                ops: vec![OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("value".to_string()),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+                source_file: None,
+            },
+            FunctionIR {
+                name: "void_helper".to_string(),
+                params: vec![],
+                ops: vec![OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+                source_file: None,
+            },
+        ];
+
+        let context = SimpleBackend::build_module_context(&functions);
+
+        assert_eq!(context.function_has_ret.get("value_helper"), Some(&true));
+        assert_eq!(context.function_has_ret.get("void_helper"), Some(&false));
+    }
+
+    #[test]
+    fn trampoline_key_distinguishes_void_and_value_targets() {
+        let value_key = crate::TrampolineKey {
+            name: "helper".to_string(),
+            arity: 1,
+            has_closure: false,
+            is_import: false,
+            kind: TrampolineKind::Plain,
+            closure_size: 0,
+            target_has_ret: true,
+        };
+        let void_key = crate::TrampolineKey {
+            target_has_ret: false,
+            ..value_key.clone()
+        };
+
+        assert_ne!(value_key, void_key);
     }
 
     #[test]
@@ -4708,6 +4708,63 @@ mod tests {
                     && op.out.as_deref() == Some("merged")
             }),
             "merged phi should become load_var"
+        );
+    }
+
+    #[test]
+    fn fast_int_overflow_result_does_not_unbox_merged_bigint_result() {
+        let clif = compile_function_to_clif_text(
+            vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("base".to_string()),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("exp".to_string()),
+                        value: Some(63),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "pow".to_string(),
+                        args: Some(vec!["base".to_string(), "exp".to_string()]),
+                        out: Some("powv".to_string()),
+                        fast_int: Some(true),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("one".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "sub".to_string(),
+                        args: Some(vec!["powv".to_string(), "one".to_string()]),
+                        out: Some("maxsize".to_string()),
+                        fast_int: Some(true),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("maxsize".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+            }],
+            "molt_main",
+        );
+
+        assert!(
+            !clif.contains("block11(v43: i64):\n    v77 = iconst.i64 0x7fff_0000_0000_0000"),
+            "merged overflow result must remain boxed until a real inline-int consumer proves otherwise:\n{clif}",
         );
     }
 }
