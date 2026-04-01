@@ -6410,8 +6410,14 @@ impl SimpleBackend {
                             // memory load, falling to runtime call on failure.
                             let idx_raw = raw_int_shadow.get(&args[1]).copied()
                                 .unwrap_or_else(|| unbox_int(&mut builder, *idx, &nbc));
+                            let validate_fn_id = Self::import_func_id_split(
+                                &mut self.module, &mut self.import_ids,
+                                "molt_list_int_validate_ptr",
+                                &[types::I64, types::I64], &[types::I64],
+                            );
+                            let validate_fn = self.module.declare_func_in_func(validate_fn_id, builder.func);
                             let (data_ptr, in_bounds) =
-                                emit_list_int_bounds_check(&mut builder, *obj, idx_raw, &nbc);
+                                emit_list_int_bounds_check_inner(&mut builder, *obj, idx_raw, &nbc, Some(validate_fn));
                             let fast_block = builder.create_block();
                             let slow_block = builder.create_block();
                             builder.set_cold_block(slow_block);
@@ -13428,11 +13434,14 @@ impl SimpleBackend {
                     let flag_ptr_val: Option<Value> =
                         exc_flag_ptr_slot.map(|slot| builder.ins().stack_load(types::I64, slot, 0));
                     if let Some(flag_ptr) = flag_ptr_val {
-                        // Fast path: inline byte load from flag address
+                        // Fast path: inline byte load from flag address.
+                        // CRITICAL: MemFlags::new() required — trusted() lets
+                        // Cranelift cache/hoist the load across function calls
+                        // (molt_raise), reading the stale pre-raise flag value.
                         let pending_byte =
                             builder
                                 .ins()
-                                .load(types::I8, MemFlags::trusted(), flag_ptr, 0);
+                                .load(types::I8, MemFlags::new(), flag_ptr, 0);
                         let pending_i64 = builder.ins().uextend(types::I64, pending_byte);
                         let is_pending = builder.ins().icmp_imm(IntCC::NotEqual, pending_i64, 0);
                         // On positive read, validate with full function before branching
