@@ -1930,7 +1930,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         "EQ", "NE", "LT", "LE", "GT", "GE",
         "GET_ATTR", "SET_ATTR", "DEL_ATTR",
         "GETATTR_GENERIC_OBJ", "GETATTR_GENERIC_PTR",
-        "GUARDED_GETATTR", "MODULE_GET_ATTR",
+        "GUARDED_GETATTR", "MODULE_GET_ATTR", "MODULE_GET_GLOBAL",
         "SETATTR_GENERIC_OBJ", "SETATTR_GENERIC_PTR",
         "INDEX", "STORE_INDEX", "DEL_INDEX",
         "CALL", "CALL_FUNC", "CALL_METHOD", "CALL_BUILTIN",
