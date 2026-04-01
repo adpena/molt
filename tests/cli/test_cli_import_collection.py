@@ -4611,6 +4611,25 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
     assert "MOLT_STDLIB_OBJ" not in seen_backend_env
 
 
+def test_stdlib_object_cache_path_tracks_build_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+
+    base = cli._stdlib_object_cache_path(tmp_path / "program.o", "variant=a")
+    same = cli._stdlib_object_cache_path(tmp_path / "program.o", "variant=a")
+    changed = cli._stdlib_object_cache_path(tmp_path / "program.o", "variant=b")
+
+    assert base is not None
+    assert same == base
+    assert changed is not None
+    assert changed != base
+    assert base.parent == cache_root
+    assert base.name.startswith("stdlib_shared_")
+    assert base.suffix == ".o"
+
+
 def test_read_module_source_uses_utf8_fast_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -7237,6 +7256,18 @@ def test_backend_codegen_env_digest_tracks_codegen_knobs(
     monkeypatch.setenv("MOLT_BACKEND_REGALLOC_ALGORITHM", "single_pass")
     native_changed = cli._backend_codegen_env_digest(is_wasm=False)
     assert native_changed != baseline_native
+
+    monkeypatch.delenv("MOLT_BACKEND_REGALLOC_ALGORITHM", raising=False)
+    baseline_native = cli._backend_codegen_env_digest(is_wasm=False)
+    monkeypatch.setenv("MOLT_TIR_OPT", "0")
+    native_tir_changed = cli._backend_codegen_env_digest(is_wasm=False)
+    assert native_tir_changed != baseline_native
+
+    monkeypatch.delenv("MOLT_TIR_OPT", raising=False)
+    baseline_native = cli._backend_codegen_env_digest(is_wasm=False)
+    monkeypatch.setenv("MOLT_BACKEND", "llvm")
+    native_backend_changed = cli._backend_codegen_env_digest(is_wasm=False)
+    assert native_backend_changed != baseline_native
 
     baseline_wasm = cli._backend_codegen_env_digest(is_wasm=True)
     monkeypatch.setenv("MOLT_WASM_TABLE_BASE", "2048")

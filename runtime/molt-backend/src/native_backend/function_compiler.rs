@@ -1162,6 +1162,77 @@ impl SimpleBackend {
             }
         }
 
+        // ── Frame stack push for module chunk functions ────────────────
+        // Module chunks need traceback info (File/line) for exception
+        // formatting.  Emit molt_frame_push_info(filename_bits, name_bits,
+        // lineno) at entry and molt_frame_pop() before every return.
+        let is_module_chunk = func_ir.name.contains("__molt_module_chunk_");
+        if is_module_chunk {
+            // Allocate filename string.
+            let filename_bytes = func_ir
+                .source_file
+                .as_deref()
+                .unwrap_or("<module>")
+                .as_bytes();
+            let filename_data_id = Self::intern_data_segment(
+                &mut self.module,
+                &mut self.data_pool,
+                &mut self.next_data_id,
+                filename_bytes,
+            );
+            let filename_global = self.module.declare_data_in_func(filename_data_id, builder.func);
+            let filename_ptr = builder.ins().symbol_value(types::I64, filename_global);
+            let filename_len = builder.ins().iconst(types::I64, filename_bytes.len() as i64);
+
+            let str_from_bytes = Self::import_func_id_split(
+                &mut self.module,
+                &mut self.import_ids,
+                "molt_string_from_bytes",
+                &[types::I64, types::I64, types::I64],
+                &[types::I32],
+            );
+            let str_from_bytes_ref = self.module.declare_func_in_func(str_from_bytes, builder.func);
+
+            let filename_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot, 8, 3,
+            ));
+            let filename_out_ptr = builder.ins().stack_addr(types::I64, filename_slot, 0);
+            builder.ins().call(str_from_bytes_ref, &[filename_ptr, filename_len, filename_out_ptr]);
+            let filename_bits = builder.ins().stack_load(types::I64, filename_slot, 0);
+
+            // Allocate "<module>" name string.
+            let name_bytes = b"<module>";
+            let name_data_id = Self::intern_data_segment(
+                &mut self.module,
+                &mut self.data_pool,
+                &mut self.next_data_id,
+                name_bytes,
+            );
+            let name_global = self.module.declare_data_in_func(name_data_id, builder.func);
+            let name_ptr = builder.ins().symbol_value(types::I64, name_global);
+            let name_len = builder.ins().iconst(types::I64, name_bytes.len() as i64);
+
+            let name_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot, 8, 3,
+            ));
+            let name_out_ptr = builder.ins().stack_addr(types::I64, name_slot, 0);
+            builder.ins().call(str_from_bytes_ref, &[name_ptr, name_len, name_out_ptr]);
+            let name_bits = builder.ins().stack_load(types::I64, name_slot, 0);
+
+            // Call molt_frame_push_info(filename_bits, name_bits, lineno).
+            let lineno = builder.ins().iconst(types::I64, 1);
+            let frame_push_fn = import_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                "molt_frame_push_info",
+                &[types::I64, types::I64, types::I64],
+                &[types::I64],
+            );
+            builder.ins().call(frame_push_fn, &[filename_bits, name_bits, lineno]);
+        }
+
         seal_block_once(&mut builder, &mut sealed_blocks, entry_block);
         sealed_blocks.insert(entry_block);
 
@@ -10777,6 +10848,19 @@ impl SimpleBackend {
                     );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[line_val]);
+                    // Update frame stack line for accurate tracebacks.
+                    if is_module_chunk {
+                        let frame_line_fn = import_func_ref(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            "molt_frame_set_line",
+                            &[types::I64],
+                            &[types::I64],
+                        );
+                        builder.ins().call(frame_line_fn, &[line_val]);
+                    }
                     if !is_block_filled && let Some(block) = builder.current_block() {
                         if let Some(names) = block_tracked_obj.get_mut(&block) {
                             let cleanup = drain_cleanup_tracked_dedup(
@@ -17080,6 +17164,20 @@ impl SimpleBackend {
 
         builder.switch_to_block(master_return_block);
         seal_block_once(&mut builder, &mut sealed_blocks, master_return_block);
+
+        // Pop frame stack for module chunk functions before returning.
+        if is_module_chunk {
+            let frame_pop_fn = import_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                "molt_frame_pop",
+                &[],
+                &[types::I64],
+            );
+            builder.ins().call(frame_pop_fn, &[]);
+        }
 
         let final_res = if has_ret {
             let res = builder.block_params(master_return_block)[0];

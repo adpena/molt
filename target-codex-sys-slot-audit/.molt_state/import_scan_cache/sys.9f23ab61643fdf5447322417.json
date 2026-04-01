@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "module_name": "sys",
+  "is_package": false,
+  "include_nested": false,
+  "size": 46342,
+  "mtime_ns": 1775010523650933742,
+  "imports": [
+    "__future__",
+    "__future__.annotations"
+  ]
+}
