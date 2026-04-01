@@ -15,7 +15,7 @@
 | Total differential tests | 736 |
 | Tests with MOLT_SKIP or xfail | 494 |
 | Conformance baseline (compile) | 272/385 (59%) |
-| Conformance baseline (runtime parity) | 197/254 (78%) → **42/50 (84%) stable** after TIR regression fix |
+| Conformance baseline (runtime parity) | 197/254 (78%) → **43/50 (86%) core, 39/51 (76%) mid** after class annotations fix |
 | SIGSEGVs | 0 |
 | Timeouts | 2 |
 | Phase 1 P0 blockers | **4/4 fixed or mitigated** — CONST-in-loop, generators, SSA all fixed; exception handling works via TIR bypass |
@@ -411,7 +411,7 @@ Identified failure clusters from 50-test sample (86% pass rate):
 | **TIR exception bypass regression** | ~10+ | Partner `31673657b` removed TIR bypass for exception functions | **FIXED** `6ddeb1860` + `ffe665dfb` (guard restored + label preservation infra) |
 | **Error message format** | 3+ | Unpack "got N" count, int() base msg, str+int concat msg | **FIXED** `9457de91b` |
 | **Traceback format** | 2+ | Missing source line + caret (`^`) in error tracebacks (CPython 3.12+) | Not started — cosmetic, correct error raised |
-| **`__annotate__` returns empty** | 6+ dataclass + 1+ annotation tests | Generated `__annotate__` function doesn't resolve class-scope names → `__annotations__` empty | Root cause identified: `_emit_annotate_function_obj` class-scope resolution. Dataclasses patched to call `__annotate__` (`4906d5edb`) |
+| **Class `__annotations__` empty** | 6+ dataclass + 1+ annotation tests | Runtime lacks type.__annotations__ descriptor for PEP 749 deferred eval | **FIXED** `e8753e005` — eagerly emit `__annotations__` alongside `__annotate__` for both class paths. 5/7 dataclass tests now pass. |
 | **`__prepare__` class metadata** | 7+ class tests | Missing `__static_attributes__`, `__classdictcell__`. `__firstlineno__` added (`c2835cd19`) | Partial — `__firstlineno__` done, 2 attrs remain |
 | **Walrus scope in genexpr** | 1 | `:=` doesn't leak to enclosing scope from genexpr | Not started — frontend scope analysis |
 | **DeprecationWarning/SyntaxWarning** | 2+ | Missing warning emission for `~True`, `return` in `finally` | Not started — cosmetic |
