@@ -10,6 +10,14 @@ use super::ops::range_components_bigint;
 use super::ops_string::wtf8_from_bytes;
 
 #[unsafe(no_mangle)]
+/// Print a bare newline to stdout (used by the `print_newline` op).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_print_newline() {
+    use std::io::Write;
+    let _ = std::io::stdout().write_all(b"\n");
+    let _ = std::io::stdout().flush();
+}
+
 pub extern "C" fn molt_print_obj(val: u64) {
     crate::with_gil_entry!(_py, {
         let args_ptr = alloc_tuple(_py, &[val]);
