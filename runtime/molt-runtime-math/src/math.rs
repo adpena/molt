@@ -421,7 +421,7 @@ fn coerce_real(_py: &PyToken, val_bits: u64) -> Option<RealValue> {
                 return None;
             }
             let res_obj = obj_from_bits(res_bits);
-            if let Some(f) = res_obj.as_float() {
+            if let Some(f) = as_float_extended(res_obj) {
                 return Some(RealValue::Float(f));
             }
             let owner = class_name_for_error(type_of_bits(_py, val_bits));
@@ -472,7 +472,7 @@ fn coerce_real(_py: &PyToken, val_bits: u64) -> Option<RealValue> {
 
 fn coerce_real_named(_py: &PyToken, val_bits: u64, name: &str) -> Option<RealValue> {
     let obj = obj_from_bits(val_bits);
-    if let Some(f) = obj.as_float() {
+    if let Some(f) = as_float_extended(obj) {
         return Some(RealValue::Float(f));
     }
     if let Some(i) = to_i64(obj) {
@@ -1711,7 +1711,7 @@ pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
         if bigint_ptr_from_bits(val_bits).is_some() {
             return val_bits;
         }
-        if let Some(f) = obj.as_float() {
+        if let Some(f) = as_float_extended(obj) {
             let Some(bits) = round_float_bits(_py, f, RoundMode::Floor) else {
                 return MoltObject::none().bits();
             };
@@ -1755,7 +1755,7 @@ pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
         if bigint_ptr_from_bits(val_bits).is_some() {
             return val_bits;
         }
-        if let Some(f) = obj.as_float() {
+        if let Some(f) = as_float_extended(obj) {
             let Some(bits) = round_float_bits(_py, f, RoundMode::Ceil) else {
                 return MoltObject::none().bits();
             };
@@ -1799,7 +1799,7 @@ pub extern "C" fn molt_math_trunc(val_bits: u64) -> u64 {
         if bigint_ptr_from_bits(val_bits).is_some() {
             return val_bits;
         }
-        if let Some(f) = obj.as_float() {
+        if let Some(f) = as_float_extended(obj) {
             let Some(bits) = round_float_bits(_py, f, RoundMode::Trunc) else {
                 return MoltObject::none().bits();
             };
@@ -3162,7 +3162,7 @@ fn statistics_coerce_elem_fast_f64(_py: &PyToken, val_bits: u64, name: &str) -> 
     if let Some(i) = val.as_int() {
         return Some(i as f64);
     }
-    if let Some(f) = val.as_float() {
+    if let Some(f) = as_float_extended(val) {
         return Some(f);
     }
     let real = coerce_real_named(_py, val_bits, name)?;
@@ -3312,7 +3312,7 @@ fn statistics_seed_bigint(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
     if let Some(ptr) = bigint_ptr_from_bits(seed_bits) {
         return Some(bigint_ref(ptr).abs());
     }
-    if seed_obj.as_float().is_some() {
+    if as_float_extended(seed_obj).is_some() {
         let hash_bits = molt_hash_builtin(seed_bits);
         if exception_pending(_py) {
             return None;

@@ -171,6 +171,31 @@ pub extern "C" fn __molt_math_string_len(ptr: *mut u8) -> usize {
     unsafe { string_len(ptr) }
 }
 
+/// Extended float extraction: returns the f64 value for both inline floats
+/// AND heap-allocated NaN floats (TYPE_ID_FLOAT).  Returns 1 and writes
+/// the value to *out if the input is a float; otherwise returns 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_as_float_extended(bits: u64, out: *mut f64) -> i32 {
+    use crate::object::ops::as_float_extended;
+    let obj = obj_from_bits(bits);
+    match as_float_extended(obj) {
+        Some(f) => {
+            unsafe { *out = f; }
+            1
+        }
+        None => 0,
+    }
+}
+
+/// Produce NaN-boxed bits for a float result.  Non-NaN values are stored
+/// inline; NaN values are heap-allocated.
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_float_result_bits(val: f64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        crate::object::ops::float_result_bits(_py, val)
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Reference counting / pointer management
 // ---------------------------------------------------------------------------
