@@ -3289,10 +3289,19 @@ pub(crate) fn format_exception_with_traceback(_py: &PyToken<'_>, ptr: *mut u8) -
         // AOT-compiled code lack traceback objects because they're raised
         // by runtime intrinsics, not Python-level raise statements.
         out.push_str("Traceback (most recent call last):\n");
-        if let Some((file, line, name)) = frame_stack_top_info(_py) {
+        if let Some((file, line, name, col, end_col)) = frame_stack_top_info(_py) {
             out.push_str(&format!("  File \"{file}\", line {line}, in {name}\n"));
             if let Some(src_line) = read_source_line(&file, line) {
                 out.push_str(&format!("    {}\n", src_line.trim()));
+                let (c, ec) = if col >= 0 && end_col >= 0 {
+                    (col, end_col)
+                } else {
+                    crate::object::ops_sys::traceback_infer_column_offsets(&src_line)
+                };
+                let caret = crate::object::ops_sys::traceback_format_caret_line_native(&src_line, c, ec);
+                if !caret.is_empty() {
+                    out.push_str(&caret);
+                }
             }
         }
     }
@@ -3561,6 +3570,12 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
         ));
         if let Some(src_line) = read_source_line(&filename, final_line) {
             out.push_str(&format!("    {}\n", src_line.trim()));
+            // Traceback objects don't carry col offsets yet — infer from source.
+            let (c, ec) = crate::object::ops_sys::traceback_infer_column_offsets(&src_line);
+            let caret = crate::object::ops_sys::traceback_format_caret_line_native(&src_line, c, ec);
+            if !caret.is_empty() {
+                out.push_str(&caret);
+            }
         }
         current_bits = next_bits;
         depth += 1;
@@ -3601,6 +3616,8 @@ pub(crate) fn frame_stack_push(_py: &PyToken<'_>, code_bits: u64) {
         stack.borrow_mut().push(FrameEntry {
             code_bits,
             line,
+            col_offset: -1,
+            end_col_offset: -1,
             locals_bits: 0,
         });
     });
@@ -3610,6 +3627,18 @@ pub(crate) fn frame_stack_set_line(line: i64) {
     FRAME_STACK.with(|stack| {
         if let Some(entry) = stack.borrow_mut().last_mut() {
             entry.line = line;
+            entry.col_offset = -1;
+            entry.end_col_offset = -1;
+        }
+    });
+}
+
+pub(crate) fn frame_stack_set_line_col(line: i64, col_offset: i64, end_col_offset: i64) {
+    FRAME_STACK.with(|stack| {
+        if let Some(entry) = stack.borrow_mut().last_mut() {
+            entry.line = line;
+            entry.col_offset = col_offset;
+            entry.end_col_offset = end_col_offset;
         }
     });
 }
@@ -3627,8 +3656,9 @@ pub(crate) fn frame_stack_pop(_py: &PyToken<'_>) {
     }
 }
 
-/// Return (filename, lineno, function_name) from the top frame, if available.
-pub(crate) fn frame_stack_top_info(_py: &PyToken<'_>) -> Option<(String, i64, String)> {
+/// Return (filename, lineno, function_name, col_offset, end_col_offset) from
+/// the top frame, if available.  col_offset/end_col_offset are -1 when unknown.
+pub(crate) fn frame_stack_top_info(_py: &PyToken<'_>) -> Option<(String, i64, String, i64, i64)> {
     FRAME_STACK.with(|stack| {
         let stack = stack.borrow();
         let entry = stack.last()?;
@@ -3646,7 +3676,7 @@ pub(crate) fn frame_stack_top_info(_py: &PyToken<'_>) -> Option<(String, i64, St
             let name_bits = code_name_bits(ptr);
             let name = string_obj_to_owned(obj_from_bits(name_bits))
                 .unwrap_or_else(|| "<module>".to_string());
-            Some((filename, entry.line, name))
+            Some((filename, entry.line, name, entry.col_offset, entry.end_col_offset))
         }
     })
 }
@@ -3751,7 +3781,15 @@ pub extern "C" fn molt_frame_push_info(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_set_line(line: i64) -> u64 {
     frame_stack_set_line(line);
-    0 // no GIL needed — frame_stack_set_line is purely thread-local
+    0
+}
+
+/// Update line and column offsets on the top frame stack entry.
+/// Called by `line` ops that carry column offset info for caret annotations.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_frame_set_line_col(line: i64, col_offset: i64, end_col_offset: i64) -> u64 {
+    frame_stack_set_line_col(line, col_offset, end_col_offset);
+    0
 }
 
 /// Pop a frame entry from the frame stack.  Called at module chunk exit.

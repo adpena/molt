@@ -10814,18 +10814,34 @@ impl SimpleBackend {
                     );
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     let _ = builder.ins().call(local_callee, &[line_val]);
-                    // Update frame stack line for accurate tracebacks.
+                    // Update frame stack line (+ column offsets) for tracebacks.
                     if is_module_chunk {
-                        let frame_line_fn = import_func_ref(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            &mut builder,
-                            &mut import_refs,
-                            "molt_frame_set_line",
-                            &[types::I64],
-                            &[types::I64],
-                        );
-                        builder.ins().call(frame_line_fn, &[line_val]);
+                        let has_col = op.col_offset.is_some() && op.end_col_offset.is_some();
+                        if has_col {
+                            let col_val = builder.ins().iconst(types::I64, op.col_offset.unwrap());
+                            let end_col_val = builder.ins().iconst(types::I64, op.end_col_offset.unwrap());
+                            let frame_line_col_fn = import_func_ref(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                "molt_frame_set_line_col",
+                                &[types::I64, types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            builder.ins().call(frame_line_col_fn, &[line_val, col_val, end_col_val]);
+                        } else {
+                            let frame_line_fn = import_func_ref(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                "molt_frame_set_line",
+                                &[types::I64],
+                                &[types::I64],
+                            );
+                            builder.ins().call(frame_line_fn, &[line_val]);
+                        }
                     }
                     if !is_block_filled && let Some(block) = builder.current_block() {
                         if let Some(names) = block_tracked_obj.get_mut(&block) {
