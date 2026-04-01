@@ -1175,9 +1175,15 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
     FRAME_STACK.with(|stack| {
         let stack = stack.borrow();
         if let Some(entry) = stack.last() {
-            LAST_EXCEPTION_COL.with(|cell| {
-                *cell.borrow_mut() = (entry.col_offset, entry.end_col_offset);
-            });
+            // Only stash if we have real col data — don't overwrite a
+            // good stash from a prior recording of the same exception.
+            if entry.col_offset >= 0 && entry.end_col_offset >= 0 {
+                LAST_EXCEPTION_COL.with(|cell| {
+                    *cell.borrow_mut() = (entry.col_offset, entry.end_col_offset);
+                });
+            }
+        } else if std::env::var("MOLT_DEBUG_FRAME_COL").is_ok() {
+            eprintln!("[RECORD_EXC] frame stack EMPTY — no col to stash");
         }
     });
     if debug_exception_flow() {
@@ -3597,9 +3603,6 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
             // Use the col_offset stashed at exception-raise time, not the
             // current frame stack (which may have been modified since).
             let saved_col = LAST_EXCEPTION_COL.with(|cell| *cell.borrow());
-            if std::env::var("MOLT_DEBUG_FRAME_COL").is_ok() {
-                eprintln!("[CARET_FMT] saved_col=({}, {}) trim_offset={}", saved_col.0, saved_col.1, trim_offset);
-            }
             let (c, ec) = if saved_col.0 >= 0 && saved_col.1 >= 0 {
                 (saved_col.0 - trim_offset, saved_col.1 - trim_offset)
             } else {
