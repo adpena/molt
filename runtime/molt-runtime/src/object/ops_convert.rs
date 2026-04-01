@@ -2,6 +2,7 @@
 // Split from ops.rs for compilation-unit size reduction.
 
 use crate::object::accessors::object_field_init_ptr_raw;
+use crate::object::inc_ref_ptr;
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
@@ -380,8 +381,17 @@ pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> 
 pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(val_bits);
+        // Inline non-NaN float: return as-is.
         if obj.is_float() {
             return val_bits;
+        }
+        // Heap-allocated NaN float (TYPE_ID_FLOAT): `float(x)` returns the
+        // same object when x is already a float, matching CPython semantics.
+        if let Some(ptr) = obj.as_ptr() {
+            if unsafe { object_type_id(ptr) } == TYPE_ID_FLOAT {
+                unsafe { inc_ref_ptr(_py, ptr) };
+                return val_bits;
+            }
         }
         if complex_ptr_from_bits(val_bits).is_some() {
             let type_label = type_name(_py, obj);
@@ -406,7 +416,7 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
                     let len = string_len(ptr);
                     let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
                     if let Ok(parsed) = parse_float_from_bytes(bytes) {
-                        return MoltObject::from_float(parsed).bits();
+                        return float_result_bits(_py, parsed);
                     }
                     let rendered = String::from_utf8_lossy(bytes);
                     let msg = format!("could not convert string to float: '{rendered}'");
@@ -416,7 +426,7 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
                     let len = bytes_len(ptr);
                     let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
                     if let Ok(parsed) = parse_float_from_bytes(bytes) {
-                        return MoltObject::from_float(parsed).bits();
+                        return float_result_bits(_py, parsed);
                     }
                     let rendered = String::from_utf8_lossy(bytes);
                     let msg = format!("could not convert string to float: '{rendered}'");
@@ -428,7 +438,7 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
                     let res_bits = call_callable0(_py, call_bits);
                     dec_ref_bits(_py, call_bits);
                     let res_obj = obj_from_bits(res_bits);
-                    if res_obj.is_float() {
+                    if is_float_extended(res_obj) {
                         return res_bits;
                     }
                     let owner = class_name_for_error(type_of_bits(_py, val_bits));
@@ -716,7 +726,7 @@ pub extern "C" fn molt_float_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
                     );
                 }
             };
-            let out_bits = MoltObject::from_float(value).bits();
+            let out_bits = float_result_bits(_py, value);
             let builtins = builtin_classes(_py);
             if cls_bits == builtins.float {
                 return out_bits;
