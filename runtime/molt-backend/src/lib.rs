@@ -1751,28 +1751,6 @@ pub(crate) fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
 }
 
 #[cfg(feature = "native-backend")]
-fn drain_cleanup_tracked(
-    names: &mut Vec<String>,
-    last_use: &BTreeMap<String, usize>,
-    op_idx: usize,
-    skip: Option<&str>,
-) -> Vec<String> {
-    let mut cleanup = Vec::new();
-    names.retain(|name| {
-        if skip == Some(name.as_str()) {
-            return true;
-        }
-        let last = last_use.get(name).copied().unwrap_or(usize::MAX);
-        if last <= op_idx {
-            cleanup.push(name.clone());
-            return false;
-        }
-        true
-    });
-    cleanup
-}
-
-#[cfg(feature = "native-backend")]
 #[allow(dead_code)]
 fn collect_cleanup_tracked(
     names: &[String],
@@ -1832,10 +1810,10 @@ pub(crate) fn propagate_tracked_to_branches(
 }
 
 #[cfg(feature = "native-backend")]
-#[cfg(feature = "native-backend")]
 fn drain_cleanup_tracked_dedup(
     names: &mut Vec<String>,
     last_use: &BTreeMap<String, usize>,
+    alias_roots: &BTreeMap<String, String>,
     op_idx: usize,
     skip: Option<&str>,
     mut already_decrefed: Option<&mut BTreeSet<String>>,
@@ -1845,15 +1823,19 @@ fn drain_cleanup_tracked_dedup(
         if skip == Some(name.as_str()) {
             return true;
         }
+        let cleanup_key = alias_roots
+            .get(name)
+            .map(String::as_str)
+            .unwrap_or(name.as_str());
         if let Some(ref set) = already_decrefed
-            && set.contains(name.as_str())
+            && set.contains(cleanup_key)
         {
             return false;
         }
         let last = last_use.get(name).copied().unwrap_or(usize::MAX);
         if last <= op_idx {
             if let Some(ref mut set) = already_decrefed {
-                set.insert(name.clone());
+                set.insert(cleanup_key.to_string());
             }
             cleanup.push(name.clone());
             return false;
@@ -1868,6 +1850,8 @@ fn drain_cleanup_entry_tracked(
     names: &mut Vec<String>,
     entry_vars: &mut BTreeMap<String, Value>,
     last_use: &BTreeMap<String, usize>,
+    alias_roots: &BTreeMap<String, String>,
+    already_decrefed: &mut BTreeSet<String>,
     op_idx: usize,
 ) -> Vec<Value> {
     let mut cleanup = Vec::new();
@@ -1878,9 +1862,18 @@ fn drain_cleanup_entry_tracked(
         // that are used later but not yet tracked in last_use.
         let last = last_use.get(name).copied().unwrap_or(usize::MAX);
         if last <= op_idx {
+            let cleanup_key = alias_roots
+                .get(name)
+                .map(String::as_str)
+                .unwrap_or(name.as_str());
+            if already_decrefed.contains(cleanup_key) {
+                to_remove.push(name.clone());
+                return false;
+            }
             if let Some(val) = entry_vars.get(name) {
                 cleanup.push(*val);
             }
+            already_decrefed.insert(cleanup_key.to_string());
             // Mark for removal from entry_vars so no other cleanup path
             // (exception handler, finalize block) can double dec-ref.
             to_remove.push(name.clone());
@@ -2805,8 +2798,8 @@ impl SimpleBackend {
         if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
-            let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
-            let tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
+            let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
+            let _tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
             // Version the TIR cache by the backend binary's own executable path hash.
             // This ensures cache invalidation when the backend is recompiled (e.g. when
             // TIR passes change). Without this, stale optimized IR persists across builds.
@@ -2867,12 +2860,6 @@ impl SimpleBackend {
                         );
                     }
 
-                // NOTE: phi rewrite is DISABLED because TIR roundtrip is
-                // disabled.  The native backend handles phi ops directly
-                // via the if/end_if handler.  The store_var/load_var rewrite
-                // interferes with the native backend's phi handling when TIR
-                // is not performing the full SSA→lowering roundtrip.
-                // rewrite_phi_to_store_load(&mut func_ir.ops);
                 // Loop markers (loop_start, loop_end) are now preserved through
                 // the TIR roundtrip via LoopRole metadata on TirFunction, so
                 // functions with loops benefit from TIR optimization.
@@ -2944,7 +2931,7 @@ impl SimpleBackend {
                         let idx = input.index;
                         let content_hash = input.content_hash;
                         // Build a temporary FunctionIR for the TIR pipeline.
-                        let tmp_func = FunctionIR {
+                        let mut tmp_func = FunctionIR {
                             name: input.name,
                             params: input.params,
                             ops: input.ops,
@@ -3011,6 +2998,11 @@ impl SimpleBackend {
                                 return (idx, content_hash, Vec::new());
                             }
                         }
+                        // The TIR roundtrip linearizes structured control flow
+                        // into jump/label blocks. Rewrite phi merges only for
+                        // functions that actually enter that roundtrip so the
+                        // state-machine backend does not see residual phi ops.
+                        rewrite_phi_to_store_load(&mut tmp_func.ops);
                         // Wrap TIR pipeline in catch_unwind so any panic in
                         // lowering/optimization falls back to original ops
                         // instead of crashing the entire compilation.
@@ -3833,6 +3825,7 @@ mod tests {
         FunctionIR, OpIR, SimpleBackend, SimpleIR, TrampolineKind, analyze_native_backend_ir,
         compute_function_has_ret,
     };
+    use crate::rewrite_phi_to_store_load;
     use crate::passes::ReturnAliasSummary;
     use cranelift_codegen::ir::types;
     use std::sync::{Mutex, OnceLock};
@@ -4636,6 +4629,85 @@ mod tests {
             "nested exception raise CFG synthesized zero-valued predecessors:\n{}\n\nCLIF:\n{}",
             suspicious.join("\n"),
             clif
+        );
+    }
+
+    #[test]
+    fn rewrite_phi_to_store_load_rewrites_merge_phi() {
+        let mut ops = vec![
+            OpIR {
+                kind: "const_bool".to_string(),
+                value: Some(1),
+                out: Some("cond".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "if".to_string(),
+                args: Some(vec!["cond".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const".to_string(),
+                value: Some(1),
+                out: Some("then_val".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "else".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const".to_string(),
+                value: Some(2),
+                out: Some("else_val".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "end_if".to_string(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "phi".to_string(),
+                out: Some("merged".to_string()),
+                args: Some(vec!["then_val".to_string(), "else_val".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".to_string(),
+                var: Some("merged".to_string()),
+                ..OpIR::default()
+            },
+        ];
+
+        rewrite_phi_to_store_load(&mut ops);
+
+        assert!(
+            ops.iter().all(|op| op.kind != "phi"),
+            "phi should be eliminated: {ops:?}"
+        );
+        assert!(
+            ops.iter().any(|op| {
+                op.kind == "store_var"
+                    && op.var.as_deref() == Some("_phi_merged")
+                    && op.args.as_ref().is_some_and(|args| args.len() == 1 && args[0] == "then_val")
+            }),
+            "then branch should store merged value"
+        );
+        assert!(
+            ops.iter().any(|op| {
+                op.kind == "store_var"
+                    && op.var.as_deref() == Some("_phi_merged")
+                    && op.args.as_ref().is_some_and(|args| args.len() == 1 && args[0] == "else_val")
+            }),
+            "else branch should store merged value"
+        );
+        assert!(
+            ops.iter().any(|op| {
+                op.kind == "load_var"
+                    && op.var.as_deref() == Some("_phi_merged")
+                    && op.out.as_deref() == Some("merged")
+            }),
+            "merged phi should become load_var"
         );
     }
 }
