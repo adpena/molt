@@ -9437,6 +9437,61 @@ pub extern "C" fn molt_tuple_getitem_borrowed(tuple_bits: u64, index_bits: u64) 
     })
 }
 
+/// Fast tuple getitem for known-tuple containers.
+///
+/// Skips the 18-type dispatch in `molt_index` and indexes directly into the
+/// tuple's element slice.  Falls back to `molt_index` if the object is not
+/// a plain tuple (safety net).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_tuple_getitem(obj_bits: u64, key_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if let Some(ptr) = obj_from_bits(obj_bits).as_ptr() {
+            unsafe {
+                if object_type_id(ptr) == TYPE_ID_TUPLE {
+                    let key = obj_from_bits(key_bits);
+                    // Slice indexing: delegate to molt_index for proper slice handling.
+                    if let Some(key_ptr) = key.as_ptr() {
+                        if object_type_id(key_ptr) == TYPE_ID_SLICE {
+                            return molt_index(obj_bits, key_bits);
+                        }
+                    }
+                    let idx = if let Some(i) = to_i64(key) {
+                        i
+                    } else {
+                        let key_type = type_name(_py, key);
+                        let type_err = format!(
+                            "tuple indices must be integers or slices, not {}",
+                            key_type
+                        );
+                        let Some(i) = index_i64_with_overflow(_py, key_bits, &type_err, None) else {
+                            return MoltObject::none().bits();
+                        };
+                        i
+                    };
+                    let len = tuple_len(ptr) as i64;
+                    let mut i = idx;
+                    if i < 0 {
+                        i += len;
+                    }
+                    if i < 0 || i >= len {
+                        return raise_exception::<_>(
+                            _py,
+                            "IndexError",
+                            "tuple index out of range",
+                        );
+                    }
+                    let elems = seq_vec_ref(ptr);
+                    let val = elems[i as usize];
+                    inc_ref_bits(_py, val);
+                    return val;
+                }
+            }
+        }
+        // Fallback: not a tuple at runtime — use generic dispatch.
+        molt_index(obj_bits, key_bits)
+    })
+}
+
 // ── Shared bytes/string helper functions (used by ops_bytes.rs and ops_string.rs) ──
 
 #[inline]
@@ -10778,4 +10833,108 @@ pub extern "C" fn molt_list_getitem_unchecked(list_bits: u64, index: i64) -> u64
             val
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Fast-path dispatch for known bound method calls.
+//
+// These functions accept a *bound method* as the first argument (the same
+// value that the generic `call_method` handler receives), extract `self` from
+// the bound method, and forward to the concrete runtime implementation.
+// The compiler emits direct calls to these when the `call_method` op carries
+// `s_value = "BoundMethod:<class>:<method>"` for a recognised pattern.
+//
+// Each function inlines the type-check + self-extraction so that the happy
+// path avoids all callargs allocation, IC lookup, and nested GIL acquisition
+// overhead.  A fallback through `molt_call_bind_ic` handles subclasses or
+// overridden methods that don't match the expected bound-method layout.
+// ---------------------------------------------------------------------------
+
+/// Fast-path for `list.append(elem)` via bound method.
+///
+/// Extracts the list receiver from `method_bits` and calls
+/// [`molt_list_append`] directly, avoiding callargs allocation and IC
+/// dispatch.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_fast_list_append(method_bits: u64, elem_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let method_obj = obj_from_bits(method_bits);
+        if let Some(method_ptr) = method_obj.as_ptr() {
+            if unsafe { object_type_id(method_ptr) } == TYPE_ID_BOUND_METHOD {
+                let self_bits = unsafe { bound_method_self_bits(method_ptr) };
+                let self_obj = obj_from_bits(self_bits);
+                if let Some(self_ptr) = self_obj.as_ptr() {
+                    if unsafe { object_type_id(self_ptr) } == TYPE_ID_LIST {
+                        // Inline the list append: push + incref.
+                        unsafe {
+                            let elems = seq_vec(self_ptr);
+                            elems.push(elem_bits);
+                            inc_ref_bits(_py, elem_bits);
+                            if crate::object::refcount_opt::is_heap_ref(elem_bits) {
+                                (*header_from_obj_ptr(self_ptr)).flags |=
+                                    crate::object::HEADER_FLAG_CONTAINS_REFS;
+                            }
+                        }
+                        dec_ref_bits(_py, method_bits);
+                        return MoltObject::none().bits();
+                    }
+                }
+            }
+        }
+        // Fallback: not actually a bound method on a list — generic dispatch.
+        let builder_ptr = molt_callargs_new(1, 0);
+        unsafe { molt_callargs_push_pos(builder_ptr, elem_bits) };
+        let site = MoltObject::from_int(0).bits();
+        crate::molt_call_bind_ic(site, method_bits, builder_ptr)
+    })
+}
+
+/// Fast-path for `str.join(iterable)` via bound method.
+///
+/// Extracts the separator string from `method_bits` and calls
+/// [`molt_string_join`] directly.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_fast_str_join(method_bits: u64, iterable_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let method_obj = obj_from_bits(method_bits);
+        if let Some(method_ptr) = method_obj.as_ptr() {
+            if unsafe { object_type_id(method_ptr) } == TYPE_ID_BOUND_METHOD {
+                let self_bits = unsafe { bound_method_self_bits(method_ptr) };
+                // Delegate to the concrete str.join implementation.
+                let result = crate::object::ops_string::molt_string_join(self_bits, iterable_bits);
+                dec_ref_bits(_py, method_bits);
+                return result;
+            }
+        }
+        let builder_ptr = molt_callargs_new(1, 0);
+        unsafe { molt_callargs_push_pos(builder_ptr, iterable_bits) };
+        let site = MoltObject::from_int(0).bits();
+        crate::molt_call_bind_ic(site, method_bits, builder_ptr)
+    })
+}
+
+/// Fast-path for `dict.get(key, default)` via bound method.
+///
+/// Extracts the dict receiver from `method_bits` and calls
+/// [`molt_dict_get`] directly.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_fast_dict_get(method_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let method_obj = obj_from_bits(method_bits);
+        if let Some(method_ptr) = method_obj.as_ptr() {
+            if unsafe { object_type_id(method_ptr) } == TYPE_ID_BOUND_METHOD {
+                let self_bits = unsafe { bound_method_self_bits(method_ptr) };
+                // Delegate to the concrete dict.get implementation.
+                let result =
+                    crate::object::ops_dict::molt_dict_get(self_bits, key_bits, default_bits);
+                dec_ref_bits(_py, method_bits);
+                return result;
+            }
+        }
+        let builder_ptr = molt_callargs_new(2, 0);
+        unsafe { molt_callargs_push_pos(builder_ptr, key_bits) };
+        unsafe { molt_callargs_push_pos(builder_ptr, default_bits) };
+        let site = MoltObject::from_int(0).bits();
+        crate::molt_call_bind_ic(site, method_bits, builder_ptr)
+    })
 }

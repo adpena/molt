@@ -414,8 +414,9 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     ),
     "sorted": BuiltinFuncSpec(
         "molt_sorted_builtin",
-        ("iterable", "key", "reverse"),
-        defaults=(ast.Constant(None), ast.Constant(False)),
+        ("iterable",),
+        kwonly_params=("key", "reverse"),
+        kw_defaults=(ast.Constant(None), ast.Constant(False)),
     ),
     # CPython: dir([object]) uses the caller's locals() when called with no args.
     # Lower as a single-arg runtime call with an explicit MOLT_MISSING sentinel
@@ -18738,10 +18739,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 arg = self.visit(node.args[0])
                 if arg is None:
                     raise NotImplementedError("Unsupported bool argument")
-                neg = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="NOT", args=[arg], result=neg))
                 res = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="NOT", args=[neg], result=res))
+                self.emit(MoltOp(kind="BOOL", args=[arg], result=res))
                 return res
             if func_id == "ord":
                 if node.keywords or len(node.args) != 1:
@@ -28655,13 +28654,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     }
                 )
             elif op.kind == "CALL_METHOD":
-                json_ops.append(
-                    {
-                        "kind": "call_method",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                    }
-                )
+                entry = {
+                    "kind": "call_method",
+                    "args": [arg.name for arg in op.args],
+                    "out": op.result.name,
+                }
+                # Propagate BoundMethod type info so the backend can
+                # specialise known receiver+method pairs (e.g.
+                # list.append, str.join, dict.get) into direct calls.
+                callee_hint = getattr(op.args[0], "type_hint", None)
+                if callee_hint and isinstance(callee_hint, str) and callee_hint.startswith("BoundMethod:"):
+                    entry["s_value"] = callee_hint
+                json_ops.append(entry)
             elif op.kind == "BUILTIN_FUNC":
                 func_name, arity = op.args
                 json_ops.append(

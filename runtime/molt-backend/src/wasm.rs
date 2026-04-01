@@ -6646,7 +6646,14 @@ impl WasmBackend {
                         let item = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(container));
                         func.instruction(&Instruction::LocalGet(item));
-                        emit_call(func, reloc_enabled, import_ids["contains"]);
+                        let import_key = match op.container_type.as_deref() {
+                            Some("set") | Some("frozenset") => "set_contains",
+                            Some("dict") => "dict_contains",
+                            Some("list") => "list_contains",
+                            Some("str") => "str_contains",
+                            _ => "contains",
+                        };
+                        emit_call(func, reloc_enabled, import_ids[import_key]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
@@ -7922,11 +7929,12 @@ impl WasmBackend {
                         let idx = locals[&args[1]];
                         func.instruction(&Instruction::LocalGet(obj));
                         func.instruction(&Instruction::LocalGet(idx));
-                        // Dispatch: list_int (flat i64) → generic
-                        let import_key = if op.container_type.as_deref() == Some("list_int") {
-                            "list_int_getitem"
-                        } else {
-                            "index"
+                        // Dispatch: list_int / dict / tuple → generic
+                        let import_key = match op.container_type.as_deref() {
+                            Some("list_int") => "list_int_getitem",
+                            Some("dict") => "dict_getitem",
+                            Some("tuple") => "tuple_getitem",
+                            _ => "index",
                         };
                         emit_call(func, reloc_enabled, import_ids[import_key]);
                         if let Some(out) = op.out.as_ref() {
@@ -7944,11 +7952,11 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(obj));
                         func.instruction(&Instruction::LocalGet(idx));
                         func.instruction(&Instruction::LocalGet(val));
-                        // Dispatch: list_int (flat i64) → generic
-                        let import_key = if op.container_type.as_deref() == Some("list_int") {
-                            "list_int_setitem"
-                        } else {
-                            "store_index"
+                        // Dispatch: list_int / dict → generic
+                        let import_key = match op.container_type.as_deref() {
+                            Some("list_int") => "list_int_setitem",
+                            Some("dict") => "dict_setitem",
+                            _ => "store_index",
                         };
                         emit_call(func, reloc_enabled, import_ids[import_key]);
                         if let Some(out) = op.out.as_ref() {
@@ -10897,28 +10905,82 @@ impl WasmBackend {
                         let args_names = op.args.as_ref().unwrap();
                         let method_bits = locals[&args_names[0]];
                         let out = locals[op.out.as_ref().unwrap()];
-                        let callargs_tmp = locals["__molt_tmp0"];
-                        let arity = args_names.len().saturating_sub(1);
-                        func.instruction(&Instruction::I64Const(arity as i64));
-                        func.instruction(&Instruction::I64Const(0));
-                        emit_call(func, reloc_enabled, import_ids["callargs_new"]);
-                        func.instruction(&Instruction::LocalSet(callargs_tmp));
-                        for arg_name in &args_names[1..] {
-                            let arg = locals[arg_name];
+
+                        // Fast-path: dispatch known bound-method patterns
+                        // directly without callargs allocation or IC lookup.
+                        let fast_dispatched = if let Some(sv) = op.s_value.as_deref() {
+                            let arity = args_names.len().saturating_sub(1);
+                            match sv {
+                                "BoundMethod:list:append" if arity == 1 => {
+                                    let arg = locals[&args_names[1]];
+                                    func.instruction(&Instruction::LocalGet(method_bits));
+                                    func.instruction(&Instruction::LocalGet(arg));
+                                    emit_call(
+                                        func,
+                                        reloc_enabled,
+                                        import_ids["fast_list_append"],
+                                    );
+                                    true
+                                }
+                                "BoundMethod:str:join" if arity == 1 => {
+                                    let arg = locals[&args_names[1]];
+                                    func.instruction(&Instruction::LocalGet(method_bits));
+                                    func.instruction(&Instruction::LocalGet(arg));
+                                    emit_call(
+                                        func,
+                                        reloc_enabled,
+                                        import_ids["fast_str_join"],
+                                    );
+                                    true
+                                }
+                                "BoundMethod:dict:get" if arity == 2 => {
+                                    let key = locals[&args_names[1]];
+                                    let default = locals[&args_names[2]];
+                                    func.instruction(&Instruction::LocalGet(method_bits));
+                                    func.instruction(&Instruction::LocalGet(key));
+                                    func.instruction(&Instruction::LocalGet(default));
+                                    emit_call(
+                                        func,
+                                        reloc_enabled,
+                                        import_ids["fast_dict_get"],
+                                    );
+                                    true
+                                }
+                                _ => false,
+                            }
+                        } else {
+                            false
+                        };
+
+                        if !fast_dispatched {
+                            // Generic path: allocate callargs and dispatch via IC.
+                            let callargs_tmp = locals["__molt_tmp0"];
+                            let arity = args_names.len().saturating_sub(1);
+                            func.instruction(&Instruction::I64Const(arity as i64));
+                            func.instruction(&Instruction::I64Const(0));
+                            emit_call(func, reloc_enabled, import_ids["callargs_new"]);
+                            func.instruction(&Instruction::LocalSet(callargs_tmp));
+                            for arg_name in &args_names[1..] {
+                                let arg = locals[arg_name];
+                                func.instruction(&Instruction::LocalGet(callargs_tmp));
+                                func.instruction(&Instruction::LocalGet(arg));
+                                emit_call(
+                                    func,
+                                    reloc_enabled,
+                                    import_ids["callargs_push_pos"],
+                                );
+                                func.instruction(&Instruction::Drop);
+                            }
+                            let site_bits = box_int(stable_ic_site_id(
+                                func_ir.name.as_str(),
+                                op_idx,
+                                "call_method",
+                            ));
+                            func.instruction(&Instruction::I64Const(site_bits));
+                            func.instruction(&Instruction::LocalGet(method_bits));
                             func.instruction(&Instruction::LocalGet(callargs_tmp));
-                            func.instruction(&Instruction::LocalGet(arg));
-                            emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
-                            func.instruction(&Instruction::Drop);
+                            emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
                         }
-                        let site_bits = box_int(stable_ic_site_id(
-                            func_ir.name.as_str(),
-                            op_idx,
-                            "call_method",
-                        ));
-                        func.instruction(&Instruction::I64Const(site_bits));
-                        func.instruction(&Instruction::LocalGet(method_bits));
-                        func.instruction(&Instruction::LocalGet(callargs_tmp));
-                        emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
                         func.instruction(&Instruction::LocalSet(out));
                     }
                     "chan_new" => {
