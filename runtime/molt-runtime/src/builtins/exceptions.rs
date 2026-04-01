@@ -3291,6 +3291,9 @@ pub(crate) fn format_exception_with_traceback(_py: &PyToken<'_>, ptr: *mut u8) -
         out.push_str("Traceback (most recent call last):\n");
         if let Some((file, line, name)) = frame_stack_top_info(_py) {
             out.push_str(&format!("  File \"{file}\", line {line}, in {name}\n"));
+            if let Some(src_line) = read_source_line(&file, line) {
+                out.push_str(&format!("    {}\n", src_line.trim()));
+            }
         }
     }
     let kind = exception_class_name(ptr);
@@ -3556,10 +3559,24 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
         out.push_str(&format!(
             "  File \"{filename}\", line {final_line}, in {func_name}\n"
         ));
+        if let Some(src_line) = read_source_line(&filename, final_line) {
+            out.push_str(&format!("    {}\n", src_line.trim()));
+        }
         current_bits = next_bits;
         depth += 1;
     }
     Some(out)
+}
+
+/// Read a single source line from a file for traceback display.
+/// Returns None if the file can't be read or the line doesn't exist.
+/// Matches CPython's `linecache.getline` behaviour for AOT tracebacks.
+fn read_source_line(filename: &str, lineno: i64) -> Option<String> {
+    if lineno <= 0 || filename.is_empty() || filename == "<unknown>" || filename == "<module>" {
+        return None;
+    }
+    let content = std::fs::read_to_string(filename).ok()?;
+    content.lines().nth((lineno - 1) as usize).map(String::from)
 }
 
 // --- Frame stack and traceback helpers ---
