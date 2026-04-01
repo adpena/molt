@@ -740,7 +740,7 @@ pub extern "C" fn molt_call_func_dispatch(
                         padded_len += 1;
                         true
                     }
-                    (1, FUNC_DEFAULT_NEG_ONE) => {
+                    (1, FUNC_DEFAULT_NEG_ONE) | (1, FUNC_DEFAULT_REPLACE_COUNT) => {
                         padded_buf[padded_len] = MoltObject::from_int(-1).bits();
                         padded_len += 1;
                         true
