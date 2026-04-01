@@ -20626,6 +20626,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         obj_name: str | None,
         exact_class: str | None,
     ) -> MoltValue:
+        # Set expression-level col_offset from the Attribute AST node so
+        # that get_attr ops carry the correct column range for traceback
+        # caret annotations (e.g. `x.upper` not `x.upper()`).
+        _prev_expr_col = getattr(self, "_expr_col", None)
+        _attr_col = getattr(node, "col_offset", None)
+        _attr_end_col = getattr(node, "end_col_offset", None)
+        if _attr_col is not None and _attr_end_col is not None:
+            self._expr_col = (_attr_col, _attr_end_col)
+        try:
+            return self._emit_attribute_load_inner(node, obj, obj_name, exact_class)
+        finally:
+            self._expr_col = _prev_expr_col
+
+    def _emit_attribute_load_inner(
+        self,
+        node: ast.Attribute,
+        obj: MoltValue,
+        obj_name: str | None,
+        exact_class: str | None,
+    ) -> MoltValue:
         if obj.type_hint.startswith("super"):
             super_class = None
             if obj.type_hint == "super":
