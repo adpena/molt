@@ -37,7 +37,7 @@ use crate::{
     molt_bytes_hex, molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice,
     molt_bytes_rindex_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
     molt_bytes_startswith_slice, molt_class_set_base, molt_dataclass_new, molt_dataclass_set_class,
-    molt_dict_from_obj, molt_dict_get, molt_dict_new, molt_file_reconfigure, molt_frozenset_copy_method,
+    molt_dict_from_obj, molt_dict_new, molt_file_reconfigure, molt_frozenset_copy_method,
     molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
     molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
     molt_frozenset_union_multi, molt_function_default_kind, molt_generator_new,
@@ -52,7 +52,7 @@ use crate::{
     molt_string_endswith_slice, molt_string_find_slice, molt_string_format_method,
     molt_string_index_slice, molt_string_rfind_slice, molt_string_rindex_slice,
     molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
-    molt_string_join, molt_string_startswith_slice, molt_super_new, molt_tuple_index_range, molt_type_call,
+    molt_string_startswith_slice, molt_super_new, molt_tuple_index_range, molt_type_call,
     molt_type_init, molt_type_new, obj_from_bits, object_class_bits, object_set_class_bits,
     object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception, raise_not_callable,
     raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned, tuple_len, type_name,
@@ -76,8 +76,6 @@ struct CallBindIcEntry {
 
 const CALL_BIND_IC_KIND_DIRECT_FUNC: u8 = 1;
 const CALL_BIND_IC_KIND_LIST_APPEND: u8 = 2;
-const CALL_BIND_IC_KIND_STR_JOIN: u8 = 3;
-const CALL_BIND_IC_KIND_DICT_GET: u8 = 4;
 
 // Thread-local direct-mapped inline cache for call_bind dispatch.
 // Each slot stores (site_id, entry). On lookup, we check if the stored site_id
@@ -1434,18 +1432,6 @@ unsafe fn call_bind_ic_entry_for_call(call_bits: u64) -> Option<CallBindIcEntry>
                         arity: 1,
                         kind: CALL_BIND_IC_KIND_LIST_APPEND,
                     })
-                } else if fn_ptr == fn_addr!(molt_string_join) {
-                    Some(CallBindIcEntry {
-                        fn_ptr: fn_ptr as u64,
-                        arity: 1,
-                        kind: CALL_BIND_IC_KIND_STR_JOIN,
-                    })
-                } else if fn_ptr == fn_addr!(dict_get_method) {
-                    Some(CallBindIcEntry {
-                        fn_ptr: fn_ptr as u64,
-                        arity: 2,
-                        kind: CALL_BIND_IC_KIND_DICT_GET,
-                    })
                 } else {
                     None
                 }
@@ -1489,46 +1475,6 @@ unsafe fn try_call_bind_ic_fast(
             let self_bits = bound_method_self_bits(call_ptr);
             let arg0 = args.pos[0];
             return Some(molt_list_append(self_bits, arg0));
-        }
-
-        if entry.kind == CALL_BIND_IC_KIND_STR_JOIN {
-            if object_type_id(call_ptr) != TYPE_ID_BOUND_METHOD || args.pos.len() != 1 {
-                return None;
-            }
-            let func_bits = bound_method_func_bits(call_ptr);
-            let func_ptr = obj_from_bits(func_bits).as_ptr()?;
-            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                return None;
-            }
-            if function_fn_ptr(func_ptr) as u64 != entry.fn_ptr {
-                return None;
-            }
-            let self_bits = bound_method_self_bits(call_ptr);
-            let arg0 = args.pos[0];
-            return Some(molt_string_join(self_bits, arg0));
-        }
-
-        if entry.kind == CALL_BIND_IC_KIND_DICT_GET {
-            let npos = args.pos.len();
-            if object_type_id(call_ptr) != TYPE_ID_BOUND_METHOD || !(npos == 1 || npos == 2) {
-                return None;
-            }
-            let func_bits = bound_method_func_bits(call_ptr);
-            let func_ptr = obj_from_bits(func_bits).as_ptr()?;
-            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                return None;
-            }
-            if function_fn_ptr(func_ptr) as u64 != entry.fn_ptr {
-                return None;
-            }
-            let self_bits = bound_method_self_bits(call_ptr);
-            let key = args.pos[0];
-            let default = if npos == 2 {
-                args.pos[1]
-            } else {
-                MoltObject::none().bits()
-            };
-            return Some(molt_dict_get(self_bits, key, default));
         }
 
         if entry.kind == CALL_BIND_IC_KIND_DIRECT_FUNC {
