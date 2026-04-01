@@ -2886,19 +2886,19 @@ impl SimpleBackend {
                         // very large functions, and functions with complex control
                         // flow (many nested if/else) where the TIR roundtrip is
                         // still not proven end to end.
-                        // Skip TIR for functions with exception handling.
-                        // check_exception ops reference label IDs that the TIR
-                        // roundtrip does not preserve — the backend's handler
-                        // skips "orphaned" check_exceptions when
-                        // state_blocks.get(&target_id) returns None, silently
-                        // breaking all try/except.  Until TIR preserves
-                        // exception handler labels through the roundtrip, we
-                        // must bypass TIR for these functions.
-                        let has_exception_handling = tmp_func.ops.iter()
-                            .any(|op| op.kind == "check_exception");
+                        //
+                        // Exception-handling functions bypass TIR: while
+                        // lower_to_simple now preserves exception handler labels
+                        // (exception_handler_blocks set), the full exception
+                        // dispatch semantics (handler block content, branch targets
+                        // within handlers, try/except scope nesting) are not yet
+                        // roundtrip-safe.  validate_labels passes but runtime
+                        // behavior is wrong for function-level try/except.
                         let cf_complexity = tmp_func.ops.iter()
                             .filter(|op| matches!(op.kind.as_str(), "if" | "br_if" | "check_exception"))
                             .count();
+                        let has_exception_handling = tmp_func.ops.iter()
+                            .any(|op| op.kind == "check_exception");
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30

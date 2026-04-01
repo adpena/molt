@@ -111,6 +111,37 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         })
         .collect();
 
+    // ── Exception handler target blocks ──
+    // Collect blocks that are targets of check_exception ops.  These blocks
+    // MUST have their label emitted regardless of loop/if membership, because
+    // check_exception references them from a separate control-flow path that
+    // is invisible to the structured loop/if detection.  Without this, an
+    // exception handler block that happens to also be classified as a loop
+    // body block or if-inlined block would lose its label, causing
+    // validate_labels to fail or (worse) the backend to silently skip the
+    // exception dispatch.
+    let exception_handler_blocks: HashSet<BlockId> = {
+        let mut handler_label_ids: HashSet<i64> = HashSet::new();
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                if op.opcode == OpCode::CheckException {
+                    if let Some(AttrValue::Int(target_id)) = op.attrs.get("value") {
+                        handler_label_ids.insert(*target_id);
+                    }
+                }
+            }
+        }
+        // Map label IDs back to block IDs via the label_id_for_block inverse.
+        let label_to_block: HashMap<i64, BlockId> = label_id_for_block
+            .iter()
+            .map(|(bid, lid)| (*lid, *bid))
+            .collect();
+        handler_label_ids
+            .iter()
+            .filter_map(|lid| label_to_block.get(lid).copied())
+            .collect()
+    };
+
     // ── Loop region detection (must run before if-pattern detection) ──
     // Compute loop_region_blocks first so that the if-pattern detector can
     // refuse to inline blocks that belong to a loop body.  Inlining loop
@@ -131,6 +162,12 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         let Some(block) = func.blocks.get(bid) else {
             continue;
         };
+        let break_kind = func
+            .loop_break_kinds
+            .get(bid)
+            .copied()
+            .unwrap_or(LoopBreakKind::BreakIfTrue);
+
         // Collect loop body blocks via DFS from the header's body successor,
         // stopping at the exit block, the header (back-edge), and any block
         // whose RPO position is at or past the end block.  The RPO bound
@@ -157,13 +194,16 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         };
 
         if let Some((Terminator::CondBranch { then_block, else_block, .. }, cond_bid)) = cond_terminator {
-            // CFG successor ordering is structural, not polarity-dependent:
-            // succs[0] / then_block is the fall-through body/continue path and
-            // succs[1] / else_block is the break/after-loop path for both
-            // loop_break_if_true and loop_break_if_false. Polarity only changes
-            // which structured SimpleIR loop_break opcode we emit later.
-            let body_seed = *then_block;
-            let exit_block = Some(*else_block);
+            let break_kind = func.loop_break_kinds.get(bid).copied()
+                .unwrap_or(LoopBreakKind::BreakIfTrue);
+            let body_seed = match break_kind {
+                LoopBreakKind::BreakIfTrue => *else_block,
+                LoopBreakKind::BreakIfFalse => *then_block,
+            };
+            let exit_block = Some(match break_kind {
+                LoopBreakKind::BreakIfTrue => *then_block,
+                LoopBreakKind::BreakIfFalse => *else_block,
+            });
             // Include the condition block itself in the region when it
             // differs from the header (Branch→CondBranch pattern).
             if cond_bid != *bid {
@@ -295,10 +335,13 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             }
             _ => None,
         };
-        if let Some(Terminator::CondBranch { then_block: _, else_block, .. }) = cond_term {
-            // CFG successor ordering is structural: else_block is always the
-            // break/after-loop target, regardless of break polarity.
-            let exit = *else_block;
+        if let Some(Terminator::CondBranch { then_block, else_block, .. }) = cond_term {
+            let break_kind = func.loop_break_kinds.get(bid).copied()
+                .unwrap_or(LoopBreakKind::BreakIfTrue);
+            let exit = match break_kind {
+                LoopBreakKind::BreakIfTrue => *then_block,
+                LoopBreakKind::BreakIfFalse => *else_block,
+            };
             deferred_exits.insert(*bid, exit);
         }
     }
@@ -312,8 +355,12 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     let mut emitted_inline: HashSet<BlockId> = HashSet::new();
 
     for bid in &rpo {
+        // Exception handler target blocks are NEVER skipped — their labels
+        // must be emitted so that check_exception dispatch can reach them.
+        let is_exc_handler = exception_handler_blocks.contains(bid);
+
         // Skip deferred exit blocks — they'll be emitted after loop_end.
-        if deferred_exit_set.contains(bid) && !loop_region_blocks.contains(bid) {
+        if !is_exc_handler && deferred_exit_set.contains(bid) && !loop_region_blocks.contains(bid) {
             continue;
         }
 
@@ -325,20 +372,20 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             .get(bid)
             .cloned()
             .unwrap_or(super::blocks::LoopRole::None);
-        if loop_region_blocks.contains(bid) && loop_role != super::blocks::LoopRole::LoopHeader {
+        if !is_exc_handler && loop_region_blocks.contains(bid) && loop_role != super::blocks::LoopRole::LoopHeader {
             continue;
         }
         // Skip LoopEnd blocks — structural markers from the original
         // SimpleIR.  The TIR roundtrip emits loop_continue + loop_end
         // via back-edge detection in the loop body handler.
-        if loop_role == super::blocks::LoopRole::LoopEnd {
+        if !is_exc_handler && loop_role == super::blocks::LoopRole::LoopEnd {
             continue;
         }
 
         // Skip blocks inlined inside structured if/else/end_if regions.
-        // No labels needed: these blocks have no check_exception ops
-        // (verified during pattern detection) so no external edges target them.
-        if if_inlined_blocks.contains(bid) {
+        // Exception handler blocks override this even if they contain no
+        // check_exception ops — they may be the TARGET of one.
+        if !is_exc_handler && if_inlined_blocks.contains(bid) {
             continue;
         }
 
@@ -347,7 +394,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         // and their body/exit blocks would be emitted twice: once inline
         // at the correct position within the outer loop, and again here
         // at the RPO position (which may be after the function return).
-        if emitted_inline.contains(bid) {
+        if !is_exc_handler && emitted_inline.contains(bid) {
             continue;
         }
 
@@ -676,11 +723,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             }
 
             if let Some((cond, then_block, then_args, else_block, else_args)) = cond_data {
-                // CFG successor ordering is structural: then_block is always the
-                // body/continue path and else_block is always the break/exit
-                // path. `break_kind` only selects loop_break_if_true vs false.
-                let (after_block, after_args, body_block, body_args) =
-                    (else_block, else_args, then_block, then_args);
+                let (after_block, after_args, body_block, body_args) = match break_kind {
+                    LoopBreakKind::BreakIfTrue => {
+                        (then_block, then_args, else_block, else_args)
+                    }
+                    LoopBreakKind::BreakIfFalse => {
+                        (else_block, else_args, then_block, then_args)
+                    }
+                };
 
                 // Emit loop break condition.
                 emit_block_arg_stores(after_block, &after_args, &block_param_vars, &mut out);
