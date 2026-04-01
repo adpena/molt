@@ -221,6 +221,23 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - If the panic is due to missing deps, run `uv sync --group dev --python 3.12`
   locally (outside the sandbox) to populate `.venv`, then rerun with `UV_NO_SYNC=1`.
 
+## Concurrent Development (Required for Multi-Agent)
+
+When multiple agents work simultaneously, each MUST set `MOLT_SESSION_ID`:
+
+```bash
+export MOLT_SESSION_ID="<unique-name>"  # e.g., "agent-1", "debug-session", UUID
+```
+
+**What it does:**
+- Isolates `CARGO_TARGET_DIR` to `target-<session>/` — no cargo lock contention
+- Isolates daemon socket — no kill/restart conflicts between sessions
+- Disables `cargo clean` — incremental builds only, no binary deletion
+
+**Without it:** All sessions share `target/` and the same daemon. One agent's `cargo build` blocks all others. One agent's `pkill -9 molt-backend` kills everyone's daemon.
+
+**Rule:** If you are an agent and another agent may be running, ALWAYS set `MOLT_SESSION_ID` before ANY build command.
+
 ## Build Profile Policy (Non-Negotiable)
 - Development workflows must use `--profile dev` for `molt build`, `molt run`, `molt compare`, `molt diff`, and `molt test --suite diff`, unless explicitly validating production artifacts.
 - Production benchmarks, release validation, and published binaries must use `--profile release`.
