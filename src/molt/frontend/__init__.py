@@ -2130,12 +2130,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if key in self._emitted_syntax_warnings:
             return
         self._emitted_syntax_warnings.add(key)
-        warnings.warn_explicit(
-            message,
-            DeprecationWarning,
-            source,
-            lineno,
-        )
+        # Read the source line for context (matches CPython's warning format).
+        src_line = ""
+        try:
+            with open(source) as f:
+                for i, line in enumerate(f, 1):
+                    if i == lineno:
+                        src_line = line.rstrip()
+                        break
+        except (OSError, UnicodeDecodeError):
+            pass
+        import sys
+        print(f"{source}:{lineno}: DeprecationWarning: {message}", file=sys.stderr)
+        if src_line:
+            print(f"  {src_line}", file=sys.stderr)
 
     def _emit_syntax_warning(self, node: ast.AST, message: str) -> None:
         """Emit a SyntaxWarning to stderr, matching CPython's format.
