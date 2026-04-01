@@ -1182,8 +1182,6 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
                     *cell.borrow_mut() = (entry.col_offset, entry.end_col_offset);
                 });
             }
-        } else if std::env::var("MOLT_DEBUG_FRAME_COL").is_ok() {
-            eprintln!("[RECORD_EXC] frame stack EMPTY — no col to stash");
         }
     });
     if debug_exception_flow() {
@@ -3824,9 +3822,6 @@ pub extern "C" fn molt_frame_set_line(line: i64) -> u64 {
 /// Called by `line` ops that carry column offset info for caret annotations.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_set_line_col(line: i64, col_offset: i64, end_col_offset: i64) -> u64 {
-    if std::env::var("MOLT_DEBUG_FRAME_COL").is_ok() {
-        eprintln!("[FRAME_COL] set_line_col({}, {}, {})", line, col_offset, end_col_offset);
-    }
     frame_stack_set_line_col(line, col_offset, end_col_offset);
     0
 }
@@ -3855,9 +3850,6 @@ pub extern "C" fn molt_frame_get_end_col() -> i64 {
 /// Called before potentially-raising ops that carry expression-level col info.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_set_col(col_offset: i64, end_col_offset: i64) -> u64 {
-    if std::env::var("MOLT_DEBUG_FRAME_COL").is_ok() {
-        eprintln!("[FRAME_COL] set_col({}, {})", col_offset, end_col_offset);
-    }
     FRAME_STACK.with(|stack| {
         if let Some(entry) = stack.borrow_mut().last_mut() {
             entry.col_offset = col_offset;
