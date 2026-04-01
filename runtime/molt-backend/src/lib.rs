@@ -1240,10 +1240,20 @@ fn emit_list_int_bounds_check(
     builder: &mut FunctionBuilder,
     list_bits: Value,
     index_raw: Value,
-    nbc: &NanBoxConsts,
+    _nbc: &NanBoxConsts,
 ) -> (Value, Value) {
-    // Step 1: extract raw pointer from NaN-boxed value
-    let obj_ptr = unbox_ptr_value(builder, list_bits, nbc);
+    // Step 1: extract raw pointer from NaN-boxed value.
+    //
+    // The NaN-boxed pointer layout is: QNAN | TAG_PTR | (addr & POINTER_MASK).
+    // To extract the address: mask off the top 16 bits (QNAN+tag), then
+    // sign-extend from bit 47 to reconstruct canonical aarch64 addresses.
+    //
+    // Use _imm variants to avoid introducing SSA variable dependencies that
+    // could interact with Cranelift's block sealing in complex control flow.
+    let masked = builder.ins().band_imm(list_bits, POINTER_MASK as i64);
+    // Sign-extend from bit 47: shift left 16, arithmetic shift right 16.
+    let shifted = builder.ins().ishl_imm(masked, 16);
+    let obj_ptr = builder.ins().sshr_imm(shifted, 16);
     // Step 2: load *mut Vec<i64> from offset 0 of the object payload
     let vec_ptr = builder.ins().load(types::I64, MemFlags::trusted(), obj_ptr, 0);
     // Step 3: load data pointer from Vec (offset 0) and length (offset 8)
@@ -2947,10 +2957,21 @@ impl SimpleBackend {
                         let loop_depth = tmp_func.ops.iter()
                             .filter(|op| op.kind == "loop_start")
                             .count();
+                        // Skip TIR for functions with exception handling.
+                        // check_exception ops reference label IDs that the TIR
+                        // roundtrip does not preserve — the backend's handler
+                        // skips "orphaned" check_exceptions when
+                        // state_blocks.get(&target_id) returns None, silently
+                        // breaking all try/except.  Until TIR preserves
+                        // exception handler labels through the roundtrip, we
+                        // must bypass TIR for these functions.
+                        let has_exception_handling = tmp_func.ops.iter()
+                            .any(|op| op.kind == "check_exception");
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
                             || loop_depth > 1
+                            || has_exception_handling
                         {
                             return (idx, content_hash, Vec::new());
                         }
