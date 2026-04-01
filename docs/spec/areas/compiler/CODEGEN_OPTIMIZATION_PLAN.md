@@ -1,8 +1,26 @@
 # Codegen Optimization Plan
 
-Status: **Sections 1-5, 10 DONE (2026-03-20)** | Author: codegen-team | Date: 2026-03-12
+Status: **Updated 2026-04-01 — see per-section status below** | Author: codegen-team | Date: 2026-03-12
 
 This document surveys the current state of Molt's Cranelift-based code generation backend (`runtime/molt-backend/src/lib.rs`, `wasm.rs`) and proposes concrete optimization work across eleven areas. Each section states the current state (with code references), proposed improvements, expected impact, and implementation effort.
+
+### Status snapshot (updated 2026-04-01)
+
+Sections 1-5 were originally marked "DONE (2026-03-20)" but this was based on Cranelift defaults being configured, not custom optimization code. Meanwhile, the TIR pipeline (added after this plan) implements escape analysis and monomorphization as TIR passes, which this plan listed as not-started.
+
+| # | Area | Status | Notes |
+|---|------|--------|-------|
+| 1 | Cranelift Optimization Flags | **Done** | Cranelift 0.130 configured with full flag set |
+| 2 | Calling Convention Optimization | **Done (defaults)** | Standard C ABI via Cranelift; no custom calling convention |
+| 3 | Register Allocation | **Done (defaults)** | Cranelift's regalloc2; no custom tuning |
+| 4 | Instruction Selection | **Done (defaults)** | Cranelift's ISLE rules; no custom patterns |
+| 5 | Branch Optimization | **Done (defaults)** | Cranelift's egraph optimizer; no custom branch opts |
+| 6 | Inline Caching | **Not started** | No `InlineCache` code in backend |
+| 7 | Escape Analysis | **Done (TIR pass)** | `tir/escape_analysis.rs` (510 lines) — NoEscape/ArgEscape/GlobalEscape lattice, stack promotion |
+| 8 | Specialization | **Done (TIR pass)** | `tir/monomorphize.rs` (653 lines) — type-specialized function copies |
+| 9 | Memory Access Patterns | **Partial (TIR pass)** | `tir/deforestation.rs` (27.8KB) — iterator fusion eliminates intermediates |
+| 10 | WASM-Specific Optimizations | **Done** | Tail call optimization, WASM feature flags |
+| 11 | Profile-Guided Optimization | **Stub** | `llvm_backend/pgo.rs` (185 lines) in LLVM backend only |
 
 ---
 
@@ -14,9 +32,9 @@ This document surveys the current state of Molt's Cranelift-based code generatio
 4. [Instruction Selection](#4-instruction-selection)
 5. [Branch Optimization](#5-branch-optimization)
 6. [Inline Caching](#6-inline-caching)
-7. [Escape Analysis](#7-escape-analysis)
-8. [Specialization](#8-specialization)
-9. [Memory Access Patterns](#9-memory-access-patterns)
+7. [Escape Analysis](#7-escape-analysis) — implemented as TIR pass
+8. [Specialization](#8-specialization) — implemented as TIR pass
+9. [Memory Access Patterns](#9-memory-access-patterns) — partially via deforestation
 10. [WASM-Specific Optimizations](#10-wasm-specific-optimizations)
 11. [Profile-Guided Optimization (PGO)](#11-profile-guided-optimization-pgo)
 
