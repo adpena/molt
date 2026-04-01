@@ -408,6 +408,8 @@ Identified failure clusters from 50-test sample (86% pass rate):
 | **SC_IOV_MAX missing** | ~20+ (all async + cascading) | `os.sysconf("SC_IOV_MAX")` crashed asyncio init | **FIXED** `e4dd37956` |
 | **Unpack exception propagation** | 1+ | Iterator `RuntimeError` replaced by `ValueError` | **FIXED** `c361f8353` |
 | **Exception handler type eval** | unknown | Exception not restored after isinstance check | **FIXED** `76cf5a071` (partner) |
+| **TIR exception bypass regression** | ~10+ | Partner `31673657b` removed TIR bypass for exception functions | **FIXED** `6ddeb1860` (guard restored) |
+| **Error message format** | 3+ | Unpack "got N" count, int() base msg, str+int concat msg | **FIXED** `9457de91b` |
 | **Traceback format** | 2+ | Missing file/line/column in error tracebacks | Not started |
 | **`__annotations__` population** | 1+ | Module-scope annotations dict not emitted | Not started |
 | **`__prepare__` class metadata** | 7+ class tests | Missing `__firstlineno__`, `__static_attributes__`, `__classdictcell__` (CPython 3.13+) | Not started |
