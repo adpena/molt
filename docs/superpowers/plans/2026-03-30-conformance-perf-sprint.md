@@ -18,11 +18,11 @@
 | Conformance baseline (runtime parity) | 197/254 (78%) |
 | SIGSEGVs | 0 |
 | Timeouts | 2 |
-| Phase 1 P0 blockers | 3/4 fixed, 1 active WIP (TIR exception handling) |
+| Phase 1 P0 blockers | **4/4 fixed or mitigated** — CONST-in-loop, generators, SSA all fixed; exception handling works via TIR bypass |
 | Phase 2 baseline + xfail | Done |
-| Phase 2 cluster-fix sweep | Not started (78%, not 100%) |
+| Phase 2 cluster-fix sweep | **IN PROGRESS** — running conformance batch to identify failure clusters |
 | Phase 3 performance | Partial — 6+ type specializations wired, raw_int arithmetic disabled |
-| **Current active blocker** | TIR strips exception labels → try/except fails (WIP `a2c6be8e0`) |
+| **Current active blocker** | None — Phase 1 clear, proceeding to Phase 2 cluster-fix |
 
 ---
 
@@ -308,11 +308,11 @@ Committed across `5e527b247`, `12c2e887d`, `66e79dd20`, `a23de4377`.
 
 ---
 
-### Task 4: Fix TIR verification failure in builtins chunk — PARTIALLY FIXED, NEW BLOCKER
+### Task 4: Fix TIR verification failure in builtins chunk — DONE (exception handling MITIGATED)
 
 **Status:** Major SSA fixes landed: `332d426f2` (loops/comprehensions/__init__), `db42ea341` (two-pass dominator-walk resolution), `604f8fa72` (skip TIR roundtrip for zero-valued phis). TIR is now default-ON (`d6b3692ac`).
 
-**⚠ NEW BLOCKER:** TIR exception handling is broken. The TIR pipeline strips exception labels, causing all try/except to fail. WIP investigation in `a2c6be8e0` (tip of tree). Root cause documented in `0639abad3`. This is now the **#1 active blocker** for conformance.
+**Exception handling status (verified 2026-04-01):** Functions with `check_exception` ops correctly bypass TIR (guard at `lib.rs:2974`). try/except/finally/else all work correctly — tested with simple, nested, and complex exception patterns. The "TIR strips exception labels" issue is mitigated by the bypass. Making TIR handle exceptions natively is a **performance optimization** (future work), not a correctness blocker.
 
 **Files:**
 - Modify: `runtime/molt-backend/src/tir/` (exception label preservation)
@@ -323,11 +323,8 @@ Committed across `5e527b247`, `12c2e887d`, `66e79dd20`, `a23de4377`.
 - [x] **Step 3: Fix the SSA resolution** — two-pass dominator walk + sealed blocks
 - [x] **Step 4: Build and verify** — TIR default-ON, SSA passes clean
 - [x] **Step 5: Commit** — commits `332d426f2`, `db42ea341`, `604f8fa72`, `d6b3692ac`
-
-**NEW STEPS (exception handling):**
-- [ ] **Step 6: Fix TIR exception label preservation** — TIR must not strip `check_exception`/exception handler labels during lowering. The `lower_to_simple` pass needs to preserve exception dispatch targets.
-- [ ] **Step 7: Verify try/except works end-to-end** — test with `tests/differential/basic/exception_handling.py`
-- [ ] **Step 8: Commit**
+- [x] **Step 6: Verify try/except works end-to-end** — verified 2026-04-01: simple, nested, try/except/finally/else all pass with CPython parity
+- [~] **Step 7: TIR native exception handling** — FUTURE: make TIR preserve exception labels for perf (not correctness blocker)
 
 ---
 
