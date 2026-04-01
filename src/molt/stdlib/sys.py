@@ -482,7 +482,7 @@ class _ImplementationNamespace:
         self,
         name: str,
         cache_tag: str,
-        version: object,
+        version: tuple[int, int, int, str, int],
         hexversion: int,
     ) -> None:
         self.name = name
