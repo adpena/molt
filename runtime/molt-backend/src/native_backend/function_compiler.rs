@@ -6526,41 +6526,12 @@ impl SimpleBackend {
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
                         if op.container_type.as_deref() == Some("list_int") {
-                            // raw_int_shadow fast path: if index is already a raw i64,
-                            // inline the entire pointer chase + bounds check + load.
-                            // Zero function calls on the hot path — only the cold
-                            // out-of-bounds fallback calls the runtime.
+                            // Raw i64 fast path: call molt_list_int_getitem_raw
+                            // with unboxed index, get unboxed result.
+                            // Inline Cranelift codegen is disabled — the extra
+                            // blocks from bounds-check branching cause Cranelift
+                            // alias analysis panics inside nested while+if+while.
                             if let Some(&raw_idx) = raw_int_shadow.get(&args[1]) {
-                                // Inline bounds check: extract vec ptr, data ptr, length
-                                // directly from the NaN-boxed list object — all in the
-                                // current block, no extra blocks yet.
-                                let (data_ptr, in_bounds) = emit_list_int_bounds_check(
-                                    &mut builder, *obj, raw_idx, &nbc,
-                                );
-                                // Fast block: inline load (no function call)
-                                let fast_block = builder.create_block();
-                                let slow_block = builder.create_block();
-                                builder.set_cold_block(slow_block);
-                                let merge_block = builder.create_block();
-                                // merge receives raw i64 result
-                                builder.append_block_param(merge_block, types::I64);
-                                builder.ins().brif(
-                                    in_bounds,
-                                    fast_block, &[],
-                                    slow_block, &[],
-                                );
-                                // --- fast path: inline memory load ---
-                                builder.switch_to_block(fast_block);
-                                seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                                let offset = builder.ins().imul_imm(raw_idx, 8);
-                                let elem_addr = builder.ins().iadd(data_ptr, offset);
-                                let fast_raw = builder.ins().load(
-                                    types::I64, MemFlags::trusted(), elem_addr, 0,
-                                );
-                                jump_block(&mut builder, merge_block, &[fast_raw]);
-                                // --- slow path: runtime fallback ---
-                                builder.switch_to_block(slow_block);
-                                seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                                 let callee = Self::import_func_id_split(
                                     &mut self.module,
                                     &mut self.import_ids,
@@ -6570,20 +6541,15 @@ impl SimpleBackend {
                                 );
                                 let local_callee = self.module.declare_func_in_func(callee, builder.func);
                                 let call = builder.ins().call(local_callee, &[*obj, raw_idx]);
-                                let slow_raw = builder.inst_results(call)[0];
-                                jump_block(&mut builder, merge_block, &[slow_raw]);
-                                // --- merge ---
-                                builder.switch_to_block(merge_block);
-                                seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                                let raw_res = builder.block_params(merge_block)[0];
+                                let raw_result = builder.inst_results(call)[0];
                                 // Box the result for the NaN-boxed world (variables must
                                 // hold NaN-boxed values for interop with generic ops).
-                                let boxed_res = box_int_value(&mut builder, raw_res, &nbc);
+                                let boxed_res = box_int_value(&mut builder, raw_result, &nbc);
                                 if let Some(ref out__) = op.out {
                                     def_var_named(&mut builder, &vars, out__, boxed_res);
                                     // Keep the raw result in shadow so downstream
                                     // arithmetic / truthiness checks skip unboxing.
-                                    raw_int_shadow.insert(out__.clone(), raw_res);
+                                    raw_int_shadow.insert(out__.clone(), raw_result);
                                 }
                             } else {
                                 // Fallback: NaN-boxed index, call the standard variant.
