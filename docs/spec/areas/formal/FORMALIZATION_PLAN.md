@@ -1,12 +1,19 @@
 # Molt Full Formalization & Verification Plan
 
-## Status: 9 sorry-using declarations remain (down from 44 this session)
+## Status (updated 2026-04-01)
+
+**Original claim:** 9 sorry-using declarations remain (down from 44).
+**Actual count (2026-04-01):** ~128 `sorry` occurrences across ~20 Lean files. The `SorryAudit.lean` catalogs ~73 individual sorrys across ~48 theorems. 4 gaps closed with complete proofs. The heaviest concentrations: `Meta/Completeness.lean` (24), `Compilation/ForwardSimulation.lean` (12), `EndToEnd.lean` (8), pass correctness proofs (6 each).
 
 **Codebase**: 66K Python, 150K Rust, 25K Lean across 1,228 files
 **Verified**: Compilation correctness, NaN-boxing, WASM ABI, RC elision, 5/6 midend passes, dominator theory
+**Also verified**: 152 Kani proof harnesses (CI-gated), 16 Quint models, 9 Hypothesis test suites
+**Not present**: Miri (no CI workflow or config found)
 
-NOTE: the historical 14-to-0 breakdown below is stale. The live inventory is
-the 9-sorry snapshot in `CERTIFICATION_STATUS.md` and the checker output.
+NOTE: the historical 14-to-0 breakdown is stale. The 9-sorry figure referred to the
+original session's *closing count*; many new sorry-using theorems were added as the
+formalization scope expanded to cover TIR passes, backend determinism, and simulation.
+The live inventory is `SorryAudit.lean` and the checker output.
 
 ---
 
