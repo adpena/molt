@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "module_name": "bool_short_circuit_order",
-  "is_package": false,
-  "include_nested": true,
-  "size": 354,
-  "mtime_ns": 1774642832825535014,
-  "imports": []
-}

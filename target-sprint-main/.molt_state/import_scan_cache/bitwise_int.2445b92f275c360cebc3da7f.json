@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "module_name": "bitwise_int",
-  "is_package": false,
-  "include_nested": true,
-  "size": 552,
-  "mtime_ns": 1774642832825274286,
-  "imports": []
-}

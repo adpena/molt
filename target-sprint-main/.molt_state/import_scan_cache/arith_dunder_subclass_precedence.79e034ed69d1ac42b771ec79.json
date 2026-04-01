@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "module_name": "arith_dunder_subclass_precedence",
-  "is_package": false,
-  "include_nested": true,
-  "size": 330,
-  "mtime_ns": 1774642832821665186,
-  "imports": []
-}

@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "module_name": "builtin_numeric_ops",
-  "is_package": false,
-  "include_nested": true,
-  "size": 734,
-  "mtime_ns": 1774642832826324781,
-  "imports": []
-}
