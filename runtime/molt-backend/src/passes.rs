@@ -412,6 +412,8 @@ pub fn inline_functions(ir: &mut SimpleIR) {
                             container_type: None,
                             type_hint: None,
                             ic_index: None,
+                            col_offset: None,
+                            end_col_offset: None,
                         });
                     }
                     continue;
