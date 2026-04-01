@@ -15,7 +15,7 @@
 | Total differential tests | 736 |
 | Tests with MOLT_SKIP or xfail | 494 |
 | Conformance baseline (compile) | 272/385 (59%) |
-| Conformance baseline (runtime parity) | 197/254 (78%) → **43/50 (86%) core, 39/51 (76%) mid** after class annotations fix |
+| Conformance baseline (runtime parity) | 197/254 (78%) → **86/100 (86%)** on 2026-04-01 after 14 code fixes |
 | SIGSEGVs | 0 |
 | Timeouts | 2 |
 | Phase 1 P0 blockers | **4/4 fixed or mitigated** — CONST-in-loop, generators, SSA all fixed; exception handling works via TIR bypass |
