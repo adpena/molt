@@ -826,6 +826,19 @@ fn switch_to_block_tracking(
 }
 
 #[cfg(feature = "native-backend")]
+fn resolve_cleanup_value(
+    builder: &mut FunctionBuilder,
+    vars: &BTreeMap<String, Variable>,
+    entry_vars: &BTreeMap<String, Value>,
+    name: &str,
+) -> Option<Value> {
+    entry_vars
+        .get(name)
+        .copied()
+        .or_else(|| var_get(builder, vars, name).map(|v| *v))
+}
+
+#[cfg(feature = "native-backend")]
 fn box_int(val: i64) -> i64 {
     // Use INT_MASK (47 bits) not POINTER_MASK (48 bits) to match the
     // sign-extending unbox path (ishl/sshr by INT_SHIFT=17).
@@ -1267,6 +1280,7 @@ fn emit_list_int_bounds_check(
 /// Load element from list_int data pointer at given index.
 /// MUST only be called after bounds check passes (i.e., inside the fast block).
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 fn emit_list_int_load(
     builder: &mut FunctionBuilder,
     data_ptr: Value,
@@ -1282,6 +1296,7 @@ fn emit_list_int_load(
 /// Store element into list_int data pointer at given index.
 /// MUST only be called after bounds check passes (i.e., inside the fast block).
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 fn emit_list_int_store(
     builder: &mut FunctionBuilder,
     data_ptr: Value,
