@@ -57,6 +57,11 @@ pub struct OpIR {
     /// Inline-cache site index for attribute access acceleration.
     /// Assigned by the frontend for `get_attr_generic_ptr` ops.
     pub ic_index: Option<i64>,
+    /// Column offset (0-based) for traceback caret annotations.
+    /// Carried by `line` ops from the frontend AST node's `col_offset`.
+    pub col_offset: Option<i64>,
+    /// End column offset (0-based) for traceback caret annotations.
+    pub end_col_offset: Option<i64>,
 }
 
 impl PgoProfileIR {
@@ -240,6 +245,8 @@ impl OpIR {
             container_type: optional_string(obj, "container_type", ctx)?,
             type_hint: optional_string(obj, "type_hint", ctx)?,
             ic_index,
+            col_offset: optional_i64(obj, "col_offset", ctx)?,
+            end_col_offset: optional_i64(obj, "end_col_offset", ctx)?,
         })
     }
 }
