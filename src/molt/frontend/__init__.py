@@ -22411,20 +22411,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if isinstance(node.op, ast.Not):
             return self._emit_not(operand)
         if isinstance(node.op, ast.Invert):
-            # Python 3.12+: DeprecationWarning for ~bool
-            if (
-                isinstance(node.operand, ast.Constant)
-                and isinstance(node.operand.value, bool)
-            ) or operand.type_hint == "bool":
-                self._emit_deprecation_warning(
-                    node,
-                    "Bitwise inversion '~' on bool is deprecated and will be "
-                    "removed in Python 3.16. This returns the bitwise inversion "
-                    "of the underlying int object and is usually not what you "
-                    "expect from negating a bool. Use the 'not' operator for "
-                    "boolean negation or ~int(x) if you really want the bitwise "
-                    "inversion of the underlying int.",
-                )
+            # TODO: Python 3.12+ emits DeprecationWarning for ~bool at runtime.
+            # CPython emits it when the expression EXECUTES, requiring a runtime
+            # stderr print mechanism. Need a PRINT_STDERR op or sys.stderr.write
+            # call in the compiled output.
             res = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="INVERT", args=[operand], result=res))
             return res
