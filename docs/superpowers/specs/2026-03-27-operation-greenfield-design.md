@@ -30,7 +30,7 @@ strict order, parallelized within each wave for maximum throughput.
 | B6 | `six`/`click` compilation failures | P2 | **PARTIAL** | `six` test exists but MOLT_SKIP'd (runtime crash); `click` test absent |
 | B7 | Tuple subclass MRO | P2 | **FIXED** | MRO lookup corrected |
 | B8 | Genexpr enumerate tuple unpacking | P2 | **FIXED** | Generator state machine + tuple unpacking fixed |
-| **B9** | **TIR exception handling (NEW)** | **P0** | **ACTIVE WIP** | TIR `lower_to_simple` strips exception labels; root cause in `0639abad3` |
+| B9 | TIR exception handling | P0 | **MITIGATED** | Functions with check_exception bypass TIR (guard at lib.rs:2974). Exception handler type eval restored (`76cf5a071`). |
 
 **In flight (uncommitted):** ~1,562 lines across 20 files — CLI enhancements,
 WASM artifact validation tests, importlib machinery tests, wasm link validation,
