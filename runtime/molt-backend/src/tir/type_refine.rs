@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::blocks::{BlockId, Terminator, TirBlock};
 use super::function::TirFunction;
-use super::ops::OpCode;
+use super::ops::{AttrDict, AttrValue, OpCode};
 use super::types::TirType;
 use super::values::ValueId;
 
@@ -40,7 +40,7 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                 .iter()
                 .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
                 .collect();
-            if let Some(inferred) = infer_result_type(op.opcode, &operand_types) {
+            if let Some(inferred) = infer_result_type(op.opcode, &operand_types, &op.attrs) {
                 for &result_id in &op.results {
                     env.insert(result_id, inferred.clone());
                 }
@@ -104,17 +104,25 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
 
     // Pre-compute op snapshots once (ops don't change during refinement,
     // only the type environment does). Avoids O(ops × rounds) Vec allocations.
-    let ops_by_block: HashMap<BlockId, Vec<(OpCode, Vec<ValueId>, Vec<ValueId>)>> = block_order
-        .iter()
-        .map(|&bid| {
-            let ops = func.blocks[&bid]
-                .ops
-                .iter()
-                .map(|op| (op.opcode, op.operands.clone(), op.results.clone()))
-                .collect();
-            (bid, ops)
-        })
-        .collect();
+    let ops_by_block: HashMap<BlockId, Vec<(OpCode, Vec<ValueId>, Vec<ValueId>, AttrDict)>> =
+        block_order
+            .iter()
+            .map(|&bid| {
+                let ops = func.blocks[&bid]
+                    .ops
+                    .iter()
+                    .map(|op| {
+                        (
+                            op.opcode,
+                            op.operands.clone(),
+                            op.results.clone(),
+                            op.attrs.clone(),
+                        )
+                    })
+                    .collect();
+                (bid, ops)
+            })
+            .collect();
 
     // When exception handling is present, identify blocks that start with
     // StateBlockStart (exception handler entry points). Block arguments of
@@ -139,6 +147,11 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
     }
 
+    // Side map: for iterator-producing values, tracks the element type
+    // that downstream IterNext/ForIter/IterNextUnboxed should yield.
+    // Populated by CallBuiltin("range") → I64, GetIter on List(T) → T, etc.
+    let mut iter_element_types: HashMap<ValueId, TirType> = HashMap::new();
+
     // Fixpoint iteration.
     for _round in 0..MAX_ROUNDS {
         let mut changed = false;
@@ -146,7 +159,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         for &block_id in &block_order {
             let ops_snapshot = &ops_by_block[&block_id];
 
-            for (opcode, operands, results) in ops_snapshot {
+            for (opcode, operands, results, attrs) in ops_snapshot {
                 if results.is_empty() {
                     continue;
                 }
@@ -168,12 +181,90 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
                     .collect();
 
-                let inferred = infer_result_type(*opcode, &operand_types);
+                let inferred = infer_result_type(*opcode, &operand_types, attrs);
+
+                // IterNextUnboxed has two results: [0]=element, [1]=Bool.
+                // Handle multi-result ops before the single-result fast path.
+                if *opcode == OpCode::IterNextUnboxed && results.len() == 2 {
+                    // results[1] is always the done-flag (Bool).
+                    let flag_id = results[1];
+                    let current_flag =
+                        env.get(&flag_id).cloned().unwrap_or(TirType::DynBox);
+                    if current_flag != TirType::Bool {
+                        env.insert(flag_id, TirType::Bool);
+                        changed = true;
+                    }
+                    // results[0] gets the element type from iter_element_types
+                    // or the general inferred type.
+                    let elem_id = results[0];
+                    // Trace the iterator operand to see if we know its element type.
+                    let elem_ty = operands
+                        .first()
+                        .and_then(|iter_val| iter_element_types.get(iter_val))
+                        .cloned()
+                        .or(inferred);
+                    if let Some(ty) = elem_ty {
+                        let current = env.get(&elem_id).cloned().unwrap_or(TirType::DynBox);
+                        if ty != current {
+                            env.insert(elem_id, ty);
+                            changed = true;
+                        }
+                    }
+                    continue;
+                }
 
                 // For ops with a single result (the common case).
                 if results.len() == 1 {
                     let result_id = results[0];
-                    if let Some(new_ty) = inferred {
+
+                    // For GetIter: record the element type of the produced
+                    // iterator in the side map so downstream IterNext/ForIter
+                    // can resolve element types.
+                    if *opcode == OpCode::GetIter {
+                        if let Some(elem_ty) =
+                            infer_iter_element_type(&operand_types, &iter_element_types, operands)
+                        {
+                            let prev = iter_element_types.get(&result_id);
+                            if prev != Some(&elem_ty) {
+                                iter_element_types.insert(result_id, elem_ty);
+                                changed = true;
+                            }
+                        }
+                    }
+
+                    // For CallBuiltin("range"): record that the result,
+                    // when iterated, yields I64.
+                    if *opcode == OpCode::CallBuiltin {
+                        if let Some(AttrValue::Str(name)) = attrs.get("name") {
+                            if name == "range"
+                                || name == "molt_range"
+                                || name == "builtin_range"
+                            {
+                                let prev = iter_element_types.get(&result_id);
+                                if prev != Some(&TirType::I64) {
+                                    iter_element_types.insert(result_id, TirType::I64);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // For ForIter/IterNext: resolve element type from the
+                    // iterator source if available.
+                    let final_ty = if matches!(
+                        opcode,
+                        OpCode::ForIter | OpCode::IterNext
+                    ) {
+                        operands
+                            .first()
+                            .and_then(|iter_val| iter_element_types.get(iter_val))
+                            .cloned()
+                            .or(inferred)
+                    } else {
+                        inferred
+                    };
+
+                    if let Some(new_ty) = final_ty {
                         let current = env.get(&result_id).cloned().unwrap_or(TirType::DynBox);
                         if new_ty != current {
                             env.insert(result_id, new_ty);
@@ -258,9 +349,49 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         .count()
 }
 
-/// Infer the result type of an operation from its operand types.
+/// Infer the element type yielded by an iterator produced by `GetIter`.
+///
+/// Given the operand types of a `GetIter` op, determine what element type
+/// the resulting iterator yields.  Also consults the `iter_element_types`
+/// side map for cases where the source value was itself annotated (e.g.,
+/// a `CallBuiltin("range")` result).
+fn infer_iter_element_type(
+    operand_types: &[TirType],
+    iter_element_types: &HashMap<ValueId, TirType>,
+    operands: &[ValueId],
+) -> Option<TirType> {
+    // If the source value already has an element-type annotation (e.g.,
+    // from CallBuiltin("range")), propagate it through GetIter.
+    if let Some(src_id) = operands.first() {
+        if let Some(elem_ty) = iter_element_types.get(src_id) {
+            return Some(elem_ty.clone());
+        }
+    }
+
+    // Structural: List(T) → T, Set(T) → T, Dict(K,V) → K, Tuple → DynBox,
+    // Str → Str (iterating a string yields single-char strings).
+    match operand_types.first() {
+        Some(TirType::List(elem)) => Some(elem.as_ref().clone()),
+        Some(TirType::Set(elem)) => Some(elem.as_ref().clone()),
+        Some(TirType::Dict(key, _)) => Some(key.as_ref().clone()),
+        Some(TirType::Str) => Some(TirType::Str),
+        Some(TirType::Bytes) => Some(TirType::I64), // iterating bytes yields ints
+        Some(TirType::Tuple(elems)) => {
+            // If all tuple elements are the same type, the iterator yields that type.
+            if let Some(first) = elems.first() {
+                if elems.iter().all(|t| t == first) {
+                    return Some(first.clone());
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Infer the result type of an operation from its operand types and attributes.
 /// Returns `None` if the result type cannot be determined (stays as-is).
-fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirType> {
+fn infer_result_type(opcode: OpCode, operand_types: &[TirType], attrs: &AttrDict) -> Option<TirType> {
     match opcode {
         // Constants — always produce a known type regardless of operands.
         OpCode::ConstInt => Some(TirType::I64),
@@ -341,6 +472,17 @@ fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirTyp
         OpCode::BuildSet => Some(TirType::Set(Box::new(TirType::DynBox))),
         OpCode::BuildTuple => Some(TirType::Tuple(operand_types.to_vec())),
 
+        // In-place arithmetic: same rules as their non-in-place counterparts.
+        OpCode::InplaceAdd => match operand_types {
+            [TirType::Str, TirType::Str] => Some(TirType::Str),
+            _ => infer_numeric_arithmetic(operand_types),
+        },
+        OpCode::InplaceMul => match operand_types {
+            [TirType::Str, TirType::I64] | [TirType::I64, TirType::Str] => Some(TirType::Str),
+            _ => infer_numeric_arithmetic(operand_types),
+        },
+        OpCode::InplaceSub => infer_numeric_arithmetic(operand_types),
+
         // Copy propagates type.
         OpCode::Copy => operand_types.first().cloned(),
 
@@ -350,6 +492,88 @@ fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirTyp
             .map(|t| TirType::Box(Box::new(t.clone()))),
         OpCode::UnboxVal => match operand_types.first() {
             Some(TirType::Box(inner)) => Some(inner.as_ref().clone()),
+            _ => None,
+        },
+
+        // CallBuiltin: infer return type from builtin name.
+        OpCode::CallBuiltin => {
+            if let Some(AttrValue::Str(name)) = attrs.get("name") {
+                match name.as_str() {
+                    // Type-casting builtins
+                    "int" | "molt_int" => Some(TirType::I64),
+                    "float" | "molt_float" => Some(TirType::F64),
+                    "str" | "molt_str" => Some(TirType::Str),
+                    "bool" | "molt_bool" => Some(TirType::Bool),
+                    "bytes" | "molt_bytes" => Some(TirType::Bytes),
+                    // Numeric builtins that always return int
+                    "len" | "molt_len" | "hash" | "id" | "ord" => Some(TirType::I64),
+                    // Numeric builtins that propagate numeric type
+                    "abs" => match operand_types.first() {
+                        Some(TirType::I64) => Some(TirType::I64),
+                        Some(TirType::F64) => Some(TirType::F64),
+                        _ => None,
+                    },
+                    // chr returns a string
+                    "chr" => Some(TirType::Str),
+                    // repr returns a string
+                    "repr" => Some(TirType::Str),
+                    // type returns DynBox (it's a type object)
+                    // range returns a range object (element type tracked separately)
+                    // min/max: propagate numeric type if both args match
+                    "min" | "max" => infer_numeric_arithmetic(operand_types),
+                    // round: int if no ndigits, float if ndigits given
+                    "round" => match operand_types.len() {
+                        1 => Some(TirType::I64),
+                        _ => Some(TirType::F64),
+                    },
+                    // isinstance/issubclass/callable/hasattr always return bool
+                    "isinstance" | "issubclass" | "callable" | "hasattr" => Some(TirType::Bool),
+                    // sum: if start is I64 and iterable elements are I64, result is I64.
+                    // Conservative: return I64 if all operands are I64.
+                    "sum" => {
+                        if operand_types.iter().all(|t| matches!(t, TirType::I64)) && !operand_types.is_empty() {
+                            Some(TirType::I64)
+                        } else {
+                            None
+                        }
+                    }
+                    // sorted always returns a list
+                    "sorted" => Some(TirType::List(Box::new(TirType::DynBox))),
+                    // list/tuple/set/dict constructors
+                    "list" | "molt_list" => Some(TirType::List(Box::new(TirType::DynBox))),
+                    "tuple" | "molt_tuple" => Some(TirType::Tuple(vec![])),
+                    "set" | "molt_set" => Some(TirType::Set(Box::new(TirType::DynBox))),
+                    "dict" | "molt_dict" => Some(TirType::Dict(
+                        Box::new(TirType::DynBox),
+                        Box::new(TirType::DynBox),
+                    )),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+
+        // Iteration: GetIter/ForIter/IterNext element types are resolved in
+        // refine_types via iter_element_types side map (not here). But we can
+        // return None here — the refine_types loop overrides with the side map.
+        // IterNextUnboxed is handled specially in the refine_types loop (two results).
+
+        // Index: extracting from a container
+        OpCode::Index => match operand_types.first() {
+            Some(TirType::List(elem)) => Some(elem.as_ref().clone()),
+            Some(TirType::Str) => Some(TirType::Str),
+            Some(TirType::Bytes) => Some(TirType::I64),
+            Some(TirType::Dict(_, val)) => Some(val.as_ref().clone()),
+            Some(TirType::Tuple(elems)) => {
+                // If all elements same type, indexing yields that type.
+                if let Some(first) = elems.first() {
+                    if elems.iter().all(|t| t == first) {
+                        return Some(first.clone());
+                    }
+                }
+                None
+            }
             _ => None,
         },
 
@@ -861,5 +1085,375 @@ mod tests {
         };
         let refined = refine_types(&mut func);
         assert_eq!(refined, 0);
+    }
+
+    // ---- Test 8: CallBuiltin("range") → GetIter → ForIter yields I64 ----
+    #[test]
+    fn range_iter_yields_i64() {
+        // Simulates: for i in range(10): ...
+        // v0 = ConstInt(10)
+        // v1 = CallBuiltin("range", v0)
+        // v2 = GetIter(v1)
+        // v3 = ForIter(v2)  → should be I64
+        let mut range_attrs = AttrDict::new();
+        range_attrs.insert("name".into(), AttrValue::Str("range".into()));
+
+        let ops = vec![
+            make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(10)),
+            make_op(
+                OpCode::CallBuiltin,
+                vec![ValueId(0)],
+                vec![ValueId(1)],
+                range_attrs,
+            ),
+            make_op(
+                OpCode::GetIter,
+                vec![ValueId(1)],
+                vec![ValueId(2)],
+                AttrDict::new(),
+            ),
+            make_op(
+                OpCode::ForIter,
+                vec![ValueId(2)],
+                vec![ValueId(3)],
+                AttrDict::new(),
+            ),
+        ];
+        let mut func = single_block_func(ops, 4);
+        let refined = refine_types(&mut func);
+        // v0=I64 (ConstInt), v1=DynBox→? (range result), v2=DynBox (iterator),
+        // v3=DynBox→I64 (ForIter element)
+        // At minimum v0 and v3 should be refined.
+        assert!(refined >= 2, "expected at least 2 refinements, got {}", refined);
+
+        let env = extract_type_map(&func);
+        assert_eq!(
+            env.get(&ValueId(3)),
+            Some(&TirType::I64),
+            "ForIter on range should yield I64"
+        );
+    }
+
+    // ---- Test 9: IterNext on range iterator yields I64 ----
+    #[test]
+    fn range_iter_next_yields_i64() {
+        let mut range_attrs = AttrDict::new();
+        range_attrs.insert("name".into(), AttrValue::Str("range".into()));
+
+        let ops = vec![
+            make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(5)),
+            make_op(
+                OpCode::CallBuiltin,
+                vec![ValueId(0)],
+                vec![ValueId(1)],
+                range_attrs,
+            ),
+            make_op(
+                OpCode::GetIter,
+                vec![ValueId(1)],
+                vec![ValueId(2)],
+                AttrDict::new(),
+            ),
+            make_op(
+                OpCode::IterNext,
+                vec![ValueId(2)],
+                vec![ValueId(3)],
+                AttrDict::new(),
+            ),
+        ];
+        let mut func = single_block_func(ops, 4);
+        refine_types(&mut func);
+
+        let env = extract_type_map(&func);
+        assert_eq!(
+            env.get(&ValueId(3)),
+            Some(&TirType::I64),
+            "IterNext on range should yield I64"
+        );
+    }
+
+    // ---- Test 10: CallBuiltin("len") → I64 ----
+    #[test]
+    fn callbuiltin_len_returns_i64() {
+        let mut len_attrs = AttrDict::new();
+        len_attrs.insert("name".into(), AttrValue::Str("len".into()));
+
+        let ops = vec![make_op(
+            OpCode::CallBuiltin,
+            vec![],
+            vec![ValueId(0)],
+            len_attrs,
+        )];
+        let mut func = single_block_func(ops, 1);
+        let refined = refine_types(&mut func);
+        assert_eq!(refined, 1);
+    }
+
+    // ---- Test 11: CallBuiltin("int") → I64 ----
+    #[test]
+    fn callbuiltin_int_returns_i64() {
+        let mut attrs = AttrDict::new();
+        attrs.insert("name".into(), AttrValue::Str("int".into()));
+
+        let ops = vec![make_op(
+            OpCode::CallBuiltin,
+            vec![],
+            vec![ValueId(0)],
+            attrs,
+        )];
+        let mut func = single_block_func(ops, 1);
+        refine_types(&mut func);
+
+        let env = extract_type_map(&func);
+        assert_eq!(env.get(&ValueId(0)), Some(&TirType::I64));
+    }
+
+    // ---- Test 12: CallBuiltin("float") → F64 ----
+    #[test]
+    fn callbuiltin_float_returns_f64() {
+        let mut attrs = AttrDict::new();
+        attrs.insert("name".into(), AttrValue::Str("float".into()));
+
+        let ops = vec![make_op(
+            OpCode::CallBuiltin,
+            vec![],
+            vec![ValueId(0)],
+            attrs,
+        )];
+        let mut func = single_block_func(ops, 1);
+        refine_types(&mut func);
+
+        let env = extract_type_map(&func);
+        assert_eq!(env.get(&ValueId(0)), Some(&TirType::F64));
+    }
+
+    // ---- Test 13: InplaceAdd propagates I64 ----
+    #[test]
+    fn inplace_add_propagates_i64() {
+        let ops = vec![
+            make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(1)),
+            make_op(OpCode::ConstInt, vec![], vec![ValueId(1)], int_attr(2)),
+            make_op(
+                OpCode::InplaceAdd,
+                vec![ValueId(0), ValueId(1)],
+                vec![ValueId(2)],
+                AttrDict::new(),
+            ),
+        ];
+        let mut func = single_block_func(ops, 3);
+        let refined = refine_types(&mut func);
+        assert_eq!(refined, 3);
+    }
+
+    // ---- Test 14: IterNextUnboxed done-flag is Bool ----
+    #[test]
+    fn iter_next_unboxed_done_flag_is_bool() {
+        let mut range_attrs = AttrDict::new();
+        range_attrs.insert("name".into(), AttrValue::Str("range".into()));
+
+        let ops = vec![
+            make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(10)),
+            make_op(
+                OpCode::CallBuiltin,
+                vec![ValueId(0)],
+                vec![ValueId(1)],
+                range_attrs,
+            ),
+            make_op(
+                OpCode::GetIter,
+                vec![ValueId(1)],
+                vec![ValueId(2)],
+                AttrDict::new(),
+            ),
+            // IterNextUnboxed: results[0]=element, results[1]=done_flag
+            make_op(
+                OpCode::IterNextUnboxed,
+                vec![ValueId(2)],
+                vec![ValueId(3), ValueId(4)],
+                AttrDict::new(),
+            ),
+        ];
+        let mut func = single_block_func(ops, 5);
+        refine_types(&mut func);
+
+        let env = extract_type_map(&func);
+        assert_eq!(
+            env.get(&ValueId(3)),
+            Some(&TirType::I64),
+            "IterNextUnboxed element from range should be I64"
+        );
+        assert_eq!(
+            env.get(&ValueId(4)),
+            Some(&TirType::Bool),
+            "IterNextUnboxed done-flag should be Bool"
+        );
+    }
+
+    // ---- Test 15: GetIter on List(I64) yields I64 elements ----
+    #[test]
+    fn getiter_list_i64_yields_i64() {
+        // Block arg typed as List(I64), then GetIter → ForIter.
+        let entry_id = BlockId(0);
+        let block = TirBlock {
+            id: entry_id,
+            args: vec![TirValue {
+                id: ValueId(0),
+                ty: TirType::List(Box::new(TirType::I64)),
+            }],
+            ops: vec![
+                make_op(
+                    OpCode::GetIter,
+                    vec![ValueId(0)],
+                    vec![ValueId(1)],
+                    AttrDict::new(),
+                ),
+                make_op(
+                    OpCode::ForIter,
+                    vec![ValueId(1)],
+                    vec![ValueId(2)],
+                    AttrDict::new(),
+                ),
+            ],
+            terminator: Terminator::Return {
+                values: vec![ValueId(2)],
+            },
+        };
+        let mut blocks = HashMap::new();
+        blocks.insert(entry_id, block);
+        let mut func = TirFunction {
+            name: "list_iter_test".into(),
+            param_names: vec!["lst".into()],
+            param_types: vec![TirType::List(Box::new(TirType::I64))],
+            return_type: TirType::I64,
+            blocks,
+            entry_block: entry_id,
+            next_value: 3,
+            next_block: 1,
+            attrs: AttrDict::new(),
+            has_exception_handling: false,
+            label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+        };
+        refine_types(&mut func);
+
+        let env = extract_type_map(&func);
+        assert_eq!(
+            env.get(&ValueId(2)),
+            Some(&TirType::I64),
+            "ForIter on List(I64) should yield I64"
+        );
+    }
+
+    // ---- Test 16: Index on List(I64) returns I64 ----
+    #[test]
+    fn index_list_i64_returns_i64() {
+        let entry_id = BlockId(0);
+        let block = TirBlock {
+            id: entry_id,
+            args: vec![TirValue {
+                id: ValueId(0),
+                ty: TirType::List(Box::new(TirType::I64)),
+            }],
+            ops: vec![
+                make_op(OpCode::ConstInt, vec![], vec![ValueId(1)], int_attr(0)),
+                make_op(
+                    OpCode::Index,
+                    vec![ValueId(0), ValueId(1)],
+                    vec![ValueId(2)],
+                    AttrDict::new(),
+                ),
+            ],
+            terminator: Terminator::Return {
+                values: vec![ValueId(2)],
+            },
+        };
+        let mut blocks = HashMap::new();
+        blocks.insert(entry_id, block);
+        let mut func = TirFunction {
+            name: "index_test".into(),
+            param_names: vec!["lst".into()],
+            param_types: vec![TirType::List(Box::new(TirType::I64))],
+            return_type: TirType::I64,
+            blocks,
+            entry_block: entry_id,
+            next_value: 3,
+            next_block: 1,
+            attrs: AttrDict::new(),
+            has_exception_handling: false,
+            label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+        };
+        refine_types(&mut func);
+
+        let env = extract_type_map(&func);
+        assert_eq!(
+            env.get(&ValueId(2)),
+            Some(&TirType::I64),
+            "Index on List(I64) should return I64"
+        );
+    }
+
+    // ---- Test 17: Sieve pattern — range + arithmetic all resolve to I64 ----
+    #[test]
+    fn sieve_pattern_all_i64() {
+        // Simulates the critical sieve path:
+        // v0 = ConstInt(100)         → I64
+        // v1 = CallBuiltin("range")  → range object
+        // v2 = GetIter(v1)           → iterator
+        // v3 = ForIter(v2)           → I64 (loop var i)
+        // v4 = ConstInt(1)           → I64
+        // v5 = Add(v3, v4)           → I64 (i + 1)
+        // v6 = Lt(v3, v0)            → Bool (i < 100)
+        let mut range_attrs = AttrDict::new();
+        range_attrs.insert("name".into(), AttrValue::Str("range".into()));
+
+        let ops = vec![
+            make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(100)),
+            make_op(
+                OpCode::CallBuiltin,
+                vec![ValueId(0)],
+                vec![ValueId(1)],
+                range_attrs,
+            ),
+            make_op(
+                OpCode::GetIter,
+                vec![ValueId(1)],
+                vec![ValueId(2)],
+                AttrDict::new(),
+            ),
+            make_op(
+                OpCode::ForIter,
+                vec![ValueId(2)],
+                vec![ValueId(3)],
+                AttrDict::new(),
+            ),
+            make_op(OpCode::ConstInt, vec![], vec![ValueId(4)], int_attr(1)),
+            make_op(
+                OpCode::Add,
+                vec![ValueId(3), ValueId(4)],
+                vec![ValueId(5)],
+                AttrDict::new(),
+            ),
+            make_op(
+                OpCode::Lt,
+                vec![ValueId(3), ValueId(0)],
+                vec![ValueId(6)],
+                AttrDict::new(),
+            ),
+        ];
+        let mut func = single_block_func(ops, 7);
+        refine_types(&mut func);
+
+        let env = extract_type_map(&func);
+        // All critical values should be typed.
+        assert_eq!(env.get(&ValueId(0)), Some(&TirType::I64), "const 100");
+        assert_eq!(env.get(&ValueId(3)), Some(&TirType::I64), "loop var i");
+        assert_eq!(env.get(&ValueId(4)), Some(&TirType::I64), "const 1");
+        assert_eq!(env.get(&ValueId(5)), Some(&TirType::I64), "i + 1");
+        assert_eq!(env.get(&ValueId(6)), Some(&TirType::Bool), "i < 100");
     }
 }
