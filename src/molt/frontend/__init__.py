@@ -11714,6 +11714,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.locals.pop(name, None)
                     self.globals.pop(name, None)
                     self.exact_locals.pop(name, None)
+                    self.boxed_locals.pop(name, None)
         free_vars = self._collect_free_vars_comprehension(node)
         if self.current_func_name == "molt_main":
             # CPython resolves module-scope comprehension names as globals, not
