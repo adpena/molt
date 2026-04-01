@@ -9724,6 +9724,52 @@ def _backend_daemon_log_tail(log_path: Path, *, max_lines: int = 30) -> str | No
     return "\n".join(tail).strip() or None
 
 
+_MAX_CONCURRENT_BUILDS = 2
+_BUILD_SLOT_DIR = Path("/tmp/molt-build-slots")
+
+
+@contextlib.contextmanager
+def _build_slot():
+    """Acquire one of N build slots before running cargo build.
+
+    Uses flock-based semaphore to hard-cap concurrent cargo builds.
+    Each build peaks at ~16GB RSS, so MAX_CONCURRENT_BUILDS=2 keeps
+    total below 32GB even on machines with 128GB RAM (leaves room for
+    daemon, tests, and OS).  Without this, 5+ concurrent builds from
+    multi-agent sessions OOM the machine.
+    """
+    import fcntl
+
+    _BUILD_SLOT_DIR.mkdir(exist_ok=True)
+    max_slots = int(os.environ.get("MOLT_MAX_CONCURRENT_BUILDS", _MAX_CONCURRENT_BUILDS))
+
+    for slot_idx in range(max_slots):
+        slot_path = _BUILD_SLOT_DIR / f"slot-{slot_idx}.lock"
+        fd = slot_path.open("w")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Got the slot
+            try:
+                yield slot_idx
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                fd.close()
+            return
+        except OSError:
+            fd.close()
+            continue
+
+    # All slots busy — wait for any slot (blocking)
+    slot_path = _BUILD_SLOT_DIR / "slot-0.lock"
+    fd = slot_path.open("w")
+    fcntl.flock(fd, fcntl.LOCK_EX)  # blocks until available
+    try:
+        yield 0
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        fd.close()
+
+
 def _molt_session_id() -> str | None:
     """Return the session ID for concurrent build isolation.
 
@@ -10624,13 +10670,14 @@ def _start_backend_daemon(
                     if _session_dir is not None:
                         _rebuild_env = os.environ.copy()
                         _rebuild_env["CARGO_TARGET_DIR"] = str(_session_dir)
-                    _rebuild = subprocess.run(
-                        _rebuild_cmd,
-                        capture_output=True,
-                        cwd=project_root,
-                        timeout=300,
-                        env=_rebuild_env,
-                    )
+                    with _build_slot() as _slot:
+                        _rebuild = subprocess.run(
+                            _rebuild_cmd,
+                            capture_output=True,
+                            cwd=project_root,
+                            timeout=300,
+                            env=_rebuild_env,
+                        )
                     if _rebuild.returncode != 0 and not json_output:
                         print(
                             f"  cargo rebuild failed (exit {_rebuild.returncode})",
@@ -20186,14 +20233,15 @@ def _ensure_runtime_lib(
             build_env["CARGO_TARGET_DIR"] = str(_session_tgt_runtime)
         _maybe_enable_sccache(build_env)
         try:
-            build = _run_cargo_with_sccache_retry(
-                cmd,
-                cwd=project_root,
-                env=build_env,
-                timeout=cargo_timeout,
-                json_output=json_output,
-                label="Runtime build",
-            )
+            with _build_slot() as _slot:
+                build = _run_cargo_with_sccache_retry(
+                    cmd,
+                    cwd=project_root,
+                    env=build_env,
+                    timeout=cargo_timeout,
+                    json_output=json_output,
+                    label="Runtime build",
+                )
         except subprocess.TimeoutExpired:
             if not json_output:
                 timeout_note = (
