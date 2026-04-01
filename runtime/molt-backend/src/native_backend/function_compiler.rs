@@ -1251,22 +1251,8 @@ impl SimpleBackend {
         // `len`/`index` can fold without touching the runtime. The tuple
         // object itself must still use the canonical runtime layout.
         let mut scalarized_tuples: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-        let trace_all_ops = func_ir.name.contains("test_exc__test") || func_ir.name.contains("test_except__test");
         for op_idx in 0..ops.len() {
-            if trace_all_ops {
-                let _ = crate::debug_artifacts::append_debug_artifact(
-                    "exc/op_trace.txt",
-                    format!("OP: func={} idx={} kind={:20} filled={} skip={}\n",
-                        func_ir.name, op_idx, ops[op_idx].kind, is_block_filled, skip_ops.contains(&op_idx)),
-                );
-            }
             if skip_ops.contains(&op_idx) {
-                if ops[op_idx].kind == "check_exception" && func_ir.name.contains("test") {
-                    let _ = crate::debug_artifacts::append_debug_artifact(
-                        "exc/skipped_check_exc.txt",
-                        format!("SKIPPED: func={} op_idx={} target={:?}\n", func_ir.name, op_idx, ops[op_idx].value),
-                    );
-                }
                 continue;
             }
             let op = ops[op_idx].clone();
@@ -1275,8 +1261,6 @@ impl SimpleBackend {
             if is_module_chunk && !is_block_filled && op.col_offset.is_some() && op.end_col_offset.is_some() {
                 let col_val = builder.ins().iconst(types::I64, op.col_offset.unwrap());
                 let end_col_val = builder.ins().iconst(types::I64, op.end_col_offset.unwrap());
-                // Reuse the current line from the most recent LINE op.
-                let line_val = builder.ins().iconst(types::I64, 0); // 0 = keep current line
                 let frame_line_col_fn = import_func_ref(
                     &mut self.module,
                     &mut self.import_ids,
