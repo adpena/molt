@@ -12355,6 +12355,21 @@ def _lower_module_serial_with_context(
         raise _ModuleLowerError(str(exc)) from exc
     except NotImplementedError as exc:
         raise _ModuleLowerError(f"NotImplementedError in {module_name}: {exc}") from exc
+    except SyntaxError as exc:
+        # Format SyntaxError like CPython: show file, line, and caret.
+        # The SyntaxError is raised during AST visiting (e.g. match pattern
+        # validation) and should produce the same output as CPython.
+        parts = []
+        if hasattr(exc, "filename") and exc.filename:
+            parts.append(f'  File "{exc.filename}", line {exc.lineno}')
+        elif module_path:
+            parts.append(f'  File "{module_path}"')
+        if hasattr(exc, "text") and exc.text:
+            parts.append(f"    {exc.text.rstrip()}")
+            if hasattr(exc, "offset") and exc.offset:
+                parts.append(" " * (exc.offset + 3) + "^" * max(1, getattr(exc, "end_offset", exc.offset) - exc.offset))
+        parts.append(f"SyntaxError: {exc.msg}")
+        raise _ModuleLowerError("\n".join(parts)) from exc
     total_s = time.perf_counter() - module_frontend_start
     payload = _module_frontend_payload(
         gen,
@@ -13482,6 +13497,72 @@ def _stdlib_object_cache_path(
     cache_root = _default_molt_cache()
     cache_root.mkdir(parents=True, exist_ok=True)
     return cache_root / "stdlib_shared.o"
+
+
+def _invalidate_stale_stdlib_cache(
+    stdlib_object_path: Path,
+    project_root: Path | None,
+) -> None:
+    """Delete the cached stdlib .o if the backend binary or runtime library is newer.
+
+    When the backend or runtime is rebuilt, the cached stdlib becomes stale
+    and will cause duplicate-symbol linker errors if reused.  This check
+    mirrors the mtime logic in ``_backend_daemon_binary_is_newer`` but
+    compares against the cached stdlib file instead of the daemon PID.
+    """
+    if not stdlib_object_path.exists():
+        return
+    try:
+        stdlib_mtime = stdlib_object_path.stat().st_mtime
+    except OSError:
+        return
+
+    # Discover project root the same way as _backend_daemon_binary_is_newer.
+    candidate = project_root
+    if candidate is None:
+        return
+    # Walk up to find Cargo.toml if needed.
+    _root = candidate
+    for _ in range(5):
+        if (_root / "Cargo.toml").exists():
+            break
+        _root = _root.parent
+    else:
+        _root = candidate
+
+    target_root = Path(
+        os.environ.get("CARGO_TARGET_DIR", str(_root / "target"))
+    )
+
+    # Check backend binary and runtime library across all profile dirs.
+    for profile_dir in ("release", "release-fast", "debug"):
+        for artifact_name in ("molt-backend", "libmolt_runtime.a"):
+            artifact = target_root / profile_dir / artifact_name
+            try:
+                if artifact.stat().st_mtime > stdlib_mtime:
+                    stdlib_object_path.unlink(missing_ok=True)
+                    return
+            except OSError:
+                continue
+
+    # Also check backend and runtime Rust sources — cargo incremental
+    # compilation may skip the link step (no binary mtime change) even
+    # when sources changed.
+    backend_src = _root / "runtime" / "molt-backend" / "src"
+    runtime_src = _root / "runtime" / "molt-runtime" / "src"
+    for src_dir in (backend_src, runtime_src):
+        try:
+            if not src_dir.is_dir():
+                continue
+            newest_rs = max(
+                (f.stat().st_mtime for f in src_dir.rglob("*.rs") if f.is_file()),
+                default=0.0,
+            )
+            if newest_rs > stdlib_mtime:
+                stdlib_object_path.unlink(missing_ok=True)
+                return
+        except OSError:
+            continue
 
 
 def _attach_build_metadata(
@@ -18083,6 +18164,8 @@ def _prepare_backend_cache_setup(
     stdlib_object_path = None
     if split_stdlib_object:
         stdlib_object_path = _stdlib_object_cache_path(cache_path, cache_key)
+        if stdlib_object_path is not None:
+            _invalidate_stale_stdlib_cache(stdlib_object_path, project_root)
     cache_candidates: list[tuple[str, Path]] = []
     if cache_path is not None:
         cache_candidates.append(("module", cache_path))
