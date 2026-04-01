@@ -8,19 +8,38 @@
 
 **Tech Stack:** Rust (Cranelift IR, molt-backend), Python (molt CLI, test harness), NaN-boxing runtime
 
+### Status snapshot (updated 2026-04-01)
+
+| Metric | Value |
+|--------|-------|
+| Total differential tests | 736 |
+| Tests with MOLT_SKIP or xfail | 494 |
+| Conformance baseline (compile) | 272/385 (59%) |
+| Conformance baseline (runtime parity) | 197/254 (78%) |
+| SIGSEGVs | 0 |
+| Timeouts | 2 |
+| Phase 1 P0 blockers | 3/4 fixed, 1 active WIP (TIR exception handling) |
+| Phase 2 baseline + xfail | Done |
+| Phase 2 cluster-fix sweep | Not started (78%, not 100%) |
+| Phase 3 performance | Partial — 6+ type specializations wired, raw_int arithmetic disabled |
+| **Current active blocker** | TIR strips exception labels → try/except fails (WIP `a2c6be8e0`) |
+
 ---
 
 ## Phase 1: Kill P0 Blockers
 
-### Task 1: Fix CONST-in-loop materialization failure
+### Task 1: Fix CONST-in-loop materialization failure — DONE
+
+**Status:** FIXED via CSE global alias resolution (commit `7ddd6fd77`). Root cause was not `is_block_filled` as hypothesized — it was the CSE pass creating dangling cross-block aliases. Additional dominator filtering added in `63c4962d5`. Sieve correctness verified: `sieve(100) = 25` (commit `5489f7000`).
 
 **Files:**
-- Modify: `runtime/molt-backend/src/native_backend/function_compiler.rs:1107-1213` (is_block_filled guard + const handler)
-- Modify: `runtime/molt-backend/src/lib.rs:808-826` (switch_to_block_tracking)
+- ~~Modify: `runtime/molt-backend/src/native_backend/function_compiler.rs:1107-1213`~~
+- ~~Modify: `runtime/molt-backend/src/lib.rs:808-826`~~
+- Actual fix: `runtime/molt-backend/src/tir/` CSE pass alias resolution
 
-This is the #1 blocker. `eq(n, 1)` inside while loops receives `b=0x0` because the CONST op's `def_var` never executes. The hypothesis is `is_block_filled` is `true` when the CONST op runs.
+~~This is the #1 blocker.~~ Resolved.
 
-- [ ] **Step 1: Add diagnostic to confirm root cause**
+- [x] **Step 1: Add diagnostic to confirm root cause**
 
 In `function_compiler.rs`, inside the main op dispatch loop, find the `is_block_filled` skip guard at line ~1107:
 
@@ -45,7 +64,7 @@ if is_block_filled {
 }
 ```
 
-- [ ] **Step 2: Build and test the diagnostic**
+- [x] **Step 2: Build and test the diagnostic**
 
 ```bash
 cargo build --profile release-fast -p molt-backend --features native-backend 2>&1 | tail -5
@@ -55,7 +74,7 @@ MOLT_DEBUG_CONST=1 timeout 300 python3 -m molt build --target native --output /t
 
 Expected: Output showing `SKIPPED const op` lines, confirming the hypothesis.
 
-- [ ] **Step 3: Fix the root cause**
+- [x] **Step 3: Fix the root cause**
 
 The issue is in the block transition logic. When a `check_exception` or branch terminator fills a block, the subsequent fallthrough ops (including CONST) get skipped because `is_block_filled` is never reset.
 
@@ -100,7 +119,7 @@ fn switch_to_block_tracking(
 
 Apply whichever scenario the diagnostic confirms. The key invariant: **no non-label op should ever be skipped by is_block_filled without an explicit dead-code reason.**
 
-- [ ] **Step 4: Remove diagnostic, build, and verify**
+- [x] **Step 4: Remove diagnostic, build, and verify**
 
 Remove the `MOLT_DEBUG_CONST` diagnostic added in Step 1.
 
@@ -113,7 +132,7 @@ timeout 300 python3 -m molt build --target native --output /tmp/test --release /
 
 Expected output: `1` (break fires at n==1, loop exits immediately).
 
-- [ ] **Step 5: Verify sieve regression is resolved**
+- [x] **Step 5: Verify sieve regression is resolved**
 
 Create test file:
 
@@ -151,22 +170,21 @@ Expected: `25` (number of primes <= 100).
 
 If sieve still returns 0, the regression is independent — proceed to bisect between commits 49fc7d33 and 15feab12.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
-```bash
-git add runtime/molt-backend/src/native_backend/function_compiler.rs runtime/molt-backend/src/lib.rs
-git commit -m "fix: CONST ops inside loops — reset is_block_filled on implicit fallthrough"
-```
+Committed as `7ddd6fd77` (CSE alias fix) and `63c4962d5` (dominator filtering).
 
 ---
 
-### Task 2: Fix generator state machine (yields only first element)
+### Task 2: Fix generator state machine (yields only first element) — DONE
+
+**Status:** FIXED across 4 commits: `5e527b247` (generator expressions yield all elements), `12c2e887d` (HEADER_STATE_OFFSET fix), `66e79dd20` (CONST_NONE preserved in state machine), `a23de4377` (generator iteration value extraction).
 
 **Files:**
 - Modify: `runtime/molt-backend/src/native_backend/function_compiler.rs:8548-8730` (state_switch + state_yield handlers)
 - Modify: `runtime/molt-backend/src/passes.rs:2605-2844` (rewrite_stateful_loops)
 
-- [ ] **Step 1: Create test file and capture behavior**
+- [x] **Step 1: Create test file and capture behavior**
 
 ```python
 # /tmp/test_gen.py
@@ -188,7 +206,7 @@ timeout 300 python3 -m molt build --target native --output /tmp/test_gen_bin --r
 
 Document actual output. Expected failure: only `[1]` or similar.
 
-- [ ] **Step 2: Add state machine diagnostic**
+- [x] **Step 2: Add state machine diagnostic**
 
 In `function_compiler.rs`, inside the `"state_switch"` handler (line ~8548), add:
 
@@ -216,7 +234,7 @@ if std::env::var("MOLT_DEBUG_GEN").is_ok() {
 }
 ```
 
-- [ ] **Step 3: Build and run diagnostic**
+- [x] **Step 3: Build and run diagnostic**
 
 ```bash
 cargo build --profile release-fast -p molt-backend --features native-backend 2>&1 | tail -5
@@ -226,7 +244,7 @@ MOLT_DEBUG_GEN=1 timeout 300 python3 -m molt build --target native --output /tmp
 
 Analyze output: check if all yield resume states are registered, and if `is_block_filled` is interfering with state_yield ops (same pattern as Task 1).
 
-- [ ] **Step 4: Fix based on diagnostic findings**
+- [x] **Step 4: Fix based on diagnostic findings**
 
 Likely root causes (fix the one the diagnostic confirms):
 
@@ -236,7 +254,7 @@ Likely root causes (fix the one the diagnostic confirms):
 
 **C — state_yield doesn't properly switch to resume block:** After `state_yield` stores the next state and jumps to `master_return_block`, it must call `switch_to_block` for the resume block (the block that runs when the generator is next called). Verify this happens and `is_block_filled` is reset.
 
-- [ ] **Step 5: Remove diagnostic, build, and verify**
+- [x] **Step 5: Remove diagnostic, build, and verify**
 
 Remove `MOLT_DEBUG_GEN` diagnostics.
 
@@ -249,7 +267,7 @@ timeout 300 python3 -m molt build --target native --output /tmp/test_gen_bin --r
 
 Expected: `[1, 2, 3]`
 
-- [ ] **Step 6: Test generator with loop**
+- [x] **Step 6: Test generator with loop**
 
 ```python
 # /tmp/test_gen_loop.py
@@ -269,132 +287,61 @@ timeout 300 python3 -m molt build --target native --output /tmp/test_gen_loop_bi
 /tmp/test_gen_loop_bin
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
-```bash
-git add runtime/molt-backend/src/native_backend/function_compiler.rs runtime/molt-backend/src/passes.rs
-git commit -m "fix: generator state machine — resume after yield works for all states"
-```
+Committed across `5e527b247`, `12c2e887d`, `66e79dd20`, `a23de4377`.
 
 ---
 
-### Task 3: Fix `__annotations__` SIGSEGV
+### Task 3: Fix `__annotations__` SIGSEGV — LIKELY RESOLVED (needs re-verification)
+
+**Status:** No specific commit, but baseline shows 0 SIGSEGVs. Broader fixes (`0b3bf0a92` disabled phi rewrite preventing 53 crashes, `3de9134a9` defensive type_id validation, `84c8e7fbe` strip `__annotate__` call sites) likely resolved this indirectly. **Needs re-verification** — if still broken on `__annotations__` access specifically, reopen with steps below.
 
 **Files:**
 - Modify: `runtime/molt-runtime/src/object/` (attribute dispatch for `__annotations__`)
 
-- [ ] **Step 1: Create test file and reproduce**
-
-```python
-# /tmp/test_annotations.py
-x: int = 5
-print(__annotations__)
-# Expected: {'x': <class 'int'>}
-```
-
-```bash
-pkill -9 -f "molt-backend"
-timeout 300 python3 -m molt build --target native --output /tmp/test_ann_bin --release /tmp/test_annotations.py --rebuild --verbose 2>&1
-/tmp/test_ann_bin
-```
-
-Document: does it SIGSEGV, or has a prior fix resolved this?
-
-- [ ] **Step 2: Investigate runtime attribute dispatch**
-
-Search for `__annotations__` handling in the runtime:
-
-```bash
-grep -rn "__annotations__" runtime/molt-runtime/src/ runtime/molt-backend/src/
-```
-
-The crash likely occurs because `__annotations__` lookup hits a null pointer — the module dict doesn't have an `__annotations__` entry, and the attribute fallback path dereferences a null.
-
-- [ ] **Step 3: Fix — ensure __annotations__ dict is initialized**
-
-The fix depends on what the investigation reveals. Likely: the module initialization needs to create an empty `__annotations__` dict in the module namespace, or the attribute lookup for `__annotations__` needs a safe fallback to an empty dict rather than dereferencing null.
-
-- [ ] **Step 4: Build and verify**
-
-```bash
-cargo build --profile release-fast -p molt-backend --features native-backend 2>&1 | tail -5
-pkill -9 -f "molt-backend"
-timeout 300 python3 -m molt build --target native --output /tmp/test_ann_bin --release /tmp/test_annotations.py --rebuild --verbose 2>&1
-/tmp/test_ann_bin
-```
-
-Expected: `{'x': <class 'int'>}` (or Molt's dict repr equivalent).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add -A runtime/
-git commit -m "fix: __annotations__ access no longer crashes — initialize module annotations dict"
-```
+- [~] **Step 1: Create test file and reproduce** — 0 SIGSEGVs in baseline; needs targeted retest
+- [ ] **Step 2: Investigate runtime attribute dispatch** — only if Step 1 still crashes
+- [ ] **Step 3: Fix** — only if still broken
+- [ ] **Step 4: Build and verify** — only if still broken
+- [ ] **Step 5: Commit** — only if still broken
 
 ---
 
-### Task 4: Fix TIR verification failure in builtins chunk
+### Task 4: Fix TIR verification failure in builtins chunk — PARTIALLY FIXED, NEW BLOCKER
+
+**Status:** Major SSA fixes landed: `332d426f2` (loops/comprehensions/__init__), `db42ea341` (two-pass dominator-walk resolution), `604f8fa72` (skip TIR roundtrip for zero-valued phis). TIR is now default-ON (`d6b3692ac`).
+
+**⚠ NEW BLOCKER:** TIR exception handling is broken. The TIR pipeline strips exception labels, causing all try/except to fail. WIP investigation in `a2c6be8e0` (tip of tree). Root cause documented in `0639abad3`. This is now the **#1 active blocker** for conformance.
 
 **Files:**
-- Modify: `runtime/molt-backend/src/tir/ssa.rs` (SSA verification/repair)
-- Reference: Partner's `MOLT_SSA_DIAG` diagnostic already in unstaged changes
+- Modify: `runtime/molt-backend/src/tir/` (exception label preservation)
+- Reference: `0639abad3` (root cause documentation)
 
-- [ ] **Step 1: Reproduce and capture diagnostic output**
+- [x] **Step 1: Reproduce and capture diagnostic output** — reproduced, root cause identified
+- [x] **Step 2: Identify the invalid SSA pattern** — SSA fixes landed across 3 commits
+- [x] **Step 3: Fix the SSA resolution** — two-pass dominator walk + sealed blocks
+- [x] **Step 4: Build and verify** — TIR default-ON, SSA passes clean
+- [x] **Step 5: Commit** — commits `332d426f2`, `db42ea341`, `604f8fa72`, `d6b3692ac`
 
-```bash
-pkill -9 -f "molt-backend"
-MOLT_SSA_DIAG=1 timeout 300 python3 -m molt build --target native --output /tmp/test_builtins --release /tmp/test_sieve.py --rebuild --verbose 2>&1 | grep SSA-DIAG
-```
-
-If no SSA-DIAG output, the issue may only trigger with specific test files. Try:
-
-```bash
-MOLT_SSA_DIAG=1 timeout 300 python3 -m molt build --target native --output /tmp/test_builtins --release tests/differential/basic/arith.py --rebuild --verbose 2>&1 | grep -E "SSA-DIAG|verification|builtins__molt_module_chunk"
-```
-
-- [ ] **Step 2: Identify the invalid SSA pattern**
-
-The partner's diagnostic in `tir/ssa.rs` (unstaged changes) logs remaining UNDEF branch args after the two-pass resolution. The output will show which block, which branch target, and which variable has an unresolved value.
-
-- [ ] **Step 3: Fix the SSA resolution**
-
-The two-pass dominator-walk SSA resolution (commit db42ea34) handles most cases. The remaining failure is likely an edge case where:
-
-**A — Unreachable block has branch args referencing values not dominated by any predecessor.** Fix: The unreachable-block fill pass (already in ssa.rs) should substitute `undef` values with `box_none` constants.
-
-**B — Loop back-edge carries a value defined after the back-edge source.** Fix: Insert a phi/block-arg at the loop header for the variable.
-
-Apply the fix based on the diagnostic output.
-
-- [ ] **Step 4: Build and verify**
-
-```bash
-cargo build --profile release-fast -p molt-backend --features native-backend 2>&1 | tail -5
-pkill -9 -f "molt-backend"
-MOLT_SSA_DIAG=1 timeout 300 python3 -m molt build --target native --output /tmp/test_builtins --release /tmp/test_sieve.py --rebuild --verbose 2>&1 | grep SSA-DIAG
-```
-
-Expected: No SSA-DIAG UNDEF output.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add runtime/molt-backend/src/tir/ssa.rs
-git commit -m "fix: resolve remaining UNDEF branch args in TIR SSA two-pass resolution"
-```
+**NEW STEPS (exception handling):**
+- [ ] **Step 6: Fix TIR exception label preservation** — TIR must not strip `check_exception`/exception handler labels during lowering. The `lower_to_simple` pass needs to preserve exception dispatch targets.
+- [ ] **Step 7: Verify try/except works end-to-end** — test with `tests/differential/basic/exception_handling.py`
+- [ ] **Step 8: Commit**
 
 ---
 
 ## Phase 2: Conformance Audit + Systematic Sweep
 
-### Task 5: Run full conformance baseline
+### Task 5: Run full conformance baseline — DONE
+
+**Status:** Baseline captured in `tests/harness/baselines/baseline.json`. Results: 385 CPython tests, 272 compile (59%), 197 runtime pass (78% parity), 55 mismatch, 0 SIGSEGV, 2 timeouts.
 
 **Files:**
 - Reference: `tests/molt_diff.py` (diff harness)
 - Reference: `tests/differential/basic/` (736 test files)
 
-- [ ] **Step 1: Run the full differential suite**
+- [x] **Step 1: Run the full differential suite**
 
 ```bash
 pkill -9 -f "molt-backend"
@@ -420,30 +367,20 @@ timeout 3600 python3 tests/molt_diff.py tests/differential/basic/ --profile rele
 tail -30 /tmp/conformance_baseline.txt
 ```
 
-- [ ] **Step 2: Capture the full failure list**
+- [x] **Step 2: Capture the full failure list** — recorded in `tests/harness/baselines/baseline.json`
 
-```bash
-cp logs/molt_diff/failures.txt /tmp/conformance_failures_baseline.txt 2>/dev/null || true
-wc -l /tmp/conformance_failures_baseline.txt
-```
-
-- [ ] **Step 3: Record baseline in commit message**
-
-```bash
-git add -A tests/ docs/
-git commit -m "chore: conformance baseline — X/Y passed (Z%)"
-```
-
-Replace X, Y, Z with actual numbers.
+- [x] **Step 3: Record baseline in commit message** — baseline committed
 
 ---
 
-### Task 6: Triage — tag unsupported-feature tests as xfail
+### Task 6: Triage — tag unsupported-feature tests as xfail — DONE
+
+**Status:** Commit `0cd0cb40e` tagged 158 tests. Currently 494 of 736 test files have MOLT_SKIP or xfail markers.
 
 **Files:**
 - Modify: Test files in `tests/differential/basic/` that exercise exec/eval/compile/monkeypatch/reflection
 
-- [ ] **Step 1: Identify tests using exec/eval/compile**
+- [x] **Step 1: Identify tests using exec/eval/compile**
 
 ```bash
 grep -rl '\bexec\s*(' tests/differential/basic/ | head -30
@@ -451,35 +388,10 @@ grep -rl '\beval\s*(' tests/differential/basic/ | head -30
 grep -rl '\bcompile\s*(' tests/differential/basic/ | head -30
 ```
 
-- [ ] **Step 2: Identify tests using restricted reflection**
-
-```bash
-grep -rl '__code__\|__globals__.*=\|__dict__.*=.*{' tests/differential/basic/ | head -30
-```
-
-- [ ] **Step 3: Add xfail metadata to each identified test**
-
-For each file, add at line 2 (after the docstring or shebang):
-
-```python
-# MOLT_META: expect_fail=molt expect_fail_reason=too_dynamic_policy
-```
-
-Only tag files whose PRIMARY purpose is testing an excluded feature. If a file tests a supported feature but happens to use `eval()` in one test case, fix the test case instead.
-
-- [ ] **Step 4: Verify xfail tests are now excluded from failure count**
-
-```bash
-pkill -9 -f "molt-backend"
-timeout 3600 python3 tests/molt_diff.py tests/differential/basic/ --profile release 2>&1 | tail -10
-```
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add tests/differential/basic/
-git commit -m "chore: tag exec/eval/compile/reflection tests as xfail — N tests excluded"
-```
+- [x] **Step 2: Identify tests using restricted reflection**
+- [x] **Step 3: Add xfail metadata to each identified test** — 158 files tagged
+- [x] **Step 4: Verify xfail tests are now excluded from failure count**
+- [x] **Step 5: Commit** — `0cd0cb40e`
 
 ---
 
@@ -668,7 +580,9 @@ git commit --allow-empty -m "perf: sieve baseline — Xms Molt vs Yms CPython"
 
 ---
 
-### Task 9: Expand fast_int coverage and activate raw_int for loop counters
+### Task 9: Expand fast_int coverage and activate raw_int for loop counters — PARTIAL
+
+**Status:** 6+ type specializations wired via TIR type inference (`07f782c38`, `3b2325af6`). fast_int paths guarded against bigint (`868052bdf`). list[int] flat storage end-to-end (`db6952258`). **However:** raw_int arithmetic chains DISABLED (commit `5489f7000`) — `box_int_value` truncates beyond 47-bit NaN-box range. Only comparison chains (icmp-based) remain active. Need overflow guard insertion to re-enable.
 
 **Files:**
 - Modify: `runtime/molt-backend/src/tir/type_refine.rs:62-259` (type refinement)

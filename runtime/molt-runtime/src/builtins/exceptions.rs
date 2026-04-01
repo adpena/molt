@@ -5321,10 +5321,24 @@ pub extern "C" fn molt_exception_last() -> u64 {
             }
             let bits = MoltObject::from_ptr(ptr.0).bits();
             inc_ref_bits(_py, bits);
+            // TEMPORARY TRACE
+            {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
+                    let _ = writeln!(f, "[EXC_LAST] returning exception bits=0x{:x}", bits);
+                }
+            }
             return bits;
         }
         if debug_flow {
             eprintln!("molt exc last task=0x0 kind=none");
+        }
+        // TEMPORARY TRACE
+        {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
+                let _ = writeln!(f, "[EXC_LAST] returning None");
+            }
         }
         MoltObject::none().bits()
     })
