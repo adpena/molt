@@ -31829,11 +31829,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for ci_idx, (start_idx, mop) in enumerate(_col_inject):
             if mop.col_offset is None:
                 continue
-            # The MoltOp may have emitted multiple json entries (e.g. CALL
-            # emits callargs_new + callargs_push_pos + call_bind).  Inject
-            # col_offset into the LAST entry, which is typically the one that
-            # can raise (the call/op itself).
-            # Find next op's start to bound this op's entries.
             end_idx = _col_inject[ci_idx + 1][0] if ci_idx + 1 < len(_col_inject) else len(json_ops)
             if end_idx > start_idx:
                 last_entry = json_ops[end_idx - 1]
