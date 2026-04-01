@@ -10532,8 +10532,10 @@ pub extern "C" fn molt_list_int_setitem(list_bits: u64, index_bits: u64, value_b
             return MoltObject::none().bits();
         }
         vec[idx as usize] = raw_value;
-        // No refcount changes — raw i64 values have no heap allocation
-        MoltObject::none().bits()
+        // No refcount changes — raw i64 values have no heap allocation.
+        // Return the list itself to match the molt_store_index contract
+        // (the compiler may assign the result back to the container variable).
+        list_bits
     }
 }
 
@@ -10543,8 +10545,6 @@ pub extern "C" fn molt_list_int_setitem(list_bits: u64, index_bits: u64, value_b
 /// have the same memory layout: obj_ptr stores `*mut Vec<T>` at offset 0, and
 /// Vec's data pointer is at offset 0/8 of the Vec struct (platform-dependent
 /// but stable via Vec::as_ptr).
-///
-/// # Safety
 /// The returned pointer is valid only as long as the list is not resized.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_data(list_bits: u64) -> u64 {
