@@ -420,9 +420,27 @@ pub mod ffi {
         /// Falls back to `molt_is_truthy` for unexpected types.
         pub fn molt_is_truthy_int(bits: u64) -> i64;
 
+        /// GIL-free truthy for known-int.  No GIL, no catch_unwind, no signal checks.
+        pub fn molt_is_truthy_int_nogil(bits: u64) -> i64;
+
         /// Fast truthy check for known-bool values.  `False` is falsy.
         /// Falls back to `molt_is_truthy` for unexpected types.
         pub fn molt_is_truthy_bool(bits: u64) -> i64;
+
+        /// GIL-free truthy for known-bool.  No GIL, no catch_unwind, no signal checks.
+        pub fn molt_is_truthy_bool_nogil(bits: u64) -> i64;
+
+        /// GIL-free list[int] getitem (NaN-boxed interface).
+        pub fn molt_list_int_getitem_nogil(list_bits: u64, index_bits: u64) -> u64;
+
+        /// GIL-free list[int] setitem (NaN-boxed interface).
+        pub fn molt_list_int_setitem_nogil(list_bits: u64, index_bits: u64, value_bits: u64) -> u64;
+
+        /// Raw-register list[int] getitem: raw i64 index in, raw i64 value out.
+        pub fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i64;
+
+        /// Raw-register list[int] setitem: raw i64 index and value.
+        pub fn molt_list_int_setitem_raw(list_bits: u64, raw_index: i64, raw_value: i64) -> u64;
 
         /// Returns a NaN-boxed `type` object for the given value.
         pub fn molt_type_of(val_bits: u64) -> u64;

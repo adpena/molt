@@ -1906,6 +1906,7 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
         {
             let names: &[(&str, libc::c_int)] = &[
                 ("SC_PAGE_SIZE", libc::_SC_PAGE_SIZE),
+                ("SC_PAGESIZE", libc::_SC_PAGESIZE),
                 ("SC_NPROCESSORS_CONF", libc::_SC_NPROCESSORS_CONF),
                 ("SC_NPROCESSORS_ONLN", libc::_SC_NPROCESSORS_ONLN),
                 ("SC_CLK_TCK", libc::_SC_CLK_TCK),
@@ -1915,6 +1916,21 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
                 ("SC_HOST_NAME_MAX", libc::_SC_HOST_NAME_MAX),
                 ("SC_LOGIN_NAME_MAX", libc::_SC_LOGIN_NAME_MAX),
                 ("SC_PHYS_PAGES", libc::_SC_PHYS_PAGES),
+                ("SC_IOV_MAX", libc::_SC_IOV_MAX),
+                ("SC_GETPW_R_SIZE_MAX", libc::_SC_GETPW_R_SIZE_MAX),
+                ("SC_GETGR_R_SIZE_MAX", libc::_SC_GETGR_R_SIZE_MAX),
+                ("SC_THREAD_STACK_MIN", libc::_SC_THREAD_STACK_MIN),
+                ("SC_THREAD_THREADS_MAX", libc::_SC_THREAD_THREADS_MAX),
+                ("SC_NGROUPS_MAX", libc::_SC_NGROUPS_MAX),
+                ("SC_RE_DUP_MAX", libc::_SC_RE_DUP_MAX),
+                ("SC_LINE_MAX", libc::_SC_LINE_MAX),
+                ("SC_STREAM_MAX", libc::_SC_STREAM_MAX),
+                ("SC_TZNAME_MAX", libc::_SC_TZNAME_MAX),
+                ("SC_BC_BASE_MAX", libc::_SC_BC_BASE_MAX),
+                ("SC_BC_DIM_MAX", libc::_SC_BC_DIM_MAX),
+                ("SC_BC_SCALE_MAX", libc::_SC_BC_SCALE_MAX),
+                ("SC_BC_STRING_MAX", libc::_SC_BC_STRING_MAX),
+                ("SC_EXPR_NEST_MAX", libc::_SC_EXPR_NEST_MAX),
             ];
             let mut entries: Vec<u64> = Vec::with_capacity(names.len() * 2);
             for (name_str, val) in names {

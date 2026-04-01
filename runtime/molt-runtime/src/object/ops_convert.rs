@@ -1567,6 +1567,33 @@ pub extern "C" fn molt_is_truthy_bool(bits: u64) -> i64 {
     }
 }
 
+/// GIL-free truthy check for known-int values.
+///
+/// Identical to `molt_is_truthy_int` but named `_nogil` to make the contract
+/// explicit: this function performs NO GIL acquisition, NO catch_unwind, and
+/// NO pending-signal checks.  It is safe to call from hot loops on values
+/// whose type is statically known to be `int` (or `bool`).
+///
+/// Fallback: if the NaN-boxed value is neither int nor bool, delegates to
+/// `molt_is_truthy_int` which itself falls back to the full GIL-wrapped
+/// `molt_is_truthy`.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_is_truthy_int_nogil(bits: u64) -> i64 {
+    // Delegate to the existing GIL-free implementation.
+    // This is not a wrapper for code-size reasons — the compiler can inline
+    // the call at LTO time, and having a single implementation avoids drift.
+    molt_is_truthy_int(bits)
+}
+
+/// GIL-free truthy check for known-bool values.
+///
+/// Same contract as `molt_is_truthy_int_nogil`: no GIL, no catch_unwind,
+/// no signal checks.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_is_truthy_bool_nogil(bits: u64) -> i64 {
+    molt_is_truthy_bool(bits)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_not(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {
