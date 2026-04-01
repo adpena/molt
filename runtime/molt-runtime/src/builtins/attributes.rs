@@ -877,6 +877,28 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 return Some(molt_bound_method_new(func_bits, self_bits));
             }
         }
+        // Heap-allocated NaN float: dispatch to float methods.
+        if type_id == TYPE_ID_FLOAT {
+            let name = string_obj_to_owned(obj_from_bits(attr_bits))?;
+            if let Some(func_bits) = float_method_bits(_py, name.as_str()) {
+                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+                return Some(molt_bound_method_new(func_bits, self_bits));
+            }
+            // Fall through to class-based resolution for inherited methods
+            let builtins = builtin_classes(_py);
+            if let Some(func_bits) =
+                builtin_class_method_bits(_py, builtins.float, name.as_str())
+            {
+                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+                return Some(molt_bound_method_new(func_bits, self_bits));
+            }
+            if let Some(func_bits) =
+                builtin_class_method_bits(_py, builtins.object, name.as_str())
+            {
+                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+                return Some(molt_bound_method_new(func_bits, self_bits));
+            }
+        }
         if type_id == TYPE_ID_BOUND_METHOD {
             let name = string_obj_to_owned(obj_from_bits(attr_bits));
             if let Some(name) = name.as_deref() {

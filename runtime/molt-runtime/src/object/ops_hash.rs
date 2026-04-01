@@ -940,6 +940,10 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
             if type_id == TYPE_ID_BIGINT {
                 return hash_bigint(ptr);
             }
+            if type_id == TYPE_ID_FLOAT {
+                let f = crate::object::ops::heap_float_value(ptr);
+                return hash_float(f);
+            }
             if type_id == TYPE_ID_COMPLEX {
                 let value = *complex_ref(ptr);
                 return hash_complex(value.re, value.im);

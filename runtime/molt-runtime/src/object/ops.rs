@@ -340,7 +340,7 @@ pub(super) fn range_index_for_candidate(
 
 pub(super) fn range_lookup_candidate(_py: &PyToken<'_>, val_bits: u64) -> Option<BigInt> {
     let val = obj_from_bits(val_bits);
-    if let Some(f) = val.as_float() {
+    if let Some(f) = as_float_extended(val) {
         if !f.is_finite() || f.fract() != 0.0 {
             return None;
         }
@@ -413,6 +413,92 @@ pub(super) fn alloc_range_from_bigints(
     dec_ref_bits(_py, stop_bits);
     dec_ref_bits(_py, step_bits);
     range_bits
+}
+
+// ---------------------------------------------------------------------------
+// Heap-allocated NaN floats
+// ---------------------------------------------------------------------------
+//
+// All non-NaN floats are stored inline in the NaN-box (zero overhead).
+// NaN floats are heap-allocated as TYPE_ID_FLOAT pointer-tagged objects so
+// that each `float('nan')` call produces a unique pointer address, making
+// bit-equality correct for identity checks (`nan is nan` → True,
+// `float('nan') is float('nan')` → False).
+//
+// Layout: MoltHeader (16 bytes) + f64 (8 bytes) = 24 bytes total.
+
+/// Allocate a heap float and return its NaN-boxed bits (pointer-tagged).
+///
+/// # Safety
+/// Caller must hold the GIL.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_alloc_heap_float(value: f64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        alloc_heap_float(_py, value)
+    })
+}
+
+/// Internal helper: allocate a heap float, returning NaN-boxed pointer bits.
+pub(crate) fn alloc_heap_float(_py: &PyToken<'_>, value: f64) -> u64 {
+    let header_size = std::mem::size_of::<MoltHeader>();
+    let total = header_size + std::mem::size_of::<f64>();
+    let ptr = alloc_object(_py, total, TYPE_ID_FLOAT);
+    if ptr.is_null() {
+        // OOM fallback: return canonical inline NaN (loses identity but doesn't crash)
+        return MoltObject::from_float(f64::NAN).bits();
+    }
+    unsafe {
+        *(ptr as *mut f64) = value;
+    }
+    MoltObject::from_ptr(ptr).bits()
+}
+
+/// Extract the f64 value from a heap float pointer (TYPE_ID_FLOAT).
+///
+/// # Safety
+/// `ptr` must be a valid pointer to the payload of a TYPE_ID_FLOAT object.
+#[inline(always)]
+pub(crate) unsafe fn heap_float_value(ptr: *mut u8) -> f64 {
+    unsafe { *(ptr as *const f64) }
+}
+
+/// Produce NaN-boxed bits for a float result.  Non-NaN values are stored
+/// inline (zero overhead); NaN values are heap-allocated.
+#[inline(always)]
+pub(crate) fn float_result_bits(_py: &PyToken<'_>, value: f64) -> u64 {
+    if value.is_nan() {
+        alloc_heap_float(_py, value)
+    } else {
+        MoltObject::from_float(value).bits()
+    }
+}
+
+/// Extended float check: returns true for both inline floats (non-NaN)
+/// AND heap-allocated floats (TYPE_ID_FLOAT).
+#[inline(always)]
+pub(crate) fn is_float_extended(obj: MoltObject) -> bool {
+    if obj.is_float() {
+        return true;
+    }
+    if let Some(ptr) = obj.as_ptr() {
+        return unsafe { object_type_id(ptr) } == TYPE_ID_FLOAT;
+    }
+    false
+}
+
+/// Extended float extraction: returns the f64 value for both inline floats
+/// AND heap-allocated floats (TYPE_ID_FLOAT).
+#[inline(always)]
+pub(crate) fn as_float_extended(obj: MoltObject) -> Option<f64> {
+    if let Some(f) = obj.as_float() {
+        return Some(f);
+    }
+    if let Some(ptr) = obj.as_ptr() {
+        if unsafe { object_type_id(ptr) } == TYPE_ID_FLOAT {
+            return Some(unsafe { heap_float_value(ptr) });
+        }
+    }
+    None
 }
 
 // --- NaN-boxed ops ---
@@ -4994,13 +5080,12 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         let mut idx = 0usize;
                         while let Some(val) = list_elem_at(ptr, idx) {
                             let elem_bits = val;
-                            // Identity check: bit-equality for non-float tagged
-                            // values.  NaN-boxed floats collapse all NaN values
-                            // to CANONICAL_NAN_BITS, so bit-equality gives false
-                            // positives for different NaN objects.  Pointer-tagged
-                            // objects (strings, lists, etc.) have unique addresses
-                            // so bit-equality is correct for identity.
-                            if elem_bits == item_bits && !obj_from_bits(elem_bits).is_float() {
+                            // Identity check: bit-equality implies identity.
+                            // Non-NaN floats are stored inline with unique bit
+                            // patterns; NaN floats are heap-allocated with unique
+                            // pointer addresses. Both cases make bit-equality
+                            // correct for identity.
+                            if elem_bits == item_bits {
                                 return MoltObject::from_bool(true).bits();
                             }
                             inc_ref_bits(_py, elem_bits);
@@ -5029,7 +5114,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                             return MoltObject::from_bool(false).bits();
                         }
                         for &elem_bits in elems.iter() {
-                            if elem_bits == item_bits && !obj_from_bits(elem_bits).is_float() {
+                            if elem_bits == item_bits {
                                 return MoltObject::from_bool(true).bits();
                             }
                             let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
@@ -5123,7 +5208,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         );
                     }
                     TYPE_ID_RANGE => {
-                        let candidate = if let Some(f) = item.as_float() {
+                        let candidate = if let Some(f) = as_float_extended(item) {
                             if !f.is_finite() || f.fract() != 0.0 {
                                 return MoltObject::from_bool(false).bits();
                             }
@@ -5431,7 +5516,7 @@ pub extern "C" fn molt_list_contains(container_bits: u64, item_bits: u64) -> u64
                 let mut idx = 0usize;
                 while let Some(val) = list_elem_at(ptr, idx) {
                     let elem_bits = val;
-                    if elem_bits == item_bits && !obj_from_bits(elem_bits).is_float() {
+                    if elem_bits == item_bits {
                         return MoltObject::from_bool(true).bits();
                     }
                     inc_ref_bits(_py, elem_bits);
@@ -7139,7 +7224,7 @@ pub(crate) fn is_truthy(_py: &PyToken<'_>, obj: MoltObject) -> bool {
     if let Some(i) = to_i64(obj) {
         return i != 0;
     }
-    if let Some(f) = obj.as_float() {
+    if let Some(f) = as_float_extended(obj) {
         return f != 0.0;
     }
     if let Some(big) = to_bigint(obj) {
@@ -7362,6 +7447,7 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
             return match object_type_id(ptr) {
+                TYPE_ID_FLOAT => Cow::Borrowed("float"),
                 TYPE_ID_STRING => Cow::Borrowed("str"),
                 TYPE_ID_BYTES => Cow::Borrowed("bytes"),
                 TYPE_ID_BYTEARRAY => Cow::Borrowed("bytearray"),
@@ -7557,7 +7643,7 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
     if lhs.is_none() && rhs.is_none() {
         return true;
     }
-    if (lhs.is_float() || rhs.is_float())
+    if (is_float_extended(lhs) || is_float_extended(rhs))
         && let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs))
     {
         return lf == rf;

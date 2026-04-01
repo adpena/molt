@@ -9,11 +9,12 @@ use num_traits::{Signed, ToPrimitive};
 
 use crate::{
     INLINE_INT_MAX_I128, INLINE_INT_MIN_I128, MoltHeader, TYPE_ID_BIGINT, TYPE_ID_COMPLEX,
-    TYPE_ID_OBJECT, alloc_object, attr_lookup_ptr_allow_missing, call_callable0, class_mro_vec,
-    class_name_for_error, dec_ref_bits, exception_pending, intern_static_name, maybe_ptr_from_bits,
-    obj_from_bits, object_class_bits, object_type_id, raise_exception, runtime_state,
-    runtime_state_for_gil, type_of_bits,
+    TYPE_ID_FLOAT, TYPE_ID_OBJECT, alloc_object, attr_lookup_ptr_allow_missing, call_callable0,
+    class_mro_vec, class_name_for_error, dec_ref_bits, exception_pending, intern_static_name,
+    maybe_ptr_from_bits, obj_from_bits, object_class_bits, object_type_id, raise_exception,
+    runtime_state, runtime_state_for_gil, type_of_bits,
 };
+use crate::object::ops::{as_float_extended, is_float_extended};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -65,8 +66,10 @@ pub(crate) fn to_i64(obj: MoltObject) -> Option<i64> {
     if obj.is_bool() {
         return Some(if (obj.bits() & 0x1) == 1 { 1 } else { 0 });
     }
-    // Float that represents an exact integer (e.g., 1.0 from codegen)
-    if let Some(f) = obj.as_float() {
+    // Float that represents an exact integer (e.g., 1.0 from codegen).
+    // Handles both inline floats and heap-allocated NaN floats
+    // (NaN never passes the fract/abs checks, so this is a no-op for NaN).
+    if let Some(f) = as_float_extended(obj) {
         if f.fract() == 0.0 && f.abs() < (1i64 << 53) as f64 {
             return Some(f as i64);
         }
@@ -384,7 +387,8 @@ pub(crate) fn float_pair_from_obj(
     // Only coerce to float when at least one operand is actually a float.
     // Without this guard, bigint + int silently loses precision by converting
     // the bigint to f64 (e.g. 10**20 + 1 → 1e20 instead of 100000000000000000001).
-    if !lhs.is_float() && !rhs.is_float() {
+    // Checks both inline floats (non-NaN) and heap-allocated NaN floats.
+    if !is_float_extended(lhs) && !is_float_extended(rhs) {
         return None;
     }
     if let (Some(lf), Some(rf)) = (to_f64(lhs), to_f64(rhs)) {
@@ -504,7 +508,8 @@ pub(crate) fn index_bigint_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str)
 
 #[inline]
 pub(crate) fn to_f64(obj: MoltObject) -> Option<f64> {
-    if let Some(val) = obj.as_float() {
+    // Handle both inline floats (non-NaN) and heap-allocated NaN floats.
+    if let Some(val) = as_float_extended(obj) {
         return Some(val);
     }
     if let Some(i) = to_i64(obj) {

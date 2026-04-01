@@ -7,10 +7,13 @@ use num_bigint::{BigInt, Sign};
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 
-use super::ops::{call_binary_dunder, call_inplace_dunder, concat_bytes_like, fill_repeated_bytes};
+use super::ops::{
+    as_float_extended, call_binary_dunder, call_inplace_dunder, concat_bytes_like,
+    fill_repeated_bytes, float_result_bits, is_float_extended,
+};
 
 fn is_number_for_concat(obj: MoltObject) -> bool {
-    if obj.as_float().is_some() {
+    if is_float_extended(obj) {
         return true;
     }
     if to_i64(obj).is_some() {
@@ -73,7 +76,7 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
         // Float fast path — second most common after int, moved before
         // as_ptr / bigint checks to avoid unnecessary pointer dereferences.
         if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return MoltObject::from_float(lf + rf).bits();
+            return float_result_bits(_py, lf + rf);
         }
         if let (Some(lp), Some(rp)) = (lhs.as_ptr(), rhs.as_ptr()) {
             unsafe {
@@ -304,7 +307,7 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
         }
         // Float fast path — moved before bigint/as_ptr checks.
         if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return MoltObject::from_float(lf - rf).bits();
+            return float_result_bits(_py, lf - rf);
         }
         if let (Some(l_big), Some(r_big)) = (to_bigint(lhs), to_bigint(rhs)) {
             let res = l_big - r_big;
@@ -410,7 +413,7 @@ pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
             return int_bits_from_i128(_py, li as i128 - ri as i128);
         }
         if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return MoltObject::from_float(lf - rf).bits();
+            return float_result_bits(_py, lf - rf);
         }
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
@@ -690,7 +693,7 @@ pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
             return int_bits_from_i128(_py, li as i128 * ri as i128);
         }
         if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return MoltObject::from_float(lf * rf).bits();
+            return float_result_bits(_py, lf * rf);
         }
         if let Some(ptr) = lhs.as_ptr() {
             unsafe {
@@ -733,7 +736,7 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
         }
         // Float fast path — moved before repeat_sequence/bigint checks.
         if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
-            return MoltObject::from_float(lf * rf).bits();
+            return float_result_bits(_py, lf * rf);
         }
         if let Some(count) = to_i64(lhs)
             && let Some(ptr) = rhs.as_ptr()
@@ -802,13 +805,13 @@ pub extern "C" fn molt_div(a: u64, b: u64) -> u64 {
             if ri == 0 {
                 return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
             }
-            return MoltObject::from_float(li as f64 / ri as f64).bits();
+            return float_result_bits(_py, li as f64 / ri as f64);
         }
         if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
             if rf == 0.0 {
                 return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
             }
-            return MoltObject::from_float(lf / rf).bits();
+            return float_result_bits(_py, lf / rf);
         }
         if complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some() {
             match (
@@ -922,7 +925,7 @@ pub extern "C" fn molt_floordiv(a: u64, b: u64) -> u64 {
                     "float floor division by zero",
                 );
             }
-            return MoltObject::from_float((lf / rf).floor()).bits();
+            return float_result_bits(_py, (lf / rf).floor());
         }
         unsafe {
             let div_name_bits = intern_static_name(
@@ -1988,7 +1991,7 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
             if rem != 0.0 && (rem > 0.0) != (rf > 0.0) {
                 rem += rf;
             }
-            return MoltObject::from_float(rem).bits();
+            return float_result_bits(_py, rem);
         }
         unsafe {
             let mod_name_bits = intern_static_name(
@@ -2206,7 +2209,7 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
             if out.is_infinite() && lf.is_finite() && rf.is_finite() {
                 return raise_exception::<_>(_py, "OverflowError", "math range error");
             }
-            return MoltObject::from_float(out).bits();
+            return float_result_bits(_py, out);
         }
         if !lhs.is_float()
             && !rhs.is_float()
@@ -2230,7 +2233,7 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
                         "0.0 cannot be raised to a negative power",
                     );
                 }
-                return MoltObject::from_float(lf.powf(rf)).bits();
+                return float_result_bits(_py, lf.powf(rf));
             }
             return raise_exception::<_>(_py, "OverflowError", "exponent too large");
         }
@@ -2253,7 +2256,7 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
             if out.is_infinite() && lf.is_finite() && rf.is_finite() {
                 return raise_exception::<_>(_py, "OverflowError", "math range error");
             }
-            return MoltObject::from_float(out).bits();
+            return float_result_bits(_py, out);
         }
         raise_exception::<_>(_py, "TypeError", "unsupported operand type(s) for **")
     })
@@ -2501,7 +2504,7 @@ pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits:
                 return raise_exception::<_>(_py, "TypeError", "round() ndigits must be int");
             };
             let rounded = round_float_ndigits(f, ndigits);
-            return MoltObject::from_float(rounded).bits();
+            return float_result_bits(_py, rounded);
         }
         raise_exception::<_>(_py, "TypeError", "round() expects a real number")
     })
@@ -3329,7 +3332,7 @@ pub extern "C" fn molt_neg(val: u64) -> u64 {
             return bigint_bits(_py, res);
         }
         if let Some(f) = to_f64(obj) {
-            return MoltObject::from_float(-f).bits();
+            return float_result_bits(_py, -f);
         }
         if let Some(ptr) = complex_ptr_from_bits(val) {
             let value = unsafe { *complex_ref(ptr) };
