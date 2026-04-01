@@ -31830,19 +31830,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # Post-pass: inject expression-level col_offset/end_col_offset into
         # JSON dicts emitted by raising ops.  This is done after serialization
         # so we don't need to modify every json_ops.append site.
-        for start_idx, mop in _col_inject:
+        for ci_idx, (start_idx, mop) in enumerate(_col_inject):
             if mop.col_offset is None:
                 continue
             # The MoltOp may have emitted multiple json entries (e.g. CALL
             # emits callargs_new + callargs_push_pos + call_bind).  Inject
             # col_offset into the LAST entry, which is typically the one that
             # can raise (the call/op itself).
-            end_idx = len(json_ops)
             # Find next op's start to bound this op's entries.
-            for s2, _ in _col_inject:
-                if s2 > start_idx:
-                    end_idx = s2
-                    break
+            end_idx = _col_inject[ci_idx + 1][0] if ci_idx + 1 < len(_col_inject) else len(json_ops)
             if end_idx > start_idx:
                 last_entry = json_ops[end_idx - 1]
                 if isinstance(last_entry, dict) and "col_offset" not in last_entry:
@@ -33901,6 +33897,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 args=canonical_args,
                 result=op.result,
                 metadata=op.metadata,
+                col_offset=op.col_offset,
+                end_col_offset=op.end_col_offset,
             )
 
             result_name = canonical_op.result.name
@@ -34012,15 +34010,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 kind="CONST_BIGINT",
                                 args=[str(folded)],
                                 result=canonical_op.result,
+                                col_offset=canonical_op.col_offset,
+                                end_col_offset=canonical_op.end_col_offset,
                             )
                             _folded_to_bigint = True
                         elif canonical_op.kind == "POW":
-                            # Replace POW with CONST when the result
-                            # fits in inline int range.
                             canonical_op = MoltOp(
                                 kind="CONST",
                                 args=[folded],
                                 result=canonical_op.result,
+                                col_offset=canonical_op.col_offset,
+                                end_col_offset=canonical_op.end_col_offset,
                             )
                         const_int_values[result_name] = folded
                         state_dirty = True
@@ -34069,6 +34069,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                         kind="CONST_BIGINT",
                                         args=[str(folded_bw)],
                                         result=canonical_op.result,
+                                        col_offset=canonical_op.col_offset,
+                                        end_col_offset=canonical_op.end_col_offset,
                                     )
                                     _folded_to_bigint = True
                                 const_int_values[result_name] = folded_bw

@@ -498,11 +498,6 @@ pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
             }
         }
         let builtins = builtin_classes(_py);
-        let class_label = class_name_for_error(cls_bits);
-        println!(
-            "molt type_new_init: object.__new__ cls={} bits=0x{cls_bits:x}",
-            class_label,
-        );
         if is_builtin_class_bits(_py, cls_bits) && cls_bits != builtins.object {
             let class_name = class_name_for_error(cls_bits);
             let msg =
