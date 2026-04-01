@@ -6411,7 +6411,7 @@ impl SimpleBackend {
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
-                        if op.container_type.as_deref() == Some("list_int") && false {
+                        if op.container_type.as_deref() == Some("list_int") {
                             // Inline list_int getitem: bounds check then direct
                             // memory load, falling to runtime call on failure.
                             let idx_raw = raw_int_shadow.get(&args[1]).copied()
@@ -6486,7 +6486,7 @@ impl SimpleBackend {
                     let val = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
                         panic!("Value not found in {} op {}", func_ir.name, op_idx)
                     });
-                    if op.container_type.as_deref() == Some("list_int") {
+                    if op.container_type.as_deref() == Some("list_int") && false {
                         // Inline list_int setitem: bounds check then direct
                         // memory store, falling to runtime call on failure.
                         let idx_raw = raw_int_shadow.get(&args[1]).copied()
@@ -6533,6 +6533,7 @@ impl SimpleBackend {
                         // - dict: direct hash-table set
                         // - default: full type dispatch
                         let fn_name = match op.container_type.as_deref() {
+                            Some("list_int") => "molt_list_int_setitem",
                             Some("dict") => "molt_dict_setitem",
                             _ => "molt_store_index",
                         };
@@ -16660,7 +16661,14 @@ impl SimpleBackend {
         if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF")
             && (filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter))
         {
-            eprintln!("CLIF {}:\n{}", func_ir.name, self.ctx.func.display());
+            let clif = format!("{}", self.ctx.func.display());
+            eprintln!("CLIF {}:\n{}", func_ir.name, clif);
+            let sanitized: String = func_ir.name.chars()
+                .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                .collect();
+            let _ = crate::debug_artifacts::write_debug_artifact(
+                format!("clif/{sanitized}.txt"), clif,
+            );
         }
 
         let id = match self.module.declare_function(

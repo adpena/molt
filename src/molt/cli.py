@@ -10393,6 +10393,8 @@ def _backend_daemon_compile_request_bytes(
                 "MOLT_MAX_FUNCTION_OPS", "MOLT_DISABLE_RC_COALESCING", "TIR_DUMP", "TIR_OPT_STATS",
                 "MOLT_DUMP_CLIF", "MOLT_DUMP_CLIF_ON_ERROR", "MOLT_DUMP_IR",
                 "MOLT_DEBUG_BIND", "MOLT_TIR_SKIP", "MOLT_BACKEND",
+                "MOLT_DEBUG_CHECK_EXC", "MOLT_DEBUG_CHECK_EXCEPTION",
+                "MOLT_TIR_SKIP_PATTERN", "MOLT_TIR_ONLY_PATTERN",
                 "MOLT_LLVM_DUMP_IR", "MOLT_BACKEND_TIMING",
                 "MOLT_TIR_NO_TYPES"):
         val = os.environ.get(key)
