@@ -59,6 +59,8 @@ class MoltOp:
     args: list[Any]
     result: MoltValue
     metadata: dict[str, Any] | None = None
+    col_offset: int | None = None
+    end_col_offset: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1855,7 +1857,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if isinstance(node, (ast.stmt, ast.ExceptHandler)):
                 lineno = getattr(node, "lineno", None)
                 if lineno:
-                    self._emit_line_marker(int(lineno))
+                    col = getattr(node, "col_offset", None)
+                    end_col = getattr(node, "end_col_offset", None)
+                    self._emit_line_marker(int(lineno), col, end_col)
             return super().visit(node)
         except CompatibilityError:
             raise
@@ -2003,19 +2007,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         )
 
-    def _emit_line_marker(self, lineno: int) -> None:
+    def _emit_line_marker(
+        self,
+        lineno: int,
+        col_offset: int | None = None,
+        end_col_offset: int | None = None,
+    ) -> None:
         if lineno <= 0:
             return
         if self.current_line == lineno:
             return
         self.current_line = lineno
-        self.emit(
-            MoltOp(
-                kind="LINE",
-                args=[lineno],
-                result=MoltValue("none"),
-            )
+        op = MoltOp(
+            kind="LINE",
+            args=[lineno],
+            result=MoltValue("none"),
         )
+        # Attach column offsets for traceback caret annotations.
+        if col_offset is not None:
+            op.col_offset = col_offset
+        if end_col_offset is not None:
+            op.end_col_offset = end_col_offset
+        self.emit(op)
 
     def _emit_line_marker_force(self) -> None:
         if not self.current_line or self.current_line <= 0:
@@ -28666,7 +28679,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif op.kind == "END_IF":
                 json_ops.append({"kind": "end_if"})
             elif op.kind == "LINE":
-                json_ops.append({"kind": "line", "value": int(op.args[0])})
+                d: dict[str, Any] = {"kind": "line", "value": int(op.args[0])}
+                if op.col_offset is not None:
+                    d["col_offset"] = op.col_offset
+                if op.end_col_offset is not None:
+                    d["end_col_offset"] = op.end_col_offset
+                json_ops.append(d)
             elif op.kind == "TRACE_ENTER_SLOT":
                 json_ops.append({"kind": "trace_enter_slot", "value": int(op.args[0])})
             elif op.kind == "TRACE_EXIT":
