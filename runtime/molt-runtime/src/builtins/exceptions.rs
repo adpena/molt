@@ -5232,6 +5232,13 @@ pub extern "C" fn molt_exception_set_last(exc_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_last() -> u64 {
+    // TEMPORARY TRACE
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
+            let _ = writeln!(f, "[EXC_LAST] called");
+        }
+    }
     crate::with_gil_entry!(_py, {
         // Fast path: if neither the global nor task pending flag is set,
         // there is no live exception — return None immediately.  This
@@ -5336,6 +5343,13 @@ pub extern "C" fn molt_exception_active() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_clear() -> u64 {
+    // TEMPORARY TRACE
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
+            let _ = writeln!(f, "[EXC_CLEAR] called");
+        }
+    }
     crate::with_gil_entry!(_py, {
         let debug_clear = debug_exception_clear();
         let reason = exception_clear_reason_take();

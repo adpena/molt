@@ -9691,6 +9691,35 @@ def _backend_daemon_log_tail(log_path: Path, *, max_lines: int = 30) -> str | No
     return "\n".join(tail).strip() or None
 
 
+def _molt_session_id() -> str | None:
+    """Return the session ID for concurrent build isolation.
+
+    When MOLT_SESSION_ID is set, each session gets:
+    - Its own daemon socket (no kill/restart conflicts)
+    - Its own CARGO_TARGET_DIR suffix (no cargo lock contention)
+    - Its own build cache directory
+
+    Set MOLT_SESSION_ID to any unique string (e.g., agent name, PID, UUID).
+    When unset, all sessions share the default paths (solo dev mode).
+    """
+    return os.environ.get("MOLT_SESSION_ID")
+
+
+def _session_target_dir(project_root: Path) -> Path | None:
+    """Return a per-session CARGO_TARGET_DIR, or None for default.
+
+    When MOLT_SESSION_ID is set, returns project_root/target-<session_id>.
+    This gives each session its own cargo build directory, eliminating
+    lock contention between concurrent builds.
+    """
+    sid = _molt_session_id()
+    if sid is None:
+        return None
+    # Sanitize session ID for filesystem use
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in sid)[:32]
+    return project_root / f"target-{safe_id}"
+
+
 def _backend_daemon_socket_dir(project_root: Path) -> Path:
     # Unix sockets can fail on some external/shared volumes (e.g. exFAT).
     # Keep sockets on a local socket-capable path by default.
@@ -9727,7 +9756,10 @@ def _backend_daemon_paths_cached(
         daemon_digest = config_digest or _backend_daemon_config_digest(
             project_root, cargo_profile
         )
-        key = f"{project_root.resolve()}|{build_state_root}|{cargo_profile}|{daemon_digest}"
+        # Include session ID in the socket key so each session gets
+        # its own daemon (no kill/restart conflicts between agents).
+        session_id = _molt_session_id() or ""
+        key = f"{project_root.resolve()}|{build_state_root}|{cargo_profile}|{daemon_digest}|{session_id}"
         suffix = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
         socket_path = socket_dir / f"moltbd.{suffix}.sock"
     daemon_root = build_state_root / "backend_daemon"
@@ -9884,7 +9916,12 @@ def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
             candidate = candidate.parent
         else:
             candidate = backend_bin.parent.parent.parent  # fallback
-        target_root = Path(os.environ.get("CARGO_TARGET_DIR", str(candidate / "target")))
+        # Check per-session target dir first, then CARGO_TARGET_DIR, then default
+        _session_tgt = _session_target_dir(candidate)
+        target_root = Path(
+            str(_session_tgt) if _session_tgt is not None
+            else os.environ.get("CARGO_TARGET_DIR", str(candidate / "target"))
+        )
         for profile_dir in ("release", "release-fast", "debug"):
             runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
             try:
@@ -10526,31 +10563,33 @@ def _start_backend_daemon(
                         if cargo_profile not in ("dev", "release")
                         else (["--release"] if cargo_profile == "release" else [])
                     )
-                    # Clean the crate first to force a full rebuild.
-                    # cargo's incremental compilation uses content hashing
-                    # and may skip the link step even when source changed.
-                    subprocess.run(
-                        [_cargo, "clean", "-p", "molt-backend", *_profile_flag],
-                        capture_output=True,
-                        cwd=project_root,
-                        timeout=30,
-                    )
-                    subprocess.run(
-                        [_cargo, "clean", "-p", "molt-runtime", *_profile_flag],
-                        capture_output=True,
-                        cwd=project_root,
-                        timeout=30,
-                    )
+                    # Incremental rebuild only — no cargo clean.
+                    # cargo clean holds the cargo lock for the entire duration,
+                    # blocking ALL concurrent builds across all agent sessions.
+                    # Cargo's incremental compilation correctly detects source
+                    # changes and rebuilds affected crates.  The previous
+                    # clean+rebuild pattern caused:
+                    #   - 30s+ lock waits for concurrent sessions
+                    #   - Binary deletion mid-test (SIGSEGV/ENOENT)
+                    #   - Env var isolation failures (daemon restarts)
                     _rebuild_cmd = [
                         _cargo, "build", "-p", "molt-backend",
                         "-p", "molt-runtime",
                         *_profile_flag,
                     ]
+                    # Per-session build isolation: use a separate
+                    # CARGO_TARGET_DIR when MOLT_SESSION_ID is set.
+                    _rebuild_env = None
+                    _session_dir = _session_target_dir(project_root)
+                    if _session_dir is not None:
+                        _rebuild_env = os.environ.copy()
+                        _rebuild_env["CARGO_TARGET_DIR"] = str(_session_dir)
                     _rebuild = subprocess.run(
                         _rebuild_cmd,
                         capture_output=True,
                         cwd=project_root,
                         timeout=300,
+                        env=_rebuild_env,
                     )
                     if _rebuild.returncode != 0 and not json_output:
                         print(
@@ -19829,10 +19868,8 @@ def _ensure_backend_binary(
                     "Backend feature mismatch detected; cleaning and rebuilding...",
                     file=sys.stderr,
                 )
-            subprocess.run(
-                ["cargo", "clean", "-p", "molt-backend", "--profile", cargo_profile],
-                cwd=project_root, env=build_env, capture_output=True, timeout=30,
-            )
+            # Skip cargo clean — incremental rebuild handles feature changes.
+            # cargo clean holds the cargo lock, blocking concurrent sessions.
             try:
                 rebuild = _run_cargo_with_sccache_retry(
                     cmd,
