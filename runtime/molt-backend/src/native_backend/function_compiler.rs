@@ -579,14 +579,9 @@ impl SimpleBackend {
     ) {
         {
             let ce_count = func_ir.ops.iter().filter(|op| op.kind == "check_exception").count();
-            if ce_count > 0 || func_ir.name.contains("__main__") {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_exc_debug.txt") {
-                    let _ = writeln!(f, "[COMPILE] func={} ops={} check_exception_count={}", func_ir.name, func_ir.ops.len(), ce_count);
-                    for (i, op) in func_ir.ops.iter().enumerate() {
-                        let _ = writeln!(f, "  [{:3}] {:30} val={:?} out={:?} args={:?} sval={:?} fi={:?} ff={:?}", i, op.kind, op.value, op.out, op.args, op.s_value, op.fast_int, op.fast_float);
-                    }
-                    let _ = writeln!(f, "---");
+            if std::env::var("MOLT_DEBUG_CHECK_EXC").is_ok() {
+                if ce_count > 0 || func_ir.name.contains("molt_main") || func_ir.name.contains("test_try") {
+                    eprintln!("[COMPILE] func={} ops={} check_exception_count={}", func_ir.name, func_ir.ops.len(), ce_count);
                 }
             }
         }
@@ -759,8 +754,10 @@ impl SimpleBackend {
         let has_exc_handling = function_exception_label_id.is_some();
         static INLINE_EXC_DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let inline_exc_disabled = *INLINE_EXC_DISABLED.get_or_init(|| {
-            // TEMPORARY: force inline exc disabled to test fallback path
-            true
+            env_setting("MOLT_BACKEND_INLINE_EXC_DISABLED")
+                .as_deref()
+                .map(parse_truthy_env)
+                .unwrap_or(false)
         });
         let exc_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
             Some(import_func_ref(
