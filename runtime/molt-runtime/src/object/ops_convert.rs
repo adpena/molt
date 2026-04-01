@@ -1519,7 +1519,10 @@ pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
         };
         if !matches {
             profile_hit_unchecked(&GUARD_TAG_TYPE_MISMATCH_DEOPT_COUNT);
-            return raise_exception::<_>(_py, "TypeError", "type guard mismatch");
+            // Deopt: return the value as-is instead of raising TypeError.
+            // Type guards are performance hints, not correctness invariants.
+            // Raising on mismatch breaks valid code that passes subtypes
+            // (e.g., version_info tuple subclass where tuple[int,...] expected).
         }
         val_bits
     })
