@@ -112,3 +112,8 @@ pub(crate) fn size_class_for(size: usize) -> u16 {
 /// Specialized list of raw i64 values — no NaN-boxing, no refcounting.
 /// Created when list elements are all known ints at compile time.
 pub(crate) const TYPE_ID_LIST_INT: u32 = 248;
+
+/// Heap-allocated float (used for NaN values to preserve identity semantics).
+/// Non-NaN floats remain inline in the NaN-box; only NaN requires heap allocation
+/// so that each `float('nan')` call produces a unique pointer address.
+pub(crate) const TYPE_ID_FLOAT: u32 = 249;

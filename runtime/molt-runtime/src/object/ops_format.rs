@@ -523,6 +523,10 @@ pub(crate) fn format_obj_str(_py: &PyToken<'_>, obj: MoltObject) -> String {
             if type_id == TYPE_ID_TYPE {
                 return format_obj(_py, obj);
             }
+            if type_id == TYPE_ID_FLOAT {
+                let f = crate::object::ops::heap_float_value(ptr);
+                return format_float(f);
+            }
             if type_id == TYPE_ID_STRING {
                 let len = string_len(ptr);
                 let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
@@ -615,6 +619,10 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
     if let Some(ptr) = maybe_ptr_from_bits(obj.bits()) {
         unsafe {
             let type_id = object_type_id(ptr);
+            if type_id == TYPE_ID_FLOAT {
+                let f = crate::object::ops::heap_float_value(ptr);
+                return format_float(f);
+            }
             if type_id == TYPE_ID_STRING {
                 let len = string_len(ptr);
                 let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);

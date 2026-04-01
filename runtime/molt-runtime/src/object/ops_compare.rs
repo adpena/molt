@@ -5,7 +5,10 @@ use crate::*;
 use molt_obj_model::MoltObject;
 use std::cmp::Ordering;
 
-use super::ops::{BinaryDunderOutcome, call_dunder_raw, simd_bytes_eq, simd_find_first_mismatch};
+use super::ops::{
+    BinaryDunderOutcome, call_dunder_raw, is_float_extended, simd_bytes_eq,
+    simd_find_first_mismatch,
+};
 
 pub(crate) fn compare_type_error(
     _py: &PyToken<'_>,
@@ -54,7 +57,7 @@ pub(crate) enum CompareOp {
 }
 
 fn is_number(obj: MoltObject) -> bool {
-    to_i64(obj).is_some() || obj.is_float() || bigint_ptr_from_bits(obj.bits()).is_some()
+    to_i64(obj).is_some() || is_float_extended(obj) || bigint_ptr_from_bits(obj.bits()).is_some()
 }
 
 fn compare_numbers_outcome(lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
