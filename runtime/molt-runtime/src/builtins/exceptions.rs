@@ -3585,15 +3585,18 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
             "  File \"{filename}\", line {final_line}, in {func_name}\n"
         ));
         if let Some(src_line) = read_source_line(&filename, final_line) {
-            out.push_str(&format!("    {}\n", src_line.trim()));
+            let trimmed = src_line.trim_start();
+            let trim_offset = (src_line.len() - trimmed.len()) as i64;
+            out.push_str(&format!("    {}\n", trimmed));
             // Traceback objects don't carry col offsets yet — infer from source.
             let saved_col = LAST_EXCEPTION_COL.with(|cell| *cell.borrow());
             let (c, ec) = if saved_col.0 >= 0 && saved_col.1 >= 0 {
-                saved_col
+                // Adjust col offsets for trimmed display
+                (saved_col.0 - trim_offset, saved_col.1 - trim_offset)
             } else {
-                crate::object::ops_sys::traceback_infer_column_offsets(&src_line)
+                crate::object::ops_sys::traceback_infer_column_offsets(trimmed)
             };
-            let caret = crate::object::ops_sys::traceback_format_caret_line_native(&src_line, c, ec);
+            let caret = crate::object::ops_sys::traceback_format_caret_line_native(trimmed, c, ec);
             if !caret.is_empty() {
                 out.push_str(&caret);
             }
