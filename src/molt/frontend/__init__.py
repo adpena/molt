@@ -2117,14 +2117,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="BRIDGE_UNAVAILABLE", args=[msg_val], result=res))
         return res
 
+    _emitted_syntax_warnings: set[tuple[str, int, str]] = set()
+
     def _emit_syntax_warning(self, node: ast.AST, message: str) -> None:
-        """Emit a SyntaxWarning to stderr, matching CPython's format."""
+        """Emit a SyntaxWarning to stderr, matching CPython's format.
+
+        Deduplicated: each (file, line, message) triple is emitted at most
+        once per process, matching CPython's behaviour.
+        """
         import warnings
         lineno = getattr(node, "lineno", 0)
+        source = self.source_path or "<string>"
+        key = (source, lineno, message)
+        if key in self._emitted_syntax_warnings:
+            return
+        self._emitted_syntax_warnings.add(key)
         warnings.warn_explicit(
             message,
             SyntaxWarning,
-            self.source_path or "<string>",
+            source,
             lineno,
         )
 
