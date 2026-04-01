@@ -1641,9 +1641,6 @@ impl SimpleBackend {
                             builder.switch_to_block(fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                             let fast_res = box_int_value(&mut builder, sum, &nbc);
-                            if let Some(out__) = &op.out {
-                                raw_int_shadow.insert(out__.clone(), sum);
-                            }
                             jump_block(&mut builder, merge_block, &[fast_res]);
 
                             builder.switch_to_block(slow_block);
@@ -1683,9 +1680,6 @@ impl SimpleBackend {
 
                             builder.switch_to_block(fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                            if let Some(out__) = &op.out {
-                                raw_int_shadow.insert(out__.clone(), sum);
-                            }
                             jump_block(&mut builder, merge_block, &[fast_res]);
 
                             builder.switch_to_block(slow_block);
@@ -1768,14 +1762,9 @@ impl SimpleBackend {
                     };
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
-                        // Shadow the raw i64 for chain optimization: unbox
-                        // the boxed result so the next fast_int op can skip
-                        // its unbox step. Cost: 2 extra instructions (ishl+sshr)
-                        // but saves 4+ instructions on the next consumer.
-                        if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
-                            let raw = unbox_int(&mut builder, res, &nbc);
-                            raw_int_shadow.insert(out__.clone(), raw);
-                        }
+                        // Addition can overflow into heap bigints on some paths,
+                        // so its merged result is not representation-stable
+                        // enough to shadow as a raw inline int here.
                     }
                 }
                 "inplace_add" => {
@@ -1827,9 +1816,6 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        if let Some(ref out_name) = op.out {
-                            raw_int_shadow.insert(out_name.clone(), raw_result);
-                        }
                         jump_block(&mut builder, merge_block, &[boxed]);
 
                         builder.switch_to_block(slow_block);
@@ -1871,9 +1857,6 @@ impl SimpleBackend {
 
                         builder.switch_to_block(fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        if let Some(ref out_name) = op.out {
-                            raw_int_shadow.insert(out_name.clone(), sum);
-                        }
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
                         builder.switch_to_block(slow_block);
@@ -1954,13 +1937,8 @@ impl SimpleBackend {
                     };
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
-                        // Shadow raw value for chain optimization
-                        if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
-                            if let Some(ref out_name) = op.out {
-                                let raw = unbox_int(&mut builder, res, &nbc);
-                                raw_int_shadow.insert(out_name.clone(), raw);
-                            }
-                        }
+                        // In-place addition can merge inline-int and boxed-bigint
+                        // results, so do not record a raw shadow for the merged value.
                     }
                 }
                 "vec_sum_int" => {
@@ -2456,9 +2434,6 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        if let Some(ref out_name) = op.out {
-                            raw_int_shadow.insert(out_name.clone(), raw_result);
-                        }
                         jump_block(&mut builder, merge_block, &[boxed]);
 
                         builder.switch_to_block(slow_block);
@@ -2591,13 +2566,8 @@ impl SimpleBackend {
                     };
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
-                        // Shadow raw value for chain optimization
-                        if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
-                            if let Some(ref out_name) = op.out {
-                                let raw = unbox_int(&mut builder, res, &nbc);
-                                raw_int_shadow.insert(out_name.clone(), raw);
-                            }
-                        }
+                        // Subtraction can overflow into heap bigints on some
+                        // paths, so its merged result cannot carry a raw-int shadow.
                     }
                 }
                 "inplace_sub" => {
@@ -2641,9 +2611,6 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        if let Some(ref out_name) = op.out {
-                            raw_int_shadow.insert(out_name.clone(), raw_result);
-                        }
                         jump_block(&mut builder, merge_block, &[boxed]);
 
                         builder.switch_to_block(slow_block);
@@ -2776,13 +2743,8 @@ impl SimpleBackend {
                     };
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
-                        // Shadow raw value for chain optimization
-                        if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
-                            if let Some(ref out_name) = op.out {
-                                let raw = unbox_int(&mut builder, res, &nbc);
-                                raw_int_shadow.insert(out_name.clone(), raw);
-                            }
-                        }
+                        // In-place subtraction can merge inline-int and boxed-bigint
+                        // results, so do not record a raw shadow for the merged value.
                     }
                 }
                 "mul" => {
@@ -2850,9 +2812,6 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        if let Some(ref out_name) = op.out {
-                            raw_int_shadow.insert(out_name.clone(), raw_result);
-                        }
                         jump_block(&mut builder, merge_block, &[boxed]);
 
                         builder.switch_to_block(slow_block);
@@ -2983,13 +2942,8 @@ impl SimpleBackend {
                     };
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
-                        // Shadow raw value for chain optimization
-                        if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
-                            if let Some(ref out_name) = op.out {
-                                let raw = unbox_int(&mut builder, res, &nbc);
-                                raw_int_shadow.insert(out_name.clone(), raw);
-                            }
-                        }
+                        // Multiplication can overflow into heap bigints on some
+                        // paths, so its merged result cannot carry a raw-int shadow.
                     }
                 }
                 "inplace_mul" => {
@@ -3028,9 +2982,6 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        if let Some(ref out_name) = op.out {
-                            raw_int_shadow.insert(out_name.clone(), raw_result);
-                        }
                         jump_block(&mut builder, merge_block, &[boxed]);
 
                         builder.switch_to_block(slow_block);
@@ -3161,13 +3112,8 @@ impl SimpleBackend {
                     };
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
-                        // Shadow raw value for chain optimization
-                        if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
-                            if let Some(ref out_name) = op.out {
-                                let raw = unbox_int(&mut builder, res, &nbc);
-                                raw_int_shadow.insert(out_name.clone(), raw);
-                            }
-                        }
+                        // In-place multiplication can merge inline-int and boxed-bigint
+                        // results, so do not record a raw shadow for the merged value.
                     }
                 }
                 "bit_or" => {
@@ -11931,9 +11877,9 @@ impl SimpleBackend {
 
                     let res = if use_inline_probe {
                         // --- Inline probe: check tag, type_id, closure, arity ---
-                        let tag_mask = builder.use_var(nbc.qnan_tag_mask);
-                        let expected_ptr_tag = builder.use_var(nbc.qnan_tag_ptr);
-                        let ptr_mask_val = builder.use_var(nbc.pointer_mask);
+                        let tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+                        let expected_ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
+                        let ptr_mask_val = builder.ins().iconst(types::I64, nbc.pointer_mask);
 
                         let merge_block = builder.create_block();
                         builder.append_block_param(merge_block, types::I64);
