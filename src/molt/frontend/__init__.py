@@ -414,9 +414,8 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     ),
     "sorted": BuiltinFuncSpec(
         "molt_sorted_builtin",
-        ("iterable",),
-        kwonly_params=("key", "reverse"),
-        kw_defaults=(ast.Constant(None), ast.Constant(False)),
+        ("iterable", "key", "reverse"),
+        defaults=(ast.Constant(None), ast.Constant(False)),
     ),
     # CPython: dir([object]) uses the caller's locals() when called with no args.
     # Lower as a single-arg runtime call with an explicit MOLT_MISSING sentinel
@@ -1977,7 +1976,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "IS",
             "IS_NOT",
             "NOT",
-            "BOOL",
             "COPY",
             "INC_REF",
             "DEC_REF",
@@ -19464,18 +19462,34 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         reverse_expr = keyword.value
                 callee = self._emit_builtin_function(func_id)
                 res = MoltValue(self.next_var(), type_hint="Any")
-                if node.keywords:
-                    callargs = self._emit_call_args_builder(node)
-                    self.emit(
-                        MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res)
-                    )
+                iterable = self.visit(node.args[0])
+                if iterable is None:
+                    raise NotImplementedError("Unsupported sorted iterable")
+                # Emit key argument (default: None)
+                if key_expr is not None:
+                    key_val = self.visit(key_expr)
+                    if key_val is None:
+                        raise NotImplementedError("Unsupported sorted key expression")
                 else:
-                    iterable = self.visit(node.args[0])
-                    if iterable is None:
-                        raise NotImplementedError("Unsupported sorted iterable")
+                    key_val = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=key_val))
+                # Emit reverse argument (default: False)
+                if reverse_expr is not None:
+                    reverse_val = self.visit(reverse_expr)
+                    if reverse_val is None:
+                        raise NotImplementedError("Unsupported sorted reverse expression")
+                else:
+                    reverse_val = MoltValue(self.next_var(), type_hint="bool")
                     self.emit(
-                        MoltOp(kind="CALL_FUNC", args=[callee, iterable], result=res)
+                        MoltOp(kind="CONST_BOOL", args=[False], result=reverse_val)
                     )
+                self.emit(
+                    MoltOp(
+                        kind="CALL_FUNC",
+                        args=[callee, iterable, key_val, reverse_val],
+                        result=res,
+                    )
+                )
                 return res
             if func_id == "iter":
                 if node.keywords:
@@ -28514,6 +28528,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append(
                     {
                         "kind": "not",
+                        "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "BOOL":
+                json_ops.append(
+                    {
+                        "kind": "bool",
                         "args": [op.args[0].name],
                         "out": op.result.name,
                     }
