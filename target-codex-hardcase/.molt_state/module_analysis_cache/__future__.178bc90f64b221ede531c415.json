@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "module_name": "__future__",
+  "is_package": false,
+  "size": 5192,
+  "mtime_ns": 1774642832757833841,
+  "func_defaults": {
+    "_load_feature_rows": {
+      "params": 0,
+      "defaults": []
+    }
+  },
+  "imports": [
+    "_intrinsics",
+    "_intrinsics.require_intrinsic"
+  ]
+}

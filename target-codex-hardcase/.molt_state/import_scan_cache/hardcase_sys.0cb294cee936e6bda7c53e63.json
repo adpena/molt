@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "module_name": "hardcase_sys",
+  "is_package": false,
+  "include_nested": true,
+  "size": 38,
+  "mtime_ns": 1775031239793631823,
+  "imports": [
+    "sys"
+  ]
+}

@@ -96,6 +96,49 @@ fn is_user_owned_symbol(name: &str, entry_module: &str) -> bool {
         || name == "molt_isolate_bootstrap"
 }
 
+#[cfg(feature = "native-backend")]
+fn stdlib_cache_count_sidecar_path(stdlib_path: &Path) -> std::path::PathBuf {
+    stdlib_path.with_extension("count")
+}
+
+#[cfg(feature = "native-backend")]
+fn stdlib_cache_key_sidecar_path(stdlib_path: &Path) -> std::path::PathBuf {
+    stdlib_path.with_extension("key")
+}
+
+#[cfg(feature = "native-backend")]
+fn read_stdlib_cache_key(stdlib_path: &Path) -> Option<String> {
+    std::fs::read_to_string(stdlib_cache_key_sidecar_path(stdlib_path))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(feature = "native-backend")]
+fn shared_stdlib_cache_matches(stdlib_path: &Path, expected_key: Option<&str>) -> bool {
+    let Some(expected_key) = expected_key.filter(|key| !key.is_empty()) else {
+        return false;
+    };
+    read_stdlib_cache_key(stdlib_path).as_deref() == Some(expected_key)
+}
+
+#[cfg(feature = "native-backend")]
+fn write_shared_stdlib_cache_sidecars(
+    stdlib_path: &Path,
+    stdlib_count: usize,
+    cache_key: Option<&str>,
+) {
+    let count_path = stdlib_cache_count_sidecar_path(stdlib_path);
+    let _ = std::fs::write(&count_path, stdlib_count.to_string());
+
+    let key_path = stdlib_cache_key_sidecar_path(stdlib_path);
+    if let Some(cache_key) = cache_key.filter(|key| !key.is_empty()) {
+        let _ = std::fs::write(&key_path, cache_key);
+    } else {
+        let _ = std::fs::remove_file(&key_path);
+    }
+}
+
 #[derive(Debug)]
 struct DaemonHealthResponse {
     protocol_version: u32,
@@ -1264,6 +1307,7 @@ fn main() -> io::Result<()> {
             // subsequent builds skip them entirely.  User functions always
             // recompile.  This reduces builds from ~5min to ~3sec.
             let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok();
+            let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
             let entry_module =
                 std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
 
@@ -1275,21 +1319,25 @@ fn main() -> io::Result<()> {
                     eprintln!("MOLT_BACKEND: warning: failed to create stdlib parent: {e}");
                 });
                 if stdlib_path.exists() {
-                    // Cached stdlib exists — check if it covers the current
-                    // stdlib function set by comparing function counts.
+                    // Cached stdlib exists — only reuse it when the CLI and
+                    // backend agree on the exact stdlib IR identity.
                     let total = ir.functions.len();
                     let current_stdlib_count = ir
                         .functions
                         .iter()
                         .filter(|f| !is_user_owned_symbol(&f.name, &entry_module))
                         .count();
-                    let count_path = stdlib_path.with_extension("count");
+                    let count_path = stdlib_cache_count_sidecar_path(stdlib_path);
                     let cached_count: usize = std::fs::read_to_string(&count_path)
                         .ok()
                         .and_then(|s| s.trim().parse().ok())
                         .unwrap_or(0);
-                    if cached_count >= current_stdlib_count {
-                        // Cache covers all needed stdlib functions — use it
+                    let cached_key = read_stdlib_cache_key(stdlib_path);
+                    if shared_stdlib_cache_matches(
+                        stdlib_path,
+                        expected_stdlib_cache_key.as_deref(),
+                    ) {
+                        // Cache exactly matches the requested stdlib IR — use it.
                         ir.functions
                             .retain(|f| is_user_owned_symbol(&f.name, &entry_module));
                         let kept = ir.functions.len();
@@ -1299,14 +1347,17 @@ fn main() -> io::Result<()> {
                             stdlib_path.display()
                         );
                     } else {
-                        // Cache is incomplete — delete and rebuild with full set
+                        // Cache is stale or from a different stdlib IR topology.
                         eprintln!(
-                            "MOLT_BACKEND: stdlib cache incomplete (cached {} functions, need {}) — rebuilding",
+                            "MOLT_BACKEND: stdlib cache key mismatch (cached key {}, expected key {}; cached {} functions, need {}) — rebuilding",
+                            cached_key.as_deref().unwrap_or("<missing>"),
+                            expected_stdlib_cache_key.as_deref().unwrap_or("<missing>"),
                             cached_count,
                             current_stdlib_count,
                         );
                         let _ = std::fs::remove_file(stdlib_path);
                         let _ = std::fs::remove_file(&count_path);
+                        let _ = std::fs::remove_file(stdlib_cache_key_sidecar_path(stdlib_path));
                     }
                 } else {
                     // First build — compile stdlib separately, cache it
@@ -1361,9 +1412,11 @@ fn main() -> io::Result<()> {
                         let stdlib_bytes = stdlib_backend.compile(stdlib_ir);
                         std::fs::write(stdlib_path, &stdlib_bytes)
                             .expect("failed to write cached stdlib .o");
-                        // Write function count sidecar for cache validity checking
-                        let count_path = stdlib_path.with_extension("count");
-                        let _ = std::fs::write(&count_path, stdlib_count.to_string());
+                        write_shared_stdlib_cache_sidecars(
+                            stdlib_path,
+                            stdlib_count,
+                            expected_stdlib_cache_key.as_deref(),
+                        );
                     } else {
                         // Batched stdlib compilation
                         let all_stdlib_names: std::collections::BTreeSet<String> =
@@ -1429,9 +1482,11 @@ fn main() -> io::Result<()> {
                             );
                         }
                         let _ = std::fs::remove_dir_all(&stdlib_tmp_dir);
-                        // Write function count sidecar for cache validity checking
-                        let count_path = stdlib_path.with_extension("count");
-                        let _ = std::fs::write(&count_path, stdlib_count.to_string());
+                        write_shared_stdlib_cache_sidecars(
+                            stdlib_path,
+                            stdlib_count,
+                            expected_stdlib_cache_key.as_deref(),
+                        );
                     }
                     // Now compile user functions only
                     ir.functions = user_remaining;
@@ -1591,7 +1646,7 @@ mod tests {
         GIB, DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse, compile_single_job,
         daemon_response_payload, default_backend_max_rss_gb_from_physical_mem_bytes,
         ensure_output_parent_dir, is_user_owned_symbol, read_daemon_request_bytes,
-        write_cached_output,
+        shared_stdlib_cache_matches, write_cached_output, write_shared_stdlib_cache_sidecars,
     };
     use std::io::Cursor;
     use std::sync::Arc;
@@ -1805,5 +1860,27 @@ mod tests {
             default_backend_max_rss_gb_from_physical_mem_bytes(Some(64 * GIB)),
             16
         );
+    }
+
+    #[test]
+    fn shared_stdlib_cache_requires_matching_key() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "molt-stdlib-cache-key-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let stdlib_path = tmp_dir.join("stdlib.o");
+        std::fs::write(&stdlib_path, b"placeholder").expect("write stdlib object");
+
+        write_shared_stdlib_cache_sidecars(&stdlib_path, 7, Some("abc123"));
+        assert!(shared_stdlib_cache_matches(&stdlib_path, Some("abc123")));
+        assert!(!shared_stdlib_cache_matches(&stdlib_path, Some("def456")));
+        assert!(!shared_stdlib_cache_matches(&stdlib_path, None));
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

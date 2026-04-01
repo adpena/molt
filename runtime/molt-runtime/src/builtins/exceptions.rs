@@ -3696,6 +3696,47 @@ pub extern "C" fn molt_frame_push(code_bits: u64) -> u64 {
     })
 }
 
+/// Push a frame entry from filename/name string bits and a line number.
+/// Allocates a temporary code object internally.  Preferred for module
+/// chunks where no pre-built code object exists.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_frame_push_info(
+    filename_bits: u64,
+    name_bits: u64,
+    lineno: i64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        use crate::object::builders::alloc_code_obj;
+        let code_ptr = alloc_code_obj(
+            _py,
+            filename_bits,
+            name_bits,
+            lineno,
+            0, // linetable (None — not needed for traceback)
+            0, // varnames (None — not needed for traceback)
+            0, // argcount
+            0, // posonlyargcount
+            0, // kwonlyargcount
+        );
+        let code_bits = MoltObject::from_ptr(code_ptr).bits();
+        frame_stack_push(_py, code_bits);
+        // frame_stack_push inc_ref'd the code_bits; balance with dec_ref
+        // so the code object is owned solely by the frame stack entry.
+        if code_bits != 0 {
+            dec_ref_bits(_py, code_bits);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// Update the current line number on the top frame stack entry.
+/// Called by `line` ops in module chunk functions for accurate tracebacks.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_frame_set_line(line: i64) -> u64 {
+    frame_stack_set_line(line);
+    0 // no GIL needed — frame_stack_set_line is purely thread-local
+}
+
 /// Pop a frame entry from the frame stack.  Called at module chunk exit.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_pop() -> u64 {

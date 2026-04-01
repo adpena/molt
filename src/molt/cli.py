@@ -125,7 +125,7 @@ _LOCK_CHECK_CACHE_VERSION = 1
 _HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"
 _HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"
 _BACKEND_DAEMON_PROTOCOL_VERSION = 1
-_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 1
+_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 2
 _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 1
 _BACKEND_REQUEST_ENV_KNOBS = (
     "MOLT_TIR_OPT",
@@ -1110,6 +1110,7 @@ class _BackendCacheSetup:
     cache_path: Path | None
     function_cache_path: Path | None
     stdlib_object_path: Path | None
+    stdlib_object_cache_key: str | None
     cache_candidates: tuple[tuple[str, Path], ...]
     cache_hit: bool
     cache_hit_tier: str | None
@@ -10140,6 +10141,8 @@ def _try_cached_backend_candidates(
     cache_key: str | None,
     function_cache_key: str | None,
     cache_path: Path | None,
+    stdlib_object_path: Path | None,
+    stdlib_object_cache_key: str | None,
     warnings: list[str],
 ) -> tuple[bool, str | None]:
     state_path = _artifact_sync_state_path(project_root, output_artifact)
@@ -10149,6 +10152,15 @@ def _try_cached_backend_candidates(
     except OSError:
         output_stat = None
     for tier, candidate in cache_candidates:
+        if stdlib_object_path is not None and not _shared_stdlib_cache_matches_key(
+            stdlib_object_path, stdlib_object_cache_key
+        ):
+            if stdlib_object_path.exists():
+                warnings.append(
+                    f"Ignoring shared stdlib cache with mismatched key: {stdlib_object_path}"
+                )
+                _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
+            continue
         if not candidate.exists():
             continue
         if not _is_valid_cached_backend_artifact(candidate, is_wasm=is_wasm):
@@ -10416,6 +10428,7 @@ def _backend_daemon_compile_request_bytes(
     skip_function_output_if_synced: bool,
     entry_module: str | None = None,
     stdlib_object_path: Path | None = None,
+    stdlib_object_cache_key: str | None = None,
     probe_cache_only: bool = False,
     include_health: bool = False,
 ) -> tuple[bytes | None, str | None]:
@@ -10457,6 +10470,8 @@ def _backend_daemon_compile_request_bytes(
         env_passthrough[ENTRY_OVERRIDE_ENV] = entry_module
     if stdlib_object_path is not None:
         env_passthrough["MOLT_STDLIB_OBJ"] = str(stdlib_object_path)
+    if stdlib_object_cache_key:
+        env_passthrough["MOLT_STDLIB_CACHE_KEY"] = stdlib_object_cache_key
     if env_passthrough:
         payload["env"] = env_passthrough
     return _backend_daemon_request_payload_bytes(payload)
@@ -10759,6 +10774,7 @@ def _compile_with_backend_daemon(
     skip_function_output_if_synced: bool = False,
     entry_module: str | None = None,
     stdlib_object_path: Path | None = None,
+    stdlib_object_cache_key: str | None = None,
     timeout: float | None,
     request_bytes: bytes | None = None,
 ) -> _BackendDaemonCompileResult:
@@ -10781,6 +10797,7 @@ def _compile_with_backend_daemon(
             skip_function_output_if_synced=skip_function_output_if_synced,
             entry_module=entry_module,
             stdlib_object_path=stdlib_object_path,
+            stdlib_object_cache_key=stdlib_object_cache_key,
             probe_cache_only=True,
             include_health=False,
         )
@@ -10804,6 +10821,7 @@ def _compile_with_backend_daemon(
             skip_function_output_if_synced=skip_function_output_if_synced,
             entry_module=entry_module,
             stdlib_object_path=stdlib_object_path,
+            stdlib_object_cache_key=stdlib_object_cache_key,
             include_health=False,
         )
         if encode_err is not None:
@@ -11076,22 +11094,38 @@ def _link_fingerprint_path(
     )
 
 
-def _native_stdlib_obj_path(
-    project_root: Path,
-    output_artifact: Path,
-    *,
-    profile: BuildProfile,
-    target_triple: str | None,
-) -> Path:
-    # Use a SHARED stdlib cache path keyed only on profile + target.
-    # This allows ALL programs to reuse the same compiled stdlib — the
-    # backend automatically invalidates when the backend binary or IR
-    # changes.  Previously, the path included output_artifact which made
-    # the cache per-program (defeating the purpose of caching).
-    target = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
-    cache_root = _default_molt_cache()
-    cache_root.mkdir(parents=True, exist_ok=True)
-    return cache_root / f"stdlib.{profile}.{target}.o"
+def _stdlib_object_count_sidecar_path(stdlib_object_path: Path) -> Path:
+    return stdlib_object_path.with_extension("count")
+
+
+def _stdlib_object_key_sidecar_path(stdlib_object_path: Path) -> Path:
+    return stdlib_object_path.with_extension("key")
+
+
+def _remove_shared_stdlib_cache_artifacts(stdlib_object_path: Path) -> None:
+    with contextlib.suppress(OSError):
+        stdlib_object_path.unlink()
+    with contextlib.suppress(OSError):
+        _stdlib_object_count_sidecar_path(stdlib_object_path).unlink()
+    with contextlib.suppress(OSError):
+        _stdlib_object_key_sidecar_path(stdlib_object_path).unlink()
+
+
+def _shared_stdlib_cache_matches_key(
+    stdlib_object_path: Path | None,
+    stdlib_object_cache_key: str | None,
+) -> bool:
+    if stdlib_object_path is None or stdlib_object_cache_key is None:
+        return False
+    if not stdlib_object_path.exists():
+        return False
+    try:
+        cached_key = _stdlib_object_key_sidecar_path(stdlib_object_path).read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        return False
+    return cached_key.strip() == stdlib_object_cache_key
 
 
 def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
@@ -13535,25 +13569,76 @@ def _native_stdlib_object_split_enabled(*, target: str, emit_mode: str) -> bool:
     return target == "native"
 
 
+def _is_user_owned_symbol(name: str, entry_module: str) -> bool:
+    entry_init = f"molt_init_{entry_module}"
+    return (
+        name == "molt_main"
+        or name.startswith(f"{entry_module}__")
+        or name == entry_init
+        or name == "molt_init___main__"
+        or name == "molt_isolate_import"
+        or name == "molt_isolate_bootstrap"
+    )
+
+
+def _shared_stdlib_cache_payload(
+    ir: Mapping[str, Any],
+    *,
+    entry_module: str,
+) -> bytes:
+    functions = ir.get("functions")
+    selected: list[Any] = []
+    seen: set[str] = set()
+    if isinstance(functions, list):
+        for func in functions:
+            if not isinstance(func, dict):
+                continue
+            name = func.get("name")
+            if not isinstance(name, str) or _is_user_owned_symbol(name, entry_module):
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            selected.append(func)
+    payload_ir: dict[str, Any] = {
+        "functions": _sorted_ir_functions(selected),
+        "profile": ir.get("profile"),
+    }
+    return json.dumps(
+        payload_ir,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_json_ir_default,
+    ).encode("utf-8")
+
+
+def _shared_stdlib_cache_key(
+    ir: Mapping[str, Any],
+    *,
+    entry_module: str,
+    target_triple: str | None,
+    cache_variant: str,
+) -> str:
+    payload = _shared_stdlib_cache_payload(ir, entry_module=entry_module)
+    return _cache_key(
+        cast(dict[str, Any], ir),
+        "native-stdlib",
+        target_triple,
+        cache_variant,
+        payload=payload,
+    )
+
+
 def _stdlib_object_cache_path(
     cache_path: Path | None,
-    cache_key: str | None,
+    stdlib_cache_key: str | None,
 ) -> Path | None:
-    """Return a SHARED stdlib cache path.
-
-    The stdlib .o is shared across ALL programs — stdlib functions are
-    identical regardless of user code.  The backend invalidates the cache
-    automatically when the backend binary changes (different compilation
-    produces different object code).
-
-    Using a fixed name ensures that building `import math` creates a
-    stdlib cache that `import json` or `import click` can reuse instantly.
-    """
-    if cache_path is None:
+    """Return a shared stdlib cache path scoped to exact stdlib IR identity."""
+    if cache_path is None or stdlib_cache_key is None:
         return None
     cache_root = _default_molt_cache()
     cache_root.mkdir(parents=True, exist_ok=True)
-    return cache_root / "stdlib_shared.o"
+    return cache_root / f"stdlib_shared_{stdlib_cache_key}.o"
 
 
 def _invalidate_stale_stdlib_cache(
@@ -13597,7 +13682,7 @@ def _invalidate_stale_stdlib_cache(
             artifact = target_root / profile_dir / artifact_name
             try:
                 if artifact.stat().st_mtime > stdlib_mtime:
-                    stdlib_object_path.unlink(missing_ok=True)
+                    _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
                     return
             except OSError:
                 continue
@@ -13616,7 +13701,7 @@ def _invalidate_stale_stdlib_cache(
                 default=0.0,
             )
             if newest_rs > stdlib_mtime:
-                stdlib_object_path.unlink(missing_ok=True)
+                _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
                 return
         except OSError:
             continue
@@ -14172,6 +14257,7 @@ def _prepare_native_object_artifact(
     output_artifact: Path,
     artifacts_root: Path,
     stdlib_obj_path: Path | None,
+    stdlib_object_cache_key: str | None,
     json_output: bool,
     link_timeout: float | None,
     target_triple: str | None = None,
@@ -14179,6 +14265,12 @@ def _prepare_native_object_artifact(
 ) -> tuple[Path | None, subprocess.CompletedProcess[str] | None, dict[str, Any] | None]:
     if stdlib_obj_path is None or not stdlib_obj_path.exists():
         return output_artifact, None, None
+    if not _shared_stdlib_cache_matches_key(stdlib_obj_path, stdlib_object_cache_key):
+        return None, None, _fail(
+            "Shared stdlib cache key mismatch before native object link",
+            json_output,
+            command="build",
+        )
     merged_output = artifacts_root / f"{output_artifact.stem}_linked{output_artifact.suffix}"
     try:
         link_process = _run_native_partial_link_command(
@@ -14359,6 +14451,7 @@ def _emit_native_link_result(
     pgo_profile_payload: Any | None,
     runtime_feedback_payload: Any | None,
     emit_ir_path: Path | None,
+    stdlib_obj_path: Path | None,
     warnings: list[str],
     json_output: bool,
     resolved_diagnostics_verbosity: str,
@@ -14467,10 +14560,9 @@ def _emit_native_link_result(
             if "undefined symbol" in link_stderr and not getattr(
                 _build_native_link_program, "_retried", False
             ):
-                stdlib_cache = _default_molt_cache() / "stdlib_shared.o"
-                if stdlib_cache.exists():
+                if stdlib_obj_path is not None and stdlib_obj_path.exists():
                     try:
-                        stdlib_cache.unlink()
+                        stdlib_obj_path.unlink()
                         print(
                             "  Deleted incomplete stdlib cache — auto-retrying link...",
                             file=sys.stderr,
@@ -15663,6 +15755,7 @@ def _prepare_backend_setup(
     warnings: list[str],
     cache: bool,
     ir: Mapping[str, Any],
+    entry_module: str,
     stdlib_profile: str | None = "micro",
 ) -> tuple[_PreparedBackendSetup | None, dict[str, Any] | None]:
     runtime_state = _initialize_runtime_artifact_state(
@@ -15688,6 +15781,7 @@ def _prepare_backend_setup(
         cache_dir=cache_dir,
         output_artifact=output_artifact,
         warnings=warnings,
+        entry_module=entry_module,
     )
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is not None and not cache_setup.cache_hit and not _ensure_runtime_lib_ready(
@@ -16058,6 +16152,7 @@ def _execute_backend_compile(
                     skip_function_output_if_synced=skip_function_output_if_synced,
                     entry_module=entry_module,
                     stdlib_object_path=cache_setup.stdlib_object_path,
+                    stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 )
             )
             if request_encode_err is not None:
@@ -16084,6 +16179,7 @@ def _execute_backend_compile(
                 skip_function_output_if_synced=skip_function_output_if_synced,
                 entry_module=entry_module,
                 stdlib_object_path=cache_setup.stdlib_object_path,
+                stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 timeout=None,
                 request_bytes=backend_daemon_request_bytes_cached,
             )
@@ -16136,6 +16232,7 @@ def _execute_backend_compile(
                         skip_function_output_if_synced=skip_function_output_if_synced,
                         entry_module=entry_module,
                         stdlib_object_path=cache_setup.stdlib_object_path,
+                        stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                         timeout=None,
                         request_bytes=backend_daemon_request_bytes_cached,
                     )
@@ -16167,6 +16264,11 @@ def _execute_backend_compile(
                 stdlib_obj_path.parent.mkdir(parents=True, exist_ok=True)
                 if backend_env is not None:
                     backend_env.setdefault("MOLT_STDLIB_OBJ", str(stdlib_obj_path))
+                    if cache_setup.stdlib_object_cache_key:
+                        backend_env.setdefault(
+                            "MOLT_STDLIB_CACHE_KEY",
+                            cache_setup.stdlib_object_cache_key,
+                        )
             if not is_wasm and not _is_transpile and backend_env is not None:
                 backend_env.setdefault(ENTRY_OVERRIDE_ENV, entry_module)
                 # Limit rayon threads to a fraction of available cores.
@@ -16718,6 +16820,7 @@ def _run_backend_pipeline(
         warnings=prepared_build_preamble.warnings,
         cache=cache,
         ir=ir,
+        entry_module=resolved_build_entry.entry_module,
         stdlib_profile=stdlib_profile,
     )
     if prepared_backend_setup_error is not None:
@@ -17005,6 +17108,7 @@ def _run_backend_pipeline(
         pgo_profile_payload=prepared_build_config.pgo_profile_payload,
         runtime_feedback_payload=prepared_build_config.runtime_feedback_payload,
         emit_ir_path=output_layout.emit_ir_path,
+        stdlib_obj_path=prepared_backend_setup.cache_setup.stdlib_object_path,
         warnings=prepared_build_preamble.warnings,
         json_output=json_output,
         resolved_diagnostics_verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
@@ -18157,6 +18261,7 @@ def _prepare_backend_cache_setup(
     cache_dir: str | None,
     output_artifact: Path,
     warnings: list[str],
+    entry_module: str,
 ) -> _BackendCacheSetup:
     split_stdlib_object = _native_stdlib_object_split_enabled(
         target=target,
@@ -18170,6 +18275,7 @@ def _prepare_backend_cache_setup(
             cache_path=None,
             function_cache_path=None,
             stdlib_object_path=None,
+            stdlib_object_cache_key=None,
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
@@ -18220,8 +18326,17 @@ def _prepare_backend_cache_setup(
     if function_cache_key and function_cache_key != cache_key:
         function_cache_path = cache_root / f"{function_cache_key}.{ext}"
     stdlib_object_path = None
+    stdlib_object_cache_key = None
     if split_stdlib_object:
-        stdlib_object_path = _stdlib_object_cache_path(cache_path, cache_key)
+        stdlib_object_cache_key = _shared_stdlib_cache_key(
+            ir,
+            entry_module=entry_module,
+            target_triple=target_triple,
+            cache_variant=cache_variant,
+        )
+        stdlib_object_path = _stdlib_object_cache_path(
+            cache_path, stdlib_object_cache_key
+        )
         if stdlib_object_path is not None:
             _invalidate_stale_stdlib_cache(stdlib_object_path, project_root)
     cache_candidates: list[tuple[str, Path]] = []
@@ -18246,6 +18361,7 @@ def _prepare_backend_cache_setup(
         cache_path=cache_path,
         function_cache_path=function_cache_path,
         stdlib_object_path=stdlib_object_path,
+        stdlib_object_cache_key=stdlib_object_cache_key,
         cache_candidates=tuple(cache_candidates),
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,

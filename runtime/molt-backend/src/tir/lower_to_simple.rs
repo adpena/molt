@@ -720,6 +720,9 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 let mut emitted_loop_end = false;
 
                 for region_bid in &body_blocks {
+                    if emitted_inline.contains(region_bid) {
+                        continue;
+                    }
                     let nested_role = func.loop_roles.get(region_bid).cloned()
                         .unwrap_or(super::blocks::LoopRole::None);
                     if nested_role == super::blocks::LoopRole::LoopHeader {
@@ -1694,7 +1697,7 @@ fn emit_terminator(
 fn emit_nested_loop(
     func: &TirFunction,
     inner_header_bid: &BlockId,
-    _outer_header_bid: &BlockId,
+    outer_header_bid: &BlockId,
     header_body_chain: &HashMap<BlockId, Vec<BlockId>>,
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &impl Fn(&BlockId) -> i64,
@@ -1834,6 +1837,7 @@ fn emit_nested_loop(
             .copied()
             .filter(|candidate| {
                 Some(*candidate) != inlined_cond_block
+                    && deferred_exits.get(inner_header_bid).copied() != Some(*candidate)
                     && func
                         .loop_roles
                         .get(candidate)
@@ -2037,18 +2041,30 @@ fn emit_nested_loop(
                     }
                 }
                 emit_ops(exit_block, out);
-                let exit_role = func.loop_roles.get(exit_bid).cloned()
-                    .unwrap_or(super::blocks::LoopRole::None);
-                emit_terminator(
-                    exit_block,
-                    block_param_vars,
-                    block_label_id,
-                    &func.loop_roles,
-                    out,
-                    original_has_ret,
-                    exit_role,
-                    types,
-                );
+                match &exit_block.terminator {
+                    Terminator::Branch { .. } => emit_block_arg_stores_for_terminator(
+                        func,
+                        exit_block,
+                        *outer_header_bid,
+                        block_param_vars,
+                        block_label_id,
+                        out,
+                    ),
+                    _ => {
+                        let exit_role = func.loop_roles.get(exit_bid).cloned()
+                            .unwrap_or(super::blocks::LoopRole::None);
+                        emit_terminator(
+                            exit_block,
+                            block_param_vars,
+                            block_label_id,
+                            &func.loop_roles,
+                            out,
+                            original_has_ret,
+                            exit_role,
+                            types,
+                        );
+                    }
+                }
             }
         }
     } else {
