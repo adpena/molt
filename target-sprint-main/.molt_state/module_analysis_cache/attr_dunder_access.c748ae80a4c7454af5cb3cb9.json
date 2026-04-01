@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "module_name": "attr_dunder_access",
+  "is_package": false,
+  "size": 1294,
+  "mtime_ns": 1774642832824437724,
+  "func_defaults": {
+    "foo": {
+      "params": 0,
+      "defaults": []
+    }
+  },
+  "imports": []
+}

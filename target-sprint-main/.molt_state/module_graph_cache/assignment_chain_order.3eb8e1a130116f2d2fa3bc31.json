@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "assignment_chain_order",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/assignment_chain_order.py",
+      "size": 478,
+      "mtime_ns": 1774642832822041631
+    }
+  ],
+  "explicit_imports": []
+}

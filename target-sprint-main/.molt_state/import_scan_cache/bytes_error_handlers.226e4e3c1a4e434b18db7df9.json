@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "bytes_error_handlers",
+  "is_package": false,
+  "include_nested": true,
+  "size": 673,
+  "mtime_ns": 1774642832840492162,
+  "imports": []
+}

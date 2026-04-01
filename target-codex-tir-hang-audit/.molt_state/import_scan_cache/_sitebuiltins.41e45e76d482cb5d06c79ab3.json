@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "module_name": "_sitebuiltins",
+  "is_package": false,
+  "include_nested": false,
+  "size": 2476,
+  "mtime_ns": 1774642832765076335,
+  "imports": [
+    "__future__",
+    "__future__.annotations",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic"
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "module_name": "attr_hooks",
+  "is_package": false,
+  "size": 1268,
+  "mtime_ns": 1774642832824494062,
+  "func_defaults": {
+    "deco": {
+      "params": 1,
+      "defaults": []
+    },
+    "deco_obj": {
+      "params": 1,
+      "defaults": []
+    },
+    "add": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": 1
+        }
+      ]
+    },
+    "mul": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": 2
+        }
+      ]
+    }
+  },
+  "imports": []
+}

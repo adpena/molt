@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "module_name": "asyncgen_hooks_api",
+  "is_package": false,
+  "size": 823,
+  "mtime_ns": 1774642832824385554,
+  "func_defaults": {
+    "first": {
+      "params": 1,
+      "defaults": []
+    },
+    "final": {
+      "params": 1,
+      "defaults": []
+    }
+  },
+  "imports": [
+    "sys"
+  ]
+}

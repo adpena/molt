@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "args_kwargs_eval_order",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/args_kwargs_eval_order.py",
+      "size": 352,
+      "mtime_ns": 1774642832821191734
+    }
+  ],
+  "explicit_imports": []
+}

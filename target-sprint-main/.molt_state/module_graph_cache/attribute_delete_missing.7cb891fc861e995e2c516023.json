@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "attribute_delete_missing",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/attribute_delete_missing.py",
+      "size": 257,
+      "mtime_ns": 1774642832824655407
+    }
+  ],
+  "explicit_imports": []
+}

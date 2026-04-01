@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "builtin_iterators",
+  "is_package": false,
+  "include_nested": true,
+  "size": 886,
+  "mtime_ns": 1774642832826188146,
+  "imports": []
+}

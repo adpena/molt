@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "arith_dunder_mul_truediv",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/arith_dunder_mul_truediv.py",
+      "size": 508,
+      "mtime_ns": 1774642832821526176
+    }
+  ],
+  "explicit_imports": []
+}

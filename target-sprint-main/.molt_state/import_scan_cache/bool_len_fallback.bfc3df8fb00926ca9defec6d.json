@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "bool_len_fallback",
+  "is_package": false,
+  "include_nested": true,
+  "size": 286,
+  "mtime_ns": 1774642832825478551,
+  "imports": []
+}

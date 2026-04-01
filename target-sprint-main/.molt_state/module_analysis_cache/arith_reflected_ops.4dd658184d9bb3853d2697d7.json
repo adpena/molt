@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "arith_reflected_ops",
+  "is_package": false,
+  "size": 443,
+  "mtime_ns": 1774642832821733399,
+  "func_defaults": {},
+  "imports": []
+}

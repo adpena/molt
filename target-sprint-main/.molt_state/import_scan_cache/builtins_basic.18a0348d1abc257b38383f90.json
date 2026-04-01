@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "module_name": "builtins_basic",
+  "is_package": false,
+  "include_nested": true,
+  "size": 235,
+  "mtime_ns": 1774642832826549839,
+  "imports": [
+    "builtins"
+  ]
+}

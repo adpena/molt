@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "attribute_delete_missing",
+  "is_package": false,
+  "size": 257,
+  "mtime_ns": 1774642832824655407,
+  "func_defaults": {},
+  "imports": []
+}

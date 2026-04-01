@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "arith_dunder_floordiv_mod",
+  "is_package": false,
+  "size": 532,
+  "mtime_ns": 1774642832821463838,
+  "func_defaults": {},
+  "imports": []
+}

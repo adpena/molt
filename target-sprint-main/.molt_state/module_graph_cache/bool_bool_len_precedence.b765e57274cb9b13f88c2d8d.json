@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "bool_bool_len_precedence",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/bool_bool_len_precedence.py",
+      "size": 329,
+      "mtime_ns": 1774642832825324957
+    }
+  ],
+  "explicit_imports": []
+}

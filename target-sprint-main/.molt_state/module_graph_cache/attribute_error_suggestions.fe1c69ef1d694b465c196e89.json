@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "attribute_error_suggestions",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/attribute_error_suggestions.py",
+      "size": 312,
+      "mtime_ns": 1774642832824795209
+    }
+  ],
+  "explicit_imports": []
+}

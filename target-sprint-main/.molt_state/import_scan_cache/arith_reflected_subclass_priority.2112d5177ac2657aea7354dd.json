@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "arith_reflected_subclass_priority",
+  "is_package": false,
+  "include_nested": true,
+  "size": 329,
+  "mtime_ns": 1774642832821813947,
+  "imports": []
+}

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "module_name": "abc",
+  "is_package": false,
+  "include_nested": false,
+  "size": 6145,
+  "mtime_ns": 1774642832766368514,
+  "imports": [
+    "builtins",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic",
+    "_abc",
+    "_abc.get_cache_token",
+    "_abc._abc_init",
+    "_abc._abc_register",
+    "_abc._abc_instancecheck",
+    "_abc._abc_subclasscheck",
+    "_abc._get_dump",
+    "_abc._reset_registry",
+    "_abc._reset_caches"
+  ]
+}

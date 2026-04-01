@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "arith_dunder_subclass_precedence",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/arith_dunder_subclass_precedence.py",
+      "size": 330,
+      "mtime_ns": 1774642832821665186
+    }
+  ],
+  "explicit_imports": []
+}

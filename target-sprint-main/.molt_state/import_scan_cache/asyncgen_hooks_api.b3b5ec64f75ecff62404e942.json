@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "module_name": "asyncgen_hooks_api",
+  "is_package": false,
+  "include_nested": true,
+  "size": 823,
+  "mtime_ns": 1774642832824385554,
+  "imports": [
+    "sys"
+  ]
+}

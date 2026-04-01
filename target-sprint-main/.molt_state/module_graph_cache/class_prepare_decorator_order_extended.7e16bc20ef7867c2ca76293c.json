@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "class_prepare_decorator_order_extended",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/class_prepare_decorator_order_extended.py",
+      "size": 628,
+      "mtime_ns": 1774642832844477623
+    }
+  ],
+  "explicit_imports": []
+}

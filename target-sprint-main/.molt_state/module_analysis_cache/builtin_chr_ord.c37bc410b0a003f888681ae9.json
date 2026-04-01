@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "builtin_chr_ord",
+  "is_package": false,
+  "size": 1285,
+  "mtime_ns": 1774642832825709277,
+  "func_defaults": {},
+  "imports": []
+}

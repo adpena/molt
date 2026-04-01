@@ -2739,7 +2739,11 @@ impl SimpleBackend {
         // TIR default OFF pending body/exit block mapping fix for sieve.
         // The body/exit swap (commit 50c5aa2eb) was reverted but the sieve
         // still crashes Cranelift. Set MOLT_TIR_OPT=1 to enable.
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        // TIR default OFF: the NanBoxConsts refactor (Variable→iconst) changed
+        // how CLIF IR is generated, making TIR-roundtripped ops incompatible
+        // with Cranelift's alias analysis / block ordering.  Enable with
+        // MOLT_TIR_OPT=1 for development / benchmarking.
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
