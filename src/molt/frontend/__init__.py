@@ -14489,6 +14489,37 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
+        elif (
+            not self.future_annotations
+            and not self.eager_annotations
+            and dynamic_namespace is not None
+            and self.class_annotation_items
+            and "__annotations__" not in class_attr_values
+        ):
+            # PEP 749 deferred annotations: the __annotate__ function is
+            # emitted separately, but CPython 3.14 also needs __annotations__
+            # eagerly accessible on class objects (via type descriptor).
+            # Since our runtime doesn't implement the type.__annotations__
+            # descriptor, eagerly evaluate and store annotations here.
+            ann_items: list[MoltValue] = []
+            for name, expr, _exec_id in self.class_annotation_items:
+                key_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
+                ann_val = self._emit_annotation_value(expr, stringize=False)
+                ann_items.extend([key_val, ann_val])
+            ann_dict = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(MoltOp(kind="DICT_NEW", args=ann_items, result=ann_dict))
+            key_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(
+                MoltOp(kind="CONST_STR", args=["__annotations__"], result=key_val)
+            )
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[dynamic_namespace, key_val, ann_dict],
+                    result=MoltValue("none"),
+                )
+            )
 
         if dynamic_build:
             if (
@@ -14702,6 +14733,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 akey = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=["__annotate__"], result=akey))
                 class_def_attrs.append((akey, annotate_val))
+                # Also emit eager __annotations__ dict: our runtime does not
+                # implement the type.__annotations__ descriptor that CPython 3.14
+                # uses to lazily evaluate __annotate__.  Eagerly storing the
+                # annotations ensures cls.__annotations__ works for dataclasses
+                # and any code that reads annotations directly.
+                ann_items_eager: list[MoltValue] = []
+                for name, expr, _exec_id in self.class_annotation_items:
+                    ekey = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(MoltOp(kind="CONST_STR", args=[name], result=ekey))
+                    eval_val = self._emit_annotation_value(expr, stringize=False)
+                    ann_items_eager.extend([ekey, eval_val])
+                ann_dict = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(MoltOp(kind="DICT_NEW", args=ann_items_eager, result=ann_dict))
+                ann_key = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=["__annotations__"], result=ann_key))
+                class_def_attrs.append((ann_key, ann_dict))
             for method_name, method_info in methods.items():
                 mkey = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[method_name], result=mkey))
