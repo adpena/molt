@@ -22411,10 +22411,54 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if isinstance(node.op, ast.Not):
             return self._emit_not(operand)
         if isinstance(node.op, ast.Invert):
-            # TODO: Python 3.12+ emits DeprecationWarning for ~bool at runtime.
-            # CPython emits it when the expression EXECUTES, requiring a runtime
-            # stderr print mechanism. Need a PRINT_STDERR op or sys.stderr.write
-            # call in the compiled output.
+            # Python 3.12+: DeprecationWarning for ~bool at runtime.
+            if (
+                isinstance(node.operand, ast.Constant)
+                and isinstance(node.operand.value, bool)
+            ) or operand.type_hint == "bool":
+                lineno = getattr(node, "lineno", 0)
+                source = self.source_path or "<string>"
+                msg = (
+                    "Bitwise inversion '~' on bool is deprecated and will be "
+                    "removed in Python 3.16. This returns the bitwise inversion "
+                    "of the underlying int object and is usually not what you "
+                    "expect from negating a bool. Use the 'not' operator for "
+                    "boolean negation or ~int(x) if you really want the bitwise "
+                    "inversion of the underlying int."
+                )
+                # Emit runtime stderr output matching CPython's warning format:
+                #   file.py:13: DeprecationWarning: message
+                #     source_line
+                warn_line1 = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(
+                    kind="CONST_STR",
+                    args=[f"{source}:{lineno}: DeprecationWarning: {msg}"],
+                    result=warn_line1,
+                ))
+                self.emit(MoltOp(
+                    kind="WARN_STDERR",
+                    args=[warn_line1],
+                    result=MoltValue("none"),
+                ))
+                # Read source line for context
+                try:
+                    with open(source) as f:
+                        for i, line in enumerate(f, 1):
+                            if i == lineno:
+                                warn_line2 = MoltValue(self.next_var(), type_hint="str")
+                                self.emit(MoltOp(
+                                    kind="CONST_STR",
+                                    args=[f"  {line.rstrip()}"],
+                                    result=warn_line2,
+                                ))
+                                self.emit(MoltOp(
+                                    kind="WARN_STDERR",
+                                    args=[warn_line2],
+                                    result=MoltValue("none"),
+                                ))
+                                break
+                except (OSError, UnicodeDecodeError):
+                    pass
             res = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="INVERT", args=[operand], result=res))
             return res
@@ -29625,6 +29669,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             elif op.kind == "PRINT_NEWLINE":
                 json_ops.append({"kind": "print_newline"})
+            elif op.kind == "WARN_STDERR":
+                json_ops.append({
+                    "kind": "warn_stderr",
+                    "args": [op.args[0].name],
+                })
             elif op.kind == "ALLOC":
                 json_ops.append(
                     {

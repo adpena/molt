@@ -9285,6 +9285,19 @@ impl SimpleBackend {
                     let local_callee = self.module.declare_func_in_func(callee, builder.func);
                     builder.ins().call(local_callee, &[val]);
                 }
+                "warn_stderr" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let val = var_get(&mut builder, &vars, &args[0]).expect("warn_stderr arg");
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_warn_stderr",
+                        &[types::I64],
+                        &[],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    builder.ins().call(local_callee, &[*val]);
+                }
                 "print_newline" => {
                     let callee = Self::import_func_id_split(
                         &mut self.module,
