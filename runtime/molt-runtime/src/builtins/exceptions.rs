@@ -1171,14 +1171,6 @@ pub(crate) fn task_last_exception_drop(_py: &PyToken<'_>, ptr: *mut u8) {
 
 pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
     crate::gil_assert();
-    FRAME_STACK.with(|stack| {
-        let stack = stack.borrow();
-        if let Some(entry) = stack.last() {
-            LAST_EXCEPTION_COL.with(|cell| {
-                *cell.borrow_mut() = (entry.col_offset, entry.end_col_offset);
-            });
-        }
-    });
     if debug_exception_flow() {
         let kind_bits = unsafe { exception_kind_bits(ptr) };
         let kind = string_obj_to_owned(obj_from_bits(kind_bits))
@@ -3595,11 +3587,18 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
             // pushed during exception formatting because module chunks
             // Use the col_offset stashed at exception-raise time, not the
             // current frame stack (which may have been modified since).
-            let saved_col = LAST_EXCEPTION_COL.with(|cell| *cell.borrow());
-            let (c, ec) = if saved_col.0 >= 0 && saved_col.1 >= 0 {
-                (saved_col.0 - trim_offset, saved_col.1 - trim_offset)
-            } else {
-                crate::object::ops_sys::traceback_infer_column_offsets(trimmed)
+            // Read col_offset directly from the frame stack. The frame is
+            // still pushed because module chunks skip frame_pop when an
+            // exception is pending.
+            let frame_col = FRAME_STACK.with(|stack| {
+                let stack = stack.borrow();
+                stack.last().map(|e| (e.col_offset, e.end_col_offset))
+            });
+            let (c, ec) = match frame_col {
+                Some((col, end_col)) if col >= 0 && end_col >= 0 => {
+                    (col - trim_offset, end_col - trim_offset)
+                }
+                _ => crate::object::ops_sys::traceback_infer_column_offsets(trimmed),
             };
             let caret = crate::object::ops_sys::traceback_format_caret_line_native(trimmed, c, ec);
             if !caret.is_empty() {
