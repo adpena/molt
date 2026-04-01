@@ -759,10 +759,8 @@ impl SimpleBackend {
         let has_exc_handling = function_exception_label_id.is_some();
         static INLINE_EXC_DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let inline_exc_disabled = *INLINE_EXC_DISABLED.get_or_init(|| {
-            env_setting("MOLT_BACKEND_INLINE_EXC_DISABLED")
-                .as_deref()
-                .map(parse_truthy_env)
-                .unwrap_or(false)
+            // TEMPORARY: force inline exc disabled to test fallback path
+            true
         });
         let exc_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
             Some(import_func_ref(
@@ -1115,7 +1113,15 @@ impl SimpleBackend {
         // `len`/`index` can fold without touching the runtime. The tuple
         // object itself must still use the canonical runtime layout.
         let mut scalarized_tuples: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        let trace_all_ops = func_ir.name.contains("test_exc__test") || func_ir.name.contains("test_except__test");
         for op_idx in 0..ops.len() {
+            if trace_all_ops {
+                let _ = crate::debug_artifacts::append_debug_artifact(
+                    "exc/op_trace.txt",
+                    format!("OP: func={} idx={} kind={:20} filled={} skip={}\n",
+                        func_ir.name, op_idx, ops[op_idx].kind, is_block_filled, skip_ops.contains(&op_idx)),
+                );
+            }
             if skip_ops.contains(&op_idx) {
                 if ops[op_idx].kind == "check_exception" && func_ir.name.contains("test") {
                     let _ = crate::debug_artifacts::append_debug_artifact(
