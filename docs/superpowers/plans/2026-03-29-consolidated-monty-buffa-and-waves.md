@@ -1,6 +1,7 @@
 # Canonical Engineering Burndown Plan: Monty, Buffa, and Runtime/WASM Closure
 
 > Audited and re-consolidated on 2026-03-30 for maximum developer velocity, signal density, and low-overhead execution.
+> **Status update 2026-04-01:** Added per-track status markers based on codebase cross-reference audit.
 
 ## Why this plan exists
 
@@ -36,14 +37,14 @@ Already retired before this pass:
 
 ## Burndown board
 
-| Track | Area | Dependency tier | Validation gate | Current blocker |
-|---|---|---|---|---|
-| E0 | Stdlib partition contract | Tier 0 | Focused backend + CLI partition tests | Need final ownership proof, explicit link-input proof, and `emit=obj` contract |
-| E1 | Wave A correctness exit | Tier 0 | Focused differential + backend + daemon/TIR sweep | Need one explicit exit pass and Cranelift-baseline decision record |
-| E2 | Buffa/protobuf end-to-end proof | Tier 0 | Molt-facing e2e proof, not crate-local only | Existing crate code exists; repo still lacks a canonical Molt-surface proof path |
-| E3 | Ecosystem unlock (`click`, `attrs`) | Tier 1 (after E0/E1) | Small ecosystem differential matrix | `six` is covered; `click` and `attrs` focused lanes still missing |
-| E4 | WASM parity and deploy proof | Tier 1 (after E0/E1) | WASM parity sweep + live deploy proof + benchmark artifact | Need one current parity pass, deploy proof artifact, and size/startup evidence |
-| E5 | Final docs/status convergence | Tier 2 (after E2/E3/E4) | Canonical docs reflect only proven claims | Must wait for engineering exit gates to settle |
+| Track | Area | Tier | Status | Validation gate | Current blocker |
+|---|---|---|---|---|---|
+| E0 | Stdlib partition contract | 0 | **~60%** | Focused backend + CLI partition tests | 2 of 3 tests missing (`stdlib_link_fingerprint`, `stdlib_partition_emit_obj`); no daemon partition-root metadata |
+| E1 | Wave A correctness exit | 0 | **~75%** | Focused differential + backend + daemon/TIR sweep | TIR exception handling broken (WIP `a2c6be8e0`); no Cranelift baseline decision doc |
+| E2 | Buffa/protobuf end-to-end proof | 0 | **~40%** | Molt-facing e2e proof, not crate-local only | Crate has 14 unit tests; zero Python-through-Molt proof paths |
+| E3 | Ecosystem unlock (`click`, `attrs`) | 1 | **~10%** | Small ecosystem differential matrix | `import_six.py` exists but MOLT_SKIP'd; `import_click.py`/`import_attrs.py` don't exist |
+| E4 | WASM parity and deploy proof | 1 | **~35%** | WASM parity sweep + live deploy proof + benchmark artifact | No current sweep results; no live deploy artifact; benchmarks from 2026-03-28 |
+| E5 | Final docs/status convergence | 2 | **~10%** | Canonical docs reflect only proven claims | STATUS.md last updated 2026-03-19; blocked on E2/E3/E4 |
 
 ## Tier 0 - run in parallel now
 
@@ -51,10 +52,15 @@ Already retired before this pass:
 
 Scope folded from the old stdlib-object-partition residual plan.
 
+Done:
+- ✅ `is_user_owned_symbol()` in `main.rs:89` correctly excludes non-entry stdlib `molt_init_*` while keeping entry roots
+- ✅ Unit test `user_owned_symbol_whitelist_keeps_only_entry_roots` passes
+- ✅ `stdlib_partition_mode_changes_cache_identity` test exists in `test_cli_import_collection.py`
+
 Remaining work:
-- prove backend symbol ownership excludes non-entry stdlib `molt_init_*` symbols while preserving entry/runtime ABI roots;
-- keep native linking driven by explicit stdlib partition artifacts and artifact membership;
-- lock one canonical `emit=obj` contract under partition mode.
+- add `stdlib_link_fingerprint` test (link fingerprints change when any stdlib partition artifact changes);
+- add `stdlib_partition_emit_obj` test (`emit=obj` contract under partition mode);
+- add daemon partition-root metadata (daemon request carries partition-root explicitly, not ambient env).
 
 Validation:
 - `cargo test -p molt-backend --features native-backend user_owned_symbol_whitelist_keeps_only_entry_roots -- --nocapture`
@@ -64,10 +70,16 @@ Validation:
 
 Scope folded from the old Wave A residual plan.
 
+Done:
+- ✅ Cranelift 0.130.0 pinned across all targets in `molt-backend/Cargo.toml`
+- ✅ TIR default-ON (`d6b3692ac`) with structured CondBranch, nested loop emission, type specializations
+- ✅ Test files exist and are NOT skipped: `nested_indexed_loops.py`, `triple_nested_loops.py`, `stdlib_attr_access.py`, `tuple_subclass_mro.py`, `genexpr_enumerate_unpack.py`
+- ✅ SSA fixes landed: two-pass dominator walk (`db42ea341`), sealed blocks, loop phi fix
+
 Remaining work:
-- record whether `cranelift 0.130.0` remains the intended baseline or upgrade if not;
-- run the focused Wave A regression sweep for nested loops, stdlib attribute access, tuple-subclass MRO, and genexpr enumerate unpacking;
-- verify daemon/TIR behavior on the same focused slice.
+- record Cranelift 0.130.0 as the intended pinned baseline (decision doc, not just Cargo.toml);
+- **fix TIR exception handling** — the TIR pipeline strips exception labels, breaking try/except (WIP `a2c6be8e0`, root cause in `0639abad3`); this is the #1 active blocker;
+- run the focused Wave A regression sweep and record pass/fail results as artifact.
 
 Validation:
 - `cargo check -p molt-backend --features native-backend`
@@ -93,10 +105,14 @@ Validation:
 
 Scope folded from the old Wave B residual plan.
 
+Done:
+- ✅ `tests/differential/basic/import_six.py` exists (but MOLT_SKIP'd — runtime crash: "index out of bounds")
+
 Remaining work:
-- add and close a focused `click` import/decorator differential lane;
-- add and close a focused `attrs` end-to-end differential lane;
-- keep `six`, `click`, and `attrs` on one small matrix and fix reusable semantics at the runtime/frontend/backend layers, not with package shims.
+- fix `six` runtime crash and remove MOLT_SKIP;
+- create `tests/differential/basic/import_click.py` differential test;
+- create `tests/differential/basic/import_attrs.py` differential test;
+- fix reusable semantics at runtime/frontend/backend layers for all three.
 
 Validation:
 - `MOLT_DIFF_MEASURE_RSS=1 MOLT_BACKEND_DAEMON=0 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/import_six.py tests/differential/basic/import_click.py tests/differential/basic/import_attrs.py --jobs 1`
@@ -105,10 +121,16 @@ Validation:
 
 Scope folded from the old Wave C residual plan.
 
+Done:
+- ✅ `test_wasm_codec_parity.py` exists (JSON/CBOR/msgpack roundtrip)
+- ✅ `test_cloudflare_demo_verify.py` exists with endpoint verification tooling
+- ✅ WASM benchmarks from 2026-03-28 in `bench/results/bench_wasm_20260328_*.json`
+- ✅ Split-runtime works, WASM 1.7MB gzipped fits Cloudflare Workers
+
 Remaining work:
-- re-run and stabilize the focused WASM parity sweep;
-- produce one real Cloudflare live deploy verification artifact, or leave an explicit credentials blocker;
-- emit one current WASM benchmark artifact for size/startup closure.
+- re-run WASM parity sweep with current codebase and record results;
+- produce live Cloudflare deploy verification artifact (or record explicit credentials blocker);
+- emit current `wave_c_exit_gate.json` benchmark (existing benchmarks are 4 days stale).
 
 Validation:
 - `PYTHONPATH=src uv run --python 3.12 python3 -m pytest -q tests/test_wasm_importlib_machinery.py tests/test_wasm_link_validation.py tests/cli/test_cli_wasm_artifact_validation.py`
@@ -119,8 +141,11 @@ Validation:
 
 ### E5 - Docs and status convergence
 
+Status: Blocked on E2/E3/E4. `docs/spec/STATUS.md` last updated 2026-03-19 — does not reflect TIR default-ON, multi-crate extraction, Monty/Buffa work, Cranelift 0.130, or conformance baseline.
+
 Remaining work:
-- refresh docs/spec/status surfaces so they claim only what the finished gates prove;
+- refresh `docs/spec/STATUS.md` to reflect current capabilities (TIR, type specializations, conformance 78%, Cranelift 0.130);
+- refresh `ROADMAP.md` to reflect completed milestones and current blockers;
 - keep `bench/results/`, `logs/`, and `tmp/` as the canonical evidence roots;
 - remove this plan only when the engineering burndown has no remaining open tracks.
 

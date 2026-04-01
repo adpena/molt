@@ -6,29 +6,31 @@ Kill every P0/P1 correctness blocker, promote WASM to first-class semantic
 parity with native, then unlock the third-party ecosystem pipeline — in that
 strict order, parallelized within each wave for maximum throughput.
 
-## Current Grounded Status (2026-03-27)
+## Current Grounded Status (updated 2026-04-01)
 
 **Working:**
 - Zero build errors, zero warnings, fully pushed to `origin/main`
-- 2,617/2,617 differential tests pass (100%)
-- 17/18 stdlib imports pass
-- Wrapper artifact contract landed and verified (237 CLI tests pass)
-- 48 libraries compile; Luau backend 56/56
-- Cranelift beats CPython by 23% on fib(30)
-- RuntimeVtable (64 fn ptrs), 20 extracted crates, thin LTO
+- Conformance baseline: 385 tests, 272 compile (59%), 197 runtime pass (78% parity), 0 SIGSEGVs
+- 494/736 tests tagged MOLT_SKIP or xfail for unsupported features
+- TIR default-ON with 6+ type specializations, structured CondBranch, nested loop emission
+- Cranelift 0.130.0 pinned; sieve correctness verified (9592 primes)
+- Split-runtime WASM 1.7MB gzipped fits Cloudflare Workers
+- RuntimeVtable (58+ fn ptrs), 20+ extracted crates, thin LTO
+- Generators yield all elements; CSE alias resolution fixed
 
-**Broken — live blockers:**
+**Blocker status (updated 2026-04-01):**
 
-| ID | Blocker | Severity | Root Cause |
-|----|---------|----------|------------|
-| B1 | stdlib `import sys/os` AttributeError at runtime | P0 | Attribute lookup in compiled stdlib class hierarchies fails — was masked by prior SIGSEGV |
-| B2 | Nested indexed loops (`for i / for j`) miscompiled | P0 | Cranelift 0.130 egraph optimizer prunes inner loop body as unreachable |
-| B3 | Backend daemon lock contention stalls benchmarks | P1 | Lock/state ownership bug in daemon/build-state path |
-| B4 | `importlib.machinery` missing in WASM | P1 | Import resolution boundary doesn't resolve submodule in wasm lane |
-| B5 | TIR globally disabled (`MOLT_TIR_OPT=0`) | P1 | SSA roundtrip in `lower_to_simple.rs` breaks operand connections; ~20-30% perf left on table |
-| B6 | `six`/`click` compilation failures | P2 | Module-scope variable scoping + backend complexity limits |
-| B7 | Tuple subclass MRO | P2 | `object.__new__` found instead of `tuple.__new__` in MRO lookup |
-| B8 | Genexpr enumerate tuple unpacking | P2 | Compiled generator expression body doesn't handle tuple unpacking from enumerate |
+| ID | Blocker | Severity | Status | Resolution |
+|----|---------|----------|--------|------------|
+| B1 | stdlib `import sys/os` AttributeError | P0 | **FIXED** | Attribute lookup + stdlib cache invalidation (`ef6e8f540`, `2951c165f`) |
+| B2 | Nested indexed loops miscompiled | P0 | **FIXED** | Loop IR restructured, TIR nested loop emission (`d6b3692ac`, `e8f0c7c42`) |
+| B3 | Backend daemon lock contention | P1 | **FIXED** | Lock/state ownership resolved |
+| B4 | `importlib.machinery` missing in WASM | P1 | **FIXED** | Import resolution boundary fixed |
+| B5 | TIR globally disabled | P1 | **FIXED (but new issue)** | TIR default-ON (`d6b3692ac`). **NEW:** TIR strips exception labels → try/except broken (WIP `a2c6be8e0`) |
+| B6 | `six`/`click` compilation failures | P2 | **PARTIAL** | `six` test exists but MOLT_SKIP'd (runtime crash); `click` test absent |
+| B7 | Tuple subclass MRO | P2 | **FIXED** | MRO lookup corrected |
+| B8 | Genexpr enumerate tuple unpacking | P2 | **FIXED** | Generator state machine + tuple unpacking fixed |
+| **B9** | **TIR exception handling (NEW)** | **P0** | **ACTIVE WIP** | TIR `lower_to_simple` strips exception labels; root cause in `0639abad3` |
 
 **In flight (uncommitted):** ~1,562 lines across 20 files — CLI enhancements,
 WASM artifact validation tests, importlib machinery tests, wasm link validation,
