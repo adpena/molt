@@ -150,6 +150,10 @@ thread_local! {
     static EXCEPTION_CLEAR_REASON: RefCell<Option<&'static str>> = const { RefCell::new(None) };
 }
 
+thread_local! {
+    static LAST_EXCEPTION_COL: RefCell<(i64, i64)> = const { RefCell::new((-1, -1)) };
+}
+
 pub(crate) fn exception_clear_reason_set(reason: &'static str) {
     EXCEPTION_CLEAR_REASON.with(|cell| {
         *cell.borrow_mut() = Some(reason);
@@ -1164,6 +1168,14 @@ pub(crate) fn task_last_exception_drop(_py: &PyToken<'_>, ptr: *mut u8) {
 
 pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
     crate::gil_assert();
+    FRAME_STACK.with(|stack| {
+        let stack = stack.borrow();
+        if let Some(entry) = stack.last() {
+            LAST_EXCEPTION_COL.with(|cell| {
+                *cell.borrow_mut() = (entry.col_offset, entry.end_col_offset);
+            });
+        }
+    });
     if debug_exception_flow() {
         let kind_bits = unsafe { exception_kind_bits(ptr) };
         let kind = string_obj_to_owned(obj_from_bits(kind_bits))
@@ -3571,7 +3583,12 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
         if let Some(src_line) = read_source_line(&filename, final_line) {
             out.push_str(&format!("    {}\n", src_line.trim()));
             // Traceback objects don't carry col offsets yet — infer from source.
-            let (c, ec) = crate::object::ops_sys::traceback_infer_column_offsets(&src_line);
+            let saved_col = LAST_EXCEPTION_COL.with(|cell| *cell.borrow());
+            let (c, ec) = if saved_col.0 >= 0 && saved_col.1 >= 0 {
+                saved_col
+            } else {
+                crate::object::ops_sys::traceback_infer_column_offsets(&src_line)
+            };
             let caret = crate::object::ops_sys::traceback_format_caret_line_native(&src_line, c, ec);
             if !caret.is_empty() {
                 out.push_str(&caret);
