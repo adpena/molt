@@ -245,10 +245,7 @@ class _GenericAlias(_TypingBase):
 
     def __init__(self, origin: object, args: object, name: str | None = None) -> None:
         self.__origin__ = origin
-        converted = _as_tuple(args)
-        print(f"  [_GenericAlias.__init__] args={args!r} type={type(args).__name__} converted={converted!r} conv_type={type(converted).__name__}")
-        self.__args__ = converted
-        print(f"  [_GenericAlias.__init__] self.__args__={self.__args__!r} type={type(self.__args__).__name__}")
+        self.__args__ = _as_tuple(args)
         self._name = name
 
     def __repr__(self) -> str:
