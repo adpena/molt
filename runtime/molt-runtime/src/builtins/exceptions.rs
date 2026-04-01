@@ -609,9 +609,17 @@ pub(crate) unsafe fn exception_dict_bits(ptr: *mut u8) -> u64 {
 fn exception_slot_is_valid(ptr: PtrSlot) -> bool {
     let bits = MoltObject::from_ptr(ptr.0).bits();
     let Some(live_ptr) = maybe_ptr_from_bits(bits) else {
+        if std::env::var("MOLT_TRACE_EXC_VALID").as_deref() == Ok("1") {
+            eprintln!("[EXC_VALID] ptr=0x{:x} bits=0x{:x} -> not a pointer", ptr.0 as usize, bits);
+        }
         return false;
     };
-    unsafe { object_type_id(live_ptr) == TYPE_ID_EXCEPTION }
+    let tid = unsafe { object_type_id(live_ptr) };
+    let valid = tid == TYPE_ID_EXCEPTION;
+    if !valid && std::env::var("MOLT_TRACE_EXC_VALID").as_deref() == Ok("1") {
+        eprintln!("[EXC_VALID] ptr=0x{:x} type_id={} expected={} -> INVALID", ptr.0 as usize, tid, TYPE_ID_EXCEPTION);
+    }
+    valid
 }
 
 pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
@@ -5406,6 +5414,18 @@ pub extern "C" fn molt_exception_pending() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_pending_fast() -> u64 {
+    // TEMPORARY TRACE
+    {
+        use std::io::Write;
+        let global_pending = crate::state::runtime_state::runtime_state_for_gil()
+            .map(|s| s.last_exception_pending.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(false);
+        if global_pending {
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
+                let _ = writeln!(f, "[PENDING_FAST] global_pending={}", global_pending);
+            }
+        }
+    }
     let Some(state) = crate::state::runtime_state::runtime_state_for_gil() else {
         return 0;
     };
@@ -5434,11 +5454,44 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
             }
         }
     }
-    if state.last_exception_pending.load(AtomicOrdering::Relaxed) {
+    let result = if state.last_exception_pending.load(AtomicOrdering::Relaxed) {
         let mut guard = state.last_exception.lock().unwrap();
         match *guard {
-            Some(ptr) if exception_slot_is_valid(ptr) => 1,
-            _ => {
+            Some(ptr) if exception_slot_is_valid(ptr) => {
+                // TEMPORARY TRACE
+                {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
+                        let _ = writeln!(f, "[PENDING_FAST] VALID slot, returning 1");
+                    }
+                }
+                1
+            }
+            Some(ptr) => {
+                // TEMPORARY TRACE
+                {
+                    use std::io::Write;
+                    let bits = MoltObject::from_ptr(ptr.0).bits();
+                    let live_ptr = maybe_ptr_from_bits(bits);
+                    let type_id = live_ptr.map(|p| unsafe { object_type_id(p) }).unwrap_or(0);
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
+                        let _ = writeln!(f, "[PENDING_FAST] INVALID slot! ptr=0x{:x} bits=0x{:x} live_ptr={:?} type_id={}", ptr.0 as usize, bits, live_ptr.map(|p| p as usize), type_id);
+                    }
+                }
+                *guard = None;
+                state
+                    .last_exception_pending
+                    .store(false, AtomicOrdering::Relaxed);
+                0
+            }
+            None => {
+                // TEMPORARY TRACE
+                {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_pending_trace.txt") {
+                        let _ = writeln!(f, "[PENDING_FAST] slot is None, clearing");
+                    }
+                }
                 *guard = None;
                 state
                     .last_exception_pending
@@ -5448,7 +5501,8 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
         }
     } else {
         0
-    }
+    };
+    result
 }
 
 /// Returns a pointer to the `last_exception_pending` AtomicBool byte.
