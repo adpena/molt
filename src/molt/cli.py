@@ -7693,6 +7693,7 @@ def _lock_check_cache_path_cached(
     project_root_str: str,
     name: str,
     cargo_target_override: str | None,
+    session_id: str | None = None,
 ) -> Path:
     # The lock-check cache can grow (especially for Cargo metadata inputs).
     # Keep it colocated with Cargo build outputs when CARGO_TARGET_DIR is set so
@@ -7702,6 +7703,11 @@ def _lock_check_cache_path_cached(
         target_dir = Path(cargo_target_override)
         if not target_dir.is_absolute():
             target_dir = project_root / target_dir
+    elif session_id is not None:
+        safe_id = "".join(
+            c if c.isalnum() or c in "-_" else "_" for c in session_id
+        )[:32]
+        target_dir = project_root / f"target-{safe_id}"
     else:
         target_dir = project_root / "target"
     return target_dir / "lock_checks" / f"{name}.json"
@@ -7712,6 +7718,7 @@ def _lock_check_cache_path(project_root: Path, name: str) -> Path:
         os.fspath(project_root),
         name,
         os.environ.get("CARGO_TARGET_DIR"),
+        _molt_session_id(),
     )
 
 
@@ -8941,6 +8948,7 @@ def _backend_bin_path_cached(
         project_root_str,
         cargo_target_override,
         cwd_str,
+        _molt_session_id(),
     )
     exe_suffix = ".exe" if os_name == "nt" else ""
     # Disambiguate binary path by feature set to prevent native/wasm/rust
@@ -9387,6 +9395,7 @@ def _runtime_lib_path_cached(
         project_root_str,
         cargo_target_override,
         cwd_str,
+        _molt_session_id(),
     )
     if target_triple:
         return target_root / target_triple / profile_dir / "libmolt_runtime.a"
@@ -13672,8 +13681,12 @@ def _invalidate_stale_stdlib_cache(
     else:
         _root = candidate
 
+    # Use session-specific target dir when MOLT_SESSION_ID is active,
+    # falling back to CARGO_TARGET_DIR, then the default target/.
+    _session_tgt_stdlib = _session_target_dir(_root)
     target_root = Path(
-        os.environ.get("CARGO_TARGET_DIR", str(_root / "target"))
+        str(_session_tgt_stdlib) if _session_tgt_stdlib is not None
+        else os.environ.get("CARGO_TARGET_DIR", str(_root / "target"))
     )
 
     # Check backend binary and runtime library across all profile dirs.
@@ -19945,6 +19958,12 @@ def _ensure_backend_binary(
             cmd.append("--no-default-features")
             cmd.extend(["--features", ",".join(backend_features)])
         build_env = os.environ.copy()
+        # Per-session build isolation: route cargo output to target-<id>/
+        # when MOLT_SESSION_ID is active to prevent concurrent agents from
+        # clobbering each other's backend artifacts.
+        _session_tgt_backend = _session_target_dir(project_root)
+        if _session_tgt_backend is not None and "CARGO_TARGET_DIR" not in os.environ:
+            build_env["CARGO_TARGET_DIR"] = str(_session_tgt_backend)
         # When building with the LLVM feature, ensure the pinned llvm-sys
         # prefix env var points at the matching Homebrew install so
         # inkwell/llvm-sys can link without extra shell setup.
@@ -20159,6 +20178,12 @@ def _ensure_runtime_lib(
         if target_triple:
             cmd.extend(["--target", target_triple])
         build_env = os.environ.copy()
+        # Per-session build isolation: route cargo output to target-<id>/
+        # when MOLT_SESSION_ID is active to prevent concurrent agents from
+        # clobbering each other's runtime artifacts.
+        _session_tgt_runtime = _session_target_dir(project_root)
+        if _session_tgt_runtime is not None and "CARGO_TARGET_DIR" not in os.environ:
+            build_env["CARGO_TARGET_DIR"] = str(_session_tgt_runtime)
         _maybe_enable_sccache(build_env)
         try:
             build = _run_cargo_with_sccache_retry(
@@ -21088,9 +21113,19 @@ def _cargo_target_root_cached(
     project_root_str: str,
     cargo_target_override: str | None,
     cwd_str: str,
+    session_id: str | None = None,
 ) -> Path:
     project_root = Path(project_root_str)
     if not cargo_target_override:
+        # When MOLT_SESSION_ID is active and no explicit CARGO_TARGET_DIR is
+        # set, each session builds into its own target-<id>/ directory.  This
+        # prevents concurrent agents from clobbering each other's cargo
+        # artifacts (lock contention, binary deletion mid-test, etc.).
+        if session_id is not None:
+            safe_id = "".join(
+                c if c.isalnum() or c in "-_" else "_" for c in session_id
+            )[:32]
+            return project_root / f"target-{safe_id}"
         return project_root / "target"
     path = Path(cargo_target_override).expanduser()
     if not path.is_absolute():
@@ -21103,6 +21138,7 @@ def _cargo_target_root(project_root: Path) -> Path:
         os.fspath(project_root),
         os.environ.get("CARGO_TARGET_DIR"),
         os.fspath(Path.cwd()),
+        _molt_session_id(),
     )
 
 
@@ -21124,6 +21160,7 @@ def _build_state_root_cached(
             project_root_str,
             cargo_target_override,
             cwd_str,
+            _molt_session_id(),
         )
         / ".molt_state"
     )

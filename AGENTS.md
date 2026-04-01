@@ -223,20 +223,39 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 
 ## Concurrent Development (Required for Multi-Agent)
 
-When multiple agents work simultaneously, each MUST set `MOLT_SESSION_ID`:
+`MOLT_SESSION_ID` **must be set BEFORE any build command**. Every agent must export it at the start of every shell command:
 
 ```bash
 export MOLT_SESSION_ID="<unique-name>"  # e.g., "agent-1", "debug-session", UUID
 ```
 
 **What it does:**
-- Isolates `CARGO_TARGET_DIR` to `target-<session>/` — no cargo lock contention
+- Routes ALL cargo builds to `target-<session>/` (e.g., `target-agent_1/`) — no cargo lock contention, no artifact clobbering
 - Isolates daemon socket — no kill/restart conflicts between sessions
+- Isolates build state, lock-check caches, and staleness checks — fully independent build lifecycle
 - Disables `cargo clean` — incremental builds only, no binary deletion
 
-**Without it:** All sessions share `target/` and the same daemon. One agent's `cargo build` blocks all others. One agent's `pkill -9 molt-backend` kills everyone's daemon.
+**Pre-build step** (first build in a new session takes ~5 min for full compile):
+```bash
+export MOLT_SESSION_ID="agent-1"
+cargo build --profile release-fast -p molt-backend --features native-backend --target-dir target-agent_1
+```
+
+**Daemon management:**
+- `pkill -9 -f "molt-backend"` kills ALL daemons across ALL sessions
+- To kill only YOUR session's daemon: `pkill -9 -f "moltbd.*<session-id>"`
+- Each session's daemon has a unique socket path derived from the session ID
+
+**Without it:** All sessions share `target/` and the same daemon. One agent's `cargo build` blocks all others. One agent's rebuild deletes artifacts that other sessions depend on.
+
+**Resource limits:** Maximum 2 concurrent builds (OOM risk on machines with less than 128GB RAM).
 
 **Rule:** If you are an agent and another agent may be running, ALWAYS set `MOLT_SESSION_ID` before ANY build command.
+
+**Git discipline (non-negotiable):**
+- NEVER revert unstaged changes — they are partner work
+- Always `git add` immediately after writing files (linter hooks can silently revert unstaged changes)
+- Write + git add in the same operation using `&&` chaining
 
 ## Build Profile Policy (Non-Negotiable)
 - Development workflows must use `--profile dev` for `molt build`, `molt run`, `molt compare`, `molt diff`, and `molt test --suite diff`, unless explicitly validating production artifacts.
