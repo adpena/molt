@@ -392,31 +392,29 @@ grep -rl '\bcompile\s*(' tests/differential/basic/ | head -30
 
 ---
 
-### Task 7: Cluster failures by root cause and fix systematically
+### Task 7: Cluster failures by root cause and fix systematically — IN PROGRESS
 
 **Files:**
 - Modify: Various files in `runtime/molt-backend/src/` and `runtime/molt-runtime/src/`
 
 This is the largest task. It repeats a cycle: analyze failures → identify common root cause → fix → re-run suite → repeat.
 
-- [ ] **Step 1: Categorize remaining failures**
+- [x] **Step 1: Categorize remaining failures** (2026-04-01 analysis)
 
-For each failing test, run it individually to capture the error:
+Identified failure clusters from 50-test sample (86% pass rate):
 
-```bash
-for f in $(cat /tmp/conformance_failures_baseline.txt | head -50); do
-    echo "=== $f ==="
-    timeout 30 python3 -m molt diff "$f" --profile release --verbose 2>&1 | tail -5
-    echo ""
-done > /tmp/failure_analysis.txt
-```
-
-Categorize errors into clusters:
-- **SIGSEGV/SIGILL**: Crash bugs (highest priority)
-- **Wrong output**: Logic errors in codegen
-- **Missing builtin/attribute**: Runtime gaps
-- **Timeout**: Infinite loops or hangs
-- **Compilation error**: Frontend/backend errors
+| Cluster | Tests | Root Cause | Fix Status |
+|---------|-------|------------|------------|
+| **SC_IOV_MAX missing** | ~20+ (all async + cascading) | `os.sysconf("SC_IOV_MAX")` crashed asyncio init | **FIXED** `e4dd37956` |
+| **Unpack exception propagation** | 1+ | Iterator `RuntimeError` replaced by `ValueError` | **FIXED** `c361f8353` |
+| **Exception handler type eval** | unknown | Exception not restored after isinstance check | **FIXED** `76cf5a071` (partner) |
+| **Traceback format** | 2+ | Missing file/line/column in error tracebacks | Not started |
+| **`__annotations__` population** | 1+ | Module-scope annotations dict not emitted | Not started |
+| **`__prepare__` class metadata** | 7+ class tests | Missing `__firstlineno__`, `__static_attributes__`, `__classdictcell__` (CPython 3.13+) | Not started |
+| **Walrus scope in genexpr** | 1 | `:=` doesn't leak to enclosing scope from genexpr | Not started |
+| **DeprecationWarning/SyntaxWarning** | 2+ | Missing warning emission for `~True`, `return` in `finally` | Not started |
+| **getattr method dispatch** | 1+ | `str.replace(old, new, count)` via `getattr` misroutes count arg | Not started |
+| **Async runtime** | all async tests | Builds but empty output after sysconf fix | Not started (separate cluster) |
 
 - [ ] **Step 2: Fix crash cluster (SIGSEGV/SIGILL)**
 
