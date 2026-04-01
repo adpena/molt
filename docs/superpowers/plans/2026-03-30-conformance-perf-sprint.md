@@ -412,7 +412,7 @@ Identified failure clusters from 50-test sample (86% pass rate):
 | **Error message format** | 3+ | Unpack "got N" count, int() base msg, str+int concat msg | **FIXED** `9457de91b` |
 | **Traceback format** | 2+ | Missing source line + caret (`^`) in error tracebacks (CPython 3.12+) | Not started — cosmetic, correct error raised |
 | **Class `__annotations__` empty** | 6+ dataclass + 1+ annotation tests | Runtime lacks type.__annotations__ descriptor for PEP 749 deferred eval | **FIXED** `e8753e005` — eagerly emit `__annotations__` alongside `__annotate__` for both class paths. 5/7 dataclass tests now pass. |
-| **`__prepare__` class metadata** | 7+ class tests | Missing `__static_attributes__`, `__classdictcell__`. `__firstlineno__` added (`c2835cd19`) | Partial — `__firstlineno__` done, 2 attrs remain |
+| **`__prepare__` class metadata** | 7+ class tests | Missing `__static_attributes__`, `__classdictcell__`. `__firstlineno__` added (`c2835cd19`) | **FIXED** — `__static_attributes__` + `__classdictcell__` emitted. All 5 class_prepare tests pass. |
 | **Walrus scope in genexpr** | 1 | `:=` doesn't leak to enclosing scope from genexpr | Not started — frontend scope analysis |
 | **DeprecationWarning/SyntaxWarning** | 2+ | Missing warning emission for `~True`, `return` in `finally` | Not started — cosmetic |
 | **getattr method dispatch** | 1+ | Bound method 3-arg dispatch misroutes count arg for `str.replace` | Not started — call/bind.rs investigation needed |
