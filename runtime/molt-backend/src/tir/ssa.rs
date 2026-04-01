@@ -994,6 +994,15 @@ impl<'a> SsaContext<'a> {
         if let Some(ref th) = op.type_hint {
             attrs.insert("_type_hint".into(), AttrValue::Str(th.clone()));
         }
+        // Preserve column offsets for traceback caret annotations through
+        // the TIR roundtrip.  Without this, per-op col_offset is lost when
+        // lower_to_simple reconstructs OpIR from TirOp.
+        if let Some(col) = op.col_offset {
+            attrs.insert("_col_offset".into(), AttrValue::Int(col));
+        }
+        if let Some(ecol) = op.end_col_offset {
+            attrs.insert("_end_col_offset".into(), AttrValue::Int(ecol));
+        }
 
         let opcode = kind_to_opcode(&op.kind);
 
