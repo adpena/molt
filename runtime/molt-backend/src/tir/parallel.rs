@@ -84,7 +84,6 @@ mod tests {
             loop_roles: HashMap::new(),
             loop_pairs: HashMap::new(),
             loop_break_kinds: HashMap::new(),
-            loop_break_blocks: HashMap::new(),
         }
     }
 
@@ -133,7 +132,6 @@ mod tests {
             loop_roles: HashMap::new(),
             loop_pairs: HashMap::new(),
             loop_break_kinds: HashMap::new(),
-            loop_break_blocks: HashMap::new(),
         }
     }
 
