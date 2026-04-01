@@ -1272,6 +1272,14 @@ impl SimpleBackend {
             let op = ops[op_idx].clone();
             // Update frame stack column offsets for traceback carets.
             // Only emit for module chunks and only when the op carries col info.
+            if is_module_chunk && op.col_offset.is_some() && op.end_col_offset.is_some() {
+                if is_block_filled && std::env::var("MOLT_DEBUG_COL_SKIP").is_ok() {
+                    eprintln!(
+                        "[COL_SKIP] {} op={} kind={} col={:?} SKIPPED (is_block_filled)",
+                        func_ir.name, op_idx, op.kind, op.col_offset,
+                    );
+                }
+            }
             if is_module_chunk && !is_block_filled && op.col_offset.is_some() && op.end_col_offset.is_some() {
                 let col_val = builder.ins().iconst(types::I64, op.col_offset.unwrap());
                 let end_col_val = builder.ins().iconst(types::I64, op.end_col_offset.unwrap());
@@ -17166,8 +17174,32 @@ impl SimpleBackend {
         builder.switch_to_block(master_return_block);
         seal_block_once(&mut builder, &mut sealed_blocks, master_return_block);
 
-        // Pop frame stack for module chunk functions before returning.
+        // Pop frame stack for module chunk functions — but only on the
+        // non-exception path.  When an exception is pending, the frame
+        // must stay pushed so the traceback formatter can read the
+        // col_offset/end_col_offset for caret annotations.  The caller
+        // (molt_finish in the C stub) pops it after formatting.
         if is_module_chunk {
+            let pending_fn = import_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+                &mut import_refs,
+                "molt_exception_pending_fast",
+                &[],
+                &[types::I64],
+            );
+            let pending_call = builder.ins().call(pending_fn, &[]);
+            let pending = builder.inst_results(pending_call)[0];
+            let zero = builder.ins().iconst(types::I64, 0);
+            let not_pending = builder.ins().icmp(cranelift_codegen::ir::condcodes::IntCC::Equal, pending, zero);
+
+            let pop_block = builder.create_block();
+            let skip_pop_block = builder.create_block();
+            builder.ins().brif(not_pending, pop_block, &[], skip_pop_block, &[]);
+
+            builder.switch_to_block(pop_block);
+            builder.seal_block(pop_block);
             let frame_pop_fn = import_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
@@ -17178,6 +17210,10 @@ impl SimpleBackend {
                 &[types::I64],
             );
             builder.ins().call(frame_pop_fn, &[]);
+            builder.ins().jump(skip_pop_block, &[]);
+
+            builder.switch_to_block(skip_pop_block);
+            builder.seal_block(skip_pop_block);
         }
 
         let final_res = if has_ret {

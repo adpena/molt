@@ -151,6 +151,10 @@ thread_local! {
 }
 
 thread_local! {
+    /// Stashed col_offset/end_col_offset from the frame stack at the point
+    /// an exception was recorded.  The traceback formatter reads this to
+    /// produce correct caret annotations.  (-1, -1) = unknown.
+    static LAST_EXCEPTION_COL: RefCell<(i64, i64)> = const { RefCell::new((-1, -1)) };
 }
 
 pub(crate) fn exception_clear_reason_set(reason: &'static str) {
@@ -1165,62 +1169,14 @@ pub(crate) fn task_last_exception_drop(_py: &PyToken<'_>, ptr: *mut u8) {
     }
 }
 
-/// Read stashed column offsets from the exception object's dict.
-fn read_exception_col(_py: &PyToken<'_>, ptr: *mut u8) -> (i64, i64) {
-    unsafe {
-        let dict_bits = instance_dict_bits(ptr);
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                let col_key = alloc_string(_py, b"__molt_col__");
-                let end_col_key = alloc_string(_py, b"__molt_end_col__");
-                if !col_key.is_null() && !end_col_key.is_null() {
-                    let col = dict_get_in_place(_py, dict_ptr, MoltObject::from_ptr(col_key).bits())
-                        .and_then(|b| to_i64(obj_from_bits(b)))
-                        .unwrap_or(-1);
-                    let end_col = dict_get_in_place(_py, dict_ptr, MoltObject::from_ptr(end_col_key).bits())
-                        .and_then(|b| to_i64(obj_from_bits(b)))
-                        .unwrap_or(-1);
-                    return (col, end_col);
-                }
-            }
-        }
-    }
-    (-1, -1)
-}
-
-/// Capture frame stack column offsets onto the exception object so the
-/// traceback formatter can use them even after the frame is popped.
-fn stash_frame_col_on_exception(_py: &PyToken<'_>, ptr: *mut u8) {
-    let (col, end_col) = FRAME_STACK.with(|stack| {
-        let stack = stack.borrow();
-        stack.last().map(|e| (e.col_offset, e.end_col_offset)).unwrap_or((-1, -1))
-    });
-    if col < 0 || end_col < 0 {
-        return;
-    }
-    unsafe {
-        let dict_bits = instance_dict_bits(ptr);
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                let col_key = alloc_string(_py, b"__molt_col__");
-                let end_col_key = alloc_string(_py, b"__molt_end_col__");
-                if !col_key.is_null() && !end_col_key.is_null() {
-                    let col_bits = MoltObject::from_int(col).bits();
-                    let end_col_bits = MoltObject::from_int(end_col).bits();
-                    dict_set_in_place(_py, dict_ptr, MoltObject::from_ptr(col_key).bits(), col_bits);
-                    dict_set_in_place(_py, dict_ptr, MoltObject::from_ptr(end_col_key).bits(), end_col_bits);
-                }
-            }
-        }
-    }
-}
-
 pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
     crate::gil_assert();
-    stash_frame_col_on_exception(_py, ptr);
     FRAME_STACK.with(|stack| {
         let stack = stack.borrow();
         if let Some(entry) = stack.last() {
+            LAST_EXCEPTION_COL.with(|cell| {
+                *cell.borrow_mut() = (entry.col_offset, entry.end_col_offset);
+            });
         }
     });
     if debug_exception_flow() {
@@ -3635,10 +3591,13 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
             let trimmed = src_line.trim_start();
             let trim_offset = (src_line.len() - trimmed.len()) as i64;
             out.push_str(&format!("    {}\n", trimmed));
-            // Use col stashed on the exception object, fall back to inference.
-            let exc_col = read_exception_col(_py, ptr);
-            let (c, ec) = if exc_col.0 >= 0 && exc_col.1 >= 0 {
-                (exc_col.0 - trim_offset, exc_col.1 - trim_offset)
+            // Use frame stack col_offset when available (frame is still
+            // pushed during exception formatting because module chunks
+            // Use the col_offset stashed at exception-raise time, not the
+            // current frame stack (which may have been modified since).
+            let saved_col = LAST_EXCEPTION_COL.with(|cell| *cell.borrow());
+            let (c, ec) = if saved_col.0 >= 0 && saved_col.1 >= 0 {
+                (saved_col.0 - trim_offset, saved_col.1 - trim_offset)
             } else {
                 crate::object::ops_sys::traceback_infer_column_offsets(trimmed)
             };
@@ -3858,6 +3817,9 @@ pub extern "C" fn molt_frame_set_line(line: i64) -> u64 {
 /// Called by `line` ops that carry column offset info for caret annotations.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_set_line_col(line: i64, col_offset: i64, end_col_offset: i64) -> u64 {
+    if std::env::var("MOLT_DEBUG_FRAME_COL").is_ok() {
+        eprintln!("[FRAME_COL] set_line_col({}, {}, {})", line, col_offset, end_col_offset);
+    }
     frame_stack_set_line_col(line, col_offset, end_col_offset);
     0
 }
@@ -3866,6 +3828,9 @@ pub extern "C" fn molt_frame_set_line_col(line: i64, col_offset: i64, end_col_of
 /// Called before potentially-raising ops that carry expression-level col info.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_set_col(col_offset: i64, end_col_offset: i64) -> u64 {
+    if std::env::var("MOLT_DEBUG_FRAME_COL").is_ok() {
+        eprintln!("[FRAME_COL] set_col({}, {})", col_offset, end_col_offset);
+    }
     FRAME_STACK.with(|stack| {
         if let Some(entry) = stack.borrow_mut().last_mut() {
             entry.col_offset = col_offset;
