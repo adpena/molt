@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "module_name": "builtin_sorted",
-  "is_package": false,
-  "include_nested": true,
-  "size": 604,
-  "mtime_ns": 1774642832826435831,
-  "imports": []
-}

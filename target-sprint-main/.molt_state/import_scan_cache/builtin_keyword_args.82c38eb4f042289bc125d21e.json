@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "module_name": "builtin_keyword_args",
-  "is_package": false,
-  "include_nested": true,
-  "size": 911,
-  "mtime_ns": 1774642832826259234,
-  "imports": []
-}

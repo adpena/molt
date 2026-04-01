@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "module_name": "arith_dunder_precedence",
-  "is_package": false,
-  "include_nested": true,
-  "size": 447,
-  "mtime_ns": 1774642832821604015,
-  "imports": []
-}

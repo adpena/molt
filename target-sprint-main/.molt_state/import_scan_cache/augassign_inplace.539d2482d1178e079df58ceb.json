@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "module_name": "augassign_inplace",
-  "is_package": false,
-  "include_nested": true,
-  "size": 2901,
-  "mtime_ns": 1774642832825133693,
-  "imports": []
-}
