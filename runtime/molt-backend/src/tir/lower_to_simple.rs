@@ -165,13 +165,18 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         };
 
         if let Some((Terminator::CondBranch { then_block, else_block, .. }, cond_bid)) = cond_terminator {
+            // The CFG builds successors for loop_break_if_true as:
+            //   succs[0] = fall-through (body/continue path)
+            //   succs[1] = break target (exit/after-loop)
+            // The SSA pass maps these to then_block=succs[0], else_block=succs[1].
+            // Therefore for BreakIfTrue: body=then_block, exit=else_block.
             let body_seed = match break_kind {
-                LoopBreakKind::BreakIfTrue => *else_block,
-                LoopBreakKind::BreakIfFalse => *then_block,
-            };
-            exit_block = Some(match break_kind {
                 LoopBreakKind::BreakIfTrue => *then_block,
                 LoopBreakKind::BreakIfFalse => *else_block,
+            };
+            exit_block = Some(match break_kind {
+                LoopBreakKind::BreakIfTrue => *else_block,
+                LoopBreakKind::BreakIfFalse => *then_block,
             });
             // Include the condition block itself in the region when it
             // differs from the header (Branch→CondBranch pattern).
@@ -307,9 +312,11 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             _ => None,
         };
         if let Some(Terminator::CondBranch { then_block, else_block, .. }) = cond_term {
+            // See header_body_chain comment: then_block=body, else_block=exit
+            // for BreakIfTrue (CFG fall-through order).
             let exit = match break_kind {
-                LoopBreakKind::BreakIfTrue => *then_block,
-                LoopBreakKind::BreakIfFalse => *else_block,
+                LoopBreakKind::BreakIfTrue => *else_block,
+                LoopBreakKind::BreakIfFalse => *then_block,
             };
             deferred_exits.insert(*bid, exit);
         }
@@ -629,12 +636,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             }
 
             if let Some((cond, then_block, then_args, else_block, else_args)) = cond_data {
+                // then_block=succs[0]=fall-through=body, else_block=succs[1]=break=exit.
+                // after_block = exit (where we go on break), body_block = continue path.
                 let (after_block, after_args, body_block, body_args) = match break_kind {
                     LoopBreakKind::BreakIfTrue => {
-                        (then_block, then_args, else_block, else_args)
+                        (else_block, else_args, then_block, then_args)
                     }
                     LoopBreakKind::BreakIfFalse => {
-                        (else_block, else_args, then_block, then_args)
+                        (then_block, then_args, else_block, else_args)
                     }
                 };
 
@@ -1726,9 +1735,10 @@ fn emit_nested_loop(
     }
 
     if let Some((cond, then_block, then_args, else_block, else_args)) = cond_data {
+        // then_block=succs[0]=fall-through=body, else_block=succs[1]=break=exit.
         let (after_block, after_args, body_block, body_args) = match inner_break_kind {
-            LoopBreakKind::BreakIfTrue => (then_block, then_args, else_block, else_args),
-            LoopBreakKind::BreakIfFalse => (else_block, else_args, then_block, then_args),
+            LoopBreakKind::BreakIfTrue => (else_block, else_args, then_block, then_args),
+            LoopBreakKind::BreakIfFalse => (then_block, then_args, else_block, else_args),
         };
 
         // Emit loop break condition.

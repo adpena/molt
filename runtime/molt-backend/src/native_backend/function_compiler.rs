@@ -584,7 +584,7 @@ impl SimpleBackend {
                 if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/molt_exc_debug.txt") {
                     let _ = writeln!(f, "[COMPILE] func={} ops={} check_exception_count={}", func_ir.name, func_ir.ops.len(), ce_count);
                     for (i, op) in func_ir.ops.iter().enumerate() {
-                        let _ = writeln!(f, "  [{:3}] {:30} val={:?} out={:?} args={:?} sval={:?}", i, op.kind, op.value, op.out, op.args, op.s_value);
+                        let _ = writeln!(f, "  [{:3}] {:30} val={:?} out={:?} args={:?} sval={:?} fi={:?} ff={:?}", i, op.kind, op.value, op.out, op.args, op.s_value, op.fast_int, op.fast_float);
                     }
                     let _ = writeln!(f, "---");
                 }
