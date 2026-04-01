@@ -5427,6 +5427,11 @@ pub extern "C" fn molt_list_contains(container_bits: u64, item_bits: u64) -> u64
                 let mut idx = 0usize;
                 while let Some(val) = list_elem_at(ptr, idx) {
                     let elem_bits = val;
+                    // Identity check first (CPython semantics: `x is y or x == y`).
+                    // This handles NaN: float('nan') is float('nan') when same object.
+                    if elem_bits == item_bits {
+                        return MoltObject::from_bool(true).bits();
+                    }
                     inc_ref_bits(_py, elem_bits);
                     let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
                         Some(val) => val,
@@ -8521,6 +8526,10 @@ pub(crate) fn set_find_entry_fast(
         }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx];
+        // Identity check first (CPython semantics: `x is y or x == y`).
+        if entry_key == key_bits {
+            return Some(entry_idx);
+        }
         if obj_eq(_py, obj_from_bits(entry_key), obj_from_bits(key_bits)) {
             return Some(entry_idx);
         }
@@ -8550,6 +8559,10 @@ pub(crate) fn set_find_entry(
         }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx];
+        // Identity check first (CPython semantics: `x is y or x == y`).
+        if entry_key == key_bits {
+            return Some(entry_idx);
+        }
         let eq = unsafe { eq_bool_from_bits(_py, entry_key, key_bits) };
         match eq {
             Some(true) => return Some(entry_idx),
@@ -8583,6 +8596,10 @@ pub(crate) fn set_find_entry_with_hash(
         }
         let entry_idx = entry - 1;
         let entry_key = order[entry_idx];
+        // Identity check first (CPython semantics: `x is y or x == y`).
+        if entry_key == key_bits {
+            return Some(entry_idx);
+        }
         let eq = unsafe { eq_bool_from_bits(_py, entry_key, key_bits) };
         match eq {
             Some(true) => return Some(entry_idx),
