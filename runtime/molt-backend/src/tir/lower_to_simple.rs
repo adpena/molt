@@ -507,12 +507,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                             // This shouldn't happen since nested loop headers are
                             // separate entries in the RPO, but handle defensively.
                             emit_block_arg_stores(*then_block, then_args, &block_param_vars, out);
-                            out.push(OpIR {
+                            let mut br_op = OpIR {
                                 kind: "br_if".to_string(),
                                 args: Some(vec![value_var(*cond)]),
                                 value: Some(block_label_id(then_block)),
                                 ..OpIR::default()
-                            });
+                            };
+                            annotate_cond_type_hint(&mut br_op, *cond, types);
+                            out.push(br_op);
                             emit_block_arg_stores(*else_block, else_args, &block_param_vars, out);
                             out.push(OpIR {
                                 kind: "jump".to_string(),
@@ -522,12 +524,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                         } else {
                             // Generic conditional branch inside loop body.
                             emit_block_arg_stores(*then_block, then_args, &block_param_vars, out);
-                            out.push(OpIR {
+                            let mut br_op = OpIR {
                                 kind: "br_if".to_string(),
                                 args: Some(vec![value_var(*cond)]),
                                 value: Some(block_label_id(then_block)),
                                 ..OpIR::default()
-                            });
+                            };
+                            annotate_cond_type_hint(&mut br_op, *cond, types);
+                            out.push(br_op);
                             emit_block_arg_stores(*else_block, else_args, &block_param_vars, out);
                             out.push(OpIR {
                                 kind: "jump".to_string(),
@@ -636,14 +640,16 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
 
                 // Emit loop break condition.
                 emit_block_arg_stores(after_block, &after_args, &block_param_vars, &mut out);
-                out.push(OpIR {
+                let mut break_op = OpIR {
                     kind: match break_kind {
                         LoopBreakKind::BreakIfTrue => "loop_break_if_true".to_string(),
                         LoopBreakKind::BreakIfFalse => "loop_break_if_false".to_string(),
                     },
                     args: Some(vec![value_var(cond)]),
                     ..OpIR::default()
-                });
+                };
+                annotate_cond_type_hint(&mut break_op, cond, types);
+                out.push(break_op);
 
                 // Store args for the first body block entry.
                 emit_block_arg_stores(body_block, &body_args, &block_param_vars, &mut out);
@@ -792,6 +798,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                             &mut out,
                             original_has_ret,
                             exit_role,
+                            types,
                         );
                     }
                 }
@@ -807,6 +814,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     &mut out,
                     original_has_ret,
                     loop_role,
+                    types,
                 );
             }
         } else if let Some(pattern) = if_patterns.get(bid) {
@@ -854,11 +862,13 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             };
 
             // Emit: if cond
-            out.push(OpIR {
+            let mut if_op = OpIR {
                 kind: "if".to_string(),
                 args: Some(vec![value_var(*cond)]),
                 ..OpIR::default()
-            });
+            };
+            annotate_cond_type_hint(&mut if_op, *cond, types);
+            out.push(if_op);
 
             // Emit then-block ops inline.
             for op in &then_blk.ops {
@@ -913,6 +923,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 &mut out,
                 original_has_ret,
                 loop_role,
+                types,
             );
         }
     }
@@ -1431,6 +1442,7 @@ fn emit_terminator(
     out: &mut Vec<OpIR>,
     original_has_ret: bool,
     loop_role: super::blocks::LoopRole,
+    types: &HashMap<ValueId, TirType>,
 ) {
     match &block.terminator {
         Terminator::Return { values } => {
@@ -1523,22 +1535,26 @@ fn emit_terminator(
                 emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
                 // Emit loop_break_if_true which the native backend uses
                 // to construct the loop exit branch.
-                out.push(OpIR {
+                let mut break_op = OpIR {
                     kind: "loop_break_if_true".to_string(),
                     args: Some(vec![value_var(*cond)]),
                     ..OpIR::default()
-                });
+                };
+                annotate_cond_type_hint(&mut break_op, *cond, types);
+                out.push(break_op);
                 // Fall through to body — store else-args for the body block.
                 emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
             } else {
                 // Generic conditional branch.
                 emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
-                out.push(OpIR {
+                let mut br_op = OpIR {
                     kind: "br_if".to_string(),
                     args: Some(vec![value_var(*cond)]),
                     value: Some(block_label_id(then_block)),
                     ..OpIR::default()
-                });
+                };
+                annotate_cond_type_hint(&mut br_op, *cond, types);
+                out.push(br_op);
                 emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
                 out.push(OpIR {
                     kind: "jump".to_string(),
@@ -1717,14 +1733,16 @@ fn emit_nested_loop(
 
         // Emit loop break condition.
         emit_block_arg_stores(after_block, &after_args, block_param_vars, out);
-        out.push(OpIR {
+        let mut break_op = OpIR {
             kind: match inner_break_kind {
                 LoopBreakKind::BreakIfTrue => "loop_break_if_true".to_string(),
                 LoopBreakKind::BreakIfFalse => "loop_break_if_false".to_string(),
             },
             args: Some(vec![value_var(cond)]),
             ..OpIR::default()
-        });
+        };
+        annotate_cond_type_hint(&mut break_op, cond, types);
+        out.push(break_op);
 
         // Store args for the first body block entry.
         emit_block_arg_stores(body_block, &body_args, block_param_vars, out);
@@ -1821,12 +1839,14 @@ fn emit_nested_loop(
                         cond, then_block, then_args, else_block, else_args,
                     } => {
                         emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
-                        out.push(OpIR {
+                        let mut br_op = OpIR {
                             kind: "br_if".to_string(),
                             args: Some(vec![value_var(*cond)]),
                             value: Some(block_label_id(then_block)),
                             ..OpIR::default()
-                        });
+                        };
+                        annotate_cond_type_hint(&mut br_op, *cond, types);
+                        out.push(br_op);
                         emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
                         out.push(OpIR {
                             kind: "jump".to_string(),
@@ -1902,6 +1922,7 @@ fn emit_nested_loop(
                     out,
                     original_has_ret,
                     exit_role,
+                    types,
                 );
             }
         }
@@ -1916,6 +1937,7 @@ fn emit_nested_loop(
             out,
             original_has_ret,
             super::blocks::LoopRole::LoopHeader,
+            types,
         );
     }
 }
@@ -2048,6 +2070,20 @@ fn successors_of(block: &TirBlock) -> Vec<BlockId> {
 // Type annotation propagation
 // ---------------------------------------------------------------------------
 
+/// Annotate an [`OpIR`] condition-bearing op (`if`, `loop_break_if_*`,
+/// `br_if`) with the TIR type of its condition value.  This enables
+/// fast-path truthy dispatch (`molt_is_truthy_int`, `molt_is_truthy_bool`)
+/// in downstream backends.
+fn annotate_cond_type_hint(opir: &mut OpIR, cond: ValueId, types: &HashMap<ValueId, TirType>) {
+    match types.get(&cond) {
+        Some(TirType::I64) => { opir.type_hint = Some("int".to_string()); }
+        Some(TirType::Bool) => { opir.type_hint = Some("bool".to_string()); }
+        Some(TirType::F64) => { opir.type_hint = Some("float".to_string()); }
+        Some(TirType::Str) => { opir.type_hint = Some("str".to_string()); }
+        _ => {}
+    }
+}
+
 /// Annotate a SimpleIR [`OpIR`] with fast-path flags derived from TIR type
 /// refinement results.  This is the critical bridge that makes TIR type
 /// analysis visible to downstream backends (Cranelift, WASM, Luau).
@@ -2114,6 +2150,41 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
     // so the native backend can emit stack allocation instead of heap allocation.
     if tir_op.opcode == OpCode::StackAlloc {
         opir.stack_eligible = Some(true);
+    }
+
+    // Propagate container_type for Index / StoreIndex ops.
+    // operands[0] is the container; look up its TIR type.
+    if matches!(tir_op.opcode, OpCode::Index | OpCode::StoreIndex) {
+        if opir.container_type.is_none() {
+            if let Some(container_id) = tir_op.operands.first() {
+                match types.get(container_id) {
+                    Some(TirType::List(_)) => { opir.container_type = Some("list".to_string()); }
+                    Some(TirType::Str) => { opir.container_type = Some("str".to_string()); }
+                    Some(TirType::Dict(_, _)) => { opir.container_type = Some("dict".to_string()); }
+                    Some(TirType::Tuple(_)) => { opir.container_type = Some("tuple".to_string()); }
+                    Some(TirType::Set(_)) => { opir.container_type = Some("set".to_string()); }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Propagate container_type for len ops (CallBuiltin with _original_kind="len").
+    // operands[0] is the container argument.
+    if tir_op.opcode == OpCode::CallBuiltin
+        && opir.container_type.is_none()
+        && opir.kind == "len"
+    {
+        if let Some(arg_id) = tir_op.operands.first() {
+            match types.get(arg_id) {
+                Some(TirType::List(_)) => { opir.container_type = Some("list".to_string()); }
+                Some(TirType::Str) => { opir.container_type = Some("str".to_string()); }
+                Some(TirType::Dict(_, _)) => { opir.container_type = Some("dict".to_string()); }
+                Some(TirType::Tuple(_)) => { opir.container_type = Some("tuple".to_string()); }
+                Some(TirType::Set(_)) => { opir.container_type = Some("set".to_string()); }
+                _ => {}
+            }
+        }
     }
 
     // Preserve original fast_int / fast_float / type_hint from the input IR
