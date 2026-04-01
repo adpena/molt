@@ -478,6 +478,17 @@ def _molt_apply_dataclass(
                 fields[name] = field_obj
 
     annotations = getattr(cls, "__annotations__", {}) or {}
+    # PEP 749 (Python 3.14+): annotations may be deferred via __annotate__.
+    # If __annotations__ is empty but __annotate__ exists, call it to
+    # eagerly evaluate and cache the annotations.
+    if not annotations:
+        annotate_fn = getattr(cls, "__annotate__", None)
+        if annotate_fn is not None:
+            try:
+                annotations = annotate_fn(1)  # FORMAT_VALUE = 1
+                cls.__annotations__ = annotations
+            except Exception:
+                annotations = {}
     kw_only_marker = kw_only
     for name, annotation in annotations.items():
         if _is_kw_only(annotation):
