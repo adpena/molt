@@ -2869,7 +2869,14 @@ impl SimpleBackend {
                     .collect();
 
                 // Each element: (func_index, content_hash, optimized_ops)
-                let results: Vec<(usize, String, Vec<OpIR>)> = inputs
+                // Use a custom thread pool with 16MB stacks for TIR.
+                // lower_to_simple_ir has deeply nested closures capturing
+                // many HashMaps, which exceeds rayon's default 8MB stacks.
+                let tir_pool = rayon::ThreadPoolBuilder::new()
+                    .stack_size(64 * 1024 * 1024)
+                    .build()
+                    .expect("Failed to build TIR thread pool");
+                let results: Vec<(usize, String, Vec<OpIR>)> = tir_pool.install(|| inputs
                     .into_par_iter()
                     .map(|input| {
                         let idx = input.index;
@@ -3003,7 +3010,8 @@ impl SimpleBackend {
                             }
                         }
                     })
-                    .collect();
+                    .collect()
+                );
 
                 // Phase 3 (sequential): apply validated TIR ops and cache them.
                 // Empty ops = TIR roundtrip failed validation; keep original ops.

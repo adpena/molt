@@ -1485,7 +1485,7 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
                 return raise_exception::<_>(
                     _py,
                     "ZeroDivisionError",
-                    "integer division or modulo by zero",
+                    "division by zero",
                 );
             }
             let li128 = li as i128;
@@ -1508,7 +1508,7 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
                 return raise_exception::<_>(
                     _py,
                     "ZeroDivisionError",
-                    "integer division or modulo by zero",
+                    "division by zero",
                 );
             }
             let quot = l_big.div_floor(&r_big);
@@ -1531,7 +1531,7 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
         }
         if let Some((lf, rf)) = float_pair_from_obj(_py, lhs, rhs) {
             if rf == 0.0 {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "float divmod()");
+                return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
             }
             let quot = (lf / rf).floor();
             let mut rem = lf % rf;

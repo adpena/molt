@@ -41,15 +41,22 @@ When you identify the correct fix and feel tempted to do something "simpler" ins
 
 ## Concurrent Development (MOLT_SESSION_ID)
 
-When multiple agents work on the codebase simultaneously, set `MOLT_SESSION_ID` to a unique string (e.g., agent name or UUID) to isolate builds:
+`MOLT_SESSION_ID` **must be set BEFORE any build command**. Every agent must export it at the start of every shell command:
 
 ```bash
-export MOLT_SESSION_ID="agent-1"
+export MOLT_SESSION_ID="agent-1"  # MUST come before any molt or cargo command
 ```
 
+Each session gets its own `target-<id>/` cargo directory (e.g., `target-agent_1/`). All cargo builds, path resolution, staleness checks, and cache lookups automatically route through the session-specific directory.
+
 This gives each session:
-- **Its own CARGO_TARGET_DIR** (`target-agent-1/`) — no cargo lock contention
+- **Its own cargo target directory** (`target-agent_1/`) — no cargo lock contention, no artifact clobbering
 - **Its own daemon socket** — no kill/restart conflicts between sessions
+- **Its own build state and lock-check caches** — fully isolated build lifecycle
 - **No `cargo clean`** — incremental builds only, no binary deletion
 
+The first build in a new session takes approximately 5 minutes (full compile). Subsequent builds are incremental.
+
 Without `MOLT_SESSION_ID`, all sessions share the default `target/` directory (solo dev mode).
+
+Agents **MUST** use `export MOLT_SESSION_ID="unique-name"` at the start of every command to ensure isolation.

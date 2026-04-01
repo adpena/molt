@@ -742,6 +742,7 @@ mod tests {
             loop_roles: std::collections::HashMap::new(),
             loop_pairs: std::collections::HashMap::new(),
             loop_break_kinds: std::collections::HashMap::new(),
+            loop_break_blocks: std::collections::HashMap::new(),
         };
 
         let stats = run(&mut func);
@@ -848,6 +849,7 @@ mod tests {
             loop_roles: std::collections::HashMap::new(),
             loop_pairs: std::collections::HashMap::new(),
             loop_break_kinds: std::collections::HashMap::new(),
+            loop_break_blocks: std::collections::HashMap::new(),
         };
 
         run(&mut func);
@@ -951,6 +953,7 @@ mod tests {
             loop_roles: std::collections::HashMap::new(),
             loop_pairs: std::collections::HashMap::new(),
             loop_break_kinds: std::collections::HashMap::new(),
+            loop_break_blocks: std::collections::HashMap::new(),
         };
 
         run(&mut func);
