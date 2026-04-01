@@ -2121,6 +2121,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     _emitted_syntax_warnings: set[tuple[str, int, str]] = set()
 
+    def _emit_deprecation_warning(self, node: ast.AST, message: str) -> None:
+        """Emit a DeprecationWarning to stderr, matching CPython's format."""
+        import warnings
+        lineno = getattr(node, "lineno", 0)
+        source = self.source_path or "<string>"
+        key = (source, lineno, message)
+        if key in self._emitted_syntax_warnings:
+            return
+        self._emitted_syntax_warnings.add(key)
+        warnings.warn_explicit(
+            message,
+            DeprecationWarning,
+            source,
+            lineno,
+        )
+
     def _emit_syntax_warning(self, node: ast.AST, message: str) -> None:
         """Emit a SyntaxWarning to stderr, matching CPython's format.
 
@@ -11617,6 +11633,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             if module_namedexpr_targets:
                 self.module_global_mutations.update(module_namedexpr_targets)
+                # Invalidate local SSA cache for walrus targets so that
+                # subsequent reads at module scope re-read from the module
+                # dict (which the genexpr writes to via global_decls).
+                # Pop from both locals and globals — the compiler uses
+                # whichever it finds first for module-scope name reads.
+                for name in module_namedexpr_targets:
+                    self.locals.pop(name, None)
+                    self.globals.pop(name, None)
+                    self.exact_locals.pop(name, None)
         free_vars = self._collect_free_vars_comprehension(node)
         if self.current_func_name == "molt_main":
             # CPython resolves module-scope comprehension names as globals, not
@@ -22378,6 +22403,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if isinstance(node.op, ast.Not):
             return self._emit_not(operand)
         if isinstance(node.op, ast.Invert):
+            # Python 3.12+: DeprecationWarning for ~bool
+            if (
+                isinstance(node.operand, ast.Constant)
+                and isinstance(node.operand.value, bool)
+            ) or operand.type_hint == "bool":
+                self._emit_deprecation_warning(
+                    node,
+                    "Bitwise inversion '~' on bool is deprecated and will be "
+                    "removed in Python 3.16. This returns the bitwise inversion "
+                    "of the underlying int object and is usually not what you "
+                    "expect from negating a bool. Use the 'not' operator for "
+                    "boolean negation or ~int(x) if you really want the bitwise "
+                    "inversion of the underlying int.",
+                )
             res = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="INVERT", args=[operand], result=res))
             return res
