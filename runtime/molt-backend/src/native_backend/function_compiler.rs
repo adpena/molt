@@ -1272,14 +1272,6 @@ impl SimpleBackend {
             let op = ops[op_idx].clone();
             // Update frame stack column offsets for traceback carets.
             // Only emit for module chunks and only when the op carries col info.
-            if is_module_chunk && op.col_offset.is_some() && op.end_col_offset.is_some() {
-                if is_block_filled && std::env::var("MOLT_DEBUG_COL_SKIP").is_ok() {
-                    eprintln!(
-                        "[COL_SKIP] {} op={} kind={} col={:?} SKIPPED (is_block_filled)",
-                        func_ir.name, op_idx, op.kind, op.col_offset,
-                    );
-                }
-            }
             if is_module_chunk && !is_block_filled && op.col_offset.is_some() && op.end_col_offset.is_some() {
                 let col_val = builder.ins().iconst(types::I64, op.col_offset.unwrap());
                 let end_col_val = builder.ins().iconst(types::I64, op.end_col_offset.unwrap());
