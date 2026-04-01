@@ -26,6 +26,17 @@ pub extern "C" fn molt_print_obj(val: u64) {
 }
 
 #[unsafe(no_mangle)]
+/// Print a string to stderr followed by newline.  Used by the compiler to
+/// emit runtime warnings (DeprecationWarning, etc.) in CPython's format.
+pub extern "C" fn molt_warn_stderr(msg_bits: u64) {
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(msg_bits);
+        if let Some(s) = string_obj_to_owned(obj) {
+            eprintln!("{}", s);
+        }
+    })
+}
+
 pub extern "C" fn molt_print_newline() {
     crate::with_gil_entry!(_py, {
         let args_ptr = alloc_tuple(_py, &[]);
