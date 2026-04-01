@@ -1182,6 +1182,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.locals_cache_val: MoltValue | None = None
         self.boxed_locals: dict[str, MoltValue] = {}
         self.closure_locals: set[str] = set()
+        self._expr_col: tuple[int, int] | None = None  # expression-level col_offset for traceback carets
         self.boxed_local_hints: dict[str, str] = {}
         self.free_vars: dict[str, int] = {}
         self.free_var_hints: dict[str, str] = {}
@@ -29670,6 +29671,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             elif op.kind == "PRINT_NEWLINE":
                 json_ops.append({"kind": "print_newline"})
             elif op.kind == "WARN_STDERR":
+                if os.environ.get("MOLT_DEBUG_WARN"):
+                    import sys as _sys
+                    print(f"[WARN_SERIALIZE] warn_stderr arg={op.args[0].name}", file=_sys.stderr)
                 json_ops.append({
                     "kind": "warn_stderr",
                     "args": [op.args[0].name],

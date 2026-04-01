@@ -1384,6 +1384,7 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "copy" | "store_var" | "load_var" => OpCode::Copy,
         "import" => OpCode::Import,
         "import_from" => OpCode::ImportFrom,
+        "warn_stderr" => OpCode::WarnStderr,
         // Fallback for unknown ops.
         _ => OpCode::Copy,
     }

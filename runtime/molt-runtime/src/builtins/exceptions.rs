@@ -3604,11 +3604,13 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
             let trimmed = src_line.trim_start();
             let trim_offset = (src_line.len() - trimmed.len()) as i64;
             out.push_str(&format!("    {}\n", trimmed));
-            // Use frame stack col_offset when available (frame is still
-            // pushed during exception formatting because module chunks
-            // Use the col_offset stashed at exception-raise time, not the
-            // current frame stack (which may have been modified since).
-            let saved_col = LAST_EXCEPTION_COL.with(|cell| *cell.borrow());
+            // Use col_offset stashed at exception-raise time.
+            let saved_col = LAST_EXCEPTION_COL.with(|cell| {
+                let val = *cell.borrow();
+                // Reset to avoid stale data leaking to subsequent exceptions.
+                *cell.borrow_mut() = (-1, -1);
+                val
+            });
             let (c, ec) = if saved_col.0 >= 0 && saved_col.1 >= 0 {
                 (saved_col.0 - trim_offset, saved_col.1 - trim_offset)
             } else {
@@ -3835,24 +3837,6 @@ pub extern "C" fn molt_frame_set_line_col(line: i64, col_offset: i64, end_col_of
 }
 
 
-/// Read the current frame stack's col_offset for traceback caret annotations.
-/// This is an FFI-visible function to prevent LTO dead-stripping of the
-/// FRAME_STACK access path in format_traceback.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_get_col() -> i64 {
-    FRAME_STACK.with(|stack| {
-        let stack = stack.borrow();
-        stack.last().map(|e| e.col_offset).unwrap_or(-1)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_get_end_col() -> i64 {
-    FRAME_STACK.with(|stack| {
-        let stack = stack.borrow();
-        stack.last().map(|e| e.end_col_offset).unwrap_or(-1)
-    })
-}
 
 /// Update only column offsets on the top frame entry (line unchanged).
 /// Called before potentially-raising ops that carry expression-level col info.
