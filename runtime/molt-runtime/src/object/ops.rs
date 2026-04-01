@@ -444,8 +444,7 @@ pub(crate) fn alloc_heap_float(_py: &PyToken<'_>, value: f64) -> u64 {
     let total = header_size + std::mem::size_of::<f64>();
     let ptr = alloc_object(_py, total, TYPE_ID_FLOAT);
     if ptr.is_null() {
-        // OOM fallback: return canonical inline NaN (loses identity but doesn't crash)
-        return MoltObject::from_float(f64::NAN).bits();
+        return raise_exception::<u64>(_py, "MemoryError", "");
     }
     unsafe {
         *(ptr as *mut f64) = value;

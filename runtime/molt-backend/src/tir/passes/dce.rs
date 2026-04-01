@@ -72,6 +72,8 @@ fn is_side_effecting(opcode: OpCode) -> bool {
         // Import has module-level side effects.
         | OpCode::Import
         | OpCode::ImportFrom
+        // IO / diagnostics — emits to stderr.
+        | OpCode::WarnStderr
         // Deoptimisation must not be silently dropped.
         | OpCode::Deopt
     )

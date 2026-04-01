@@ -1144,7 +1144,7 @@ fn percent_decimal_from_obj(_py: &PyToken<'_>, value_bits: u64, conv: u8) -> Opt
     if let Some(big_ptr) = bigint_ptr_from_bits(value_bits) {
         return Some(unsafe { bigint_ref(big_ptr) }.clone());
     }
-    if let Some(f) = obj.as_float() {
+    if let Some(f) = as_float_extended(obj) {
         if f.is_nan() {
             return raise_exception::<Option<BigInt>>(
                 _py,
@@ -1355,7 +1355,7 @@ fn percent_char_from_obj(_py: &PyToken<'_>, value_bits: u64) -> Option<char> {
 
 fn percent_float_from_obj(_py: &PyToken<'_>, value_bits: u64) -> Option<f64> {
     let obj = obj_from_bits(value_bits);
-    if let Some(f) = obj.as_float() {
+    if let Some(f) = as_float_extended(obj) {
         return Some(f);
     }
     if let Some(i) = to_i64(obj) {

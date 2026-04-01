@@ -931,8 +931,8 @@ pub extern "C" fn molt_operator_neg(val: u64) -> u64 {
             }
             return bigint_bits(_py, res);
         }
-        if let Some(f) = obj.as_float() {
-            return MoltObject::from_float(-f).bits();
+        if let Some(f) = crate::object::ops::as_float_extended(obj) {
+            return crate::object::ops::float_result_bits(_py, -f);
         }
         if complex_ptr_from_bits(val).is_some() {
             match complex_from_obj_strict(_py, obj) {
@@ -977,8 +977,8 @@ pub extern "C" fn molt_operator_pos(val: u64) -> u64 {
             }
             return bigint_bits(_py, big);
         }
-        if let Some(f) = obj.as_float() {
-            return MoltObject::from_float(f).bits();
+        if let Some(f) = crate::object::ops::as_float_extended(obj) {
+            return crate::object::ops::float_result_bits(_py, f);
         }
         if complex_ptr_from_bits(val).is_some() {
             match complex_from_obj_strict(_py, obj) {

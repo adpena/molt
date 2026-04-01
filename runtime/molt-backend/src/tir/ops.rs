@@ -113,6 +113,8 @@ pub enum OpCode {
     // Import
     Import,
     ImportFrom,
+    // IO / diagnostics
+    WarnStderr,
     // Structured control flow (scf dialect)
     ScfIf,
     ScfFor,
