@@ -9271,6 +9271,9 @@ impl SimpleBackend {
                 }
                 "warn_stderr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    if std::env::var("MOLT_DEBUG_WARN_BACKEND").is_ok() {
+                        eprintln!("[WARN_BACKEND] warn_stderr op in func={} args={:?} is_block_filled={}", func_ir.name, args, is_block_filled);
+                    }
                     let val = var_get(&mut builder, &vars, &args[0]).expect("warn_stderr arg");
                     let callee = Self::import_func_id_split(
                         &mut self.module,
