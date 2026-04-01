@@ -2130,6 +2130,17 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
     {
         opir.type_hint = Some(th);
     }
+    // Restore col_offset/end_col_offset for traceback caret annotations.
+    if opir.col_offset.is_none() {
+        if let Some(AttrValue::Int(col)) = tir_op.attrs.get("_col_offset") {
+            opir.col_offset = Some(*col);
+        }
+    }
+    if opir.end_col_offset.is_none() {
+        if let Some(AttrValue::Int(ecol)) = tir_op.attrs.get("_end_col_offset") {
+            opir.end_col_offset = Some(*ecol);
+        }
+    }
 }
 
 /// Convert a TIR type to a human-readable hint string for the backend.
