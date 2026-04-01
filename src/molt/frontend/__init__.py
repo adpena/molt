@@ -2124,7 +2124,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def _emit_deprecation_warning(self, node: ast.AST, message: str) -> None:
         """Emit a DeprecationWarning to stderr, matching CPython's format."""
-        import warnings
         lineno = getattr(node, "lineno", 0)
         source = self.source_path or "<string>"
         key = (source, lineno, message)
