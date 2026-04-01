@@ -924,20 +924,24 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     out
 }
 
-/// Remove unreachable code regions from the linearised op stream.
+/// Remove dead `label` ops from the linearised op stream.
 ///
-/// A "dead label" is a `label` op that (a) has no incoming jump/br_if/
-/// check_exception and (b) is preceded by a block-terminating instruction
-/// (jump, ret, raise, loop_continue).  The Cranelift backend creates a
-/// block for every label seen in the pre-scan; if that block has no
-/// predecessors, Cranelift's alias_analysis and block ordering panic.
+/// A "dead label" is a `label`/`state_label` op whose label id is never
+/// the target of any `jump`, `br_if`, or `check_exception` op AND whose
+/// preceding instruction has already terminated the block (i.e., the label
+/// is not reachable via fallthrough either).
 ///
-/// This pass walks the ops, detects dead regions, and removes them.
-/// A dead region starts at a dead label and ends just before the next
-/// reachable label (one that IS a jump/br_if target or is reached by
-/// fallthrough from a non-terminated predecessor).
+/// The Cranelift backend creates a block for every label it sees in its
+/// pre-scan.  If that block ends up with no predecessors (no branch targets
+/// it AND no fallthrough), Cranelift's alias_analysis and block ordering
+/// panic with `Option::unwrap() on None`.
+///
+/// This pass strips only the dead label ops themselves.  The code following
+/// a dead label is kept: it may be reachable via structured control flow
+/// (e.g., `loop_end` switches to an `after_block` and the following ops
+/// are emitted into that block).
 fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
-    // Phase 1: collect all label ids that are branch targets.
+    // Phase 1: collect all label ids that are explicit branch targets.
     let mut branch_targets: HashSet<i64> = HashSet::new();
     for op in ops.iter() {
         match op.kind.as_str() {
@@ -950,71 +954,52 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
         }
     }
 
-    // Phase 2: walk ops, marking dead regions for removal.
-    // is_filled tracks whether the previous block-filling instruction has
-    // been emitted without a subsequent label to start a new live block.
+    // Phase 2: walk ops, detecting dead labels.
+    // `is_filled` tracks whether the current block has been terminated
+    // (by jump/ret/raise/loop_continue) without a subsequent label
+    // starting a new live block.
     let mut is_filled = false;
-    let mut in_dead_region = false;
     let mut keep = vec![true; ops.len()];
 
     for i in 0..ops.len() {
         let kind = ops[i].kind.as_str();
         match kind {
             "jump" | "ret" | "raise" | "loop_continue" => {
-                if in_dead_region {
-                    keep[i] = false;
-                } else {
-                    is_filled = true;
-                }
+                is_filled = true;
             }
             "label" | "state_label" => {
                 let label_id = ops[i].value.unwrap_or(-1);
-                if in_dead_region {
-                    // Check if this label is a branch target — if so, the
-                    // dead region ends and we resume emitting.
-                    if branch_targets.contains(&label_id) {
-                        in_dead_region = false;
-                        is_filled = false;
-                    } else {
-                        keep[i] = false;
-                    }
-                } else if is_filled && !branch_targets.contains(&label_id) {
-                    // Dead label: preceded by a terminator and not a branch target.
-                    in_dead_region = true;
+                if is_filled && !branch_targets.contains(&label_id) {
+                    // Dead label: preceded by a terminator and not a
+                    // branch target.  Remove the label op but keep the
+                    // code that follows (it may be reachable via
+                    // structured control flow like loop_end → after_block).
                     keep[i] = false;
                 } else {
+                    // Live label (reachable via fallthrough or branch).
                     is_filled = false;
                 }
             }
-            "loop_start" | "loop_end" | "loop_break_if_false" | "loop_index_start" => {
-                if in_dead_region {
-                    keep[i] = false;
-                } else {
-                    // loop_break_if_false does not fill the block (it falls through)
-                    if kind == "loop_break_if_false" {
-                        is_filled = false;
-                    }
-                }
+            // loop_end resets the filled state because the native backend
+            // switches to the after_block, making following ops reachable.
+            "loop_end" => {
+                is_filled = false;
+            }
+            // loop_start, loop_break_if_false do not fill.
+            "loop_start" | "loop_break_if_false" | "loop_index_start" => {
+                // These are control-flow markers that don't terminate blocks.
             }
             "br_if" => {
-                // br_if does not fill the block — it falls through.
-                if in_dead_region {
-                    keep[i] = false;
-                } else {
-                    is_filled = false;
-                }
+                // br_if has a fallthrough path — does not fill.
+                is_filled = false;
             }
             _ => {
-                if in_dead_region {
-                    keep[i] = false;
-                } else {
-                    // Normal ops don't change is_filled state.
-                }
+                // Normal ops do not change is_filled state.
             }
         }
     }
 
-    // Phase 3: compact — remove dead ops.
+    // Phase 3: compact — remove dead label ops.
     let mut write_idx = 0;
     for read_idx in 0..ops.len() {
         if keep[read_idx] {
