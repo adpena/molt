@@ -6108,9 +6108,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return res
         # Restore the original exception after evaluating the handler type.
         # EXCEPTION_CLEAR above was needed so the type lookup (e.g.
-        # `ZeroDivisionError`) doesn't fail with an active exception, but
-        # we need the exception back for the isinstance check and for
-        # detecting if the evaluation itself raised.
+        # `ZeroDivisionError`) doesn't fail with an active exception.
+        # We restore it so isinstance can match the original exception.
+        #
+        # Note: we do NOT guard against the type evaluation raising, because
+        # simple name lookups (Exception, ValueError, etc.) never raise, and
+        # the check_exception ops emitted around the visit() call handle
+        # complex expressions. The previous IS-None guard was incompatible
+        # with the restore — exception_last() always returned the restored
+        # exception, causing the guard to always re-raise.
         self.emit(
             MoltOp(
                 kind="EXCEPTION_SET_LAST",
@@ -6118,16 +6124,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 result=MoltValue("none"),
             )
         )
-        eval_exc = MoltValue(self.next_var(), type_hint="exception")
-        self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=eval_exc))
-        none_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-        eval_ok = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="IS", args=[eval_exc, none_val], result=eval_ok))
-        self.emit(MoltOp(kind="IF", args=[eval_ok], result=MoltValue("none")))
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="RAISE", args=[eval_exc], result=MoltValue("none")))
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         res = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="ISINSTANCE", args=[exc_val, class_val], result=res))
         return res

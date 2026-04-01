@@ -1166,7 +1166,8 @@ impl SimpleBackend {
         // Module chunks need traceback info (File/line) for exception
         // formatting.  Emit molt_frame_push_info(filename_bits, name_bits,
         // lineno) at entry and molt_frame_pop() before every return.
-        let is_module_chunk = func_ir.name.contains("__molt_module_chunk_");
+        let is_module_chunk = func_ir.name.contains("__molt_module_chunk_")
+            || func_ir.name == "molt_main";
         if is_module_chunk {
             // Allocate filename string.
             let filename_bytes = func_ir
