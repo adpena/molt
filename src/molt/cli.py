@@ -10655,10 +10655,10 @@ def _start_backend_daemon(
                 _cache_root = _default_molt_cache()
                 if _cache_root.is_dir():
                     for _cached_file in _cache_root.iterdir():
-                        if _cached_file.name.endswith(".stdlib.o"):
+                        if _cached_file.name.startswith("stdlib_shared_"):
                             continue
                         if _cached_file.is_file() and _cached_file.suffix in {
-                            ".o", ".wasm", ".fingerprint",
+                            ".o", ".wasm", ".fingerprint", ".count", ".key",
                         }:
                             _cached_file.unlink(missing_ok=True)
                     if not json_output:
@@ -11095,11 +11095,11 @@ def _link_fingerprint_path(
 
 
 def _stdlib_object_count_sidecar_path(stdlib_object_path: Path) -> Path:
-    return stdlib_object_path.with_extension("count")
+    return stdlib_object_path.with_suffix(".count")
 
 
 def _stdlib_object_key_sidecar_path(stdlib_object_path: Path) -> Path:
-    return stdlib_object_path.with_extension("key")
+    return stdlib_object_path.with_suffix(".key")
 
 
 def _remove_shared_stdlib_cache_artifacts(stdlib_object_path: Path) -> None:
@@ -14561,14 +14561,11 @@ def _emit_native_link_result(
                 _build_native_link_program, "_retried", False
             ):
                 if stdlib_obj_path is not None and stdlib_obj_path.exists():
-                    try:
-                        stdlib_obj_path.unlink()
-                        print(
-                            "  Deleted incomplete stdlib cache — auto-retrying link...",
-                            file=sys.stderr,
-                        )
-                    except OSError:
-                        pass
+                    _remove_shared_stdlib_cache_artifacts(stdlib_obj_path)
+                    print(
+                        "  Deleted incomplete stdlib cache — auto-retrying link...",
+                        file=sys.stderr,
+                    )
                 # Mark as retried to prevent infinite loops.
                 _build_native_link_program._retried = True  # type: ignore[attr-defined]
                 link_process = subprocess.run(
@@ -16517,6 +16514,8 @@ def _prepare_backend_compile(
                 cache_key=cache_key,
                 function_cache_key=function_cache_key,
                 cache_path=cache_path,
+                stdlib_object_path=cache_setup.stdlib_object_path,
+                stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 warnings=warnings,
             )
 
@@ -16986,6 +16985,7 @@ def _run_backend_pipeline(
                 output_artifact=output_layout.output_artifact,
                 artifacts_root=artifacts_root,
                 stdlib_obj_path=prepared_backend_setup.cache_setup.stdlib_object_path,
+                stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
                 json_output=json_output,
                 link_timeout=prepared_build_config.link_timeout,
                 target_triple=output_layout.target_triple,
@@ -17068,6 +17068,7 @@ def _run_backend_pipeline(
         link_timeout=prepared_build_config.link_timeout,
         warnings=prepared_build_preamble.warnings,
         stdlib_obj_path=prepared_backend_setup.cache_setup.stdlib_object_path,
+        stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
     )
     if prepared_native_link_error is not None:
         return prepared_native_link_error
@@ -17447,16 +17448,19 @@ def _prepare_native_link(
     link_timeout: float | None,
     warnings: list[str],
     stdlib_obj_path: Path | None = None,
+    stdlib_object_cache_key: str | None = None,
 ) -> tuple[_PreparedNativeLink | None, dict[str, Any] | None]:
     output_obj = output_artifact
-    if stdlib_obj_path is None:
-        stdlib_obj_path = _native_stdlib_obj_path(
-            project_root,
-            output_obj,
-            profile=profile,
-            target_triple=target_triple,
-        )
-    _invalidate_stale_stdlib_cache(stdlib_obj_path, project_root)
+    if stdlib_obj_path is not None:
+        _invalidate_stale_stdlib_cache(stdlib_obj_path, project_root)
+        if stdlib_obj_path.exists() and not _shared_stdlib_cache_matches_key(
+            stdlib_obj_path, stdlib_object_cache_key
+        ):
+            return None, _fail(
+                "Shared stdlib cache key mismatch before native link",
+                json_output,
+                command="build",
+            )
     main_c_content = _render_native_main_stub(
         trusted=trusted,
         capabilities_list=capabilities_list,
@@ -18316,6 +18320,7 @@ def _prepare_backend_cache_setup(
             cache_path=None,
             function_cache_path=None,
             stdlib_object_path=None,
+            stdlib_object_cache_key=None,
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
@@ -18352,6 +18357,8 @@ def _prepare_backend_cache_setup(
         cache_key=cache_key,
         function_cache_key=function_cache_key,
         cache_path=cache_path,
+        stdlib_object_path=stdlib_object_path,
+        stdlib_object_cache_key=stdlib_object_cache_key,
         warnings=warnings,
     )
     return _BackendCacheSetup(
@@ -19912,13 +19919,13 @@ def _ensure_backend_binary(
         _cache_root = _default_molt_cache()
         if _cache_root.is_dir():
             for _cached_file in _cache_root.iterdir():
-                # Preserve stdlib compilation cache (.stdlib.o) — these are
-                # expensive to rebuild and automatically invalidated when the
-                # backend binary or IR content changes.
-                if _cached_file.name.endswith(".stdlib.o"):
+                # Preserve keyed shared stdlib caches and their sidecars —
+                # these are automatically invalidated when their exact stdlib
+                # IR identity or the toolchain fingerprint changes.
+                if _cached_file.name.startswith("stdlib_shared_"):
                     continue
                 if _cached_file.is_file() and _cached_file.suffix in {
-                    ".o", ".wasm", ".fingerprint",
+                    ".o", ".wasm", ".fingerprint", ".count", ".key",
                 }:
                     try:
                         _cached_file.unlink()
