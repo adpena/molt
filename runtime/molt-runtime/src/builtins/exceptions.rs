@@ -3304,13 +3304,17 @@ pub(crate) fn format_exception_with_traceback(_py: &PyToken<'_>, ptr: *mut u8) -
         if let Some((file, line, name, col, end_col)) = frame_stack_top_info(_py) {
             out.push_str(&format!("  File \"{file}\", line {line}, in {name}\n"));
             if let Some(src_line) = read_source_line(&file, line) {
-                out.push_str(&format!("    {}\n", src_line.trim()));
+                let trimmed = src_line.trim_start();
+                let trim_offset = (src_line.len() - trimmed.len()) as i64;
+                out.push_str(&format!("    {}\n", trimmed));
                 let (c, ec) = if col >= 0 && end_col >= 0 {
-                    (col, end_col)
+                    // Adjust col offsets for trimmed display: the printed
+                    // line has 4-space indent regardless of original indent.
+                    (col - trim_offset, end_col - trim_offset)
                 } else {
-                    crate::object::ops_sys::traceback_infer_column_offsets(&src_line)
+                    crate::object::ops_sys::traceback_infer_column_offsets(trimmed)
                 };
-                let caret = crate::object::ops_sys::traceback_format_caret_line_native(&src_line, c, ec);
+                let caret = crate::object::ops_sys::traceback_format_caret_line_native(trimmed, c, ec);
                 if !caret.is_empty() {
                     out.push_str(&caret);
                 }
