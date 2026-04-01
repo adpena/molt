@@ -6908,6 +6908,15 @@ pub extern "C" fn molt_unpack_sequence(
                 }
                 dec_ref_bits(_py, iter_bits);
                 if count < expected {
+                    // If an exception is already pending (e.g. the iterator
+                    // raised RuntimeError, not StopIteration), propagate that
+                    // exception instead of replacing it with ValueError.
+                    if exception_pending(_py) {
+                        for i in 0..count {
+                            dec_ref_bits(_py, out_slice[i]);
+                        }
+                        return MoltObject::none().bits();
+                    }
                     let msg = format!(
                         "not enough values to unpack (expected {}, got {})",
                         expected, count
