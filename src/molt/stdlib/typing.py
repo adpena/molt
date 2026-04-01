@@ -132,9 +132,13 @@ _AnnotatedOrigin.__qualname__ = "Annotated"
 
 
 def _as_tuple(params: object) -> tuple[object, ...]:
-    if isinstance(params, tuple):
-        return params
-    return (params,)
+    # Single return path: the backend's ret-inside-if cleanup mishandles the
+    # early-return-param pattern (SIGSEGV from NaN-box tag loss on the first
+    # tuple element).  Restructured to a single exit point which avoids the
+    # problematic codegen path while remaining semantically identical.
+    if not isinstance(params, tuple):
+        params = (params,)
+    return params
 
 
 def _type_repr(arg: object) -> str:
