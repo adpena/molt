@@ -6538,7 +6538,7 @@ impl SimpleBackend {
                                 let callee = Self::import_func_id_split(
                                     &mut self.module,
                                     &mut self.import_ids,
-                                    "molt_list_int_getitem_raw",
+                                    "molt_list_int_getitem_unchecked",
                                     &[types::I64, types::I64],
                                     &[types::I64],
                                 );
@@ -6645,7 +6645,7 @@ impl SimpleBackend {
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
                                 &mut self.import_ids,
-                                "molt_list_int_setitem_raw",
+                                "molt_list_int_setitem_unchecked",
                                 &[types::I64, types::I64, types::I64],
                                 &[types::I64],
                             );
@@ -6722,7 +6722,7 @@ impl SimpleBackend {
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
                                 &mut self.import_ids,
-                                "molt_list_int_setitem_raw",
+                                "molt_list_int_setitem_unchecked",
                                 &[types::I64, types::I64, types::I64],
                                 &[types::I64],
                             );

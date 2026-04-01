@@ -10668,6 +10668,37 @@ pub extern "C" fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i
     }
 }
 
+/// Ultra-fast list[int] getitem — no bounds check, no negative index handling.
+/// Used when the compiler can prove the index is non-negative and in bounds
+/// (e.g., loop counter bounded by list length).
+///
+/// # Safety
+/// Caller must guarantee `0 <= raw_index < len(list)`.
+#[unsafe(no_mangle)]
+#[inline(never)]
+pub extern "C" fn molt_list_int_getitem_unchecked(list_bits: u64, raw_index: i64) -> i64 {
+    unsafe {
+        let ptr = obj_from_bits(list_bits).as_ptr().unwrap_unchecked();
+        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
+        *(*vec_ptr).as_ptr().add(raw_index as usize)
+    }
+}
+
+/// Ultra-fast list[int] setitem — no bounds check, no negative index handling.
+///
+/// # Safety
+/// Caller must guarantee `0 <= raw_index < len(list)`.
+#[unsafe(no_mangle)]
+#[inline(never)]
+pub extern "C" fn molt_list_int_setitem_unchecked(list_bits: u64, raw_index: i64, raw_value: i64) -> u64 {
+    unsafe {
+        let ptr = obj_from_bits(list_bits).as_ptr().unwrap_unchecked();
+        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
+        *(*vec_ptr).as_mut_ptr().add(raw_index as usize) = raw_value;
+    }
+    list_bits
+}
+
 /// Raw-register fast path for list[int] setitem.
 /// Takes raw i64 index and value (NOT NaN-boxed). Stores value directly into the flat i64 array.
 /// Returns list_bits unchanged (matching molt_list_int_setitem contract).
