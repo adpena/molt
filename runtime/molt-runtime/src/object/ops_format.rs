@@ -45,20 +45,6 @@ pub extern "C" fn molt_warn_stderr(msg_bits: u64) {
     })
 }
 
-pub extern "C" fn molt_print_newline() {
-    crate::with_gil_entry!(_py, {
-        let args_ptr = alloc_tuple(_py, &[]);
-        if args_ptr.is_null() {
-            return;
-        }
-        let args_bits = MoltObject::from_ptr(args_ptr).bits();
-        let none_bits = MoltObject::none().bits();
-        let flush_bits = MoltObject::from_bool(true).bits();
-        let res_bits = molt_print_builtin(args_bits, none_bits, none_bits, none_bits, flush_bits);
-        dec_ref_bits(_py, res_bits);
-        dec_ref_bits(_py, args_bits);
-    })
-}
 
 fn format_float(f: f64) -> String {
     if f.is_nan() {
