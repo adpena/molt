@@ -2121,6 +2121,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return res
 
     _emitted_syntax_warnings: set[tuple[str, int, str]] = set()
+    _deferred_runtime_warnings: list[str] = []
 
     def _emit_deprecation_warning(self, node: ast.AST, message: str) -> None:
         """Emit a DeprecationWarning to stderr, matching CPython's format."""
@@ -2144,6 +2145,56 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         print(f"{source}:{lineno}: DeprecationWarning: {message}", file=sys.stderr)
         if src_line:
             print(f"  {src_line}", file=sys.stderr)
+
+    def _prescan_compile_warnings(self, module_node: ast.Module) -> None:
+        """Pre-scan AST for patterns that need compile-time warnings."""
+        source = self.source_path or "<string>"
+        for node in ast.walk(module_node):
+            if (
+                isinstance(node, ast.UnaryOp)
+                and isinstance(node.op, ast.Invert)
+                and isinstance(node.operand, ast.Constant)
+                and isinstance(node.operand.value, bool)
+            ):
+                lineno = getattr(node, "lineno", 0)
+                key = (source, lineno, "~bool")
+                if key in self._emitted_syntax_warnings:
+                    continue
+                self._emitted_syntax_warnings.add(key)
+                msg = (
+                    "Bitwise inversion '~' on bool is deprecated and will be "
+                    "removed in Python 3.16. This returns the bitwise inversion "
+                    "of the underlying int object and is usually not what you "
+                    "expect from negating a bool. Use the 'not' operator for "
+                    "boolean negation or ~int(x) if you really want the bitwise "
+                    "inversion of the underlying int."
+                )
+                self._deferred_runtime_warnings.append(
+                    f"{source}:{lineno}: DeprecationWarning: {msg}"
+                )
+                try:
+                    with open(source) as f:
+                        for i, line in enumerate(f, 1):
+                            if i == lineno:
+                                self._deferred_runtime_warnings.append(
+                                    f"  {line.rstrip()}"
+                                )
+                                break
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+    def _emit_deferred_warnings(self) -> None:
+        """Emit deferred runtime warnings as WARN_STDERR ops.
+
+        Called at the start of module compilation so warnings appear before
+        any print output, matching CPython's behavior of emitting compile-time
+        warnings before executing any code.
+        """
+        for line in self._deferred_runtime_warnings:
+            val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[line], result=val))
+            self.emit(MoltOp(kind="WARN_STDERR", args=[val], result=MoltValue("none")))
+        self._deferred_runtime_warnings.clear()
 
     def _emit_syntax_warning(self, node: ast.AST, message: str) -> None:
         """Emit a SyntaxWarning to stderr, matching CPython's format.
@@ -3430,6 +3481,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.defer_module_attrs = True
             self.deferred_module_attrs = set()
         self._emit_module_frame_enter(node)
+        # Pre-scan for compile-time warnings (~bool, etc.) and emit
+        # WARN_STDERR ops at module startup, before any print output.
+        # This matches CPython which emits compile-time warnings before
+        # executing any code.
+        self._prescan_compile_warnings(node)
+        self._emit_deferred_warnings()
         self.del_targets = self._collect_deleted_names(node.body)
         if self.module_chunking and self.module_chunk_max_ops > 0:
             wrapper_ops = self.current_ops
@@ -11417,7 +11474,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         """Check whether a list comprehension can be lowered as an inline loop.
 
         Requirements: single generator, no async, single target name, no
-        nested comprehensions in the element expression.
+        nested comprehensions in the element expression.  Multi-for
+        comprehensions use the GeneratorExp path which handles walrus
+        scope leaking separately.
         """
         if len(node.generators) != 1:
             return False
@@ -22411,54 +22470,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if isinstance(node.op, ast.Not):
             return self._emit_not(operand)
         if isinstance(node.op, ast.Invert):
-            # Python 3.12+: DeprecationWarning for ~bool at runtime.
-            if (
-                isinstance(node.operand, ast.Constant)
-                and isinstance(node.operand.value, bool)
-            ) or operand.type_hint == "bool":
-                lineno = getattr(node, "lineno", 0)
-                source = self.source_path or "<string>"
-                msg = (
-                    "Bitwise inversion '~' on bool is deprecated and will be "
-                    "removed in Python 3.16. This returns the bitwise inversion "
-                    "of the underlying int object and is usually not what you "
-                    "expect from negating a bool. Use the 'not' operator for "
-                    "boolean negation or ~int(x) if you really want the bitwise "
-                    "inversion of the underlying int."
-                )
-                # Emit runtime stderr output matching CPython's warning format:
-                #   file.py:13: DeprecationWarning: message
-                #     source_line
-                warn_line1 = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(
-                    kind="CONST_STR",
-                    args=[f"{source}:{lineno}: DeprecationWarning: {msg}"],
-                    result=warn_line1,
-                ))
-                self.emit(MoltOp(
-                    kind="WARN_STDERR",
-                    args=[warn_line1],
-                    result=MoltValue("none"),
-                ))
-                # Read source line for context
-                try:
-                    with open(source) as f:
-                        for i, line in enumerate(f, 1):
-                            if i == lineno:
-                                warn_line2 = MoltValue(self.next_var(), type_hint="str")
-                                self.emit(MoltOp(
-                                    kind="CONST_STR",
-                                    args=[f"  {line.rstrip()}"],
-                                    result=warn_line2,
-                                ))
-                                self.emit(MoltOp(
-                                    kind="WARN_STDERR",
-                                    args=[warn_line2],
-                                    result=MoltValue("none"),
-                                ))
-                                break
-                except (OSError, UnicodeDecodeError):
-                    pass
+            # DeprecationWarning for ~bool is handled by _prescan_compile_warnings
+            # at module startup. No inline emission needed here.
             res = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="INVERT", args=[operand], result=res))
             return res

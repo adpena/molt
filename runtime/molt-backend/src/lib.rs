@@ -2968,7 +2968,7 @@ impl SimpleBackend {
                                     return None;
                                 }
                                 // Debug: dump before/after for specific functions
-                                if std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| tir_func.name.contains(&p)).unwrap_or(false) {
+                                if std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| func_name.contains(&p)).unwrap_or(false) {
                                     use std::io::Write;
                                     let path = format!("/tmp/tir_diff_{}.txt", tir_func.name);
                                     if let Ok(mut f) = std::fs::File::create(&path) {
