@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "args_kwargs",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/args_kwargs.py",
+      "size": 822,
+      "mtime_ns": 1774642832821147523
+    }
+  ],
+  "explicit_imports": []
+}

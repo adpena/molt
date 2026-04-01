@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "arith",
+  "is_package": false,
+  "include_nested": true,
+  "size": 166,
+  "mtime_ns": 1774642832821231029,
+  "imports": []
+}

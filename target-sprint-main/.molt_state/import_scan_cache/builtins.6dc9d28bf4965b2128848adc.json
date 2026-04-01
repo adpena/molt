@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "module_name": "builtins",
+  "is_package": false,
+  "include_nested": true,
+  "size": 23532,
+  "mtime_ns": 1774805922510287947,
+  "imports": [
+    "__future__",
+    "__future__.annotations",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic",
+    "_sitebuiltins",
+    "typing",
+    "typing.Any",
+    "typing",
+    "typing.Callable",
+    "typing.Optional"
+  ]
+}

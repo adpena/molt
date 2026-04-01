@@ -1,0 +1,272 @@
+{
+  "version": 1,
+  "module_name": "socket",
+  "is_package": false,
+  "size": 32852,
+  "mtime_ns": 1774642832797722207,
+  "func_defaults": {
+    "_init_constants": {
+      "params": 0,
+      "defaults": []
+    },
+    "getdefaulttimeout": {
+      "params": 0,
+      "defaults": []
+    },
+    "_coerce_timeout": {
+      "params": 1,
+      "defaults": []
+    },
+    "setdefaulttimeout": {
+      "params": 1,
+      "defaults": []
+    },
+    "_map_gaierror": {
+      "params": 1,
+      "defaults": []
+    },
+    "_map_herror": {
+      "params": 1,
+      "defaults": []
+    },
+    "_exc_errno": {
+      "params": 1,
+      "defaults": []
+    },
+    "_require_socket_intrinsic": {
+      "params": 2,
+      "defaults": []
+    },
+    "_socket_from_handle": {
+      "params": 4,
+      "defaults": []
+    },
+    "fromfd": {
+      "params": 4,
+      "defaults": [
+        {
+          "const": true,
+          "value": 0
+        }
+      ]
+    },
+    "socketpair": {
+      "params": 3,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "getaddrinfo": {
+      "params": 6,
+      "defaults": [
+        {
+          "const": true,
+          "value": 0
+        },
+        {
+          "const": true,
+          "value": 0
+        },
+        {
+          "const": true,
+          "value": 0
+        },
+        {
+          "const": true,
+          "value": 0
+        }
+      ]
+    },
+    "getnameinfo": {
+      "params": 2,
+      "defaults": []
+    },
+    "gethostname": {
+      "params": 0,
+      "defaults": []
+    },
+    "gethostbyname": {
+      "params": 1,
+      "defaults": []
+    },
+    "gethostbyaddr": {
+      "params": 1,
+      "defaults": []
+    },
+    "getfqdn": {
+      "params": 1,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "getservbyname": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "getservbyport": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "inet_aton": {
+      "params": 1,
+      "defaults": []
+    },
+    "inet_pton": {
+      "params": 2,
+      "defaults": []
+    },
+    "inet_ntoa": {
+      "params": 1,
+      "defaults": []
+    },
+    "inet_ntop": {
+      "params": 2,
+      "defaults": []
+    },
+    "htons": {
+      "params": 1,
+      "defaults": []
+    },
+    "ntohs": {
+      "params": 1,
+      "defaults": []
+    },
+    "htonl": {
+      "params": 1,
+      "defaults": []
+    },
+    "ntohl": {
+      "params": 1,
+      "defaults": []
+    },
+    "close": {
+      "params": 1,
+      "defaults": []
+    },
+    "getprotobyname": {
+      "params": 1,
+      "defaults": []
+    },
+    "gethostbyname_ex": {
+      "params": 1,
+      "defaults": []
+    },
+    "sethostname": {
+      "params": 1,
+      "defaults": []
+    },
+    "CMSG_LEN": {
+      "params": 1,
+      "defaults": []
+    },
+    "CMSG_SPACE": {
+      "params": 1,
+      "defaults": []
+    },
+    "if_nameindex": {
+      "params": 0,
+      "defaults": []
+    },
+    "if_nametoindex": {
+      "params": 1,
+      "defaults": []
+    },
+    "if_indextoname": {
+      "params": 1,
+      "defaults": []
+    },
+    "create_connection": {
+      "params": 3,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "create_server": {
+      "params": 4,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": true,
+          "value": false
+        },
+        {
+          "const": true,
+          "value": false
+        }
+      ]
+    },
+    "has_dualstack_ipv6": {
+      "params": 0,
+      "defaults": []
+    },
+    "send_fds": {
+      "params": 5,
+      "defaults": [
+        {
+          "const": true,
+          "value": 0
+        },
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "recv_fds": {
+      "params": 4,
+      "defaults": [
+        {
+          "const": true,
+          "value": 0
+        }
+      ]
+    }
+  },
+  "imports": [
+    "__future__",
+    "__future__.annotations",
+    "errno",
+    "sys",
+    "typing",
+    "typing.Any",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic",
+    "enum",
+    "enum.IntEnum",
+    "enum.IntFlag"
+  ]
+}

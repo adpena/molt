@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "assignment_starred_nested",
+  "is_package": false,
+  "include_nested": true,
+  "size": 336,
+  "mtime_ns": 1774642832822174432,
+  "imports": []
+}

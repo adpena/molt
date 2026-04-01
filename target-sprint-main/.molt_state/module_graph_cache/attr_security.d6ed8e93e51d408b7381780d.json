@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "attr_security",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/attr_security.py",
+      "size": 1561,
+      "mtime_ns": 1774642832824569317
+    }
+  ],
+  "explicit_imports": []
+}

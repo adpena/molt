@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "builtin_constructor_dynamic",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/builtin_constructor_dynamic.py",
+      "size": 543,
+      "mtime_ns": 1774642832825770073
+    }
+  ],
+  "explicit_imports": []
+}

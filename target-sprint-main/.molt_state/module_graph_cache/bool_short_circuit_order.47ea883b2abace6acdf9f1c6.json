@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "bool_short_circuit_order",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/bool_short_circuit_order.py",
+      "size": 354,
+      "mtime_ns": 1774642832825535014
+    }
+  ],
+  "explicit_imports": []
+}

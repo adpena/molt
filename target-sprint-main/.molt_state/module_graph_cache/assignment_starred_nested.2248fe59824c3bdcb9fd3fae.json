@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "assignment_starred_nested",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/assignment_starred_nested.py",
+      "size": 336,
+      "mtime_ns": 1774642832822174432
+    }
+  ],
+  "explicit_imports": []
+}

@@ -1,0 +1,536 @@
+{
+  "version": 1,
+  "module_name": "os",
+  "is_package": false,
+  "size": 44721,
+  "mtime_ns": 1774916372899064424,
+  "func_defaults": {
+    "_resolve_os_name": {
+      "params": 0,
+      "defaults": []
+    },
+    "WIFEXITED": {
+      "params": 1,
+      "defaults": []
+    },
+    "WEXITSTATUS": {
+      "params": 1,
+      "defaults": []
+    },
+    "WIFSIGNALED": {
+      "params": 1,
+      "defaults": []
+    },
+    "WTERMSIG": {
+      "params": 1,
+      "defaults": []
+    },
+    "WIFSTOPPED": {
+      "params": 1,
+      "defaults": []
+    },
+    "WSTOPSIG": {
+      "params": 1,
+      "defaults": []
+    },
+    "_molt_env_get": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "_molt_env_snapshot": {
+      "params": 0,
+      "defaults": []
+    },
+    "_molt_env_set": {
+      "params": 2,
+      "defaults": []
+    },
+    "_molt_env_unset": {
+      "params": 1,
+      "defaults": []
+    },
+    "_molt_env_len": {
+      "params": 0,
+      "defaults": []
+    },
+    "_molt_env_contains": {
+      "params": 1,
+      "defaults": []
+    },
+    "_molt_env_popitem": {
+      "params": 0,
+      "defaults": []
+    },
+    "_molt_env_clear": {
+      "params": 0,
+      "defaults": []
+    },
+    "_molt_env_putenv": {
+      "params": 2,
+      "defaults": []
+    },
+    "_molt_env_unsetenv": {
+      "params": 1,
+      "defaults": []
+    },
+    "_require_cap": {
+      "params": 1,
+      "defaults": []
+    },
+    "_require_callable_intrinsic": {
+      "params": 2,
+      "defaults": []
+    },
+    "_require_os_intrinsic": {
+      "params": 1,
+      "defaults": []
+    },
+    "_expect_str": {
+      "params": 2,
+      "defaults": []
+    },
+    "_expect_splitext": {
+      "params": 1,
+      "defaults": []
+    },
+    "_expect_stat_result": {
+      "params": 2,
+      "defaults": []
+    },
+    "fspath": {
+      "params": 1,
+      "defaults": []
+    },
+    "fsencode": {
+      "params": 1,
+      "defaults": []
+    },
+    "listdir": {
+      "params": 1,
+      "defaults": [
+        {
+          "const": true,
+          "value": "."
+        }
+      ]
+    },
+    "getpid": {
+      "params": 0,
+      "defaults": []
+    },
+    "urandom": {
+      "params": 1,
+      "defaults": []
+    },
+    "getcwd": {
+      "params": 0,
+      "defaults": []
+    },
+    "getenv": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "putenv": {
+      "params": 2,
+      "defaults": []
+    },
+    "unsetenv": {
+      "params": 1,
+      "defaults": []
+    },
+    "unlink": {
+      "params": 1,
+      "defaults": []
+    },
+    "remove": {
+      "params": 1,
+      "defaults": []
+    },
+    "readlink": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "dir_fd"
+        }
+      ]
+    },
+    "symlink": {
+      "params": 4,
+      "defaults": [
+        {
+          "const": true,
+          "value": false
+        },
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "dir_fd"
+        }
+      ]
+    },
+    "rmdir": {
+      "params": 1,
+      "defaults": []
+    },
+    "mkdir": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": 511
+        }
+      ]
+    },
+    "chmod": {
+      "params": 2,
+      "defaults": []
+    },
+    "makedirs": {
+      "params": 3,
+      "defaults": [
+        {
+          "const": true,
+          "value": 511
+        },
+        {
+          "const": true,
+          "value": false
+        }
+      ]
+    },
+    "open": {
+      "params": 3,
+      "defaults": [
+        {
+          "const": true,
+          "value": 511
+        }
+      ]
+    },
+    "fdopen": {
+      "params": 3,
+      "defaults": [
+        {
+          "const": true,
+          "value": "r"
+        },
+        {
+          "const": true,
+          "value": true
+        }
+      ]
+    },
+    "close": {
+      "params": 1,
+      "defaults": []
+    },
+    "read": {
+      "params": 2,
+      "defaults": []
+    },
+    "write": {
+      "params": 2,
+      "defaults": []
+    },
+    "pipe": {
+      "params": 0,
+      "defaults": []
+    },
+    "dup": {
+      "params": 1,
+      "defaults": []
+    },
+    "dup2": {
+      "params": 2,
+      "defaults": []
+    },
+    "lseek": {
+      "params": 3,
+      "defaults": []
+    },
+    "ftruncate": {
+      "params": 2,
+      "defaults": []
+    },
+    "isatty": {
+      "params": 1,
+      "defaults": []
+    },
+    "get_inheritable": {
+      "params": 1,
+      "defaults": []
+    },
+    "set_inheritable": {
+      "params": 2,
+      "defaults": []
+    },
+    "stat": {
+      "params": 3,
+      "defaults": [
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "dir_fd"
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "follow_symlinks"
+        }
+      ]
+    },
+    "lstat": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "dir_fd"
+        }
+      ]
+    },
+    "fstat": {
+      "params": 1,
+      "defaults": []
+    },
+    "rename": {
+      "params": 4,
+      "defaults": [
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "src_dir_fd"
+        },
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "dst_dir_fd"
+        }
+      ]
+    },
+    "replace": {
+      "params": 4,
+      "defaults": [
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "src_dir_fd"
+        },
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "dst_dir_fd"
+        }
+      ]
+    },
+    "access": {
+      "params": 3,
+      "defaults": [
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "follow_symlinks"
+        }
+      ]
+    },
+    "chdir": {
+      "params": 1,
+      "defaults": []
+    },
+    "cpu_count": {
+      "params": 0,
+      "defaults": []
+    },
+    "link": {
+      "params": 5,
+      "defaults": [
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "src_dir_fd"
+        },
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "dst_dir_fd"
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "follow_symlinks"
+        }
+      ]
+    },
+    "truncate": {
+      "params": 2,
+      "defaults": []
+    },
+    "umask": {
+      "params": 1,
+      "defaults": []
+    },
+    "uname": {
+      "params": 0,
+      "defaults": []
+    },
+    "getppid": {
+      "params": 0,
+      "defaults": []
+    },
+    "getuid": {
+      "params": 0,
+      "defaults": []
+    },
+    "getgid": {
+      "params": 0,
+      "defaults": []
+    },
+    "geteuid": {
+      "params": 0,
+      "defaults": []
+    },
+    "getegid": {
+      "params": 0,
+      "defaults": []
+    },
+    "getlogin": {
+      "params": 0,
+      "defaults": []
+    },
+    "getloadavg": {
+      "params": 0,
+      "defaults": []
+    },
+    "kill": {
+      "params": 2,
+      "defaults": []
+    },
+    "waitpid": {
+      "params": 2,
+      "defaults": []
+    },
+    "getpgrp": {
+      "params": 0,
+      "defaults": []
+    },
+    "setpgrp": {
+      "params": 0,
+      "defaults": []
+    },
+    "setsid": {
+      "params": 0,
+      "defaults": []
+    },
+    "sysconf": {
+      "params": 1,
+      "defaults": []
+    },
+    "utime": {
+      "params": 5,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "ns"
+        },
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "dir_fd"
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "follow_symlinks"
+        }
+      ]
+    },
+    "sendfile": {
+      "params": 4,
+      "defaults": []
+    },
+    "removedirs": {
+      "params": 1,
+      "defaults": []
+    },
+    "get_terminal_size": {
+      "params": 1,
+      "defaults": [
+        {
+          "const": true,
+          "value": 1
+        }
+      ]
+    },
+    "walk": {
+      "params": 4,
+      "defaults": [
+        {
+          "const": true,
+          "value": true
+        },
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": true,
+          "value": false
+        }
+      ]
+    },
+    "scandir": {
+      "params": 1,
+      "defaults": [
+        {
+          "const": true,
+          "value": "."
+        }
+      ]
+    }
+  },
+  "imports": [
+    "__future__",
+    "__future__.annotations",
+    "abc",
+    "sys",
+    "types",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic",
+    "typing",
+    "typing.Any",
+    "typing.Iterator"
+  ]
+}

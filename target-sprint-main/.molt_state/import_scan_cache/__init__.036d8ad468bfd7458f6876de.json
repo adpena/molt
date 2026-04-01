@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "module_name": "json",
+  "is_package": true,
+  "include_nested": false,
+  "size": 9923,
+  "mtime_ns": 1774734419354754181,
+  "imports": [
+    "__future__",
+    "__future__.annotations",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic"
+  ]
+}

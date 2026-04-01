@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "attribute_getattribute_fallback",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/attribute_getattribute_fallback.py",
+      "size": 503,
+      "mtime_ns": 1774642832824844296
+    }
+  ],
+  "explicit_imports": []
+}

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "module_name": "args_kwargs",
+  "is_package": false,
+  "size": 822,
+  "mtime_ns": 1774642832821147523,
+  "func_defaults": {
+    "f": {
+      "params": 5,
+      "defaults": [
+        {
+          "const": true,
+          "value": 2
+        },
+        {
+          "const": true,
+          "value": 3
+        },
+        {
+          "const": true,
+          "value": 5,
+          "kwonly": true,
+          "name": "e"
+        }
+      ]
+    },
+    "g": {
+      "has_vararg": true
+    },
+    "h": {
+      "params": 3,
+      "defaults": []
+    }
+  },
+  "imports": []
+}

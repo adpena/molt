@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "assignment_unpack_custom_iter",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/assignment_unpack_custom_iter.py",
+      "size": 488,
+      "mtime_ns": 1774642832822364280
+    }
+  ],
+  "explicit_imports": []
+}

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "module_name": "socket",
+  "is_package": false,
+  "include_nested": false,
+  "size": 32852,
+  "mtime_ns": 1774642832797722207,
+  "imports": [
+    "__future__",
+    "__future__.annotations",
+    "errno",
+    "sys",
+    "typing",
+    "typing.Any",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic",
+    "enum",
+    "enum.IntEnum",
+    "enum.IntFlag"
+  ]
+}

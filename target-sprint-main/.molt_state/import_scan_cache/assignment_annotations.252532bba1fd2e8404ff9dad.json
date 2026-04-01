@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "module_name": "assignment_annotations",
+  "is_package": false,
+  "include_nested": true,
+  "size": 580,
+  "mtime_ns": 1774642832821957333,
+  "imports": [
+    "__future__",
+    "__future__.annotations"
+  ]
+}

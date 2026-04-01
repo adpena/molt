@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "assignment_chain_descriptors",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/assignment_chain_descriptors.py",
+      "size": 365,
+      "mtime_ns": 1774642832821999378
+    }
+  ],
+  "explicit_imports": []
+}

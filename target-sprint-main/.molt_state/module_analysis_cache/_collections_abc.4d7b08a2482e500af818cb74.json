@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "module_name": "_collections_abc",
+  "is_package": false,
+  "size": 35212,
+  "mtime_ns": 1774642832758831540,
+  "func_defaults": {
+    "_cast": {
+      "params": 2,
+      "defaults": []
+    },
+    "_f": {
+      "params": 0,
+      "defaults": []
+    },
+    "_check_methods": {
+      "has_vararg": true
+    },
+    "_simple_type_repr": {
+      "params": 1,
+      "defaults": []
+    },
+    "_is_param_expr": {
+      "params": 1,
+      "defaults": []
+    }
+  },
+  "imports": [
+    "_intrinsics",
+    "_intrinsics.require_intrinsic",
+    "abc",
+    "abc.ABCMeta",
+    "abc.abstractmethod",
+    "sys",
+    "warnings",
+    "warnings"
+  ]
+}

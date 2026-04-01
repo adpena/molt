@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "__future__",
+      "path": "/Users/adpena/Projects/molt/src/molt/stdlib/__future__.py",
+      "size": 5192,
+      "mtime_ns": 1774642832757833841
+    },
+    {
+      "module": "_intrinsics",
+      "path": "/Users/adpena/Projects/molt/src/molt/stdlib/_intrinsics.py",
+      "size": 3308,
+      "mtime_ns": 1774642832760087925
+    },
+    {
+      "module": "_sitebuiltins",
+      "path": "/Users/adpena/Projects/molt/src/molt/stdlib/_sitebuiltins.py",
+      "size": 2476,
+      "mtime_ns": 1774642832765076335
+    },
+    {
+      "module": "assignment_annotations",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/assignment_annotations.py",
+      "size": 580,
+      "mtime_ns": 1774642832821957333
+    },
+    {
+      "module": "builtins",
+      "path": "/Users/adpena/Projects/molt/src/molt/stdlib/builtins.py",
+      "size": 23532,
+      "mtime_ns": 1774805922510287947
+    }
+  ],
+  "explicit_imports": [
+    "__future__",
+    "__future__.annotations",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic",
+    "_sitebuiltins",
+    "builtins"
+  ]
+}

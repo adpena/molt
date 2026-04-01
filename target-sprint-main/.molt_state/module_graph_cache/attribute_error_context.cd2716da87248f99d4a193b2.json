@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "attribute_error_context",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/attribute_error_context.py",
+      "size": 285,
+      "mtime_ns": 1774642832824747873
+    }
+  ],
+  "explicit_imports": []
+}

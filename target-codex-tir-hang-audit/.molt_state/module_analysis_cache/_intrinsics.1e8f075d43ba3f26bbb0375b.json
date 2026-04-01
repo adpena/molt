@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "module_name": "_intrinsics",
+  "is_package": false,
+  "size": 3308,
+  "mtime_ns": 1774642832760087925,
+  "func_defaults": {
+    "_is_intrinsic_value": {
+      "params": 1,
+      "defaults": []
+    },
+    "_lookup_builtin_obj": {
+      "params": 2,
+      "defaults": []
+    },
+    "_lookup_name_and_alias": {
+      "params": 2,
+      "defaults": []
+    },
+    "_lookup_registry": {
+      "params": 2,
+      "defaults": []
+    },
+    "_lookup_from_builtins_obj": {
+      "params": 2,
+      "defaults": []
+    },
+    "_lookup_runtime_builtins": {
+      "params": 1,
+      "defaults": []
+    },
+    "runtime_active": {
+      "params": 0,
+      "defaults": []
+    },
+    "require_intrinsic": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "load_intrinsic": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    }
+  },
+  "imports": [
+    "builtins"
+  ]
+}
