@@ -38,3 +38,18 @@ When you identify the correct fix and feel tempted to do something "simpler" ins
 - Test with `python3 -m molt build --target native --output /tmp/test_out test_file.py --rebuild`
 - Backend daemon uses release-fast profile. Kill with `pkill -9 -f "molt-backend"` before testing new builds.
 - Max 2 build-triggering agents at once. 5 concurrent builds OOM the machine.
+
+## Concurrent Development (MOLT_SESSION_ID)
+
+When multiple agents work on the codebase simultaneously, set `MOLT_SESSION_ID` to a unique string (e.g., agent name or UUID) to isolate builds:
+
+```bash
+export MOLT_SESSION_ID="agent-1"
+```
+
+This gives each session:
+- **Its own CARGO_TARGET_DIR** (`target-agent-1/`) — no cargo lock contention
+- **Its own daemon socket** — no kill/restart conflicts between sessions
+- **No `cargo clean`** — incremental builds only, no binary deletion
+
+Without `MOLT_SESSION_ID`, all sessions share the default `target/` directory (solo dev mode).
