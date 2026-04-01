@@ -2802,6 +2802,18 @@ pub(super) fn binary_type_error(
     rhs: MoltObject,
     op: &str,
 ) -> u64 {
+    // CPython uses "can only concatenate X (not 'Y') to X" for sequence +
+    if op == "+" {
+        let ltype = type_name(_py, lhs);
+        let rtype = type_name(_py, rhs);
+        if matches!(&*ltype, "str" | "list" | "tuple" | "bytes") && ltype != rtype {
+            let msg = format!(
+                "can only concatenate {} (not \"{}\") to {}",
+                ltype, rtype, ltype
+            );
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+    }
     let msg = format!(
         "unsupported operand type(s) for {op}: '{}' and '{}'",
         type_name(_py, lhs),

@@ -1286,7 +1286,7 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                 return raise_exception::<_>(
                     _py,
                     "ValueError",
-                    "base must be 0 or between 2 and 36",
+                    "int() base must be >= 2 and <= 36, or 0",
                 );
             }
             base

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "module_name": "__future__",
+  "is_package": false,
+  "include_nested": true,
+  "size": 5192,
+  "mtime_ns": 1774642832757833841,
+  "imports": [
+    "_intrinsics",
+    "_intrinsics.require_intrinsic"
+  ]
+}

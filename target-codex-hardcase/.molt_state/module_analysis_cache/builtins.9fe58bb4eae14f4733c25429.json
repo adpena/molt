@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "module_name": "builtins",
+  "is_package": false,
+  "size": 23532,
+  "mtime_ns": 1774805922510287947,
+  "func_defaults": {
+    "_modules_dict": {
+      "params": 0,
+      "defaults": []
+    },
+    "_module_namespace": {
+      "params": 1,
+      "defaults": []
+    },
+    "_molt_descriptor_types": {
+      "params": 0,
+      "defaults": []
+    },
+    "_resolve_import_name": {
+      "params": 3,
+      "defaults": []
+    },
+    "_is_placeholder_module": {
+      "params": 1,
+      "defaults": []
+    },
+    "_require_importlib_util_module": {
+      "params": 0,
+      "defaults": []
+    },
+    "_recover_placeholder_module": {
+      "params": 2,
+      "defaults": []
+    },
+    "_load_via_spec": {
+      "params": 1,
+      "defaults": []
+    },
+    "_intrinsic_import": {
+      "params": 5,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": false
+        },
+        {
+          "const": true,
+          "value": 0
+        }
+      ]
+    },
+    "_require_builtin_intrinsic": {
+      "params": 1,
+      "defaults": []
+    },
+    "compile": {
+      "params": 7,
+      "defaults": [
+        {
+          "const": true,
+          "value": 0
+        },
+        {
+          "const": true,
+          "value": false
+        },
+        {
+          "const": false
+        },
+        {
+          "const": false,
+          "kwonly": true,
+          "name": "_feature_version"
+        }
+      ]
+    },
+    "_dynamic_execution_unavailable": {
+      "params": 1,
+      "defaults": []
+    },
+    "eval": {
+      "params": 3,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "exec": {
+      "params": 4,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "closure"
+        }
+      ]
+    },
+    "pow": {
+      "params": 3,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "input": {
+      "params": 1,
+      "defaults": [
+        {
+          "const": true,
+          "value": ""
+        }
+      ]
+    },
+    "breakpoint": {
+      "has_vararg": true
+    }
+  },
+  "imports": [
+    "__future__",
+    "__future__.annotations",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic",
+    "_sitebuiltins",
+    "typing",
+    "typing.Any",
+    "typing",
+    "typing.Callable",
+    "typing.Optional"
+  ]
+}

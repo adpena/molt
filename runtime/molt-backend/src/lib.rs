@@ -2885,25 +2885,13 @@ impl SimpleBackend {
                         // Skip TIR for module chunks (complex megafunction splits),
                         // very large functions, and functions with complex control
                         // flow (many nested if/else) where the TIR roundtrip is
-                        // most likely to produce Cranelift-incompatible IR.
+                        // still not proven end to end.
                         let cf_complexity = tmp_func.ops.iter()
                             .filter(|op| matches!(op.kind.as_str(), "if" | "br_if" | "check_exception"))
-                            .count();
-                        // Count nested loops: if there are 2+ loop_start ops,
-                        // the function has nested while-loops.  The TIR
-                        // lower_to_simple roundtrip does not correctly emit
-                        // nested loop structures — the inner loop header
-                        // block gets placed after the function return in the
-                        // linearised output, producing an infinite loop at
-                        // runtime.  Skip TIR until emit_nested_loop is
-                        // implemented in lower_to_simple.rs.
-                        let loop_depth = tmp_func.ops.iter()
-                            .filter(|op| op.kind == "loop_start")
                             .count();
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
-                            || loop_depth > 1
                         {
                             return (idx, content_hash, Vec::new());
                         }
@@ -3862,7 +3850,7 @@ mod tests {
         let ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir, &type_map);
         assert!(
             crate::tir::lower_to_simple::validate_labels(&ops),
-            "TIR roundtrip must preserve all referenced labels"
+            "TIR roundtrip must preserve all referenced labels: {ops:#?}"
         );
         FunctionIR {
             name: func.name.clone(),
@@ -4577,6 +4565,123 @@ mod tests {
         assert!(
             clif.contains("return"),
             "TIR-roundtripped exception function must compile to CLIF:\n{clif}"
+        );
+    }
+
+    #[test]
+    fn native_backend_compiles_tir_roundtripped_nested_loops() {
+        let func = FunctionIR {
+            name: "nested_loops".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(0),
+                    out: Some("total".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(0),
+                    out: Some("i".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(2),
+                    out: Some("outer_limit".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(2),
+                    out: Some("inner_limit".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(1),
+                    out: Some("one".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_start".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "lt".into(),
+                    args: Some(vec!["i".into(), "outer_limit".into()]),
+                    out: Some("outer_cond".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_break_if_false".into(),
+                    args: Some(vec!["outer_cond".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(0),
+                    out: Some("j".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_start".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "lt".into(),
+                    args: Some(vec!["j".into(), "inner_limit".into()]),
+                    out: Some("inner_cond".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_break_if_false".into(),
+                    args: Some(vec!["inner_cond".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "add".into(),
+                    args: Some(vec!["total".into(), "j".into()]),
+                    out: Some("total".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "add".into(),
+                    args: Some(vec!["j".into(), "one".into()]),
+                    out: Some("j".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_end".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "add".into(),
+                    args: Some(vec!["i".into(), "one".into()]),
+                    out: Some("i".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_end".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    var: Some("total".into()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+        };
+
+        let roundtripped = roundtrip_function_through_tir(&func);
+        let clif = compile_function_to_clif_text(vec![roundtripped], "nested_loops");
+
+        assert!(
+            clif.contains("return"),
+            "TIR-roundtripped nested-loop function must compile to CLIF:\n{clif}"
         );
     }
 

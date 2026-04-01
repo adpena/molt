@@ -1,0 +1,376 @@
+{
+  "version": 1,
+  "module_name": "sys",
+  "is_package": false,
+  "size": 46342,
+  "mtime_ns": 1775010523650933742,
+  "func_defaults": {
+    "cast": {
+      "params": 2,
+      "defaults": []
+    },
+    "_noop": {
+      "has_vararg": true
+    },
+    "_return_empty_list": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_empty_tuple": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_empty_str": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_utf8": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_surrogateescape": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_false": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_zero": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_1000": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_4300": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_switchinterval": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_asyncgen_hooks_default": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_version_info_default": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_hexversion_default": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_platform_unknown": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_maxsize_default": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_maxunicode_default": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_little_endian": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_libdir_default": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_empty_frozenset": {
+      "params": 0,
+      "defaults": []
+    },
+    "_return_refcount_default": {
+      "params": 1,
+      "defaults": []
+    },
+    "_return_identity": {
+      "params": 1,
+      "defaults": []
+    },
+    "_return_getsizeof_default": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "_safe_intrinsic": {
+      "params": 3,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": false
+        }
+      ]
+    },
+    "_lazy_intrinsic": {
+      "params": 3,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        },
+        {
+          "const": false
+        }
+      ]
+    },
+    "_noop_getframe": {
+      "params": 1,
+      "defaults": [
+        {
+          "const": true,
+          "value": 0
+        }
+      ]
+    },
+    "_noop_is_string_obj": {
+      "params": 1,
+      "defaults": []
+    },
+    "_resolve_platform": {
+      "params": 1,
+      "defaults": [
+        {
+          "const": false
+        }
+      ]
+    },
+    "exit": {
+      "params": 1,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "__breakpointhook__": {
+      "has_vararg": true
+    },
+    "_expect_int": {
+      "params": 3,
+      "defaults": []
+    },
+    "_expect_version_info_tuple": {
+      "params": 3,
+      "defaults": []
+    },
+    "_resolve_implementation": {
+      "params": 1,
+      "defaults": []
+    },
+    "_resolve_flags_payload": {
+      "params": 1,
+      "defaults": []
+    },
+    "_try_str_intrinsic": {
+      "params": 2,
+      "defaults": []
+    },
+    "_try_int_intrinsic": {
+      "params": 2,
+      "defaults": []
+    },
+    "_try_tuple_intrinsic": {
+      "params": 3,
+      "defaults": [
+        {
+          "const": true,
+          "value": 0
+        }
+      ]
+    },
+    "_init_metadata": {
+      "params": 0,
+      "defaults": []
+    },
+    "_bootstrap_module_file": {
+      "params": 0,
+      "defaults": []
+    },
+    "_bootstrap_str_list": {
+      "params": 3,
+      "defaults": []
+    },
+    "_bootstrap_str": {
+      "params": 3,
+      "defaults": []
+    },
+    "_bootstrap_str_or_none": {
+      "params": 3,
+      "defaults": []
+    },
+    "_bootstrap_bool": {
+      "params": 3,
+      "defaults": []
+    },
+    "_extract_bootstrap_payload": {
+      "params": 1,
+      "defaults": []
+    },
+    "_resolve_stdio_handle": {
+      "params": 2,
+      "defaults": []
+    },
+    "getrecursionlimit": {
+      "params": 0,
+      "defaults": []
+    },
+    "setrecursionlimit": {
+      "params": 1,
+      "defaults": []
+    },
+    "exc_info": {
+      "params": 0,
+      "defaults": []
+    },
+    "_getframe": {
+      "params": 1,
+      "defaults": [
+        {
+          "const": true,
+          "value": 0
+        }
+      ]
+    },
+    "getdefaultencoding": {
+      "params": 0,
+      "defaults": []
+    },
+    "getfilesystemencoding": {
+      "params": 0,
+      "defaults": []
+    },
+    "getfilesystemencodeerrors": {
+      "params": 0,
+      "defaults": []
+    },
+    "get_asyncgen_hooks": {
+      "params": 0,
+      "defaults": []
+    },
+    "set_asyncgen_hooks": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "firstiter"
+        },
+        {
+          "const": true,
+          "value": null,
+          "kwonly": true,
+          "name": "finalizer"
+        }
+      ]
+    },
+    "intern": {
+      "params": 1,
+      "defaults": []
+    },
+    "getsizeof": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__ellipsis__": true
+          }
+        }
+      ]
+    },
+    "displayhook": {
+      "params": 1,
+      "defaults": []
+    },
+    "excepthook": {
+      "params": 3,
+      "defaults": []
+    },
+    "unraisablehook": {
+      "params": 1,
+      "defaults": []
+    },
+    "get_int_max_str_digits": {
+      "params": 0,
+      "defaults": []
+    },
+    "set_int_max_str_digits": {
+      "params": 1,
+      "defaults": []
+    },
+    "is_finalizing": {
+      "params": 0,
+      "defaults": []
+    },
+    "getrefcount": {
+      "params": 1,
+      "defaults": []
+    },
+    "getswitchinterval": {
+      "params": 0,
+      "defaults": []
+    },
+    "setswitchinterval": {
+      "params": 1,
+      "defaults": []
+    },
+    "settrace": {
+      "params": 1,
+      "defaults": []
+    },
+    "gettrace": {
+      "params": 0,
+      "defaults": []
+    },
+    "setprofile": {
+      "params": 1,
+      "defaults": []
+    },
+    "getprofile": {
+      "params": 0,
+      "defaults": []
+    },
+    "call_tracing": {
+      "params": 2,
+      "defaults": []
+    },
+    "exception": {
+      "params": 0,
+      "defaults": []
+    },
+    "addaudithook": {
+      "params": 1,
+      "defaults": []
+    },
+    "audit": {
+      "has_vararg": true
+    }
+  },
+  "imports": [
+    "__future__",
+    "__future__.annotations",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic",
+    "collections.abc",
+    "collections.abc.Callable",
+    "collections.abc.Iterable"
+  ]
+}
