@@ -85,3 +85,4 @@ type_facts.json
 output_linked.cwasm
 tests/harness/corpus/molt_adapted/
 target-sprint-agent/
+target-*/

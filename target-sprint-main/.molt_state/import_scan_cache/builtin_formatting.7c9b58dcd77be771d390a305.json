@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "module_name": "builtin_formatting",
-  "is_package": false,
-  "include_nested": true,
-  "size": 927,
-  "mtime_ns": 1774642832826126016,
-  "imports": []
-}

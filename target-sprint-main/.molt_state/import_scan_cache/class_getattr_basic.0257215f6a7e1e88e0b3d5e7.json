@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "module_name": "class_getattr_basic",
-  "is_package": false,
-  "include_nested": true,
-  "size": 265,
-  "mtime_ns": 1774642832842076404,
-  "imports": []
-}

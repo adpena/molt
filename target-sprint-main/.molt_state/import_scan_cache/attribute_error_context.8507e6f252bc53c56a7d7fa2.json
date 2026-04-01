@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "module_name": "attribute_error_context",
-  "is_package": false,
-  "include_nested": true,
-  "size": 285,
-  "mtime_ns": 1774642832824747873,
-  "imports": []
-}
