@@ -12512,9 +12512,16 @@ def _lower_module_serial_with_context(
         elif module_path:
             parts.append(f'  File "{module_path}"')
         if hasattr(exc, "text") and exc.text:
-            parts.append(f"    {exc.text.rstrip()}")
+            # CPython strips leading whitespace from the source line and
+            # adjusts the caret offset to match the stripped version.
+            raw_text = exc.text.rstrip("\n")
+            stripped = raw_text.lstrip()
+            indent_removed = len(raw_text) - len(stripped)
+            parts.append(f"    {stripped}")
             if hasattr(exc, "offset") and exc.offset:
-                parts.append(" " * (exc.offset + 3) + "^" * max(1, getattr(exc, "end_offset", exc.offset) - exc.offset))
+                adj_offset = max(1, exc.offset - indent_removed)
+                adj_end = max(adj_offset, getattr(exc, "end_offset", exc.offset) - indent_removed)
+                parts.append(" " * (adj_offset + 3) + "^" * max(1, adj_end - adj_offset))
         parts.append(f"SyntaxError: {exc.msg}")
         raise _ModuleLowerError("\n".join(parts)) from exc
     total_s = time.perf_counter() - module_frontend_start
