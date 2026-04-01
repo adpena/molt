@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "module_name": "capability_error_messages_io_net",
+  "is_package": false,
+  "size": 584,
+  "mtime_ns": 1774642832841701793,
+  "func_defaults": {
+    "show": {
+      "params": 2,
+      "defaults": []
+    },
+    "read_self": {
+      "params": 0,
+      "defaults": []
+    },
+    "create_socket": {
+      "params": 0,
+      "defaults": []
+    }
+  },
+  "imports": [
+    "socket"
+  ]
+}

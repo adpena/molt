@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "bigint_ops",
+  "is_package": false,
+  "include_nested": true,
+  "size": 328,
+  "mtime_ns": 1774642832825203990,
+  "imports": []
+}

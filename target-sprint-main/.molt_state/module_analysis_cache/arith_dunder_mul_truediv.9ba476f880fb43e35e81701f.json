@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "arith_dunder_mul_truediv",
+  "is_package": false,
+  "size": 508,
+  "mtime_ns": 1774642832821526176,
+  "func_defaults": {},
+  "imports": []
+}

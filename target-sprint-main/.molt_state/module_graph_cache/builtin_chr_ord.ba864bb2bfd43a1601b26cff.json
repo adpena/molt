@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "builtin_chr_ord",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/builtin_chr_ord.py",
+      "size": 1285,
+      "mtime_ns": 1774642832825709277
+    }
+  ],
+  "explicit_imports": []
+}

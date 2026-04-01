@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "module_name": "attr_security",
+  "is_package": false,
+  "size": 1561,
+  "mtime_ns": 1774642832824569317,
+  "func_defaults": {
+    "show_exc": {
+      "params": 2,
+      "defaults": []
+    }
+  },
+  "imports": []
+}

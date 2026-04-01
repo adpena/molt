@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "attribute_error_suggestions",
+  "is_package": false,
+  "include_nested": true,
+  "size": 312,
+  "mtime_ns": 1774642832824795209,
+  "imports": []
+}

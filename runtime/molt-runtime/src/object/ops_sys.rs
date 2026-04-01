@@ -1850,9 +1850,9 @@ pub(crate) fn traceback_format_caret_line_native(line: &str, mut colno: i64, mut
     if end_colno <= colno {
         return String::new();
     }
-    let width = end_colno - colno;
+    let width = (end_colno - colno) as usize;
     let col_usize = colno as usize;
-    let mut out = String::with_capacity((4 + colno + width + 1) as usize);
+    let mut out = String::with_capacity(4 + col_usize + width + 1);
     out.push_str("    ");
     for ch in line.chars().take(col_usize) {
         if ch == '\t' {
@@ -1861,11 +1861,72 @@ pub(crate) fn traceback_format_caret_line_native(line: &str, mut colno: i64, mut
             out.push(' ');
         }
     }
-    for _ in 0..width {
-        out.push('^');
+
+    // CPython 3.12 uses ^ for the "anchor" (operator, dot, paren) and ~ for
+    // the rest.  Find the anchor within the highlighted region by scanning
+    // for operator tokens in the source text.
+    let chars: Vec<char> = line.chars().skip(col_usize).take(width).collect();
+    let anchor = find_caret_anchor(&chars);
+    match anchor {
+        Some((a_start, a_end)) => {
+            for i in 0..width {
+                if i >= a_start && i < a_end {
+                    out.push('^');
+                } else {
+                    out.push('~');
+                }
+            }
+        }
+        None => {
+            for _ in 0..width {
+                out.push('^');
+            }
+        }
     }
     out.push('\n');
     out
+}
+
+/// Find the binary-operator anchor position within a highlighted region.
+/// Returns (start, end) as char offsets within `region`, or None if the whole
+/// region should use `^`.  Matches CPython 3.12 which only uses `~`/`^` for
+/// binary operations — attribute access, calls, subscripts all use `^`.
+fn find_caret_anchor(region: &[char]) -> Option<(usize, usize)> {
+    if region.len() <= 2 {
+        return None; // too short for binary op pattern
+    }
+    // Binary operators: find a run of operator chars in the interior,
+    // indicating `operand OP operand`.  Whitespace around the operator
+    // is expected (e.g. `1 / 0` has spaces around `/`).
+    let op_char = |c: char| matches!(c, '+' | '-' | '*' | '/' | '%' | '|' | '&' | '^' | '~' | '<' | '>' | '=' | '!' | '@');
+    let mut i = 0;
+    // Skip leading non-operator chars (left operand + whitespace).
+    while i < region.len() && !op_char(region[i]) {
+        i += 1;
+    }
+    if i == 0 || i >= region.len() {
+        return None; // no left operand or no operator
+    }
+    let op_start = i;
+    // Consume the operator token (may be multi-char: //, **, <<, etc.)
+    while i < region.len() && op_char(region[i]) {
+        i += 1;
+    }
+    let op_end = i;
+    // Skip whitespace after operator.
+    while i < region.len() && region[i] == ' ' {
+        i += 1;
+    }
+    // Must have a right operand remaining.
+    if i >= region.len() {
+        return None;
+    }
+    // Verify left operand has non-whitespace content before operator.
+    let left_has_content = region[..op_start].iter().any(|c| !c.is_whitespace());
+    if !left_has_content {
+        return None;
+    }
+    Some((op_start, op_end))
 }
 
 #[cfg(test)]

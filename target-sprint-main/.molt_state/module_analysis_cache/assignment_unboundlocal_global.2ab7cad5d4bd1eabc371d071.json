@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "module_name": "assignment_unboundlocal_global",
+  "is_package": false,
+  "size": 473,
+  "mtime_ns": 1774642832822313151,
+  "func_defaults": {
+    "unbound_read_then_assign": {
+      "params": 0,
+      "defaults": []
+    },
+    "global_read_then_assign": {
+      "params": 0,
+      "defaults": []
+    }
+  },
+  "imports": []
+}

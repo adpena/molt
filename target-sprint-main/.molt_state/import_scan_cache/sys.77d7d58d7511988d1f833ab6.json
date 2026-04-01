@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "module_name": "sys",
+  "is_package": false,
+  "include_nested": true,
+  "size": 46342,
+  "mtime_ns": 1775010523650933742,
+  "imports": [
+    "__future__",
+    "__future__.annotations",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic",
+    "collections.abc",
+    "collections.abc.Callable",
+    "collections.abc.Iterable"
+  ]
+}

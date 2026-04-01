@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "attribute_property_delete",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/attribute_property_delete.py",
+      "size": 397,
+      "mtime_ns": 1774642832824988848
+    }
+  ],
+  "explicit_imports": []
+}

@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "module_name": "_collections_abc",
+  "is_package": false,
+  "include_nested": true,
+  "size": 35212,
+  "mtime_ns": 1774642832758831540,
+  "imports": [
+    "_intrinsics",
+    "_intrinsics.require_intrinsic",
+    "abc",
+    "abc.ABCMeta",
+    "abc.abstractmethod",
+    "sys",
+    "warnings",
+    "warnings"
+  ]
+}

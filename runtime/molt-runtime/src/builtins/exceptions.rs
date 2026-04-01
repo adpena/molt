@@ -3792,6 +3792,19 @@ pub extern "C" fn molt_frame_set_line_col(line: i64, col_offset: i64, end_col_of
     0
 }
 
+/// Update only column offsets on the top frame entry (line unchanged).
+/// Called before potentially-raising ops that carry expression-level col info.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_frame_set_col(col_offset: i64, end_col_offset: i64) -> u64 {
+    FRAME_STACK.with(|stack| {
+        if let Some(entry) = stack.borrow_mut().last_mut() {
+            entry.col_offset = col_offset;
+            entry.end_col_offset = end_col_offset;
+        }
+    });
+    0
+}
+
 /// Pop a frame entry from the frame stack.  Called at module chunk exit.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_pop() -> u64 {

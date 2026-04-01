@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "bool_len_exceptions",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/bool_len_exceptions.py",
+      "size": 374,
+      "mtime_ns": 1774642832825413838
+    }
+  ],
+  "explicit_imports": []
+}

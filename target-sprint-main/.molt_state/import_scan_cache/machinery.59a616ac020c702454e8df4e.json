@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "module_name": "importlib.machinery",
+  "is_package": false,
+  "include_nested": true,
+  "size": 30103,
+  "mtime_ns": 1774642832787168219,
+  "imports": [
+    "__future__",
+    "__future__.annotations",
+    "sys",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic",
+    "io",
+    "sys",
+    "sys"
+  ]
+}

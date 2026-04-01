@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "attr_dunder_access",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/attr_dunder_access.py",
+      "size": 1294,
+      "mtime_ns": 1774642832824437724
+    }
+  ],
+  "explicit_imports": []
+}

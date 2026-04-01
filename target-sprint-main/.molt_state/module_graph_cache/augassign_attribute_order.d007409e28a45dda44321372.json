@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "augassign_attribute_order",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/augassign_attribute_order.py",
+      "size": 668,
+      "mtime_ns": 1774642832825081814
+    }
+  ],
+  "explicit_imports": []
+}

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "hello",
+  "is_package": false,
+  "include_nested": true,
+  "size": 10,
+  "mtime_ns": 1774642832609304991,
+  "imports": []
+}

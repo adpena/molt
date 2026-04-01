@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "module_name": "_intrinsics",
+  "is_package": false,
+  "include_nested": false,
+  "size": 3308,
+  "mtime_ns": 1774642832760087925,
+  "imports": [
+    "builtins"
+  ]
+}

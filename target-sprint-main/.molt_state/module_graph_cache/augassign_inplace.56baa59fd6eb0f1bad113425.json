@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "augassign_inplace",
+      "path": "/Users/adpena/Projects/molt/tests/differential/basic/augassign_inplace.py",
+      "size": 2901,
+      "mtime_ns": 1774642832825133693
+    }
+  ],
+  "explicit_imports": []
+}

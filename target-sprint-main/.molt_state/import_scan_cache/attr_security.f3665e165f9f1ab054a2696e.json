@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "module_name": "attr_security",
+  "is_package": false,
+  "include_nested": true,
+  "size": 1561,
+  "mtime_ns": 1774642832824569317,
+  "imports": []
+}

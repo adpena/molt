@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "module_name": "assignment_target_eval_order",
+  "is_package": false,
+  "size": 841,
+  "mtime_ns": 1774642832822262064,
+  "func_defaults": {
+    "rhs_pair": {
+      "params": 0,
+      "defaults": []
+    },
+    "idx": {
+      "params": 1,
+      "defaults": []
+    }
+  },
+  "imports": []
+}

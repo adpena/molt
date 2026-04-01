@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "module_name": "builtin_conversion_edges",
+  "is_package": false,
+  "size": 608,
+  "mtime_ns": 1774642832825820744,
+  "func_defaults": {
+    "show": {
+      "params": 2,
+      "defaults": []
+    }
+  },
+  "imports": []
+}

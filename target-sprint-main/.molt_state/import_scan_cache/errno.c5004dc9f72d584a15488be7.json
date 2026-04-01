@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "module_name": "errno",
+  "is_package": false,
+  "include_nested": false,
+  "size": 1047,
+  "mtime_ns": 1774642832782172683,
+  "imports": [
+    "_intrinsics",
+    "_intrinsics.require_intrinsic"
+  ]
+}

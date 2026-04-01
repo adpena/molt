@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "module_name": "assignment_starred_targets",
+  "is_package": false,
+  "size": 360,
+  "mtime_ns": 1774642832822216560,
+  "func_defaults": {
+    "main": {
+      "params": 0,
+      "defaults": []
+    }
+  },
+  "imports": []
+}

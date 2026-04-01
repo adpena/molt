@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "module_name": "enum",
+  "is_package": false,
+  "include_nested": false,
+  "size": 10145,
+  "mtime_ns": 1774642832782119845,
+  "imports": [
+    "__future__",
+    "__future__.annotations",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic"
+  ]
+}

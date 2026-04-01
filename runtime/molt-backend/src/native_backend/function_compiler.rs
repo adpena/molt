@@ -1269,6 +1269,24 @@ impl SimpleBackend {
                 continue;
             }
             let op = ops[op_idx].clone();
+            // Update frame stack column offsets for traceback carets.
+            // Only emit for module chunks and only when the op carries col info.
+            if is_module_chunk && !is_block_filled && op.col_offset.is_some() && op.end_col_offset.is_some() {
+                let col_val = builder.ins().iconst(types::I64, op.col_offset.unwrap());
+                let end_col_val = builder.ins().iconst(types::I64, op.end_col_offset.unwrap());
+                // Reuse the current line from the most recent LINE op.
+                let line_val = builder.ins().iconst(types::I64, 0); // 0 = keep current line
+                let frame_line_col_fn = import_func_ref(
+                    &mut self.module,
+                    &mut self.import_ids,
+                    &mut builder,
+                    &mut import_refs,
+                    "molt_frame_set_col",
+                    &[types::I64, types::I64],
+                    &[types::I64],
+                );
+                builder.ins().call(frame_line_col_fn, &[col_val, end_col_val]);
+            }
             // Don't use sync_block_filled — it sets is_block_filled=true for EVERY
             // block with a terminator, including legitimate fallthrough blocks.
             // Instead, only detect filled blocks when switching to them (in

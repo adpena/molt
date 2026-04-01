@@ -1,0 +1,483 @@
+{
+  "version": 1,
+  "module_name": "hashlib",
+  "is_package": false,
+  "size": 11599,
+  "mtime_ns": 1774642832782960324,
+  "func_defaults": {
+    "_normalize_name": {
+      "params": 1,
+      "defaults": []
+    },
+    "_validate_options": {
+      "params": 3,
+      "defaults": []
+    },
+    "new": {
+      "has_vararg": true
+    },
+    "__get_builtin_constructor": {
+      "params": 1,
+      "defaults": []
+    },
+    "md4": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "md5": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "ripemd160": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "sha1": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "sha224": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "sha256": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "sha384": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "sha512": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "sha3_224": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "sha3_256": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "sha3_384": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "sha3_512": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "shake_128": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "shake_256": {
+      "params": 2,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "blake2b": {
+      "params": 13,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": 64,
+          "kwonly": true,
+          "name": "digest_size"
+        },
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          },
+          "kwonly": true,
+          "name": "key"
+        },
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          },
+          "kwonly": true,
+          "name": "salt"
+        },
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          },
+          "kwonly": true,
+          "name": "person"
+        },
+        {
+          "const": true,
+          "value": 1,
+          "kwonly": true,
+          "name": "fanout"
+        },
+        {
+          "const": true,
+          "value": 1,
+          "kwonly": true,
+          "name": "depth"
+        },
+        {
+          "const": true,
+          "value": 0,
+          "kwonly": true,
+          "name": "leaf_size"
+        },
+        {
+          "const": true,
+          "value": 0,
+          "kwonly": true,
+          "name": "node_offset"
+        },
+        {
+          "const": true,
+          "value": 0,
+          "kwonly": true,
+          "name": "node_depth"
+        },
+        {
+          "const": true,
+          "value": 0,
+          "kwonly": true,
+          "name": "inner_size"
+        },
+        {
+          "const": true,
+          "value": false,
+          "kwonly": true,
+          "name": "last_node"
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "blake2s": {
+      "params": 13,
+      "defaults": [
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          }
+        },
+        {
+          "const": true,
+          "value": 32,
+          "kwonly": true,
+          "name": "digest_size"
+        },
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          },
+          "kwonly": true,
+          "name": "key"
+        },
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          },
+          "kwonly": true,
+          "name": "salt"
+        },
+        {
+          "const": true,
+          "value": {
+            "__bytes__": []
+          },
+          "kwonly": true,
+          "name": "person"
+        },
+        {
+          "const": true,
+          "value": 1,
+          "kwonly": true,
+          "name": "fanout"
+        },
+        {
+          "const": true,
+          "value": 1,
+          "kwonly": true,
+          "name": "depth"
+        },
+        {
+          "const": true,
+          "value": 0,
+          "kwonly": true,
+          "name": "leaf_size"
+        },
+        {
+          "const": true,
+          "value": 0,
+          "kwonly": true,
+          "name": "node_offset"
+        },
+        {
+          "const": true,
+          "value": 0,
+          "kwonly": true,
+          "name": "node_depth"
+        },
+        {
+          "const": true,
+          "value": 0,
+          "kwonly": true,
+          "name": "inner_size"
+        },
+        {
+          "const": true,
+          "value": false,
+          "kwonly": true,
+          "name": "last_node"
+        },
+        {
+          "const": true,
+          "value": true,
+          "kwonly": true,
+          "name": "usedforsecurity"
+        }
+      ]
+    },
+    "pbkdf2_hmac": {
+      "params": 5,
+      "defaults": [
+        {
+          "const": true,
+          "value": null
+        }
+      ]
+    },
+    "scrypt": {
+      "params": 7,
+      "defaults": [
+        {
+          "const": true,
+          "value": 0,
+          "kwonly": true,
+          "name": "maxmem"
+        },
+        {
+          "const": true,
+          "value": 64,
+          "kwonly": true,
+          "name": "dklen"
+        }
+      ]
+    },
+    "file_digest": {
+      "params": 2,
+      "defaults": []
+    },
+    "compare_digest": {
+      "params": 2,
+      "defaults": []
+    }
+  },
+  "imports": [
+    "__future__",
+    "__future__.annotations",
+    "typing",
+    "typing.Any",
+    "typing.Callable",
+    "_intrinsics",
+    "_intrinsics.require_intrinsic"
+  ]
+}
