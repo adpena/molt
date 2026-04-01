@@ -2900,21 +2900,10 @@ impl SimpleBackend {
                         let loop_depth = tmp_func.ops.iter()
                             .filter(|op| op.kind == "loop_start")
                             .count();
-                        // Skip TIR for functions with exception handling.
-                        // check_exception ops reference label IDs that the TIR
-                        // roundtrip does not preserve — the backend's handler
-                        // skips "orphaned" check_exceptions when
-                        // state_blocks.get(&target_id) returns None, silently
-                        // breaking all try/except.  Until TIR preserves
-                        // exception handler labels through the roundtrip, we
-                        // must bypass TIR for these functions.
-                        let has_exception_handling = tmp_func.ops.iter()
-                            .any(|op| op.kind == "check_exception");
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
                             || loop_depth > 1
-                            || has_exception_handling
                         {
                             return (idx, content_hash, Vec::new());
                         }
@@ -3864,6 +3853,26 @@ mod tests {
             .to_string()
     }
 
+    fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
+        let mut tir = crate::tir::lower_from_simple::lower_to_tir(func);
+        crate::tir::type_refine::refine_types(&mut tir);
+        let _stats = crate::tir::passes::run_pipeline(&mut tir);
+        crate::tir::type_refine::refine_types(&mut tir);
+        let type_map = crate::tir::type_refine::extract_type_map(&tir);
+        let ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir, &type_map);
+        assert!(
+            crate::tir::lower_to_simple::validate_labels(&ops),
+            "TIR roundtrip must preserve all referenced labels"
+        );
+        FunctionIR {
+            name: func.name.clone(),
+            params: func.params.clone(),
+            ops,
+            param_types: func.param_types.clone(),
+            source_file: func.source_file.clone(),
+        }
+    }
+
     #[test]
     fn native_backend_skips_trace_imports_by_default() {
         let bytes = compile_trace_probe_object(None);
@@ -4425,6 +4434,150 @@ mod tests {
         let bytes = SimpleBackend::new().compile(ir);
 
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_else() {
+        let func = FunctionIR {
+            name: "hello_regress____molt_globals_builtin__".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "exception_stack_enter".to_string(),
+                    out: Some("v74".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_stack_depth".to_string(),
+                    out: Some("v75".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".to_string(),
+                    out: Some("v76".to_string()),
+                    s_value: Some("hello_regress".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".to_string(),
+                    value: Some(2),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_cache_get".to_string(),
+                    out: Some("v77".to_string()),
+                    args: Some(vec!["v76".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".to_string(),
+                    value: Some(2),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".to_string(),
+                    out: Some("v78".to_string()),
+                    s_value: Some("__dict__".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".to_string(),
+                    value: Some(2),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_get_attr".to_string(),
+                    out: Some("v79".to_string()),
+                    args: Some(vec!["v77".to_string(), "v78".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".to_string(),
+                    value: Some(2),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("v79".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".to_string(),
+                    value: Some(2),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_stack_set_depth".to_string(),
+                    args: Some(vec!["v75".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_stack_exit".to_string(),
+                    args: Some(vec!["v74".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_last".to_string(),
+                    out: Some("v80".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("v81".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "is".to_string(),
+                    out: Some("v82".to_string()),
+                    args: Some(vec!["v80".to_string(), "v81".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "not".to_string(),
+                    out: Some("v83".to_string()),
+                    args: Some(vec!["v82".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "if".to_string(),
+                    args: Some(vec!["v83".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "raise".to_string(),
+                    args: Some(vec!["v80".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("v84".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("v84".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "end_if".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+        };
+
+        let roundtripped = roundtrip_function_through_tir(&func);
+        let clif = compile_function_to_clif_text(vec![roundtripped], "hello_regress____molt_globals_builtin__");
+
+        assert!(
+            clif.contains("return"),
+            "TIR-roundtripped exception function must compile to CLIF:\n{clif}"
+        );
     }
 
     #[test]
