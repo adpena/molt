@@ -16,6 +16,7 @@ const MAX_ROUNDS: usize = 20;
 /// has already converged).
 pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     let mut env: HashMap<ValueId, TirType> = HashMap::new();
+    let mut iter_element_types: HashMap<ValueId, TirType> = HashMap::new();
 
     // Sorted block order for deterministic iteration.
     let mut block_order: Vec<BlockId> = func.blocks.keys().copied().collect();
@@ -29,26 +30,22 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
             env.insert(arg.id, arg.ty.clone());
         }
 
-        // Re-infer op result types from operand types (single pass — the
-        // fixpoint has already converged so one pass is sufficient).
+        // Reconstruct refined op result types from the converged function state.
         for op in &block.ops {
             if op.results.is_empty() {
                 continue;
             }
-            let operand_types: Vec<TirType> = op
-                .operands
-                .iter()
-                .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
-                .collect();
-            if let Some(inferred) = infer_result_type(op.opcode, &operand_types, &op.attrs) {
-                for &result_id in &op.results {
-                    env.insert(result_id, inferred.clone());
-                }
-            } else {
-                // No inference possible — record DynBox so the map is complete.
-                for &result_id in &op.results {
-                    env.entry(result_id).or_insert(TirType::DynBox);
-                }
+            apply_refined_op_types(
+                &mut env,
+                &mut iter_element_types,
+                op.opcode,
+                &op.operands,
+                &op.results,
+                &op.attrs,
+                func.has_exception_handling,
+            );
+            for &result_id in &op.results {
+                env.entry(result_id).or_insert(TirType::DynBox);
             }
         }
     }
@@ -160,118 +157,15 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
             let ops_snapshot = &ops_by_block[&block_id];
 
             for (opcode, operands, results, attrs) in ops_snapshot {
-                if results.is_empty() {
-                    continue;
-                }
-
-                // Do not refine results of CheckException — the value
-                // coming out of an exception check is dynamically typed.
-                if has_eh && matches!(opcode, OpCode::CheckException) {
-                    for &result_id in results {
-                        if !matches!(env.get(&result_id), Some(TirType::DynBox)) {
-                            env.insert(result_id, TirType::DynBox);
-                            changed = true;
-                        }
-                    }
-                    continue;
-                }
-
-                let operand_types: Vec<TirType> = operands
-                    .iter()
-                    .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
-                    .collect();
-
-                let inferred = infer_result_type(*opcode, &operand_types, attrs);
-
-                // IterNextUnboxed has two results: [0]=element, [1]=Bool.
-                // Handle multi-result ops before the single-result fast path.
-                if *opcode == OpCode::IterNextUnboxed && results.len() == 2 {
-                    // results[1] is always the done-flag (Bool).
-                    let flag_id = results[1];
-                    let current_flag =
-                        env.get(&flag_id).cloned().unwrap_or(TirType::DynBox);
-                    if current_flag != TirType::Bool {
-                        env.insert(flag_id, TirType::Bool);
-                        changed = true;
-                    }
-                    // results[0] gets the element type from iter_element_types
-                    // or the general inferred type.
-                    let elem_id = results[0];
-                    // Trace the iterator operand to see if we know its element type.
-                    let elem_ty = operands
-                        .first()
-                        .and_then(|iter_val| iter_element_types.get(iter_val))
-                        .cloned()
-                        .or(inferred);
-                    if let Some(ty) = elem_ty {
-                        let current = env.get(&elem_id).cloned().unwrap_or(TirType::DynBox);
-                        if ty != current {
-                            env.insert(elem_id, ty);
-                            changed = true;
-                        }
-                    }
-                    continue;
-                }
-
-                // For ops with a single result (the common case).
-                if results.len() == 1 {
-                    let result_id = results[0];
-
-                    // For GetIter: record the element type of the produced
-                    // iterator in the side map so downstream IterNext/ForIter
-                    // can resolve element types.
-                    if *opcode == OpCode::GetIter {
-                        if let Some(elem_ty) =
-                            infer_iter_element_type(&operand_types, &iter_element_types, operands)
-                        {
-                            let prev = iter_element_types.get(&result_id);
-                            if prev != Some(&elem_ty) {
-                                iter_element_types.insert(result_id, elem_ty);
-                                changed = true;
-                            }
-                        }
-                    }
-
-                    // For CallBuiltin("range"): record that the result,
-                    // when iterated, yields I64.
-                    if *opcode == OpCode::CallBuiltin {
-                        if let Some(AttrValue::Str(name)) = attrs.get("name") {
-                            if name == "range"
-                                || name == "molt_range"
-                                || name == "builtin_range"
-                            {
-                                let prev = iter_element_types.get(&result_id);
-                                if prev != Some(&TirType::I64) {
-                                    iter_element_types.insert(result_id, TirType::I64);
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-
-                    // For ForIter/IterNext: resolve element type from the
-                    // iterator source if available.
-                    let final_ty = if matches!(
-                        opcode,
-                        OpCode::ForIter | OpCode::IterNext
-                    ) {
-                        operands
-                            .first()
-                            .and_then(|iter_val| iter_element_types.get(iter_val))
-                            .cloned()
-                            .or(inferred)
-                    } else {
-                        inferred
-                    };
-
-                    if let Some(new_ty) = final_ty {
-                        let current = env.get(&result_id).cloned().unwrap_or(TirType::DynBox);
-                        if new_ty != current {
-                            env.insert(result_id, new_ty);
-                            changed = true;
-                        }
-                    }
-                }
+                changed |= apply_refined_op_types(
+                    &mut env,
+                    &mut iter_element_types,
+                    *opcode,
+                    operands,
+                    results,
+                    attrs,
+                    has_eh,
+                );
             }
 
             // Recompute block argument types from all incoming edges.
@@ -347,6 +241,110 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 .unwrap_or(false)
         })
         .count()
+}
+
+fn apply_refined_op_types(
+    env: &mut HashMap<ValueId, TirType>,
+    iter_element_types: &mut HashMap<ValueId, TirType>,
+    opcode: OpCode,
+    operands: &[ValueId],
+    results: &[ValueId],
+    attrs: &AttrDict,
+    has_exception_handling: bool,
+) -> bool {
+    if results.is_empty() {
+        return false;
+    }
+
+    let mut changed = false;
+
+    if has_exception_handling && matches!(opcode, OpCode::CheckException) {
+        for &result_id in results {
+            if !matches!(env.get(&result_id), Some(TirType::DynBox)) {
+                env.insert(result_id, TirType::DynBox);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    let operand_types: Vec<TirType> = operands
+        .iter()
+        .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
+        .collect();
+    let inferred = infer_result_type(opcode, &operand_types, attrs);
+
+    if opcode == OpCode::IterNextUnboxed && results.len() == 2 {
+        let flag_id = results[1];
+        let current_flag = env.get(&flag_id).cloned().unwrap_or(TirType::DynBox);
+        if current_flag != TirType::Bool {
+            env.insert(flag_id, TirType::Bool);
+            changed = true;
+        }
+
+        let elem_id = results[0];
+        let elem_ty = operands
+            .first()
+            .and_then(|iter_val| iter_element_types.get(iter_val))
+            .cloned()
+            .or(inferred);
+        if let Some(ty) = elem_ty {
+            let current = env.get(&elem_id).cloned().unwrap_or(TirType::DynBox);
+            if ty != current {
+                env.insert(elem_id, ty);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    if results.len() != 1 {
+        return changed;
+    }
+
+    let result_id = results[0];
+
+    if opcode == OpCode::GetIter
+        && let Some(elem_ty) =
+            infer_iter_element_type(&operand_types, iter_element_types, operands)
+    {
+        let prev = iter_element_types.get(&result_id);
+        if prev != Some(&elem_ty) {
+            iter_element_types.insert(result_id, elem_ty);
+            changed = true;
+        }
+    }
+
+    if opcode == OpCode::CallBuiltin
+        && let Some(AttrValue::Str(name)) = attrs.get("name")
+        && (name == "range" || name == "molt_range" || name == "builtin_range")
+    {
+        let prev = iter_element_types.get(&result_id);
+        if prev != Some(&TirType::I64) {
+            iter_element_types.insert(result_id, TirType::I64);
+            changed = true;
+        }
+    }
+
+    let final_ty = if matches!(opcode, OpCode::ForIter | OpCode::IterNext) {
+        operands
+            .first()
+            .and_then(|iter_val| iter_element_types.get(iter_val))
+            .cloned()
+            .or(inferred)
+    } else {
+        inferred
+    };
+
+    if let Some(new_ty) = final_ty {
+        let current = env.get(&result_id).cloned().unwrap_or(TirType::DynBox);
+        if new_ty != current {
+            env.insert(result_id, new_ty);
+            changed = true;
+        }
+    }
+
+    changed
 }
 
 /// Infer the element type yielded by an iterator produced by `GetIter`.
