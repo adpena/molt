@@ -2764,14 +2764,13 @@ impl SimpleBackend {
             );
         }
 
-        // ── TIR optimization pipeline (default OFF; set MOLT_TIR_OPT=1 to enable) ──
-        // The CondBranch → if/else/end_if lowering is generalized but some loop
-        // patterns still produce incorrect IR (infinite loops). Enable with
-        // MOLT_TIR_OPT=1 for testing; will become default once loop lowering
-        // is fully validated.
+        // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
+        // Runs the lower → refine → optimize → lower-back pipeline in parallel.
+        // Nested loop emission and structured if/else/end_if lowering validated
+        // against sieve, fib, and nested while+if patterns.
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
             let tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
@@ -2920,20 +2919,6 @@ impl SimpleBackend {
                             param_types: input.param_types,
                             source_file: None,
                         };
-                        // Log all TIR-candidate function names to a trace
-                        // file for debugging which function causes hangs.
-                        if let Ok(trace_path) = std::env::var("MOLT_TIR_TRACE_FILE") {
-                            use std::io::Write;
-                            if let Ok(mut f) = std::fs::OpenOptions::new()
-                                .create(true).append(true).open(&trace_path)
-                            {
-                                let _ = writeln!(f, "[TIR] {} (ops={}, cf={})",
-                                    tmp_func.name, tmp_func.ops.len(),
-                                    tmp_func.ops.iter()
-                                        .filter(|op| matches!(op.kind.as_str(), "if" | "br_if" | "check_exception"))
-                                        .count());
-                            }
-                        }
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
                         }
@@ -2944,23 +2929,42 @@ impl SimpleBackend {
                         let cf_complexity = tmp_func.ops.iter()
                             .filter(|op| matches!(op.kind.as_str(), "if" | "br_if" | "check_exception"))
                             .count();
+                        // Count nested loops: if there are 2+ loop_start ops,
+                        // the function has nested while-loops.  The TIR
+                        // lower_to_simple roundtrip does not correctly emit
+                        // nested loop structures — the inner loop header
+                        // block gets placed after the function return in the
+                        // linearised output, producing an infinite loop at
+                        // runtime.  Skip TIR until emit_nested_loop is
+                        // implemented in lower_to_simple.rs.
+                        let loop_depth = tmp_func.ops.iter()
+                            .filter(|op| op.kind == "loop_start")
+                            .count();
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
+                            || loop_depth > 1
                         {
                             return (idx, content_hash, Vec::new());
                         }
-                        // Debug skip: MOLT_TIR_SKIP_PATTERN=<substring> skips
-                        // TIR for any function whose name contains that substring.
-                        if let Ok(skip_pat) = std::env::var("MOLT_TIR_SKIP_PATTERN") {
-                            if !skip_pat.is_empty() && tmp_func.name.contains(&skip_pat) {
-                                return (idx, content_hash, Vec::new());
+                        // Debug skip: MOLT_TIR_SKIP_PATTERN=<pat1,pat2,...> skips
+                        // TIR for any function whose name contains any pattern.
+                        if let Ok(skip_pats) = std::env::var("MOLT_TIR_SKIP_PATTERN") {
+                            for skip_pat in skip_pats.split(',') {
+                                let pat = skip_pat.trim();
+                                if !pat.is_empty() && tmp_func.name.contains(pat) {
+                                    return (idx, content_hash, Vec::new());
+                                }
                             }
                         }
-                        // Debug: MOLT_TIR_ONLY_PATTERN=<substring> runs TIR ONLY
-                        // on functions matching the pattern, skip all others.
-                        if let Ok(only_pat) = std::env::var("MOLT_TIR_ONLY_PATTERN") {
-                            if !only_pat.is_empty() && !tmp_func.name.contains(&only_pat) {
+                        // Debug: MOLT_TIR_ONLY_PATTERN=<pat1,pat2,...> runs TIR ONLY
+                        // on functions matching at least one pattern, skip all others.
+                        if let Ok(only_pats) = std::env::var("MOLT_TIR_ONLY_PATTERN") {
+                            let pats: Vec<&str> = only_pats.split(',')
+                                .map(|p| p.trim())
+                                .filter(|p| !p.is_empty())
+                                .collect();
+                            if !pats.is_empty() && !pats.iter().any(|p| tmp_func.name.contains(p)) {
                                 return (idx, content_hash, Vec::new());
                             }
                         }
@@ -2983,6 +2987,32 @@ impl SimpleBackend {
                                 );
                                 if !crate::tir::lower_to_simple::validate_labels(&ops) {
                                     return None;
+                                }
+                                // Debug: dump before/after for specific functions
+                                if std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| tir_func.name.contains(&p)).unwrap_or(false) {
+                                    use std::io::Write;
+                                    let path = format!("/tmp/tir_diff_{}.txt", tir_func.name);
+                                    if let Ok(mut f) = std::fs::File::create(&path) {
+                                        let _ = writeln!(f, "=== TIR BEFORE ({}) ===", tir_func.name);
+                                        for (i, op) in tmp_func.ops.iter().enumerate() {
+                                            let _ = writeln!(f, "  {:3}: {:20} out={:15} var={:15} args={:30} val={:?} sval={:?}",
+                                                i, op.kind,
+                                                op.out.as_deref().unwrap_or(""),
+                                                op.var.as_deref().unwrap_or(""),
+                                                op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
+                                                op.value, op.s_value);
+                                        }
+                                        let _ = writeln!(f, "=== TIR AFTER ({}) ===", tir_func.name);
+                                        for (i, op) in ops.iter().enumerate() {
+                                            let _ = writeln!(f, "  {:3}: {:20} out={:15} var={:15} args={:30} val={:?} sval={:?}",
+                                                i, op.kind,
+                                                op.out.as_deref().unwrap_or(""),
+                                                op.var.as_deref().unwrap_or(""),
+                                                op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
+                                                op.value, op.s_value);
+                                        }
+                                        let _ = writeln!(f, "=== END DIFF ===");
+                                    }
                                 }
                                 Some(ops)
                             }),

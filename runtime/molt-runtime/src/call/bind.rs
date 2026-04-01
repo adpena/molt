@@ -382,7 +382,11 @@ unsafe fn call_type_with_builder(
                 if pos_args.is_empty() {
                     return MoltObject::from_bool(false).bits();
                 }
-                return MoltObject::from_bool(is_truthy(_py, obj_from_bits(pos_args[0]))).bits();
+                let result = is_truthy(_py, obj_from_bits(pos_args[0]));
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_bool(result).bits();
             }
 
             if class_bits == builtins.float {
