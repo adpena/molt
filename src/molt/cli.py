@@ -14226,10 +14226,7 @@ def _build_native_link_command(
     suppress_linker_warnings = os.environ.get("MOLT_LINKER_WARNINGS") != "1"
     if target_triple:
         if "apple" in target_triple or "darwin" in target_triple:
-            # dead_strip removed: it strips runtime-internal functions
-            # like format_traceback's frame col access, breaking caret
-            # annotations in tracebacks.  Binary size increase: ~200KB.
-            pass
+            link_cmd.append("-Wl,-dead_strip")
             # Do NOT use -exported_symbol,_main — the runtime uses dlsym()
             # to resolve intrinsic functions at runtime. Restricting exports
             # to _main makes all #[no_mangle] symbols invisible to dlsym,
@@ -14258,10 +14255,7 @@ def _build_native_link_command(
             link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
     else:
         if sys.platform == "darwin":
-            # dead_strip removed: it strips runtime-internal functions
-            # like format_traceback's frame col access, breaking caret
-            # annotations in tracebacks.  Binary size increase: ~200KB.
-            pass
+            link_cmd.append("-Wl,-dead_strip")
             link_cmd.extend(["-Wl,-x", "-Wl,-S"])
             if suppress_linker_warnings:
                 link_cmd.append("-Wl,-w")
