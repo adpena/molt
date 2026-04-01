@@ -14800,22 +14800,24 @@ impl SimpleBackend {
                         switch_to_block_tracking(&mut builder, cleanup_block, &mut is_block_filled);
                         seal_block_once(&mut builder, &mut sealed_blocks, cleanup_block);
                         for name in tracked_obj_snapshot {
-                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked obj var not found in {} op {}: {}",
-                                    func_ir.name, op_idx, name
-                                )
-                            });
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                            let val = resolve_cleanup_value(&mut builder, &vars, &entry_vars, &name)
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "Tracked obj var not found in {} op {}: {}",
+                                        func_ir.name, op_idx, name
+                                    )
+                                });
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                         for name in tracked_ptr_snapshot {
-                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked ptr var not found in {} op {}: {}",
-                                    func_ir.name, op_idx, name
-                                )
-                            });
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                            let val = resolve_cleanup_value(&mut builder, &vars, &entry_vars, &name)
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "Tracked ptr var not found in {} op {}: {}",
+                                        func_ir.name, op_idx, name
+                                    )
+                                });
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                         reachable_blocks.insert(frame.after_block);
                         jump_block(&mut builder, frame.after_block, &[]);
@@ -14935,22 +14937,24 @@ impl SimpleBackend {
                         switch_to_block_tracking(&mut builder, cleanup_block, &mut is_block_filled);
                         seal_block_once(&mut builder, &mut sealed_blocks, cleanup_block);
                         for name in tracked_obj_snapshot {
-                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked obj var not found in {} op {}: {}",
-                                    func_ir.name, op_idx, name
-                                )
-                            });
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                            let val = resolve_cleanup_value(&mut builder, &vars, &entry_vars, &name)
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "Tracked obj var not found in {} op {}: {}",
+                                        func_ir.name, op_idx, name
+                                    )
+                                });
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                         for name in tracked_ptr_snapshot {
-                            let val = var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked ptr var not found in {} op {}: {}",
-                                    func_ir.name, op_idx, name
-                                )
-                            });
-                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                            let val = resolve_cleanup_value(&mut builder, &vars, &entry_vars, &name)
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "Tracked ptr var not found in {} op {}: {}",
+                                        func_ir.name, op_idx, name
+                                    )
+                                });
+                            builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                         reachable_blocks.insert(frame.after_block);
                         jump_block(&mut builder, frame.after_block, &[]);
@@ -16218,14 +16222,19 @@ impl SimpleBackend {
                                     if already_decrefed.contains(&name) {
                                         continue;
                                     }
-                                    let val =
-                                        var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                            panic!(
-                                                "Tracked obj var not found in {} op {}: {}",
-                                                func_ir.name, op_idx, name
-                                            )
-                                        });
-                                    builder.ins().call(local_dec_ref_obj, &[*val]);
+                                    let val = resolve_cleanup_value(
+                                        &mut builder,
+                                        &vars,
+                                        &entry_vars,
+                                        &name,
+                                    )
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "Tracked obj var not found in {} op {}: {}",
+                                            func_ir.name, op_idx, name
+                                        )
+                                    });
+                                    builder.ins().call(local_dec_ref_obj, &[val]);
                                     already_decrefed.insert(name);
                                 }
                             }
@@ -16234,14 +16243,19 @@ impl SimpleBackend {
                                     if already_decrefed.contains(&name) {
                                         continue;
                                     }
-                                    let val =
-                                        var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                            panic!(
-                                                "Tracked ptr var not found in {} op {}: {}",
-                                                func_ir.name, op_idx, name
-                                            )
-                                        });
-                                    builder.ins().call(local_dec_ref_obj, &[*val]);
+                                    let val = resolve_cleanup_value(
+                                        &mut builder,
+                                        &vars,
+                                        &entry_vars,
+                                        &name,
+                                    )
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "Tracked ptr var not found in {} op {}: {}",
+                                            func_ir.name, op_idx, name
+                                        )
+                                    });
+                                    builder.ins().call(local_dec_ref_obj, &[val]);
                                     already_decrefed.insert(name);
                                 }
                             }
@@ -16367,26 +16381,36 @@ impl SimpleBackend {
                         // Function return: fully drain per-block tracked values.
                         if let Some(names) = block_tracked_obj.remove(&block) {
                             for name in names {
-                                let val =
-                                    var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                        panic!(
-                                            "Tracked obj var not found in {} op {}: {}",
-                                            func_ir.name, op_idx, name
-                                        )
-                                    });
-                                builder.ins().call(local_dec_ref_obj, &[*val]);
+                                let val = resolve_cleanup_value(
+                                    &mut builder,
+                                    &vars,
+                                    &entry_vars,
+                                    &name,
+                                )
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "Tracked obj var not found in {} op {}: {}",
+                                        func_ir.name, op_idx, name
+                                    )
+                                });
+                                builder.ins().call(local_dec_ref_obj, &[val]);
                             }
                         }
                         if let Some(names) = block_tracked_ptr.remove(&block) {
                             for name in names {
-                                let val =
-                                    var_get(&mut builder, &vars, &name).unwrap_or_else(|| {
-                                        panic!(
-                                            "Tracked ptr var not found in {} op {}: {}",
-                                            func_ir.name, op_idx, name
-                                        )
-                                    });
-                                builder.ins().call(local_dec_ref_obj, &[*val]);
+                                let val = resolve_cleanup_value(
+                                    &mut builder,
+                                    &vars,
+                                    &entry_vars,
+                                    &name,
+                                )
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "Tracked ptr var not found in {} op {}: {}",
+                                        func_ir.name, op_idx, name
+                                    )
+                                });
+                                builder.ins().call(local_dec_ref_obj, &[val]);
                             }
                         }
                     }
