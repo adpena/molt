@@ -143,8 +143,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
     }
 
     // Detect loop structural roles from the original SimpleIR ops.
-    let (loop_roles, loop_pairs, loop_break_kinds, loop_break_blocks) =
-        detect_loop_structure(ir, cfg, &block_map);
+    let (loop_roles, loop_pairs, loop_break_kinds) = detect_loop_structure(ir, cfg, &block_map);
 
     TirFunction {
         name: ir.name.clone(),
@@ -167,7 +166,6 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         loop_roles,
         loop_pairs,
         loop_break_kinds,
-        loop_break_blocks,
     }
 }
 
@@ -182,12 +180,10 @@ fn detect_loop_structure(
     HashMap<BlockId, LoopRole>,
     HashMap<BlockId, BlockId>,
     HashMap<BlockId, LoopBreakKind>,
-    HashMap<BlockId, BlockId>,
 ) {
     let mut roles = HashMap::new();
     let mut loop_pairs = HashMap::new();
     let mut loop_break_kinds = HashMap::new();
-    let mut loop_break_blocks = HashMap::new();
     let block_containing = |op_idx: usize| -> Option<BlockId> {
         cfg.blocks
             .iter()
@@ -233,16 +229,10 @@ fn detect_loop_structure(
                         "loop_end" => nested_depth = nested_depth.saturating_sub(1),
                         "loop_break_if_true" if nested_depth == 0 => {
                             loop_break_kinds.insert(header_bid, LoopBreakKind::BreakIfTrue);
-                            if let Some(break_bid) = block_containing(inner_idx) {
-                                loop_break_blocks.insert(header_bid, break_bid);
-                            }
                             break;
                         }
                         "loop_break_if_false" if nested_depth == 0 => {
                             loop_break_kinds.insert(header_bid, LoopBreakKind::BreakIfFalse);
-                            if let Some(break_bid) = block_containing(inner_idx) {
-                                loop_break_blocks.insert(header_bid, break_bid);
-                            }
                             break;
                         }
                         _ => {}
@@ -252,7 +242,7 @@ fn detect_loop_structure(
             _ => {}
         }
     }
-    (roles, loop_pairs, loop_break_kinds, loop_break_blocks)
+    (roles, loop_pairs, loop_break_kinds)
 }
 
 /// Walk the original ops and propagate `fast_int` / `fast_float` / `type_hint`

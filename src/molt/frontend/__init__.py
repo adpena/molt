@@ -1321,6 +1321,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.exception_stack_prev_baseline: MoltValue | None = None
         self.return_unwind_depth = 0
         self.return_unwind_popped_scopes = []
+        self.finally_depth = 0
         self.return_label: int | None = None
         self.return_slot: MoltValue | None = None
         self.return_slot_index: MoltValue | None = None
@@ -1693,6 +1694,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.exception_stack_prev_baseline = None
         self.return_unwind_depth = 0
         self.return_unwind_popped_scopes = []
+        self.finally_depth = 0
         self.return_label = None
         self.return_slot = None
         self.return_slot_index = None
@@ -1860,6 +1862,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     col = getattr(node, "col_offset", None)
                     end_col = getattr(node, "end_col_offset", None)
                     self._emit_line_marker(int(lineno), col, end_col)
+            # Track expression-level column offsets for traceback carets.
+            # When an expression node is visited, record its position so
+            # that ops emitted during this visit carry the expression's
+            # col_offset (not the statement's).
+            if isinstance(node, ast.expr):
+                col = getattr(node, "col_offset", None)
+                end_col = getattr(node, "end_col_offset", None)
+                if col is not None and end_col is not None:
+                    prev = getattr(self, "_expr_col", None)
+                    self._expr_col = (col, end_col)
+                    result = super().visit(node)
+                    self._expr_col = prev
+                    return result
             return super().visit(node)
         except CompatibilityError:
             raise
@@ -1906,7 +1921,30 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             )
                         )
 
+    # Op kinds that can raise exceptions at runtime and should carry
+    # expression-level col_offset for traceback caret annotations.
+    _RAISING_OP_KINDS = frozenset({
+        "ADD", "SUB", "MUL", "DIV", "FLOOR_DIV", "MOD", "POW",
+        "LSHIFT", "RSHIFT", "BIT_AND", "BIT_OR", "BIT_XOR",
+        "INPLACE_ADD", "INPLACE_SUB", "INPLACE_MUL",
+        "EQ", "NE", "LT", "LE", "GT", "GE",
+        "GET_ATTR", "SET_ATTR", "DEL_ATTR",
+        "INDEX", "STORE_INDEX", "DEL_INDEX",
+        "CALL", "CALL_FUNC", "CALL_METHOD", "CALL_BUILTIN",
+        "CALL_INDIRECT", "CALL_GUARDED", "CALL_BIND",
+        "GET_ITER", "ITER_NEXT", "FOR_ITER",
+        "IMPORT", "IMPORT_FROM",
+    })
+
     def emit(self, op: MoltOp) -> None:
+        # Auto-attach expression column offsets to raising ops.
+        if (
+            op.col_offset is None
+            and op.kind in self._RAISING_OP_KINDS
+            and hasattr(self, "_expr_col")
+            and self._expr_col is not None
+        ):
+            op.col_offset, op.end_col_offset = self._expr_col
         if (
             op.kind == "CONST"
             and op.result
@@ -2078,6 +2116,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(MoltOp(kind="BRIDGE_UNAVAILABLE", args=[msg_val], result=res))
         return res
+
+    def _emit_syntax_warning(self, node: ast.AST, message: str) -> None:
+        """Emit a SyntaxWarning to stderr, matching CPython's format."""
+        import warnings
+        lineno = getattr(node, "lineno", 0)
+        warnings.warn_explicit(
+            message,
+            SyntaxWarning,
+            self.source_path or "<string>",
+            lineno,
+        )
 
     def _bridge_fallback(
         self,
@@ -2629,6 +2678,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.exception_stack_depth_baseline = None
         self.return_unwind_depth = 0
         self.return_unwind_popped_scopes = []
+        self.finally_depth = 0
         self.active_exceptions = []
         self.return_label = None
         self.return_slot = None
@@ -7338,6 +7388,67 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         cell = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="INDEX", args=[closure, idx_val], result=cell))
         return cell
+
+    def _collect_static_attributes(self, class_node: ast.ClassDef) -> tuple[str, ...]:
+        """Collect attribute names set via self.X = ... in class body methods.
+
+        Returns a tuple of unique attribute names in definition order,
+        matching CPython 3.13+ __static_attributes__.
+        """
+        attrs: list[str] = []
+        seen: set[str] = set()
+
+        class SelfAttrCollector(ast.NodeVisitor):
+            def __init__(self, self_name: str) -> None:
+                self.self_name = self_name
+
+            def visit_Assign(self, node: ast.Assign) -> None:
+                for target in node.targets:
+                    self._check(target)
+                self.generic_visit(node.value)
+
+            def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+                self._check(node.target)
+
+            def visit_AugAssign(self, node: ast.AugAssign) -> None:
+                self._check(node.target)
+
+            def _check(self, target: ast.AST) -> None:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == self.self_name
+                    and target.attr not in seen
+                ):
+                    seen.add(target.attr)
+                    attrs.append(target.attr)
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                return  # Don't recurse into nested functions
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                return
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                return  # Don't recurse into nested classes
+
+        for item in class_node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # First parameter is self
+                self_name = "self"
+                if item.args.args:
+                    self_name = item.args.args[0].arg
+                collector = SelfAttrCollector(self_name)
+                for stmt in item.body:
+                    collector.visit(stmt)
+            elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                # Class-level annotations like x: int
+                name = item.target.id
+                if name not in seen:
+                    seen.add(name)
+                    attrs.append(name)
+
+        return tuple(attrs)
 
     def _collect_class_mutations(self, nodes: list[ast.stmt]) -> set[str]:
         outer = self
@@ -14478,6 +14589,45 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         finally:
             self.locals = saved_locals
 
+        # __static_attributes__ (CPython 3.13+) — always emitted after class
+        # body, even when empty.  Appears after methods in namespace event order.
+        if dynamic_namespace is not None:
+            static_attrs = self._collect_static_attributes(node)
+            attr_vals: list[MoltValue] = []
+            for attr_name in static_attrs:
+                av = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[attr_name], result=av))
+                attr_vals.append(av)
+            static_tuple = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=attr_vals, result=static_tuple))
+            key_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=["__static_attributes__"], result=key_val))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[dynamic_namespace, key_val, static_tuple],
+                    result=MoltValue("none"),
+                )
+            )
+            # __classdictcell__ (CPython 3.14+) — the class body dict cell,
+            # set when the class has methods.  This is NOT the same as
+            # __classcell__ (which is for super() support).
+            has_methods = any(
+                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                for item in node.body
+            )
+            if has_methods:
+                # The value is the namespace dict itself (class body dict cell)
+                cdc_key = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=["__classdictcell__"], result=cdc_key))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_INDEX",
+                        args=[dynamic_namespace, cdc_key, dynamic_namespace],
+                        result=MoltValue("none"),
+                    )
+                )
+
         if (
             (self.future_annotations or self.eager_annotations)
             and dynamic_namespace is not None
@@ -14669,6 +14819,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 key = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[attr_str], result=key))
                 class_def_attrs.append((key, attr_val))
+            # __static_attributes__ (CPython 3.13+)
+            static_attrs = self._collect_static_attributes(node)
+            if static_attrs:
+                sa_vals: list[MoltValue] = []
+                for sa_name in static_attrs:
+                    sv = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(MoltOp(kind="CONST_STR", args=[sa_name], result=sv))
+                    sa_vals.append(sv)
+                sa_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(MoltOp(kind="TUPLE_NEW", args=sa_vals, result=sa_tuple))
+                sa_key = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=["__static_attributes__"], result=sa_key))
+                class_def_attrs.append((sa_key, sa_tuple))
             class_val = MoltValue(self.next_var(), type_hint="type")
 
         class_info = self.classes[node.name]
@@ -24125,9 +24288,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         popped_scopes: int = 0,
     ) -> None:
         self.return_unwind_depth += 1
+        self.finally_depth += 1
         self.return_unwind_popped_scopes.append(popped_scopes)
         self._emit_guarded_body(finalbody, baseline_exc)
         self.return_unwind_popped_scopes.pop()
+        self.finally_depth -= 1
         self.return_unwind_depth -= 1
 
     def _ctx_mark_arg(self, scope: TryScope) -> MoltValue:
@@ -25510,6 +25675,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.active_exceptions = prior_active
 
     def visit_Break(self, node: ast.Break) -> None:
+        if self.finally_depth > 0:
+            self._emit_syntax_warning(node, "'break' in a 'finally' block")
         if not self.loop_break_flags:
             raise SyntaxError(f"'break' outside loop (line {node.lineno})")
         del node
@@ -25534,6 +25701,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return None
 
     def visit_Continue(self, node: ast.Continue) -> None:
+        if self.finally_depth > 0:
+            self._emit_syntax_warning(node, "'continue' in a 'finally' block")
         if not self.loop_break_flags:
             raise SyntaxError(f"'continue' not properly in loop (line {node.lineno})")
         del node
@@ -25569,6 +25738,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return None
 
     def visit_Return(self, node: ast.Return) -> None:
+        if self.finally_depth > 0:
+            self._emit_syntax_warning(node, "'return' in a 'finally' block")
         self.block_terminated = True
         if self.in_generator:
             val = self.visit(node.value) if node.value is not None else None
@@ -28231,7 +28402,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     ):
                         const_none_vars.add(a.name)
 
+        # Track json_ops start index for each MoltOp so we can inject
+        # expression-level col_offset after the main serialization loop.
+        _col_inject: list[tuple[int, MoltOp]] = []
         for op in ops:
+            _col_inject.append((len(json_ops), op))
             if op.kind == "CONST":
                 value = op.args[0]
                 if isinstance(value, bool):
@@ -31618,6 +31793,30 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         if ops and ops[-1].kind != "ret":
             json_ops.append({"kind": "ret_void"})
+
+        # Post-pass: inject expression-level col_offset/end_col_offset into
+        # JSON dicts emitted by raising ops.  This is done after serialization
+        # so we don't need to modify every json_ops.append site.
+        for start_idx, mop in _col_inject:
+            if mop.col_offset is None:
+                continue
+            # The MoltOp may have emitted multiple json entries (e.g. CALL
+            # emits callargs_new + callargs_push_pos + call_bind).  Inject
+            # col_offset into the LAST entry, which is typically the one that
+            # can raise (the call/op itself).
+            end_idx = len(json_ops)
+            # Find next op's start to bound this op's entries.
+            for s2, _ in _col_inject:
+                if s2 > start_idx:
+                    end_idx = s2
+                    break
+            if end_idx > start_idx:
+                last_entry = json_ops[end_idx - 1]
+                if isinstance(last_entry, dict) and "col_offset" not in last_entry:
+                    last_entry["col_offset"] = mop.col_offset
+                    if mop.end_col_offset is not None:
+                        last_entry["end_col_offset"] = mop.end_col_offset
+
         return json_ops
 
     def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]:
