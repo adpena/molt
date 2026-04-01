@@ -22873,6 +22873,30 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if not pattern.patterns and not pattern.kwd_patterns:
             return
 
+        # CPython special case: builtin types (int, str, float, bool, bytes,
+        # bytearray, complex) accept exactly 1 positional sub-pattern that
+        # binds the subject itself — they don't have __match_args__.
+        _MATCH_SELF_TYPES = {"int", "str", "float", "bool", "bytes", "bytearray", "complex"}
+        if (
+            isinstance(pattern.cls, ast.Name)
+            and pattern.cls.id in _MATCH_SELF_TYPES
+            and len(pattern.patterns) == 1
+            and not pattern.kwd_patterns
+        ):
+            subpat = pattern.patterns[0]
+            if isinstance(subpat, ast.MatchAs) and subpat.pattern is None and subpat.name:
+                self._emit_match_capture(
+                    subpat.name, subject, match_cell, match_idx, capture_map
+                )
+            elif isinstance(subpat, ast.MatchAs) and subpat.pattern is None and subpat.name is None:
+                pass  # wildcard — already matched by isinstance
+            else:
+                # Nested pattern — emit recursive match against the subject itself
+                self._emit_match_pattern(
+                    subpat, subject, match_cell, match_idx, capture_map
+                )
+            return
+
         pos_count = len(pattern.patterns)
         pos_attr_list = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[], result=pos_attr_list))
