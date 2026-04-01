@@ -919,7 +919,112 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
 
     VALUE_NAME_OVERRIDES.with(|overrides| overrides.borrow_mut().clear());
 
+    eliminate_dead_labels(&mut out);
+
     out
+}
+
+/// Remove unreachable code regions from the linearised op stream.
+///
+/// A "dead label" is a `label` op that (a) has no incoming jump/br_if/
+/// check_exception and (b) is preceded by a block-terminating instruction
+/// (jump, ret, raise, loop_continue).  The Cranelift backend creates a
+/// block for every label seen in the pre-scan; if that block has no
+/// predecessors, Cranelift's alias_analysis and block ordering panic.
+///
+/// This pass walks the ops, detects dead regions, and removes them.
+/// A dead region starts at a dead label and ends just before the next
+/// reachable label (one that IS a jump/br_if target or is reached by
+/// fallthrough from a non-terminated predecessor).
+fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
+    // Phase 1: collect all label ids that are branch targets.
+    let mut branch_targets: HashSet<i64> = HashSet::new();
+    for op in ops.iter() {
+        match op.kind.as_str() {
+            "jump" | "br_if" | "check_exception" | "loop_continue" => {
+                if let Some(id) = op.value {
+                    branch_targets.insert(id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Phase 2: walk ops, marking dead regions for removal.
+    // is_filled tracks whether the previous block-filling instruction has
+    // been emitted without a subsequent label to start a new live block.
+    let mut is_filled = false;
+    let mut in_dead_region = false;
+    let mut keep = vec![true; ops.len()];
+
+    for i in 0..ops.len() {
+        let kind = ops[i].kind.as_str();
+        match kind {
+            "jump" | "ret" | "raise" | "loop_continue" => {
+                if in_dead_region {
+                    keep[i] = false;
+                } else {
+                    is_filled = true;
+                }
+            }
+            "label" | "state_label" => {
+                let label_id = ops[i].value.unwrap_or(-1);
+                if in_dead_region {
+                    // Check if this label is a branch target — if so, the
+                    // dead region ends and we resume emitting.
+                    if branch_targets.contains(&label_id) {
+                        in_dead_region = false;
+                        is_filled = false;
+                    } else {
+                        keep[i] = false;
+                    }
+                } else if is_filled && !branch_targets.contains(&label_id) {
+                    // Dead label: preceded by a terminator and not a branch target.
+                    in_dead_region = true;
+                    keep[i] = false;
+                } else {
+                    is_filled = false;
+                }
+            }
+            "loop_start" | "loop_end" | "loop_break_if_false" | "loop_index_start" => {
+                if in_dead_region {
+                    keep[i] = false;
+                } else {
+                    // loop_break_if_false does not fill the block (it falls through)
+                    if kind == "loop_break_if_false" {
+                        is_filled = false;
+                    }
+                }
+            }
+            "br_if" => {
+                // br_if does not fill the block — it falls through.
+                if in_dead_region {
+                    keep[i] = false;
+                } else {
+                    is_filled = false;
+                }
+            }
+            _ => {
+                if in_dead_region {
+                    keep[i] = false;
+                } else {
+                    // Normal ops don't change is_filled state.
+                }
+            }
+        }
+    }
+
+    // Phase 3: compact — remove dead ops.
+    let mut write_idx = 0;
+    for read_idx in 0..ops.len() {
+        if keep[read_idx] {
+            if write_idx != read_idx {
+                ops.swap(write_idx, read_idx);
+            }
+            write_idx += 1;
+        }
+    }
+    ops.truncate(write_idx);
 }
 
 /// Validate that every label referenced by jump/br_if/check_exception exists
