@@ -14100,6 +14100,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
+            # __firstlineno__ (CPython 3.13+) — line number of the class statement
+            key_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=["__firstlineno__"], result=key_val))
+            lineno_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[node.lineno], result=lineno_val))
+            self.emit(
+                MoltOp(
+                    kind="STORE_INDEX",
+                    args=[namespace_val, key_val, lineno_val],
+                    result=MoltValue("none"),
+                )
+            )
             dynamic_namespace = namespace_val
             if needs_classcell:
                 none_val = MoltValue(self.next_var(), type_hint="None")
@@ -14601,10 +14613,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             # Outlined class definition: collect attrs, emit single CLASS_DEF op
             class_def_attrs: list[tuple[MoltValue, MoltValue]] = []
+            # __firstlineno__ (CPython 3.13+)
+            lineno_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[node.lineno], result=lineno_val))
             for attr_str, attr_val in [
                 ("__name__", name_val),
                 ("__qualname__", qualname_val),
                 ("__module__", module_val),
+                ("__firstlineno__", lineno_val),
             ]:
                 key = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[attr_str], result=key))
