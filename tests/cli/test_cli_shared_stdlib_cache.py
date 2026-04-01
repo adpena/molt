@@ -89,3 +89,19 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
     assert cli._stdlib_object_cache_path(Path("cache"), key_a) != cli._stdlib_object_cache_path(
         Path("cache"), key_b
     )
+
+
+def test_shared_stdlib_cache_matches_key_requires_present_matching_sidecar(
+    tmp_path: Path,
+) -> None:
+    stdlib_object = tmp_path / "stdlib_shared_test.o"
+    stdlib_object.write_bytes(b"fake")
+
+    assert not cli._shared_stdlib_cache_matches_key(stdlib_object, "abc123")
+
+    key_sidecar = cli._stdlib_object_key_sidecar_path(stdlib_object)
+    key_sidecar.write_text("wrong-key\n", encoding="utf-8")
+    assert not cli._shared_stdlib_cache_matches_key(stdlib_object, "abc123")
+
+    key_sidecar.write_text("abc123\n", encoding="utf-8")
+    assert cli._shared_stdlib_cache_matches_key(stdlib_object, "abc123")
