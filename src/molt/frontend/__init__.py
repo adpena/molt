@@ -1924,7 +1924,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     # Op kinds that can raise exceptions at runtime and should carry
     # expression-level col_offset for traceback caret annotations.
     _RAISING_OP_KINDS = frozenset({
-        "ADD", "SUB", "MUL", "DIV", "FLOOR_DIV", "MOD", "POW",
+        "ADD", "SUB", "MUL", "DIV", "FLOORDIV", "MOD", "POW",
         "LSHIFT", "RSHIFT", "BIT_AND", "BIT_OR", "BIT_XOR",
         "INPLACE_ADD", "INPLACE_SUB", "INPLACE_MUL",
         "EQ", "NE", "LT", "LE", "GT", "GE",
