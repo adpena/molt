@@ -63,7 +63,7 @@ pub(crate) unsafe fn resolved_new_is_default_object_new(new_bits: Option<u64>) -
 
 #[inline]
 pub(crate) unsafe fn resolved_constructor_init_policy(
-    _new_bits: Option<u64>,
+    new_bits: Option<u64>,
     init_bits: Option<u64>,
 ) -> InitArgPolicy {
     unsafe {
@@ -71,10 +71,15 @@ pub(crate) unsafe fn resolved_constructor_init_policy(
         if !init_is_object {
             return InitArgPolicy::ForwardArgs;
         }
-        // CPython 3.12+: object.__init__ accepts and ignores extra args
-        // when __new__ is overridden or the class has non-object bases.
-        // For compiled classes this is always the case, so we skip the
-        // arg rejection and let the constructor proceed.
+        let new_is_object = resolved_new_is_default_object_new(new_bits);
+        if new_is_object {
+            // Both __init__ and __new__ are inherited from object.
+            // CPython rejects extra args: "X() takes no arguments".
+            return InitArgPolicy::RejectConstructorArgs;
+        }
+        // __init__ is object.__init__ but __new__ is overridden —
+        // CPython 3.12+ accepts and ignores extra args in __init__
+        // when __new__ is custom (the custom __new__ consumes them).
         InitArgPolicy::SkipObjectInit
     }
 }
