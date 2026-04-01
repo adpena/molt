@@ -18,6 +18,7 @@ pub extern "C" fn molt_print_newline() {
     let _ = std::io::stdout().flush();
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_print_obj(val: u64) {
     crate::with_gil_entry!(_py, {
         let args_ptr = alloc_tuple(_py, &[val]);
