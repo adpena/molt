@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
+use super::ops::{as_float_extended, float_result_bits};
 use super::ops_sys::{decode_slice_bound, slice_error};
 use super::ops_arith::binary_type_error;
 
@@ -1445,11 +1446,11 @@ pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
             return bigint_bits(_py, abs_val);
         }
         if let Some(f) = to_f64(obj) {
-            return MoltObject::from_float(f.abs()).bits();
+            return float_result_bits(_py, f.abs());
         }
         if let Some(ptr) = complex_ptr_from_bits(val_bits) {
             let value = unsafe { *complex_ref(ptr) };
-            return MoltObject::from_float(value.re.hypot(value.im)).bits();
+            return float_result_bits(_py, value.re.hypot(value.im));
         }
         if let Some(ptr) = maybe_ptr_from_bits(val_bits)
             && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__abs__")
@@ -1538,8 +1539,8 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
             if rem != 0.0 && (rem > 0.0) != (rf > 0.0) {
                 rem += rf;
             }
-            let q_bits = MoltObject::from_float(quot).bits();
-            let r_bits = MoltObject::from_float(rem).bits();
+            let q_bits = float_result_bits(_py, quot);
+            let r_bits = float_result_bits(_py, rem);
             let tuple_ptr = alloc_tuple(_py, &[q_bits, r_bits]);
             if tuple_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -2000,7 +2001,7 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
             let mut fsum = start_val;
             let mut comp = 0.0_f64; // Neumaier compensation term
             let mut all_numeric = true;
-            let mut has_float = start_obj.as_float().is_some();
+            let mut has_float = as_float_extended(start_obj).is_some();
             loop {
                 let pair_bits = molt_iter_next(iter_obj);
                 let pair_obj = obj_from_bits(pair_bits);
@@ -2021,7 +2022,7 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                         if all_numeric {
                             let result = fsum + comp;
                             if has_float {
-                                return MoltObject::from_float(result).bits();
+                                return float_result_bits(_py, result);
                             } else {
                                 return MoltObject::from_int(result as i64).bits();
                             }
@@ -2034,7 +2035,7 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                     let val_obj = obj_from_bits(val_bits);
                     if all_numeric {
                         // Check if value is float-coercible and stay in compensated mode
-                        let item_f = if let Some(f) = val_obj.as_float() {
+                        let item_f = if let Some(f) = as_float_extended(val_obj) {
                             has_float = true;
                             Some(f)
                         } else if let Some(i) = to_i64(val_obj) {
@@ -2051,7 +2052,7 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                                 comp += (x - t) + fsum;
                             }
                             fsum = t;
-                            total_bits = MoltObject::from_float(fsum).bits();
+                            total_bits = float_result_bits(_py, fsum);
                             total_owned = true;
                             continue;
                         }
@@ -2059,7 +2060,7 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                         // total_owned must be set here because the done-check
                         // at the top of the next iteration reads it.
                         all_numeric = false;
-                        total_bits = MoltObject::from_float(fsum + comp).bits();
+                        total_bits = float_result_bits(_py, fsum + comp);
                         #[allow(unused_assignments)]
                         {
                             total_owned = true;

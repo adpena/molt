@@ -3,6 +3,7 @@
 
 use crate::object::accessors::object_field_init_ptr_raw;
 use crate::object::inc_ref_ptr;
+use crate::object::ops::{as_float_extended, float_result_bits, is_float_extended};
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
@@ -578,7 +579,7 @@ fn float_hex_string(value: f64) -> String {
 
 fn float_value_or_descriptor_error(_py: &PyToken<'_>, self_bits: u64, method: &str) -> Option<f64> {
     let obj = obj_from_bits(self_bits);
-    if let Some(value) = obj.as_float() {
+    if let Some(value) = as_float_extended(obj) {
         return Some(value);
     }
     let type_label = class_name_for_error(type_of_bits(_py, self_bits));
@@ -595,7 +596,7 @@ pub extern "C" fn molt_float_conjugate(self_bits: u64) -> u64 {
         let Some(value) = float_value_or_descriptor_error(_py, self_bits, "conjugate") else {
             return MoltObject::none().bits();
         };
-        MoltObject::from_float(value).bits()
+        float_result_bits(_py, value)
     })
 }
 

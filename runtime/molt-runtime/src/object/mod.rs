@@ -1578,6 +1578,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 TYPE_ID_STRING => {
                     utf8_cache_remove(py, ptr as usize);
                 }
+                // Heap-allocated NaN float: no inner refs to dec-ref.
+                TYPE_ID_FLOAT => {}
                 // Class objects: dec-ref all ref-counted fields and bump the
                 // global type version so all inline caches that held a pointer
                 // to this class are invalidated before the memory is reused.

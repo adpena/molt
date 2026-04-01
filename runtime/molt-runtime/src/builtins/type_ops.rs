@@ -100,6 +100,7 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                     }
                     builtins.object
                 }
+                TYPE_ID_FLOAT => builtins.float,
                 TYPE_ID_STRING => builtins.str,
                 TYPE_ID_BYTES => builtins.bytes,
                 TYPE_ID_BYTEARRAY => builtins.bytearray,
