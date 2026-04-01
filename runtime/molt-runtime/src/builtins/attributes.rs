@@ -2675,6 +2675,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         instance_set_dict_bits(_py, obj_ptr, dict_bits);
                     }
                 }
+
                 if dict_bits != 0 {
                     inc_ref_bits(_py, dict_bits);
                     return Some(dict_bits);
@@ -3583,8 +3584,26 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         );
                     }
                     if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
+                        object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
+                        // Also store in instance dict so __dict__ reflects
+                        // field-offset attributes (CPython parity).
+                        let mut dict_bits = instance_dict_bits(obj_ptr);
+                        if dict_bits == 0 {
+                            let dict_ptr = alloc_dict_with_pairs(_py, &[]);
+                            if !dict_ptr.is_null() {
+                                dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+                                instance_set_dict_bits(_py, obj_ptr, dict_bits);
+                            }
+                        }
+                        if dict_bits != 0 {
+                            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                                && object_type_id(dict_ptr) == TYPE_ID_DICT
+                            {
+                                dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
+                            }
+                        }
                         dec_ref_bits(_py, attr_bits);
-                        return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits) as i64;
+                        return MoltObject::none().bits() as i64;
                     }
                 }
                 if let Some(info) = slots_info
@@ -5017,23 +5036,6 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                 .unwrap_or_else(|| "<attr>".to_string());
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
                 if let Some(val) = attr_lookup_ptr(_py, obj_ptr, name_bits) {
-                    // If the resolved attribute is a function/builtin_function_or_method
-                    // and the object is NOT a type (i.e. it's an instance), wrap it
-                    // in a bound method so that calling it passes self automatically.
-                    let val_ptr_opt = obj_from_bits(val).as_ptr();
-                    let obj_type_id = object_type_id(obj_ptr);
-                    let is_instance = obj_type_id != TYPE_ID_TYPE
-                        && obj_type_id != TYPE_ID_MODULE;
-                    if is_instance {
-                        if let Some(val_ptr) = val_ptr_opt {
-                            let val_tid = object_type_id(val_ptr);
-                            if val_tid == TYPE_ID_FUNCTION {
-                                let bound = molt_bound_method_new(val, obj_bits);
-                                dec_ref_bits(_py, val);
-                                return bound;
-                            }
-                        }
-                    }
                     return val;
                 }
                 if exception_pending(_py) {
