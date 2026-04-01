@@ -418,8 +418,37 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         }
 
         // Helper: emit a block's ops with type annotation.
+        // Phi Copy ops from the original SimpleIR are handled specially:
+        // - In linearised blocks (no block args), the CondBranch was folded
+        //   and the phi becomes copy_var from the last operand.
+        // - In if-pattern join blocks (has block args), the phi is redundant
+        //   (the if-pattern emission + load_var handle it) — skip.
         let emit_block_ops = |block: &TirBlock, out: &mut Vec<OpIR>| {
+            let has_block_args = !block.args.is_empty();
             for op in &block.ops {
+                // Detect phi Copy ops (original_kind="phi" with 2+ operands).
+                if op.opcode == OpCode::Copy
+                    && op.attrs.get("_original_kind")
+                        .map(|v| matches!(v, super::ops::AttrValue::Str(s) if s == "phi"))
+                        .unwrap_or(false)
+                    && op.operands.len() >= 2
+                {
+                    if has_block_args {
+                        // Join block with block args: phi is handled by
+                        // if-pattern emission + load_var.  Skip it.
+                        continue;
+                    }
+                    // Linearised block: emit copy_var from last operand.
+                    if let Some(dst) = op.results.first() {
+                        out.push(OpIR {
+                            kind: "copy_var".to_string(),
+                            var: Some(value_var(*op.operands.last().unwrap())),
+                            out: Some(value_var(*dst)),
+                            ..OpIR::default()
+                        });
+                    }
+                    continue;
+                }
                 if let Some(mut opir) = lower_op(op) {
                     annotate_type_flags(&mut opir, op, types);
                     out.push(opir);
