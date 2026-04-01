@@ -4,6 +4,17 @@
 **Type:** Single deep session
 **Exit criteria:** 100% pass rate on supported-feature conformance suite + sieve < 30ms
 
+### Progress snapshot (updated 2026-04-01)
+
+| Area | Status |
+|------|--------|
+| Phase 1 P0 blockers | 3/5 fixed (CONST-in-loop, generators, sieve regression). `__annotations__` likely fixed (0 SIGSEGVs). **TIR exception handling is the new #1 blocker.** |
+| Phase 2 baseline | Done — 78% runtime parity (197/254), 0 SIGSEGVs |
+| Phase 2 xfail tags | Done — 158 tests tagged (commit `0cd0cb40e`), 494/736 total with skip/xfail |
+| Phase 2 cluster-fix | Not started |
+| Phase 3 performance | Partial — 6+ type specializations wired, raw_int arithmetic disabled (NaN-box truncation) |
+| Exit criteria met? | **No** — 78% not 100%; sieve timing unconfirmed |
+
 ## Scope
 
 ### In scope
@@ -19,30 +30,26 @@ Tests exercising these features will be tagged `xfail` with documented reason.
 
 ## Phase 1: Kill P0 Blockers
 
-### 1.1 CONST-in-loop materialization failure
-- **Symptom:** `eq(n, 1)` inside while loop receives `b=0x0` for constant `1` on all iterations
-- **Hypothesis:** `is_block_filled` flag in main op compilation loop is `true` when CONST op runs, causing ops to be skipped
-- **Investigation:** Add `eprintln!` inside `"const"` handler (~`function_compiler.rs:1171`) gated by `MOLT_DEBUG_CONST=1`, print `is_block_filled`, `op_idx`, `op.value`
-- **Test file:** `/tmp/test_eq_loop.py` (already exists)
-- **Success:** `print(n)` outputs `1` (break fires at n==1)
+### 1.1 CONST-in-loop materialization failure — ✅ FIXED
+- **Root cause:** CSE pass creating dangling cross-block aliases (not `is_block_filled` as hypothesized)
+- **Fix:** CSE global alias resolution (`7ddd6fd77`) + dominator filtering (`63c4962d5`)
+- **Verified:** `sieve(100) = 25` correct
 
-### 1.2 Sieve regression
-- **Symptom:** sieve returns 0 after commit 49fc7d33 (0-init for loop vars)
-- **Likely same root cause** as 1.1 — verify after CONST fix
-- **If independent:** bisect between 49fc7d33 and 15feab12
+### 1.2 Sieve regression — ✅ FIXED
+- **Same root cause** as 1.1 — CSE alias fix resolved both
+- **Verified:** `sieve(100000) = 9592` correct (commit `5489f7000`)
 
-### 1.3 Generator state machine
-- **Symptom:** Generator yields only first element
-- **Root cause:** State machine bug in poll function compilation
-- **Test:** `list(x for x in [1,2,3])` should return `[1, 2, 3]`
+### 1.3 Generator state machine — ✅ FIXED
+- **Fix:** 4 commits: `5e527b247` (yield all elements), `12c2e887d` (HEADER_STATE_OFFSET), `66e79dd20` (CONST_NONE preserved), `a23de4377` (iteration value extraction)
+- **Verified:** `list(x for x in [1,2,3])` returns `[1, 2, 3]`
 
-### 1.4 `__annotations__` SIGSEGV
-- **Symptom:** `__annotations__` access crashes with SIGSEGV
-- **Investigation:** Check runtime attribute dispatch for `__annotations__` key
+### 1.4 `__annotations__` SIGSEGV — likely resolved (needs retest)
+- 0 SIGSEGVs in baseline. Broader phi/type_id fixes likely resolved this indirectly.
+- Related: `84c8e7fbe` stripped `__annotate__` call sites
 
-### 1.5 TIR verification failure
-- **Symptom:** `builtins__molt_module_chunk_2` — invalid SSA from partner TIR optimization
-- **Investigation:** Run with `MOLT_SSA_DIAG=1` (partner's diagnostic already in unstaged changes)
+### 1.5 TIR verification failure — ✅ FIXED (but new blocker emerged)
+- **Fix:** SSA two-pass dominator walk (`db42ea341`), sealed blocks, TIR default-ON (`d6b3692ac`)
+- **NEW BLOCKER (B9):** TIR `lower_to_simple` strips exception labels → all try/except fails. Root cause documented in `0639abad3`. WIP `a2c6be8e0`. This is the **current #1 blocker**.
 
 ## Phase 2: Conformance Audit + Systematic Sweep
 
@@ -73,15 +80,17 @@ Tests exercising these features will be tagged `xfail` with documented reason.
 
 ## Phase 3: Performance
 
-### 3.1 Activate raw_int fast paths
-- **Problem:** TIR emits `raw_int` but TIR I64 != raw i64 at SimpleIR level
-- **Fix:** Implement explicit unbox/rebox insertion in TIR unboxing pass
-- Already wired for add/sub/mul/lt — needs activation
+### 3.1 Activate raw_int fast paths — PARTIAL
+- 6+ type specializations wired via TIR type inference (`07f782c38`, `3b2325af6`)
+- fast_int paths guarded against bigint pointers (`868052bdf`)
+- list[int] flat i64 storage end-to-end (`db6952258`, `42af7f0f3`)
+- **raw_int arithmetic chains DISABLED** (commit `5489f7000`) — `box_int_value` truncates beyond 47-bit NaN-box range. Only comparison chains (icmp-based) remain active.
+- **TODO:** Insert overflow guards to re-enable arithmetic chains safely
 
-### 3.2 Sieve < 30ms
-- Current: 43ms (CPython: 23ms)
-- Profile NaN-boxing overhead in sieve hot loop
-- Target: < 30ms (1.3x CPython, down from 1.9x)
+### 3.2 Sieve < 30ms — UNCONFIRMED
+- Memory notes reference 13ms with type specialization, but not in formal baseline
+- raw_int arithmetic disabled means full fast path not active
+- Need fresh benchmark with current codebase
 
 ### 3.3 Measure and report
 - Benchmark: sieve, fib(30), startup
