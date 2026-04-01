@@ -577,6 +577,12 @@ impl SimpleBackend {
         known_function_arities: &BTreeMap<String, usize>,
         function_has_ret: &BTreeMap<String, bool>,
     ) {
+        if std::env::var("MOLT_DEBUG_CHECK_EXC").is_ok() {
+            let ce_count = func_ir.ops.iter().filter(|op| op.kind == "check_exception").count();
+            if ce_count > 0 || func_ir.name.contains("molt_main") || func_ir.name.contains("test_try") {
+                eprintln!("[COMPILE] func={} ops={} check_exception_count={}", func_ir.name, func_ir.ops.len(), ce_count);
+            }
+        }
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
         let FunctionPreanalysis {
@@ -6405,19 +6411,13 @@ impl SimpleBackend {
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
-                        if op.container_type.as_deref() == Some("list_int") {
+                        if op.container_type.as_deref() == Some("list_int") && false {
                             // Inline list_int getitem: bounds check then direct
                             // memory load, falling to runtime call on failure.
                             let idx_raw = raw_int_shadow.get(&args[1]).copied()
                                 .unwrap_or_else(|| unbox_int(&mut builder, *idx, &nbc));
-                            let validate_fn_id = Self::import_func_id_split(
-                                &mut self.module, &mut self.import_ids,
-                                "molt_list_int_validate_ptr",
-                                &[types::I64, types::I64], &[types::I64],
-                            );
-                            let validate_fn = self.module.declare_func_in_func(validate_fn_id, builder.func);
                             let (data_ptr, in_bounds) =
-                                emit_list_int_bounds_check_inner(&mut builder, *obj, idx_raw, &nbc, Some(validate_fn));
+                                emit_list_int_bounds_check(&mut builder, *obj, idx_raw, &nbc);
                             let fast_block = builder.create_block();
                             let slow_block = builder.create_block();
                             builder.set_cold_block(slow_block);
@@ -13335,6 +13335,13 @@ impl SimpleBackend {
                 "check_exception" => {
 
                     let target_id = op.value.unwrap_or(0);
+                    if std::env::var("MOLT_DEBUG_CHECK_EXC").is_ok() {
+                        eprintln!(
+                            "[CHECK_EXC] func={} op={} target_id={} found_in_state_blocks={}",
+                            func_ir.name, op_idx, target_id,
+                            state_blocks.contains_key(&target_id)
+                        );
+                    }
                     let Some(&target_block) = state_blocks.get(&target_id) else {
                         // Orphaned check_exception (handler stripped by IR pass) — skip.
                         continue;
@@ -13434,10 +13441,6 @@ impl SimpleBackend {
                     let flag_ptr_val: Option<Value> =
                         exc_flag_ptr_slot.map(|slot| builder.ins().stack_load(types::I64, slot, 0));
                     if let Some(flag_ptr) = flag_ptr_val {
-                        // Fast path: inline byte load from flag address.
-                        // CRITICAL: MemFlags::new() required — trusted() lets
-                        // Cranelift cache/hoist the load across function calls
-                        // (molt_raise), reading the stale pre-raise flag value.
                         let pending_byte =
                             builder
                                 .ins()
