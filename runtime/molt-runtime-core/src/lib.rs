@@ -441,6 +441,17 @@ pub mod ffi {
         /// Convert a value to float (like `float(x)`).
         pub fn molt_float_from_obj(val_bits: u64) -> u64;
 
+        // -- Fast-path bound-method dispatch ----------------------------------
+
+        /// Fast-path `list.append(elem)` via bound method bits.
+        pub fn molt_fast_list_append(method_bits: u64, elem_bits: u64) -> u64;
+
+        /// Fast-path `str.join(iterable)` via bound method bits.
+        pub fn molt_fast_str_join(method_bits: u64, iterable_bits: u64) -> u64;
+
+        /// Fast-path `dict.get(key, default)` via bound method bits.
+        pub fn molt_fast_dict_get(method_bits: u64, key_bits: u64, default_bits: u64) -> u64;
+
         // -- Collection operations -------------------------------------------
 
         /// Append a value to a list. Returns None on success.

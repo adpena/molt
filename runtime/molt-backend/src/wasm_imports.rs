@@ -105,6 +105,10 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("callargs_push_pos", 3),
     ("handle_resolve", 13),
     ("invoke_ffi_ic", 7),
+    // ── INTERNAL: Fast-path method dispatch ──
+    ("fast_dict_get", 5),   // (method, key, default) -> i64
+    ("fast_list_append", 3), // (method, elem) -> i64
+    ("fast_str_join", 3),   // (method, iterable) -> i64
     // ── INTERNAL: Guards and inline caches ──
     ("guard_layout_ptr", 17),
     ("guard_type", 3),
@@ -116,6 +120,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("abs_builtin", 2),
     ("add", 3),
     ("str_concat", 3),
+    ("str_contains", 3),
     ("bit_and", 3),
     ("bit_or", 3),
     ("bit_xor", 3),
@@ -231,9 +236,11 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("contains", 3),
     ("del_index", 3),
     ("dict_clear", 2),
+    ("dict_contains", 3),
     ("dict_copy", 2),
     ("dict_from_obj", 2),
     ("dict_get", 5),
+    ("dict_getitem", 3),
     ("dict_inc", 5),
     ("dict_items", 2),
     ("dict_keys", 2),
@@ -242,6 +249,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("dict_popitem", 2),
     ("dict_set", 5),
     ("dict_setdefault", 5),
+    ("dict_setitem", 5),
     ("dict_setdefault_empty_list", 3),
     ("dict_str_int_inc", 5),
     ("dict_update", 3),
@@ -265,6 +273,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("len_tuple", 2),
     ("list_append", 3),
     ("list_builder_append", 6),
+    ("list_contains", 3),
     ("list_builder_finish", 2),
     ("list_builder_new", 2),
     ("list_clear", 2),
@@ -289,6 +298,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("range_new", 5),
     ("reversed_builtin", 2),
     ("set_add", 3),
+    ("set_contains", 3),
     ("set_difference_update", 3),
     ("set_discard", 3),
     ("set_intersection_update", 3),
@@ -304,6 +314,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("tuple_builder_finish", 2),
     ("tuple_count", 3),
     ("tuple_from_list", 2),
+    ("tuple_getitem", 3),
     ("tuple_index", 3),
     ("zip_builtin", 3),
     // ── INTERNAL: Type constructors ──
@@ -1187,7 +1198,14 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ),
     (
         "call_method",
-        &["call_bind_ic", "callargs_new", "callargs_push_pos"],
+        &[
+            "call_bind_ic",
+            "callargs_new",
+            "callargs_push_pos",
+            "fast_dict_get",
+            "fast_list_append",
+            "fast_str_join",
+        ],
     ),
     (
         "cbor_parse",
