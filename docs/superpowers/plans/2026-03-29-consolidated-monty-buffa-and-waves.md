@@ -40,7 +40,7 @@ Already retired before this pass:
 | Track | Area | Tier | Status | Validation gate | Current blocker |
 |---|---|---|---|---|---|
 | E0 | Stdlib partition contract | 0 | **~60%** | Focused backend + CLI partition tests | 2 of 3 tests missing (`stdlib_link_fingerprint`, `stdlib_partition_emit_obj`); no daemon partition-root metadata |
-| E1 | Wave A correctness exit | 0 | **~75%** | Focused differential + backend + daemon/TIR sweep | TIR exception handling broken (WIP `a2c6be8e0`); no Cranelift baseline decision doc |
+| E1 | Wave A correctness exit | 0 | **~85%** | Focused differential + backend + daemon/TIR sweep | Exception handling mitigated (2026-04-01); need Cranelift baseline decision doc + sweep artifact |
 | E2 | Buffa/protobuf end-to-end proof | 0 | **~40%** | Molt-facing e2e proof, not crate-local only | Crate has 14 unit tests; zero Python-through-Molt proof paths |
 | E3 | Ecosystem unlock (`click`, `attrs`) | 1 | **~10%** | Small ecosystem differential matrix | `import_six.py` exists but MOLT_SKIP'd; `import_click.py`/`import_attrs.py` don't exist |
 | E4 | WASM parity and deploy proof | 1 | **~35%** | WASM parity sweep + live deploy proof + benchmark artifact | No current sweep results; no live deploy artifact; benchmarks from 2026-03-28 |
@@ -78,7 +78,7 @@ Done:
 
 Remaining work:
 - record Cranelift 0.130.0 as the intended pinned baseline (decision doc, not just Cargo.toml);
-- **fix TIR exception handling** — the TIR pipeline strips exception labels, breaking try/except (WIP `a2c6be8e0`, root cause in `0639abad3`); this is the #1 active blocker;
+- ~~fix TIR exception handling~~ — MITIGATED (2026-04-01): functions with `check_exception` bypass TIR; try/except/finally/else verified working with CPython parity. Making TIR handle exceptions natively is a future perf optimization.
 - run the focused Wave A regression sweep and record pass/fail results as artifact.
 
 Validation:
