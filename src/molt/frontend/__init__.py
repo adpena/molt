@@ -22269,7 +22269,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 baseline = bindings[0]
                 for binding in bindings[1:]:
                     if binding != baseline:
-                        raise SyntaxError("alternative patterns bind different names")
+                        self._raise_syntax_error(
+                            "alternative patterns bind different names",
+                            pattern,
+                        )
             for sub in pattern.patterns:
                 self._validate_match_pattern(sub)
             return
@@ -22854,6 +22857,25 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return
         raise NotImplementedError("Unsupported match pattern")
 
+
+    def _raise_syntax_error(self, msg: str, node: ast.AST) -> None:
+        """Raise SyntaxError with CPython-compatible line/column info."""
+        err = SyntaxError(msg)
+        err.filename = self.source_path or "<unknown>"
+        err.lineno = getattr(node, "lineno", None)
+        err.offset = getattr(node, "col_offset", 0) + 1  # 1-based
+        err.end_offset = getattr(node, "end_col_offset", err.offset)
+        # Read source line if possible
+        if self.source_path:
+            try:
+                with open(self.source_path) as f:
+                    lines = f.readlines()
+                    if err.lineno and err.lineno <= len(lines):
+                        err.text = lines[err.lineno - 1]
+            except OSError:
+                pass
+        raise err
+
     def visit_Match(self, node: ast.Match) -> None:
         subject = self.visit(node.subject)
         if subject is None:
@@ -22879,12 +22901,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if reason is not None:
                     kind, name = reason
                     if kind == "wildcard":
-                        raise SyntaxError(
-                            "wildcard makes remaining patterns unreachable"
+                        self._raise_syntax_error(
+                            "wildcard makes remaining patterns unreachable",
+                            case.pattern,
                         )
                     if kind == "capture" and name:
-                        raise SyntaxError(
-                            f"name capture '{name}' makes remaining patterns unreachable"
+                        self._raise_syntax_error(
+                            f"name capture '{name}' makes remaining patterns unreachable",
+                            case.pattern,
                         )
 
             capture_names = sorted(self._collect_pattern_capture_names(case.pattern))
