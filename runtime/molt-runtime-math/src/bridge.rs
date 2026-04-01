@@ -100,6 +100,8 @@ unsafe extern "C" {
     ) -> i32;
     fn __molt_math_string_bytes(ptr: *mut u8, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
     fn __molt_math_string_len(ptr: *mut u8) -> usize;
+    fn __molt_math_as_float_extended(bits: u64, out: *mut f64) -> i32;
+    fn __molt_math_float_result_bits(val: f64) -> u64;
 }
 
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
@@ -159,6 +161,20 @@ pub unsafe fn string_bytes(ptr: *mut u8) -> &'static [u8] {
 
 pub fn string_len(ptr: *mut u8) -> usize {
     unsafe { __molt_math_string_len(ptr) }
+}
+
+/// Extended float extraction: returns the f64 value for both inline floats
+/// AND heap-allocated NaN floats (TYPE_ID_FLOAT).
+pub fn as_float_extended(obj: MoltObject) -> Option<f64> {
+    let mut out: f64 = 0.0;
+    let ok = unsafe { __molt_math_as_float_extended(obj.bits(), &mut out) };
+    if ok != 0 { Some(out) } else { None }
+}
+
+/// Produce NaN-boxed bits for a float result.  Non-NaN values are stored
+/// inline; NaN values are heap-allocated.
+pub fn float_result_bits(_py: &PyToken, val: f64) -> u64 {
+    unsafe { __molt_math_float_result_bits(val) }
 }
 
 // ---------------------------------------------------------------------------
