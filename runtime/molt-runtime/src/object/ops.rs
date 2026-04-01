@@ -10537,16 +10537,15 @@ pub extern "C" fn molt_list_int_setitem(list_bits: u64, index_bits: u64, value_b
     }
 }
 
-/// Return the raw data pointer and length of a list_int as a (ptr, len) pair.
+/// Return the raw data pointer of a list (regular or list_int).
 ///
-/// The caller can then do direct element loads: `*(data_ptr + index * 8)`.
-/// Returns `(data_ptr, len)` packed as two u64 return values.
-/// If the input is not a valid list_int pointer, returns (0, 0).
+/// Works for both regular lists (Vec<u64>) and list_int (Vec<i64>) since both
+/// have the same memory layout: obj_ptr stores `*mut Vec<T>` at offset 0, and
+/// Vec's data pointer is at offset 0/8 of the Vec struct (platform-dependent
+/// but stable via Vec::as_ptr).
 ///
 /// # Safety
 /// The returned pointer is valid only as long as the list is not resized.
-/// Compiled code must not resize the list between obtaining the pointer and
-/// using it.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_data(list_bits: u64) -> u64 {
     let list_obj = obj_from_bits(list_bits);
@@ -10554,12 +10553,12 @@ pub extern "C" fn molt_list_int_data(list_bits: u64) -> u64 {
         return 0;
     };
     unsafe {
-        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
+        let vec_ptr = *(ptr as *mut *mut Vec<u64>);
         (*vec_ptr).as_ptr() as u64
     }
 }
 
-/// Return the length of a list_int as a raw i64 (NOT NaN-boxed).
+/// Return the length of a list (regular or list_int) as a raw u64.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_len_raw(list_bits: u64) -> u64 {
     let list_obj = obj_from_bits(list_bits);
@@ -10567,7 +10566,7 @@ pub extern "C" fn molt_list_int_len_raw(list_bits: u64) -> u64 {
         return 0;
     };
     unsafe {
-        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
+        let vec_ptr = *(ptr as *mut *mut Vec<u64>);
         (*vec_ptr).len() as u64
     }
 }

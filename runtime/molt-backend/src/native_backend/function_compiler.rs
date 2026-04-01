@@ -593,7 +593,7 @@ impl SimpleBackend {
             resume_states,
             function_exception_label_id,
             exception_label_ids,
-            const_int_map: _const_int_map,
+            const_int_map,
             loop_body_out_vars,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries);
         let (rc_skip_inc, mut rc_skip_dec) =
@@ -6405,6 +6405,7 @@ impl SimpleBackend {
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
+
                         if op.container_type.as_deref() == Some("list_int") {
                             // Inline list_int getitem: bounds check then direct
                             // memory load, falling to runtime call on failure.
