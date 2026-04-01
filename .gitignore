@@ -84,3 +84,4 @@ type_facts.json
 .claire/
 output_linked.cwasm
 tests/harness/corpus/molt_adapted/
+target-sprint-agent/
