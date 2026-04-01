@@ -579,8 +579,13 @@ impl SimpleBackend {
     ) {
         if std::env::var("MOLT_DEBUG_CHECK_EXC").is_ok() {
             let ce_count = func_ir.ops.iter().filter(|op| op.kind == "check_exception").count();
-            if ce_count > 0 || func_ir.name.contains("molt_main") || func_ir.name.contains("test_try") {
+            if ce_count > 0 || func_ir.name.contains("molt_main") || func_ir.name.contains("test_try") || func_ir.name.contains("__main__") {
                 eprintln!("[COMPILE] func={} ops={} check_exception_count={}", func_ir.name, func_ir.ops.len(), ce_count);
+                for (i, op) in func_ir.ops.iter().enumerate() {
+                    if op.kind == "check_exception" || op.kind == "label" || op.kind == "exception_push" || op.kind == "try_start" || op.kind == "try_end" || op.kind == "exception_last" || op.kind == "exception_pop" || op.kind == "div" {
+                        eprintln!("  [{:3}] {} val={:?} out={:?} args={:?}", i, op.kind, op.value, op.out, op.args);
+                    }
+                }
             }
         }
         let mut builder_ctx = FunctionBuilderContext::new();
@@ -6411,61 +6416,31 @@ impl SimpleBackend {
                         sig.params.push(AbiParam::new(types::I64));
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
-                        if op.container_type.as_deref() == Some("list_int") {
-                            // Inline list_int getitem: bounds check then direct
-                            // memory load, falling to runtime call on failure.
-                            let idx_raw = raw_int_shadow.get(&args[1]).copied()
-                                .unwrap_or_else(|| unbox_int(&mut builder, *idx, &nbc));
-                            let (data_ptr, in_bounds) =
-                                emit_list_int_bounds_check(&mut builder, *obj, idx_raw, &nbc);
-                            let fast_block = builder.create_block();
-                            let slow_block = builder.create_block();
-                            builder.set_cold_block(slow_block);
-                            let merge_block = builder.create_block();
-                            builder.append_block_param(merge_block, types::I64);
-                            builder.ins().brif(in_bounds, fast_block, &[], slow_block, &[]);
-
-                            builder.switch_to_block(fast_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                            let fast_res = emit_list_int_load(&mut builder, data_ptr, idx_raw, &nbc);
-                            jump_block(&mut builder, merge_block, &[fast_res]);
-
-                            builder.switch_to_block(slow_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                            let callee = Self::import_func_id_split(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                "molt_list_int_getitem",
-                                &[types::I64, types::I64],
-                                &[types::I64],
-                            );
-                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                            let call = builder.ins().call(local_callee, &[*obj, *idx]);
-                            let slow_res = builder.inst_results(call)[0];
-                            jump_block(&mut builder, merge_block, &[slow_res]);
-
-                            builder.switch_to_block(merge_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                            let res = builder.block_params(merge_block)[0];
-                            if let Some(out__) = op.out {
-                                def_var_named(&mut builder, &vars, out__, res);
-                            }
-                        } else {
-                            // Dispatch based on container specialization:
-                            // - dict: direct hash-table lookup
-                            // - tuple: direct element access
-                            // - fast_int: generic list but index is known int
-                            // - default: full type dispatch
+                        {
+                            // Dispatch based on container specialization.
+                            //
+                            // Note: inline Cranelift codegen for list_int (bounds
+                            // check + direct memory load) was removed because the
+                            // fast/slow/merge branch blocks it creates interact
+                            // badly with Cranelift block sealing in nested
+                            // control flow (while+if+while). The specialized
+                            // runtime functions already avoid full type dispatch
+                            // and are sufficient until the inline path can be
+                            // rearchitected to not create extra blocks.
                             let fn_name = match op.container_type.as_deref() {
+                                Some("list_int") => "molt_list_int_getitem",
                                 Some("dict") => "molt_dict_getitem",
                                 Some("tuple") => "molt_tuple_getitem",
                                 _ if op.fast_int.unwrap_or(false) => "molt_list_getitem_int_fast",
                                 _ => "molt_index",
                             };
-                            let callee = self
-                                .module
-                                .declare_function(fn_name, Linkage::Import, &sig)
-                                .unwrap();
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                fn_name,
+                                &[types::I64, types::I64],
+                                &[types::I64],
+                            );
                             let local_callee = self.module.declare_func_in_func(callee, builder.func);
                             let call = builder.ins().call(local_callee, &[*obj, *idx]);
                             let res = builder.inst_results(call)[0];
@@ -6486,52 +6461,15 @@ impl SimpleBackend {
                     let val = var_get(&mut builder, &vars, &args[2]).unwrap_or_else(|| {
                         panic!("Value not found in {} op {}", func_ir.name, op_idx)
                     });
-                    if op.container_type.as_deref() == Some("list_int") && false {
-                        // Inline list_int setitem: bounds check then direct
-                        // memory store, falling to runtime call on failure.
-                        let idx_raw = raw_int_shadow.get(&args[1]).copied()
-                            .unwrap_or_else(|| unbox_int(&mut builder, *idx, &nbc));
-                        // For list_int values: unbox int or bool to raw i64.
-                        let val_raw = raw_int_shadow.get(&args[2]).copied()
-                            .unwrap_or_else(|| unbox_int_or_bool(&mut builder, *val, &nbc));
-                        let (data_ptr, in_bounds) =
-                            emit_list_int_bounds_check(&mut builder, *obj, idx_raw, &nbc);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-                        builder.ins().brif(in_bounds, fast_block, &[], slow_block, &[]);
-
-                        builder.switch_to_block(fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        emit_list_int_store(&mut builder, data_ptr, idx_raw, val_raw);
-                        jump_block(&mut builder, merge_block, &[*obj]);
-
-                        builder.switch_to_block(slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_list_int_setitem",
-                            &[types::I64, types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder.ins().call(local_callee, &[*obj, *idx, *val]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-
-                        builder.switch_to_block(merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        let res = builder.block_params(merge_block)[0];
-                        if let Some(out__) = op.out {
-                            def_var_named(&mut builder, &vars, out__, res);
-                        }
-                    } else {
-                        // Dispatch based on container specialization:
-                        // - dict: direct hash-table set
-                        // - default: full type dispatch
+                    {
+                        // Dispatch based on container specialization.
+                        //
+                        // Note: inline Cranelift codegen for list_int (bounds
+                        // check + direct memory store) was removed for the same
+                        // reason as the getitem path: fast/slow/merge branch
+                        // blocks break Cranelift block sealing in nested
+                        // control flow. The specialized runtime function
+                        // molt_list_int_setitem avoids full type dispatch.
                         let fn_name = match op.container_type.as_deref() {
                             Some("list_int") => "molt_list_int_setitem",
                             Some("dict") => "molt_dict_setitem",
