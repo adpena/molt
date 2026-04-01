@@ -316,6 +316,32 @@ def _coerce_process_text(value: str | bytes | None) -> str:
     return value
 
 
+import re as _re
+
+_PYTHON_WARNING_RE = _re.compile(
+    r"^.+:\d+: (?:Syntax|Deprecation|Runtime|User|Future|Pending\s*Deprecation)Warning: "
+)
+
+
+def _forward_compilation_warnings(stderr: str) -> None:
+    """Forward Python warnings from build subprocess stderr to the user.
+
+    Matches CPython's warning format: ``path:line: CategoryWarning: message``
+    followed by an optional source-line context line (2-space indented).
+    Only forwards recognized Python warning categories, not build noise.
+    """
+    lines = stderr.splitlines(keepends=True)
+    i = 0
+    while i < len(lines):
+        if _PYTHON_WARNING_RE.match(lines[i]):
+            sys.stderr.write(lines[i])
+            # Forward the following source-context line if present
+            if i + 1 < len(lines) and lines[i + 1].startswith("  "):
+                sys.stderr.write(lines[i + 1])
+                i += 1
+        i += 1
+
+
 def _coerce_json_path(value: Any) -> Path | None:
     if not isinstance(value, str) or not value:
         return None
@@ -569,6 +595,12 @@ def _run_wrapper_build(
     assert contract is not None
     if not json_output:
         _emit_wrapper_build_success_signals(payload)
+        # Forward compilation warnings (SyntaxWarning, DeprecationWarning)
+        # from the build subprocess so they appear in `molt run` output,
+        # matching CPython's behaviour where warnings are emitted during
+        # compile() which runs inline with execution.
+        if stderr:
+            _forward_compilation_warnings(stderr)
     return contract, duration, None
 
 
