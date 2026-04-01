@@ -23180,7 +23180,7 @@ def _internal_batch_build_server(
                         target=cast(Target, params.get("target", "native")),
                         parse_codec=cast(ParseCodec, params.get("codec", "msgpack")),
                         type_hint_policy=cast(
-                            TypeHintPolicy, params.get("type_hints", "ignore")
+                            TypeHintPolicy, params.get("type_hints", "check")
                         ),
                         fallback_policy=cast(
                             FallbackPolicy, params.get("fallback", "error")
@@ -29076,7 +29076,7 @@ def main() -> int:
     if args.command == "build":
         target = args.target or build_cfg.get("target") or "native"
         codec = args.codec or build_cfg.get("codec") or "msgpack"
-        type_hints = args.type_hints or build_cfg.get("type_hints") or "ignore"
+        type_hints = args.type_hints or build_cfg.get("type_hints") or "check"
         fallback = args.fallback or build_cfg.get("fallback") or "error"
         output = args.output or build_cfg.get("output")
         out_dir = args.out_dir or build_cfg.get("out_dir") or build_cfg.get("out-dir")
