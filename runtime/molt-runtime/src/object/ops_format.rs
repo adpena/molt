@@ -41,6 +41,11 @@ pub extern "C" fn molt_warn_stderr(msg_bits: u64) {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(msg_bits);
         if let Some(s) = string_obj_to_owned(obj) {
+            // Flush stdout first to ensure correct ordering when stdout and
+            // stderr are merged (e.g. `./binary 2>&1`).  CPython's warnings
+            // module does this implicitly through Python's I/O layer.
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
             eprintln!("{}", s);
         }
     })
