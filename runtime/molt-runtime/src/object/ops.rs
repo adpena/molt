@@ -6900,20 +6900,30 @@ pub extern "C" fn molt_unpack_sequence(
                     }
                     count += 1;
                     if count > expected {
-                        // Exhaust iterator to get actual count for error message
-                        loop {
+                        // Try to exhaust iterator for the "got N" count.
+                        // Cap at 1024 extra iterations to avoid hanging on
+                        // infinite iterators.
+                        let mut extra = 0usize;
+                        let exhausted = loop {
+                            if extra >= 1024 { break false; }
                             let extra_bits = molt_iter_next(iter_bits);
                             let extra_obj = obj_from_bits(extra_bits);
-                            let Some(extra_ptr) = extra_obj.as_ptr() else { break; };
-                            if object_type_id(extra_ptr) != TYPE_ID_TUPLE { break; }
+                            let Some(extra_ptr) = extra_obj.as_ptr() else { break true; };
+                            if object_type_id(extra_ptr) != TYPE_ID_TUPLE { break true; }
                             let extra_elems = seq_vec_ref(extra_ptr);
-                            if extra_elems.len() < 2 { break; }
+                            if extra_elems.len() < 2 { break true; }
                             let done = is_truthy(_py, obj_from_bits(extra_elems[1]));
-                            if done { break; }
-                            count += 1;
-                        }
+                            if done { break true; }
+                            extra += 1;
+                        };
+                        count += extra;
                         dec_ref_bits(_py, iter_bits);
-                        let msg = format!("too many values to unpack (expected {}, got {})", expected, count);
+                        let msg = if exhausted {
+                            format!("too many values to unpack (expected {}, got {})", expected, count)
+                        } else {
+                            // Iterator didn't terminate — report without count
+                            format!("too many values to unpack (expected {})", expected)
+                        };
                         raise_exception::<u64>(_py, "ValueError", &msg);
                         return MoltObject::none().bits();
                     }
