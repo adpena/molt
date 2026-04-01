@@ -4651,16 +4651,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
             else:
-                format_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[1], result=format_val))
-                ann_dict = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(
-                    MoltOp(
-                        kind="CALL_FUNC",
-                        args=[annotate_val, format_val],
-                        result=ann_dict,
+                # Build __annotations__ dict directly from the annotation
+                # items.  For future_annotations, all values are strings.
+                # For eager_annotations, they're evaluated types.
+                # Calling __annotate__(1) through CALL_FUNC has been unreliable
+                # for TIR-compiled functions, so we build the dict inline.
+                ann_items: list[MoltValue] = []
+                for name, expr in items:
+                    key_val = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
+                    val = self._emit_annotation_value(
+                        expr, stringize=self.future_annotations
                     )
-                )
+                    ann_items.extend([key_val, val])
+                ann_dict = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(MoltOp(kind="DICT_NEW", args=ann_items, result=ann_dict))
                 self.emit(
                     MoltOp(
                         kind="SETATTR_GENERIC_OBJ",
