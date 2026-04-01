@@ -955,6 +955,32 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
                 let msg = format!("float expected at most 1 argument, got {}", args.len());
                 return Some(raise_exception::<_>(_py, "TypeError", &msg));
             }
+            if call_bits == builtins.bool {
+                if args.is_empty() {
+                    return Some(MoltObject::from_bool(false).bits());
+                }
+                if args.len() == 1 {
+                    return Some(crate::molt_bool_builtin(args[0]));
+                }
+                let msg = format!("bool expected at most 1 argument, got {}", args.len());
+                return Some(raise_exception::<_>(_py, "TypeError", &msg));
+            }
+            if call_bits == builtins.int {
+                if args.is_empty() {
+                    return Some(MoltObject::from_int(0).bits());
+                }
+                if args.len() == 1 {
+                    let has_base = MoltObject::from_int(0).bits();
+                    let base = MoltObject::from_int(10).bits();
+                    return Some(crate::molt_int_from_obj(args[0], base, has_base));
+                }
+                if args.len() == 2 {
+                    let has_base = MoltObject::from_int(1).bits();
+                    return Some(crate::molt_int_from_obj(args[0], args[1], has_base));
+                }
+                let msg = format!("int() takes at most 2 arguments ({} given)", args.len());
+                return Some(raise_exception::<_>(_py, "TypeError", &msg));
+            }
             return Some(call_class_init_with_args(_py, call_ptr, args));
         }
         None
