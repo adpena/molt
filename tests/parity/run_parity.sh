@@ -105,11 +105,8 @@ run_test() {
     mkdir -p "$build_out_dir"
 
     local build_rc=0
-    timeout "$TIMEOUT" "$MOLT_PYTHON" -m molt.cli build "$test_file" \
-        --build-profile "$BUILD_PROFILE" \
-        --capabilities "$CAPABILITIES" \
-        --respect-pythonpath \
-        --out-dir "$build_out_dir" \
+    timeout "$TIMEOUT" "$MOLT_PYTHON" -m molt build "$test_file" \
+        --target native \
         --output "$binary_path" \
         > "$test_work/build.out" 2> "$test_work/build.err" || build_rc=$?
 
