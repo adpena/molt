@@ -4994,9 +4994,13 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         let mut idx = 0usize;
                         while let Some(val) = list_elem_at(ptr, idx) {
                             let elem_bits = val;
-                            // Identity check first (CPython semantics: `x is y or x == y`).
-                            // This handles NaN: float('nan') is float('nan') when same object.
-                            if elem_bits == item_bits {
+                            // Identity check: bit-equality for non-float tagged
+                            // values.  NaN-boxed floats collapse all NaN values
+                            // to CANONICAL_NAN_BITS, so bit-equality gives false
+                            // positives for different NaN objects.  Pointer-tagged
+                            // objects (strings, lists, etc.) have unique addresses
+                            // so bit-equality is correct for identity.
+                            if elem_bits == item_bits && !obj_from_bits(elem_bits).is_float() {
                                 return MoltObject::from_bool(true).bits();
                             }
                             inc_ref_bits(_py, elem_bits);
@@ -5025,7 +5029,7 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                             return MoltObject::from_bool(false).bits();
                         }
                         for &elem_bits in elems.iter() {
-                            if elem_bits == item_bits {
+                            if elem_bits == item_bits && !obj_from_bits(elem_bits).is_float() {
                                 return MoltObject::from_bool(true).bits();
                             }
                             let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
@@ -5427,9 +5431,7 @@ pub extern "C" fn molt_list_contains(container_bits: u64, item_bits: u64) -> u64
                 let mut idx = 0usize;
                 while let Some(val) = list_elem_at(ptr, idx) {
                     let elem_bits = val;
-                    // Identity check first (CPython semantics: `x is y or x == y`).
-                    // This handles NaN: float('nan') is float('nan') when same object.
-                    if elem_bits == item_bits {
+                    if elem_bits == item_bits && !obj_from_bits(elem_bits).is_float() {
                         return MoltObject::from_bool(true).bits();
                     }
                     inc_ref_bits(_py, elem_bits);
