@@ -3613,12 +3613,6 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
                 *cell.borrow_mut() = (-1, -1);
                 val
             });
-<<<<<<< Updated upstream
-            let (c, ec) = if saved_col.0 >= 0 && saved_col.1 >= 0 {
-                (saved_col.0 - trim_offset, saved_col.1 - trim_offset)
-            } else {
-                (-1, -1)
-            };
             if saved_col.0 >= 0 && saved_col.1 >= 0 {
                 let c = saved_col.0 - trim_offset;
                 let ec = saved_col.1 - trim_offset;

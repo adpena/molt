@@ -3585,10 +3585,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     }
                     if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
                         object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
-<<<<<<< Updated upstream
-=======
                         // Mirror to instance dict for __dict__ parity.
->>>>>>> Stashed changes
                         crate::object::accessors::mirror_field_to_instance_dict(
                             _py, obj_ptr, slice.as_ptr(), slice.len(), val_bits,
                         );
