@@ -482,6 +482,13 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             for op in &else_blk.ops {
                 if let Some(mut opir) = lower_op(op) {
                     annotate_type_flags(&mut opir, op, types);
+                    if matches!(opir.kind.as_str(), "check_exception" | "try_start" | "try_end") {
+                        if let Some(orig_id) = opir.value {
+                            if let Some(&new_id) = original_to_new_label.get(&orig_id) {
+                                opir.value = Some(new_id);
+                            }
+                        }
+                    }
                     out.push(opir);
                 }
             }
