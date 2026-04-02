@@ -222,6 +222,27 @@ fn should_suppress(action: &str, message: &str, category: &str, lineno: i64) -> 
 ///   stacklevel_bits: Stack level for determining the caller location (int)
 ///
 /// Returns None.
+/// Emit a DeprecationWarning to stderr.  Used by runtime checks that
+/// detect deprecated patterns (e.g. `~bool`).  Deduplicates by message
+/// so the same warning is only printed once per process.
+pub(crate) fn emit_deprecation_warning(_py: &crate::PyToken<'_>, message: &str) {
+    use std::sync::{Mutex, LazyLock};
+    static SEEN: LazyLock<Mutex<std::collections::HashSet<u64>>> =
+        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+    let hash = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        message.hash(&mut hasher);
+        hasher.finish()
+    };
+    if let Ok(mut seen) = SEEN.lock() {
+        if !seen.insert(hash) {
+            return; // Already emitted
+        }
+    }
+    eprintln!("DeprecationWarning: {message}");
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_warnings_warn(
     message_bits: u64,
