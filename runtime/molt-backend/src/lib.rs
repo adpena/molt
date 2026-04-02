@@ -2947,36 +2947,13 @@ impl SimpleBackend {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
                         }
                         // Skip TIR for module chunks (complex megafunction splits),
-                        // very large functions, and functions with complex control
-                        // flow (many nested if/else) where the TIR roundtrip is
-                        // still not proven end to end.
-                        //
-                        // Exception-handling functions bypass TIR: while
-                        // lower_to_simple now preserves exception handler labels
-                        // (exception_handler_blocks set), the full exception
-                        // dispatch semantics (handler block content, branch targets
-                        // within handlers, try/except scope nesting) are not yet
-                        // roundtrip-safe.  validate_labels passes but runtime
-                        // behavior is wrong for function-level try/except.
-                        let cf_complexity = tmp_func.ops.iter()
-                            .filter(|op| matches!(op.kind.as_str(), "if" | "br_if" | "check_exception"))
-                            .count();
-                        // Exception-handling functions now go through TIR:
-                        // the exception_handler_blocks set in lower_to_simple
-                        // preserves handler labels, LAST_EXCEPTION_COL stashes
-                        // col_offset at raise time, and the polarity fixes ensure
-                        // correct loop body/exit ordering.  Verified 50/50 on core
-                        // conformance suite with MOLT_TIR_ENABLE_EH=1.
-                        //
-                        // Set MOLT_TIR_SKIP_EH=1 to restore the old bypass.
-                        let has_exception_handling = tmp_func.ops.iter()
-                            .any(|op| op.kind == "check_exception");
-                        let force_eh_bypass = std::env::var("MOLT_TIR_SKIP_EH").as_deref() == Ok("1");
-                        if tmp_func.name.contains("__molt_module_chunk_")
-                            || tmp_func.ops.len() > 2000
-                            || cf_complexity > 30
-                            || (has_exception_handling && force_eh_bypass)
-                        {
+                        // TIR handles all functions: no complexity guards,
+                        // no exception-handling bypass, no size limits.
+                        // Module chunks are the only skip — they contain
+                        // top-level imperative code with patterns (dynamic
+                        // imports, exec-like constructs) that the SSA pipeline
+                        // cannot yet represent without semantic loss.
+                        if tmp_func.name.contains("__molt_module_chunk_") {
                             return (idx, content_hash, Vec::new());
                         }
                         // Debug skip: MOLT_TIR_SKIP_PATTERN=<pat1,pat2,...> skips
@@ -3005,79 +2982,56 @@ impl SimpleBackend {
                         // functions that actually enter that roundtrip so the
                         // state-machine backend does not see residual phi ops.
                         rewrite_phi_to_store_load(&mut tmp_func.ops);
-                        // Wrap TIR pipeline in catch_unwind so any panic in
-                        // lowering/optimization falls back to original ops
-                        // instead of crashing the entire compilation.
                         let func_name = tmp_func.name.clone();
-                        let tir_result = std::panic::catch_unwind(
-                            std::panic::AssertUnwindSafe(|| {
-                                let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
-                                crate::tir::type_refine::refine_types(&mut tir_func);
-                                let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
-                                crate::tir::type_refine::refine_types(&mut tir_func);
-                                let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
-                                    std::collections::HashMap::new()
-                                } else {
-                                    crate::tir::type_refine::extract_type_map(&tir_func)
-                                };
-                                let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
-                                    &tir_func, &type_map,
-                                );
-                                if !crate::tir::lower_to_simple::validate_labels(&ops) {
-                                    return None;
-                                }
-                                // Debug: dump before/after for specific functions
-                                if std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| func_name.contains(&p)).unwrap_or(false) {
-                                    use std::io::Write;
-                                    let path = format!("/tmp/tir_diff_{}.txt", tir_func.name);
-                                    if let Ok(mut f) = std::fs::File::create(&path) {
-                                        let _ = writeln!(f, "=== TIR BEFORE ({}) ===", tir_func.name);
-                                        for (i, op) in tmp_func.ops.iter().enumerate() {
-                                            let _ = writeln!(f, "  {:3}: {:20} out={:15} var={:15} args={:30} val={:?} sval={:?}",
-                                                i, op.kind,
-                                                op.out.as_deref().unwrap_or(""),
-                                                op.var.as_deref().unwrap_or(""),
-                                                op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
-                                                op.value, op.s_value);
-                                        }
-                                        let _ = writeln!(f, "=== TIR AFTER ({}) ===", tir_func.name);
-                                        for (i, op) in ops.iter().enumerate() {
-                                            let _ = writeln!(f, "  {:3}: {:20} out={:15} var={:15} args={:30} val={:?} sval={:?}",
-                                                i, op.kind,
-                                                op.out.as_deref().unwrap_or(""),
-                                                op.var.as_deref().unwrap_or(""),
-                                                op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
-                                                op.value, op.s_value);
-                                        }
-                                        let _ = writeln!(f, "=== END DIFF ===");
-                                    }
-                                }
-                                Some(ops)
-                            }),
+                        let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
+                        crate::tir::type_refine::refine_types(&mut tir_func);
+                        let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                        crate::tir::type_refine::refine_types(&mut tir_func);
+                        let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
+                            std::collections::HashMap::new()
+                        } else {
+                            crate::tir::type_refine::extract_type_map(&tir_func)
+                        };
+                        let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
+                            &tir_func, &type_map,
                         );
-                        match tir_result {
-                            Ok(Some(ops)) => (idx, content_hash, ops),
-                            Ok(None) => {
-                                eprintln!(
-                                    "MOLT_BACKEND: TIR roundtrip emitted invalid labels for '{}'; using original ops",
-                                    func_name
-                                );
-                                (idx, content_hash, Vec::new())
-                            }
-                            Err(_panic) => {
-                                eprintln!(
-                                    "MOLT_BACKEND: TIR roundtrip panicked for '{}'; using original ops",
-                                    func_name
-                                );
-                                (idx, content_hash, Vec::new())
+                        assert!(
+                            crate::tir::lower_to_simple::validate_labels(&ops),
+                            "TIR roundtrip emitted invalid labels for '{}'", func_name,
+                        );
+                        // Debug: dump before/after for specific functions.
+                        if std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| func_name.contains(&p)).unwrap_or(false) {
+                            use std::io::Write;
+                            let path = format!("/tmp/tir_diff_{}.txt", tir_func.name);
+                            if let Ok(mut f) = std::fs::File::create(&path) {
+                                let _ = writeln!(f, "=== TIR BEFORE ({}) ===", tir_func.name);
+                                for (i, op) in tmp_func.ops.iter().enumerate() {
+                                    let _ = writeln!(f, "  {:3}: {:20} out={:15} var={:15} args={:30} val={:?} sval={:?}",
+                                        i, op.kind,
+                                        op.out.as_deref().unwrap_or(""),
+                                        op.var.as_deref().unwrap_or(""),
+                                        op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
+                                        op.value, op.s_value);
+                                }
+                                let _ = writeln!(f, "=== TIR AFTER ({}) ===", tir_func.name);
+                                for (i, op) in ops.iter().enumerate() {
+                                    let _ = writeln!(f, "  {:3}: {:20} out={:15} var={:15} args={:30} val={:?} sval={:?}",
+                                        i, op.kind,
+                                        op.out.as_deref().unwrap_or(""),
+                                        op.var.as_deref().unwrap_or(""),
+                                        op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
+                                        op.value, op.s_value);
+                                }
+                                let _ = writeln!(f, "=== END DIFF ===");
                             }
                         }
+                        (idx, content_hash, ops)
                     })
                     .collect()
                 );
 
                 // Phase 3 (sequential): apply validated TIR ops and cache them.
-                // Empty ops = TIR roundtrip failed validation; keep original ops.
+                // Empty ops = module chunk skipped TIR; keep original ops.
                 // Save original ops so we can fall back if Cranelift compilation fails.
                 let mut tir_original_ops: std::collections::HashMap<String, Vec<OpIR>> = std::collections::HashMap::new();
                 for (idx, content_hash, ops) in &results {

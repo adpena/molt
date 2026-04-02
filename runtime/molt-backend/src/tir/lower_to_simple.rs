@@ -283,13 +283,176 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 // Store body args for the body block.
                 emit_block_arg_stores(body_block, body_args, &block_param_vars, &mut out);
 
-                // Emit loop body blocks (all blocks in the loop region).
-                // For now, emit them inline using the RPO order.
-                // Body blocks have their own labels/terminators.
+                // Inline loop body blocks: emit all blocks between the
+                // header and the back-edge in RPO order.  Blocks that
+                // branch back to the header get loop_continue + loop_end.
+                let header_rpo_pos = rpo.iter().position(|b| *b == *bid);
+                let end_bid = func.loop_pairs.get(bid).copied();
+                let end_rpo_pos = end_bid.and_then(|eb| rpo.iter().position(|b| *b == eb));
+
+                for body_bid in &rpo {
+                    // Only emit blocks AFTER the header in RPO.
+                    let body_rpo = rpo.iter().position(|b| b == body_bid);
+                    if body_rpo <= header_rpo_pos { continue; }
+                    // Don't emit past the end block.
+                    if let Some(end_pos) = end_rpo_pos {
+                        if body_rpo >= Some(end_pos) { continue; }
+                    }
+                    // Skip the exit block (it's after the loop).
+                    if *body_bid == exit_block { continue; }
+                    // Skip blocks already inlined by if-patterns.
+                    if if_inlined_blocks.contains(body_bid) { continue; }
+                    let Some(body_block_ir) = func.blocks.get(body_bid) else { continue };
+
+                    // Emit label + load_var for the body block.
+                    out.push(OpIR {
+                        kind: "label".to_string(),
+                        value: Some(block_label_id(body_bid)),
+                        ..OpIR::default()
+                    });
+                    if let Some(param_vars) = block_param_vars.get(body_bid) {
+                        for (i, var_name) in param_vars.iter().enumerate() {
+                            if i < body_block_ir.args.len() {
+                                out.push(OpIR {
+                                    kind: "load_var".to_string(),
+                                    var: Some(var_name.clone()),
+                                    out: Some(value_var(body_block_ir.args[i].id)),
+                                    ..OpIR::default()
+                                });
+                            }
+                        }
+                    }
+
+                    // Emit the body block's ops.
+                            emit_block_ops(body_block_ir, &mut out);
+
+                    // Emit the body block's terminator.
+                    match &body_block_ir.terminator {
+                        Terminator::Branch { target, args } if *target == *bid => {
+                            // Back-edge to header: loop_continue + loop_end.
+                            emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
+                            out.push(OpIR { kind: "loop_continue".to_string(), ..OpIR::default() });
+                            out.push(OpIR { kind: "loop_end".to_string(), ..OpIR::default() });
+                        }
+                        _ => {
+                            // Other terminators (branches to other body blocks,
+                            // CondBranch for if-inside-loop, etc.)
+                            let original_has_ret = func.attrs.get("_original_has_ret")
+                                .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
+                                .unwrap_or(false);
+                            let body_role = func.loop_roles.get(body_bid).cloned()
+                                .unwrap_or(super::blocks::LoopRole::None);
+                            emit_terminator(
+                                body_block_ir,
+                                &block_param_vars,
+                                &block_label_id,
+                                &func.loop_roles,
+                                &mut out,
+                                original_has_ret,
+                                body_role,
+                                &func.loop_break_kinds,
+                            );
+                        }
+                    }
+                    // Mark as emitted so the main loop skips it.
+                    if_inlined_blocks.insert(*body_bid);
+                }
             } else if let Terminator::Branch { target, args } = &block.terminator {
-                // Unconditional branch — infinite loop or condition in a
-                // separate block. Emit body args and fall through.
+                // Header has a Branch (not CondBranch) — the condition check
+                // is in the successor block.  Emit args, then check if the
+                // target block has the CondBranch.
                 emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
+
+                eprintln!("BRANCH_DBG: following Branch to {:?}", target);
+                if let Some(cond_block) = func.blocks.get(target) {
+                    // Load the target block's params.
+                    if let Some(param_vars) = block_param_vars.get(target) {
+                        for (i, var_name) in param_vars.iter().enumerate() {
+                            if i < cond_block.args.len() {
+                                out.push(OpIR {
+                                    kind: "load_var".to_string(),
+                                    var: Some(var_name.clone()),
+                                    out: Some(value_var(cond_block.args[i].id)),
+                                    ..OpIR::default()
+                                });
+                            }
+                        }
+                    }
+                    // Emit the condition block's ops.
+                    emit_block_ops(cond_block, &mut out);
+
+                    // Check if this block has the CondBranch.
+                    if let Terminator::CondBranch { cond, then_block, then_args, else_block, else_args, .. } = &cond_block.terminator {
+                        let (exit_block_id, exit_args, body_block_id, body_args) = match break_kind {
+                            LoopBreakKind::BreakIfTrue => (*then_block, then_args, *else_block, else_args),
+                            LoopBreakKind::BreakIfFalse => (*else_block, else_args, *then_block, then_args),
+                        };
+                        emit_block_arg_stores(exit_block_id, exit_args, &block_param_vars, &mut out);
+                        let break_op_kind = match break_kind {
+                            LoopBreakKind::BreakIfTrue => "loop_break_if_true",
+                            LoopBreakKind::BreakIfFalse => "loop_break_if_false",
+                        };
+                        out.push(OpIR {
+                            kind: break_op_kind.to_string(),
+                            args: Some(vec![value_var(*cond)]),
+                            ..OpIR::default()
+                        });
+                            emit_block_arg_stores(body_block_id, body_args, &block_param_vars, &mut out);
+
+                        // Mark the condition block as inlined.
+                        if_inlined_blocks.insert(*target);
+
+                        // Inline body blocks.
+                        let header_rpo_pos = rpo.iter().position(|b| *b == *bid);
+                        let end_bid = func.loop_pairs.get(bid).copied();
+                        let end_rpo_pos = end_bid.and_then(|eb| rpo.iter().position(|b| *b == eb));
+
+                        for body_bid in rpo.clone() {
+                                                        let body_rpo = rpo.iter().position(|b| *b == body_bid);
+                            if body_rpo <= header_rpo_pos { continue; }
+                            if let Some(end_pos) = end_rpo_pos {
+                                if body_rpo >= Some(end_pos) { continue; }
+                            }
+                            if body_bid == exit_block_id { continue; }
+                            if body_bid == *target { continue; } // cond block already emitted
+                            // Don't skip if_inlined blocks — loop body blocks
+                            // may have been matched by the if-pattern detector
+                            // but must still be emitted inside the loop.
+let Some(body_block_ir) = func.blocks.get(&body_bid) else { continue };
+
+                            out.push(OpIR { kind: "label".to_string(), value: Some(block_label_id(&body_bid)), ..OpIR::default() });
+                            if let Some(pvars) = block_param_vars.get(&body_bid) {
+                                for (i, vn) in pvars.iter().enumerate() {
+                                    if i < body_block_ir.args.len() {
+                                        out.push(OpIR { kind: "load_var".to_string(), var: Some(vn.clone()), out: Some(value_var(body_block_ir.args[i].id)), ..OpIR::default() });
+                                    }
+                                }
+                            }
+                            emit_block_ops(body_block_ir, &mut out);
+                            match &body_block_ir.terminator {
+                                Terminator::Branch { target: bt, args: ba }
+                                    if *bt == *bid
+                                        || end_bid == Some(*bt)
+                                        || func.loop_roles.get(bt)
+                                            .map(|r| *r == super::blocks::LoopRole::LoopEnd)
+                                            .unwrap_or(false) =>
+                                {
+                                    // Back-edge: branch to header or LoopEnd block.
+                                    // Store args for the HEADER (not the end block).
+                                    emit_block_arg_stores(*bid, ba, &block_param_vars, &mut out);
+                                    out.push(OpIR { kind: "loop_continue".to_string(), ..OpIR::default() });
+                                    out.push(OpIR { kind: "loop_end".to_string(), ..OpIR::default() });
+                                }
+                                _ => {
+                                    let ohr = func.attrs.get("_original_has_ret").map(|v| matches!(v, super::ops::AttrValue::Bool(true))).unwrap_or(false);
+                                    let br = func.loop_roles.get(&body_bid).cloned().unwrap_or(super::blocks::LoopRole::None);
+                                    emit_terminator(body_block_ir, &block_param_vars, &block_label_id, &func.loop_roles, &mut out, ohr, br, &func.loop_break_kinds);
+                                }
+                            }
+                            if_inlined_blocks.insert(body_bid);
+                        }
+                    }
+                }
             }
 
             continue; // Skip the generic block emission below.
@@ -1090,31 +1253,15 @@ fn emit_terminator(
                 .get(target)
                 .map(|r| *r == super::blocks::LoopRole::LoopHeader)
                 .unwrap_or(false);
-            let source_is_in_loop = _loop_role != super::blocks::LoopRole::None
-                || _loop_roles.values().any(|r| *r != super::blocks::LoopRole::None);
-            // A back-edge is when we branch BACK to the header from inside
-            // the loop. The initial entry from outside is not a back-edge.
-            // Use _loop_role: LoopHeader blocks' own terminators never
-            // branch back to themselves (they branch to body/exit).
-            // Body blocks have LoopRole::None but are inside the loop.
-            // We detect back-edges by checking if the block_id is in the
-            // loop region (passed via the loop_role != None OR the block
-            // is referenced in loop metadata).
-            // Conservative: treat ALL branches to LoopHeaders as back-edges
-            // EXCEPT from blocks with no ops after the label (the preheader
-            // pattern where entry just falls through to the header).
-            let is_back_edge = target_is_loop_header
-                && !block.ops.is_empty()
-                && _loop_role != super::blocks::LoopRole::LoopHeader;
-            if is_back_edge {
-                out.push(OpIR {
-                    kind: "loop_continue".to_string(),
-                    ..OpIR::default()
-                });
-                out.push(OpIR {
-                    kind: "loop_end".to_string(),
-                    ..OpIR::default()
-                });
+            // Suppress jump when the target is a LoopHeader — we fall
+            // through to loop_start instead. Back-edges are handled
+            // inline in the LoopHeader handler.
+            let target_is_loop_header = _loop_roles
+                .get(target)
+                .map(|r| *r == super::blocks::LoopRole::LoopHeader)
+                .unwrap_or(false);
+            if target_is_loop_header {
+                // Fall through to loop_start — no jump needed.
             } else if !last_op_is_check_exception {
                 out.push(OpIR {
                     kind: "jump".to_string(),
