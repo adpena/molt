@@ -707,106 +707,12 @@ pub extern "C" fn molt_call_func_dispatch(
             return molt_call_func_direct(_py, fn_ptr_val, effective_args, code_id, func_bits);
         }
 
-        // --- Step 5: Handle missing args with defaults ---
-        // Use an inline [u64; 18] buffer for padded args (up to 16 effective + 2 defaults).
-        // This same buffer is reused for the generic __defaults__ fallback below,
-        // eliminating a second heap allocation.
+        // --- Step 5: Handle missing args with __defaults__ tuple ---
+        // Consult the __defaults__ tuple stored on the function object.
+        // The tuple holds right-aligned defaults for the last N parameters.
         if eff_nargs < func_arity {
             let missing = func_arity - eff_nargs;
             let mut padded_buf = [0u64; 18];
-            if missing <= 4 {
-                let default_kind = molt_function_default_kind(effective_func);
-                padded_buf[..eff_nargs].copy_from_slice(effective_args);
-                let mut padded_len = eff_nargs;
-
-                let filled = match (missing, default_kind) {
-                    (1, FUNC_DEFAULT_NONE) => {
-                        padded_buf[padded_len] = MoltObject::none().bits();
-                        padded_len += 1;
-                        true
-                    }
-                    (1, FUNC_DEFAULT_DICT_POP) => {
-                        padded_buf[padded_len] = MoltObject::from_int(1).bits();
-                        padded_len += 1;
-                        true
-                    }
-                    (1, FUNC_DEFAULT_DICT_UPDATE) => {
-                        padded_buf[padded_len] = missing_bits(_py);
-                        padded_len += 1;
-                        true
-                    }
-                    (1, FUNC_DEFAULT_ZERO) => {
-                        padded_buf[padded_len] = MoltObject::from_int(0).bits();
-                        padded_len += 1;
-                        true
-                    }
-                    (1, FUNC_DEFAULT_NEG_ONE) | (1, FUNC_DEFAULT_REPLACE_COUNT) => {
-                        padded_buf[padded_len] = MoltObject::from_int(-1).bits();
-                        padded_len += 1;
-                        true
-                    }
-                    (1, FUNC_DEFAULT_MISSING) => {
-                        padded_buf[padded_len] = missing_bits(_py);
-                        padded_len += 1;
-                        true
-                    }
-                    (2, FUNC_DEFAULT_NONE2) => {
-                        padded_buf[padded_len] = MoltObject::none().bits();
-                        padded_buf[padded_len + 1] = MoltObject::none().bits();
-                        padded_len += 2;
-                        true
-                    }
-                    (2, FUNC_DEFAULT_DICT_POP) => {
-                        padded_buf[padded_len] = MoltObject::none().bits();
-                        padded_buf[padded_len + 1] = MoltObject::from_int(0).bits();
-                        padded_len += 2;
-                        true
-                    }
-                    // str.count/find/index slice defaults
-                    (4, FUNC_DEFAULT_SLICE_ARGS) => {
-                        let zero = MoltObject::from_int(0).bits();
-                        padded_buf[padded_len] = zero;
-                        padded_buf[padded_len + 1] = zero;
-                        padded_buf[padded_len + 2] = zero;
-                        padded_buf[padded_len + 3] = zero;
-                        padded_len += 4;
-                        true
-                    }
-                    (3, FUNC_DEFAULT_SLICE_ARGS) => {
-                        let zero = MoltObject::from_int(0).bits();
-                        let one = MoltObject::from_int(1).bits();
-                        padded_buf[padded_len] = zero; // end
-                        padded_buf[padded_len + 1] = one;  // has_start
-                        padded_buf[padded_len + 2] = zero; // has_end
-                        padded_len += 3;
-                        true
-                    }
-                    (2, FUNC_DEFAULT_SLICE_ARGS) => {
-                        let one = MoltObject::from_int(1).bits();
-                        padded_buf[padded_len] = one; // has_start
-                        padded_buf[padded_len + 1] = one; // has_end
-                        padded_len += 2;
-                        true
-                    }
-                    _ => false,
-                };
-
-                if filled {
-                    return molt_call_func_direct(
-                        _py,
-                        fn_ptr_val,
-                        &padded_buf[..padded_len],
-                        code_id,
-                        func_bits,
-                    );
-                }
-            }
-
-            // Generic fallback: consult __defaults__ tuple on the function.
-            // This handles user-defined functions with keyword default
-            // arguments (e.g. `def f(a, b, lo=0, hi=100)`) that the compact
-            // default_kind encoding cannot represent.
-            // Reuses padded_buf from above to avoid a second heap allocation.
             unsafe {
                 let defaults_bits = function_attr_bits(
                     _py,

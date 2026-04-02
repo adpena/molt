@@ -1858,12 +1858,13 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     // descriptor protocol.  f.__get__(instance, owner) returns
                     // a bound method binding f to instance, or f itself when
                     // instance is None.
-                    let func_bits = crate::builtins::methods::builtin_func_bits_with_default(
+                    let none = MoltObject::none().bits();
+                    let func_bits = crate::builtins::methods::builtin_func_bits_with_defaults_tuple(
                         _py,
                         &runtime_state(_py).method_cache.function_descriptor_get,
                         fn_addr!(molt_function_descriptor_get),
                         3, // (self, instance, owner)
-                        crate::constants::FUNC_DEFAULT_NONE,
+                        &[none],
                     );
                     let self_bits = MoltObject::from_ptr(obj_ptr).bits();
                     return Some(molt_bound_method_new(func_bits, self_bits));
