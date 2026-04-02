@@ -2801,8 +2801,8 @@ impl SimpleBackend {
         // whose condition cannot be expressed as a structured
         // loop_break_if_{true,false} are emitted as plain label/jump/br_if
         // blocks (not loop_start/loop_end) to avoid orphaned Cranelift blocks.
-        // Set MOLT_TIR_OPT=0 to disable.
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        // TIR default OFF: sieve SIGILL from TIR roundtrip. Set MOLT_TIR_OPT=1 to enable.
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
