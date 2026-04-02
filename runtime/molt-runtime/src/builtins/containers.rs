@@ -6,7 +6,7 @@ macro_rules! fn_addr {
 
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
-    TYPE_ID_FROZENSET, TYPE_ID_SET, alloc_tuple, builtin_func_bits,
+    TYPE_ID_FROZENSET, TYPE_ID_LIST_INT, TYPE_ID_SET, alloc_tuple, builtin_func_bits,
     builtin_func_bits_with_defaults_tuple,
     dec_ref_bits, dict_clear_method, dict_copy_method, dict_fromkeys_method, dict_get_method,
     dict_items_method, dict_keys_method, dict_pop_method, dict_popitem_method,
@@ -593,7 +593,13 @@ pub(crate) fn tuple_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
 }
 
 pub(crate) unsafe fn list_len(ptr: *mut u8) -> usize {
-    unsafe { seq_vec_ref(ptr).len() }
+    unsafe {
+        if object_type_id(ptr) == TYPE_ID_LIST_INT {
+            crate::object::layout::list_int_vec_ref(ptr).len()
+        } else {
+            seq_vec_ref(ptr).len()
+        }
+    }
 }
 
 pub(crate) unsafe fn tuple_len(ptr: *mut u8) -> usize {
