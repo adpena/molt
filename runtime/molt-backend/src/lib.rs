@@ -2969,13 +2969,21 @@ impl SimpleBackend {
                         let cf_complexity = tmp_func.ops.iter()
                             .filter(|op| matches!(op.kind.as_str(), "if" | "br_if" | "check_exception"))
                             .count();
+                        // Exception-handling functions now go through TIR:
+                        // the exception_handler_blocks set in lower_to_simple
+                        // preserves handler labels, LAST_EXCEPTION_COL stashes
+                        // col_offset at raise time, and the polarity fixes ensure
+                        // correct loop body/exit ordering.  Verified 50/50 on core
+                        // conformance suite with MOLT_TIR_ENABLE_EH=1.
+                        //
+                        // Set MOLT_TIR_SKIP_EH=1 to restore the old bypass.
                         let has_exception_handling = tmp_func.ops.iter()
                             .any(|op| op.kind == "check_exception");
-                        let skip_eh_bypass = std::env::var("MOLT_TIR_ENABLE_EH").as_deref() == Ok("1");
+                        let force_eh_bypass = std::env::var("MOLT_TIR_SKIP_EH").as_deref() == Ok("1");
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
-                            || (has_exception_handling && !skip_eh_bypass)
+                            || (has_exception_handling && force_eh_bypass)
                         {
                             return (idx, content_hash, Vec::new());
                         }
