@@ -806,6 +806,11 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                     return "[...]".to_string();
                 }
                 let elems = seq_vec_ref(ptr);
+                if std::env::var("MOLT_DEBUG_LIST_REPR").as_deref() == Ok("1") {
+                    eprintln!("list_repr: list_ptr={:p} vec_data={:p} len={} raw_elems={:?}",
+                        ptr, elems.as_ptr(), elems.len(),
+                        elems.iter().map(|b| format!("0x{:016x}", b)).collect::<Vec<_>>());
+                }
                 let mut out = String::from("[");
                 for (idx, elem) in elems.iter().enumerate() {
                     if idx > 0 {
