@@ -17272,7 +17272,7 @@ impl SimpleBackend {
                         builder.switch_to_block(block);
                         builder
                             .ins()
-                            .trap(cranelift_codegen::ir::TrapCode::user(0).unwrap());
+                            .trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
                     }
                 }
             }

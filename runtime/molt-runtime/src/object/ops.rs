@@ -1533,7 +1533,18 @@ pub extern "C" fn molt_object_hash(val: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_id(val: u64) -> u64 {
-    crate::with_gil_entry!(_py, { int_bits_from_i64(_py, val as i64) })
+    crate::with_gil_entry!(_py, {
+        let obj = obj_from_bits(val);
+        // For pointer-backed objects, use the raw pointer address as id
+        // (matches CPython's id() which returns the memory address).
+        // For inline values (ints, small floats, bools, None), use the
+        // NaN-boxed bits directly — they are canonical.
+        if let Some(ptr) = obj.as_ptr() {
+            int_bits_from_i64(_py, ptr as i64)
+        } else {
+            int_bits_from_i64(_py, val as i64)
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
