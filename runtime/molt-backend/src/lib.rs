@@ -2799,8 +2799,10 @@ impl SimpleBackend {
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
         // TIR default ON: loop markers preserved, EH functions bypassed.
-        // Disable with MOLT_TIR_OPT=0.
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        // TIR opt-in: MOLT_TIR_OPT=1. SSA phi-placement doesn't create phis
+        // for store_var/load_var at loop headers — ALL function-level while
+        // loops infinite-loop. This is the fundamental blocker to default ON.
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
