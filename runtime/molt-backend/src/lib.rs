@@ -2484,12 +2484,22 @@ impl SimpleBackend {
                     func,
                     name,
                 } => {
-                    match Self::retry_define_at_opt_none(&mut self.module, func_id, *func, &name) {
-                        Ok(()) => {
+                    // Wrap retry in catch_unwind: Cranelift can panic
+                    // even at opt_level=none (e.g. blockorder or
+                    // alias_analysis on functions with orphaned blocks).
+                    let retry_result = std::panic::catch_unwind(
+                        std::panic::AssertUnwindSafe(|| {
+                            Self::retry_define_at_opt_none(
+                                &mut self.module, func_id, *func, &name,
+                            )
+                        }),
+                    );
+                    match retry_result {
+                        Ok(Ok(())) => {
                             self.defined_func_names.insert(name.clone());
                             eprintln!("  -> {} compiled successfully at opt_level=none", name);
                         }
-                        Err(retry_err) => {
+                        Ok(Err(retry_err)) => {
                             eprintln!("  -> retry also failed for {}: {}", name, retry_err);
                             let sig = self
                                 .module
@@ -2498,7 +2508,31 @@ impl SimpleBackend {
                                 .signature
                                 .clone();
                             eprintln!(
-                                "  -> emitting trap stub for {} (function too large for Cranelift)",
+                                "  -> emitting trap stub for {} (Cranelift error)",
+                                name
+                            );
+                            match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
+                                Ok(()) => {
+                                    self.defined_func_names.insert(name);
+                                }
+                                Err(stub_err) => {
+                                    eprintln!(
+                                        "  -> trap stub also failed for {}: {}",
+                                        name, stub_err
+                                    );
+                                }
+                            }
+                        }
+                        Err(_panic) => {
+                            eprintln!("  -> retry panicked for {}", name);
+                            let sig = self
+                                .module
+                                .declarations()
+                                .get_function_decl(func_id)
+                                .signature
+                                .clone();
+                            eprintln!(
+                                "  -> emitting trap stub for {} (Cranelift panic)",
                                 name
                             );
                             match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
@@ -2736,14 +2770,15 @@ impl SimpleBackend {
         // against sieve, fib, and nested while+if patterns.
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        // TIR default OFF pending body/exit block mapping fix for sieve.
-        // The body/exit swap (commit 50c5aa2eb) was reverted but the sieve
-        // still crashes Cranelift. Set MOLT_TIR_OPT=1 to enable.
-        // TIR default OFF: the NanBoxConsts refactor (Variable→iconst) changed
-        // how CLIF IR is generated, making TIR-roundtripped ops incompatible
-        // with Cranelift's alias analysis / block ordering.  Enable with
-        // MOLT_TIR_OPT=1 for development / benchmarking.
-        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+        // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
+        // The TIR roundtrip (lower→refine→optimize→lower-back) is enabled by
+        // default.  Functions that crash Cranelift compilation get a trap stub
+        // via the catch_unwind retry path in flush_deferred_defines.  Loops
+        // whose condition cannot be expressed as a structured
+        // loop_break_if_{true,false} are emitted as plain label/jump/br_if
+        // blocks (not loop_start/loop_end) to avoid orphaned Cranelift blocks.
+        // Set MOLT_TIR_OPT=0 to disable.
+        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
