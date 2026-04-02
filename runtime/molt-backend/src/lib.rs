@@ -2793,7 +2793,7 @@ impl SimpleBackend {
         // TIR default ON: loop roundtrip preserves structured markers.
         // loop info that the native backend needs for raw_int_shadow and type
         // Disable with MOLT_TIR_OPT=0. Type specialization passes active.
-        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
