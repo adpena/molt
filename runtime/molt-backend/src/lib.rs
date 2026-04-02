@@ -3026,8 +3026,7 @@ impl SimpleBackend {
                             // Also skip functions with store_index inside loops:
                             // TIR roundtrip loses NaN-box pointer tags on load_var
                             // for list variables, causing subscript failures.
-                            || (tmp_func.ops.iter().any(|op| op.kind == "loop_start")
-                                && tmp_func.ops.iter().any(|op| op.kind == "store_index"))
+                            // store_index guard DISABLED for testing
                         {
                             return (idx, content_hash, Vec::new());
                         }
