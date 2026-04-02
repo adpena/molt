@@ -311,7 +311,7 @@ class _UnionGenericAlias(_TypingBase):
         args = self.__args__
         if len(args) == 2 and _NoneType in args:
             other = args[0] if args[1] is _NoneType else args[1]
-            return f"typing.Optional[{_type_repr(other)}]"
+            return f"{_type_repr(other)} | None"
         return f"typing.Union[{_format_args(args)}]"
 
     def __call__(self, *_args: object, **_kwargs: object) -> object:
