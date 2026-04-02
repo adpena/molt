@@ -2804,7 +2804,7 @@ impl SimpleBackend {
         // loop info that the native backend needs for raw_int_shadow and type
         // Disable with MOLT_TIR_OPT=0.
         let _ = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/tir_debug_entry.txt").and_then(|mut f| { use std::io::Write; writeln!(f, "TIR_GATE: setting={:?} enabled={} functions={}", tir_setting, tir_setting.as_deref() != Some("0"), ir.functions.len()) });
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
