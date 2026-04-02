@@ -2801,7 +2801,7 @@ impl SimpleBackend {
         // TIR default ON: loop markers preserved, EH functions bypassed.
         // loop info that the native backend needs for raw_int_shadow and type
         // Disable with MOLT_TIR_OPT=0.
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
