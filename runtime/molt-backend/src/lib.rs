@@ -2798,7 +2798,10 @@ impl SimpleBackend {
         // handles back-edges via has_loop_or_backedge detection.
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        // TIR default OFF: TIR roundtrip to label/jump/br_if loses structured
+        // loop info that the native backend needs for raw_int_shadow and type
+        // specialization. Sieve: 15ms (OFF) vs 25ms (ON). Enable with MOLT_TIR_OPT=1.
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");

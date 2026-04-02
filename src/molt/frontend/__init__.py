@@ -1222,7 +1222,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.async_locals_base: int = 0
         self.async_closure_offset: int | None = None
         self.async_local_hints: dict[str, str] = {}
-        self.eager_annotations = sys.version_info < (3, 14)
+        # Always eagerly emit __annotations__ dicts.  Our runtime does not
+        # implement the deferred __annotate__ protocol (PEP 749), so we must
+        # materialise annotations at definition time regardless of the host
+        # Python version.
+        self.eager_annotations = True
         self.parse_codec = parse_codec
         self.type_hint_policy = type_hint_policy
         self.explicit_type_hints: dict[str, str] = {}
@@ -22067,6 +22071,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 cell = self.boxed_locals[name]
                 idx = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+                # Read old value from cell before overwriting, then dec_ref
+                # to release the initial allocation ref.  Without this, the
+                # object's __del__ won't fire until function return.
+                old_val = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=old_val))
                 missing = self._emit_missing_value()
                 self.globals.pop(name, None)
                 if allow_missing:
@@ -22080,6 +22089,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         result=MoltValue("none"),
                     )
                 )
+                # Dec_ref the old value to balance the initial allocation ref.
+                self.emit(MoltOp(kind="DEC_REF", args=[old_val], result=MoltValue("none")))
                 self.unbound_check_names.add(name)
                 return
             local_val = self.locals.pop(name, None)

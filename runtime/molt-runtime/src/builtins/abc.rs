@@ -1132,6 +1132,7 @@ fn protocol_collect_structural_members(
         b"__module__",
         b"__doc__",
         b"__annotations__",
+        b"__annotate__",
         b"_is_protocol",
         b"_is_runtime_protocol",
         b"__protocol_attrs__",
@@ -1141,6 +1142,16 @@ fn protocol_collect_structural_members(
         b"__subclasshook__",
         b"__init_subclass__",
         b"__abstractmethods__",
+        // Internal class attributes that are never part of the structural
+        // contract — these are set by the compiler or runtime on every class.
+        b"__classdictcell__",
+        b"__mro__",
+        b"__bases__",
+        b"__firstlineno__",
+        b"__static_attributes__",
+        b"__qualname__",
+        b"__slots__",
+        b"__type_params__",
     ];
 
     // Collect own members from the protocol class itself.
