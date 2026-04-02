@@ -3614,11 +3614,13 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
             let (c, ec) = if saved_col.0 >= 0 && saved_col.1 >= 0 {
                 (saved_col.0 - trim_offset, saved_col.1 - trim_offset)
             } else {
-                crate::object::ops_sys::traceback_infer_column_offsets(trimmed)
+                (-1, -1)
             };
-            let caret = crate::object::ops_sys::traceback_format_caret_line_native(trimmed, c, ec);
-            if !caret.is_empty() {
-                out.push_str(&caret);
+            if c >= 0 && ec >= 0 {
+                let caret = crate::object::ops_sys::traceback_format_caret_line_native(trimmed, c, ec);
+                if !caret.is_empty() {
+                    out.push_str(&caret);
+                }
             }
         }
         current_bits = next_bits;
