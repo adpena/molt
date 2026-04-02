@@ -2720,6 +2720,8 @@ impl SimpleBackend {
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
+        let _ = std::fs::write("/tmp/tir_debug_entry.txt", format!("COMPILE_ENTRY: {} functions
+", ir.functions.len()));
         let timing = env_setting("MOLT_BACKEND_TIMING")
             .as_deref()
             .map(parse_truthy_env)
@@ -2802,7 +2804,7 @@ impl SimpleBackend {
         // loop info that the native backend needs for raw_int_shadow and type
         // Disable with MOLT_TIR_OPT=0.
         let tir_setting = env_setting("MOLT_TIR_OPT");
-        eprintln!("TIR_GATE: setting={:?} enabled={}", tir_setting, tir_setting.as_deref() != Some("0"));
+        let _ = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/tir_debug_entry.txt").and_then(|mut f| { use std::io::Write; writeln!(f, "TIR_GATE: setting={:?} enabled={}", tir_setting, tir_setting.as_deref() != Some("0")) });
         if tir_setting.as_deref() != Some("0") {
             use rayon::prelude::*;
 
