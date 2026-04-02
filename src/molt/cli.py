@@ -10429,11 +10429,21 @@ def _backend_daemon_request_bytes(
     *,
     timeout: float | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
+    # Check for daemon redirect (overflow agent sharing another daemon).
+    actual_socket = socket_path
+    redirect_file = socket_path.with_suffix(".redirect")
+    if redirect_file.exists():
+        try:
+            redirected = Path(redirect_file.read_text().strip())
+            if redirected.exists():
+                actual_socket = redirected
+        except OSError:
+            pass
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             if timeout is not None:
                 sock.settimeout(timeout)
-            sock.connect(str(socket_path))
+            sock.connect(str(actual_socket))
             return _backend_daemon_request_on_socket(sock, data, shutdown_write=True)
     except OSError as exc:
         return None, f"backend daemon connection failed: {exc}"
@@ -10803,62 +10813,68 @@ def _start_backend_daemon(
     except OSError:
         pass
     daemon_pid: int | None = None
-    # ── Stale daemon cleanup ──
-    # Remove sockets whose owning daemon is no longer alive, and enforce a
-    # maximum daemon count to prevent agent swarms from exhausting memory.
+    # ── Stale daemon cleanup + concurrency limit ──
+    # 1. Remove sockets whose owning daemon is dead (stale cleanup).
+    # 2. If too many live daemons exist, reuse the newest one instead of
+    #    spawning.  This serializes the overflow agent's builds through a
+    #    shared daemon — graceful degradation instead of OOM.
     _MAX_CONCURRENT_DAEMONS = 3
     try:
         sock_dir = socket_path.parent
-        live_socks = 0
-        for sock_file in sorted(sock_dir.glob("moltbd.*.sock")):
-            # Check if the daemon PID file exists and the process is alive.
+        live_daemons: list[tuple[Path, int]] = []  # (socket_path, pid)
+        for sock_file in sock_dir.glob("moltbd.*.sock"):
+            if sock_file.is_symlink():
+                # Previous overflow redirect — remove stale symlink.
+                try:
+                    sock_file.unlink()
+                except OSError:
+                    pass
+                continue
             pid_file = sock_file.with_suffix(".pid")
             if pid_file.exists():
                 try:
-                    stale_pid = int(pid_file.read_text().strip())
-                    os.kill(stale_pid, 0)  # probe — doesn't kill
-                    live_socks += 1
+                    daemon_pid_probe = int(pid_file.read_text().strip())
+                    os.kill(daemon_pid_probe, 0)  # probe — doesn't kill
+                    live_daemons.append((sock_file, daemon_pid_probe))
                     continue
                 except (ValueError, ProcessLookupError, PermissionError, OSError):
                     pass
-            # No PID file or process dead — remove stale socket.
+            # Dead daemon — clean up socket and PID file.
+            for f in (sock_file, pid_file):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        if len(live_daemons) >= _MAX_CONCURRENT_DAEMONS:
+            # Reuse the newest daemon instead of spawning a new one.
+            # Sort by socket mtime (newest first) to pick the most recently
+            # started daemon, which is most likely to have the latest binary.
+            live_daemons.sort(key=lambda x: x[0].stat().st_mtime, reverse=True)
+            shared_sock, shared_pid = live_daemons[0]
+            if not json_output:
+                print(
+                    f"[molt] daemon limit ({_MAX_CONCURRENT_DAEMONS}) reached; "
+                    f"sharing daemon pid={shared_pid} at {shared_sock.name}",
+                    file=sys.stderr,
+                )
+            # Point our socket path to the shared daemon via copy (not
+            # symlink — Unix sockets can't be symlinked reliably).
+            # Instead, just use the shared socket path directly by
+            # writing it to our PID file so the caller can find it.
             try:
-                sock_file.unlink()
-                if pid_file.exists():
-                    pid_file.unlink()
+                pid_path.parent.mkdir(parents=True, exist_ok=True)
+                pid_path.write_text(str(shared_pid))
             except OSError:
                 pass
-        if live_socks >= _MAX_CONCURRENT_DAEMONS:
-            # Too many daemons.  Instead of killing another agent's active
-            # daemon (which causes silent compilation failures), reuse an
-            # existing daemon by connecting to the newest one.  The session
-            # isolation hash in the socket name means each session gets its
-            # own socket, but the underlying daemon binary is the same —
-            # any daemon can serve any session's requests.
-            #
-            # Fall through to the spawn logic below which will detect the
-            # existing socket is gone (we didn't create one) and retry.
-            # The net effect: the 4th+ agent shares a daemon with an
-            # earlier agent, serializing their builds rather than OOM-ing.
-            newest_sock = max(
-                (s for s in sock_dir.glob("moltbd.*.sock") if s != socket_path),
-                key=lambda s: s.stat().st_mtime,
-                default=None,
-            )
-            if newest_sock is not None:
-                # Symlink our socket path to the newest existing daemon.
-                # This makes the current session connect to the shared daemon.
-                try:
-                    if socket_path.exists() or socket_path.is_symlink():
-                        socket_path.unlink()
-                    socket_path.symlink_to(newest_sock)
-                    # Copy the PID file too so our cleanup logic works.
-                    newest_pid = newest_sock.with_suffix(".pid")
-                    if newest_pid.exists():
-                        pid_path.write_text(newest_pid.read_text())
-                    return True  # Reuse existing daemon — no new spawn.
-                except OSError:
-                    pass  # Symlink failed — fall through to spawn.
+            # Return the shared socket path to the caller.  The caller
+            # will connect to it instead of our session-specific socket.
+            # We signal this by creating a redirect file.
+            redirect_file = socket_path.with_suffix(".redirect")
+            try:
+                redirect_file.write_text(str(shared_sock))
+            except OSError:
+                pass
+            return True
     except OSError:
         pass
     try:
