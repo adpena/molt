@@ -594,7 +594,8 @@ def _run_wrapper_build(
         return None, duration, contract_error
     assert contract is not None
     if not json_output:
-        _emit_wrapper_build_success_signals(payload)
+        if verbose:
+            _emit_wrapper_build_success_signals(payload)
         # Forward compilation warnings (SyntaxWarning, DeprecationWarning)
         # from the build subprocess so they appear in `molt run` output,
         # matching CPython's behaviour where warnings are emitted during
