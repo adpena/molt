@@ -10772,7 +10772,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 and len(node.left.elts) == 1
                 and isinstance(node.left.elts[0], ast.Constant)
                 and isinstance(node.left.elts[0].value, int)
-                and not isinstance(node.left.elts[0].value, bool)
             ):
                 list_node, count_node = node.left, node.right
             elif (
@@ -10780,7 +10779,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 and len(node.right.elts) == 1
                 and isinstance(node.right.elts[0], ast.Constant)
                 and isinstance(node.right.elts[0].value, int)
-                and not isinstance(node.right.elts[0].value, bool)
             ):
                 list_node, count_node = node.right, node.left
             if list_node is not None and count_node is not None:
