@@ -30,9 +30,13 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     //    The rewrite is safe because lower_to_simple_ir restores the original
     //    store_index/index patterns from the SSA output.
     let mut working_ops = ir.ops.clone();
-    // Memory SSA disabled until lower_to_simple_ir reverse conversion is implemented.
-    // let cell_rewrite_applied = rewrite_cell_locals_to_store_load(&mut working_ops);
-    let cell_rewrite_applied = false;
+    // Memory SSA: rewrite cell-based locals (store_index/index on list) to
+    // store_var/load_var so the SSA pass creates proper phi nodes at loop
+    // headers.  The native backend handles store_var/load_var natively via
+    // Cranelift variables — no reverse conversion needed.
+    // Memory SSA disabled — rewrite adds store_var in parallel with
+    // store_index instead of replacing. SSA picks up the stale store_index.
+    let _cell_rewrite_applied = false; // rewrite_cell_locals_to_store_load(&mut working_ops);
 
     let tmp_ir = crate::ir::FunctionIR {
         name: ir.name.clone(),
