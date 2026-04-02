@@ -639,7 +639,11 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                         );
                     });
 
-                    if stdlib_path.exists() {
+                    // Stdlib partition disabled — compile everything into one .o.
+                    // The partition system has cache key mismatches that cause
+                    // linker errors (undefined molt_init_* symbols). Re-enable
+                    // after the CLI and daemon agree on stdlib cache paths.
+                    if false && stdlib_path.exists() {
                         if shared_stdlib_cache_matches(
                             stdlib_path,
                             expected_stdlib_cache_key.as_deref(),

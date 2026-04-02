@@ -3299,6 +3299,37 @@ pub(crate) fn format_exception(_py: &PyToken<'_>, ptr: *mut u8) -> String {
 }
 
 pub(crate) fn format_exception_with_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> String {
+    // CPython displays chained exceptions recursively: context first,
+    // then a separator, then the current exception.
+    let suppress = unsafe { exception_suppress_bits(ptr) };
+    let suppress_context = is_truthy(_py, obj_from_bits(suppress));
+    if !suppress_context {
+        let cause_bits = unsafe { exception_cause_bits(ptr) };
+        let context_bits = unsafe { exception_context_bits(ptr) };
+        if let Some(cause_ptr) = obj_from_bits(cause_bits).as_ptr() {
+            if unsafe { object_type_id(cause_ptr) } == TYPE_ID_EXCEPTION {
+                let mut chain = format_exception_with_traceback(_py, cause_ptr);
+                chain.push_str(
+                    "\nThe above exception was the direct cause of the following exception:\n\n",
+                );
+                chain.push_str(&format_single_exception(_py, ptr));
+                return chain;
+            }
+        } else if let Some(ctx_ptr) = obj_from_bits(context_bits).as_ptr() {
+            if unsafe { object_type_id(ctx_ptr) } == TYPE_ID_EXCEPTION {
+                let mut chain = format_exception_with_traceback(_py, ctx_ptr);
+                chain.push_str(
+                    "\nDuring handling of the above exception, another exception occurred:\n\n",
+                );
+                chain.push_str(&format_single_exception(_py, ptr));
+                return chain;
+            }
+        }
+    }
+    format_single_exception(_py, ptr)
+}
+
+fn format_single_exception(_py: &PyToken<'_>, ptr: *mut u8) -> String {
     let mut out = String::new();
     if let Some(trace) = format_traceback(_py, ptr) {
         out.push_str(&trace);

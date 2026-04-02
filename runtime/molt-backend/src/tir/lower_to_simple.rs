@@ -183,9 +183,10 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             (None, None) => None,
             _ => { continue; }
         };
-        if_patterns.insert(*bid, IfPattern { then_bid, else_bid, join_bid });
-        if_inlined_blocks.insert(then_bid);
-        if_inlined_blocks.insert(else_bid);
+        // DISABLED: if-pattern inlining drops loop back-edges
+        // if_patterns.insert(*bid, IfPattern { then_bid, else_bid, join_bid });
+        // if_inlined_blocks.insert(then_bid);
+        // if_inlined_blocks.insert(else_bid);
     }
     for bid in &rpo {
         let loop_role = func
@@ -1044,6 +1045,13 @@ fn emit_terminator(
             //   store_var then_args...
             //   jump → then_block
             let needs_trampoline = !then_args.is_empty();
+            {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tir_condbranch.log") {
+                    let _ = writeln!(f, "CondBranch: then_args={}, else_args={}, trampoline={}, then={:?}, else={:?}",
+                        then_args.len(), else_args.len(), needs_trampoline, then_block, else_block);
+                }
+            }
             if needs_trampoline {
                 // Allocate a fresh label for the then-path trampoline.
                 let trampoline_label = {
