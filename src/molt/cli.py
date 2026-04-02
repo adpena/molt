@@ -14242,7 +14242,15 @@ def _build_native_link_command(
         profile=profile,
     )
     _link_inputs = [str(stub_path), str(output_obj)]
-    if stdlib_obj_path is not None and stdlib_obj_path.exists():
+    # Only include stdlib_obj if it was produced by this build session's
+    # non-daemon backend. The daemon compiles all functions (stdlib+user)
+    # into output.o, so including a stale stdlib_shared_*.o causes
+    # duplicate-symbol linker errors.
+    if (
+        stdlib_obj_path is not None
+        and stdlib_obj_path.exists()
+        and not _backend_daemon_enabled()
+    ):
         _link_inputs.append(str(stdlib_obj_path))
     # Use -force_load on macOS to ensure ALL objects from the static archive
     # are included, resolving circular references between molt-runtime and
