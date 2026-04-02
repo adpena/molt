@@ -536,7 +536,7 @@ pub fn validate_labels(ops: &[crate::ir::OpIR]) -> bool {
                     defined_labels.insert(id);
                 }
             }
-            "jump" | "br_if" | "check_exception" => {
+            "jump" | "br_if" | "check_exception" | "try_start" | "try_end" => {
                 if let Some(id) = op.value {
                     referenced_labels.insert(id);
                 }

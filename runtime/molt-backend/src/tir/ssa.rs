@@ -1385,8 +1385,16 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "import" => OpCode::Import,
         "import_from" => OpCode::ImportFrom,
         "warn_stderr" => OpCode::WarnStderr,
-        // Fallback for unknown ops.
-        _ => OpCode::Copy,
+        // Unknown ops are treated as passthrough Copy. This is correct for ops
+        // that the TIR pipeline does not need to optimize (e.g. framework-specific
+        // ops that the backend emits verbatim). The SimpleIR→TIR→SimpleIR roundtrip
+        // preserves the original op kind string, so the backend handles them.
+        other => {
+            if cfg!(debug_assertions) {
+                eprintln!("tir::kind_to_opcode: unrecognized op kind '{other}', treating as Copy");
+            }
+            OpCode::Copy
+        }
     }
 }
 
