@@ -111,12 +111,45 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         })
         .collect();
 
+    // ── Pre-compute structured-break eligibility for each loop header ──
+    // A loop header has a "structured break" when its condition is expressed
+    // as a CondBranch (directly or via the first body block).  Only these
+    // loops emit loop_start/loop_break_if_{true,false}/loop_end.  Loops
+    // with unstructured conditions (br_if/jump) are emitted as plain
+    // label/jump/br_if blocks to avoid creating orphaned Cranelift blocks.
+    let structured_loop_headers: HashSet<BlockId> = {
+        let mut set = HashSet::new();
+        for bid in &rpo {
+            let role = func.loop_roles.get(bid).cloned()
+                .unwrap_or(super::blocks::LoopRole::None);
+            if role != super::blocks::LoopRole::LoopHeader {
+                continue;
+            }
+            let Some(block) = func.blocks.get(bid) else { continue };
+            let has_cond = match &block.terminator {
+                Terminator::CondBranch { .. } => true,
+                Terminator::Branch { target, .. } => {
+                    func.blocks.get(target)
+                        .is_some_and(|b| matches!(&b.terminator, Terminator::CondBranch { .. }))
+                }
+                _ => false,
+            };
+            if has_cond {
+                set.insert(*bid);
+            }
+        }
+        set
+    };
+
     // ── Loop region detection (must run before if-pattern detection) ──
     // Compute loop_region_blocks first so that the if-pattern detector can
     // refuse to inline blocks that belong to a loop body.  Inlining loop
     // body blocks as if/else/end_if corrupts the loop back-edge because the
     // inlined blocks lose their labels and the loop_continue/loop_end
     // markers can no longer reach them.
+    //
+    // Only loops with structured breaks participate in region detection.
+    // Loops with unstructured control flow are emitted as plain blocks.
     let mut loop_region_blocks: HashSet<BlockId> = HashSet::new();
     let mut header_body_chain: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
     for bid in &rpo {
@@ -125,7 +158,8 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             .get(bid)
             .cloned()
             .unwrap_or(super::blocks::LoopRole::None);
-        if role != super::blocks::LoopRole::LoopHeader {
+        if role != super::blocks::LoopRole::LoopHeader
+            || !structured_loop_headers.contains(bid) {
             continue;
         }
         let Some(block) = func.blocks.get(bid) else {
@@ -368,7 +402,11 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             None => continue,
         };
 
-        // Emit loop_start before loop header blocks.
+        let has_structured_break = structured_loop_headers.contains(bid);
+
+        // Emit loop_start before loop header blocks, but only when the
+        // loop has a structured break condition.  Loops with unstructured
+        // control flow (br_if/jump) are emitted as plain label blocks.
         if loop_role == super::blocks::LoopRole::LoopHeader {
             // Emit a label for the loop header so that check_exception
             // targets referencing this block's label ID remain valid.
@@ -379,10 +417,12 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     ..OpIR::default()
                 });
             }
-            out.push(OpIR {
-                kind: "loop_start".to_string(),
-                ..OpIR::default()
-            });
+            if has_structured_break {
+                out.push(OpIR {
+                    kind: "loop_start".to_string(),
+                    ..OpIR::default()
+                });
+            }
         }
 
         // Loop headers fall through from the preheader into the structured
@@ -430,7 +470,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         // broke when a loop body contained CondBranch terminators (e.g.
         // if-statements inside while loops) — the conditional was silently
         // dropped, causing infinite loops or wrong results.
-        if loop_role == super::blocks::LoopRole::LoopHeader {
+        if loop_role == super::blocks::LoopRole::LoopHeader && has_structured_break {
             let break_kind = func
                 .loop_break_kinds
                 .get(bid)
@@ -554,6 +594,19 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             // the first region block which then has the CondBranch.
             let mut cond_data: Option<(ValueId, BlockId, Vec<ValueId>, BlockId, Vec<ValueId>)> = None;
             let mut first_body_block_inlined = false;
+            let _trace_loop = std::env::var("MOLT_TIR_TRACE_LOOP").as_deref() == Ok("1");
+            if _trace_loop {
+                let term_kind = match &block.terminator {
+                    Terminator::Branch { target, .. } => format!("Branch(→{:?})", target),
+                    Terminator::CondBranch { then_block, else_block, .. } =>
+                        format!("CondBranch(then={:?} else={:?})", then_block, else_block),
+                    Terminator::Return { .. } => "Return".to_string(),
+                    Terminator::Unreachable => "Unreachable".to_string(),
+                    _ => format!("{:?}", block.terminator),
+                };
+                eprintln!("[TIR-LOOP] func={} header bid={:?} term={} region_chain={:?}",
+                    func.name, bid, term_kind, region_chain);
+            }
 
             match &block.terminator {
                 Terminator::CondBranch {
@@ -624,6 +677,9 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 }
             }
 
+            if _trace_loop {
+                eprintln!("[TIR-LOOP]   cond_data={}", if cond_data.is_some() { "Some" } else { "None" });
+            }
             if let Some((cond, then_block, then_args, else_block, else_args)) = cond_data {
                 let (after_block, after_args, body_block, body_args) = match break_kind {
                     LoopBreakKind::BreakIfTrue => {
@@ -1000,6 +1056,10 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
     }
 
     // Phase 3: compact — remove dead label ops.
+    let removed_count = keep.iter().filter(|&&k| !k).count();
+    if removed_count > 0 {
+        eprintln!("[TIR-DCE] eliminating {} dead label(s)", removed_count);
+    }
     let mut write_idx = 0;
     for read_idx in 0..ops.len() {
         if keep[read_idx] {

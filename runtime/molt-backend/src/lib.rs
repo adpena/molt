@@ -2918,6 +2918,15 @@ impl SimpleBackend {
                             || cf_complexity > 30
                             || has_exception_handling
                         {
+                            if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1")
+                                && tmp_func.name.contains("sieve") {
+                                eprintln!("[TIR-SKIP] {} reason: chunk={} ops={} cf={} exc={}",
+                                    tmp_func.name,
+                                    tmp_func.name.contains("__molt_module_chunk_"),
+                                    tmp_func.ops.len(),
+                                    cf_complexity,
+                                    has_exception_handling);
+                            }
                             return (idx, content_hash, Vec::new());
                         }
                         // Debug skip: MOLT_TIR_SKIP_PATTERN=<pat1,pat2,...> skips
