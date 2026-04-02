@@ -2297,6 +2297,14 @@ pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         let mod_obj = obj_from_bits(m);
+        // CPython rejects float arguments for 3-arg pow regardless of value.
+        if lhs.is_float() || rhs.is_float() || mod_obj.is_float() {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "pow() 3rd argument not allowed unless all arguments are integers",
+            );
+        }
         if let (Some(li), Some(ri), Some(mi)) = (to_i64(lhs), to_i64(rhs), to_i64(mod_obj)) {
             let (base, exp, modulus) = (li as i128, ri, mi as i128);
             if modulus == 0 {
