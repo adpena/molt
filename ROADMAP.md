@@ -510,6 +510,18 @@ Planned milestones:
 - Wasmtime host runner is available (`molt-wasm-host`) with shared memory/table wiring and a `tools/bench_wasm.py --runner wasmtime` path for perf comparison against Node.
 - Implemented: Wasmtime DB host delivery is non-blocking via `molt_db_host_poll` with stream semantics + cancellation checks; parity coverage still pending.
 
+## Reference Counting & Memory Management
+- Implemented: call-based RC (opaque `molt_inc_ref_obj`/`molt_dec_ref_obj` calls). Matches Swift ARC pattern — opaque calls act as Cranelift compiler barriers, preventing reordering of memory operations across refcount updates.
+- Implemented: inline dec-ref tag check — NaN-box tag check inlined (skip call for non-heap ints/floats/bools/None), actual dec-ref remains an opaque call for compiler-barrier semantics.
+- Implemented: nursery bump allocator (thread-local, < 256 bytes) + object pool for bound methods and iterators.
+- Fixed (2026-04-02): inline inc-ref Cranelift corruption bug. Inline `emit_inline_inc_ref_obj` creates brif blocks that fragment the CFG inside `tuple_new`, causing `atomic_rmw` to target the wrong address. Even single-branch (2-block) approach corrupts. Root cause: Cranelift SSA value propagation across brif boundaries interacts with subsequent `list_builder_append` calls. Fix: disabled inline inc-ref; using opaque call-based inc-ref (correct and matches Swift ARC).
+- TODO(perf, owner:compiler, milestone:RT3, priority:P1, status:planned): re-enable inline inc-ref with a fully branchless approach. Instead of `brif` to branch around the atomic_rmw, compute a conditional mask and use a single `select` + non-branching store. Requires Cranelift-level investigation of why even 2-block inline inc-ref corrupts tuple_new's list elements.
+- TODO(perf, owner:runtime, milestone:RT3, priority:P1, status:planned): single-threaded non-atomic refcounts. The GIL guarantees single-threaded access to refcount fields. Replace `atomic_rmw` (AtomicRmwOp::Add) with plain `load + iadd_imm + store`. Eliminates memory fence overhead of atomic operations on ARM64 (where atomics are ~10x more expensive than plain loads/stores due to exclusive monitor). Requires audit that no multi-threaded path (async I/O callbacks, `threading` module) touches refcounts without the GIL held.
+- TODO(semantics, owner:runtime, milestone:RT3, priority:P2, status:planned): double inc-ref audit. `tuple_new` and `list_new` both inc-ref elements in the compiler (emit_inc_ref_obj) AND in `alloc_tuple_with_capacity`/`alloc_list_with_capacity`. Causes reference leaks (not corruption). Audit all builder paths and choose one site for inc-ref.
+- TODO(semantics, owner:runtime, milestone:TC3, priority:P2, status:planned): cycle collector. CPython detects reference cycles via `tp_traverse`. Molt currently leaks cycles. Implement mark-and-sweep cycle collector.
+- TODO(perf, owner:runtime, milestone:RT4, priority:P3, status:planned): epoch-based reclamation for concurrent async runtimes. Consider crossbeam-style epoch-based memory reclamation for internally-managed data structures.
+- TODO(perf, owner:runtime, milestone:RT4, priority:P3, status:planned): deferred RC / expanded immortal objects. Expand immortal flag to all module-level constants and singletons. Consider batch decrefs at function exit instead of per-use for short-lived temporaries.
+
 ## Type Coverage
 - memoryview (Partial): multi-dimensional `format`/`shape`/`strides`/`nbytes` + `cast`, tuple scalar indexing, 1D slicing/assignment for bytes/bytearray-backed views.
 - TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:missing): memoryview multi-dimensional slicing + sub-views (C-order parity).
