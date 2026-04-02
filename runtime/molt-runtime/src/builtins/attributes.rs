@@ -3585,23 +3585,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     }
                     if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
                         object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
-                        // Also store in instance dict so __dict__ reflects
-                        // field-offset attributes (CPython parity).
-                        let mut dict_bits = instance_dict_bits(obj_ptr);
-                        if dict_bits == 0 {
-                            let dict_ptr = alloc_dict_with_pairs(_py, &[]);
-                            if !dict_ptr.is_null() {
-                                dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-                                instance_set_dict_bits(_py, obj_ptr, dict_bits);
-                            }
-                        }
-                        if dict_bits != 0 {
-                            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                                && object_type_id(dict_ptr) == TYPE_ID_DICT
-                            {
-                                dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
-                            }
-                        }
+                        crate::object::accessors::mirror_field_to_instance_dict(
+                            _py, obj_ptr, slice.as_ptr(), slice.len(), val_bits,
+                        );
                         dec_ref_bits(_py, attr_bits);
                         return MoltObject::none().bits() as i64;
                     }
