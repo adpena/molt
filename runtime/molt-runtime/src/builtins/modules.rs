@@ -378,6 +378,7 @@ fn simple_edit_distance(a: &str, b: &str) -> usize {
     prev[n]
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(name_bits);
