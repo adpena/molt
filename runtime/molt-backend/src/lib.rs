@@ -2999,9 +2999,27 @@ impl SimpleBackend {
                         // Skip cell-loop guard for user functions — they work with TIR.
                         // Only apply it for stdlib functions where the SSA limitation
                         // causes infinite loops during Cranelift compilation.
-                        let is_stdlib = !tmp_func.name.contains("__molt_user_")
-                            && !tmp_func.name.starts_with("test_")
-                            && !tmp_func.name.starts_with("bench_");
+                        // Stdlib functions have names like: sys__audit, builtins___probe,
+                        // _intrinsics___lookup_registry, etc.
+                        // User functions are: <module>__<func> where module is the .py filename.
+                        let is_stdlib = tmp_func.name.starts_with("sys_")
+                            || tmp_func.name.starts_with("builtins_")
+                            || tmp_func.name.starts_with("_intrinsics")
+                            || tmp_func.name.starts_with("_sitebuiltins")
+                            || tmp_func.name.starts_with("_collections")
+                            || tmp_func.name.starts_with("os_")
+                            || tmp_func.name.starts_with("posixpath")
+                            || tmp_func.name.starts_with("genericpath")
+                            || tmp_func.name.starts_with("stat_")
+                            || tmp_func.name.starts_with("codecs_")
+                            || tmp_func.name.starts_with("encodings")
+                            || tmp_func.name.starts_with("abc_")
+                            || tmp_func.name.starts_with("io_")
+                            || tmp_func.name.starts_with("_io_")
+                            || tmp_func.name.starts_with("warnings_")
+                            || tmp_func.name.starts_with("molt_isolate")
+                            || tmp_func.name.starts_with("molt_init")
+                            || tmp_func.name.starts_with("molt_main");
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
