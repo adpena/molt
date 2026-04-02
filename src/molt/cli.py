@@ -10803,6 +10803,56 @@ def _start_backend_daemon(
     except OSError:
         pass
     daemon_pid: int | None = None
+    # ── Stale daemon cleanup ──
+    # Remove sockets whose owning daemon is no longer alive, and enforce a
+    # maximum daemon count to prevent agent swarms from exhausting memory.
+    _MAX_CONCURRENT_DAEMONS = 3
+    try:
+        sock_dir = socket_path.parent
+        live_socks = 0
+        for sock_file in sorted(sock_dir.glob("moltbd.*.sock")):
+            # Check if the daemon PID file exists and the process is alive.
+            pid_file = sock_file.with_suffix(".pid")
+            if pid_file.exists():
+                try:
+                    stale_pid = int(pid_file.read_text().strip())
+                    os.kill(stale_pid, 0)  # probe — doesn't kill
+                    live_socks += 1
+                    continue
+                except (ValueError, ProcessLookupError, PermissionError, OSError):
+                    pass
+            # No PID file or process dead — remove stale socket.
+            try:
+                sock_file.unlink()
+                if pid_file.exists():
+                    pid_file.unlink()
+            except OSError:
+                pass
+        if live_socks >= _MAX_CONCURRENT_DAEMONS:
+            # Too many daemons — kill the oldest one to make room.
+            oldest_sock = min(
+                (s for s in sock_dir.glob("moltbd.*.sock") if s != socket_path),
+                key=lambda s: s.stat().st_mtime,
+                default=None,
+            )
+            if oldest_sock is not None:
+                old_pid_file = oldest_sock.with_suffix(".pid")
+                if old_pid_file.exists():
+                    try:
+                        old_pid = int(old_pid_file.read_text().strip())
+                        os.kill(old_pid, 9)
+                    except (ValueError, ProcessLookupError, PermissionError, OSError):
+                        pass
+                    try:
+                        old_pid_file.unlink()
+                    except OSError:
+                        pass
+                try:
+                    oldest_sock.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        pass
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         # Propagate all environment variables to the daemon so that

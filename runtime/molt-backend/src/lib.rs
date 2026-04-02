@@ -2971,10 +2971,11 @@ impl SimpleBackend {
                             .count();
                         let has_exception_handling = tmp_func.ops.iter()
                             .any(|op| op.kind == "check_exception");
+                        let skip_eh_bypass = std::env::var("MOLT_TIR_ENABLE_EH").as_deref() == Ok("1");
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
-                            || has_exception_handling
+                            || (has_exception_handling && !skip_eh_bypass)
                         {
                             return (idx, content_hash, Vec::new());
                         }
