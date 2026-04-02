@@ -2982,10 +2982,22 @@ impl SimpleBackend {
                         // The TIR roundtrip for check_exception patterns is not
                         // yet stable (Cranelift crashes on complex eh patterns).
                         let force_eh_bypass = true;
+                        // Skip TIR for functions with cell-based loop variables.
+                        // SSA doesn't track store_index mutations, so loop vars
+                        // in cells don't update across iterations (infinite loop).
+                        // Memory SSA (cell→store_var rewrite) is the proper fix.
+                        let has_cell_loop = {
+                            let has_loop = tmp_func.ops.iter()
+                                .any(|op| op.kind == "loop_start");
+                            let has_cell_store = tmp_func.ops.iter()
+                                .any(|op| op.kind == "store_index");
+                            has_loop && has_cell_store
+                        };
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
                             || (has_exception_handling && force_eh_bypass)
+                            || has_cell_loop
                         {
                             return (idx, content_hash, Vec::new());
                         }
