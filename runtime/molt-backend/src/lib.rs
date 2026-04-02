@@ -2720,8 +2720,6 @@ impl SimpleBackend {
     }
 
     pub fn compile(mut self, ir: SimpleIR) -> Vec<u8> {
-        let _ = std::fs::write("/tmp/tir_debug_entry.txt", format!("COMPILE_ENTRY: {} functions
-", ir.functions.len()));
         let timing = env_setting("MOLT_BACKEND_TIMING")
             .as_deref()
             .map(parse_truthy_env)
@@ -2803,7 +2801,7 @@ impl SimpleBackend {
         // TIR default ON: loop markers preserved, EH functions bypassed.
         // loop info that the native backend needs for raw_int_shadow and type
         // Disable with MOLT_TIR_OPT=0.
-        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
@@ -3040,7 +3038,7 @@ impl SimpleBackend {
                                     return None;
                                 }
                                 // Debug: dump before/after for all TIR functions.
-                                if func_name.contains("count_to") || std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| func_name.contains(&p)).unwrap_or(false) {
+                                if std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| func_name.contains(&p)).unwrap_or(false) {
                                     use std::io::Write;
                                     let path = format!("/tmp/tir_diff_{}.txt", tir_func.name);
                                     if let Ok(mut f) = std::fs::File::create(&path) {

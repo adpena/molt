@@ -10463,6 +10463,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _prepare_mutable_control_flow_bindings(self, names: set[str]) -> None:
         if not names:
             return
+        # In function scope, loop-carried values are handled natively by
+        # Cranelift's SSA phi/block-argument mechanism.  Boxing variables
+        # into heap-allocated list cells adds ~10 cycles per access and
+        # defeats raw_int_shadow optimisation.  Only box at module scope
+        # (where there's no SSA) or for closures/nonlocals that truly
+        # need heap storage.
+        if self.current_func_name != "molt_main" and not self.is_async():
+            return
         module_backed: set[str] = set()
         if self.current_func_name == "molt_main":
             # Module-scope control-flow bindings already have a canonical mutable
