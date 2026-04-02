@@ -1030,9 +1030,54 @@ fn emit_terminator(
             else_block,
             else_args,
         } => {
-            {
-                // Conditional branch: emit br_if to then_block, jump to else_block.
+            // Conditional branch: the then/else arg stores must execute
+            // on the CORRECT path. If both targets share the same
+            // parameter variables (e.g. loop header phis), unconditionally
+            // storing both would clobber the else values with then values.
+            //
+            // Pattern:
+            //   br_if cond → label_then_trampoline
+            //   ; else fall-through:
+            //   store_var else_args...
+            //   jump → else_block
+            //   label_then_trampoline:
+            //   store_var then_args...
+            //   jump → then_block
+            let needs_trampoline = !then_args.is_empty();
+            if needs_trampoline {
+                // Allocate a fresh label for the then-path trampoline.
+                let trampoline_label = {
+                    let max_label = out.iter()
+                        .filter_map(|op| op.value)
+                        .max()
+                        .unwrap_or(0);
+                    max_label + 1000
+                };
+                out.push(OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec![value_var(*cond)]),
+                    value: Some(trampoline_label),
+                    ..OpIR::default()
+                });
+                emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
+                out.push(OpIR {
+                    kind: "jump".to_string(),
+                    value: Some(block_label_id(else_block)),
+                    ..OpIR::default()
+                });
+                out.push(OpIR {
+                    kind: "label".to_string(),
+                    value: Some(trampoline_label),
+                    ..OpIR::default()
+                });
                 emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
+                out.push(OpIR {
+                    kind: "jump".to_string(),
+                    value: Some(block_label_id(then_block)),
+                    ..OpIR::default()
+                });
+            } else {
+                // No then-args: original pattern is safe.
                 out.push(OpIR {
                     kind: "br_if".to_string(),
                     args: Some(vec![value_var(*cond)]),
