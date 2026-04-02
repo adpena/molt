@@ -574,7 +574,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
             };
         }
 
-        let Some(ir) = job.ir else {
+        let Some(mut ir) = job.ir else {
             return DaemonJobResponse {
                 id: job.id,
                 ok: false,
@@ -617,7 +617,220 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
         } else {
             #[cfg(feature = "native-backend")]
             {
-                let backend = SimpleBackend::new_with_target(job.target_triple.as_deref());
+                let target_triple = job.target_triple.as_deref();
+
+                // ── Stdlib/user partition (mirrors one-shot path in main()) ──
+                // When MOLT_STDLIB_OBJ is set, the daemon must exclude stdlib
+                // functions from output.o to avoid duplicate symbols when the
+                // CLI links output.o + stdlib_shared_*.o together.
+                let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok();
+                let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
+                let entry_module = std::env::var("MOLT_ENTRY_MODULE")
+                    .unwrap_or_else(|_| "__main__".to_string());
+
+                if let Some(ref stdlib_path_str) = stdlib_obj_path {
+                    let stdlib_path = std::path::Path::new(stdlib_path_str);
+                    ensure_output_parent_dir(
+                        stdlib_path.to_str().unwrap_or(""),
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!(
+                            "MOLT_BACKEND(daemon): warning: failed to create stdlib parent: {e}"
+                        );
+                    });
+
+                    if stdlib_path.exists() {
+                        if shared_stdlib_cache_matches(
+                            stdlib_path,
+                            expected_stdlib_cache_key.as_deref(),
+                        ) {
+                            // Cache matches — strip stdlib functions, compile user only.
+                            let total = ir.functions.len();
+                            ir.functions
+                                .retain(|f| is_user_owned_symbol(&f.name, &entry_module));
+                            let kept = ir.functions.len();
+                            eprintln!(
+                                "MOLT_BACKEND(daemon): incremental — compiling {kept} user functions \
+                                 (cached {} stdlib in {})",
+                                total - kept,
+                                stdlib_path.display()
+                            );
+                        } else {
+                            // Stale cache — delete it and rebuild below.
+                            let cached_key = read_stdlib_cache_key(stdlib_path);
+                            eprintln!(
+                                "MOLT_BACKEND(daemon): stdlib cache key mismatch \
+                                 (cached key {}, expected key {}) — rebuilding",
+                                cached_key.as_deref().unwrap_or("<missing>"),
+                                expected_stdlib_cache_key.as_deref().unwrap_or("<missing>"),
+                            );
+                            let _ = std::fs::remove_file(stdlib_path);
+                            let _ = std::fs::remove_file(
+                                stdlib_cache_count_sidecar_path(stdlib_path),
+                            );
+                            let _ = std::fs::remove_file(
+                                stdlib_cache_key_sidecar_path(stdlib_path),
+                            );
+                            // Fall through — stdlib .o no longer exists, handled below.
+                        }
+                    }
+
+                    if !stdlib_path.exists() && !ir.functions.is_empty() {
+                        // First build (or stale cache was just deleted) — compile
+                        // stdlib separately and cache it, then keep only user
+                        // functions for output.o.
+                        ensure_output_parent_dir(
+                            stdlib_path.to_str().unwrap_or(""),
+                        )
+                        .unwrap_or_else(|e| {
+                            eprintln!(
+                                "MOLT_BACKEND(daemon): warning: could not create \
+                                 stdlib cache parent dir: {e}"
+                            );
+                        });
+
+                        let user_func_set: std::collections::BTreeSet<String> = ir
+                            .functions
+                            .iter()
+                            .filter(|f| is_user_owned_symbol(&f.name, &entry_module))
+                            .map(|f| f.name.clone())
+                            .collect();
+                        let all_funcs: Vec<_> = ir.functions.drain(..).collect();
+                        let (user_remaining, mut stdlib_funcs): (Vec<_>, Vec<_>) = all_funcs
+                            .into_iter()
+                            .partition(|f| user_func_set.contains(&f.name));
+
+                        // Deduplicate stdlib functions by name (keep first).
+                        {
+                            let mut seen: std::collections::BTreeSet<String> =
+                                std::collections::BTreeSet::new();
+                            stdlib_funcs.retain(|f| seen.insert(f.name.clone()));
+                        }
+
+                        let stdlib_count = stdlib_funcs.len();
+                        if stdlib_count > 0 {
+                            eprintln!(
+                                "MOLT_BACKEND(daemon): first build — caching {} stdlib functions to {}",
+                                stdlib_count,
+                                stdlib_path.display()
+                            );
+                            let stdlib_batch_size: usize =
+                                std::env::var("MOLT_BACKEND_BATCH_SIZE")
+                                    .ok()
+                                    .and_then(|v| v.parse().ok())
+                                    .unwrap_or(64);
+
+                            if stdlib_count <= stdlib_batch_size {
+                                let stdlib_ir = SimpleIR {
+                                    functions: stdlib_funcs,
+                                    profile: ir.profile.clone(),
+                                };
+                                let mut stdlib_backend =
+                                    SimpleBackend::new_with_target(target_triple);
+                                stdlib_backend.skip_ir_passes = true;
+                                let stdlib_bytes = stdlib_backend.compile(stdlib_ir);
+                                if let Err(e) = std::fs::write(stdlib_path, &stdlib_bytes) {
+                                    eprintln!(
+                                        "MOLT_BACKEND(daemon): failed to write stdlib cache: {e}"
+                                    );
+                                }
+                            } else {
+                                // Batched stdlib compilation to avoid OOM.
+                                let all_stdlib_names: std::collections::BTreeSet<String> =
+                                    stdlib_funcs.iter().map(|f| f.name.clone()).collect();
+                                let stdlib_module_context =
+                                    SimpleBackend::build_module_context(&stdlib_funcs);
+                                let mut stdlib_remaining = stdlib_funcs;
+                                let stdlib_total_batches =
+                                    stdlib_remaining.len().div_ceil(stdlib_batch_size);
+                                let mut stdlib_batch_paths: Vec<std::path::PathBuf> = Vec::new();
+                                let stdlib_tmp_dir = std::env::temp_dir().join(format!(
+                                    "molt_daemon_stdlib_batch_{}",
+                                    std::process::id()
+                                ));
+                                let _ = std::fs::create_dir_all(&stdlib_tmp_dir);
+                                let mut stdlib_batch_idx = 0usize;
+
+                                while !stdlib_remaining.is_empty() {
+                                    let take =
+                                        stdlib_remaining.len().min(stdlib_batch_size);
+                                    let batch_funcs: Vec<_> =
+                                        stdlib_remaining.drain(..take).collect();
+                                    eprintln!(
+                                        "MOLT_BACKEND(daemon): stdlib batch {}/{} ({} functions)",
+                                        stdlib_batch_idx + 1,
+                                        stdlib_total_batches,
+                                        batch_funcs.len()
+                                    );
+                                    let batch_ir = SimpleIR {
+                                        functions: batch_funcs,
+                                        profile: ir.profile.clone(),
+                                    };
+                                    let mut batch_backend =
+                                        SimpleBackend::new_with_target(target_triple);
+                                    batch_backend.skip_ir_passes = true;
+                                    batch_backend.external_function_names =
+                                        all_stdlib_names.clone();
+                                    batch_backend
+                                        .set_module_context(stdlib_module_context.clone());
+                                    let batch_bytes = batch_backend.compile(batch_ir);
+                                    let batch_path = stdlib_tmp_dir
+                                        .join(format!("batch_{stdlib_batch_idx}.o"));
+                                    std::fs::write(&batch_path, &batch_bytes)
+                                        .expect("write stdlib batch .o");
+                                    stdlib_batch_paths.push(batch_path);
+                                    stdlib_batch_idx += 1;
+                                }
+
+                                // Merge stdlib batches with ld -r.
+                                if stdlib_batch_paths.len() == 1 {
+                                    let _ = std::fs::copy(
+                                        &stdlib_batch_paths[0],
+                                        stdlib_path,
+                                    );
+                                } else {
+                                    let linker = std::env::var("MOLT_LINKER")
+                                        .unwrap_or_else(|_| "ld".to_string());
+                                    let status = std::process::Command::new(&linker)
+                                        .arg("-r")
+                                        .args(
+                                            stdlib_batch_paths.iter().map(|p| p.as_os_str()),
+                                        )
+                                        .arg("-o")
+                                        .arg(stdlib_path.as_os_str())
+                                        .status()
+                                        .unwrap_or_else(|e| panic!("ld -r failed: {e}"));
+                                    if !status.success() {
+                                        eprintln!(
+                                            "MOLT_BACKEND(daemon): stdlib partial link failed"
+                                        );
+                                    } else {
+                                        eprintln!(
+                                            "MOLT_BACKEND(daemon): merged {} stdlib batches → {}",
+                                            stdlib_batch_paths.len(),
+                                            stdlib_path.display()
+                                        );
+                                    }
+                                }
+                                let _ = std::fs::remove_dir_all(&stdlib_tmp_dir);
+                            }
+
+                            write_shared_stdlib_cache_sidecars(
+                                stdlib_path,
+                                stdlib_count,
+                                expected_stdlib_cache_key.as_deref(),
+                            );
+                        }
+
+                        ir.functions = user_remaining;
+                        eprintln!(
+                            "MOLT_BACKEND(daemon): compiling {} user functions",
+                            ir.functions.len()
+                        );
+                    }
+                }
+
+                let backend = SimpleBackend::new_with_target(target_triple);
                 Arc::from(backend.compile(ir))
             }
             #[cfg(not(feature = "native-backend"))]
