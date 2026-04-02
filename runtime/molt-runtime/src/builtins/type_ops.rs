@@ -484,11 +484,17 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
                 if issubclass_bits(val_type, class_bits) {
                     return true;
                 }
-                // issubclass fast-path returned false.  Molt does not
-                // support custom metaclasses with __instancecheck__, so
-                // return false immediately — consistent with the tuple
-                // path below.
-                return false;
+                // issubclass fast-path returned false.  Only short-circuit
+                // when the metaclass is plain `type`; custom metaclasses
+                // (e.g. typing._ProtocolMeta) may define __instancecheck__
+                // that performs structural checks.
+                let meta_bits = unsafe { object_class_bits(class_ptr) };
+                let plain_type = meta_bits == 0
+                    || meta_bits == builtin_classes(_py).type_obj;
+                if plain_type {
+                    return false;
+                }
+                // Custom metaclass — fall through to the generic path.
             } else if class_tid == TYPE_ID_TUPLE {
                 let items = unsafe { seq_vec_ref(class_ptr) };
                 let val_type = type_of_bits(_py, val_bits);
@@ -500,12 +506,21 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
                     }
                 });
                 if all_types {
-                    if items.iter().any(|&item_bits| issubclass_bits(val_type, item_bits)) {
-                        return true;
+                    // Check that none of the tuple elements have a custom metaclass.
+                    let all_plain_meta = items.iter().all(|&item_bits| {
+                        if let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() {
+                            let meta = unsafe { object_class_bits(item_ptr) };
+                            meta == 0 || meta == builtin_classes(_py).type_obj
+                        } else {
+                            true
+                        }
+                    });
+                    if all_plain_meta {
+                        if items.iter().any(|&item_bits| issubclass_bits(val_type, item_bits)) {
+                            return true;
+                        }
+                        return false;
                     }
-                    // All were TYPE_ID_TYPE but none matched — return false without
-                    // falling through to the expensive metaclass path.
-                    return false;
                 }
                 // Tuple contains non-type elements (e.g. nested tuples) — fall
                 // through to the generic path which recursively flattens them.
