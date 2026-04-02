@@ -762,6 +762,32 @@ pub extern "C" fn molt_call_func_dispatch(
                         padded_len += 2;
                         true
                     }
+                    // str.count/find/index slice defaults
+                    (4, FUNC_DEFAULT_SLICE_ARGS) => {
+                        let zero = MoltObject::from_int(0).bits();
+                        padded_buf[padded_len] = zero;
+                        padded_buf[padded_len + 1] = zero;
+                        padded_buf[padded_len + 2] = zero;
+                        padded_buf[padded_len + 3] = zero;
+                        padded_len += 4;
+                        true
+                    }
+                    (3, FUNC_DEFAULT_SLICE_ARGS) => {
+                        let zero = MoltObject::from_int(0).bits();
+                        let one = MoltObject::from_int(1).bits();
+                        padded_buf[padded_len] = zero; // end
+                        padded_buf[padded_len + 1] = one;  // has_start
+                        padded_buf[padded_len + 2] = zero; // has_end
+                        padded_len += 3;
+                        true
+                    }
+                    (2, FUNC_DEFAULT_SLICE_ARGS) => {
+                        let one = MoltObject::from_int(1).bits();
+                        padded_buf[padded_len] = one; // has_start
+                        padded_buf[padded_len + 1] = one; // has_end
+                        padded_len += 2;
+                        true
+                    }
                     _ => false,
                 };
 
