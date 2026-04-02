@@ -3605,18 +3605,23 @@ fn format_traceback(_py: &PyToken<'_>, ptr: *mut u8) -> Option<String> {
             let trim_offset = (src_line.len() - trimmed.len()) as i64;
             out.push_str(&format!("    {}\n", trimmed));
             // Use col_offset stashed at exception-raise time.
+            // Use precise col_offset stashed at exception-raise time.
+            // No heuristic fallback — CPython shows no caret for frames
+            // without column info in the code object.
             let saved_col = LAST_EXCEPTION_COL.with(|cell| {
                 let val = *cell.borrow();
-                // Reset to avoid stale data leaking to subsequent exceptions.
                 *cell.borrow_mut() = (-1, -1);
                 val
             });
+<<<<<<< Updated upstream
             let (c, ec) = if saved_col.0 >= 0 && saved_col.1 >= 0 {
                 (saved_col.0 - trim_offset, saved_col.1 - trim_offset)
             } else {
                 (-1, -1)
             };
-            if c >= 0 && ec >= 0 {
+            if saved_col.0 >= 0 && saved_col.1 >= 0 {
+                let c = saved_col.0 - trim_offset;
+                let ec = saved_col.1 - trim_offset;
                 let caret = crate::object::ops_sys::traceback_format_caret_line_native(trimmed, c, ec);
                 if !caret.is_empty() {
                     out.push_str(&caret);

@@ -1540,7 +1540,16 @@ pub extern "C" fn molt_id(val: u64) -> u64 {
         // For inline values (ints, small floats, bools, None), use the
         // NaN-boxed bits directly — they are canonical.
         if let Some(ptr) = obj.as_ptr() {
-            int_bits_from_i64(_py, ptr as i64)
+            // Use usize to ensure non-negative id (CPython id() is always >= 0).
+            // On 64-bit systems, high pointers would produce negative i64.
+            let addr = ptr as usize;
+            if addr <= i64::MAX as usize {
+                int_bits_from_i64(_py, addr as i64)
+            } else {
+                // Pointer above i64::MAX — allocate BigInt.
+                let big = num_bigint::BigInt::from(addr as u64);
+                crate::object::builders::alloc_bigint(_py, &big)
+            }
         } else {
             int_bits_from_i64(_py, val as i64)
         }
