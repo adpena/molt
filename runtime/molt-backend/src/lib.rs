@@ -1280,7 +1280,12 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
 /// AtomicU32 refcount field.
 #[cfg(feature = "native-backend")]
 fn inline_rc_enabled() -> bool {
-    true
+    // Disabled by default: inline RC codegen creates extra Cranelift blocks
+    // per inc_ref, causing memory corruption when tuple_new fragments the
+    // control flow between list_builder_append calls. The atomic_rmw
+    // instruction targets the wrong address in fragmented block layouts.
+    // Enable with MOLT_INLINE_RC=1 for benchmarking only.
+    std::env::var("MOLT_INLINE_RC").as_deref() == Ok("1")
 }
 
 /// Emit an inlined `inc_ref_obj` as Cranelift IR instead of a function call.
