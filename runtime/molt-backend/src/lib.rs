@@ -3015,6 +3015,17 @@ impl SimpleBackend {
                         // into jump/label blocks. Rewrite phi merges only for
                         // functions that actually enter that roundtrip so the
                         // state-machine backend does not see residual phi ops.
+                        // Progress log: atomic writes via flock
+                        {
+                            use std::io::Write;
+                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                .create(true).append(true)
+                                .open("/tmp/tir_progress.log")
+                            {
+                                let msg = format!("|||START:{}:{}|||\n", tmp_func.name, tmp_func.ops.len());
+                                let _ = f.write_all(msg.as_bytes());
+                            }
+                        }
                         rewrite_phi_to_store_load(&mut tmp_func.ops);
                         // Wrap TIR pipeline in catch_unwind so any panic in
                         // lowering/optimization falls back to original ops
@@ -3038,7 +3049,7 @@ impl SimpleBackend {
                                     return None;
                                 }
                                 // Debug: dump before/after for all TIR functions.
-                                if std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| func_name.contains(&p)).unwrap_or(false) {
+                                if func_name.contains("count") || std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| func_name.contains(&p)).unwrap_or(false) {
                                     use std::io::Write;
                                     let path = format!("/tmp/tir_diff_{}.txt", tir_func.name);
                                     if let Ok(mut f) = std::fs::File::create(&path) {
@@ -3061,6 +3072,17 @@ impl SimpleBackend {
                                                 op.value, op.s_value);
                                         }
                                         let _ = writeln!(f, "=== END DIFF ===");
+                                    }
+                                }
+                                // Progress log: TIR complete
+                                {
+                                    use std::io::Write;
+                                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                                        .create(true).append(true)
+                                        .open("/tmp/tir_progress.log")
+                                    {
+                                        let msg = format!("|||DONE:{}:{}|||\n", func_name, ops.len());
+                                        let _ = f.write_all(msg.as_bytes());
                                     }
                                 }
                                 Some(ops)
