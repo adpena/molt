@@ -10760,28 +10760,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[folded_str], result=res))
                 return res
-        # Specialized list[int] detection: [bool/int_literal] * count
+        # Specialized list[int] detection: [int_literal] * count
         # Emits LIST_INT_NEW for flat i64 storage (Codon-style) instead of
         # generic LIST_NEW + MUL which creates NaN-boxed elements.
+        # NOTE: bools are excluded — `[True] * n` must yield booleans,
+        # not ints, since `bool` is a subclass of `int` in CPython.
         if isinstance(node.op, ast.Mult):
             list_node = count_node = None
             if (
                 isinstance(node.left, ast.List)
                 and len(node.left.elts) == 1
                 and isinstance(node.left.elts[0], ast.Constant)
-                and isinstance(node.left.elts[0].value, (bool, int))
+                and isinstance(node.left.elts[0].value, int)
+                and not isinstance(node.left.elts[0].value, bool)
             ):
                 list_node, count_node = node.left, node.right
             elif (
                 isinstance(node.right, ast.List)
                 and len(node.right.elts) == 1
                 and isinstance(node.right.elts[0], ast.Constant)
-                and isinstance(node.right.elts[0].value, (bool, int))
+                and isinstance(node.right.elts[0].value, int)
+                and not isinstance(node.right.elts[0].value, bool)
             ):
                 list_node, count_node = node.right, node.left
             if list_node is not None and count_node is not None:
                 fill_val = list_node.elts[0].value
-                # Convert bool to int for storage (True=1, False=0)
                 fill_int = int(fill_val)
                 fill_res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[fill_int], result=fill_res))
