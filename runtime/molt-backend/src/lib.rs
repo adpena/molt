@@ -2484,7 +2484,6 @@ impl SimpleBackend {
                     func,
                     name,
                 } => {
-<<<<<<< Updated upstream
                     // Wrap retry in catch_unwind: Cranelift can panic
                     // even at opt_level=none (e.g. blockorder or
                     // alias_analysis on functions with orphaned blocks).
@@ -2493,11 +2492,6 @@ impl SimpleBackend {
                             Self::retry_define_at_opt_none(
                                 &mut self.module, func_id, *func, &name,
                             )
-=======
-                    let retry_result = std::panic::catch_unwind(
-                        std::panic::AssertUnwindSafe(|| {
-                            Self::retry_define_at_opt_none(&mut self.module, func_id, *func, &name)
->>>>>>> Stashed changes
                         }),
                     );
                     match retry_result {
@@ -2802,20 +2796,12 @@ impl SimpleBackend {
             std::collections::BTreeSet::new();
         // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
         // The TIR roundtrip (lower→refine→optimize→lower-back) is enabled by
-<<<<<<< Updated upstream
         // default.  Functions that crash Cranelift compilation get a trap stub
         // via the catch_unwind retry path in flush_deferred_defines.  Loops
         // whose condition cannot be expressed as a structured
         // loop_break_if_{true,false} are emitted as plain label/jump/br_if
         // blocks (not loop_start/loop_end) to avoid orphaned Cranelift blocks.
         // Set MOLT_TIR_OPT=0 to disable.
-=======
-        // default.  Functions that crash Cranelift get a trap stub via the
-        // catch_unwind retry path in flush_deferred_defines.  Loops whose
-        // condition cannot be expressed as a structured loop_break_if_{true,false}
-        // are emitted as plain label/jump/br_if blocks (not loop_start/loop_end)
-        // to avoid orphaned Cranelift blocks.  Set MOLT_TIR_OPT=0 to disable.
->>>>>>> Stashed changes
         if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
