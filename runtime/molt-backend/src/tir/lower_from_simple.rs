@@ -39,8 +39,10 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     };
     // Also rewrite cell-based locals (store_index/index on list) to
     // store_var/load_var for the same reason.
-    // Cell rewrite disabled: converting cell list to variable loses type info.
-    // // Memory SSA gated: only enable for functions matching MOLT_TIR_CELL_SSA pattern
+    // Memory SSA: rewrite cell-based locals to store_var/load_var so SSA
+    // creates proper phi nodes at loop headers for cell variables.
+    // Cell SSA: opt-in via MOLT_TIR_CELL_SSA=1 (env var must reach daemon).
+    // Default off because it corrupts list type info for some patterns.
     let _cell_rewrite_applied = if std::env::var("MOLT_TIR_CELL_SSA").is_ok() {
         rewrite_cell_locals_to_store_load(&mut working_ops)
     } else {
