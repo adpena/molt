@@ -10829,28 +10829,36 @@ def _start_backend_daemon(
             except OSError:
                 pass
         if live_socks >= _MAX_CONCURRENT_DAEMONS:
-            # Too many daemons — kill the oldest one to make room.
-            oldest_sock = min(
+            # Too many daemons.  Instead of killing another agent's active
+            # daemon (which causes silent compilation failures), reuse an
+            # existing daemon by connecting to the newest one.  The session
+            # isolation hash in the socket name means each session gets its
+            # own socket, but the underlying daemon binary is the same —
+            # any daemon can serve any session's requests.
+            #
+            # Fall through to the spawn logic below which will detect the
+            # existing socket is gone (we didn't create one) and retry.
+            # The net effect: the 4th+ agent shares a daemon with an
+            # earlier agent, serializing their builds rather than OOM-ing.
+            newest_sock = max(
                 (s for s in sock_dir.glob("moltbd.*.sock") if s != socket_path),
                 key=lambda s: s.stat().st_mtime,
                 default=None,
             )
-            if oldest_sock is not None:
-                old_pid_file = oldest_sock.with_suffix(".pid")
-                if old_pid_file.exists():
-                    try:
-                        old_pid = int(old_pid_file.read_text().strip())
-                        os.kill(old_pid, 9)
-                    except (ValueError, ProcessLookupError, PermissionError, OSError):
-                        pass
-                    try:
-                        old_pid_file.unlink()
-                    except OSError:
-                        pass
+            if newest_sock is not None:
+                # Symlink our socket path to the newest existing daemon.
+                # This makes the current session connect to the shared daemon.
                 try:
-                    oldest_sock.unlink()
+                    if socket_path.exists() or socket_path.is_symlink():
+                        socket_path.unlink()
+                    socket_path.symlink_to(newest_sock)
+                    # Copy the PID file too so our cleanup logic works.
+                    newest_pid = newest_sock.with_suffix(".pid")
+                    if newest_pid.exists():
+                        pid_path.write_text(newest_pid.read_text())
+                    return True  # Reuse existing daemon — no new spawn.
                 except OSError:
-                    pass
+                    pass  # Symlink failed — fall through to spawn.
     except OSError:
         pass
     try:
