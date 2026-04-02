@@ -413,16 +413,9 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             } else {
                 loop_role
             };
-            // For condition blocks, map the break kind from the header.
-            let effective_break_kinds = if let Some(header_bid) = cond_to_header.get(bid) {
-                let mut bk = func.loop_break_kinds.clone();
-                if let Some(kind) = func.loop_break_kinds.get(header_bid) {
-                    bk.insert(*bid, *kind);
-                }
-                bk
-            } else {
-                func.loop_break_kinds.clone()
-            };
+            // Break kinds are resolved by the loop emission above, not
+            // by emit_terminator.  No clone needed.
+            let effective_break_kinds = &func.loop_break_kinds;
             emit_terminator(
                 block,
                 &block_param_vars,
@@ -561,7 +554,9 @@ pub fn validate_labels(ops: &[crate::ir::OpIR]) -> bool {
     let ref_ids: HashSet<i64> = referenced_labels.keys().copied().collect();
     let missing = ref_ids.difference(&defined_labels).copied().collect::<Vec<_>>();
     if !missing.is_empty() {
-        eprintln!("validate_labels: missing labels: {:?}", missing);
+        if std::env::var("MOLT_TIR_TRACE").as_deref() == Ok("1") {
+            eprintln!("validate_labels: missing labels: {:?}", missing);
+        }
         for label in &missing {
             if let Some(refs) = referenced_labels.get(label) {
                 for (idx, kind) in refs {
