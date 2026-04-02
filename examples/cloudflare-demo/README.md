@@ -42,8 +42,8 @@ molt build examples/cloudflare-demo/src/app.py \
 ```
 
 This produces:
-- `app.wasm` (~50-100KB) - just your compiled Python code
-- `molt_runtime.wasm` (~1-2MB) - tree-shaken runtime with only the builtins your app uses
+- `app.wasm` - your compiled Python code (size varies by app complexity; this demo with microGPT is ~3.7MB raw, ~1.2MB gzipped)
+- `molt_runtime.wasm` - tree-shaken runtime with only the builtins your app uses (~4.3MB raw, ~1.4MB gzipped for this demo)
 - `worker.js` - multi-module loader that stitches them together
 - `manifest.json` - deployment manifest
 - `wrangler.jsonc` - ready-to-deploy Cloudflare config
