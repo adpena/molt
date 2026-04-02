@@ -3314,16 +3314,16 @@ pub(crate) fn format_exception_with_traceback(_py: &PyToken<'_>, ptr: *mut u8) -
                 let trimmed = src_line.trim_start();
                 let trim_offset = (src_line.len() - trimmed.len()) as i64;
                 out.push_str(&format!("    {}\n", trimmed));
-                let (c, ec) = if col >= 0 && end_col >= 0 {
-                    // Adjust col offsets for trimmed display: the printed
-                    // line has 4-space indent regardless of original indent.
-                    (col - trim_offset, end_col - trim_offset)
-                } else {
-                    crate::object::ops_sys::traceback_infer_column_offsets(trimmed)
-                };
-                let caret = crate::object::ops_sys::traceback_format_caret_line_native(trimmed, c, ec);
-                if !caret.is_empty() {
-                    out.push_str(&caret);
+                // Only show carets when precise col_offset data is available.
+                // No heuristic fallback — CPython shows no caret for frames
+                // without column info in the code object.
+                if col >= 0 && end_col >= 0 {
+                    let c = col - trim_offset;
+                    let ec = end_col - trim_offset;
+                    let caret = crate::object::ops_sys::traceback_format_caret_line_native(trimmed, c, ec);
+                    if !caret.is_empty() {
+                        out.push_str(&caret);
+                    }
                 }
             }
         }
