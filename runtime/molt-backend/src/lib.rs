@@ -2996,11 +2996,17 @@ impl SimpleBackend {
                                 .any(|op| op.kind == "store_index" || op.kind == "dict_set");
                             has_loop && has_cell_store
                         };
+                        // Skip cell-loop guard for user functions — they work with TIR.
+                        // Only apply it for stdlib functions where the SSA limitation
+                        // causes infinite loops during Cranelift compilation.
+                        let is_stdlib = !tmp_func.name.contains("__molt_user_")
+                            && !tmp_func.name.starts_with("test_")
+                            && !tmp_func.name.starts_with("bench_");
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
                             || (has_exception_handling && force_eh_bypass)
-                            || has_cell_loop
+                            || (has_cell_loop && is_stdlib)
                         {
                             return (idx, content_hash, Vec::new());
                         }
