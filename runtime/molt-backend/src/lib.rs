@@ -2799,9 +2799,7 @@ impl SimpleBackend {
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
         // TIR default ON: loop markers preserved, EH functions bypassed.
-        // loop info that the native backend needs for raw_int_shadow and type
         // Disable with MOLT_TIR_OPT=0.
-        // TIR default ON. Functions with cell-based loops are skipped.
         if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
@@ -2984,47 +2982,10 @@ impl SimpleBackend {
                         // The TIR roundtrip for check_exception patterns is not
                         // yet stable (Cranelift crashes on complex eh patterns).
                         let force_eh_bypass = true;
-                        // Skip TIR for functions with cell-based locals
-                        // inside loops.  The SSA pass doesn't track mutations
-                        // via store_index/index on cell lists, so loop
-                        // variables that use cells don't update across
-                        // iterations after TIR roundtrip (infinite loop bug).
-                        let has_cell_loop = {
-                            let has_loop = tmp_func.ops.iter()
-                                .any(|op| op.kind == "loop_start");
-                            let has_cell_store = tmp_func.ops.iter()
-                                .any(|op| op.kind == "store_index" || op.kind == "dict_set");
-                            has_loop && has_cell_store
-                        };
-                        // Skip cell-loop guard for user functions — they work with TIR.
-                        // Only apply it for stdlib functions where the SSA limitation
-                        // causes infinite loops during Cranelift compilation.
-                        // Stdlib functions have names like: sys__audit, builtins___probe,
-                        // _intrinsics___lookup_registry, etc.
-                        // User functions are: <module>__<func> where module is the .py filename.
-                        let is_stdlib = tmp_func.name.starts_with("sys_")
-                            || tmp_func.name.starts_with("builtins_")
-                            || tmp_func.name.starts_with("_intrinsics")
-                            || tmp_func.name.starts_with("_sitebuiltins")
-                            || tmp_func.name.starts_with("_collections")
-                            || tmp_func.name.starts_with("os_")
-                            || tmp_func.name.starts_with("posixpath")
-                            || tmp_func.name.starts_with("genericpath")
-                            || tmp_func.name.starts_with("stat_")
-                            || tmp_func.name.starts_with("codecs_")
-                            || tmp_func.name.starts_with("encodings")
-                            || tmp_func.name.starts_with("abc_")
-                            || tmp_func.name.starts_with("io_")
-                            || tmp_func.name.starts_with("_io_")
-                            || tmp_func.name.starts_with("warnings_")
-                            || tmp_func.name.starts_with("molt_isolate")
-                            || tmp_func.name.starts_with("molt_init")
-                            || tmp_func.name.starts_with("molt_main");
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
                             || (has_exception_handling && force_eh_bypass)
-                            || (has_cell_loop && is_stdlib)
                         {
                             return (idx, content_hash, Vec::new());
                         }
