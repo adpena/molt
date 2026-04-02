@@ -8,7 +8,7 @@ use crate::{
     CALL_BIND_IC_MISS_COUNT, CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT, FUNC_DEFAULT_DICT_POP,
     FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_IO_RAW, FUNC_DEFAULT_IO_TEXT_WRAPPER,
     FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE, FUNC_DEFAULT_NONE, FUNC_DEFAULT_NONE2,
-    FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_ZERO, GEN_CONTROL_SIZE,
+    FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_SLICE_ARGS, FUNC_DEFAULT_ZERO, GEN_CONTROL_SIZE,
     INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject, PtrDropGuard, PyToken,
     TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE, TYPE_ID_DATACLASS, TYPE_ID_DICT,
     TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST,
@@ -2628,6 +2628,31 @@ unsafe fn bind_builtin_call(
                 out.push(MoltObject::from_bool(false).bits());
                 return Some(out);
             }
+        }
+        // str.count/find/index with only (self, sub) — fill start=0, end=0, has_start=0, has_end=0
+        if missing == 4 && default_kind == FUNC_DEFAULT_SLICE_ARGS {
+            let zero = MoltObject::from_int(0).bits();
+            out.push(zero);
+            out.push(zero);
+            out.push(zero);
+            out.push(zero);
+            return Some(out);
+        }
+        // str.count/find/index with (self, sub, start) — fill end=0, has_start=1, has_end=0
+        if missing == 3 && default_kind == FUNC_DEFAULT_SLICE_ARGS {
+            let zero = MoltObject::from_int(0).bits();
+            let one = MoltObject::from_int(1).bits();
+            out.push(zero); // end
+            out.push(one);  // has_start = True
+            out.push(zero); // has_end = False
+            return Some(out);
+        }
+        // str.count/find/index with (self, sub, start, end) — fill has_start=1, has_end=1
+        if missing == 2 && default_kind == FUNC_DEFAULT_SLICE_ARGS {
+            let one = MoltObject::from_int(1).bits();
+            out.push(one); // has_start = True
+            out.push(one); // has_end = True
+            return Some(out);
         }
         if missing == 4 && default_kind == FUNC_DEFAULT_IO_TEXT_WRAPPER {
             out.push(MoltObject::none().bits());

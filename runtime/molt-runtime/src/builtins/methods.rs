@@ -290,11 +290,12 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_contains),
             2,
         )),
-        "count" => Some(builtin_func_bits(
+        "count" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.str_count,
             fn_addr!(molt_string_count_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
         "startswith" => Some(builtin_func_bits(
             _py,
@@ -308,29 +309,33 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_string_endswith_slice),
             6,
         )),
-        "find" => Some(builtin_func_bits(
+        "find" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.str_find,
             fn_addr!(molt_string_find_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
-        "rfind" => Some(builtin_func_bits(
+        "rfind" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.str_rfind,
             fn_addr!(molt_string_rfind_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
-        "index" => Some(builtin_func_bits(
+        "index" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.str_index,
             fn_addr!(molt_string_index_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
-        "rindex" => Some(builtin_func_bits(
+        "rindex" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.str_rindex,
             fn_addr!(molt_string_rindex_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
         "format" => Some(builtin_func_bits(
             _py,
@@ -612,11 +617,12 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_bytes_count_slice),
             6,
         )),
-        "find" => Some(builtin_func_bits(
+        "find" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.bytes_find,
             fn_addr!(molt_bytes_find_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
         "index" => {
             static BYTES_INDEX: AtomicU64 = AtomicU64::new(0);
@@ -627,11 +633,12 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
                 6,
             ))
         }
-        "rfind" => Some(builtin_func_bits(
+        "rfind" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.bytes_rfind,
             fn_addr!(molt_bytes_rfind_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
         "rindex" => {
             static BYTES_RINDEX: AtomicU64 = AtomicU64::new(0);

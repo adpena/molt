@@ -20296,6 +20296,28 @@ def _ensure_runtime_lib(
         if not _artifact_needs_rebuild(runtime_lib, fingerprint, stored_fingerprint):
             _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
+        # Fast path: if the .a exists and cargo would be a no-op (the .a
+        # is newer than all source files), skip the expensive cargo build
+        # and just update the stored fingerprint.  This handles the common
+        # case of running `cargo build` manually before `molt build`.
+        if runtime_lib.exists():
+            try:
+                lib_mtime = runtime_lib.stat().st_mtime
+                src_dirs = [
+                    project_root / "runtime" / "molt-runtime" / "src",
+                    project_root / "runtime" / "molt-obj-model" / "src",
+                ]
+                newest_src = 0.0
+                for d in src_dirs:
+                    if d.is_dir():
+                        for f in d.rglob("*.rs"):
+                            newest_src = max(newest_src, f.stat().st_mtime)
+                if lib_mtime > newest_src and newest_src > 0:
+                    _write_runtime_fingerprint(fingerprint_path, fingerprint)
+                    _RUNTIME_LIB_VERIFIED.add(session_key)
+                    return True
+            except OSError:
+                pass
         canonical_target_root = _canonical_target_root(project_root)
         profile_dir = _cargo_profile_dir(cargo_profile)
         if target_triple:

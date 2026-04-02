@@ -50,6 +50,9 @@ pub(crate) const FUNC_DEFAULT_MISSING: i64 = 7;
 pub(crate) const FUNC_DEFAULT_NONE2: i64 = 8;
 pub(crate) const FUNC_DEFAULT_IO_RAW: i64 = 9;
 pub(crate) const FUNC_DEFAULT_IO_TEXT_WRAPPER: i64 = 10;
+/// Fill 4 missing slice args: start=0, end=0, has_start=0, has_end=0.
+/// Used by str.count/find/index/rfind/rindex, bytes equivalents.
+pub(crate) const FUNC_DEFAULT_SLICE_ARGS: i64 = 11;
 
 pub(crate) const GEN_SEND_OFFSET: usize = 0;
 pub(crate) const GEN_THROW_OFFSET: usize = 8;
