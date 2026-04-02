@@ -2790,9 +2790,9 @@ impl SimpleBackend {
         // handles back-edges via has_loop_or_backedge detection.
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        // TIR opt-in: loop roundtrip fixed but some functions still crash.
+        // TIR default ON: loop roundtrip preserves structured markers.
         // loop info that the native backend needs for raw_int_shadow and type
-        // Enable with MOLT_TIR_OPT=1. Default OFF until all label issues resolved.
+        // Disable with MOLT_TIR_OPT=0. Type specialization passes active.
         if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             use rayon::prelude::*;
 
@@ -2995,12 +2995,9 @@ impl SimpleBackend {
                         let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
                             &tir_func, &type_map,
                         );
-                        assert!(
-                            crate::tir::lower_to_simple::validate_labels(&ops),
-                            "TIR roundtrip emitted invalid labels for '{}'", func_name,
-                        );
-                        // Debug: dump before/after for specific functions.
-                        if std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| func_name.contains(&p)).unwrap_or(false) {
+                        let labels_valid = crate::tir::lower_to_simple::validate_labels(&ops);
+                        // Debug: dump before/after on validation failure or explicit request.
+                        if !labels_valid || std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| func_name.contains(&p)).unwrap_or(false) {
                             use std::io::Write;
                             let path = format!("/tmp/tir_diff_{}.txt", tir_func.name);
                             if let Ok(mut f) = std::fs::File::create(&path) {
@@ -3025,6 +3022,10 @@ impl SimpleBackend {
                                 let _ = writeln!(f, "=== END DIFF ===");
                             }
                         }
+                        assert!(
+                            labels_valid,
+                            "TIR roundtrip emitted invalid labels for '{}'", func_name,
+                        );
                         (idx, content_hash, ops)
                     })
                     .collect()

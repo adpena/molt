@@ -552,8 +552,8 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
 /// as a label op in the output.  Returns false if any reference is dangling.
 pub fn validate_labels(ops: &[crate::ir::OpIR]) -> bool {
     let mut defined_labels: HashSet<i64> = HashSet::new();
-    let mut referenced_labels: HashSet<i64> = HashSet::new();
-    for op in ops {
+    let mut referenced_labels: HashMap<i64, Vec<(usize, String)>> = HashMap::new();
+    for (i, op) in ops.iter().enumerate() {
         match op.kind.as_str() {
             "label" | "state_label" => {
                 if let Some(id) = op.value {
@@ -562,13 +562,38 @@ pub fn validate_labels(ops: &[crate::ir::OpIR]) -> bool {
             }
             "jump" | "br_if" | "check_exception" | "try_start" | "try_end" => {
                 if let Some(id) = op.value {
-                    referenced_labels.insert(id);
+                    referenced_labels.entry(id).or_default().push((i, op.kind.clone()));
                 }
             }
             _ => {}
         }
     }
-    referenced_labels.is_subset(&defined_labels)
+    let ref_ids: HashSet<i64> = referenced_labels.keys().copied().collect();
+    let missing = ref_ids.difference(&defined_labels).copied().collect::<Vec<_>>();
+    if !missing.is_empty() {
+        eprintln!("validate_labels: missing labels: {:?}", missing);
+        for label in &missing {
+            if let Some(refs) = referenced_labels.get(label) {
+                for (idx, kind) in refs {
+                    eprintln!("  label {} referenced by {} at op index {}", label, kind, idx);
+                }
+            }
+        }
+        // Dump full ops to /tmp for debugging.
+        if let Ok(mut f) = std::fs::File::create("/tmp/tir_invalid_labels.txt") {
+            use std::io::Write;
+            for (i, op) in ops.iter().enumerate() {
+                let _ = writeln!(f, "  {:4}: {:20} out={:15} var={:15} args={:30} val={:?} sval={:?}",
+                    i, op.kind,
+                    op.out.as_deref().unwrap_or(""),
+                    op.var.as_deref().unwrap_or(""),
+                    op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
+                    op.value, op.s_value);
+            }
+        }
+        return false;
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
