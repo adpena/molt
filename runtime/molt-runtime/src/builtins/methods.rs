@@ -33,51 +33,76 @@ fn runtime_python_at_least(_py: &PyToken<'_>, major: i64, minor: i64) -> bool {
     runtime_major > major || (runtime_major == major && runtime_minor >= minor)
 }
 
+/// Create and cache a builtin function object with no optional args.
 pub(crate) fn builtin_func_bits(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
     fn_ptr: u64,
     arity: u64,
 ) -> u64 {
-    builtin_func_bits_with_default(_py, slot, fn_ptr, arity, 0)
+    init_atomic_bits(_py, slot, || {
+        let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        unsafe {
+            // Cached builtin callables are runtime singletons; treat them as immortal so
+            // refcount churn in compiled code cannot free them out from under the caches.
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+            let old_bits = object_class_bits(ptr);
+            if old_bits != builtin_bits {
+                if old_bits != 0 {
+                    dec_ref_bits(_py, old_bits);
+                }
+                object_set_class_bits(_py, ptr, builtin_bits);
+                inc_ref_bits(_py, builtin_bits);
+            }
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
 }
 
-pub(crate) fn builtin_func_bits_with_default(
+/// Create a builtin function with a `__defaults__` tuple for optional args.
+/// This is the CPython-parity approach: the defaults tuple holds the last N
+/// parameter defaults (right-aligned). When called with fewer args, the
+/// bind path reads missing values from the end of the tuple.
+pub(crate) fn builtin_func_bits_with_defaults_tuple(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
     fn_ptr: u64,
     arity: u64,
-    default_kind: i64,
+    defaults: &[u64],
 ) -> u64 {
     init_atomic_bits(_py, slot, || {
         let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            unsafe {
-                // Cached builtin callables are runtime singletons; treat them as immortal so
-                // refcount churn in compiled code cannot free them out from under the caches.
-                (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
-            }
-            if default_kind != 0 {
-                let bits = MoltObject::from_int(default_kind).bits();
-                unsafe {
-                    function_set_dict_bits(ptr, bits);
-                }
-            }
-            unsafe {
-                let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-                let old_bits = object_class_bits(ptr);
-                if old_bits != builtin_bits {
-                    if old_bits != 0 {
-                        dec_ref_bits(_py, old_bits);
-                    }
-                    object_set_class_bits(_py, ptr, builtin_bits);
-                    inc_ref_bits(_py, builtin_bits);
-                }
-            }
-            MoltObject::from_ptr(ptr).bits()
+            return MoltObject::none().bits();
         }
+        unsafe {
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            // Set __defaults__ tuple as a function attribute.
+            let defaults_name = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.defaults_name,
+                b"__defaults__",
+            );
+            let defaults_ptr = alloc_tuple(_py, defaults);
+            if !defaults_ptr.is_null() {
+                let defaults_bits = MoltObject::from_ptr(defaults_ptr).bits();
+                function_set_attr_bits(_py, ptr, defaults_name, defaults_bits);
+            }
+            let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+            let old_bits = object_class_bits(ptr);
+            if old_bits != builtin_bits {
+                if old_bits != 0 {
+                    dec_ref_bits(_py, old_bits);
+                }
+                object_set_class_bits(_py, ptr, builtin_bits);
+                inc_ref_bits(_py, builtin_bits);
+            }
+        }
+        MoltObject::from_ptr(ptr).bits()
     })
 }
 
@@ -114,25 +139,31 @@ pub(crate) fn builtin_classmethod_bits(
     })
 }
 
-pub(crate) fn builtin_classmethod_bits_with_default(
+/// Create a classmethod with a `__defaults__` tuple for optional args.
+pub(crate) fn builtin_classmethod_bits_with_defaults_tuple(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
     fn_ptr: u64,
     arity: u64,
-    default_kind: i64,
+    defaults: &[u64],
 ) -> u64 {
     init_atomic_bits(_py, slot, || {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
         if func_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        if default_kind != 0 {
-            let bits = MoltObject::from_int(default_kind).bits();
-            unsafe {
-                function_set_dict_bits(func_ptr, bits);
-            }
-        }
         unsafe {
+            (*header_from_obj_ptr(func_ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            let defaults_name = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.defaults_name,
+                b"__defaults__",
+            );
+            let defaults_ptr = alloc_tuple(_py, defaults);
+            if !defaults_ptr.is_null() {
+                let defaults_bits = MoltObject::from_ptr(defaults_ptr).bits();
+                function_set_attr_bits(_py, func_ptr, defaults_name, defaults_bits);
+            }
             let builtin_bits = builtin_classes(_py).builtin_function_or_method;
             let old_bits = object_class_bits(func_ptr);
             if old_bits != builtin_bits {
@@ -290,55 +321,76 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_contains),
             2,
         )),
-        "count" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_count,
-            fn_addr!(molt_string_count_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
-        "startswith" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_startswith,
-            fn_addr!(molt_string_startswith_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
-        "endswith" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_endswith,
-            fn_addr!(molt_string_endswith_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
-        "find" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_find,
-            fn_addr!(molt_string_find_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
-        "rfind" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_rfind,
-            fn_addr!(molt_string_rfind_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
-        "index" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_index,
-            fn_addr!(molt_string_index_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
-        "rindex" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_rindex,
-            fn_addr!(molt_string_rindex_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
+        "count" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_count,
+                fn_addr!(molt_string_count_method),
+                4,
+                &[none, none],
+            ))
+        }
+        "startswith" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_startswith,
+                fn_addr!(molt_string_startswith_method),
+                4,
+                &[none, none],
+            ))
+        }
+        "endswith" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_endswith,
+                fn_addr!(molt_string_endswith_method),
+                4,
+                &[none, none],
+            ))
+        }
+        "find" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_find,
+                fn_addr!(molt_string_find_method),
+                4,
+                &[none, none],
+            ))
+        }
+        "rfind" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_rfind,
+                fn_addr!(molt_string_rfind_method),
+                4,
+                &[none, none],
+            ))
+        }
+        "index" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_index,
+                fn_addr!(molt_string_index_method),
+                4,
+                &[none, none],
+            ))
+        }
+        "rindex" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_rindex,
+                fn_addr!(molt_string_rindex_method),
+                4,
+                &[none, none],
+            ))
+        }
         "format" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_format,
@@ -459,27 +511,36 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_string_swapcase),
             1,
         )),
-        "strip" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_strip,
-            fn_addr!(molt_string_strip),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
-        "lstrip" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_lstrip,
-            fn_addr!(molt_string_lstrip),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
-        "rstrip" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_rstrip,
-            fn_addr!(molt_string_rstrip),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
+        "strip" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_strip,
+                fn_addr!(molt_string_strip),
+                2,
+                &[none],
+            ))
+        }
+        "lstrip" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_lstrip,
+                fn_addr!(molt_string_lstrip),
+                2,
+                &[none],
+            ))
+        }
+        "rstrip" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_rstrip,
+                fn_addr!(molt_string_rstrip),
+                2,
+                &[none],
+            ))
+        }
         "split" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_split,
@@ -492,13 +553,16 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_string_rsplit_max),
             3,
         )),
-        "splitlines" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_splitlines,
-            fn_addr!(molt_string_splitlines),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
+        "splitlines" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_splitlines,
+                fn_addr!(molt_string_splitlines),
+                2,
+                &[none],
+            ))
+        }
         "partition" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_partition,
@@ -511,13 +575,16 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_string_rpartition),
             2,
         )),
-        "replace" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_replace,
-            fn_addr!(molt_string_replace),
-            4,
-            FUNC_DEFAULT_REPLACE_COUNT,
-        )),
+        "replace" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_replace,
+                fn_addr!(molt_string_replace),
+                4,
+                &[neg_one],
+            ))
+        }
         "removeprefix" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_removeprefix,
@@ -536,34 +603,46 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_string_zfill),
             2,
         )),
-        "center" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_center,
-            fn_addr!(molt_string_center),
-            3,
-            FUNC_DEFAULT_MISSING,
-        )),
-        "ljust" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_ljust,
-            fn_addr!(molt_string_ljust),
-            3,
-            FUNC_DEFAULT_MISSING,
-        )),
-        "rjust" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_rjust,
-            fn_addr!(molt_string_rjust),
-            3,
-            FUNC_DEFAULT_MISSING,
-        )),
-        "expandtabs" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_expandtabs,
-            fn_addr!(molt_string_expandtabs),
-            2,
-            FUNC_DEFAULT_MISSING,
-        )),
+        "center" => {
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_center,
+                fn_addr!(molt_string_center),
+                3,
+                &[miss],
+            ))
+        }
+        "ljust" => {
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_ljust,
+                fn_addr!(molt_string_ljust),
+                3,
+                &[miss],
+            ))
+        }
+        "rjust" => {
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_rjust,
+                fn_addr!(molt_string_rjust),
+                3,
+                &[miss],
+            ))
+        }
+        "expandtabs" => {
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_expandtabs,
+                fn_addr!(molt_string_expandtabs),
+                2,
+                &[miss],
+            ))
+        }
         "join" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_join,
@@ -576,13 +655,16 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_string_translate),
             2,
         )),
-        "maketrans" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.str_maketrans,
-            fn_addr!(molt_string_maketrans),
-            3,
-            FUNC_DEFAULT_NONE2,
-        )),
+        "maketrans" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_maketrans,
+                fn_addr!(molt_string_maketrans),
+                3,
+                &[none, none],
+            ))
+        }
         "encode" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.str_encode,
@@ -613,43 +695,56 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_contains),
             2,
         )),
-        "count" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytes_count,
-            fn_addr!(molt_bytes_count_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
-        "find" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytes_find,
-            fn_addr!(molt_bytes_find_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
-        "index" => {
-            static BYTES_INDEX: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits(
+        "count" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
-                &BYTES_INDEX,
-                fn_addr!(molt_bytes_index_slice),
-                6,
+                &runtime_state(_py).method_cache.bytes_count,
+                fn_addr!(molt_bytes_count_method),
+                4,
+                &[none, none],
             ))
         }
-        "rfind" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytes_rfind,
-            fn_addr!(molt_bytes_rfind_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
+        "find" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytes_find,
+                fn_addr!(molt_bytes_find_method),
+                4,
+                &[none, none],
+            ))
+        }
+        "index" => {
+            static BYTES_INDEX: AtomicU64 = AtomicU64::new(0);
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &BYTES_INDEX,
+                fn_addr!(molt_bytes_index_method),
+                4,
+                &[none, none],
+            ))
+        }
+        "rfind" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytes_rfind,
+                fn_addr!(molt_bytes_rfind_method),
+                4,
+                &[none, none],
+            ))
+        }
         "rindex" => {
             static BYTES_RINDEX: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits(
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &BYTES_RINDEX,
-                fn_addr!(molt_bytes_rindex_slice),
-                6,
+                fn_addr!(molt_bytes_rindex_method),
+                4,
+                &[none, none],
             ))
         }
         "split" => Some(builtin_func_bits(
@@ -664,54 +759,72 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_bytes_rsplit_max),
             3,
         )),
-        "strip" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytes_strip,
-            fn_addr!(molt_bytes_strip),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
-        "lstrip" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytes_lstrip,
-            fn_addr!(molt_bytes_lstrip),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
-        "rstrip" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytes_rstrip,
-            fn_addr!(molt_bytes_rstrip),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
-        "startswith" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytes_startswith,
-            fn_addr!(molt_bytes_startswith_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
-        "endswith" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytes_endswith,
-            fn_addr!(molt_bytes_endswith_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
+        "strip" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytes_strip,
+                fn_addr!(molt_bytes_strip),
+                2,
+                &[none],
+            ))
+        }
+        "lstrip" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytes_lstrip,
+                fn_addr!(molt_bytes_lstrip),
+                2,
+                &[none],
+            ))
+        }
+        "rstrip" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytes_rstrip,
+                fn_addr!(molt_bytes_rstrip),
+                2,
+                &[none],
+            ))
+        }
+        "startswith" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytes_startswith,
+                fn_addr!(molt_bytes_startswith_method),
+                4,
+                &[none, none],
+            ))
+        }
+        "endswith" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytes_endswith,
+                fn_addr!(molt_bytes_endswith_method),
+                4,
+                &[none, none],
+            ))
+        }
         "__reversed__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytes_reversed,
             fn_addr!(molt_reversed_builtin),
             1,
         )),
-        "splitlines" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytes_splitlines,
-            fn_addr!(molt_bytes_splitlines),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
+        "splitlines" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytes_splitlines,
+                fn_addr!(molt_bytes_splitlines),
+                2,
+                &[none],
+            ))
+        }
         "partition" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytes_partition,
@@ -724,13 +837,16 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_bytes_rpartition),
             2,
         )),
-        "replace" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytes_replace,
-            fn_addr!(molt_bytes_replace),
-            4,
-            FUNC_DEFAULT_REPLACE_COUNT,
-        )),
+        "replace" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytes_replace,
+                fn_addr!(molt_bytes_replace),
+                4,
+                &[neg_one],
+            ))
+        }
         "removeprefix" => {
             static BYTES_REMOVEPREFIX: AtomicU64 = AtomicU64::new(0);
             Some(builtin_func_bits(
@@ -883,51 +999,58 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
         }
         "center" => {
             static BYTES_CENTER: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits_with_default(
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &BYTES_CENTER,
                 fn_addr!(molt_bytes_center),
                 3,
-                FUNC_DEFAULT_MISSING,
+                &[miss],
             ))
         }
         "ljust" => {
             static BYTES_LJUST: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits_with_default(
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &BYTES_LJUST,
                 fn_addr!(molt_bytes_ljust),
                 3,
-                FUNC_DEFAULT_MISSING,
+                &[miss],
             ))
         }
         "rjust" => {
             static BYTES_RJUST: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits_with_default(
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &BYTES_RJUST,
                 fn_addr!(molt_bytes_rjust),
                 3,
-                FUNC_DEFAULT_MISSING,
+                &[miss],
             ))
         }
         "expandtabs" => {
             static BYTES_EXPANDTABS: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits_with_default(
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &BYTES_EXPANDTABS,
                 fn_addr!(molt_bytes_expandtabs),
                 2,
-                FUNC_DEFAULT_MISSING,
+                &[miss],
             ))
         }
-        "translate" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytes_translate,
-            fn_addr!(molt_bytes_translate),
-            3,
-            FUNC_DEFAULT_MISSING,
-        )),
+        "translate" => {
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytes_translate,
+                fn_addr!(molt_bytes_translate),
+                3,
+                &[miss],
+            ))
+        }
         "maketrans" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytes_maketrans,
@@ -987,12 +1110,13 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
         }
         "pop" => {
             static BYTEARRAY_POP: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits_with_default(
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &BYTEARRAY_POP,
                 fn_addr!(molt_bytearray_pop),
                 2,
-                FUNC_DEFAULT_NONE,
+                &[none],
             ))
         }
         "remove" => {
@@ -1037,13 +1161,16 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             fn_addr!(molt_bytearray_hex),
             3,
         )),
-        "translate" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_translate,
-            fn_addr!(molt_bytearray_translate),
-            3,
-            FUNC_DEFAULT_MISSING,
-        )),
+        "translate" => {
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytearray_translate,
+                fn_addr!(molt_bytearray_translate),
+                3,
+                &[miss],
+            ))
+        }
         "maketrans" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytearray_maketrans,
@@ -1056,45 +1183,56 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             fn_addr!(molt_bytearray_clear),
             1,
         )),
-        "count" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_count,
-            fn_addr!(molt_bytearray_count_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
-        "find" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_find,
-            fn_addr!(molt_bytearray_find_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
-        "index" => {
-            static BYTEARRAY_INDEX: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits_with_default(
+        "count" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
-                &BYTEARRAY_INDEX,
-                fn_addr!(molt_bytearray_index_slice),
-                6,
-                FUNC_DEFAULT_SLICE_ARGS,
+                &runtime_state(_py).method_cache.bytearray_count,
+                fn_addr!(molt_bytearray_count_method),
+                4,
+                &[none, none],
             ))
         }
-        "rfind" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_rfind,
-            fn_addr!(molt_bytearray_rfind_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
+        "find" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytearray_find,
+                fn_addr!(molt_bytearray_find_method),
+                4,
+                &[none, none],
+            ))
+        }
+        "index" => {
+            static BYTEARRAY_INDEX: AtomicU64 = AtomicU64::new(0);
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &BYTEARRAY_INDEX,
+                fn_addr!(molt_bytearray_index_method),
+                4,
+                &[none, none],
+            ))
+        }
+        "rfind" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytearray_rfind,
+                fn_addr!(molt_bytearray_rfind_method),
+                4,
+                &[none, none],
+            ))
+        }
         "rindex" => {
             static BYTEARRAY_RINDEX: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits_with_default(
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &BYTEARRAY_RINDEX,
-                fn_addr!(molt_bytearray_rindex_slice),
-                6,
-                FUNC_DEFAULT_SLICE_ARGS,
+                fn_addr!(molt_bytearray_rindex_method),
+                4,
+                &[none, none],
             ))
         }
         "split" => Some(builtin_func_bits(
@@ -1109,41 +1247,56 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             fn_addr!(molt_bytearray_rsplit_max),
             3,
         )),
-        "strip" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_strip,
-            fn_addr!(molt_bytearray_strip),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
-        "lstrip" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_lstrip,
-            fn_addr!(molt_bytearray_lstrip),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
-        "rstrip" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_rstrip,
-            fn_addr!(molt_bytearray_rstrip),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
-        "startswith" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_startswith,
-            fn_addr!(molt_bytearray_startswith_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
-        "endswith" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_endswith,
-            fn_addr!(molt_bytearray_endswith_slice),
-            6,
-            FUNC_DEFAULT_SLICE_ARGS,
-        )),
+        "strip" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytearray_strip,
+                fn_addr!(molt_bytearray_strip),
+                2,
+                &[none],
+            ))
+        }
+        "lstrip" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytearray_lstrip,
+                fn_addr!(molt_bytearray_lstrip),
+                2,
+                &[none],
+            ))
+        }
+        "rstrip" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytearray_rstrip,
+                fn_addr!(molt_bytearray_rstrip),
+                2,
+                &[none],
+            ))
+        }
+        "startswith" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytearray_startswith,
+                fn_addr!(molt_bytes_startswith_method),
+                4,
+                &[none, none],
+            ))
+        }
+        "endswith" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytearray_endswith,
+                fn_addr!(molt_bytes_endswith_method),
+                4,
+                &[none, none],
+            ))
+        }
         "__reversed__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytearray_reversed,
@@ -1162,13 +1315,16 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             fn_addr!(molt_delitem_method),
             2,
         )),
-        "splitlines" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_splitlines,
-            fn_addr!(molt_bytearray_splitlines),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
+        "splitlines" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytearray_splitlines,
+                fn_addr!(molt_bytearray_splitlines),
+                2,
+                &[none],
+            ))
+        }
         "partition" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.bytearray_partition,
@@ -1181,13 +1337,16 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             fn_addr!(molt_bytearray_rpartition),
             2,
         )),
-        "replace" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_replace,
-            fn_addr!(molt_bytearray_replace),
-            4,
-            FUNC_DEFAULT_REPLACE_COUNT,
-        )),
+        "replace" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytearray_replace,
+                fn_addr!(molt_bytearray_replace),
+                4,
+                &[neg_one],
+            ))
+        }
         "removeprefix" => {
             static BYTEARRAY_REMOVEPREFIX: AtomicU64 = AtomicU64::new(0);
             Some(builtin_func_bits(
@@ -1343,42 +1502,46 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
         }
         "center" => {
             static BYTEARRAY_CENTER: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits_with_default(
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &BYTEARRAY_CENTER,
                 fn_addr!(molt_bytearray_center),
                 3,
-                FUNC_DEFAULT_MISSING,
+                &[miss],
             ))
         }
         "ljust" => {
             static BYTEARRAY_LJUST: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits_with_default(
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &BYTEARRAY_LJUST,
                 fn_addr!(molt_bytearray_ljust),
                 3,
-                FUNC_DEFAULT_MISSING,
+                &[miss],
             ))
         }
         "rjust" => {
             static BYTEARRAY_RJUST: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits_with_default(
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &BYTEARRAY_RJUST,
                 fn_addr!(molt_bytearray_rjust),
                 3,
-                FUNC_DEFAULT_MISSING,
+                &[miss],
             ))
         }
         "expandtabs" => {
             static BYTEARRAY_EXPANDTABS: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits_with_default(
+            let miss = missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &BYTEARRAY_EXPANDTABS,
                 fn_addr!(molt_bytearray_expandtabs),
                 2,
-                FUNC_DEFAULT_MISSING,
+                &[miss],
             ))
         }
         "decode" => Some(builtin_func_bits(
@@ -1489,26 +1652,32 @@ pub(crate) fn int_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
                 1,
             ))
         }
-        "to_bytes" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.int_to_bytes,
-            fn_addr!(molt_int_to_bytes),
-            4,
-            FUNC_DEFAULT_ZERO,
-        )),
+        "to_bytes" => {
+            let zero = MoltObject::from_int(0).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.int_to_bytes,
+                fn_addr!(molt_int_to_bytes),
+                4,
+                &[zero],
+            ))
+        }
         _ => None,
     }
 }
 
 pub(crate) fn int_class_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
-        "from_bytes" => Some(builtin_classmethod_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.int_from_bytes,
-            fn_addr!(molt_int_from_bytes),
-            4,
-            FUNC_DEFAULT_ZERO,
-        )),
+        "from_bytes" => {
+            let zero = MoltObject::from_int(0).bits();
+            Some(builtin_classmethod_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.int_from_bytes,
+                fn_addr!(molt_int_from_bytes),
+                4,
+                &[zero],
+            ))
+        }
         _ => None,
     }
 }
@@ -1696,23 +1865,26 @@ pub(crate) fn builtin_class_method_bits(
         return property_method_bits(_py, name);
     }
     if class_bits == builtins.file_io {
+        // FileIO(name, mode='r', closefd=True, opener=None)
+        // __defaults__ = (None, None, None) for the last 3 params
+        let none = MoltObject::none().bits();
         match name {
             "__new__" => {
-                return Some(builtin_func_bits_with_default(
+                return Some(builtin_func_bits_with_defaults_tuple(
                     _py,
                     &runtime_state(_py).method_cache.file_io_new,
                     fn_addr!(molt_file_io_new),
                     5,
-                    FUNC_DEFAULT_IO_RAW,
+                    &[none, none, none],
                 ));
             }
             "__init__" => {
-                return Some(builtin_func_bits_with_default(
+                return Some(builtin_func_bits_with_defaults_tuple(
                     _py,
                     &runtime_state(_py).method_cache.file_io_init,
                     fn_addr!(molt_file_io_init),
                     5,
-                    FUNC_DEFAULT_IO_RAW,
+                    &[none, none, none],
                 ));
             }
             _ => {}
@@ -1722,92 +1894,102 @@ pub(crate) fn builtin_class_method_bits(
         || class_bits == builtins.buffered_writer
         || class_bits == builtins.buffered_random
     {
+        // BufferedReader(raw, buffer_size=-1)
+        let neg_one = MoltObject::from_int(-1).bits();
         match name {
             "__new__" => {
-                return Some(builtin_func_bits_with_default(
+                return Some(builtin_func_bits_with_defaults_tuple(
                     _py,
                     &runtime_state(_py).method_cache.buffered_new,
                     fn_addr!(molt_buffered_new),
                     3,
-                    FUNC_DEFAULT_NEG_ONE,
+                    &[neg_one],
                 ));
             }
             "__init__" => {
-                return Some(builtin_func_bits_with_default(
+                return Some(builtin_func_bits_with_defaults_tuple(
                     _py,
                     &runtime_state(_py).method_cache.buffered_init,
                     fn_addr!(molt_buffered_init),
                     3,
-                    FUNC_DEFAULT_NEG_ONE,
+                    &[neg_one],
                 ));
             }
             _ => {}
         }
     }
     if class_bits == builtins.text_io_wrapper {
+        // TextIOWrapper(buffer, encoding=None, errors=None, newline=None,
+        //               line_buffering=False, write_through=False)
+        let none = MoltObject::none().bits();
+        let false_bits = MoltObject::from_bool(false).bits();
         match name {
             "__new__" => {
-                return Some(builtin_func_bits_with_default(
+                return Some(builtin_func_bits_with_defaults_tuple(
                     _py,
                     &runtime_state(_py).method_cache.text_io_wrapper_new,
                     fn_addr!(molt_text_io_wrapper_new),
                     7,
-                    FUNC_DEFAULT_IO_TEXT_WRAPPER,
+                    &[none, none, none, false_bits, false_bits],
                 ));
             }
             "__init__" => {
-                return Some(builtin_func_bits_with_default(
+                return Some(builtin_func_bits_with_defaults_tuple(
                     _py,
                     &runtime_state(_py).method_cache.text_io_wrapper_init,
                     fn_addr!(molt_text_io_wrapper_init),
                     7,
-                    FUNC_DEFAULT_IO_TEXT_WRAPPER,
+                    &[none, none, none, false_bits, false_bits],
                 ));
             }
             _ => {}
         }
     }
     if class_bits == builtins.bytes_io {
+        // BytesIO(initial_bytes=None)
+        let none = MoltObject::none().bits();
         match name {
             "__new__" => {
-                return Some(builtin_func_bits_with_default(
+                return Some(builtin_func_bits_with_defaults_tuple(
                     _py,
                     &runtime_state(_py).method_cache.bytes_io_new,
                     fn_addr!(molt_bytesio_new),
                     2,
-                    FUNC_DEFAULT_NONE,
+                    &[none],
                 ));
             }
             "__init__" => {
-                return Some(builtin_func_bits_with_default(
+                return Some(builtin_func_bits_with_defaults_tuple(
                     _py,
                     &runtime_state(_py).method_cache.bytes_io_init,
                     fn_addr!(molt_bytesio_init),
                     2,
-                    FUNC_DEFAULT_NONE,
+                    &[none],
                 ));
             }
             _ => {}
         }
     }
     if class_bits == builtins.string_io {
+        // StringIO(initial_value='', newline=None)
+        let none = MoltObject::none().bits();
         match name {
             "__new__" => {
-                return Some(builtin_func_bits_with_default(
+                return Some(builtin_func_bits_with_defaults_tuple(
                     _py,
                     &runtime_state(_py).method_cache.string_io_new,
                     fn_addr!(molt_stringio_new),
                     3,
-                    FUNC_DEFAULT_NONE2,
+                    &[none, none],
                 ));
             }
             "__init__" => {
-                return Some(builtin_func_bits_with_default(
+                return Some(builtin_func_bits_with_defaults_tuple(
                     _py,
                     &runtime_state(_py).method_cache.string_io_init,
                     fn_addr!(molt_stringio_init),
                     3,
-                    FUNC_DEFAULT_NONE2,
+                    &[none, none],
                 ));
             }
             _ => {}
@@ -2168,34 +2350,46 @@ pub(crate) fn range_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
 
 pub(crate) fn file_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
-        "read" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.file_read,
-            fn_addr!(molt_file_read),
-            2,
-            FUNC_DEFAULT_NEG_ONE,
-        )),
-        "readline" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.file_readline,
-            fn_addr!(molt_file_readline),
-            2,
-            FUNC_DEFAULT_NEG_ONE,
-        )),
-        "readlines" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.file_readlines,
-            fn_addr!(molt_file_readlines),
-            2,
-            FUNC_DEFAULT_NEG_ONE,
-        )),
-        "read1" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.file_read1,
-            fn_addr!(molt_file_read1),
-            2,
-            FUNC_DEFAULT_NEG_ONE,
-        )),
+        "read" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.file_read,
+                fn_addr!(molt_file_read),
+                2,
+                &[neg_one],
+            ))
+        }
+        "readline" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.file_readline,
+                fn_addr!(molt_file_readline),
+                2,
+                &[neg_one],
+            ))
+        }
+        "readlines" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.file_readlines,
+                fn_addr!(molt_file_readlines),
+                2,
+                &[neg_one],
+            ))
+        }
+        "read1" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.file_read1,
+                fn_addr!(molt_file_read1),
+                2,
+                &[neg_one],
+            ))
+        }
         "readall" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.file_readall,
@@ -2250,13 +2444,16 @@ pub(crate) fn file_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_file_reconfigure),
             6,
         )),
-        "seek" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.file_seek,
-            fn_addr!(molt_file_seek),
-            3,
-            FUNC_DEFAULT_ZERO,
-        )),
+        "seek" => {
+            let zero = MoltObject::from_int(0).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.file_seek,
+                fn_addr!(molt_file_seek),
+                3,
+                &[zero],
+            ))
+        }
         "tell" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.file_tell,
@@ -2269,13 +2466,16 @@ pub(crate) fn file_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_file_fileno),
             1,
         )),
-        "truncate" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.file_truncate,
-            fn_addr!(molt_file_truncate),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
+        "truncate" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.file_truncate,
+                fn_addr!(molt_file_truncate),
+                2,
+                &[none],
+            ))
+        }
         "readable" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.file_readable,
@@ -2324,13 +2524,16 @@ pub(crate) fn file_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_file_exit_method),
             4,
         )),
-        "peek" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.file_peek,
-            fn_addr!(molt_file_peek),
-            2,
-            FUNC_DEFAULT_NEG_ONE,
-        )),
+        "peek" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.file_peek,
+                fn_addr!(molt_file_peek),
+                2,
+                &[neg_one],
+            ))
+        }
         "getvalue" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.file_getvalue,

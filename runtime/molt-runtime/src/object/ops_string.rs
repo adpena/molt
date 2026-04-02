@@ -138,6 +138,117 @@ pub extern "C" fn molt_string_rindex(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
+// ── 4-arg method-dispatch wrappers ──────────────────────────────────
+// These accept (self, sub, start=None, end=None) and convert the None
+// sentinel into has_start/has_end bools before delegating to the 6-arg
+// _slice functions.  Used by dynamic method resolution with __defaults__
+// tuples; the backends continue to call the _slice variants directly.
+
+/// str.find(sub, start=None, end=None) — method dispatch entry point.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_find_method(
+    hay_bits: u64,
+    needle_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+) -> u64 {
+    let has_start = obj_from_bits(start_bits).is_none() as u64 ^ 1;
+    let has_end = obj_from_bits(end_bits).is_none() as u64 ^ 1;
+    let start = if has_start != 0 { start_bits } else { MoltObject::from_int(0).bits() };
+    let end = if has_end != 0 { end_bits } else { MoltObject::from_int(0).bits() };
+    molt_string_find_slice(hay_bits, needle_bits, start, end, MoltObject::from_int(has_start as i64).bits(), MoltObject::from_int(has_end as i64).bits())
+}
+
+/// str.rfind(sub, start=None, end=None)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_rfind_method(
+    hay_bits: u64,
+    needle_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+) -> u64 {
+    let has_start = obj_from_bits(start_bits).is_none() as u64 ^ 1;
+    let has_end = obj_from_bits(end_bits).is_none() as u64 ^ 1;
+    let start = if has_start != 0 { start_bits } else { MoltObject::from_int(0).bits() };
+    let end = if has_end != 0 { end_bits } else { MoltObject::from_int(0).bits() };
+    molt_string_rfind_slice(hay_bits, needle_bits, start, end, MoltObject::from_int(has_start as i64).bits(), MoltObject::from_int(has_end as i64).bits())
+}
+
+/// str.index(sub, start=None, end=None)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_index_method(
+    hay_bits: u64,
+    needle_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+) -> u64 {
+    let has_start = obj_from_bits(start_bits).is_none() as u64 ^ 1;
+    let has_end = obj_from_bits(end_bits).is_none() as u64 ^ 1;
+    let start = if has_start != 0 { start_bits } else { MoltObject::from_int(0).bits() };
+    let end = if has_end != 0 { end_bits } else { MoltObject::from_int(0).bits() };
+    molt_string_index_slice(hay_bits, needle_bits, start, end, MoltObject::from_int(has_start as i64).bits(), MoltObject::from_int(has_end as i64).bits())
+}
+
+/// str.rindex(sub, start=None, end=None)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_rindex_method(
+    hay_bits: u64,
+    needle_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+) -> u64 {
+    let has_start = obj_from_bits(start_bits).is_none() as u64 ^ 1;
+    let has_end = obj_from_bits(end_bits).is_none() as u64 ^ 1;
+    let start = if has_start != 0 { start_bits } else { MoltObject::from_int(0).bits() };
+    let end = if has_end != 0 { end_bits } else { MoltObject::from_int(0).bits() };
+    molt_string_rindex_slice(hay_bits, needle_bits, start, end, MoltObject::from_int(has_start as i64).bits(), MoltObject::from_int(has_end as i64).bits())
+}
+
+/// str.count(sub, start=None, end=None)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_count_method(
+    hay_bits: u64,
+    needle_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+) -> u64 {
+    let has_start = obj_from_bits(start_bits).is_none() as u64 ^ 1;
+    let has_end = obj_from_bits(end_bits).is_none() as u64 ^ 1;
+    let start = if has_start != 0 { start_bits } else { MoltObject::from_int(0).bits() };
+    let end = if has_end != 0 { end_bits } else { MoltObject::from_int(0).bits() };
+    molt_string_count_slice(hay_bits, needle_bits, start, end, MoltObject::from_int(has_start as i64).bits(), MoltObject::from_int(has_end as i64).bits())
+}
+
+/// str.startswith(prefix, start=None, end=None)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_startswith_method(
+    hay_bits: u64,
+    needle_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+) -> u64 {
+    let has_start = obj_from_bits(start_bits).is_none() as u64 ^ 1;
+    let has_end = obj_from_bits(end_bits).is_none() as u64 ^ 1;
+    let start = if has_start != 0 { start_bits } else { MoltObject::from_int(0).bits() };
+    let end = if has_end != 0 { end_bits } else { MoltObject::from_int(0).bits() };
+    molt_string_startswith_slice(hay_bits, needle_bits, start, end, MoltObject::from_int(has_start as i64).bits(), MoltObject::from_int(has_end as i64).bits())
+}
+
+/// str.endswith(suffix, start=None, end=None)
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_string_endswith_method(
+    hay_bits: u64,
+    needle_bits: u64,
+    start_bits: u64,
+    end_bits: u64,
+) -> u64 {
+    let has_start = obj_from_bits(start_bits).is_none() as u64 ^ 1;
+    let has_end = obj_from_bits(end_bits).is_none() as u64 ^ 1;
+    let start = if has_start != 0 { start_bits } else { MoltObject::from_int(0).bits() };
+    let end = if has_end != 0 { end_bits } else { MoltObject::from_int(0).bits() };
+    molt_string_endswith_slice(hay_bits, needle_bits, start, end, MoltObject::from_int(has_start as i64).bits(), MoltObject::from_int(has_end as i64).bits())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_find_slice(
     hay_bits: u64,

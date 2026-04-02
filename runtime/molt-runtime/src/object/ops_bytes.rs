@@ -603,6 +603,48 @@ pub extern "C" fn molt_bytes_find(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
+// ── 4-arg method-dispatch wrappers for bytes/bytearray ──────────────
+// Mirror the str wrappers: (self, sub, start=None, end=None) with None
+// sentinel → has_start/has_end conversion.
+
+macro_rules! bytes_slice_method_wrapper {
+    ($name:ident, $delegate:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(
+            hay_bits: u64,
+            needle_bits: u64,
+            start_bits: u64,
+            end_bits: u64,
+        ) -> u64 {
+            let has_start = obj_from_bits(start_bits).is_none() as u64 ^ 1;
+            let has_end = obj_from_bits(end_bits).is_none() as u64 ^ 1;
+            let start = if has_start != 0 { start_bits } else { MoltObject::from_int(0).bits() };
+            let end = if has_end != 0 { end_bits } else { MoltObject::from_int(0).bits() };
+            $delegate(
+                hay_bits, needle_bits, start, end,
+                MoltObject::from_int(has_start as i64).bits(),
+                MoltObject::from_int(has_end as i64).bits(),
+            )
+        }
+    };
+}
+
+bytes_slice_method_wrapper!(molt_bytes_find_method, molt_bytes_find_slice);
+bytes_slice_method_wrapper!(molt_bytes_rfind_method, molt_bytes_rfind_slice);
+bytes_slice_method_wrapper!(molt_bytes_index_method, molt_bytes_index_slice);
+bytes_slice_method_wrapper!(molt_bytes_rindex_method, molt_bytes_rindex_slice);
+bytes_slice_method_wrapper!(molt_bytes_count_method, molt_bytes_count_slice);
+bytes_slice_method_wrapper!(molt_bytes_startswith_method, molt_bytes_startswith_slice);
+bytes_slice_method_wrapper!(molt_bytes_endswith_method, molt_bytes_endswith_slice);
+
+// bytearray reuses the same runtime functions as bytes, so these wrappers
+// delegate to the bytes _slice variants directly.
+bytes_slice_method_wrapper!(molt_bytearray_find_method, molt_bytearray_find_slice);
+bytes_slice_method_wrapper!(molt_bytearray_rfind_method, molt_bytearray_rfind_slice);
+bytes_slice_method_wrapper!(molt_bytearray_index_method, molt_bytearray_index_slice);
+bytes_slice_method_wrapper!(molt_bytearray_rindex_method, molt_bytearray_rindex_slice);
+bytes_slice_method_wrapper!(molt_bytearray_count_method, molt_bytearray_count_slice);
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_find_slice(
     hay_bits: u64,

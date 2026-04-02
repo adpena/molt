@@ -253,14 +253,6 @@ mod native_backend_consts {
     pub(super) const TASK_KIND_FUTURE: i64 = 0;
     pub(super) const TASK_KIND_GENERATOR: i64 = 1;
     pub(super) const TASK_KIND_COROUTINE: i64 = 2;
-    // FUNC_DEFAULT_* constants moved to the runtime (molt_call_func_dispatch).
-    // Kept as dead_code in case the WASM backend needs them during outlining.
-    #[allow(dead_code)]
-    pub(super) const FUNC_DEFAULT_NONE: i64 = 1;
-    #[allow(dead_code)]
-    pub(super) const FUNC_DEFAULT_DICT_POP: i64 = 2;
-    #[allow(dead_code)]
-    pub(super) const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
     pub(super) const HEADER_SIZE_BYTES: i32 = 16;
     // MoltHeader layout (16 bytes total):
     //   offset  0: type_id    (u32)
