@@ -297,17 +297,19 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             6,
             FUNC_DEFAULT_SLICE_ARGS,
         )),
-        "startswith" => Some(builtin_func_bits(
+        "startswith" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.str_startswith,
             fn_addr!(molt_string_startswith_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
-        "endswith" => Some(builtin_func_bits(
+        "endswith" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.str_endswith,
             fn_addr!(molt_string_endswith_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
         "find" => Some(builtin_func_bits_with_default(
             _py,
@@ -683,17 +685,19 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             2,
             FUNC_DEFAULT_NONE,
         )),
-        "startswith" => Some(builtin_func_bits(
+        "startswith" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.bytes_startswith,
             fn_addr!(molt_bytes_startswith_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
-        "endswith" => Some(builtin_func_bits(
+        "endswith" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.bytes_endswith,
             fn_addr!(molt_bytes_endswith_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
         "__reversed__" => Some(builtin_func_bits(
             _py,
@@ -1126,17 +1130,19 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             2,
             FUNC_DEFAULT_NONE,
         )),
-        "startswith" => Some(builtin_func_bits(
+        "startswith" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.bytearray_startswith,
             fn_addr!(molt_bytearray_startswith_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
-        "endswith" => Some(builtin_func_bits(
+        "endswith" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.bytearray_endswith,
             fn_addr!(molt_bytearray_endswith_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
         "__reversed__" => Some(builtin_func_bits(
             _py,
