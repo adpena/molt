@@ -2258,7 +2258,22 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
             }
             return float_result_bits(_py, out);
         }
-        raise_exception::<_>(_py, "TypeError", "unsupported operand type(s) for **")
+        unsafe {
+            let pow_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.pow_name,
+                b"__pow__",
+            );
+            let rpow_name_bits = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.rpow_name,
+                b"__rpow__",
+            );
+            if let Some(res_bits) = call_binary_dunder(_py, a, b, pow_name_bits, rpow_name_bits) {
+                return res_bits;
+            }
+        }
+        binary_type_error(_py, lhs, rhs, "**")
     })
 }
 
