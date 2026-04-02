@@ -91,6 +91,24 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     let block_label_id =
         |bid: &BlockId| -> i64 { label_id_for_block.get(bid).copied().unwrap_or(bid.0 as i64) };
 
+    // Build a mapping from ORIGINAL label IDs to NEW label IDs.
+    // check_exception, try_start, and try_end ops carry original label IDs
+    // in their value attrs.  After TIR roundtrip, blocks may have different
+    // label IDs.  This map translates original → new so the ops reference
+    // the correct post-roundtrip labels.
+    let original_to_new_label: HashMap<i64, i64> = {
+        let mut map = HashMap::new();
+        for (&bid_u32, &original_id) in &func.label_id_map {
+            let block_id = BlockId(bid_u32);
+            if let Some(&new_id) = label_id_for_block.get(&block_id) {
+                if original_id != new_id {
+                    map.insert(original_id, new_id);
+                }
+            }
+        }
+        map
+    };
+
     // Collect block argument info for all blocks so we can generate
     // `store_var` assignments at branch sites.
     // Map: (source_block, target_block) → Vec<(arg_value, param_var_name)>
@@ -238,6 +256,15 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             for op in &block.ops {
                 if let Some(mut opir) = lower_op(op) {
                     annotate_type_flags(&mut opir, op, types);
+                    // Remap label IDs in check_exception/try_start/try_end ops
+                    // to match post-roundtrip block label assignments.
+                    if matches!(opir.kind.as_str(), "check_exception" | "try_start" | "try_end") {
+                        if let Some(orig_id) = opir.value {
+                            if let Some(&new_id) = original_to_new_label.get(&orig_id) {
+                                opir.value = Some(new_id);
+                            }
+                        }
+                    }
                     out.push(opir);
                 }
             }
@@ -298,6 +325,13 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             for op in &then_blk.ops {
                 if let Some(mut opir) = lower_op(op) {
                     annotate_type_flags(&mut opir, op, types);
+                    if matches!(opir.kind.as_str(), "check_exception" | "try_start" | "try_end") {
+                        if let Some(orig_id) = opir.value {
+                            if let Some(&new_id) = original_to_new_label.get(&orig_id) {
+                                opir.value = Some(new_id);
+                            }
+                        }
+                    }
                     out.push(opir);
                 }
             }
@@ -313,6 +347,13 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             for op in &else_blk.ops {
                 if let Some(mut opir) = lower_op(op) {
                     annotate_type_flags(&mut opir, op, types);
+                    if matches!(opir.kind.as_str(), "check_exception" | "try_start" | "try_end") {
+                        if let Some(orig_id) = opir.value {
+                            if let Some(&new_id) = original_to_new_label.get(&orig_id) {
+                                opir.value = Some(new_id);
+                            }
+                        }
+                    }
                     out.push(opir);
                 }
             }
