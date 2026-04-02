@@ -2987,14 +2987,11 @@ impl SimpleBackend {
                         let force_eh_bypass = true;
                         // Cell-loop guard REMOVED: Memory SSA (cell→store_var
                         // rewrite in lower_from_simple) now handles cell-based
-                        // loop variables. The SSA pass sees store_var/load_var
-                        // and creates proper phi nodes at loop headers.
-                        // Skip TIR for functions with cell-based loop variables.
+                        // Memory SSA rewrites cell locals to store_var/load_var,
+                        // so cell-loop functions now go through TIR correctly.
                         let has_cell_loop = {
-                            let has_loop = tmp_func.ops.iter()
-                                .any(|op| op.kind == "loop_start");
-                            let has_cell_store = tmp_func.ops.iter()
-                                .any(|op| op.kind == "store_index");
+                            let has_loop = tmp_func.ops.iter().any(|op| op.kind == "loop_start");
+                            let has_cell_store = tmp_func.ops.iter().any(|op| op.kind == "store_index");
                             has_loop && has_cell_store
                         };
                         if tmp_func.name.contains("__molt_module_chunk_")
