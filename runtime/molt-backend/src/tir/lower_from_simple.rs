@@ -29,14 +29,23 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     //
     //    The rewrite is safe because lower_to_simple_ir restores the original
     //    store_index/index patterns from the SSA output.
-    let mut working_ops = ir.ops.clone();
-    // Memory SSA: rewrite cell-based locals (store_index/index on list) to
-    // store_var/load_var so the SSA pass creates proper phi nodes at loop
-    // headers.  The native backend handles store_var/load_var natively via
-    // Cranelift variables — no reverse conversion needed.
-    // Memory SSA disabled — rewrite adds store_var in parallel with
-    // store_index instead of replacing. SSA picks up the stale store_index.
-    let _cell_rewrite_applied = false; // rewrite_cell_locals_to_store_load(&mut working_ops);
+    // Rewrite loop_index_start/loop_index_next to store_var/load_var so the
+    // SSA pass creates proper phi nodes at loop headers for induction variables.
+    let rewritten_ops = rewrite_loop_index_to_store_load(&ir.ops);
+    let mut working_ops = if rewritten_ops.is_empty() {
+        ir.ops.clone()
+    } else {
+        rewritten_ops
+    };
+    // Also rewrite cell-based locals (store_index/index on list) to
+    // store_var/load_var for the same reason.
+    // Cell rewrite disabled: converting cell list to variable loses type info.
+    // // Memory SSA gated: only enable for functions matching MOLT_TIR_CELL_SSA pattern
+    let _cell_rewrite_applied = if std::env::var("MOLT_TIR_CELL_SSA").is_ok() {
+        rewrite_cell_locals_to_store_load(&mut working_ops)
+    } else {
+        false
+    };
 
     let tmp_ir = crate::ir::FunctionIR {
         name: ir.name.clone(),
@@ -947,17 +956,18 @@ fn rewrite_cell_locals_to_store_load(ops: &mut Vec<crate::ir::OpIR>) -> bool {
 
     // Step 3: scan for store_index and index ops on the cell list.
     // For each, determine the slot index and create store_var/load_var.
-    let mut insertions: Vec<(usize, OpIR)> = Vec::new();
     let mut replacements: Vec<(usize, OpIR)> = Vec::new();
 
     for (i, op) in ops.iter().enumerate() {
         if let Some(args) = &op.args {
             if op.kind == "store_index" && args.len() == 3 && args[0] == cell_var {
                 // store_index(cell_list, slot_var, value)
-                // → insert store_var(_cell_N, value) AFTER this op
+                // → REPLACE with store_var(_cell_N, value)
+                // The cell list write is removed — the SSA variable carries the
+                // value instead. This is correct for non-closure locals.
                 if let Some(&slot_val) = const_values.get(&args[1]) {
                     let var_name = format!("_cell_{}", slot_val);
-                    insertions.push((i + 1, OpIR {
+                    replacements.push((i, OpIR {
                         kind: "store_var".to_string(),
                         var: Some(var_name),
                         args: Some(vec![args[2].clone()]),
@@ -986,20 +996,13 @@ fn rewrite_cell_locals_to_store_load(ops: &mut Vec<crate::ir::OpIR>) -> bool {
         }
     }
 
-    if insertions.is_empty() && replacements.is_empty() {
+    if replacements.is_empty() {
         return false; // No cell locals to rewrite.
     }
 
-    // Apply replacements (index → load_var).
+    // Apply all replacements (store_index → store_var, index → load_var).
     for (idx, new_op) in &replacements {
         ops[*idx] = new_op.clone();
-    }
-
-    // Apply insertions (store_var after store_index) in reverse order
-    // so indices remain valid.
-    insertions.sort_by(|a, b| b.0.cmp(&a.0));
-    for (idx, new_op) in insertions {
-        ops.insert(idx, new_op);
     }
     true
 }
