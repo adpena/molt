@@ -1047,10 +1047,6 @@ fn emit_terminator(
             let needs_trampoline = !then_args.is_empty();
             {
                 use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tir_condbranch.log") {
-                    let _ = writeln!(f, "CondBranch: then_args={}, else_args={}, trampoline={}, then={:?}, else={:?}",
-                        then_args.len(), else_args.len(), needs_trampoline, then_block, else_block);
-                }
             }
             if needs_trampoline {
                 // Allocate a fresh label for the then-path trampoline.
