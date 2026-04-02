@@ -5,10 +5,7 @@ use crate::call::type_policy::{
 use crate::state::tls::FRAME_STACK;
 use crate::{
     ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_OPEN, CALL_BIND_IC_HIT_COUNT,
-    CALL_BIND_IC_MISS_COUNT, CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT, FUNC_DEFAULT_DICT_POP,
-    FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_IO_RAW, FUNC_DEFAULT_IO_TEXT_WRAPPER,
-    FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NEG_ONE, FUNC_DEFAULT_NONE, FUNC_DEFAULT_NONE2,
-    FUNC_DEFAULT_REPLACE_COUNT, FUNC_DEFAULT_SLICE_ARGS, FUNC_DEFAULT_ZERO, GEN_CONTROL_SIZE,
+    CALL_BIND_IC_MISS_COUNT, CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT, GEN_CONTROL_SIZE,
     INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject, PtrDropGuard, PyToken,
     TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE, TYPE_ID_DATACLASS, TYPE_ID_DICT,
     TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST,
@@ -40,7 +37,7 @@ use crate::{
     molt_dict_from_obj, molt_dict_new, molt_file_reconfigure, molt_frozenset_copy_method,
     molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
     molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
-    molt_frozenset_union_multi, molt_function_default_kind, molt_generator_new,
+    molt_frozenset_union_multi, molt_generator_new,
     molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_is_callable, molt_iter,
     molt_iter_next, molt_list_append, molt_list_index_range, molt_list_pop, molt_list_sort,
     molt_memoryview_cast, molt_memoryview_hex, molt_object_init, molt_object_init_subclass,
@@ -2550,127 +2547,7 @@ unsafe fn bind_builtin_call(
         if missing == 0 {
             return Some(out);
         }
-        let default_kind = molt_function_default_kind(func_bits);
-        if missing == 1 {
-            if default_kind == FUNC_DEFAULT_NONE {
-                out.push(MoltObject::none().bits());
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_NONE2 {
-                out.push(MoltObject::none().bits());
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_IO_RAW {
-                out.push(MoltObject::none().bits());
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_IO_TEXT_WRAPPER {
-                out.push(MoltObject::from_bool(false).bits());
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_DICT_POP {
-                out.push(MoltObject::from_int(1).bits());
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_DICT_UPDATE {
-                out.push(missing_bits(_py));
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_REPLACE_COUNT {
-                out.push(MoltObject::from_int(-1).bits());
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_NEG_ONE {
-                out.push(MoltObject::from_int(-1).bits());
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_ZERO {
-                out.push(MoltObject::from_int(0).bits());
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_MISSING {
-                out.push(missing_bits(_py));
-                return Some(out);
-            }
-        }
-        if missing == 2 {
-            if default_kind == FUNC_DEFAULT_DICT_POP {
-                out.push(MoltObject::none().bits());
-                out.push(MoltObject::from_int(0).bits());
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_NONE2 {
-                out.push(MoltObject::none().bits());
-                out.push(MoltObject::none().bits());
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_IO_RAW {
-                out.push(MoltObject::none().bits());
-                out.push(MoltObject::none().bits());
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_IO_TEXT_WRAPPER {
-                out.push(MoltObject::from_bool(false).bits());
-                out.push(MoltObject::from_bool(false).bits());
-                return Some(out);
-            }
-        }
-        if missing == 3 {
-            if default_kind == FUNC_DEFAULT_IO_RAW {
-                out.push(MoltObject::none().bits());
-                out.push(MoltObject::none().bits());
-                out.push(MoltObject::none().bits());
-                return Some(out);
-            }
-            if default_kind == FUNC_DEFAULT_IO_TEXT_WRAPPER {
-                out.push(MoltObject::none().bits());
-                out.push(MoltObject::from_bool(false).bits());
-                out.push(MoltObject::from_bool(false).bits());
-                return Some(out);
-            }
-        }
-        // str.count/find/index with only (self, sub) — fill start=0, end=0, has_start=0, has_end=0
-        if missing == 4 && default_kind == FUNC_DEFAULT_SLICE_ARGS {
-            let zero = MoltObject::from_int(0).bits();
-            out.push(zero);
-            out.push(zero);
-            out.push(zero);
-            out.push(zero);
-            return Some(out);
-        }
-        // str.count/find/index with (self, sub, start) — fill end=0, has_start=1, has_end=0
-        if missing == 3 && default_kind == FUNC_DEFAULT_SLICE_ARGS {
-            let zero = MoltObject::from_int(0).bits();
-            let one = MoltObject::from_int(1).bits();
-            out.push(zero); // end
-            out.push(one);  // has_start = True
-            out.push(zero); // has_end = False
-            return Some(out);
-        }
-        // str.count/find/index with (self, sub, start, end) — fill has_start=1, has_end=1
-        if missing == 2 && default_kind == FUNC_DEFAULT_SLICE_ARGS {
-            let one = MoltObject::from_int(1).bits();
-            out.push(one); // has_start = True
-            out.push(one); // has_end = True
-            return Some(out);
-        }
-        if missing == 4 && default_kind == FUNC_DEFAULT_IO_TEXT_WRAPPER {
-            out.push(MoltObject::none().bits());
-            out.push(MoltObject::none().bits());
-            out.push(MoltObject::from_bool(false).bits());
-            out.push(MoltObject::from_bool(false).bits());
-            return Some(out);
-        }
-        if missing == 5 && default_kind == FUNC_DEFAULT_IO_TEXT_WRAPPER {
-            out.push(MoltObject::none().bits());
-            out.push(MoltObject::none().bits());
-            out.push(MoltObject::none().bits());
-            out.push(MoltObject::from_bool(false).bits());
-            out.push(MoltObject::from_bool(false).bits());
-            return Some(out);
-        }
-
-        // Generic fallback: consult __defaults__ tuple stored on the function.
+        // Consult __defaults__ tuple stored on the function.
         // This handles user-defined functions with keyword default arguments
         // that end up in the builtin bind path (e.g. on WASM when
         // __molt_arg_names__ is not found on the function object).

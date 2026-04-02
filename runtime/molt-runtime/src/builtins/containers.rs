@@ -5,11 +5,12 @@ macro_rules! fn_addr {
 }
 
 use crate::{
-    FUNC_DEFAULT_DICT_POP, FUNC_DEFAULT_DICT_UPDATE, FUNC_DEFAULT_MISSING, FUNC_DEFAULT_NONE,
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
-    TYPE_ID_FROZENSET, TYPE_ID_SET, alloc_tuple, builtin_func_bits, builtin_func_bits_with_default,
+    TYPE_ID_FROZENSET, TYPE_ID_SET, alloc_tuple, builtin_func_bits,
+    builtin_func_bits_with_defaults_tuple,
     dec_ref_bits, dict_clear_method, dict_copy_method, dict_fromkeys_method, dict_get_method,
     dict_items_method, dict_keys_method, dict_pop_method, dict_popitem_method,
+    molt_dict_pop_method,
     dict_setdefault_method, dict_update_method, dict_values_method, exception_pending,
     molt_contains, molt_delitem_method, molt_frozenset_copy_method,
     molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
@@ -72,21 +73,25 @@ pub(crate) fn dict_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
                     fn_addr!(dict_get_method)
                 );
             }
-            Some(builtin_func_bits_with_default(
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &runtime_state(_py).method_cache.dict_get,
                 fn_addr!(dict_get_method),
                 3,
-                FUNC_DEFAULT_NONE,
+                &[none],
             ))
         }
-        "pop" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.dict_pop,
-            fn_addr!(dict_pop_method),
-            4,
-            FUNC_DEFAULT_DICT_POP,
-        )),
+        "pop" => {
+            let miss = crate::builtins::methods::missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.dict_pop,
+                fn_addr!(molt_dict_pop_method),
+                3,
+                &[miss],
+            ))
+        }
         "clear" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.dict_clear,
@@ -114,21 +119,25 @@ pub(crate) fn dict_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
                     fn_addr!(dict_setdefault_method)
                 );
             }
-            Some(builtin_func_bits_with_default(
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &runtime_state(_py).method_cache.dict_setdefault,
                 fn_addr!(dict_setdefault_method),
                 3,
-                FUNC_DEFAULT_NONE,
+                &[none],
             ))
         }
-        "update" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.dict_update,
-            fn_addr!(dict_update_method),
-            2,
-            FUNC_DEFAULT_DICT_UPDATE,
-        )),
+        "update" => {
+            let miss = crate::builtins::methods::missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.dict_update,
+                fn_addr!(dict_update_method),
+                2,
+                &[miss],
+            ))
+        }
         "fromkeys" => {
             if cfg!(target_arch = "wasm32")
                 && std::env::var("MOLT_WASM_DICT_METHOD_DEBUG").as_deref() == Ok("1")
@@ -138,12 +147,13 @@ pub(crate) fn dict_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
                     fn_addr!(dict_fromkeys_method)
                 );
             }
-            Some(builtin_func_bits_with_default(
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &runtime_state(_py).method_cache.dict_fromkeys,
                 fn_addr!(dict_fromkeys_method),
                 3,
-                FUNC_DEFAULT_NONE,
+                &[none],
             ))
         }
         "__getitem__" => Some(builtin_func_bits(
@@ -416,26 +426,32 @@ pub(crate) fn list_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_list_remove),
             2,
         )),
-        "pop" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.list_pop,
-            fn_addr!(molt_list_pop),
-            2,
-            FUNC_DEFAULT_NONE,
-        )),
+        "pop" => {
+            let none = MoltObject::none().bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.list_pop,
+                fn_addr!(molt_list_pop),
+                2,
+                &[none],
+            ))
+        }
         "clear" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.list_clear,
             fn_addr!(molt_list_clear),
             1,
         )),
-        "__init__" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.list_init,
-            fn_addr!(molt_list_init_method),
-            2,
-            FUNC_DEFAULT_MISSING,
-        )),
+        "__init__" => {
+            let miss = crate::builtins::methods::missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.list_init,
+                fn_addr!(molt_list_init_method),
+                2,
+                &[miss],
+            ))
+        }
         "copy" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.list_copy,
@@ -544,13 +560,16 @@ pub(crate) fn list_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
 
 pub(crate) fn tuple_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
-        "__new__" => Some(builtin_func_bits_with_default(
-            _py,
-            &runtime_state(_py).method_cache.tuple_new,
-            fn_addr!(molt_tuple_new_bound),
-            2,
-            FUNC_DEFAULT_MISSING,
-        )),
+        "__new__" => {
+            let miss = crate::builtins::methods::missing_bits(_py);
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.tuple_new,
+                fn_addr!(molt_tuple_new_bound),
+                2,
+                &[miss],
+            ))
+        }
         "count" => {
             static TUPLE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             Some(builtin_func_bits(

@@ -1,8 +1,8 @@
 use crate::intrinsics::generated::{INTRINSICS, resolve_symbol};
 use crate::{
-    FUNC_DEFAULT_NONE, MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING,
+    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING,
     alloc_dict_with_pairs, alloc_string, builtin_classes, dec_ref_bits, dict_get_in_place,
-    dict_set_in_place, function_set_dict_bits, inc_ref_bits, module_dict_bits, obj_from_bits,
+    dict_set_in_place, inc_ref_bits, module_dict_bits, obj_from_bits,
     object_set_class_bits, object_type_id, raise_exception, string_bytes, string_len,
 };
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
@@ -342,16 +342,12 @@ fn build_runtime_function(
     _py: &PyToken<'_>,
     fn_ptr: u64,
     arity: u8,
-    default_kind: i64,
 ) -> Option<u64> {
     let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity as u64);
     if ptr.is_null() {
         return None;
     }
     unsafe {
-        if default_kind != 0 {
-            function_set_dict_bits(ptr, MoltObject::from_int(default_kind).bits());
-        }
         let builtin_bits = builtin_classes(_py).builtin_function_or_method;
         object_set_class_bits(_py, ptr, builtin_bits);
         inc_ref_bits(_py, builtin_bits);
@@ -363,22 +359,31 @@ fn build_bootstrap_function(
     _py: &PyToken<'_>,
     fn_ptr: u64,
     arity: u8,
-    default_kind: i64,
+    defaults: &[u64],
 ) -> Option<u64> {
     let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity as u64);
     if ptr.is_null() {
         return None;
     }
-    unsafe {
-        if default_kind != 0 {
-            function_set_dict_bits(ptr, MoltObject::from_int(default_kind).bits());
+    if !defaults.is_empty() {
+        unsafe {
+            let defaults_name = crate::intern_static_name(
+                _py,
+                &crate::runtime_state(_py).interned.defaults_name,
+                b"__defaults__",
+            );
+            let defaults_ptr = crate::alloc_tuple(_py, defaults);
+            if !defaults_ptr.is_null() {
+                let defaults_bits = MoltObject::from_ptr(defaults_ptr).bits();
+                crate::function_set_attr_bits(_py, ptr, defaults_name, defaults_bits);
+            }
         }
     }
     Some(MoltObject::from_ptr(ptr).bits())
 }
 
 fn build_intrinsic_func(_py: &PyToken<'_>, fn_ptr: u64, arity: u8) -> Option<u64> {
-    build_runtime_function(_py, fn_ptr, arity, 0)
+    build_runtime_function(_py, fn_ptr, arity)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -471,11 +476,12 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
         // Avoid builtin_classes() here: register_intrinsics_module runs during
         // bootstrap while init_builtin_classes still holds its mutex.
+        let none = MoltObject::none().bits();
         if let Some(fn_bits) = build_bootstrap_function(
             _py,
             molt_require_intrinsic_runtime as *const () as usize as u64,
             2,
-            FUNC_DEFAULT_NONE,
+            &[none],
         ) {
             let key_ptr = alloc_string(_py, b"require_intrinsic");
             if !key_ptr.is_null() {

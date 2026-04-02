@@ -520,7 +520,7 @@ pub(crate) use crate::call::bind::{
 pub(crate) use crate::call::class_init::{
     alloc_instance_for_class, alloc_instance_for_class_no_pool,
     alloc_instance_for_default_object_new, call_builtin_type_if_needed, call_class_init_with_args,
-    function_attr_bits, raise_not_callable, try_call_generator,
+    function_attr_bits, function_set_attr_bits, raise_not_callable, try_call_generator,
 };
 pub(crate) use crate::call::dispatch::{
     call_callable0, call_callable1, call_callable2, call_callable3, callable_arity,

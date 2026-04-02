@@ -1073,3 +1073,40 @@ pub(crate) unsafe fn function_attr_bits(
         dict_get_in_place(_py, dict_ptr, attr_bits)
     }
 }
+
+/// Set an attribute on a function object's __dict__.
+/// If the function has no dict or the dict slot holds a non-dict value (e.g. a
+/// bare int from the legacy FUNC_DEFAULT_* system), a fresh dict is allocated
+/// and installed before inserting the key-value pair.
+pub(crate) unsafe fn function_set_attr_bits(
+    _py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    attr_bits: u64,
+    val_bits: u64,
+) {
+    unsafe {
+        let dict_bits = function_dict_bits(func_ptr);
+        let dict_ptr = if dict_bits != 0 {
+            if let Some(p) = obj_from_bits(dict_bits).as_ptr() {
+                if object_type_id(p) == TYPE_ID_DICT {
+                    p
+                } else {
+                    // Dict slot holds a non-dict (legacy default_kind int).
+                    // Replace it with a real dict.
+                    let new_dict = alloc_dict_with_pairs(_py, &[]);
+                    function_set_dict_bits(func_ptr, MoltObject::from_ptr(new_dict).bits());
+                    new_dict
+                }
+            } else {
+                let new_dict = alloc_dict_with_pairs(_py, &[]);
+                function_set_dict_bits(func_ptr, MoltObject::from_ptr(new_dict).bits());
+                new_dict
+            }
+        } else {
+            let new_dict = alloc_dict_with_pairs(_py, &[]);
+            function_set_dict_bits(func_ptr, MoltObject::from_ptr(new_dict).bits());
+            new_dict
+        };
+        dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
+    }
+}
