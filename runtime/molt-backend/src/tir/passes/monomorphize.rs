@@ -207,10 +207,14 @@ fn collect_call_sites(
 ///
 /// Returns the total number of specializations created.
 pub fn monomorphize(module: &mut TirModule) -> usize {
+    const MAX_TOTAL_SPECS: usize = 500;
     let mut cache: SpecCache = HashMap::new();
     let mut total_specs = 0;
 
     for _depth in 0..MAX_DEPTH {
+        if module.functions.len() > MAX_TOTAL_SPECS {
+            break; // Hard cap to prevent OOM from polymorphic recursion.
+        }
         // Collect all pending specializations this round.
         // Tuple: (caller_func_idx, block_id, op_idx, callee_name, specialized_name, arg_types)
         let mut pending: Vec<(usize, BlockId, usize, String, String, Vec<TirType>)> = Vec::new();

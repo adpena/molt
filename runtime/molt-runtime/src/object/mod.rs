@@ -475,9 +475,14 @@ impl ColdHeaderSlab {
         }
         let idx = self.entries.len();
         if idx > u16::MAX as usize {
-            // Slab is full — extremely unlikely (65535 simultaneous
-            // oversized objects or generators).  Fall back gracefully.
-            return 0;
+            // Slab full — 65535 live oversized/generator objects.
+            // Panic instead of returning 0, which would silently corrupt
+            // object state (cold_idx=0 is the "no header" sentinel).
+            panic!(
+                "cold header slab exhausted ({} entries) — too many live \
+                 oversized objects or generators",
+                self.entries.len()
+            );
         }
         self.entries.push(cold);
         idx as u16
