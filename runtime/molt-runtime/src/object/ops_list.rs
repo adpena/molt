@@ -29,10 +29,6 @@ pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_LIST {
                     let elems = seq_vec(ptr);
-                    if std::env::var("MOLT_DEBUG_LIST_APPEND").as_deref() == Ok("1") {
-                        eprintln!("list_append: list_ptr={:p} vec_ptr={:p} vec_data={:p} len={} cap={} val=0x{:016x}",
-                            ptr, elems as *const Vec<u64>, elems.as_ptr(), elems.len(), elems.capacity(), val_bits);
-                    }
                     elems.push(val_bits);
                     inc_ref_bits(_py, val_bits);
                     if crate::object::refcount_opt::is_heap_ref(val_bits) {

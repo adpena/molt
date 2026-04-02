@@ -368,24 +368,6 @@ pub unsafe extern "C" fn molt_list_builder_finish(builder_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_debug_list_vec_data(list_bits: u64) {
-    let obj = MoltObject::from_bits(list_bits);
-    if let Some(ptr) = obj.as_ptr() {
-        unsafe {
-            if crate::object::object_type_id(ptr) == TYPE_ID_LIST {
-                let vec_ptr = *(ptr as *mut *mut Vec<u64>);
-                if !vec_ptr.is_null() {
-                    let vec = &*vec_ptr;
-                    eprintln!("debug_list_vec: list_ptr={:p} vec_data={:p} len={} elems={:?}",
-                        ptr, vec.as_ptr(), vec.len(),
-                        vec.iter().map(|b| format!("0x{:016x}", b)).collect::<Vec<_>>());
-                }
-            }
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `builder_bits` is valid and points to a list builder with owned refs.
 pub unsafe extern "C" fn molt_list_builder_finish_owned(builder_bits: u64) -> u64 {
