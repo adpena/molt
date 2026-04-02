@@ -22,13 +22,22 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PYTHON="${PYTHON:-python3}"
 BUILD_PROFILE="${BUILD_PROFILE:-release-fast}"
 CAPABILITIES="${CAPABILITIES:-fs,env,time,random}"
-TIMEOUT="${TIMEOUT:-30}"
+TIMEOUT="${TIMEOUT:-120}"
 VERBOSE="${VERBOSE:-0}"
 MOLT_PYTHON="${MOLT_PYTHON:-$PYTHON}"
 
 # Temp directory for build artifacts
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/molt_parity_XXXXXX")
 trap 'rm -rf "$WORK_DIR"' EXIT
+
+# Warm up the build pipeline (runtime fingerprint, daemon) so individual
+# test builds don't timeout waiting for the first compile.
+if [ "$VERBOSE" = "1" ]; then
+    echo "Warming up build pipeline..."
+fi
+_warmup_file="$WORK_DIR/warmup.py"
+echo 'print(1)' > "$_warmup_file"
+timeout "$TIMEOUT" "$MOLT_PYTHON" -m molt build "$_warmup_file"     --target native     --output "$WORK_DIR/warmup"     > /dev/null 2>&1 || true
 
 # Colors (if terminal supports it)
 if [ -t 1 ]; then
