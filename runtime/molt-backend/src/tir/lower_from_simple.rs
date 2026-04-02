@@ -22,27 +22,27 @@ use super::values::ValueId;
 /// are propagated as initial seed types on the SSA values that correspond to
 /// ops carrying those hints. All other values start as `DynBox`.
 pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
-    // 0. Rewrite loop_index_start/loop_index_next into store_var/load_var so
-    //    the SSA conversion creates proper phi nodes at loop headers.
-    let rewritten_ops = rewrite_loop_index_to_store_load(&ir.ops);
-    let ops = if rewritten_ops.is_empty() { &ir.ops[..] } else { &rewritten_ops[..] };
+    // 0. Memory SSA: rewrite cell-based local variables (store_index/index on
+    //    the locals list) into store_var/load_var. This enables the SSA pass
+    //    to track local variable mutations through loop iterations — the key
+    //    enabler for type specialization and fast_int optimization on loops.
+    //
+    //    The rewrite is safe because lower_to_simple_ir restores the original
+    //    store_index/index patterns from the SSA output.
+    let mut working_ops = ir.ops.clone();
+    let cell_rewrite_applied = rewrite_cell_locals_to_store_load(&mut working_ops);
 
-    // Create a temporary FunctionIR view if we rewrote ops.
-    let tmp_ir;
-    let ir_ref = if rewritten_ops.is_empty() {
-        ir
-    } else {
-        tmp_ir = crate::ir::FunctionIR {
-            name: ir.name.clone(),
-            ops: rewritten_ops.clone(),
-            params: ir.params.clone(),
-            param_types: ir.param_types.clone(),
-            source_file: ir.source_file.clone(),
-        };
-        &tmp_ir
+    let tmp_ir = crate::ir::FunctionIR {
+        name: ir.name.clone(),
+        ops: working_ops.clone(),
+        params: ir.params.clone(),
+        param_types: ir.param_types.clone(),
+        source_file: ir.source_file.clone(),
     };
+    let ir_ref = &tmp_ir;
+    let ops = &working_ops[..];
 
-    // 1. Build CFG from the (possibly rewritten) op stream.
+    // 1. Build CFG from the rewritten op stream.
     let cfg = CFG::build(ops);
 
     // 2. Convert to SSA with block arguments (pass params for implicit entry defs).
@@ -879,4 +879,121 @@ mod tests {
         assert_eq!(string_to_tir_type("none"), TirType::None);
         assert_eq!(string_to_tir_type("unknown_type"), TirType::DynBox);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Memory SSA: cell-based locals → store_var/load_var rewrite
+// ---------------------------------------------------------------------------
+
+/// Rewrite store_index/index on the function's locals cell list into
+/// store_var/load_var ops. This is a form of Memory SSA that enables
+/// the standard SSA algorithm to track local variable mutations through
+/// loop iterations.
+///
+/// The Molt frontend stores ALL local variables in a cell list:
+///   missing → v0; list_new(v0) → cell_list
+///   store_index(cell_list, const_N, value)  // assign local[N] = value
+///   index(cell_list, const_N) → v           // read local[N]
+///
+/// After rewrite:
+///   store_var(_cell_N, value)  // SSA-visible assignment
+///   load_var(_cell_N) → v     // SSA-visible read
+///
+/// The original store_index/index on the cell list are kept as-is (the
+/// runtime still needs them for the actual cell storage), but ADDITIONAL
+/// store_var/load_var ops are inserted so the SSA pass can track the
+/// variable flow. The load_var output replaces subsequent uses of the
+/// index output.
+/// Returns true if any rewrites were applied.
+fn rewrite_cell_locals_to_store_load(ops: &mut Vec<crate::ir::OpIR>) -> bool {
+    use crate::ir::OpIR;
+
+    // Step 1: identify the cell list variable.
+    // The pattern is: missing → X; list_new(X) → CELL_LIST
+    // The CELL_LIST is the first list_new output in the function.
+    let mut cell_list_var: Option<String> = None;
+    for op in ops.iter() {
+        if op.kind == "list_new" {
+            if let Some(out) = &op.out {
+                cell_list_var = Some(out.clone());
+                break;
+            }
+        }
+    }
+    let Some(cell_var) = cell_list_var else {
+        return false; // No cell list — nothing to rewrite.
+    };
+
+    // Step 2: find all constant slots used with this cell list.
+    // We need to map (cell_var, const_slot_value) → synthetic variable name.
+    // The const_slot_value is in the `value` field of a `const` op whose
+    // output is used as the second arg of store_index/index.
+    //
+    // Build a map: const_output_var → const_value (for slot indices).
+    let mut const_values: HashMap<String, i64> = HashMap::new();
+    for op in ops.iter() {
+        if op.kind == "const" {
+            if let (Some(out), Some(val)) = (&op.out, op.value) {
+                const_values.insert(out.clone(), val);
+            }
+        }
+    }
+
+    // Step 3: scan for store_index and index ops on the cell list.
+    // For each, determine the slot index and create store_var/load_var.
+    let mut insertions: Vec<(usize, OpIR)> = Vec::new();
+    let mut replacements: Vec<(usize, OpIR)> = Vec::new();
+
+    for (i, op) in ops.iter().enumerate() {
+        if let Some(args) = &op.args {
+            if op.kind == "store_index" && args.len() == 3 && args[0] == cell_var {
+                // store_index(cell_list, slot_var, value)
+                // → insert store_var(_cell_N, value) AFTER this op
+                if let Some(&slot_val) = const_values.get(&args[1]) {
+                    let var_name = format!("_cell_{}", slot_val);
+                    insertions.push((i + 1, OpIR {
+                        kind: "store_var".to_string(),
+                        var: Some(var_name),
+                        args: Some(vec![args[2].clone()]),
+                        ..OpIR::default()
+                    }));
+                }
+            } else if op.kind == "index" && args.len() == 2 && args[0] == cell_var {
+                // index(cell_list, slot_var) → out
+                // → replace with load_var(_cell_N) → out
+                if let Some(&slot_val) = const_values.get(&args[1]) {
+                    if let Some(out) = &op.out {
+                        let var_name = format!("_cell_{}", slot_val);
+                        replacements.push((i, OpIR {
+                            kind: "load_var".to_string(),
+                            var: Some(var_name),
+                            out: Some(out.clone()),
+                            // Preserve type hints from the original op.
+                            fast_int: op.fast_int,
+                            fast_float: op.fast_float,
+                            type_hint: op.type_hint.clone(),
+                            ..OpIR::default()
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    if insertions.is_empty() && replacements.is_empty() {
+        return false; // No cell locals to rewrite.
+    }
+
+    // Apply replacements (index → load_var).
+    for (idx, new_op) in &replacements {
+        ops[*idx] = new_op.clone();
+    }
+
+    // Apply insertions (store_var after store_index) in reverse order
+    // so indices remain valid.
+    insertions.sort_by(|a, b| b.0.cmp(&a.0));
+    for (idx, new_op) in insertions {
+        ops.insert(idx, new_op);
+    }
+    true
 }
