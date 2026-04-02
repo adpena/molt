@@ -55,6 +55,165 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
 }
 
 
+/// Rewrite `loop_index_start`/`loop_index_next` into `store_var`/`load_var`
+/// patterns so the SSA conversion creates proper phi nodes at loop headers.
+///
+/// The original pattern:
+/// ```text
+///   ... (before loop_start)
+///   loop_start
+///   loop_index_start  out=V  args=INIT   // V = INIT on first iteration
+///   ...loop body...
+///   loop_index_next   out=V  args=UPDATED // V = UPDATED on subsequent iterations
+///   loop_continue
+///   loop_end
+/// ```
+///
+/// The rewritten pattern:
+/// ```text
+///   ... (before loop_start)
+///   store_var  var=V  args=INIT           // define V before the loop
+///   loop_start
+///   load_var   var=V  out=V               // read V (phi at loop header)
+///   ...loop body...
+///   store_var  var=V  args=UPDATED        // update V at end of loop body
+///   loop_continue
+///   loop_end
+/// ```
+///
+/// Returns an empty Vec if no rewrites were needed (caller uses original ops).
+fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::OpIR> {
+    use crate::ir::OpIR;
+
+    // Quick scan: any loop_index_start ops?
+    let has_loop_index = ops.iter().any(|op| op.kind == "loop_index_start");
+    if !has_loop_index {
+        return Vec::new();
+    }
+
+    // Find the loop_start op that immediately precedes each loop_index_start.
+    // We need to insert store_var BEFORE the loop_start.
+    //
+    // Also find every loop_index_start and loop_index_next to rewrite them.
+    let mut result: Vec<OpIR> = Vec::with_capacity(ops.len() + 8);
+
+    // First, find the positions of loop_start ops so we can insert store_var
+    // before them. We process ops sequentially, buffering the loop_start and
+    // inserting the store_var before it when we see loop_index_start.
+
+    // Strategy: two-pass approach.
+    // Pass 1: identify (loop_start_idx, var_name, init_arg) for each pattern.
+    // Pass 2: emit rewritten ops.
+
+    struct LoopIndexPattern {
+        loop_start_idx: usize,
+        var_name: String,
+        init_arg: String,
+    }
+
+    let mut patterns: Vec<LoopIndexPattern> = Vec::new();
+    let mut loop_start_stack: Vec<usize> = Vec::new();
+
+    for (idx, op) in ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "loop_start" => {
+                loop_start_stack.push(idx);
+            }
+            "loop_end" => {
+                loop_start_stack.pop();
+            }
+            "loop_index_start" => {
+                if let Some(&ls_idx) = loop_start_stack.last() {
+                    let var_name = op.out.clone().unwrap_or_default();
+                    let init_arg = op.args.as_ref()
+                        .and_then(|a| a.first())
+                        .cloned()
+                        .unwrap_or_default();
+                    if !var_name.is_empty() && var_name != "none" {
+                        patterns.push(LoopIndexPattern {
+                            loop_start_idx: ls_idx,
+                            var_name,
+                            init_arg,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if patterns.is_empty() {
+        return Vec::new();
+    }
+
+    // Build sets for quick lookup.
+    let insert_before: std::collections::HashMap<usize, Vec<&LoopIndexPattern>> = {
+        let mut map: std::collections::HashMap<usize, Vec<&LoopIndexPattern>> = std::collections::HashMap::new();
+        for pat in &patterns {
+            map.entry(pat.loop_start_idx).or_default().push(pat);
+        }
+        map
+    };
+    let rewrite_vars: std::collections::HashSet<&str> = patterns.iter()
+        .map(|p| p.var_name.as_str())
+        .collect();
+
+    // Pass 2: emit rewritten ops.
+    for (idx, op) in ops.iter().enumerate() {
+        // Before a loop_start, insert store_var for each pattern.
+        if let Some(pats) = insert_before.get(&idx) {
+            for pat in pats {
+                result.push(OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some(pat.var_name.clone()),
+                    args: Some(vec![pat.init_arg.clone()]),
+                    ..OpIR::default()
+                });
+            }
+        }
+
+        match op.kind.as_str() {
+            "loop_index_start" => {
+                let var_name = op.out.clone().unwrap_or_default();
+                if rewrite_vars.contains(var_name.as_str()) {
+                    // Rewrite to load_var: read V from the phi.
+                    result.push(OpIR {
+                        kind: "load_var".to_string(),
+                        var: Some(var_name.clone()),
+                        out: Some(var_name),
+                        ..OpIR::default()
+                    });
+                } else {
+                    result.push(op.clone());
+                }
+            }
+            "loop_index_next" => {
+                let var_name = op.out.clone().unwrap_or_default();
+                if rewrite_vars.contains(var_name.as_str()) {
+                    // Rewrite to store_var: update V.
+                    let updated_arg = op.args.as_ref()
+                        .and_then(|a| a.first())
+                        .cloned()
+                        .unwrap_or_default();
+                    result.push(OpIR {
+                        kind: "store_var".to_string(),
+                        var: Some(var_name),
+                        args: Some(vec![updated_arg]),
+                        ..OpIR::default()
+                    });
+                } else {
+                    result.push(op.clone());
+                }
+            }
+            _ => {
+                result.push(op.clone());
+            }
+        }
+    }
+
+    result
+}
+
 /// Assemble a `TirFunction` from a `FunctionIR`, its `CFG`, and the `SsaOutput`.
 fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction {
     let SsaOutput {
