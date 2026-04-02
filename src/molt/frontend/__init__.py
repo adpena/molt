@@ -23466,7 +23466,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if not self.is_async():
             assigned = self._collect_assigned_names([node])
             for name in sorted(assigned):
-                self._box_local(name)
+                if name not in self.scope_assigned or name in self.closure_locals:
+                    self._box_local(name)
 
         for case in node.cases:
             self._validate_match_pattern(case.pattern)
@@ -24752,7 +24753,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if not self.is_async():
             assigned = self._collect_assigned_names([node])
             for name in sorted(assigned):
-                self._box_local(name)
+                if name not in self.scope_assigned or name in self.closure_locals:
+                    self._box_local(name)
         prior_terminated = self.block_terminated
         self.block_terminated = False
         self.control_flow_depth += 1
@@ -25080,7 +25082,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if not self.is_async():
             assigned = self._collect_assigned_names([node])
             for name in sorted(assigned):
-                self._box_local(name)
+                if name not in self.scope_assigned or name in self.closure_locals:
+                    self._box_local(name)
         prior_terminated = self.block_terminated
         self.block_terminated = False
         self.control_flow_depth += 1
@@ -33247,8 +33250,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "GUARDED_SETATTR_INIT",
             "DELATTR_NAME",
             "DEL_INDEX",
+            "STORE_VAR",
         }:
             return "writes_heap"
+        if op_kind in {
+            "LOAD_VAR",
+        }:
+            return "reads_heap"
         if op_kind.startswith("EXCEPTION_") or op_kind.startswith("STATE_"):
             return "control"
         if op_kind in {
@@ -35001,6 +35009,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "IS",
             "TYPE_OF",
             "LEN",
+            "STORE_VAR",
+            "LOAD_VAR",
         }
         if op_kind in non_raising:
             return False
@@ -38802,6 +38812,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # Slice
             "slice_new",
             "get_slice",
+            # Variable ops (SSA-level, no heap escape)
+            "store_var",
+            "load_var",
         }
 
         # Ops where certain arg positions store the value into a container
