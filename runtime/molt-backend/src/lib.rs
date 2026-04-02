@@ -1280,32 +1280,34 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
 /// AtomicU32 refcount field.
 #[cfg(feature = "native-backend")]
 fn inline_rc_enabled() -> bool {
-    // Disabled by default: inline RC codegen creates extra Cranelift blocks
-    // per inc_ref, causing memory corruption when tuple_new fragments the
-    // control flow between list_builder_append calls. The atomic_rmw
-    // instruction targets the wrong address in fragmented block layouts.
-    // Enable with MOLT_INLINE_RC=1 for benchmarking only.
-    std::env::var("MOLT_INLINE_RC").as_deref() == Ok("1")
+    // Disabled: inline RC codegen (even single-branch) causes memory corruption
+    // when inc_ref blocks fragment the control flow inside tuple_new. The root
+    // cause is Cranelift's handling of SSA values across the brif boundary
+    // between the inc_ref blocks and subsequent list_builder_append calls.
+    // The function-call path (molt_inc_ref_obj) is both correct and fast
+    // enough — it matches Swift's ARC pattern of opaque retain/release calls.
+    false
 }
 
-/// Emit an inlined `inc_ref_obj` as Cranelift IR instead of a function call.
+/// Emit an inlined `inc_ref_obj` as Cranelift IR.
 ///
-/// The emitted IR is equivalent to:
+/// Single-branch architecture: only one brif (is_ptr → inc, else → merge).
+/// The immortal check uses branchless conditional select to compute the
+/// increment delta (0 for immortal, 1 for mortal), avoiding the extra
+/// block that caused the Cranelift block-fragmentation corruption bug.
+///
+/// Equivalent to:
 /// ```text
 /// if (val & (QNAN | TAG_MASK)) == (QNAN | TAG_PTR):
 ///     ptr = sign_extend(val & POINTER_MASK)
-///     flags = *(ptr - 8) as u64
-///     if (flags & HEADER_FLAG_IMMORTAL) == 0:
-///         rc = *(ptr - 36) as u32
-///         *(ptr - 36) = rc + 1
+///     flags = *(ptr - 8) as u32
+///     delta = ((flags & IMMORTAL) == 0) ? 1 : 0
+///     atomic_add(*(ptr - 12), delta)  // no-op when delta=0
 /// ```
 #[cfg(feature = "native-backend")]
 fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) {
-    let current_block = builder.current_block().expect("no current block");
-
-    // --- Block layout: current → check_immortal → do_inc → merge ---
-    let check_immortal_block = builder.create_block();
-    let do_inc_block = builder.create_block();
+    // Single-branch: only split on is_ptr to avoid block fragmentation.
+    let inc_block = builder.create_block();
     let merge_block = builder.create_block();
 
     // 1. Check if val is a heap pointer: (val & (QNAN | TAG_MASK)) == (QNAN | TAG_PTR)
@@ -1315,13 +1317,14 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, nbc: &NanB
     let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
     builder
         .ins()
-        .brif(is_ptr, check_immortal_block, &[], merge_block, &[]);
+        .brif(is_ptr, inc_block, &[], merge_block, &[]);
 
-    // 2. Extract raw data pointer and check immortal flag
-    builder.switch_to_block(check_immortal_block);
+    // 2. Inc block: extract pointer, check immortal branchlessly, atomic inc
+    builder.switch_to_block(inc_block);
     let raw_ptr = unbox_ptr_value(builder, val, nbc);
 
-    // Load flags (u32 at ptr + HEADER_FLAGS_OFFSET)
+    // Load flags and compute delta branchlessly:
+    // delta = (flags & IMMORTAL) == 0 ? 1 : 0
     let flags = builder.ins().load(
         types::I32,
         MemFlags::trusted(),
@@ -1332,39 +1335,32 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, nbc: &NanB
         .ins()
         .iconst(types::I32, HEADER_FLAG_IMMORTAL as i64);
     let immortal_bits = builder.ins().band(flags, immortal_mask);
-    let zero = builder.ins().iconst(types::I32, 0);
-    let is_mortal = builder.ins().icmp(IntCC::Equal, immortal_bits, zero);
-    builder
+    let zero_i32 = builder.ins().iconst(types::I32, 0);
+    let is_mortal = builder
         .ins()
-        .brif(is_mortal, do_inc_block, &[], merge_block, &[]);
+        .icmp(IntCC::Equal, immortal_bits, zero_i32);
+    let one_i32 = builder.ins().iconst(types::I32, 1);
+    // Branchless: delta = select(is_mortal, 1, 0)
+    let delta = builder.ins().select(is_mortal, one_i32, zero_i32);
 
-    // 3. Increment refcount atomically using atomic_rmw (Add)
-    builder.switch_to_block(do_inc_block);
+    // Atomic add of delta (0 for immortal = no-op, 1 for mortal = inc)
     let rc_offset = builder
         .ins()
         .iconst(types::I64, HEADER_REFCOUNT_OFFSET as i64);
     let rc_addr = builder.ins().iadd(raw_ptr, rc_offset);
-    let one_i32 = builder.ins().iconst(types::I32, 1);
     builder.ins().atomic_rmw(
         types::I32,
         MemFlags::trusted(),
         AtomicRmwOp::Add,
         rc_addr,
-        one_i32,
+        delta,
     );
     builder.ins().jump(merge_block, &[]);
 
-    // 4. Merge — continue in the merge block
+    // 3. Merge
     builder.switch_to_block(merge_block);
-    // Seal the blocks we created (they have known predecessors now)
-    builder.seal_block(check_immortal_block);
-    builder.seal_block(do_inc_block);
+    builder.seal_block(inc_block);
     builder.seal_block(merge_block);
-
-    // Note: caller must NOT seal current_block before calling this function
-    // if it hasn't been sealed yet. The merge_block becomes the new "current"
-    // block for subsequent instruction emission.
-    let _ = current_block; // suppress unused warning
 }
 
 /// Emit an inc_ref_obj — either inlined or as a function call depending on
