@@ -9850,6 +9850,7 @@ def _backend_daemon_paths_cached(
     socket_dir_override: str | None,
     build_state_root_str: str,
     tempdir_str: str,
+    session_id: str = "",  # Must be in cache key for session isolation
 ) -> tuple[Path, Path, Path]:
     project_root = Path(project_root_str)
     build_state_root = Path(build_state_root_str)
@@ -9896,6 +9897,7 @@ def _backend_daemon_socket_path(
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR"),
         os.fspath(_build_state_root(project_root)),
         tempfile.gettempdir(),
+        session_id=_molt_session_id(),
     )
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     return socket_path
@@ -9910,6 +9912,7 @@ def _backend_daemon_log_path(project_root: Path, cargo_profile: str) -> Path:
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR"),
         os.fspath(_build_state_root(project_root)),
         tempfile.gettempdir(),
+        session_id=_molt_session_id(),
     )
     log_path.parent.mkdir(parents=True, exist_ok=True)
     return log_path
@@ -9924,6 +9927,7 @@ def _backend_daemon_pid_path(project_root: Path, cargo_profile: str) -> Path:
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR"),
         os.fspath(_build_state_root(project_root)),
         tempfile.gettempdir(),
+        session_id=_molt_session_id(),
     )
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     return pid_path
@@ -10997,7 +11001,17 @@ def _compile_with_backend_daemon(
             probe_followup_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             if timeout is not None:
                 probe_followup_socket.settimeout(timeout)
-            probe_followup_socket.connect(str(socket_path))
+            # Resolve daemon redirect (overflow agent sharing another daemon).
+            _actual_probe_socket = socket_path
+            _probe_redirect = socket_path.with_suffix(".redirect")
+            if _probe_redirect.exists():
+                try:
+                    _redir = Path(_probe_redirect.read_text().strip())
+                    if _redir.exists():
+                        _actual_probe_socket = _redir
+                except OSError:
+                    pass
+            probe_followup_socket.connect(str(_actual_probe_socket))
             response, err = _backend_daemon_request_on_socket(
                 probe_followup_socket,
                 probe_request_bytes,
