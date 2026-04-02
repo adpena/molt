@@ -1634,6 +1634,9 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     bump_type_version();
                 }
                 TYPE_ID_LIST => {
+                    if std::env::var("MOLT_DEBUG_LIST_FREE").as_deref() == Ok("1") {
+                        eprintln!("list_FREE: list_ptr={:p}", ptr);
+                    }
                     let vec_ptr = seq_vec_ptr(ptr);
                     if !vec_ptr.is_null() {
                         let vec = Box::from_raw(vec_ptr);
