@@ -359,6 +359,25 @@ unsafe fn sys_populate_stdio(_py: &PyToken<'_>, sys_ptr: *mut u8) -> Result<(), 
 }
 
 #[unsafe(no_mangle)]
+
+fn simple_edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (m, n) = (a.len(), b.len());
+    if m.abs_diff(n) > 2 { return 3; }
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0usize; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a[i-1] == b[j-1] { 0 } else { 1 };
+            curr[j] = (prev[j]+1).min(curr[j-1]+1).min(prev[j-1]+cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
 pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(name_bits);
@@ -4271,7 +4290,37 @@ Use static modules or pre-generated code paths instead."
                     module_name, name, pending
                 );
             }
-            let msg = format!("name '{name}' is not defined");
+            // CPython 3.12+: suggest similar names in NameError.
+            let dict_bits = module_dict_bits(module_ptr);
+            let suggestion: Option<String> = if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            {
+                let order = crate::builtins::containers::dict_order(dict_ptr);
+                let mut best: Option<(String, usize)> = None;
+                let mut i = 0;
+                while i + 1 < order.len() {
+                    if let Some(key_ptr) = obj_from_bits(order[i]).as_ptr()
+                        && object_type_id(key_ptr) == TYPE_ID_STRING
+                    {
+                        let len = string_len(key_ptr);
+                        let bytes = std::slice::from_raw_parts(string_bytes(key_ptr), len);
+                        if let Ok(cand) = std::str::from_utf8(bytes) {
+                            let d = simple_edit_distance(&name, cand);
+                            let t = if name.len() <= 2 { 1 } else { 2 };
+                            if d > 0 && d <= t && (best.is_none() || d < best.as_ref().unwrap().1) {
+                                best = Some((cand.to_string(), d));
+                            }
+                        }
+                    }
+                    i += 2;
+                }
+                best.map(|(n, _)| n)
+            } else { None };
+            let msg = if let Some(similar) = suggestion {
+                format!("name '{name}' is not defined. Did you mean: '{similar}'?")
+            } else {
+                format!("name '{name}' is not defined")
+            };
             raise_exception::<_>(_py, "NameError", &msg)
         }
     })

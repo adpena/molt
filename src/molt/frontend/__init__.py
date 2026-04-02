@@ -11558,6 +11558,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for wname in walrus_names:
             if wname not in self.boxed_locals:
                 self._box_local(wname)
+        # If the element expression or filters contain lambdas that
+        # reference the iteration variable, box it so the lambda can
+        # capture it as a closure cell.  Without boxing, the iteration
+        # variable is a plain SSA local that lambdas can't close over.
+        lambda_free_vars: set[str] = set()
+        for child in ast.walk(node.elt):
+            if isinstance(child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+                for inner in ast.walk(child):
+                    if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load):
+                        lambda_free_vars.add(inner.id)
+        for if_node in comp.ifs:
+            for child in ast.walk(if_node):
+                if isinstance(child, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for inner in ast.walk(child):
+                        if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load):
+                            lambda_free_vars.add(inner.id)
+        if target_name in lambda_free_vars and target_name not in self.boxed_locals:
+            self._box_local(target_name)
         iterable_val = self.visit(comp.iter)
         iter_obj = self._emit_iter_new(iterable_val)
         res = MoltValue(self.next_var(), type_hint="list")
@@ -27229,9 +27247,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             free_var_hints: dict[str, str] = {}
             closure_val: MoltValue | None = None
             has_closure = False
-            if self.current_func_name != "molt_main":
-                free_vars = self._collect_free_vars_expr(node)
-                if free_vars:
+            # Collect free variables for closure capture.  At module scope,
+            # only capture variables that are boxed (e.g., comprehension
+            # iteration variables that lambdas need to close over).
+            candidate_free_vars = self._collect_free_vars_expr(node)
+            if self.current_func_name == "molt_main":
+                # Only keep free vars that are already boxed — these are
+                # comprehension iteration vars or walrus targets.
+                free_vars = [v for v in candidate_free_vars if v in self.boxed_locals]
+            else:
+                free_vars = candidate_free_vars
+            if free_vars:
                     self.unbound_check_names.update(free_vars)
                     for name in free_vars:
                         self._box_local(name)
@@ -27465,13 +27491,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         free_var_hints: dict[str, str] = {}
         closure_val: MoltValue | None = None
         has_closure = False
-        if self.current_func_name != "molt_main":
-            free_vars = self._collect_free_vars_expr(node)
-            if free_vars:
-                self.unbound_check_names.update(free_vars)
-                for name in free_vars:
-                    self._box_local(name)
-                    self.closure_locals.add(name)
+        candidate_free_vars = self._collect_free_vars_expr(node)
+        if self.current_func_name == "molt_main":
+            free_vars = [v for v in candidate_free_vars if v in self.boxed_locals]
+        else:
+            free_vars = candidate_free_vars
+        if free_vars:
+            self.unbound_check_names.update(free_vars)
+            for name in free_vars:
+                self._box_local(name)
+                self.closure_locals.add(name)
                 for name in free_vars:
                     hint = self.boxed_local_hints.get(name)
                     if hint is None:
