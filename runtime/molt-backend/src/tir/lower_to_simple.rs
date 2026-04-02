@@ -199,13 +199,19 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         };
 
         if let Some((Terminator::CondBranch { then_block, else_block, .. }, cond_bid)) = cond_terminator {
+            // The SSA pass assigns then_block=succs[0]=fall-through (body)
+            // and else_block=succs[1]=break-target (exit) for
+            // loop_break_if_true.  For loop_break_if_false, the SSA
+            // convention is the same (succs[0]=fall-through, succs[1]=target).
+            // So then_block is ALWAYS the body/continue path, and
+            // else_block is ALWAYS the break/exit path.
             let body_seed = match break_kind {
-                LoopBreakKind::BreakIfTrue => *else_block,
-                LoopBreakKind::BreakIfFalse => *then_block,
-            };
-            exit_block = Some(match break_kind {
                 LoopBreakKind::BreakIfTrue => *then_block,
                 LoopBreakKind::BreakIfFalse => *else_block,
+            };
+            exit_block = Some(match break_kind {
+                LoopBreakKind::BreakIfTrue => *else_block,
+                LoopBreakKind::BreakIfFalse => *then_block,
             });
             // Include the condition block itself in the region when it
             // differs from the header (Branch→CondBranch pattern).
@@ -341,10 +347,9 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             _ => None,
         };
         if let Some(Terminator::CondBranch { then_block, else_block, .. }) = cond_term {
-            let exit = match break_kind {
-                LoopBreakKind::BreakIfTrue => *then_block,
-                LoopBreakKind::BreakIfFalse => *else_block,
-            };
+            // SSA convention: then=succs[0]=fall-through=body,
+            // else=succs[1]=break-target=exit.  Same for both break kinds.
+            let exit = *else_block;
             deferred_exits.insert(*bid, exit);
         }
     }
@@ -664,12 +669,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             }
 
             if let Some((cond, then_block, then_args, else_block, else_args)) = cond_data {
+                // Match SSA convention: then_block=succs[0]=fall-through=body,
+                // else_block=succs[1]=break-target=exit.
                 let (after_block, after_args, body_block, body_args) = match break_kind {
                     LoopBreakKind::BreakIfTrue => {
-                        (then_block, then_args, else_block, else_args)
+                        (else_block, else_args, then_block, then_args)
                     }
                     LoopBreakKind::BreakIfFalse => {
-                        (else_block, else_args, then_block, then_args)
+                        (then_block, then_args, else_block, else_args)
                     }
                 };
 
