@@ -1081,11 +1081,32 @@ fn emit_terminator(
             emit_block_arg_stores(*target, args, block_param_vars, out);
             // Back-edge to a LoopHeader: emit loop_continue + loop_end
             // instead of a plain jump, preserving structured loop info.
+            // A branch to a LoopHeader is a back-edge (loop_continue) only
+            // if we're inside the loop body. The initial entry to the header
+            // from outside the loop is a regular jump/fallthrough.
+            // We detect this by checking if the CURRENT block's loop_role is
+            // not None (meaning it's inside a loop region).
             let target_is_loop_header = _loop_roles
                 .get(target)
                 .map(|r| *r == super::blocks::LoopRole::LoopHeader)
                 .unwrap_or(false);
-            if target_is_loop_header {
+            let source_is_in_loop = _loop_role != super::blocks::LoopRole::None
+                || _loop_roles.values().any(|r| *r != super::blocks::LoopRole::None);
+            // A back-edge is when we branch BACK to the header from inside
+            // the loop. The initial entry from outside is not a back-edge.
+            // Use _loop_role: LoopHeader blocks' own terminators never
+            // branch back to themselves (they branch to body/exit).
+            // Body blocks have LoopRole::None but are inside the loop.
+            // We detect back-edges by checking if the block_id is in the
+            // loop region (passed via the loop_role != None OR the block
+            // is referenced in loop metadata).
+            // Conservative: treat ALL branches to LoopHeaders as back-edges
+            // EXCEPT from blocks with no ops after the label (the preheader
+            // pattern where entry just falls through to the header).
+            let is_back_edge = target_is_loop_header
+                && !block.ops.is_empty()
+                && _loop_role != super::blocks::LoopRole::LoopHeader;
+            if is_back_edge {
                 out.push(OpIR {
                     kind: "loop_continue".to_string(),
                     ..OpIR::default()
