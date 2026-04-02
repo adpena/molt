@@ -16888,14 +16888,42 @@ impl SimpleBackend {
                 }
                 // TIR round-trip variable ops — wire SSA values between blocks
                 "store_var" => {
-                    // Store a value into a named variable (block arg passing)
+                    // Store a value into a named variable.
+                    // For user-local variables (emitted by the frontend for
+                    // non-closure locals), we must manage refcounts:
+                    //   inc_ref(new_val) — the variable now owns a reference
+                    //   dec_ref(old_val) — release the previous value
+                    // This mirrors what store_index does in the runtime for
+                    // cell-based locals.
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val =
                         var_get(&mut builder, &vars, &args[0]).expect("store_var: src not found");
-                    if let Some(ref var_name) = op.var {
-                        def_var_named(&mut builder, &vars, var_name, *val);
-                    } else if let Some(ref out_name) = op.out {
-                        def_var_named(&mut builder, &vars, out_name, *val);
+                    let var_name = op.var.as_deref().or(op.out.as_deref());
+                    if let Some(name) = var_name {
+                        // Check if this is a user-local variable (starts with a letter,
+                        // not an internal _v123 or _bb0_arg0 variable).
+                        let is_user_local = !name.starts_with('_')
+                            && !name.starts_with("p")
+                            && name.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false);
+                        if is_user_local {
+                            // inc_ref the new value so it's owned by the variable.
+                            // dec_ref the old value to release the previous reference.
+                            // Uses NaN-boxed u64 variants (no-op for inline ints/bools).
+                            //
+                            // We always inc_ref the new value. We only dec_ref the
+                            // old if the variable has been defined before (use_var
+                            // would panic on undefined variables at the entry block).
+                            let inc_ref_callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_inc_ref_obj",
+                                &[types::I64],
+                                &[],
+                            );
+                            let inc_local = self.module.declare_func_in_func(inc_ref_callee, builder.func);
+                            builder.ins().call(inc_local, &[*val]);
+                        }
+                        def_var_named(&mut builder, &vars, name, *val);
                     }
                 }
                 "load_var" | "copy_var" => {
