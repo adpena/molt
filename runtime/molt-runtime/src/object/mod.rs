@@ -959,9 +959,15 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
     };
     // For small, non-pool objects try the thread-local nursery (bump alloc:
     // ~2 instructions) before falling back to the global allocator.
+    //
+    // Bigints are excluded from nursery allocation: they can be stored
+    // into cell lists (local variable storage) that outlive the nursery
+    // reset point, causing use-after-free when the cell list reads stale
+    // nursery memory on subsequent loop iterations.
+    let nursery_eligible = !matches!(type_id, TYPE_ID_BIGINT);
     let header_ptr = header_ptr
         .or_else(|| {
-            if total_size <= NURSERY_ALLOC_MAX && !pool_eligible && !nursery_is_suspended() {
+            if nursery_eligible && total_size <= NURSERY_ALLOC_MAX && !pool_eligible && !nursery_is_suspended() {
                 NURSERY_TLS.with(|cell| {
                     cell.borrow_mut().alloc(total_size, 8).map(|ptr| {
                         from_nursery = true;
