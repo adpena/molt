@@ -2801,7 +2801,8 @@ impl SimpleBackend {
         // TIR default ON: loop markers preserved, EH functions bypassed.
         // loop info that the native backend needs for raw_int_shadow and type
         // Disable with MOLT_TIR_OPT=0.
-        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+        // TIR default ON. Functions with cell-based loops are skipped.
+        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
@@ -2983,10 +2984,23 @@ impl SimpleBackend {
                         // The TIR roundtrip for check_exception patterns is not
                         // yet stable (Cranelift crashes on complex eh patterns).
                         let force_eh_bypass = true;
+                        // Skip TIR for functions with cell-based locals
+                        // inside loops.  The SSA pass doesn't track mutations
+                        // via store_index/index on cell lists, so loop
+                        // variables that use cells don't update across
+                        // iterations after TIR roundtrip (infinite loop bug).
+                        let has_cell_loop = {
+                            let has_loop = tmp_func.ops.iter()
+                                .any(|op| op.kind == "loop_start");
+                            let has_cell_store = tmp_func.ops.iter()
+                                .any(|op| op.kind == "store_index" || op.kind == "dict_set");
+                            has_loop && has_cell_store
+                        };
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
                             || (has_exception_handling && force_eh_bypass)
+                            || has_cell_loop
                         {
                             return (idx, content_hash, Vec::new());
                         }
