@@ -123,8 +123,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     // Cranelift function compiler (back-edges are detected by
     // `has_loop_or_backedge`), so all loops from TIR are emitted as
     // unstructured label/jump/br_if blocks.
-    let structured_loop_headers: HashSet<BlockId> = HashSet::new();
-
     // ── Structured if/else/end_if detection ──
     // Detect simple CondBranch patterns where both successors:
     //   (a) have no check_exception ops (which require label blocks for implicit edges)
@@ -958,11 +956,11 @@ fn emit_terminator(
     block: &TirBlock,
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
-    loop_roles: &HashMap<BlockId, super::blocks::LoopRole>,
+    _loop_roles: &HashMap<BlockId, super::blocks::LoopRole>,
     out: &mut Vec<OpIR>,
     original_has_ret: bool,
-    loop_role: super::blocks::LoopRole,
-    loop_break_kinds: &HashMap<BlockId, LoopBreakKind>,
+    _loop_role: super::blocks::LoopRole,
+    _loop_break_kinds: &HashMap<BlockId, LoopBreakKind>,
 ) {
     match &block.terminator {
         Terminator::Return { values } => {
@@ -999,44 +997,19 @@ fn emit_terminator(
         }
 
         Terminator::Branch { target, args } => {
-            if loop_role == super::blocks::LoopRole::LoopEnd {
-                // Loop back-edge: emit loop_continue + loop_end instead
-                // of a plain jump.  The native backend uses these markers
-                // to construct the Cranelift loop back-edge.
-                emit_block_arg_stores(*target, args, block_param_vars, out);
+            // If the block ends with a check_exception op, the native
+            // backend handles the fallthrough implicitly -- suppress the
+            // jump so the next block's ops follow sequentially.
+            let last_op_is_check_exception = block.ops.last()
+                .map(|op| op.opcode == OpCode::CheckException)
+                .unwrap_or(false);
+            emit_block_arg_stores(*target, args, block_param_vars, out);
+            if !last_op_is_check_exception {
                 out.push(OpIR {
-                    kind: "loop_continue".to_string(),
+                    kind: "jump".to_string(),
+                    value: Some(block_label_id(target)),
                     ..OpIR::default()
                 });
-                out.push(OpIR {
-                    kind: "loop_end".to_string(),
-                    ..OpIR::default()
-                });
-            } else if loop_roles.get(target).cloned()
-                == Some(super::blocks::LoopRole::LoopHeader)
-            {
-                // Structured loop entry falls through from the preheader into
-                // loop_start. The header label exists only for external
-                // references such as check_exception targets; the preheader
-                // itself must not jump to it or re-enter above loop setup.
-                emit_block_arg_stores(*target, args, block_param_vars, out);
-            } else {
-                // If the block ends with a check_exception op, the native
-                // backend handles the fallthrough implicitly — suppress the
-                // jump so the next block's ops follow sequentially.  This
-                // prevents TIR block boundaries from fragmenting loop bodies
-                // with spurious jump/label pairs.
-                let last_op_is_check_exception = block.ops.last()
-                    .map(|op| op.opcode == OpCode::CheckException)
-                    .unwrap_or(false);
-                emit_block_arg_stores(*target, args, block_param_vars, out);
-                if !last_op_is_check_exception {
-                    out.push(OpIR {
-                        kind: "jump".to_string(),
-                        value: Some(block_label_id(target)),
-                        ..OpIR::default()
-                    });
-                }
             }
         }
 
@@ -1047,28 +1020,8 @@ fn emit_terminator(
             else_block,
             else_args,
         } => {
-            if loop_role == super::blocks::LoopRole::LoopHeader {
-                // SSA convention: then=succs[0]=fall-through=body,
-                // else=succs[1]=break-target=exit.
-                // Store else-args (exit path values) for the after-loop block.
-                emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
-                // Emit the correct loop break op from the detected break kind.
-                let break_kind_for_block = loop_break_kinds
-                    .get(&block.id)
-                    .copied()
-                    .unwrap_or(LoopBreakKind::BreakIfTrue);
-                out.push(OpIR {
-                    kind: match break_kind_for_block {
-                        LoopBreakKind::BreakIfTrue => "loop_break_if_true".to_string(),
-                        LoopBreakKind::BreakIfFalse => "loop_break_if_false".to_string(),
-                    },
-                    args: Some(vec![value_var(*cond)]),
-                    ..OpIR::default()
-                });
-                // Fall through to body — store then-args for the body block.
-                emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
-            } else {
-                // Generic conditional branch.
+            {
+                // Conditional branch: emit br_if to then_block, jump to else_block.
                 emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
                 out.push(OpIR {
                     kind: "br_if".to_string(),
@@ -1123,391 +1076,21 @@ fn emit_terminator(
     }
 }
 
-/// Emit `store_var` ops to pass `values` to the target block's arg variables.
-/// Emit a nested loop's full structure (label, loop_start, condition,
-/// body blocks, loop_continue, loop_end, deferred exit) inline within
-/// an outer loop's body.  All emitted blocks are recorded in
-/// `emitted_inline` so the RPO main loop skips them.
-///
-/// This is the key fix for the nested-loop-inside-if-inside-while
-/// pattern: without inline emission, the RPO main loop places the
-/// inner loop header after the function return, creating unreachable
-/// loop_start/loop_end pairs and causing infinite loops.
-fn emit_nested_loop(
-    func: &TirFunction,
-    inner_header_bid: &BlockId,
-    outer_header_bid: &BlockId,
-    header_body_chain: &HashMap<BlockId, Vec<BlockId>>,
-    block_param_vars: &HashMap<BlockId, Vec<String>>,
-    block_label_id: &impl Fn(&BlockId) -> i64,
-    deferred_exits: &HashMap<BlockId, BlockId>,
-    types: &HashMap<ValueId, TirType>,
-    original_has_ret: bool,
-    emitted_inline: &mut HashSet<BlockId>,
-    out: &mut Vec<OpIR>,
-) {
-    let Some(inner_block) = func.blocks.get(inner_header_bid) else { return };
-    emitted_inline.insert(*inner_header_bid);
 
-    let inner_break_kind = func
-        .loop_break_kinds
-        .get(inner_header_bid)
-        .copied()
-        .unwrap_or(LoopBreakKind::BreakIfTrue);
-    let inner_region_chain = header_body_chain
-        .get(inner_header_bid)
-        .cloned()
-        .unwrap_or_default();
-
-    // Helper: emit ops for a block
-    let emit_ops = |block: &TirBlock, out: &mut Vec<OpIR>| {
-        for op in &block.ops {
-            if let Some(mut opir) = lower_op(op) {
-                annotate_type_flags(&mut opir, op, types);
-                out.push(opir);
-            }
-        }
-    };
-
-    // Emit label for the inner loop header.
-    out.push(OpIR {
-        kind: "label".to_string(),
-        value: Some(block_label_id(inner_header_bid)),
-        ..OpIR::default()
-    });
-    // Load block arguments for the inner header.
-    if let Some(param_vars) = block_param_vars.get(inner_header_bid) {
-        for (i, var_name) in param_vars.iter().enumerate() {
-            if i < inner_block.args.len() {
-                out.push(OpIR {
-                    kind: "load_var".to_string(),
-                    var: Some(var_name.clone()),
-                    out: Some(value_var(inner_block.args[i].id)),
-                    ..OpIR::default()
-                });
-            }
-        }
-    }
-
-    out.push(OpIR {
-        kind: "loop_start".to_string(),
-        ..OpIR::default()
-    });
-
-    // Determine the inner loop's condition from its terminator.
-    // Same logic as the outer loop header processing: the header may
-    // CondBranch directly, or Branch to a condition-test block.
-    let mut cond_data: Option<(ValueId, BlockId, Vec<ValueId>, BlockId, Vec<ValueId>)> = None;
-    let mut first_body_block_inlined = false;
-
-    match &inner_block.terminator {
-        Terminator::CondBranch {
-            cond, then_block, then_args, else_block, else_args,
-        } => {
-            emit_ops(inner_block, out);
-            cond_data = Some((*cond, *then_block, then_args.clone(), *else_block, else_args.clone()));
-        }
-        Terminator::Branch { target, args } => {
-            emit_ops(inner_block, out);
-            if inner_region_chain.first() == Some(target)
-                && let Some(cond_block) = func.blocks.get(target)
-                && let Terminator::CondBranch {
-                    cond, then_block, then_args, else_block, else_args,
-                } = &cond_block.terminator
-            {
-                // Inline the condition-test block's ops with arg mapping.
-                let resolved: Vec<(ValueId, String)> = cond_block
-                    .args
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, arg)| {
-                        args.get(i).map(|&pred| (arg.id, value_var(pred)))
-                    })
-                    .collect();
-                VALUE_NAME_OVERRIDES.with(|overrides| {
-                    let mut map = overrides.borrow_mut();
-                    for (id, name) in &resolved {
-                        map.insert(*id, name.clone());
-                    }
-                });
-                for op in &cond_block.ops {
-                    if let Some(mut opir) = lower_op(op) {
-                        annotate_type_flags(&mut opir, op, types);
-                        out.push(opir);
-                    }
-                }
-                emitted_inline.insert(*target);
-                first_body_block_inlined = true;
-                cond_data = Some((*cond, *then_block, then_args.clone(), *else_block, else_args.clone()));
-            }
-        }
-        _ => {
-            emit_ops(inner_block, out);
-        }
-    }
-
-    if let Some((cond, then_block, then_args, else_block, else_args)) = cond_data {
-        // SSA convention: then=succs[0]=fall-through=body,
-        // else=succs[1]=break-target=exit.  Same for both break kinds.
-        let (after_block, after_args, body_block, body_args) = match inner_break_kind {
-            LoopBreakKind::BreakIfTrue | LoopBreakKind::BreakIfFalse => {
-                (else_block, else_args, then_block, then_args)
-            }
-        };
-
-        // Emit loop break condition.
-        emit_block_arg_stores(after_block, &after_args, block_param_vars, out);
-        out.push(OpIR {
-            kind: match inner_break_kind {
-                LoopBreakKind::BreakIfTrue => "loop_break_if_true".to_string(),
-                LoopBreakKind::BreakIfFalse => "loop_break_if_false".to_string(),
-            },
-            args: Some(vec![value_var(cond)]),
-            ..OpIR::default()
-        });
-
-        // Store args for the first body block entry.
-        emit_block_arg_stores(body_block, &body_args, block_param_vars, out);
-
-        // Emit inner loop body blocks.
-        let inner_body_blocks: Vec<BlockId> = if first_body_block_inlined {
-            inner_region_chain.iter().skip(1).copied().collect()
-        } else {
-            inner_region_chain.clone()
-        };
-
-        let mut inner_emitted_loop_end = false;
-
-        for inner_region_bid in &inner_body_blocks {
-            emitted_inline.insert(*inner_region_bid);
-            let nested_nested_role = func.loop_roles.get(inner_region_bid).cloned()
-                .unwrap_or(super::blocks::LoopRole::None);
-            if nested_nested_role == super::blocks::LoopRole::LoopHeader {
-                // Doubly-nested loop: recurse.
-                emit_nested_loop(
-                    func,
-                    inner_region_bid,
-                    inner_header_bid,
-                    header_body_chain,
-                    block_param_vars,
-                    block_label_id,
-                    deferred_exits,
-                    types,
-                    original_has_ret,
-                    emitted_inline,
-                    out,
-                );
-                continue;
-            }
-            // Skip blocks in a deeper nested loop's body chain.
-            let mut in_deeper_nested = false;
-            for (hdr, chain) in header_body_chain {
-                if *hdr != *inner_header_bid && chain.contains(inner_region_bid) {
-                    in_deeper_nested = true;
-                    break;
-                }
-            }
-            if in_deeper_nested { continue; }
-
-            if let Some(region_block) = func.blocks.get(inner_region_bid) {
-                // Emit label.
-                out.push(OpIR {
-                    kind: "label".to_string(),
-                    value: Some(block_label_id(inner_region_bid)),
-                    ..OpIR::default()
-                });
-                if let Some(param_vars) = block_param_vars.get(inner_region_bid) {
-                    for (i, var_name) in param_vars.iter().enumerate() {
-                        if i < region_block.args.len() {
-                            out.push(OpIR {
-                                kind: "load_var".to_string(),
-                                var: Some(var_name.clone()),
-                                out: Some(value_var(region_block.args[i].id)),
-                                ..OpIR::default()
-                            });
-                        }
-                    }
-                }
-                // Emit ops.
-                emit_ops(region_block, out);
-                // Emit terminator, replacing back-edges to the inner header.
-                match &region_block.terminator {
-                    Terminator::Branch { target, args } => {
-                        emit_block_arg_stores(*target, args, block_param_vars, out);
-                        if *target == *inner_header_bid {
-                            out.push(OpIR {
-                                kind: "loop_continue".to_string(),
-                                ..OpIR::default()
-                            });
-                            out.push(OpIR {
-                                kind: "loop_end".to_string(),
-                                ..OpIR::default()
-                            });
-                            inner_emitted_loop_end = true;
-                        } else {
-                            let last_op_is_check_exception = region_block.ops.last()
-                                .map(|op| op.opcode == OpCode::CheckException)
-                                .unwrap_or(false);
-                            if !last_op_is_check_exception {
-                                out.push(OpIR {
-                                    kind: "jump".to_string(),
-                                    value: Some(block_label_id(target)),
-                                    ..OpIR::default()
-                                });
-                            }
-                        }
-                    }
-                    Terminator::CondBranch {
-                        cond, then_block, then_args, else_block, else_args,
-                    } => {
-                        emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
-                        out.push(OpIR {
-                            kind: "br_if".to_string(),
-                            args: Some(vec![value_var(*cond)]),
-                            value: Some(block_label_id(then_block)),
-                            ..OpIR::default()
-                        });
-                        emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
-                        out.push(OpIR {
-                            kind: "jump".to_string(),
-                            value: Some(block_label_id(else_block)),
-                            ..OpIR::default()
-                        });
-                    }
-                    Terminator::Return { values } => {
-                        emit_return_ops(values, original_has_ret, out);
-                    }
-                    Terminator::Unreachable => {
-                        out.push(OpIR {
-                            kind: "unreachable".to_string(),
-                            ..OpIR::default()
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // If no body block branched back to the inner header, force close.
-        if !inner_emitted_loop_end {
-            if inner_body_blocks.is_empty() {
-                if let Some(body_block_ir) = func.blocks.get(&body_block) {
-                    emitted_inline.insert(body_block);
-                    out.push(OpIR {
-                        kind: "label".to_string(),
-                        value: Some(block_label_id(&body_block)),
-                        ..OpIR::default()
-                    });
-                    emit_ops(body_block_ir, out);
-                    emit_block_arg_stores_for_terminator(body_block_ir, inner_header_bid, block_param_vars, block_label_id, out);
-                } else {
-                    out.push(OpIR { kind: "loop_continue".to_string(), ..OpIR::default() });
-                    out.push(OpIR { kind: "loop_end".to_string(), ..OpIR::default() });
-                }
-            } else {
-                out.push(OpIR { kind: "loop_continue".to_string(), ..OpIR::default() });
-                out.push(OpIR { kind: "loop_end".to_string(), ..OpIR::default() });
-            }
-        }
-
-        // Emit the inner loop's deferred exit block.
-        if let Some(exit_bid) = deferred_exits.get(inner_header_bid) {
-            emitted_inline.insert(*exit_bid);
-            if let Some(exit_block) = func.blocks.get(exit_bid) {
-                out.push(OpIR {
-                    kind: "label".to_string(),
-                    value: Some(block_label_id(exit_bid)),
-                    ..OpIR::default()
-                });
-                if let Some(param_vars) = block_param_vars.get(exit_bid) {
-                    for (i, var_name) in param_vars.iter().enumerate() {
-                        if i < exit_block.args.len() {
-                            out.push(OpIR {
-                                kind: "load_var".to_string(),
-                                var: Some(var_name.clone()),
-                                out: Some(value_var(exit_block.args[i].id)),
-                                ..OpIR::default()
-                            });
-                        }
-                    }
-                }
-                emit_ops(exit_block, out);
-                let exit_role = func.loop_roles.get(exit_bid).cloned()
-                    .unwrap_or(super::blocks::LoopRole::None);
-                emit_terminator(
-                    exit_block,
-                    block_param_vars,
-                    block_label_id,
-                    &func.loop_roles,
-                    out,
-                    original_has_ret,
-                    exit_role,
-                    &func.loop_break_kinds,
-                );
-            }
-        }
-    } else {
-        // No condition data — unusual. Emit the header's ops and fall through.
-        emit_ops(inner_block, out);
-        emit_terminator(
-            inner_block,
-            block_param_vars,
-            block_label_id,
-            &func.loop_roles,
-            out,
-            original_has_ret,
-            super::blocks::LoopRole::LoopHeader,
-            &func.loop_break_kinds,
-        );
-    }
-}
-
-/// Helper for emit_nested_loop: emit a block's Branch terminator,
-/// converting back-edges to loop_continue + loop_end.
-fn emit_block_arg_stores_for_terminator(
-    block: &TirBlock,
-    header_bid: &BlockId,
-    block_param_vars: &HashMap<BlockId, Vec<String>>,
-    block_label_id: &impl Fn(&BlockId) -> i64,
-    out: &mut Vec<OpIR>,
-) {
-    match &block.terminator {
-        Terminator::Branch { target, args } => {
-            emit_block_arg_stores(*target, args, block_param_vars, out);
-            if *target == *header_bid {
-                out.push(OpIR { kind: "loop_continue".to_string(), ..OpIR::default() });
-                out.push(OpIR { kind: "loop_end".to_string(), ..OpIR::default() });
-            } else {
-                out.push(OpIR {
-                    kind: "jump".to_string(),
-                    value: Some(block_label_id(target)),
-                    ..OpIR::default()
-                });
-            }
-        }
-        _ => {
-            out.push(OpIR { kind: "loop_continue".to_string(), ..OpIR::default() });
-            out.push(OpIR { kind: "loop_end".to_string(), ..OpIR::default() });
-        }
-    }
-}
-
+/// Emit `store_var` ops to pass values to the target block's argument variables.
 fn emit_block_arg_stores(
     target: BlockId,
-    values: &[ValueId],
+    args: &[ValueId],
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     out: &mut Vec<OpIR>,
 ) {
-    if values.is_empty() {
-        return;
-    }
     if let Some(param_vars) = block_param_vars.get(&target) {
-        for (i, val) in values.iter().enumerate() {
+        for (i, arg_val) in args.iter().enumerate() {
             if let Some(var_name) = param_vars.get(i) {
                 out.push(OpIR {
                     kind: "store_var".to_string(),
                     var: Some(var_name.clone()),
-                    args: Some(vec![value_var(*val)]),
+                    args: Some(vec![value_var(*arg_val)]),
                     ..OpIR::default()
                 });
             }
@@ -1682,21 +1265,6 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
         if let Some(AttrValue::Int(ecol)) = tir_op.attrs.get("_end_col_offset") {
             opir.end_col_offset = Some(*ecol);
         }
-    }
-}
-
-/// Convert a TIR type to a human-readable hint string for the backend.
-/// Collect all successor BlockIds from a block's terminator.
-fn block_successors(block: &TirBlock) -> Vec<BlockId> {
-    match &block.terminator {
-        Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch { then_block, else_block, .. } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. } => {
-            let mut succs: Vec<BlockId> = cases.iter().map(|c| c.1).collect();
-            succs.push(*default);
-            succs
-        }
-        _ => vec![],
     }
 }
 
