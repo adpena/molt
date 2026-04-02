@@ -666,7 +666,7 @@ thread_local! {
     /// global allocator.  Set during module import to prevent type objects
     /// from being nursery-allocated and then stored into persistent dicts
     /// that outlive the nursery reset.
-    pub(crate) static NURSERY_SUSPENDED: Cell<bool> = const { Cell::new(true) };  // DISABLED FOR DEBUGGING
+    pub(crate) static NURSERY_SUSPENDED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Suspend nursery allocation — all objects go to global allocator.

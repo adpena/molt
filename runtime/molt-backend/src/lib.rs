@@ -1280,7 +1280,7 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
 /// AtomicU32 refcount field.
 #[cfg(feature = "native-backend")]
 fn inline_rc_enabled() -> bool {
-    true
+    false  // DISABLED FOR DEBUGGING
 }
 
 /// Emit an inlined `inc_ref_obj` as Cranelift IR instead of a function call.
