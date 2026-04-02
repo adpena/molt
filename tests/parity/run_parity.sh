@@ -133,7 +133,9 @@ run_test() {
     # --- Run Molt binary ---
     molt_rc=0
     if [ -f "$binary_path" ]; then
-        timeout "$TIMEOUT" "$binary_path" > "$molt_out" 2> "$molt_err" || molt_rc=$?
+        # Cap virtual memory at 2GB to prevent runaway allocation bugs
+        # from consuming all system RAM (observed: 80GB+ per process).
+        (ulimit -v 2097152 2>/dev/null; timeout "$TIMEOUT" "$binary_path") > "$molt_out" 2> "$molt_err" || molt_rc=$?
     elif [ -f "$binary_path.wasm" ]; then
         # WASM output — try running via node or wasmtime
         if command -v wasmtime &>/dev/null; then
@@ -150,7 +152,7 @@ run_test() {
         local found_bin
         found_bin=$(find "$build_out_dir" -type f -perm +111 2>/dev/null | head -1)
         if [ -n "$found_bin" ]; then
-            timeout "$TIMEOUT" "$found_bin" > "$molt_out" 2> "$molt_err" || molt_rc=$?
+            (ulimit -v 2097152 2>/dev/null; timeout "$TIMEOUT" "$found_bin") > "$molt_out" 2> "$molt_err" || molt_rc=$?
         else
             printf "  ${RED}ERROR${RESET} %-30s (no output binary found)\n" "$test_name"
             if [ "$VERBOSE" = "1" ]; then
