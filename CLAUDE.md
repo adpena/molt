@@ -38,6 +38,8 @@ When you identify the correct fix and feel tempted to do something "simpler" ins
 - Test with `python3 -m molt build --target native --output /tmp/test_out test_file.py --rebuild`
 - Backend daemon uses release-fast profile. Kill with `pkill -9 -f "molt-backend"` before testing new builds.
 - Max 2 build-triggering agents at once. 5 concurrent builds OOM the machine.
+- Max 3 backend daemons enforced by the CLI. Stale sockets are auto-cleaned.
+- After a session with multiple agents, run: `pkill -9 -f "molt-backend" && rm -rf target-* .molt_cache_*`
 
 ## Concurrent Development (MOLT_SESSION_ID)
 
