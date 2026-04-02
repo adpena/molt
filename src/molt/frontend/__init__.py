@@ -2524,7 +2524,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         stack: list[ast.AST] = list(node.body)
         while stack:
             current = stack.pop()
-            if isinstance(current, (ast.Try, ast.TryStar, ast.With, ast.AsyncWith)):
+            if isinstance(current, (ast.Try, ast.TryStar, ast.With, ast.AsyncWith, ast.Raise)):
                 return True
             if isinstance(
                 current,
