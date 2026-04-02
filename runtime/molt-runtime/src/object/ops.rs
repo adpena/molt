@@ -5123,6 +5123,31 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         }
                         return MoltObject::from_bool(false).bits();
                     }
+                    TYPE_ID_LIST_INT => {
+                        // list[int] stores raw i64 — compare against the
+                        // needle's int value directly for O(n) scan.
+                        let elems = crate::object::layout::list_int_vec_ref(ptr);
+                        if let Some(needle) = to_i64(item) {
+                            for &raw in elems.iter() {
+                                if raw == needle {
+                                    return MoltObject::from_bool(true).bits();
+                                }
+                            }
+                            return MoltObject::from_bool(false).bits();
+                        }
+                        // Non-int needle: box each element and compare.
+                        for &raw in elems.iter() {
+                            let elem_bits = MoltObject::from_int(raw).bits();
+                            let eq = match eq_bool_from_bits(_py, elem_bits, item_bits) {
+                                Some(val) => val,
+                                None => return MoltObject::none().bits(),
+                            };
+                            if eq {
+                                return MoltObject::from_bool(true).bits();
+                            }
+                        }
+                        return MoltObject::from_bool(false).bits();
+                    }
                     TYPE_ID_TUPLE => {
                         let elems = seq_vec_ref(ptr);
                         // Same identity fast path for tuples with inline-int/bool/None needle.
@@ -7470,7 +7495,7 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
                 TYPE_ID_STRING => Cow::Borrowed("str"),
                 TYPE_ID_BYTES => Cow::Borrowed("bytes"),
                 TYPE_ID_BYTEARRAY => Cow::Borrowed("bytearray"),
-                TYPE_ID_LIST => Cow::Borrowed("list"),
+                TYPE_ID_LIST | TYPE_ID_LIST_INT => Cow::Borrowed("list"),
                 TYPE_ID_TUPLE => Cow::Borrowed("tuple"),
                 TYPE_ID_DICT => Cow::Borrowed("dict"),
                 TYPE_ID_DICT_KEYS_VIEW => Cow::Borrowed("dict_keys"),

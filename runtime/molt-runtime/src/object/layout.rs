@@ -22,6 +22,15 @@ pub(crate) unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
     }
 }
 
+/// Read the backing `Vec<i64>` from a `TYPE_ID_LIST_INT` object.
+/// The layout stores raw i64 values (not NaN-boxed).
+pub(crate) unsafe fn list_int_vec_ref(ptr: *mut u8) -> &'static Vec<i64> {
+    unsafe {
+        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
+        &*vec_ptr
+    }
+}
+
 pub(crate) unsafe fn bytearray_vec_ptr(ptr: *mut u8) -> *mut Vec<u8> {
     unsafe { *(ptr as *mut *mut Vec<u8>) }
 }

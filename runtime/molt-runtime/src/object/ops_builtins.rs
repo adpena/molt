@@ -1917,6 +1917,19 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                         }
                     }
                 }
+                // Specialized list[int] — elements are raw i64, no NaN-boxing.
+                if type_id == TYPE_ID_LIST_INT {
+                    let elems = unsafe { crate::object::layout::list_int_vec_ref(ptr) };
+                    let start_int = to_i64(start_obj);
+                    if let Some(s) = start_int {
+                        let mut acc128 = s as i128;
+                        for &raw in elems.iter() {
+                            acc128 += raw as i128;
+                        }
+                        use crate::builtins::numbers::int_bits_from_i128;
+                        return int_bits_from_i128(_py, acc128);
+                    }
+                }
             }
         }
         let iter_obj = molt_iter(iter_bits);
