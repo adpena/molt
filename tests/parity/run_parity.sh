@@ -30,14 +30,25 @@ MOLT_PYTHON="${MOLT_PYTHON:-$PYTHON}"
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/molt_parity_XXXXXX")
 trap 'rm -rf "$WORK_DIR"' EXIT
 
+# Clear stale .pyc caches that can cause the CLI module to use outdated
+# bytecode after source edits.
+find "$REPO_ROOT/src/molt" -name '*.pyc' -delete 2>/dev/null || true
+find "$REPO_ROOT/src/molt" -name '__pycache__' -type d -empty -delete 2>/dev/null || true
+
 # Warm up the build pipeline (runtime fingerprint, daemon) so individual
-# test builds don't timeout waiting for the first compile.
+# test builds don't timeout waiting for the first compile.  Pass --profile
+# to match the actual BUILD_PROFILE so the fingerprint is primed for the
+# profile that tests will use.
 if [ "$VERBOSE" = "1" ]; then
     echo "Warming up build pipeline..."
 fi
 _warmup_file="$WORK_DIR/warmup.py"
 echo 'print(1)' > "$_warmup_file"
-timeout "$TIMEOUT" "$MOLT_PYTHON" -m molt build "$_warmup_file"     --target native     --output "$WORK_DIR/warmup"     > /dev/null 2>&1 || true
+timeout "$TIMEOUT" "$MOLT_PYTHON" -m molt build "$_warmup_file" \
+    --target native \
+    --profile "$BUILD_PROFILE" \
+    --output "$WORK_DIR/warmup" \
+    > /dev/null 2>&1 || true
 
 # Colors (if terminal supports it)
 if [ -t 1 ]; then

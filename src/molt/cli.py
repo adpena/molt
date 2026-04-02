@@ -8930,30 +8930,16 @@ def _backend_source_paths_cached(
 ) -> tuple[Path, ...]:
     project_root = Path(project_root_str)
     backend_root = project_root / "runtime/molt-backend"
-    src_root = backend_root / "src"
-    features = frozenset(backend_features)
+    # Include the entire src/ directory so that new files (e.g. tir/*.rs,
+    # native_backend/*.rs, llvm_backend/*.rs) are automatically covered
+    # without having to enumerate them individually.
     source_paths: list[Path] = [
-        src_root / "lib.rs",
-        src_root / "main.rs",
-        src_root / "ir_schema.rs",
+        backend_root / "src",
         backend_root / "Cargo.toml",
         backend_root / "build.rs",
         project_root / "Cargo.toml",
         project_root / "Cargo.lock",
     ]
-    if "egraphs" in features:
-        source_paths.append(src_root / "egraph_simplify.rs")
-    if "rust-backend" in features:
-        source_paths.append(src_root / "rust.rs")
-    if "wasm-backend" in features:
-        source_paths.append(src_root / "wasm.rs")
-    if "luau-backend" in features:
-        source_paths.extend(
-            [
-                src_root / "luau.rs",
-                src_root / "luau_json_prelude.luau",
-            ]
-        )
     return tuple(source_paths)
 
 
@@ -19976,6 +19962,10 @@ def _ensure_backend_binary(
     project_root: Path,
     backend_features: tuple[str, ...],
 ) -> bool:
+    # MOLT_SKIP_RUNTIME_REBUILD=1 also skips the backend fingerprint check.
+    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
+        if backend_bin.exists():
+            return True
     rustflags = os.environ.get("RUSTFLAGS", "")
     fingerprint_path = _backend_fingerprint_path(
         project_root, backend_bin, cargo_profile
@@ -20076,6 +20066,16 @@ def _ensure_backend_binary(
             candidate_artifact=canonical_backend_bin,
             candidate_fingerprint_path=canonical_fingerprint_path,
         ):
+            return True
+        # Fast path: if the backend binary exists and is newer than every
+        # source file that contributes to the fingerprint, skip the expensive
+        # cargo build and just update the stored fingerprint.  This handles
+        # the common case of running `cargo build` manually before `molt build`.
+        if _artifact_newer_than_sources(
+            backend_bin,
+            _backend_source_paths(project_root, backend_features),
+        ):
+            _write_runtime_fingerprint(fingerprint_path, fingerprint)
             return True
         if not json_output:
             print("Backend sources changed; rebuilding backend...", file=sys.stderr)
@@ -20243,6 +20243,33 @@ def _ensure_backend_binary(
     return True
 
 
+def _artifact_newer_than_sources(
+    artifact: Path,
+    source_paths: list[Path],
+) -> bool:
+    """Return True if *artifact* exists and is newer than every file in *source_paths*.
+
+    Handles both individual files and directories (recursed for all files).
+    Returns False on any OS error or if no source files are found.
+    """
+    try:
+        lib_mtime = artifact.stat().st_mtime
+    except OSError:
+        return False
+    newest_src = 0.0
+    for path in source_paths:
+        try:
+            if path.is_dir():
+                for item in path.rglob("*"):
+                    if item.is_file():
+                        newest_src = max(newest_src, item.stat().st_mtime)
+            elif path.exists():
+                newest_src = max(newest_src, path.stat().st_mtime)
+        except OSError:
+            return False
+    return newest_src > 0 and lib_mtime > newest_src
+
+
 def _ensure_runtime_lib(
     runtime_lib: Path,
     target_triple: str | None,
@@ -20258,6 +20285,13 @@ def _ensure_runtime_lib(
     session_key = (os.fspath(project_root), cargo_profile, target_triple)
     if session_key in _RUNTIME_LIB_VERIFIED:
         return True
+    # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
+    # Use when you have already run `cargo build` manually and want to avoid
+    # the ~90s overhead of the CLI re-running cargo.
+    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
+        if runtime_lib.exists():
+            _RUNTIME_LIB_VERIFIED.add(session_key)
+            return True
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = _runtime_cargo_features(target_triple)
     builtin_features = _builtin_features_from_import_graph(resolved_modules, stdlib_profile)
@@ -20288,28 +20322,16 @@ def _ensure_runtime_lib(
         if not _artifact_needs_rebuild(runtime_lib, fingerprint, stored_fingerprint):
             _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
-        # Fast path: if the .a exists and cargo would be a no-op (the .a
-        # is newer than all source files), skip the expensive cargo build
-        # and just update the stored fingerprint.  This handles the common
-        # case of running `cargo build` manually before `molt build`.
-        if runtime_lib.exists():
-            try:
-                lib_mtime = runtime_lib.stat().st_mtime
-                src_dirs = [
-                    project_root / "runtime" / "molt-runtime" / "src",
-                    project_root / "runtime" / "molt-obj-model" / "src",
-                ]
-                newest_src = 0.0
-                for d in src_dirs:
-                    if d.is_dir():
-                        for f in d.rglob("*.rs"):
-                            newest_src = max(newest_src, f.stat().st_mtime)
-                if lib_mtime > newest_src and newest_src > 0:
-                    _write_runtime_fingerprint(fingerprint_path, fingerprint)
-                    _RUNTIME_LIB_VERIFIED.add(session_key)
-                    return True
-            except OSError:
-                pass
+        # Fast path: if the .a/.lib exists and is newer than every source
+        # file that contributes to the fingerprint, skip the expensive cargo
+        # build and just update the stored fingerprint.  This handles the
+        # common case of running `cargo build` manually before `molt build`.
+        if _artifact_newer_than_sources(
+            runtime_lib, _runtime_source_paths(project_root)
+        ):
+            _write_runtime_fingerprint(fingerprint_path, fingerprint)
+            _RUNTIME_LIB_VERIFIED.add(session_key)
+            return True
         canonical_target_root = _canonical_target_root(project_root)
         profile_dir = _cargo_profile_dir(cargo_profile)
         if target_triple:
@@ -20607,6 +20629,10 @@ def _ensure_runtime_wasm(
     stdlib_profile: str | None = "micro",
 ) -> bool:
     root = project_root or Path(__file__).resolve().parents[2]
+    # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
+    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
+        if runtime_wasm.exists():
+            return True
     requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     env = os.environ.copy()
@@ -20682,6 +20708,15 @@ def _ensure_runtime_wasm(
                 "Runtime wasm artifact invalid/corrupt; forcing rebuild.",
                 file=sys.stderr,
             )
+        # Fast path: if the .wasm exists and is newer than every source
+        # file, skip the expensive cargo build and just update the stored
+        # fingerprint (common after running `cargo build` manually).
+        if needs_rebuild and _artifact_newer_than_sources(
+            runtime_wasm, _runtime_source_paths(root)
+        ):
+            if _is_valid_runtime_wasm_artifact(runtime_wasm):
+                _write_runtime_fingerprint(fingerprint_path, fingerprint)
+                return True
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...", file=sys.stderr)
         if rustflags:
