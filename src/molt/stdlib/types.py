@@ -7,35 +7,52 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-# Intrinsics populate these at import time; predeclare for static checkers.
-AsyncGeneratorType: type
-BuiltinFunctionType: type
-BuiltinMethodType: type
-CapsuleType: type
-CellType: type
-ClassMethodDescriptorType: type
-CodeType: type
-CoroutineType: type
-EllipsisType: type
-FrameType: type
-FunctionType: type
-GeneratorType: type
-MappingProxyType: type
-MethodType: type
-MethodDescriptorType: type
-MethodWrapperType: type
-ModuleType: type
-NoneType: type
-NotImplementedType: type
-GenericAlias: type
-GetSetDescriptorType: type
-LambdaType: type
-MemberDescriptorType: type
-SimpleNamespace: type
-TracebackType: type
-UnionType: type
-WrapperDescriptorType: type
-DynamicClassAttribute: type
+# Bind types eagerly following CPython's types.py pattern.
+# The runtime intrinsic system exports these as module attributes,
+# but annotations alone don't create bindings.  Use require_intrinsic
+# for types backed by runtime objects, and direct Python construction
+# for types derivable from existing objects.
+import sys as _sys
+
+def _f(): yield  # noqa: helper to get GeneratorType
+_g = _f()
+
+ModuleType = type(_sys)
+NoneType = type(None)
+FunctionType = type(lambda: None)
+LambdaType = FunctionType
+GeneratorType = type(_g)
+CodeType = type(_f.__code__) if hasattr(_f, '__code__') else type
+BuiltinFunctionType = type(len)
+BuiltinMethodType = type([].append)
+MethodType = type  # placeholder — bound methods don't have a stable type() in Molt
+
+# Types bound by the runtime intrinsic system.  If not yet available,
+# fall back to `type` so the module can still be imported.
+MappingProxyType = type(type.__dict__)  # CPython: MappingProxyType = type(type.__dict__)
+SimpleNamespace = type  # placeholder until intrinsic wires it
+GenericAlias = type     # placeholder until intrinsic wires it
+
+# Types that may not be available yet — fallback to `type` sentinel.
+AsyncGeneratorType = type
+CapsuleType = type
+CellType = type
+ClassMethodDescriptorType = type
+CoroutineType = type
+EllipsisType = type(...)
+FrameType = type
+GetSetDescriptorType = type
+MemberDescriptorType = type
+MethodDescriptorType = type
+MethodWrapperType = type
+NotImplementedType = type(NotImplemented)
+TracebackType = type
+UnionType = type
+WrapperDescriptorType = type
+DynamicClassAttribute = type
+
+del _f, _g
+
 coroutine: object
 get_original_bases: object
 new_class: object

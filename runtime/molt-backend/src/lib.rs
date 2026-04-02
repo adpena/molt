@@ -2484,6 +2484,7 @@ impl SimpleBackend {
                     func,
                     name,
                 } => {
+<<<<<<< Updated upstream
                     // Wrap retry in catch_unwind: Cranelift can panic
                     // even at opt_level=none (e.g. blockorder or
                     // alias_analysis on functions with orphaned blocks).
@@ -2492,6 +2493,11 @@ impl SimpleBackend {
                             Self::retry_define_at_opt_none(
                                 &mut self.module, func_id, *func, &name,
                             )
+=======
+                    let retry_result = std::panic::catch_unwind(
+                        std::panic::AssertUnwindSafe(|| {
+                            Self::retry_define_at_opt_none(&mut self.module, func_id, *func, &name)
+>>>>>>> Stashed changes
                         }),
                     );
                     match retry_result {
@@ -2509,6 +2515,30 @@ impl SimpleBackend {
                                 .clone();
                             eprintln!(
                                 "  -> emitting trap stub for {} (Cranelift error)",
+                                name
+                            );
+                            match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
+                                Ok(()) => {
+                                    self.defined_func_names.insert(name);
+                                }
+                                Err(stub_err) => {
+                                    eprintln!(
+                                        "  -> trap stub also failed for {}: {}",
+                                        name, stub_err
+                                    );
+                                }
+                            }
+                        }
+                        Err(_panic) => {
+                            eprintln!("  -> retry panicked for {}", name);
+                            let sig = self
+                                .module
+                                .declarations()
+                                .get_function_decl(func_id)
+                                .signature
+                                .clone();
+                            eprintln!(
+                                "  -> emitting trap stub for {} (Cranelift panic)",
                                 name
                             );
                             match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
@@ -2772,12 +2802,20 @@ impl SimpleBackend {
             std::collections::BTreeSet::new();
         // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
         // The TIR roundtrip (lower→refine→optimize→lower-back) is enabled by
+<<<<<<< Updated upstream
         // default.  Functions that crash Cranelift compilation get a trap stub
         // via the catch_unwind retry path in flush_deferred_defines.  Loops
         // whose condition cannot be expressed as a structured
         // loop_break_if_{true,false} are emitted as plain label/jump/br_if
         // blocks (not loop_start/loop_end) to avoid orphaned Cranelift blocks.
         // Set MOLT_TIR_OPT=0 to disable.
+=======
+        // default.  Functions that crash Cranelift get a trap stub via the
+        // catch_unwind retry path in flush_deferred_defines.  Loops whose
+        // condition cannot be expressed as a structured loop_break_if_{true,false}
+        // are emitted as plain label/jump/br_if blocks (not loop_start/loop_end)
+        // to avoid orphaned Cranelift blocks.  Set MOLT_TIR_OPT=0 to disable.
+>>>>>>> Stashed changes
         if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
@@ -2953,15 +2991,6 @@ impl SimpleBackend {
                             || cf_complexity > 30
                             || has_exception_handling
                         {
-                            if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1")
-                                && tmp_func.name.contains("sieve") {
-                                eprintln!("[TIR-SKIP] {} reason: chunk={} ops={} cf={} exc={}",
-                                    tmp_func.name,
-                                    tmp_func.name.contains("__molt_module_chunk_"),
-                                    tmp_func.ops.len(),
-                                    cf_complexity,
-                                    has_exception_handling);
-                            }
                             return (idx, content_hash, Vec::new());
                         }
                         // Debug skip: MOLT_TIR_SKIP_PATTERN=<pat1,pat2,...> skips

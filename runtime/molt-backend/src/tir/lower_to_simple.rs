@@ -594,20 +594,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             // the first region block which then has the CondBranch.
             let mut cond_data: Option<(ValueId, BlockId, Vec<ValueId>, BlockId, Vec<ValueId>)> = None;
             let mut first_body_block_inlined = false;
-            let _trace_loop = std::env::var("MOLT_TIR_TRACE_LOOP").as_deref() == Ok("1");
-            if _trace_loop {
-                let term_kind = match &block.terminator {
-                    Terminator::Branch { target, .. } => format!("Branch(→{:?})", target),
-                    Terminator::CondBranch { then_block, else_block, .. } =>
-                        format!("CondBranch(then={:?} else={:?})", then_block, else_block),
-                    Terminator::Return { .. } => "Return".to_string(),
-                    Terminator::Unreachable => "Unreachable".to_string(),
-                    _ => format!("{:?}", block.terminator),
-                };
-                eprintln!("[TIR-LOOP] func={} header bid={:?} term={} region_chain={:?}",
-                    func.name, bid, term_kind, region_chain);
-            }
-
             match &block.terminator {
                 Terminator::CondBranch {
                     cond,
@@ -677,9 +663,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 }
             }
 
-            if _trace_loop {
-                eprintln!("[TIR-LOOP]   cond_data={}", if cond_data.is_some() { "Some" } else { "None" });
-            }
             if let Some((cond, then_block, then_args, else_block, else_args)) = cond_data {
                 let (after_block, after_args, body_block, body_args) = match break_kind {
                     LoopBreakKind::BreakIfTrue => {
@@ -1056,10 +1039,6 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
     }
 
     // Phase 3: compact — remove dead label ops.
-    let removed_count = keep.iter().filter(|&&k| !k).count();
-    if removed_count > 0 {
-        eprintln!("[TIR-DCE] eliminating {} dead label(s)", removed_count);
-    }
     let mut write_idx = 0;
     for read_idx in 0..ops.len() {
         if keep[read_idx] {

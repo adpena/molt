@@ -3585,6 +3585,10 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     }
                     if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
                         object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
+<<<<<<< Updated upstream
+=======
+                        // Mirror to instance dict for __dict__ parity.
+>>>>>>> Stashed changes
                         crate::object::accessors::mirror_field_to_instance_dict(
                             _py, obj_ptr, slice.as_ptr(), slice.len(), val_bits,
                         );
@@ -3987,6 +3991,30 @@ pub(crate) unsafe fn del_attr_ptr(
                 if let Some(call_bits) =
                     class_attr_lookup(_py, class_ptr, class_ptr, Some(obj_ptr), delattr_bits)
                 {
+                    // Short-circuit default object.__delattr__ to avoid the
+                    // bound method call overhead and ensure field slots +
+                    // instance dict are both cleared correctly.
+                    if let Some(call_ptr) = obj_from_bits(call_bits).as_ptr() {
+                        let is_default = match object_type_id(call_ptr) {
+                            TYPE_ID_BOUND_METHOD => {
+                                let inner = bound_method_func_bits(call_ptr);
+                                crate::call::type_policy::callable_matches_runtime_symbol(
+                                    Some(inner),
+                                    fn_addr!(crate::molt_object_delattr),
+                                )
+                            }
+                            TYPE_ID_FUNCTION => {
+                                crate::call::type_policy::callable_matches_runtime_symbol(
+                                    Some(call_bits),
+                                    fn_addr!(crate::molt_object_delattr),
+                                )
+                            }
+                            _ => false,
+                        };
+                        if is_default {
+                            return object_delattr_raw(_py, obj_ptr, attr_bits, attr_name);
+                        }
+                    }
                     let _ = call_callable1(_py, call_bits, attr_bits);
                     return MoltObject::none().bits() as i64;
                 }
@@ -4050,6 +4078,15 @@ pub(crate) unsafe fn del_attr_ptr(
                 }
                 let missing = missing_bits(_py);
                 let _ = object_field_set_ptr_raw(_py, obj_ptr, offset, missing);
+                // Also remove from instance dict (dual storage).
+                let dict_bits = instance_dict_bits(obj_ptr);
+                if dict_bits != 0 {
+                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                        if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                            dict_del_in_place(_py, dict_ptr, attr_bits);
+                        }
+                    }
+                }
                 return MoltObject::none().bits() as i64;
             }
             let dict_bits = instance_dict_bits(obj_ptr);
@@ -4455,6 +4492,16 @@ pub(crate) unsafe fn object_delattr_raw(
             }
             let missing = missing_bits(_py);
             let _ = object_field_set_ptr_raw(_py, obj_ptr, offset, missing);
+            // Also remove from instance dict (dual storage: __init__
+            // stores in both field slot and instance dict for correctness).
+            let dict_bits = instance_dict_bits(obj_ptr);
+            if dict_bits != 0 {
+                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
+                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                        dict_del_in_place(_py, dict_ptr, attr_bits);
+                    }
+                }
+            }
             return MoltObject::none().bits() as i64;
         }
         let dict_bits = instance_dict_bits(obj_ptr);
