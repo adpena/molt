@@ -1548,7 +1548,7 @@ pub extern "C" fn molt_id(val: u64) -> u64 {
             } else {
                 // Pointer above i64::MAX — allocate BigInt.
                 let big = num_bigint::BigInt::from(addr as u64);
-                crate::object::builders::alloc_bigint(_py, &big)
+                crate::builtins::numbers::int_bits_from_bigint(_py, big)
             }
         } else {
             int_bits_from_i64(_py, val as i64)
