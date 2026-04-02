@@ -22,16 +22,36 @@ use super::values::ValueId;
 /// are propagated as initial seed types on the SSA values that correspond to
 /// ops carrying those hints. All other values start as `DynBox`.
 pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
-    // 1. Build CFG from the linear op stream.
-    let cfg = CFG::build(&ir.ops);
+    // 0. Rewrite loop_index_start/loop_index_next into store_var/load_var so
+    //    the SSA conversion creates proper phi nodes at loop headers.
+    let rewritten_ops = rewrite_loop_index_to_store_load(&ir.ops);
+    let ops = if rewritten_ops.is_empty() { &ir.ops[..] } else { &rewritten_ops[..] };
+
+    // Create a temporary FunctionIR view if we rewrote ops.
+    let tmp_ir;
+    let ir_ref = if rewritten_ops.is_empty() {
+        ir
+    } else {
+        tmp_ir = crate::ir::FunctionIR {
+            name: ir.name.clone(),
+            ops: rewritten_ops.clone(),
+            params: ir.params.clone(),
+            param_types: ir.param_types.clone(),
+            source_file: ir.source_file.clone(),
+        };
+        &tmp_ir
+    };
+
+    // 1. Build CFG from the (possibly rewritten) op stream.
+    let cfg = CFG::build(ops);
 
     // 2. Convert to SSA with block arguments (pass params for implicit entry defs).
     // No catch_unwind — panics propagate cleanly through rayon. Using
     // AssertUnwindSafe on borrowed state violates Rust's unwind safety contract.
-    let ssa = convert_to_ssa_with_params(&cfg, &ir.ops, &ir.params);
+    let ssa = convert_to_ssa_with_params(&cfg, ops, &ir.params);
 
     // 3. Assemble the TirFunction from the SSA output.
-    assemble_function(ir, &cfg, ssa)
+    assemble_function(ir_ref, &cfg, ssa)
 }
 
 
