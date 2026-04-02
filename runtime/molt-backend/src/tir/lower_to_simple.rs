@@ -91,6 +91,25 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     let block_label_id =
         |bid: &BlockId| -> i64 { label_id_for_block.get(bid).copied().unwrap_or(bid.0 as i64) };
 
+    // Build a mapping from ORIGINAL label IDs to NEW label IDs.
+    // check_exception, try_start, and try_end ops carry original label IDs
+    // in their value attrs.  After TIR roundtrip, blocks may have different
+    // label IDs (fresh IDs for blocks not in label_id_map, or blocks whose
+    // original label was reassigned).  This map translates original → new
+    // so the ops reference the correct post-roundtrip labels.
+    let original_to_new_label: HashMap<i64, i64> = {
+        let mut map = HashMap::new();
+        for (&bid_u32, &original_id) in &func.label_id_map {
+            let block_id = BlockId(bid_u32);
+            if let Some(&new_id) = label_id_for_block.get(&block_id) {
+                if original_id != new_id {
+                    map.insert(original_id, new_id);
+                }
+            }
+        }
+        map
+    };
+
     // Collect block argument info for all blocks so we can generate
     // `store_var` assignments at branch sites.
     // Map: (source_block, target_block) → Vec<(arg_value, param_var_name)>
@@ -145,6 +164,15 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             for op in &block.ops {
                 if let Some(mut opir) = lower_op(op) {
                     annotate_type_flags(&mut opir, op, types);
+                    // Remap label IDs in check_exception/try_start/try_end ops
+                    // to match post-roundtrip block label assignments.
+                    if matches!(opir.kind.as_str(), "check_exception" | "try_start" | "try_end") {
+                        if let Some(orig_id) = opir.value {
+                            if let Some(&new_id) = original_to_new_label.get(&orig_id) {
+                                opir.value = Some(new_id);
+                            }
+                        }
+                    }
                     out.push(opir);
                 }
             }
@@ -205,6 +233,56 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         if_inlined_blocks.insert(then_bid);
         if_inlined_blocks.insert(else_bid);
     }
+
+    // Safety: un-inline any block that is a check_exception target from
+    // ANY other block. Inlined blocks don't get their own labels, so
+    // check_exception references to them would dangle.
+    {
+        // Build reverse label map: label_id → BlockId
+        let reverse_label: HashMap<i64, BlockId> = func.label_id_map.iter()
+            .map(|(&bid, &label_id)| (label_id, BlockId(bid)))
+            .chain(func.blocks.keys().map(|bid| (block_label_id(bid), *bid)))
+            .collect();
+
+        let mut exception_targets: HashSet<BlockId> = HashSet::new();
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                if op.opcode == super::ops::OpCode::CheckException {
+                    if let Some(super::ops::AttrValue::Int(label)) = op.attrs.get("value") {
+                        if let Some(&target_bid) = reverse_label.get(label) {
+                            exception_targets.insert(target_bid);
+                        }
+                    }
+                }
+            }
+        }
+        // Also check try_start/try_end targets.
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                if matches!(op.opcode, super::ops::OpCode::TryStart | super::ops::OpCode::TryEnd) {
+                    if let Some(super::ops::AttrValue::Int(label)) = op.attrs.get("value") {
+                        if let Some(&target_bid) = reverse_label.get(label) {
+                            exception_targets.insert(target_bid);
+                        }
+                    }
+                }
+            }
+        }
+        // Remove exception targets from inlined sets and invalidate their if-patterns.
+        let mut patterns_to_remove = Vec::new();
+        for (cond_bid, pat) in &if_patterns {
+            if exception_targets.contains(&pat.then_bid) || exception_targets.contains(&pat.else_bid) {
+                patterns_to_remove.push(*cond_bid);
+            }
+        }
+        for bid in &patterns_to_remove {
+            if let Some(pat) = if_patterns.remove(bid) {
+                if_inlined_blocks.remove(&pat.then_bid);
+                if_inlined_blocks.remove(&pat.else_bid);
+            }
+        }
+    }
+
     // Track condition blocks: blocks that are the Branch target of a
     // LoopHeader. These need to emit loop_break_if_* from their CondBranch.
     let mut loop_cond_blocks: HashSet<BlockId> = HashSet::new();
@@ -382,6 +460,13 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             for op in &then_blk.ops {
                 if let Some(mut opir) = lower_op(op) {
                     annotate_type_flags(&mut opir, op, types);
+                    if matches!(opir.kind.as_str(), "check_exception" | "try_start" | "try_end") {
+                        if let Some(orig_id) = opir.value {
+                            if let Some(&new_id) = original_to_new_label.get(&orig_id) {
+                                opir.value = Some(new_id);
+                            }
+                        }
+                    }
                     out.push(opir);
                 }
             }
@@ -454,6 +539,13 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     }
 
     VALUE_NAME_OVERRIDES.with(|overrides| overrides.borrow_mut().clear());
+
+    // Pre-elimination validation: check if labels are valid before dead-label
+    // removal. If they're already invalid here, the bug is in block emission.
+    if !validate_labels(&out) {
+        eprintln!("MOLT_TIR: labels ALREADY invalid BEFORE dead-label elimination for '{}'",
+                  func.name);
+    }
 
     eliminate_dead_labels(&mut out);
 
