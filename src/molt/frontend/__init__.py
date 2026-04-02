@@ -2181,11 +2181,45 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         for i, line in enumerate(f, 1):
                             if i == lineno:
                                 self._deferred_runtime_warnings.append(
-                                    f"  {line.rstrip()}"
+                                    f"  {line.strip()}"
                                 )
                                 break
                 except (OSError, UnicodeDecodeError):
                     pass
+
+            # SyntaxWarning for return/break/continue in finally blocks
+            for node in ast.walk(module_node):
+                if not isinstance(node, ast.Try) or not node.finalbody:
+                    continue
+                for stmt in ast.walk(ast.Module(body=node.finalbody, type_ignores=[])):
+                    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        continue  # Don't recurse into nested scopes
+                    warn_msg = None
+                    if isinstance(stmt, ast.Return):
+                        warn_msg = "'return' in a 'finally' block"
+                    elif isinstance(stmt, ast.Break):
+                        warn_msg = "'break' in a 'finally' block"
+                    elif isinstance(stmt, ast.Continue):
+                        warn_msg = "'continue' in a 'finally' block"
+                    if warn_msg is not None:
+                        lineno = getattr(stmt, "lineno", 0)
+                        key = (source, lineno, warn_msg)
+                        if key in self._emitted_syntax_warnings:
+                            continue
+                        self._emitted_syntax_warnings.add(key)
+                        self._deferred_runtime_warnings.append(
+                            f"{source}:{lineno}: SyntaxWarning: {warn_msg}"
+                        )
+                        try:
+                            with open(source) as f:
+                                for i, line in enumerate(f, 1):
+                                    if i == lineno:
+                                        self._deferred_runtime_warnings.append(
+                                            f"  {line.strip()}"
+                                        )
+                                        break
+                        except (OSError, UnicodeDecodeError):
+                            pass
 
     def _emit_deferred_warnings(self) -> None:
         """Emit deferred runtime warnings as WARN_STDERR ops.
