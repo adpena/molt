@@ -2789,20 +2789,16 @@ impl SimpleBackend {
         }
 
         // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
-        // Runs the lower → refine → optimize → lower-back pipeline in parallel.
-        // Nested loop emission and structured if/else/end_if lowering validated
-        // against sieve, fib, and nested while+if patterns.
+        // The TIR roundtrip (lower->refine->optimize->lower-back) is enabled by
+        // default.  Functions that crash Cranelift compilation get a trap stub
+        // via the catch_unwind retry path in flush_deferred_defines.
+        //
+        // All TIR-lowered control flow uses pure label/jump/br_if patterns
+        // (no structured loop_start/loop_end).  The Cranelift function compiler
+        // handles back-edges via has_loop_or_backedge detection.
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
-        // The TIR roundtrip (lower→refine→optimize→lower-back) is enabled by
-        // default.  Functions that crash Cranelift compilation get a trap stub
-        // via the catch_unwind retry path in flush_deferred_defines.  Loops
-        // whose condition cannot be expressed as a structured
-        // loop_break_if_{true,false} are emitted as plain label/jump/br_if
-        // blocks (not loop_start/loop_end) to avoid orphaned Cranelift blocks.
-        // TIR default OFF: sieve SIGILL from TIR roundtrip. Set MOLT_TIR_OPT=1 to enable.
-        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
