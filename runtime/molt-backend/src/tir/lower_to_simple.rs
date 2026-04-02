@@ -141,6 +141,15 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     let mut if_patterns: HashMap<BlockId, IfPattern> = HashMap::new();
     let mut if_inlined_blocks: HashSet<BlockId> = HashSet::new();
 
+        let emit_block_ops = |block: &TirBlock, out: &mut Vec<OpIR>| {
+            for op in &block.ops {
+                if let Some(mut opir) = lower_op(op) {
+                    annotate_type_flags(&mut opir, op, types);
+                    out.push(opir);
+                }
+            }
+        };
+
     for bid in &rpo {
         let role = func.loop_roles.get(bid).cloned()
             .unwrap_or(super::blocks::LoopRole::None);
@@ -209,8 +218,85 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             None => continue,
         };
 
-        // Emit a label for every non-entry block (including loop headers).
-        if *bid != func.entry_block {
+        // ── LoopHeader: emit structured loop_start/loop_break/loop_end ──
+        if loop_role == super::blocks::LoopRole::LoopHeader {
+            let break_kind = func
+                .loop_break_kinds
+                .get(bid)
+                .copied()
+                .unwrap_or(LoopBreakKind::BreakIfTrue);
+
+            // Emit label for the header (for check_exception targets).
+            if *bid != func.entry_block {
+                out.push(OpIR {
+                    kind: "label".to_string(),
+                    value: Some(block_label_id(bid)),
+                    ..OpIR::default()
+                });
+            }
+
+            // Load block argument variables (loop-carried phi values).
+            if let Some(param_vars) = block_param_vars.get(bid) {
+                for (i, var_name) in param_vars.iter().enumerate() {
+                    if i < block.args.len() {
+                        out.push(OpIR {
+                            kind: "load_var".to_string(),
+                            var: Some(var_name.clone()),
+                            out: Some(value_var(block.args[i].id)),
+                            ..OpIR::default()
+                        });
+                    }
+                }
+            }
+
+            // Emit loop_start marker.
+            out.push(OpIR {
+                kind: "loop_start".to_string(),
+                ..OpIR::default()
+            });
+
+            // Emit the header block's ops (condition computation).
+            emit_block_ops(block, &mut out);
+
+            // Emit the loop break condition from the CondBranch terminator.
+            if let Terminator::CondBranch { cond, then_block, then_args, else_block, else_args, .. } = &block.terminator {
+                let (exit_block, exit_args, body_block, body_args) = match break_kind {
+                    LoopBreakKind::BreakIfTrue => (*then_block, then_args, *else_block, else_args),
+                    LoopBreakKind::BreakIfFalse => (*else_block, else_args, *then_block, then_args),
+                };
+
+                // Store exit args for the after-loop block.
+                emit_block_arg_stores(exit_block, exit_args, &block_param_vars, &mut out);
+
+                // Emit the break condition.
+                let break_op_kind = match break_kind {
+                    LoopBreakKind::BreakIfTrue => "loop_break_if_true",
+                    LoopBreakKind::BreakIfFalse => "loop_break_if_false",
+                };
+                let mut break_op = OpIR {
+                    kind: break_op_kind.to_string(),
+                    args: Some(vec![value_var(*cond)]),
+                    ..OpIR::default()
+                };
+                out.push(break_op);
+
+                // Store body args for the body block.
+                emit_block_arg_stores(body_block, body_args, &block_param_vars, &mut out);
+
+                // Emit loop body blocks (all blocks in the loop region).
+                // For now, emit them inline using the RPO order.
+                // Body blocks have their own labels/terminators.
+            } else if let Terminator::Branch { target, args } = &block.terminator {
+                // Unconditional branch — infinite loop or condition in a
+                // separate block. Emit body args and fall through.
+                emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
+            }
+
+            continue; // Skip the generic block emission below.
+        }
+
+        // Emit a label for every non-entry block.
+        if *bid != func.entry_block && loop_role != super::blocks::LoopRole::LoopHeader {
             out.push(OpIR {
                 kind: "label".to_string(),
                 value: Some(block_label_id(bid)),
@@ -233,14 +319,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         }
 
         // Helper: emit a block's ops with type annotation.
-        let emit_block_ops = |block: &TirBlock, out: &mut Vec<OpIR>| {
-            for op in &block.ops {
-                if let Some(mut opir) = lower_op(op) {
-                    annotate_type_flags(&mut opir, op, types);
-                    out.push(opir);
-                }
-            }
-        };
 
         if let Some(pattern) = if_patterns.get(bid) {
             // ── Structured if/else/end_if emission ──
@@ -997,14 +1075,26 @@ fn emit_terminator(
         }
 
         Terminator::Branch { target, args } => {
-            // If the block ends with a check_exception op, the native
-            // backend handles the fallthrough implicitly -- suppress the
-            // jump so the next block's ops follow sequentially.
             let last_op_is_check_exception = block.ops.last()
                 .map(|op| op.opcode == OpCode::CheckException)
                 .unwrap_or(false);
             emit_block_arg_stores(*target, args, block_param_vars, out);
-            if !last_op_is_check_exception {
+            // Back-edge to a LoopHeader: emit loop_continue + loop_end
+            // instead of a plain jump, preserving structured loop info.
+            let target_is_loop_header = _loop_roles
+                .get(target)
+                .map(|r| *r == super::blocks::LoopRole::LoopHeader)
+                .unwrap_or(false);
+            if target_is_loop_header {
+                out.push(OpIR {
+                    kind: "loop_continue".to_string(),
+                    ..OpIR::default()
+                });
+                out.push(OpIR {
+                    kind: "loop_end".to_string(),
+                    ..OpIR::default()
+                });
+            } else if !last_op_is_check_exception {
                 out.push(OpIR {
                     kind: "jump".to_string(),
                     value: Some(block_label_id(target)),
