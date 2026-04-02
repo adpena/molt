@@ -1280,7 +1280,7 @@ fn emit_maybe_ref_adjust(builder: &mut FunctionBuilder, val: Value, obj_ref_fn: 
 /// AtomicU32 refcount field.
 #[cfg(feature = "native-backend")]
 fn inline_rc_enabled() -> bool {
-    false  // DISABLED FOR DEBUGGING
+    true
 }
 
 /// Emit an inlined `inc_ref_obj` as Cranelift IR instead of a function call.
@@ -2989,16 +2989,10 @@ impl SimpleBackend {
                         // rewrite in lower_from_simple) now handles cell-based
                         // Memory SSA rewrites cell locals to store_var/load_var,
                         // so cell-loop functions now go through TIR correctly.
-                        let has_cell_loop = {
-                            let has_loop = tmp_func.ops.iter().any(|op| op.kind == "loop_start");
-                            let has_cell_store = tmp_func.ops.iter().any(|op| op.kind == "store_index");
-                            has_loop && has_cell_store
-                        };
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
                             || (has_exception_handling && force_eh_bypass)
-                            || has_cell_loop
                         {
                             return (idx, content_hash, Vec::new());
                         }
