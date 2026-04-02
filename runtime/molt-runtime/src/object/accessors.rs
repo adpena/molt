@@ -340,11 +340,9 @@ pub unsafe extern "C" fn molt_guarded_field_set_ptr(
         crate::with_gil_entry!(_py, {
             let offset = usize_from_bits(offset_bits);
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
-                let result = object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
-                // Mirror to instance dict for __dict__ parity.
-                let attr_name_len = crate::usize_from_bits(attr_name_len_bits);
-                mirror_field_to_instance_dict(_py, obj_ptr, attr_name_ptr, attr_name_len, val_bits);
-                return result;
+                // Write to field slot only. __dict__ is synthesized lazily
+                // when accessed (merges field slots into instance_dict).
+                return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
             }
             crate::molt_set_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits, val_bits) as u64
         })

@@ -2675,7 +2675,55 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         instance_set_dict_bits(_py, obj_ptr, dict_bits);
                     }
                 }
-
+                // Lazy merge: populate __dict__ from inline field slots.
+                // Field-offset attrs may not be in instance_dict if stored
+                // via guarded_field_set. Merge them here on access.
+                if dict_bits != 0
+                    && class_bits != 0
+                    && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                    && object_type_id(class_ptr) == TYPE_ID_TYPE
+                {
+                    let fields_key = intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.field_offsets_name,
+                        b"__molt_field_offsets__",
+                    );
+                    let cls_dict_bits = class_dict_bits(class_ptr);
+                    if let Some(cls_dict_ptr) = obj_from_bits(cls_dict_bits).as_ptr()
+                        && object_type_id(cls_dict_ptr) == TYPE_ID_DICT
+                        && let Some(offsets_bits) = dict_get_in_place(_py, cls_dict_ptr, fields_key)
+                        && let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr()
+                        && object_type_id(offsets_ptr) == TYPE_ID_DICT
+                    {
+                        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                            && object_type_id(dict_ptr) == TYPE_ID_DICT
+                        {
+                            use crate::builtins::containers::dict_order;
+                            let pairs = dict_order(offsets_ptr).clone();
+                            let mut i = 0;
+                            while i + 1 < pairs.len() {
+                                let key_bits = pairs[i];
+                                let offset_bits = pairs[i + 1];
+                                if let Some(offset) = obj_from_bits(offset_bits).as_int()
+                                    && offset >= 0
+                                {
+                                    let val = object_field_get_ptr_raw(_py, obj_ptr, offset as usize);
+                                    if val != 0
+                                        && !obj_from_bits(val).is_none()
+                                        && !is_missing_bits(_py, val)
+                                    {
+                                        // Only set if not already present (instance_dict
+                                        // wins over field slot for __setattr__ compat).
+                                        if dict_get_in_place(_py, dict_ptr, key_bits).is_none() {
+                                            dict_set_in_place(_py, dict_ptr, key_bits, val);
+                                        }
+                                    }
+                                }
+                                i += 2;
+                            }
+                        }
+                    }
+                }
                 if dict_bits != 0 {
                     inc_ref_bits(_py, dict_bits);
                     return Some(dict_bits);
@@ -3585,10 +3633,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     }
                     if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
                         object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
-                        // Mirror to instance dict for __dict__ parity.
-                        crate::object::accessors::mirror_field_to_instance_dict(
-                            _py, obj_ptr, slice.as_ptr(), slice.len(), val_bits,
-                        );
+                        // __dict__ is synthesized lazily when accessed.
                         dec_ref_bits(_py, attr_bits);
                         return MoltObject::none().bits() as i64;
                     }

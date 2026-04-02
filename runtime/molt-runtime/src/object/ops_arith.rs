@@ -3319,10 +3319,11 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
 pub extern "C" fn molt_invert(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(val);
-        // TODO: Python 3.12+ emits DeprecationWarning for ~bool with
-        // file/line context.  Requires wiring source location into the
-        // runtime warning system (the traceback pipeline now carries
-        // col_offset but the warnings module doesn't have access yet).
+        // Python 3.12+ DeprecationWarning for ~bool is emitted at
+        // compile time by _prescan_compile_warnings for constant bools
+        // (~True, ~False). Variable-typed ~x requires runtime bool
+        // detection which needs the warning module wired to the traceback
+        // pipeline — tracked as a future enhancement.
         if let Some(i) = to_i64(obj) {
             let res = -(i as i128) - 1;
             return int_bits_from_i128(_py, res);

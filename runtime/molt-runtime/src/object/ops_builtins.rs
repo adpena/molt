@@ -714,7 +714,7 @@ pub extern "C" fn molt_call_func_dispatch(
         if eff_nargs < func_arity {
             let missing = func_arity - eff_nargs;
             let mut padded_buf = [0u64; 18];
-            if missing <= 2 {
+            if missing <= 4 {
                 let default_kind = molt_function_default_kind(effective_func);
                 padded_buf[..eff_nargs].copy_from_slice(effective_args);
                 let mut padded_len = eff_nargs;
