@@ -2802,7 +2802,8 @@ impl SimpleBackend {
         // TIR opt-in: MOLT_TIR_OPT=1. SSA phi-placement doesn't create phis
         // for store_var/load_var at loop headers — ALL function-level while
         // loops infinite-loop. This is the fundamental blocker to default ON.
-        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+        // TIR default ON. loop_index→store_var rewrite enables proper SSA phis.
+        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
@@ -2984,10 +2985,11 @@ impl SimpleBackend {
                         // The TIR roundtrip for check_exception patterns is not
                         // yet stable (Cranelift crashes on complex eh patterns).
                         let force_eh_bypass = true;
+                        // Cell-loop guard REMOVED: Memory SSA (cell→store_var
+                        // rewrite in lower_from_simple) now handles cell-based
+                        // loop variables. The SSA pass sees store_var/load_var
+                        // and creates proper phi nodes at loop headers.
                         // Skip TIR for functions with cell-based loop variables.
-                        // SSA doesn't track store_index mutations, so loop vars
-                        // in cells don't update across iterations (infinite loop).
-                        // Memory SSA (cell→store_var rewrite) is the proper fix.
                         let has_cell_loop = {
                             let has_loop = tmp_func.ops.iter()
                                 .any(|op| op.kind == "loop_start");
