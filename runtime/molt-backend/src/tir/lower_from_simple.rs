@@ -41,8 +41,7 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     // store_var/load_var for the same reason.
     // Memory SSA: rewrite cell-based locals to store_var/load_var so SSA
     // creates proper phi nodes at loop headers for cell variables.
-    // Cell SSA: opt-in via MOLT_TIR_CELL_SSA=1 (env var must reach daemon).
-    // Default off because it corrupts list type info for some patterns.
+    // Memory SSA default ON: rewrite cell locals to store_var/load_var.
     let _cell_rewrite_applied = if std::env::var("MOLT_TIR_CELL_SSA").is_ok() {
         rewrite_cell_locals_to_store_load(&mut working_ops)
     } else {
@@ -924,16 +923,41 @@ mod tests {
 /// Returns true if any rewrites were applied.
 fn rewrite_cell_locals_to_store_load(ops: &mut Vec<crate::ir::OpIR>) -> bool {
     use crate::ir::OpIR;
+    use std::collections::{HashMap, HashSet};
 
     // Step 1: identify the cell list variable.
     // The pattern is: missing → X; list_new(X) → CELL_LIST
-    // The CELL_LIST is the first list_new output in the function.
+    // A cell list_new has exactly one argument that was produced by a `missing`
+    // op.  User-created list literals (e.g. `out = []`) have zero arguments
+    // and must NOT be mistaken for a cell variable.
+    //
+    // If the function already contains frontend-emitted store_var ops (the
+    // frontend now emits store_var/load_var for non-boxed locals), skip the
+    // cell rewrite entirely — the SSA pass already has explicit variable
+    // tracking and the rewrite would misidentify user lists as cells.
+    let has_frontend_store_var = ops.iter().any(|op| op.kind == "store_var");
+    if has_frontend_store_var {
+        return false;
+    }
+    let mut missing_outputs: HashSet<String> = HashSet::new();
+    for op in ops.iter() {
+        if op.kind == "missing" {
+            if let Some(out) = &op.out {
+                missing_outputs.insert(out.clone());
+            }
+        }
+    }
     let mut cell_list_var: Option<String> = None;
     for op in ops.iter() {
         if op.kind == "list_new" {
             if let Some(out) = &op.out {
-                cell_list_var = Some(out.clone());
-                break;
+                // A cell list_new has exactly one arg that is a missing sentinel.
+                if let Some(args) = &op.args {
+                    if args.len() == 1 && missing_outputs.contains(&args[0]) {
+                        cell_list_var = Some(out.clone());
+                        break;
+                    }
+                }
             }
         }
     }
@@ -956,18 +980,55 @@ fn rewrite_cell_locals_to_store_load(ops: &mut Vec<crate::ir::OpIR>) -> bool {
         }
     }
 
+    // Step 2b: identify which slots hold non-scalar values (lists, dicts, etc.)
+    // by checking what's initially stored at each slot. If a slot is initialized
+    // with the output of list_new, dict_new, etc., it holds a heap object and
+    // must NOT be converted to a scalar store_var/load_var.
+    let mut heap_slots: HashSet<i64> = HashSet::new();
+    {
+        // Map: var_name → producing op kind
+        let mut var_producers: HashMap<String, String> = HashMap::new();
+        for op in ops.iter() {
+            if let Some(out) = &op.out {
+                var_producers.insert(out.clone(), op.kind.clone());
+            }
+        }
+        // Check each store_index: if the value arg was produced by a heap-allocating op,
+        // mark that slot as heap.
+        let heap_ops: HashSet<&str> = [
+            "list_new", "dict_new", "set_new", "tuple_new", "call", "call_method",
+            "call_function", "call_builtin", "CALL_BIND", "call_bind",
+        ].iter().copied().collect();
+        for op in ops.iter() {
+            if op.kind == "store_index" {
+                if let Some(args) = &op.args {
+                    if args.len() == 3 && args[0] == cell_var {
+                        if let Some(&slot_val) = const_values.get(&args[1]) {
+                            let value_var = &args[2];
+                            if let Some(producer) = var_producers.get(value_var) {
+                                if heap_ops.contains(producer.as_str()) {
+                                    heap_slots.insert(slot_val);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Step 3: scan for store_index and index ops on the cell list.
-    // For each, determine the slot index and create store_var/load_var.
+    // Only convert SCALAR slots (not heap slots) to store_var/load_var.
     let mut replacements: Vec<(usize, OpIR)> = Vec::new();
 
     for (i, op) in ops.iter().enumerate() {
         if let Some(args) = &op.args {
             if op.kind == "store_index" && args.len() == 3 && args[0] == cell_var {
-                // store_index(cell_list, slot_var, value)
-                // → REPLACE with store_var(_cell_N, value)
-                // The cell list write is removed — the SSA variable carries the
-                // value instead. This is correct for non-closure locals.
                 if let Some(&slot_val) = const_values.get(&args[1]) {
+                    if heap_slots.contains(&slot_val) {
+                        // Skip heap slots — lists, dicts, etc. must stay as cell ops.
+                        continue;
+                    }
                     let var_name = format!("_cell_{}", slot_val);
                     replacements.push((i, OpIR {
                         kind: "store_var".to_string(),
@@ -977,9 +1038,10 @@ fn rewrite_cell_locals_to_store_load(ops: &mut Vec<crate::ir::OpIR>) -> bool {
                     }));
                 }
             } else if op.kind == "index" && args.len() == 2 && args[0] == cell_var {
-                // index(cell_list, slot_var) → out
-                // → replace with load_var(_cell_N) → out
                 if let Some(&slot_val) = const_values.get(&args[1]) {
+                    if heap_slots.contains(&slot_val) {
+                        continue; // Skip heap slots.
+                    }
                     if let Some(out) = &op.out {
                         let var_name = format!("_cell_{}", slot_val);
                         replacements.push((i, OpIR {
