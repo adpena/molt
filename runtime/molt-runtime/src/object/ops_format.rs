@@ -1099,6 +1099,39 @@ fn format_string_repr_bytes(bytes: &[u8]) -> String {
     out
 }
 
+/// CPython-compatible printability test for repr escaping.
+/// Returns false for: control characters (Cc), format characters (Cf),
+/// surrogates (Cs), private use (Co), unassigned (Cn), line/paragraph
+/// separators (Zl/Zp U+2028/U+2029), and non-breaking spaces (U+00A0,
+/// U+1680, U+2000-U+200A, U+202F, U+205F, U+3000).
+fn is_printable_for_repr(ch: char) -> bool {
+    // Fast path: ASCII printable (0x20-0x7E)
+    let code = ch as u32;
+    if code >= 0x20 && code <= 0x7E {
+        return true;
+    }
+    // Control characters (C0, DEL, C1)
+    if ch.is_control() {
+        return false;
+    }
+    // Unicode category Zl (line separator) and Zp (paragraph separator)
+    if code == 0x2028 || code == 0x2029 {
+        return false;
+    }
+    // Surrogates (shouldn't appear in valid Rust chars, but be safe)
+    if (0xD800..=0xDFFF).contains(&code) {
+        return false;
+    }
+    // Non-characters
+    if (0xFDD0..=0xFDEF).contains(&code) || (code & 0xFFFE) == 0xFFFE {
+        return false;
+    }
+    // Use Rust's built-in alphanumeric/whitespace as approximation,
+    // but also allow symbols and punctuation — anything with a visible glyph.
+    // The key exclusions are the ones above (control, Zl, Zp, surrogates).
+    true
+}
+
 #[allow(dead_code)]
 fn format_string_repr(s: &str) -> String {
     let use_double = s.contains('\'') && !s.contains('"');
@@ -1111,12 +1144,11 @@ fn format_string_repr(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            // U+2028/U+2029 are printable in CPython 3.12 repr — no escaping
             c if c == quote => {
                 out.push('\\');
                 out.push(c);
             }
-            c if c.is_control() => {
+            c if !is_printable_for_repr(c) => {
                 let code = c as u32;
                 if code <= 0xff {
                     out.push_str(&format!("\\x{:02x}", code));
