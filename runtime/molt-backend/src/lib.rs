@@ -2790,10 +2790,11 @@ impl SimpleBackend {
         // handles back-edges via has_loop_or_backedge detection.
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        // TIR default ON: loop roundtrip preserves structured markers.
-        // loop info that the native backend needs for raw_int_shadow and type
-        // Disable with MOLT_TIR_OPT=0. Type specialization passes active.
-        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+        // TIR optimization pipeline. Opt-in: set MOLT_TIR_OPT=1 to enable.
+        // Default OFF because TIR roundtrip produces SIGILL for some functions
+        // (sieve nested while+if+while pattern). Re-enable when the structured
+        // loop emission handles all control flow patterns correctly.
+        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
@@ -2923,7 +2924,8 @@ impl SimpleBackend {
                     .collect();
 
                 // Each element: (func_index, content_hash, optimized_ops)
-                // Use a custom thread pool with 16MB stacks for TIR.
+                // Use a custom thread pool with 64MB stacks for TIR.
+                // lower_to_simple_ir has deeply nested closures + large HashMaps.
                 // lower_to_simple_ir has deeply nested closures capturing
                 // many HashMaps, which exceeds rayon's default 8MB stacks.
                 let tir_pool = rayon::ThreadPoolBuilder::new()
