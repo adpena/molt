@@ -27,16 +27,9 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     let cfg = CFG::build(&ir.ops);
 
     // 2. Convert to SSA with block arguments (pass params for implicit entry defs).
-    let ssa = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        convert_to_ssa_with_params(&cfg, &ir.ops, &ir.params)
-    }))
-    .unwrap_or_else(|payload| {
-        panic!(
-            "SSA conversion failed for '{}': {}",
-            ir.name,
-            panic_payload_message(payload.as_ref())
-        )
-    });
+    // No catch_unwind — panics propagate cleanly through rayon. Using
+    // AssertUnwindSafe on borrowed state violates Rust's unwind safety contract.
+    let ssa = convert_to_ssa_with_params(&cfg, &ir.ops, &ir.params);
 
     // 3. Assemble the TirFunction from the SSA output.
     assemble_function(ir, &cfg, ssa)
