@@ -539,6 +539,30 @@ def _run_wrapper_build(
     command: str,
     verbose: bool,
 ) -> tuple[_WrapperBuildContract | None, float, int | None]:
+    # Fast-path: if the cached binary exists and is newer than the source,
+    # skip the build subprocess entirely. This brings `molt run` for
+    # unchanged files from ~20s to <1s (matching `go run` behaviour).
+    if file_path and "--no-cache" not in build_args and "--rebuild" not in build_args:
+        _xdg = os.environ.get("XDG_CACHE_HOME")
+        _cache_root = Path(_xdg) / "molt" if _xdg else Path.home() / "Library" / "Caches" / "molt"
+        if _cache_root is not None:
+            stem = Path(file_path).stem
+            cached_bin = _cache_root / "home" / "bin" / f"{stem}_molt"
+            if cached_bin.exists():
+                try:
+                    src_mtime = Path(file_path).stat().st_mtime
+                    bin_mtime = cached_bin.stat().st_mtime
+                    if bin_mtime > src_mtime:
+                        contract = _WrapperBuildContract(
+                            output=cached_bin,
+                            consumer_output=cached_bin,
+                            bundle_root=None,
+                            artifacts={},
+                        )
+                        return contract, 0.0, None
+                except OSError:
+                    pass
+
     build_cmd = [sys.executable, "-m", "molt.cli", "build"]
     if not _build_args_has_json_flag(build_args):
         build_cmd.append("--json")
