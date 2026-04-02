@@ -611,11 +611,12 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_contains),
             2,
         )),
-        "count" => Some(builtin_func_bits(
+        "count" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.bytes_count,
             fn_addr!(molt_bytes_count_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
         "find" => Some(builtin_func_bits_with_default(
             _py,
@@ -1051,40 +1052,45 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             fn_addr!(molt_bytearray_clear),
             1,
         )),
-        "count" => Some(builtin_func_bits(
+        "count" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.bytearray_count,
             fn_addr!(molt_bytearray_count_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
-        "find" => Some(builtin_func_bits(
+        "find" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.bytearray_find,
             fn_addr!(molt_bytearray_find_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
         "index" => {
             static BYTEARRAY_INDEX: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits(
+            Some(builtin_func_bits_with_default(
                 _py,
                 &BYTEARRAY_INDEX,
                 fn_addr!(molt_bytearray_index_slice),
                 6,
+                FUNC_DEFAULT_SLICE_ARGS,
             ))
         }
-        "rfind" => Some(builtin_func_bits(
+        "rfind" => Some(builtin_func_bits_with_default(
             _py,
             &runtime_state(_py).method_cache.bytearray_rfind,
             fn_addr!(molt_bytearray_rfind_slice),
             6,
+            FUNC_DEFAULT_SLICE_ARGS,
         )),
         "rindex" => {
             static BYTEARRAY_RINDEX: AtomicU64 = AtomicU64::new(0);
-            Some(builtin_func_bits(
+            Some(builtin_func_bits_with_default(
                 _py,
                 &BYTEARRAY_RINDEX,
                 fn_addr!(molt_bytearray_rindex_slice),
                 6,
+                FUNC_DEFAULT_SLICE_ARGS,
             ))
         }
         "split" => Some(builtin_func_bits(

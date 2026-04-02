@@ -3319,11 +3319,21 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
 pub extern "C" fn molt_invert(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(val);
-        // Python 3.12+ DeprecationWarning for ~bool is emitted at
-        // compile time by _prescan_compile_warnings for constant bools
-        // (~True, ~False). Variable-typed ~x requires runtime bool
-        // detection which needs the warning module wired to the traceback
-        // pipeline — tracked as a future enhancement.
+        // Python 3.12+ DeprecationWarning for ~bool.
+        // Constant bools (~True/~False) are handled at compile time by
+        // _prescan_compile_warnings. Variable-typed ~x is caught here
+        // at runtime.
+        if obj.is_bool() {
+            let msg = concat!(
+                "Bitwise inversion '~' on bool is deprecated and will be ",
+                "removed in Python 3.16. This returns the bitwise inversion ",
+                "of the underlying int object and is usually not what you ",
+                "expect from negating a bool. Use the 'not' operator for ",
+                "boolean negation or ~int(x) if you really want the bitwise ",
+                "inversion of the underlying int."
+            );
+            crate::builtins::warnings_ext::emit_deprecation_warning(_py, msg);
+        }
         if let Some(i) = to_i64(obj) {
             let res = -(i as i128) - 1;
             return int_bits_from_i128(_py, res);
