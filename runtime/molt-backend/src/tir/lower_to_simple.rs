@@ -154,6 +154,15 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         let role = func.loop_roles.get(bid).cloned()
             .unwrap_or(super::blocks::LoopRole::None);
         if role != super::blocks::LoopRole::None { continue; }
+        // Skip blocks that are loop condition blocks (Branch target of
+        // a LoopHeader) — they need emit_terminator for loop_break_if_*.
+        let is_loop_cond = func.loop_roles.iter().any(|(hdr_bid, hdr_role)| {
+            *hdr_role == super::blocks::LoopRole::LoopHeader
+                && func.blocks.get(hdr_bid)
+                    .map(|hb| matches!(&hb.terminator, Terminator::Branch { target, .. } if *target == *bid))
+                    .unwrap_or(false)
+        });
+        if is_loop_cond { continue; }
         let Some(block) = func.blocks.get(bid) else { continue };
         let Terminator::CondBranch { then_block, else_block, .. } = &block.terminator else { continue };
         let (then_bid, else_bid) = (*then_block, *else_block);
@@ -196,6 +205,25 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         if_inlined_blocks.insert(then_bid);
         if_inlined_blocks.insert(else_bid);
     }
+    // Track condition blocks: blocks that are the Branch target of a
+    // LoopHeader. These need to emit loop_break_if_* from their CondBranch.
+    let mut loop_cond_blocks: HashSet<BlockId> = HashSet::new();
+    let mut cond_to_header: HashMap<BlockId, BlockId> = HashMap::new();
+    for (hdr_bid, _) in &func.loop_roles {
+        if func.loop_roles.get(hdr_bid) == Some(&super::blocks::LoopRole::LoopHeader) {
+            if let Some(hdr_block) = func.blocks.get(hdr_bid) {
+                if let Terminator::Branch { target, .. } = &hdr_block.terminator {
+                    if let Some(cb) = func.blocks.get(target) {
+                        if matches!(&cb.terminator, Terminator::CondBranch { .. }) {
+                            loop_cond_blocks.insert(*target);
+                            cond_to_header.insert(*target, *hdr_bid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Compute loop body blocks: these must not be skipped by the
     // if_inlined_blocks check, as they need to be emitted inside loops.
     let mut loop_body_blocks: HashSet<BlockId> = HashSet::new();
@@ -253,45 +281,22 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             // Emit header ops.
             emit_block_ops(block, &mut out);
 
-            // Emit loop_break from the terminator.
-            // The header may have a direct CondBranch or Branch→CondBranch.
-            let cond_term = match &block.terminator {
-                t @ Terminator::CondBranch { .. } => Some((t, block)),
-                Terminator::Branch { target, .. } => {
-                    func.blocks.get(target).and_then(|cb| {
-                        if matches!(&cb.terminator, Terminator::CondBranch { .. }) {
-                            // Emit the cond block's ops inline.
-                            if let Some(pvars) = block_param_vars.get(target) {
-                                for (i, vn) in pvars.iter().enumerate() {
-                                    if i < cb.args.len() {
-                                        out.push(OpIR { kind: "load_var".to_string(), var: Some(vn.clone()), out: Some(value_var(cb.args[i].id)), ..OpIR::default() });
-                                    }
-                                }
-                            }
-                            emit_block_ops(cb, &mut out);
-                            if_inlined_blocks.insert(*target);
-                            Some((&cb.terminator, cb))
-                        } else { None }
-                    })
-                }
-                _ => None,
-            };
-
-            if let Some((Terminator::CondBranch { cond, then_block, then_args, else_block, else_args, .. }, _)) = cond_term {
-                let (exit_bid, exit_args, body_bid, body_args) = match break_kind {
-                    LoopBreakKind::BreakIfTrue => (*then_block, then_args, *else_block, else_args),
-                    LoopBreakKind::BreakIfFalse => (*else_block, else_args, *then_block, then_args),
-                };
-                emit_block_arg_stores(exit_bid, exit_args, &block_param_vars, &mut out);
-                let bk = match break_kind {
-                    LoopBreakKind::BreakIfTrue => "loop_break_if_true",
-                    LoopBreakKind::BreakIfFalse => "loop_break_if_false",
-                };
-                out.push(OpIR { kind: bk.to_string(), args: Some(vec![value_var(*cond)]), ..OpIR::default() });
-                emit_block_arg_stores(body_bid, body_args, &block_param_vars, &mut out);
-            } else if let Terminator::Branch { target, args } = &block.terminator {
-                emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
-            }
+            // Emit the header's terminator normally — the condition
+            // check (CondBranch → loop_break_if_*) is handled by
+            // emit_terminator, which detects LoopHeader role.
+            let ohr = func.attrs.get("_original_has_ret")
+                .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
+                .unwrap_or(false);
+            emit_terminator(
+                block,
+                &block_param_vars,
+                &block_label_id,
+                &func.loop_roles,
+                &mut out,
+                ohr,
+                loop_role,
+                &func.loop_break_kinds,
+            );
             // Body blocks are emitted by the main RPO loop.
             // Back-edges handled in emit_terminator.
             continue;
@@ -418,6 +423,23 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             let original_has_ret = func.attrs.get("_original_has_ret")
                 .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
                 .unwrap_or(false);
+            // Condition blocks (Branch target of LoopHeader) need to
+            // emit loop_break_if_* from their CondBranch.
+            let effective_role = if loop_cond_blocks.contains(bid) {
+                super::blocks::LoopRole::LoopHeader
+            } else {
+                loop_role
+            };
+            // For condition blocks, map the break kind from the header.
+            let effective_break_kinds = if let Some(header_bid) = cond_to_header.get(bid) {
+                let mut bk = func.loop_break_kinds.clone();
+                if let Some(kind) = func.loop_break_kinds.get(header_bid) {
+                    bk.insert(*bid, *kind);
+                }
+                bk
+            } else {
+                func.loop_break_kinds.clone()
+            };
             emit_terminator(
                 block,
                 &block_param_vars,
@@ -425,8 +447,8 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 &func.loop_roles,
                 &mut out,
                 original_has_ret,
-                loop_role,
-                &func.loop_break_kinds,
+                effective_role,
+                &effective_break_kinds,
             );
         }
     }
@@ -1116,8 +1138,23 @@ fn emit_terminator(
             else_block,
             else_args,
         } => {
-            {
-                // Conditional branch: emit br_if to then_block, jump to else_block.
+            if _loop_role == super::blocks::LoopRole::LoopHeader {
+                // Loop condition: emit loop_break_if_* instead of br_if/jump.
+                let break_kind = _loop_break_kinds.get(&block.id)
+                    .copied()
+                    .unwrap_or(LoopBreakKind::BreakIfTrue);
+                let (exit_bid, exit_args, body_bid, body_args) = match break_kind {
+                    LoopBreakKind::BreakIfTrue => (*then_block, then_args.as_slice(), *else_block, else_args.as_slice()),
+                    LoopBreakKind::BreakIfFalse => (*else_block, else_args.as_slice(), *then_block, then_args.as_slice()),
+                };
+                emit_block_arg_stores(exit_bid, exit_args, block_param_vars, out);
+                let bk = match break_kind {
+                    LoopBreakKind::BreakIfTrue => "loop_break_if_true",
+                    LoopBreakKind::BreakIfFalse => "loop_break_if_false",
+                };
+                out.push(OpIR { kind: bk.to_string(), args: Some(vec![value_var(*cond)]), ..OpIR::default() });
+                emit_block_arg_stores(body_bid, body_args, block_param_vars, out);
+            } else {
                 emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
                 out.push(OpIR {
                     kind: "br_if".to_string(),
