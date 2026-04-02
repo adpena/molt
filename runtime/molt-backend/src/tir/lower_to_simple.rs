@@ -142,146 +142,37 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     // Cranelift function compiler (back-edges are detected by
     // `has_loop_or_backedge`), so all loops from TIR are emitted as
     // unstructured label/jump/br_if blocks.
-    // ── Structured if/else/end_if detection ──
-    // Detect simple CondBranch patterns where both successors:
-    //   (a) have no check_exception ops (which require label blocks for implicit edges)
-    //   (b) have simple terminators (Branch to same join block, or Return/Unreachable)
-    //   (c) are not claimed by another pattern
-    //   (d) neither successor is a loop header (loop body blocks need
-    //       their own labels for back-edge resolution)
-    //
-    // These patterns are emitted as if/else/end_if + phi ops, producing
-    // cleaner CLIF without extra unsealed label blocks.
+    // ── Structured if/else/end_if: DISABLED ──
+    // Like loops, the if/else/end_if inlining is unsound after TIR
+    // roundtrip. Inlined blocks lose their labels, but other blocks may
+    // still jump to them (e.g. the final exit/merge block of a long
+    // if/elif chain). Pure label/jump/br_if control flow is handled
+    // correctly by the Cranelift function compiler.
     struct IfPattern {
         then_bid: BlockId,
         else_bid: BlockId,
         join_bid: Option<BlockId>,
     }
-    let mut if_patterns: HashMap<BlockId, IfPattern> = HashMap::new();
-    let mut if_inlined_blocks: HashSet<BlockId> = HashSet::new();
+    let if_patterns: HashMap<BlockId, IfPattern> = HashMap::new();
+    let if_inlined_blocks: HashSet<BlockId> = HashSet::new();
 
-        let emit_block_ops = |block: &TirBlock, out: &mut Vec<OpIR>| {
-            for op in &block.ops {
-                if let Some(mut opir) = lower_op(op) {
-                    annotate_type_flags(&mut opir, op, types);
-                    // Remap label IDs in check_exception/try_start/try_end ops
-                    // to match post-roundtrip block label assignments.
-                    if matches!(opir.kind.as_str(), "check_exception" | "try_start" | "try_end") {
-                        if let Some(orig_id) = opir.value {
-                            if let Some(&new_id) = original_to_new_label.get(&orig_id) {
-                                opir.value = Some(new_id);
-                            }
-                        }
-                    }
-                    out.push(opir);
-                }
-            }
-        };
-
-    for bid in &rpo {
-        let role = func.loop_roles.get(bid).cloned()
-            .unwrap_or(super::blocks::LoopRole::None);
-        if role != super::blocks::LoopRole::None { continue; }
-        // Skip blocks that are loop condition blocks (Branch target of
-        // a LoopHeader) — they need emit_terminator for loop_break_if_*.
-        let is_loop_cond = func.loop_roles.iter().any(|(hdr_bid, hdr_role)| {
-            *hdr_role == super::blocks::LoopRole::LoopHeader
-                && func.blocks.get(hdr_bid)
-                    .map(|hb| matches!(&hb.terminator, Terminator::Branch { target, .. } if *target == *bid))
-                    .unwrap_or(false)
-        });
-        if is_loop_cond { continue; }
-        let Some(block) = func.blocks.get(bid) else { continue };
-        let Terminator::CondBranch { then_block, else_block, .. } = &block.terminator else { continue };
-        let (then_bid, else_bid) = (*then_block, *else_block);
-        if then_bid == else_bid { continue; }
-        // Successor blocks that are loop headers must not be inlined.
-        let then_role = func.loop_roles.get(&then_bid).cloned()
-            .unwrap_or(super::blocks::LoopRole::None);
-        let else_role = func.loop_roles.get(&else_bid).cloned()
-            .unwrap_or(super::blocks::LoopRole::None);
-        if then_role != super::blocks::LoopRole::None
-            || else_role != super::blocks::LoopRole::None
-        {
-            continue;
-        }
-        let Some(then_blk) = func.blocks.get(&then_bid) else { continue };
-        let Some(else_blk) = func.blocks.get(&else_bid) else { continue };
-        if if_inlined_blocks.contains(&then_bid) || if_inlined_blocks.contains(&else_bid) { continue; }
-        // No check_exception in successors — those need labels for implicit edges.
-        if then_blk.ops.iter().any(|op| op.opcode == OpCode::CheckException) { continue; }
-        if else_blk.ops.iter().any(|op| op.opcode == OpCode::CheckException) { continue; }
-        // Simple terminators only.
-        let then_target = match &then_blk.terminator {
-            Terminator::Branch { target, .. } => Some(*target),
-            Terminator::Return { .. } | Terminator::Unreachable => None,
-            _ => { continue; }
-        };
-        let else_target = match &else_blk.terminator {
-            Terminator::Branch { target, .. } => Some(*target),
-            Terminator::Return { .. } | Terminator::Unreachable => None,
-            _ => { continue; }
-        };
-        let join_bid = match (then_target, else_target) {
-            (Some(t), Some(e)) if t == e => Some(t),
-            (Some(t), None) => Some(t),
-            (None, Some(e)) => Some(e),
-            (None, None) => None,
-            _ => { continue; }
-        };
-        if_patterns.insert(*bid, IfPattern { then_bid, else_bid, join_bid });
-        if_inlined_blocks.insert(then_bid);
-        if_inlined_blocks.insert(else_bid);
-    }
-
-    // Safety: un-inline any block that is a check_exception target from
-    // ANY other block. Inlined blocks don't get their own labels, so
-    // check_exception references to them would dangle.
-    {
-        // Build reverse label map: label_id → BlockId
-        let reverse_label: HashMap<i64, BlockId> = func.label_id_map.iter()
-            .map(|(&bid, &label_id)| (label_id, BlockId(bid)))
-            .chain(func.blocks.keys().map(|bid| (block_label_id(bid), *bid)))
-            .collect();
-
-        let mut exception_targets: HashSet<BlockId> = HashSet::new();
-        for block in func.blocks.values() {
-            for op in &block.ops {
-                if op.opcode == super::ops::OpCode::CheckException {
-                    if let Some(super::ops::AttrValue::Int(label)) = op.attrs.get("value") {
-                        if let Some(&target_bid) = reverse_label.get(label) {
-                            exception_targets.insert(target_bid);
+    let emit_block_ops = |block: &TirBlock, out: &mut Vec<OpIR>| {
+        for op in &block.ops {
+            if let Some(mut opir) = lower_op(op) {
+                annotate_type_flags(&mut opir, op, types);
+                // Remap label IDs in check_exception/try_start/try_end ops
+                // to match post-roundtrip block label assignments.
+                if matches!(opir.kind.as_str(), "check_exception" | "try_start" | "try_end") {
+                    if let Some(orig_id) = opir.value {
+                        if let Some(&new_id) = original_to_new_label.get(&orig_id) {
+                            opir.value = Some(new_id);
                         }
                     }
                 }
+                out.push(opir);
             }
         }
-        // Also check try_start/try_end targets.
-        for block in func.blocks.values() {
-            for op in &block.ops {
-                if matches!(op.opcode, super::ops::OpCode::TryStart | super::ops::OpCode::TryEnd) {
-                    if let Some(super::ops::AttrValue::Int(label)) = op.attrs.get("value") {
-                        if let Some(&target_bid) = reverse_label.get(label) {
-                            exception_targets.insert(target_bid);
-                        }
-                    }
-                }
-            }
-        }
-        // Remove exception targets from inlined sets and invalidate their if-patterns.
-        let mut patterns_to_remove = Vec::new();
-        for (cond_bid, pat) in &if_patterns {
-            if exception_targets.contains(&pat.then_bid) || exception_targets.contains(&pat.else_bid) {
-                patterns_to_remove.push(*cond_bid);
-            }
-        }
-        for bid in &patterns_to_remove {
-            if let Some(pat) = if_patterns.remove(bid) {
-                if_inlined_blocks.remove(&pat.then_bid);
-                if_inlined_blocks.remove(&pat.else_bid);
-            }
-        }
-    }
+    };
 
     // Track condition blocks: blocks that are the Branch target of a
     // LoopHeader. These need to emit loop_break_if_* from their CondBranch.
