@@ -1077,7 +1077,6 @@ fn format_string_repr_bytes(bytes: &[u8]) -> String {
             0x0A => out.push_str("\\n"),
             0x0D => out.push_str("\\r"),
             0x09 => out.push_str("\\t"),
-            // U+2028/U+2029 are printable in CPython 3.12 repr — no escaping
             _ if code == quote as u32 => {
                 out.push('\\');
                 out.push(quote);
@@ -1087,7 +1086,7 @@ fn format_string_repr_bytes(bytes: &[u8]) -> String {
             }
             _ => {
                 let ch = char::from_u32(code).unwrap_or('\u{FFFD}');
-                if ch.is_control() {
+                if !is_printable_for_repr(ch) {
                     out.push_str(&unicode_escape(ch));
                 } else {
                     out.push(ch);
