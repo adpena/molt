@@ -451,6 +451,22 @@ let Some(body_block_ir) = func.blocks.get(&body_bid) else { continue };
                             }
                             if_inlined_blocks.insert(body_bid);
                         }
+
+                        // Emit the exit block (after the loop).
+                        if let Some(exit_blk) = func.blocks.get(&exit_block_id) {
+                            if let Some(pvars) = block_param_vars.get(&exit_block_id) {
+                                for (i, vn) in pvars.iter().enumerate() {
+                                    if i < exit_blk.args.len() {
+                                        out.push(OpIR { kind: "load_var".to_string(), var: Some(vn.clone()), out: Some(value_var(exit_blk.args[i].id)), ..OpIR::default() });
+                                    }
+                                }
+                            }
+                            emit_block_ops(exit_blk, &mut out);
+                            let ohr = func.attrs.get("_original_has_ret").map(|v| matches!(v, super::ops::AttrValue::Bool(true))).unwrap_or(false);
+                            let er = func.loop_roles.get(&exit_block_id).cloned().unwrap_or(super::blocks::LoopRole::None);
+                            emit_terminator(exit_blk, &block_param_vars, &block_label_id, &func.loop_roles, &mut out, ohr, er, &func.loop_break_kinds);
+                            if_inlined_blocks.insert(exit_block_id);
+                        }
                     }
                 }
             }
