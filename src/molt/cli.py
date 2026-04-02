@@ -10795,17 +10795,37 @@ def _start_backend_daemon(
             _remove_backend_daemon_pid(pid_path)
     try:
         if socket_path.exists():
-            ready, _ = _backend_daemon_wait_until_ready(
-                socket_path,
-                ready_timeout=startup_wait,
-                probe_timeout=None,
-            )
-            if ready:
-                return True
-            message = (
-                f"Backend daemon socket {socket_path} existed but did not answer "
-                f"readiness probes within {startup_wait or 0.0:.2f}s; removing stale socket."
-            )
+            # Fast path: if no daemon process is alive, the socket is
+            # definitely stale — skip the expensive readiness probe that
+            # would otherwise block for startup_wait (10s default).
+            _pid_for_sock = _read_backend_daemon_pid(pid_path)
+            _daemon_alive = _pid_for_sock is not None and _pid_alive(_pid_for_sock)
+            if _daemon_alive:
+                ready, _ = _backend_daemon_wait_until_ready(
+                    socket_path,
+                    ready_timeout=startup_wait,
+                    probe_timeout=None,
+                )
+                if ready:
+                    return True
+                message = (
+                    f"Backend daemon socket {socket_path} existed but did not answer "
+                    f"readiness probes within {startup_wait or 0.0:.2f}s; removing stale socket."
+                )
+            else:
+                # Quick single-shot probe in case an orphaned daemon is
+                # still listening (PID file was lost but process lives).
+                ready, _ = _backend_daemon_wait_until_ready(
+                    socket_path,
+                    ready_timeout=0.5,
+                    probe_timeout=0.25,
+                )
+                if ready:
+                    return True
+                message = (
+                    f"Removed stale daemon socket {socket_path.name} "
+                    f"(no live daemon process found)."
+                )
             log_tail = _backend_daemon_log_tail(log_path)
             if log_tail:
                 message = f"{message}\nLast daemon log lines:\n{log_tail}"
