@@ -1,10 +1,32 @@
 # STATUS (Canonical)
 
-Last updated: 2026-03-19
+Last updated: 2026-04-02
 
 This document is the source of truth for Molt's current capabilities and
 limitations. Update this file whenever behavior or scope changes, and keep
 README and [ROADMAP.md](../../ROADMAP.md) in sync.
+
+## Recent Work (2026-03-19 to 2026-04-02)
+
+50 commits since last STATUS update. Key areas:
+
+- **TIR (Typed Intermediate Representation)**: Default ON with EH bypass. Loop
+  roundtrip working (369/369 backend tests pass). Nested loop label fixes.
+  Sieve benchmark: 21.5ms.
+- **Performance**: Removed blanket variable boxing in function scope. Skip
+  variable boxing in function-scope loops. Bool lists in list_int fast path.
+  HashMap clone per-block removed in TIR lowering.
+- **Exception handling**: Exception chaining display in tracebacks. TIR
+  roundtrip preserves check_exception/try label IDs.
+- **Correctness**: Label validation after TIR roundtrip for early detection.
+  Senior review of partner TIR commits (5 issues resolved). Parity regression
+  fixes with TIR ON.
+- **Build**: Stdlib .o cache preserved across --no-cache. Stale tir_setting
+  debug line removed. Cloudflare demo README updated with accurate binary sizes.
+
+NOTE: This section summarizes recent changes. The detailed sections below have
+not been fully updated to reflect TIR-default-ON implications. A full STATUS
+refresh is needed.
 
 ## Strategic Target
 - Scope: full CPython `>=3.12` verified-subset parity; no host Python installation required.
