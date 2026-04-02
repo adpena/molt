@@ -27185,8 +27185,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self._emit_guard_type(self.locals[arg.arg], hint)
         if not self.is_async():
             self._prebox_scope_cell_vars(body=node.body, arg_nodes=arg_nodes)
-            for name in sorted(self.scope_assigned):
-                self._box_local(name)
+            # Only box variables that are captured by inner closures
+            # (handled by _prebox_scope_cell_vars above).  Do NOT blanket-box
+            # all scope_assigned variables — that defeats SSA and raw_int_shadow
+            # optimisation for loop-carried values.  Cranelift handles loop
+            # phis natively through block arguments.
             if needs_locals_cache:
                 self._init_locals_cache_and_pin()
         self._push_qualname(func_name, True)
