@@ -10740,8 +10740,16 @@ def _start_backend_daemon(
                     Path.home() / "Library" / "Caches" / "molt" / "home" / "bin",
                 ]:
                     if cache_dir.is_dir():
-                        shutil.rmtree(cache_dir, ignore_errors=True)
-                        cache_dir.mkdir(parents=True, exist_ok=True)
+                        # Preserve stdlib_shared_* files — the daemon stdlib
+                        # partition needs them to avoid recompiling 300+ stdlib
+                        # functions on every build.
+                        for _entry in list(cache_dir.iterdir()):
+                            if _entry.name.startswith("stdlib_shared_"):
+                                continue
+                            if _entry.is_dir():
+                                shutil.rmtree(_entry, ignore_errors=True)
+                            else:
+                                _entry.unlink(missing_ok=True)
                         if not json_output:
                             print(f"  Cleared stale cache: {cache_dir}", file=sys.stderr)
                 _cache_root = _default_molt_cache()
