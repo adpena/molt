@@ -22082,12 +22082,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
                 self.unbound_check_names.add(name)
                 return
-            self.locals.pop(name, None)
+            local_val = self.locals.pop(name, None)
             self.globals.pop(name, None)
             if allow_missing:
                 self._emit_module_global_del_safe(name)
             else:
                 self._emit_module_global_del(name)
+            # Emit dec_ref for the local SSA variable so refcount drops
+            # to zero immediately, triggering __del__ (CPython parity).
+            if local_val is not None and local_val.name != "none":
+                self.emit(MoltOp(kind="DEC_REF", args=[local_val], result=MoltValue("none")))
             return
         if name in self.global_decls:
             if allow_missing:
