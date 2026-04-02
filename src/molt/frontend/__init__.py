@@ -7817,7 +7817,30 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
             return res
-        return self.locals.get(name)
+        cached = self.locals.get(name)
+        if cached is None:
+            return None
+        # Emit explicit load_var for non-boxed function locals so TIR can
+        # track variable mutations through loop iterations via SSA phis.
+        if (
+            self.current_func_name != "molt_main"
+            and not self.is_async()
+            and name in self.scope_assigned
+            and name not in self.boxed_locals
+        ):
+            res = MoltValue(self.next_var(), type_hint=cached.type_hint)
+            self.emit(
+                MoltOp(
+                    kind="LOAD_VAR",
+                    args=[],
+                    result=res,
+                    metadata={"var": name},
+                )
+            )
+            if name in self.unbound_check_names:
+                self._emit_unbound_local_guard(res, name)
+            return res
+        return cached
 
     def _load_local_value_unchecked(self, name: str) -> MoltValue | None:
         if self.current_func_name != "molt_main" and name in self.global_decls:
@@ -7840,7 +7863,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
             return res
-        return self.locals.get(name)
+        cached = self.locals.get(name)
+        if cached is None:
+            return None
+        # Emit explicit load_var for non-boxed function locals (no unbound
+        # guard in the unchecked variant).
+        if (
+            self.current_func_name != "molt_main"
+            and not self.is_async()
+            and name in self.scope_assigned
+            and name not in self.boxed_locals
+        ):
+            res = MoltValue(self.next_var(), type_hint=cached.type_hint)
+            self.emit(
+                MoltOp(
+                    kind="LOAD_VAR",
+                    args=[],
+                    result=res,
+                    metadata={"var": name},
+                )
+            )
+            return res
+        return cached
 
     def _store_local_value(self, name: str, value: MoltValue) -> None:
         def update_locals_cache() -> None:
@@ -7958,6 +8002,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             update_locals_cache()
             return
         self.locals[name] = value
+        # Emit explicit store_var for non-boxed function locals so TIR can
+        # track variable mutations through loop iterations via SSA phis.
+        if (
+            self.current_func_name != "molt_main"
+            and not self.is_async()
+            and name in self.scope_assigned
+            and name not in self.boxed_locals
+        ):
+            self.emit(
+                MoltOp(
+                    kind="STORE_VAR",
+                    args=[value],
+                    result=MoltValue("none"),
+                    metadata={"var": name},
+                )
+            )
         update_locals_cache()
 
     def _iterable_is_indexable(self, iterable: MoltValue | None) -> bool:
@@ -13237,8 +13297,34 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if hint is not None:
                         self._emit_guard_type(self.locals[arg.arg], hint)
             self._prebox_scope_cell_vars(body=item.body, arg_nodes=arg_nodes)
+            # Only box variables that genuinely need cells (closure-captured).
+            # Non-closure locals use store_var/load_var for SSA-visible mutations.
+            param_names = {arg.arg for arg in arg_nodes}
             for name in sorted(self.scope_assigned):
-                self._box_local(name)
+                if name in self.closure_locals:
+                    self._box_local(name)
+                elif name not in param_names:
+                    init = self._emit_missing_value()
+                    self.locals[name] = init
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_VAR",
+                            args=[init],
+                            result=MoltValue("none"),
+                            metadata={"var": name},
+                        )
+                    )
+            for arg in arg_nodes:
+                pval = self.locals.get(arg.arg)
+                if pval is not None and arg.arg not in self.boxed_locals:
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_VAR",
+                            args=[pval],
+                            result=MoltValue("none"),
+                            metadata={"var": arg.arg},
+                        )
+                    )
             self._push_qualname(method_name, True)
             try:
                 for stmt in item.body:
@@ -22178,7 +22264,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if not self._emit_free_var_store(name, missing):
                 raise NotImplementedError("nonlocal binding not found")
             return
-        self._box_local(name)
+        # Only box for closure-captured variables; non-closure locals use
+        # store_var/load_var and store the missing sentinel directly.
+        if name in self.closure_locals:
+            self._box_local(name)
         if not allow_missing:
             _ = self._load_local_value(name)
         missing = self._emit_missing_value()
@@ -23468,7 +23557,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             self._box_local(name)
                     else:
                         for name in sorted(assigned):
-                            self._box_local(name)
+                            if name not in self.scope_assigned or name in self.closure_locals:
+                                self._box_local(name)
                 self._visit_block(node.orelse)
             return None
         if not self.is_async():
@@ -23508,7 +23598,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self._box_local(name)
             else:
                 for name in sorted(assigned):
-                    self._box_local(name)
+                    if name not in self.scope_assigned or name in self.closure_locals:
+                        self._box_local(name)
         cond = self.visit(node.test)
         self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
         self.control_flow_depth += 1
@@ -27185,8 +27276,39 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self._emit_guard_type(self.locals[arg.arg], hint)
         if not self.is_async():
             self._prebox_scope_cell_vars(body=node.body, arg_nodes=arg_nodes)
+            # Only box variables that genuinely need cells (closure-captured).
+            # Non-closure locals use store_var/load_var for SSA-visible mutations.
+            param_names = {arg.arg for arg in arg_nodes}
             for name in sorted(self.scope_assigned):
-                self._box_local(name)
+                if name in self.closure_locals:
+                    self._box_local(name)
+                elif name not in param_names:
+                    # Initialise non-boxed locals with the missing sentinel so
+                    # that every SSA path has a definition (needed for phi merging
+                    # and UnboundLocalError detection).
+                    init = self._emit_missing_value()
+                    self.locals[name] = init
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_VAR",
+                            args=[init],
+                            result=MoltValue("none"),
+                            metadata={"var": name},
+                        )
+                    )
+            # Emit store_var for parameters so the backend has an explicit
+            # definition that TIR can track through reassignment.
+            for arg in arg_nodes:
+                pval = self.locals.get(arg.arg)
+                if pval is not None and arg.arg not in self.boxed_locals:
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_VAR",
+                            args=[pval],
+                            result=MoltValue("none"),
+                            metadata={"var": arg.arg},
+                        )
+                    )
             if needs_locals_cache:
                 self._init_locals_cache_and_pin()
         self._push_qualname(func_name, True)
@@ -27601,8 +27723,34 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._prebox_scope_cell_vars(
                 body=[ast.Expr(value=node.body)], arg_nodes=arg_nodes
             )
+            # Only box variables that genuinely need cells (closure-captured).
+            # Non-closure locals use store_var/load_var for SSA-visible mutations.
+            param_names = {arg.arg for arg in arg_nodes}
             for name in sorted(self.scope_assigned):
-                self._box_local(name)
+                if name in self.closure_locals:
+                    self._box_local(name)
+                elif name not in param_names:
+                    init = self._emit_missing_value()
+                    self.locals[name] = init
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_VAR",
+                            args=[init],
+                            result=MoltValue("none"),
+                            metadata={"var": name},
+                        )
+                    )
+            for arg in arg_nodes:
+                pval = self.locals.get(arg.arg)
+                if pval is not None and arg.arg not in self.boxed_locals:
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_VAR",
+                            args=[pval],
+                            result=MoltValue("none"),
+                            metadata={"var": arg.arg},
+                        )
+                    )
             if needs_locals_cache:
                 self._init_locals_cache_and_pin()
         self._push_qualname("<lambda>", True)
@@ -31698,6 +31846,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     {
                         "kind": "bridge_unavailable",
                         "args": [op.args[0].name],
+                        "out": op.result.name,
+                    }
+                )
+            elif op.kind == "STORE_VAR":
+                var_name = op.metadata["var"] if op.metadata else ""
+                json_ops.append(
+                    {
+                        "kind": "store_var",
+                        "var": var_name,
+                        "args": [op.args[0].name],
+                    }
+                )
+            elif op.kind == "LOAD_VAR":
+                var_name = op.metadata["var"] if op.metadata else ""
+                json_ops.append(
+                    {
+                        "kind": "load_var",
+                        "var": var_name,
                         "out": op.result.name,
                     }
                 )

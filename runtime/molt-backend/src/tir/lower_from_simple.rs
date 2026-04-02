@@ -30,7 +30,9 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     //    The rewrite is safe because lower_to_simple_ir restores the original
     //    store_index/index patterns from the SSA output.
     let mut working_ops = ir.ops.clone();
-    let cell_rewrite_applied = rewrite_cell_locals_to_store_load(&mut working_ops);
+    // Memory SSA disabled until lower_to_simple_ir reverse conversion is implemented.
+    // let cell_rewrite_applied = rewrite_cell_locals_to_store_load(&mut working_ops);
+    let cell_rewrite_applied = false;
 
     let tmp_ir = crate::ir::FunctionIR {
         name: ir.name.clone(),
