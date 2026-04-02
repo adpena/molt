@@ -3522,6 +3522,38 @@ pub extern "C" fn molt_object_setattr(obj_bits: u64, name_bits: u64, val_bits: u
                 let builtins = builtin_classes(_py);
                 let is_dict_subclass =
                     type_id == TYPE_ID_DICT && class_bits != 0 && class_bits != builtins.dict;
+                // Check for custom __setattr__ before dispatching to fast paths.
+                // User-defined __setattr__ must take priority over internal storage.
+                if (type_id == TYPE_ID_OBJECT || is_dict_subclass)
+                    && class_bits != 0
+                    && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                    && object_type_id(class_ptr) == TYPE_ID_TYPE
+                {
+                    let setattr_name_bits = intern_static_name(
+                        _py,
+                        &runtime_state(_py).interned.setattr_name,
+                        b"__setattr__",
+                    );
+                    let mut use_custom = false;
+                    if let Some(raw_bits) = class_attr_lookup_raw_mro(_py, class_ptr, setattr_name_bits) {
+                        if let Some(default_bits) = object_method_bits(_py, "__setattr__") {
+                            if !obj_eq(_py, obj_from_bits(raw_bits), obj_from_bits(default_bits)) {
+                                use_custom = true;
+                            }
+                        } else {
+                            use_custom = true;
+                        }
+                    }
+                    if use_custom {
+                        if let Some(call_bits) = class_attr_lookup(
+                            _py, class_ptr, class_ptr, Some(obj_ptr), setattr_name_bits,
+                        ) {
+                            let _ = call_callable2(_py, call_bits, attr_bits, val_bits);
+                            dec_ref_bits(_py, attr_bits);
+                            return MoltObject::none().bits();
+                        }
+                    }
+                }
                 let res = if type_id == TYPE_ID_OBJECT || is_dict_subclass {
                     object_setattr_raw(_py, obj_ptr, attr_bits, &attr_name, val_bits)
                 } else if type_id == TYPE_ID_DATACLASS {
