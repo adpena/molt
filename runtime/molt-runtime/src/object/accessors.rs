@@ -296,7 +296,16 @@ pub unsafe extern "C" fn molt_guarded_field_get_ptr(
 /// # Safety
 /// `obj_ptr` must point to a valid object with enough payload for `offset_bits`.
 
+<<<<<<< Updated upstream
 /// Mirror a field-offset write into the instance dict for __dict__ parity.
+=======
+/// Mirror a field-offset write into the instance dict so `__dict__`
+/// reflects all instance attributes (CPython parity).  This is called
+/// from both the guarded (IC) and generic setattr paths.
+///
+/// # Safety
+/// `obj_ptr` must be a valid TYPE_ID_OBJECT pointer.
+>>>>>>> Stashed changes
 pub(crate) unsafe fn mirror_field_to_instance_dict(
     _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
@@ -305,7 +314,12 @@ pub(crate) unsafe fn mirror_field_to_instance_dict(
     val_bits: u64,
 ) {
     if let Some(attr_bits) = crate::builtins::attr::attr_name_bits_from_bytes(
+<<<<<<< Updated upstream
         _py, std::slice::from_raw_parts(attr_name_ptr, attr_name_len),
+=======
+        _py,
+        std::slice::from_raw_parts(attr_name_ptr, attr_name_len),
+>>>>>>> Stashed changes
     ) {
         let mut dict_bits = super::instance_dict_bits(obj_ptr);
         if dict_bits == 0 {
@@ -343,7 +357,31 @@ pub unsafe extern "C" fn molt_guarded_field_set_ptr(
                 let result = object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
                 // Mirror to instance dict for __dict__ parity.
                 let attr_name_len = crate::usize_from_bits(attr_name_len_bits);
+<<<<<<< Updated upstream
                 mirror_field_to_instance_dict(_py, obj_ptr, attr_name_ptr, attr_name_len, val_bits);
+=======
+                if let Some(attr_bits) = crate::builtins::attr::attr_name_bits_from_bytes(
+                    _py,
+                    std::slice::from_raw_parts(attr_name_ptr, attr_name_len),
+                ) {
+                    let mut dict_bits = crate::object::super::instance_dict_bits(obj_ptr);
+                    if dict_bits == 0 {
+                        let dict_ptr = crate::object::builders::alloc_dict_with_pairs(_py, &[]);
+                        if !dict_ptr.is_null() {
+                            dict_bits = crate::MoltObject::from_ptr(dict_ptr).bits();
+                            crate::object::super::instance_set_dict_bits(_py, obj_ptr, dict_bits);
+                        }
+                    }
+                    if dict_bits != 0 {
+                        if let Some(dict_ptr) = crate::obj_from_bits(dict_bits).as_ptr()
+                            && crate::object_type_id(dict_ptr) == crate::TYPE_ID_DICT
+                        {
+                            crate::object::ops::dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
+                        }
+                    }
+                    crate::dec_ref_bits(_py, attr_bits);
+                }
+>>>>>>> Stashed changes
                 return result;
             }
             crate::molt_set_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits, val_bits) as u64
