@@ -36,6 +36,9 @@ struct LoopRegion {
     body_set: HashSet<BlockId>,
     break_kind: LoopBreakKind,
     cond: ValueId,
+    /// The block containing the loop-controlling CondBranch.
+    /// May differ from the header when guard blocks precede the condition.
+    cond_block: BlockId,
     body_args: Vec<ValueId>,
     exit_args: Vec<ValueId>,
 }
@@ -309,6 +312,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 body_set,
                 break_kind,
                 cond: *cond,
+                cond_block: cond_bid,
                 body_args,
                 exit_args,
             },
@@ -1238,21 +1242,11 @@ fn emit_structured_loop_region(
     //    for the successor's block args.
     {
         // Build the ordered list of header-region blocks.
+        // The cond block is stored in the region from detection.
         let mut header_region: Vec<BlockId> = vec![header];
         header_region.extend(region.header_chain.iter().copied());
-        // Find the cond block (successor of last block in chain, or header itself).
-        let last_in_chain = *header_region.last().unwrap();
-        let cond_block_id = if let Some(last_blk) = func.blocks.get(&last_in_chain) {
-            if let Terminator::Branch { target, .. } = &last_blk.terminator {
-                *target
-            } else {
-                header // Header itself has the CondBranch
-            }
-        } else {
-            header
-        };
-        if cond_block_id != header {
-            header_region.push(cond_block_id);
+        if region.cond_block != header {
+            header_region.push(region.cond_block);
         }
 
         for (region_idx, region_bid) in header_region.iter().enumerate() {
@@ -1262,13 +1256,10 @@ fn emit_structured_loop_region(
             // Emit ops for this block.
             emit_block_ops_inner(region_block, types, original_to_new_label, out);
 
-            // If this block has a Branch terminator to the next block in
-            // the chain, emit store_var for its args and load_var for the
-            // successor's block args.
+            // Connect this block to the next in the header region.
             if region_idx + 1 < header_region.len() {
-                if let Terminator::Branch { target, args } = &region_block.terminator {
-                    emit_block_arg_stores(*target, args, block_param_vars, out);
-                    let next_bid = header_region[region_idx + 1];
+                let next_bid = header_region[region_idx + 1];
+                let emit_next_loads = |out: &mut Vec<OpIR>| {
                     if let Some(next_block) = func.blocks.get(&next_bid) {
                         if let Some(param_vars) = block_param_vars.get(&next_bid) {
                             for (i, var_name) in param_vars.iter().enumerate() {
@@ -1283,6 +1274,64 @@ fn emit_structured_loop_region(
                             }
                         }
                     }
+                };
+                match &region_block.terminator {
+                    Terminator::Branch { target, args } => {
+                        emit_block_arg_stores(*target, args, block_param_vars, out);
+                        emit_next_loads(out);
+                    }
+                    Terminator::CondBranch {
+                        cond,
+                        then_block,
+                        then_args,
+                        else_block,
+                        else_args,
+                    } => {
+                        // Guard CondBranch: one path raises, the other
+                        // continues to the next header-region block.
+                        // Emit br_if for the raise path, fall through for continue.
+                        let then_is_continue = *then_block == next_bid;
+                        let (raise_bid, raise_args, cont_args) = if then_is_continue {
+                            (*else_block, else_args, then_args)
+                        } else {
+                            (*then_block, then_args, else_args)
+                        };
+                        emit_block_arg_stores(raise_bid, raise_args, block_param_vars, out);
+                        if !then_is_continue {
+                            // then = raise: br_if cond -> raise label
+                            out.push(OpIR {
+                                kind: "br_if".to_string(),
+                                args: Some(vec![value_var(*cond)]),
+                                value: Some(block_label_id(&raise_bid)),
+                                ..OpIR::default()
+                            });
+                        } else {
+                            // else = raise: branch when cond is FALSE.
+                            let skip_label = out.iter()
+                                .filter_map(|op| op.value)
+                                .max()
+                                .unwrap_or(0) + 1;
+                            out.push(OpIR {
+                                kind: "br_if".to_string(),
+                                args: Some(vec![value_var(*cond)]),
+                                value: Some(skip_label),
+                                ..OpIR::default()
+                            });
+                            out.push(OpIR {
+                                kind: "jump".to_string(),
+                                value: Some(block_label_id(&raise_bid)),
+                                ..OpIR::default()
+                            });
+                            out.push(OpIR {
+                                kind: "label".to_string(),
+                                value: Some(skip_label),
+                                ..OpIR::default()
+                            });
+                        }
+                        emit_block_arg_stores(next_bid, cont_args, block_param_vars, out);
+                        emit_next_loads(out);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1365,6 +1414,15 @@ fn emit_structured_loop_region(
             );
             if let Some(inner_region) = loop_regions.get(body_bid) {
                 inner_consumed.extend(inner_region.body_set.iter().copied());
+                // Also consume the inner loop's header chain blocks and
+                // cond_block — they're emitted inline as part of the inner
+                // header region and must not be re-emitted by the outer loop.
+                for hc in &inner_region.header_chain {
+                    inner_consumed.insert(*hc);
+                }
+                if inner_region.cond_block != *body_bid {
+                    inner_consumed.insert(inner_region.cond_block);
+                }
             }
             is_first_body = false;
             continue;
