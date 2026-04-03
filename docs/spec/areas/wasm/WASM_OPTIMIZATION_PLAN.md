@@ -577,7 +577,7 @@ All WASM optimization work must report:
 | Host call count | wasmtime profiling | Track reduction over time |
 | Memory peak | `bench_wasm.py` RSS tracking | No > 20% regression |
 
-Results must be recorded in `bench/results/bench_wasm.json` and summarized in `README.md` per existing policy.
+Results must be recorded in `bench/results/` and summarized through the generated benchmark surfaces in `docs/spec/STATUS.md` and `docs/benchmarks/bench_summary.md`.
 
 ---
 

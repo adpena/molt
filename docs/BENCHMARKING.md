@@ -88,7 +88,9 @@ uv run --python 3.14 python3 tools/bench_report.py
 
 This writes `docs/benchmarks/bench_summary.md` by default. Commit the report alongside
 the JSON results to keep native and WASM performance tracking aligned.
-Add `--update-readme` to refresh the Performance & Comparisons block in `README.md`.
+Use `--update-status-doc` to refresh the concise benchmark summary block in
+`docs/spec/STATUS.md`. README should link to status and benchmark docs, not own
+generated benchmark data.
 
 ## Benchmark Artifact Diffing
 

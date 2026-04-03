@@ -23,7 +23,7 @@ Root is reserved for:
   - `AGENTS.md`
   - `LICENSE`
   - `ROADMAP.md`
-  - `SUPPORTED.md`
+  - `SUPPORTED.md` (thin pointer doc only)
   - `OPTIMIZATIONS_PLAN.md`
 - repo config
   - `.gitignore`

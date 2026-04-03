@@ -153,4 +153,4 @@ Long-form topic docs live under `docs/spec/areas/`.
 ## Adding Or Updating A Spec
 - Keep the scope narrow and list status at the top.
 - Link to the relevant matrices when semantics change.
-- Update [docs/spec/STATUS.md](docs/spec/STATUS.md) and [ROADMAP.md](ROADMAP.md) when scope moves.
+- Update [docs/spec/STATUS.md](docs/spec/STATUS.md) when current supported state moves, and update the relevant plan doc only when forward priorities or sequencing move.

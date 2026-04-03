@@ -157,8 +157,7 @@ For a meaningful release or milestone claim, keep a short bundle containing:
 - caveats or exceptions
 
 ## Relationship to other docs
-- Support contract: [../../SUPPORTED.md](../../SUPPORTED.md)
+- Current supported state: [../spec/STATUS.md](../spec/STATUS.md)
 - Compatibility corpus manifest: [../COMPATIBILITY_CORPUS_MANIFEST.md](../COMPATIBILITY_CORPUS_MANIFEST.md)
-- Deep status: [../spec/STATUS.md](../spec/STATUS.md)
 - `libmolt` ABI contract: [../spec/areas/compat/contracts/libmolt_extension_abi_contract.md](../spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
 - Dynamic execution policy: [../spec/areas/compat/contracts/dynamic_execution_policy_contract.md](../spec/areas/compat/contracts/dynamic_execution_policy_contract.md)

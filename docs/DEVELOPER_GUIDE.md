@@ -288,7 +288,7 @@ If you want to modify Molt, follow these steps:
     If you need to install or update deps, run `uv sync` locally outside the
     sandbox, then re-run commands with `UV_NO_SYNC=1`.
 4.  **Explore**:
-    - Start with `README.md` for CLI usage.
+    - Start with `README.md` for the project overview and `docs/getting-started.md` for first-run CLI usage.
     - Read `docs/spec/STATUS.md` for current feature parity.
     - Check `ROADMAP.md` for where we are going.
 
@@ -386,4 +386,4 @@ Ready to contribute code? Please read [CONTRIBUTING.md](../CONTRIBUTING.md). Not
 ## Resources
 
 - **Specifications**: `docs/spec/` contains detailed architectural decisions (ADRs).
-- **Benchmarks**: `tools/bench.py` and `README.md` (Performance section).
+- **Benchmarks**: `tools/bench.py`, `docs/BENCHMARKING.md`, and `docs/spec/STATUS.md` (generated summary block).

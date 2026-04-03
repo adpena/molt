@@ -58,7 +58,7 @@ Dispatch order (example):
 
 ## 7. Validation & Regression Gates
 - Add microbenchmarks per kernel variant.
-- Record regression thresholds in `README.md` and enforce on CI.
+- Record regression thresholds in benchmark/status docs and enforce on CI.
 - Ensure differential tests cover Unicode index semantics and buffer writes.
 
 ## 8. TODOs
