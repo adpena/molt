@@ -335,6 +335,47 @@ fn preanalyze_function_ir(
             }
         }
 
+        // Post-pass 2: extend variable lifetimes for TIR-generated control
+        // flow. When TIR linearizes loops into label/jump/br_if patterns,
+        // the loop_start/loop_end markers are absent, so the structured loop
+        // extension above doesn't fire. Back-edge jumps can cause dec_ref to
+        // free values that are still live in the next iteration.
+        //
+        // Fix: if the function has any back-edge (jump to a label at a lower
+        // position), extend ALL variable lifetimes to the last op. This is
+        // conservative but correct — cleanup happens at function return.
+        {
+            let mut has_back_edge = false;
+            let mut label_pos: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                if matches!(op.kind.as_str(), "label" | "state_label") {
+                    if let Some(id) = op.value {
+                        label_pos.insert(id, idx);
+                    }
+                }
+            }
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                if matches!(op.kind.as_str(), "jump" | "br_if") {
+                    if let Some(target_id) = op.value {
+                        if let Some(&target_pos) = label_pos.get(&target_id) {
+                            if target_pos < idx {
+                                has_back_edge = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if has_back_edge {
+                let func_end = func_ir.ops.len().saturating_sub(1);
+                for entry in last_use.values_mut() {
+                    if *entry < func_end {
+                        *entry = func_end;
+                    }
+                }
+            }
+        }
+
         // Collect output variable names assigned inside each loop body.
         // These variables are reassigned on every iteration; the old value
         // must be dec_ref'd at the back-edge to avoid permanent leaks.
