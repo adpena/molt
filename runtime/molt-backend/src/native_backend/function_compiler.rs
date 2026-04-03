@@ -311,26 +311,24 @@ fn preanalyze_function_ir(
                 _ => {}
             }
         }
-        for (start, end) in &loop_ranges {
-            for idx in *start..=*end {
-                let op = &func_ir.ops[idx];
-                if let Some(args) = &op.args {
-                    for name in args {
-                        if name != "none" {
-                            let entry = last_use.entry(name.clone()).or_insert(*end);
-                            if *entry < *end {
-                                *entry = *end;
-                            }
-                        }
-                    }
-                }
-                if let Some(var) = &op.var
-                    && var != "none"
-                {
-                    let entry = last_use.entry(var.clone()).or_insert(*end);
-                    if *entry < *end {
-                        *entry = *end;
-                    }
+        // Extend ALL variable lifetimes to function end for ANY function
+        // that has loops (structured or TIR-generated). This prevents
+        // drain_cleanup_tracked from emitting premature dec_ref for values
+        // stored in cell lists during loop iterations.
+        //
+        // Why func_end and not loop_end: drain_cleanup_tracked fires at
+        // multiple intermediate points (check_exception, label transitions,
+        // store_index calls). If any of these is AFTER the loop_end index
+        // but BEFORE the function return, the dec_ref frees cell list values
+        // that are still referenced by the cell list.
+        //
+        // This is the Swift ARC pattern: retain at store, release at scope
+        // exit (function return). The only cost is delayed cleanup.
+        if !loop_ranges.is_empty() {
+            let func_end = func_ir.ops.len().saturating_sub(1);
+            for entry in last_use.values_mut() {
+                if *entry < func_end {
+                    *entry = func_end;
                 }
             }
         }
