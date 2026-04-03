@@ -1554,7 +1554,7 @@ impl SimpleBackend {
                                 || op.type_hint.as_deref() == Some("bool")
                             {
                                 let raw_val = builder.ins().iconst(types::I64, val);
-                                raw_int_shadow.insert(out__.clone(), raw_val);
+                                // DISABLED: raw_int_shadow.insert(out__.clone(), raw_val);
                             }
                         }
                     } else {
@@ -1625,7 +1625,7 @@ impl SimpleBackend {
                         // Bool constants are 0/1 — add to raw_int_shadow so
                         // list_int setitem can use them without NaN-unboxing.
                         let raw = builder.ins().iconst(types::I64, val);
-                        raw_int_shadow.insert(out__.clone(), raw);
+                        // DISABLED: raw_int_shadow.insert(out__.clone(), raw);
                     }
                 }
                 "const_none" => {
@@ -1885,7 +1885,7 @@ impl SimpleBackend {
                             let merged_boxed = builder.block_params(merge_block)[0];
                             let merged_raw = builder.block_params(merge_block)[1];
                             if let Some(ref out__) = op.out {
-                                // raw_int_shadow.insert(out__.clone(), merged_raw); // DISABLED: merged_raw is stale across loop iterations
+                                // // DISABLED: raw_int_shadow.insert(out__.clone(), merged_raw); // DISABLED: merged_raw is stale across loop iterations
                             }
                             merged_boxed
                         } else {
@@ -2072,7 +2072,7 @@ impl SimpleBackend {
                         let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
-                            // raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
+                            // // DISABLED: raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2697,7 +2697,7 @@ impl SimpleBackend {
                         let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
-                            // raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
+                            // // DISABLED: raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2881,7 +2881,7 @@ impl SimpleBackend {
                         let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
-                            // raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
+                            // // DISABLED: raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -3089,7 +3089,7 @@ impl SimpleBackend {
                         let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
-                            // raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
+                            // // DISABLED: raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -6816,7 +6816,7 @@ impl SimpleBackend {
                                     // Propagate raw shadow — on fast path this is the true
                                     // unboxed value; on slow path it's 0 (which is a valid
                                     // i64 and will produce correct but slower downstream ops).
-                                    // raw_int_shadow.insert(out__.clone(), merged_raw); // DISABLED: merged_raw is stale across loop iterations
+                                    // // DISABLED: raw_int_shadow.insert(out__.clone(), merged_raw); // DISABLED: merged_raw is stale across loop iterations
                                 }
                             } else {
                                 // Fallback: NaN-boxed index, call the standard variant.
@@ -17307,7 +17307,7 @@ impl SimpleBackend {
                         // Propagate raw_int_shadow through store_var:
                         // Value-level (within this block) + Variable-level (across back-edges).
                         if let Some(&raw) = raw_int_shadow.get(&args[0]) {
-                            // raw_int_shadow.insert(name.to_string(), raw);
+                            // // DISABLED: raw_int_shadow.insert(name.to_string(), raw);
                             // def_var the pre-declared shadow Variable so it
                             // survives phi merges at loop back-edges.
                             if let Some(&shadow_var) = raw_int_shadow_vars.get(name) {
@@ -17331,9 +17331,9 @@ impl SimpleBackend {
                             // loop back-edges) over stale Value-based shadow.
                             if let Some(&shadow_var) = raw_int_shadow_vars.get(var_name.as_str()) {
                                 let raw_val = builder.use_var(shadow_var);
-                                raw_int_shadow.insert(out_name.clone(), raw_val);
+                                // DISABLED: raw_int_shadow.insert(out_name.clone(), raw_val);
                             } else if let Some(&raw) = raw_int_shadow.get(var_name.as_str()) {
-                            // raw_int_shadow.insert(out_name.clone(), raw);
+                            // // DISABLED: raw_int_shadow.insert(out_name.clone(), raw);
                             // } else if is_typed_int {
                             //     unbox_int seeding disabled — creates stale Values
                             //     in loop contexts where the shadow doesn't participate
@@ -17348,7 +17348,7 @@ impl SimpleBackend {
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
                             if let Some(&raw) = raw_int_shadow.get(&args[0]) {
-                            // raw_int_shadow.insert(out_name.clone(), raw);
+                            // // DISABLED: raw_int_shadow.insert(out_name.clone(), raw);
                             // } else if is_typed_int {
                             //     (same: disabled for loop safety)
                             }
