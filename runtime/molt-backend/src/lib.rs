@@ -2846,6 +2846,13 @@ impl SimpleBackend {
                 if gpu_kernel_names.contains(&func_ir.name) {
                     continue;
                 }
+                // Extern functions have their bodies in stdlib_shared.o.
+                // Register them so the backend declares Import linkage
+                // (resolved by the linker), and skip TIR/compilation.
+                if func_ir.is_extern {
+                    backend.external_function_names.insert(func_ir.name.clone());
+                    continue;
+                }
 
                 // Dump raw ops to file for debugging TIR roundtrip issues.
                 if let Some(ref pattern) = dump_func_pattern
@@ -3020,16 +3027,21 @@ impl SimpleBackend {
                                 && tmp_func.ops.iter().any(|op| op.kind == "loop_start")
                                 && tmp_func.ops.iter().any(|op| op.kind == "store_index")
                         };
-                        if tmp_func.name.contains("__molt_module_chunk_")
+                        let skip = tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
                             || (has_exception_handling && force_eh_bypass)
-                            || uses_cell_vars
-                            // Also skip functions with store_index inside loops:
-                            // TIR roundtrip loses NaN-box pointer tags on load_var
-                            // for list variables, causing subscript failures.
-                            
-                        {
+                            || uses_cell_vars;
+                        if skip {
+                            if tmp_func.name.contains("sieve") && !tmp_func.name.contains("module") {
+                                eprintln!("MOLT_BACKEND: TIR skip for {}: chunk={} large={} cf={} eh={} cell={}",
+                                    tmp_func.name,
+                                    tmp_func.name.contains("__molt_module_chunk_"),
+                                    tmp_func.ops.len() > 2000,
+                                    cf_complexity > 30,
+                                    has_exception_handling && force_eh_bypass,
+                                    uses_cell_vars);
+                            }
                             return (idx, content_hash, Vec::new());
                         }
                         // Debug skip: MOLT_TIR_SKIP_PATTERN=<pat1,pat2,...> skips
