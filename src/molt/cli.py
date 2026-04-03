@@ -14384,6 +14384,8 @@ def _build_native_link_command(
     _link_inputs = [str(stub_path), str(output_obj)]
     if stdlib_obj_path is not None and stdlib_obj_path.exists():
         _link_inputs.append(str(stdlib_obj_path))
+    elif stdlib_obj_path is not None:
+    else:
     # Use -force_load on macOS to ensure ALL objects from the static archive
     # are included, resolving circular references between molt-runtime and
     # molt-runtime-serial (e.g. serial bridge FFI symbols).
@@ -14399,6 +14401,10 @@ def _build_native_link_command(
     if target_triple:
         if "apple" in target_triple or "darwin" in target_triple:
             link_cmd.append("-Wl,-dead_strip")
+            # stdlib_shared.o and output.o emit overlapping function symbols
+            # (both contain builtins/sys stubs from chunked module compilation).
+            # The duplicates are identical code; suppress the linker error.
+            link_cmd.append("-Wl,-multiply_defined,suppress")
             # Do NOT use -exported_symbol,_main — the runtime uses dlsym()
             # to resolve intrinsic functions at runtime. Restricting exports
             # to _main makes all #[no_mangle] symbols invisible to dlsym,
@@ -14428,6 +14434,7 @@ def _build_native_link_command(
     else:
         if sys.platform == "darwin":
             link_cmd.append("-Wl,-dead_strip")
+            link_cmd.append("-Wl,-multiply_defined,suppress")
             link_cmd.extend(["-Wl,-x", "-Wl,-S"])
             if suppress_linker_warnings:
                 link_cmd.append("-Wl,-w")
@@ -18509,14 +18516,38 @@ def _prepare_backend_cache_setup(
         emit_mode=emit_mode,
     )
     if not cache_enabled:
+        # Even with cache disabled, compute stdlib_object_path so the
+        # daemon can partition stdlib functions into stdlib_shared.o and
+        # the linker can resolve them.  Without this, the daemon strips
+        # stdlib functions but the linker never sees stdlib_shared.o.
+        _nocache_stdlib_path = None
+        _nocache_stdlib_key = None
+        if split_stdlib_object:
+            _nocache_stdlib_key = _shared_stdlib_cache_key(
+                ir,
+                entry_module=entry_module,
+                target_triple=target_triple,
+                cache_variant="",
+            )
+            _nocache_cache_root = _resolve_cache_root(project_root, cache_dir)
+            try:
+                _nocache_cache_root.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            _nocache_stub_path = _nocache_cache_root / f"__nocache__.o"
+            _nocache_stdlib_path = _stdlib_object_cache_path(
+                _nocache_stub_path, _nocache_stdlib_key
+            )
+            if _nocache_stdlib_path is not None:
+                _invalidate_stale_stdlib_cache(_nocache_stdlib_path, project_root)
         return _BackendCacheSetup(
             cache_enabled=False,
             cache_key=None,
             function_cache_key=None,
             cache_path=None,
             function_cache_path=None,
-            stdlib_object_path=None,
-            stdlib_object_cache_key=None,
+            stdlib_object_path=_nocache_stdlib_path,
+            stdlib_object_cache_key=_nocache_stdlib_key,
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
