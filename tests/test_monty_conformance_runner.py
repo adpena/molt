@@ -39,19 +39,48 @@ def test_molt_build_env_sets_canonical_defaults(monkeypatch):
     assert env["MOLT_SESSION_ID"] == "monty-conformance"
 
 
+def test_molt_build_env_overrides_ambient_roots(monkeypatch):
+    repo_root = Path("/tmp/molt-repo")
+    monkeypatch.setenv("CARGO_TARGET_DIR", "/tmp/ambient-target")
+    monkeypatch.setenv("TMPDIR", "/tmp/ambient-tmp")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/ambient-pythonpath")
+    monkeypatch.setenv("MOLT_SESSION_ID", "ambient-session")
+    monkeypatch.setenv("KEEP_ME", "1")
+
+    env = run_molt_conformance._molt_build_env(repo_root)
+
+    assert env["CARGO_TARGET_DIR"] == str(repo_root / "target")
+    assert env["TMPDIR"] == str(repo_root / "tmp")
+    assert env["PYTHONPATH"] == str(repo_root / "src")
+    assert env["MOLT_SESSION_ID"] == "monty-conformance"
+    assert env["KEEP_ME"] == "1"
+
+
 def test_exit_code_fails_on_compile_errors_and_timeouts():
-    assert run_molt_conformance._exit_code_for_stats(
-        run_molt_conformance.Stats(passed=12, failed=0, compile_error=1, timeout=0)
-    ) == 1
-    assert run_molt_conformance._exit_code_for_stats(
-        run_molt_conformance.Stats(passed=12, failed=0, compile_error=0, timeout=1)
-    ) == 1
-    assert run_molt_conformance._exit_code_for_stats(
-        run_molt_conformance.Stats(passed=12, failed=1, compile_error=0, timeout=0)
-    ) == 1
-    assert run_molt_conformance._exit_code_for_stats(
-        run_molt_conformance.Stats(passed=12, failed=0, compile_error=0, timeout=0)
-    ) == 0
+    assert (
+        run_molt_conformance._exit_code_for_stats(
+            run_molt_conformance.Stats(passed=12, failed=0, compile_error=1, timeout=0)
+        )
+        == 1
+    )
+    assert (
+        run_molt_conformance._exit_code_for_stats(
+            run_molt_conformance.Stats(passed=12, failed=0, compile_error=0, timeout=1)
+        )
+        == 1
+    )
+    assert (
+        run_molt_conformance._exit_code_for_stats(
+            run_molt_conformance.Stats(passed=12, failed=1, compile_error=0, timeout=0)
+        )
+        == 1
+    )
+    assert (
+        run_molt_conformance._exit_code_for_stats(
+            run_molt_conformance.Stats(passed=12, failed=0, compile_error=0, timeout=0)
+        )
+        == 0
+    )
 
 
 def test_selected_test_files_supports_smoke_and_full_suites(tmp_path: Path):
@@ -128,10 +157,16 @@ def test_main_writes_json_summary_for_requested_suite(tmp_path: Path, monkeypatc
     monkeypatch.setattr(run_molt_conformance, "CORPUS_DIR", corpus_dir)
     monkeypatch.setattr(run_molt_conformance, "SMOKE_MANIFEST", smoke_manifest)
     monkeypatch.setattr(run_molt_conformance, "find_molt", lambda: "molt")
-    monkeypatch.setattr(run_molt_conformance, "preflight", lambda molt, corpus, tmpdir: True)
-    monkeypatch.setattr(run_molt_conformance, "compile_file", lambda molt, src, out: (True, ""))
+    monkeypatch.setattr(
+        run_molt_conformance, "preflight", lambda molt, selected_files, tmpdir: True
+    )
+    monkeypatch.setattr(
+        run_molt_conformance, "compile_file", lambda molt, src, out: (True, "")
+    )
     monkeypatch.setattr(run_molt_conformance, "run_binary", lambda binary: (0, "", ""))
-    monkeypatch.setattr(run_molt_conformance, "parse_expectation", lambda filepath: ("success", ""))
+    monkeypatch.setattr(
+        run_molt_conformance, "parse_expectation", lambda filepath: ("success", "")
+    )
 
     rc = run_molt_conformance.main(
         ["--suite", "smoke", "--json-out", str(summary_path)]
@@ -148,3 +183,34 @@ def test_main_writes_json_summary_for_requested_suite(tmp_path: Path, monkeypatc
     assert summary["compile_error"] == 0
     assert summary["timeout"] == 0
     assert summary["skipped"] == 0
+
+
+def test_main_preflight_honors_requested_suite_selection(tmp_path: Path, monkeypatch):
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    (corpus_dir / "alpha.py").write_text("print('alpha')\n", encoding="utf-8")
+    (corpus_dir / "beta.py").write_text("print('beta')\n", encoding="utf-8")
+    smoke_manifest = corpus_dir / "SMOKE.txt"
+    smoke_manifest.write_text("alpha.py\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_preflight(molt, selected_files, tmpdir):
+        captured["selected_files"] = selected_files
+        return True
+
+    monkeypatch.setattr(run_molt_conformance, "CORPUS_DIR", corpus_dir)
+    monkeypatch.setattr(run_molt_conformance, "SMOKE_MANIFEST", smoke_manifest)
+    monkeypatch.setattr(run_molt_conformance, "find_molt", lambda: "molt")
+    monkeypatch.setattr(run_molt_conformance, "preflight", fake_preflight)
+    monkeypatch.setattr(
+        run_molt_conformance, "compile_file", lambda molt, src, out: (True, "")
+    )
+    monkeypatch.setattr(run_molt_conformance, "run_binary", lambda binary: (0, "", ""))
+    monkeypatch.setattr(
+        run_molt_conformance, "parse_expectation", lambda filepath: ("success", "")
+    )
+
+    rc = run_molt_conformance.main(["--suite", "smoke"])
+
+    assert rc == 0
+    assert [path.name for path in captured["selected_files"]] == ["alpha.py"]

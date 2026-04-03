@@ -4,14 +4,18 @@ Each layer is a self-contained verification step that produces a LayerResult.
 Layers are grouped into profiles (quick, standard, deep) where each profile
 is a strict superset of the previous one.
 """
+
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -121,6 +125,9 @@ def _run_cmd(
         )
 
 
+CONFORMANCE_LAYER_TIMEOUT_S = 1800
+
+
 # ---------------------------------------------------------------------------
 # Quick-profile layer implementations
 # ---------------------------------------------------------------------------
@@ -150,6 +157,7 @@ def run_layer_compile(config: HarnessConfig) -> LayerResult:
     detail = "clean compile, no warnings"
     if has_warnings:
         import re as _re
+
         m = _re.search(r"generated (\d+) warning", combined)
         count = m.group(1) if m else "some"
         detail = f"compiled OK with {count} warnings (enforced in lint layer)"
@@ -246,23 +254,50 @@ def run_layer_unit_rust(config: HarnessConfig) -> LayerResult:
     test_runs: list[tuple[str, list[str]]] = []
 
     if "molt-runtime" in available:
-        test_runs.append((
-            "molt-runtime resource+audit",
-            ["cargo", "test", "-p", "molt-runtime", "--lib", "--", "resource::tests", "audit::tests"],
-        ))
-        test_runs.append((
-            "molt-runtime enforcement",
-            ["cargo", "test", "-p", "molt-runtime", "--test", "resource_enforcement"],
-        ))
+        test_runs.append(
+            (
+                "molt-runtime resource+audit",
+                [
+                    "cargo",
+                    "test",
+                    "-p",
+                    "molt-runtime",
+                    "--lib",
+                    "--",
+                    "resource::tests",
+                    "audit::tests",
+                ],
+            )
+        )
+        test_runs.append(
+            (
+                "molt-runtime enforcement",
+                [
+                    "cargo",
+                    "test",
+                    "-p",
+                    "molt-runtime",
+                    "--test",
+                    "resource_enforcement",
+                ],
+            )
+        )
     if "molt-backend" in available:
-        test_runs.append((
-            "molt-backend",
-            ["cargo", "test", "-p", "molt-backend", "--lib"],
-        ))
+        test_runs.append(
+            (
+                "molt-backend",
+                ["cargo", "test", "-p", "molt-backend", "--lib"],
+            )
+        )
 
     # Additional crates that get a full `cargo test` if present.
-    for crate in ["molt-snapshot", "molt-embed", "molt-harness",
-                  "molt-runtime-protobuf", "molt-ffi"]:
+    for crate in [
+        "molt-snapshot",
+        "molt-embed",
+        "molt-harness",
+        "molt-runtime-protobuf",
+        "molt-ffi",
+    ]:
         if crate in available:
             test_runs.append((crate, ["cargo", "test", "-p", crate]))
 
@@ -515,7 +550,10 @@ def run_layer_resource(config: HarnessConfig) -> LayerResult:
         name = scenario.stem
         if name == "recursion_limit":
             # RecursionError is catchable — scenario should succeed cleanly
-            if proc.returncode == 0 and "RecursionError caught correctly" in proc.stdout:
+            if (
+                proc.returncode == 0
+                and "RecursionError caught correctly" in proc.stdout
+            ):
                 passed += 1
             else:
                 failed += 1
@@ -602,8 +640,13 @@ def run_layer_fuzz(config: HarnessConfig) -> LayerResult:
     for target in targets:
         proc = _run_cmd(
             [
-                "cargo", "+nightly", "fuzz", "run", target,
-                "--", f"-max_total_time={duration}",
+                "cargo",
+                "+nightly",
+                "fuzz",
+                "run",
+                target,
+                "--",
+                f"-max_total_time={duration}",
             ],
             cwd=fuzz_dir,
             timeout_s=duration + 60,
@@ -627,10 +670,33 @@ def run_layer_fuzz(config: HarnessConfig) -> LayerResult:
     )
 
 
+def _load_molt_conformance_summary(path: Path) -> dict[str, int | float] | None:
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    pass_count = int(payload["passed"])
+    fail_count = int(payload["failed"])
+    compile_error_count = int(payload["compile_error"])
+    timeout_count = int(payload["timeout"])
+    skip_count = int(payload["skipped"])
+    executed_count = pass_count + fail_count
+    return {
+        "test_count": int(payload["total"]),
+        "pass_count": pass_count,
+        "fail_count": fail_count,
+        "compile_error_count": compile_error_count,
+        "timeout_count": timeout_count,
+        "skip_count": skip_count,
+        "executed_count": executed_count,
+        "pass_rate": pass_count / executed_count if executed_count else 0.0,
+        "duration_s": float(payload["duration_s"]),
+    }
+
+
 def run_layer_conformance(config: HarnessConfig) -> LayerResult:
-    """Run Monty conformance via the CPython runner."""
+    """Run Monty conformance through the canonical Molt runner."""
     start = time.monotonic()
-    runner = config.project_root / "tests" / "harness" / "run_monty_conformance.py"
+    runner = config.project_root / "tests" / "harness" / "run_molt_conformance.py"
     if not runner.exists():
         return LayerResult(
             name="conformance",
@@ -639,29 +705,56 @@ def run_layer_conformance(config: HarnessConfig) -> LayerResult:
             details="runner not found",
         )
 
-    proc = _run_cmd(
-        ["python3", str(runner)],
-        cwd=config.project_root,
-        timeout_s=300,
-    )
+    tmp_root = config.project_root / "tmp"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="molt_harness_conformance_",
+        dir=tmp_root,
+    ) as tmpdir:
+        summary_path = Path(tmpdir) / "conformance_summary.json"
+        proc = _run_cmd(
+            [
+                sys.executable,
+                str(runner),
+                "--suite",
+                "full",
+                "--json-out",
+                str(summary_path),
+            ],
+            cwd=config.project_root,
+            timeout_s=CONFORMANCE_LAYER_TIMEOUT_S,
+            env={"MOLT_BIN": config.molt_cmd},
+        )
+        metrics = _load_molt_conformance_summary(summary_path)
     dur = time.monotonic() - start
 
-    match = re.search(r"(\d+)/(\d+)\s+\((\d+)%\)\s+passed", proc.stdout)
-    if match:
-        passed, total = int(match.group(1)), int(match.group(2))
-        pct = int(match.group(3))
+    if metrics is not None:
+        failed = int(metrics["fail_count"])
+        compile_errors = int(metrics["compile_error_count"])
+        timeouts = int(metrics["timeout_count"])
+        skipped = int(metrics["skip_count"])
+        passed = int(metrics["pass_count"])
+        clean = (
+            failed == 0
+            and compile_errors == 0
+            and timeouts == 0
+            and proc.returncode == 0
+        )
         return LayerResult(
             name="conformance",
-            status=LayerStatus.PASS if passed == total else LayerStatus.FAIL,
+            status=LayerStatus.PASS if clean else LayerStatus.FAIL,
             duration_s=dur,
-            details=f"{passed}/{total} ({pct}%)",
-            metrics={"test_count": total, "pass_count": passed, "pass_rate": pct / 100},
+            details=(
+                f"{passed} passed, {failed} failed, {compile_errors} compile errors, "
+                f"{timeouts} timeouts, {skipped} skipped"
+            ),
+            metrics=metrics,
         )
     return LayerResult(
         name="conformance",
         status=LayerStatus.FAIL,
         duration_s=dur,
-        details=f"parse error: {proc.stdout[-200:]}",
+        details=f"parse error: {(proc.stderr or proc.stdout)[-200:]}",
     )
 
 
@@ -769,9 +862,13 @@ LAYERS: list[LayerDef] = [
 assert len(LAYERS) == 16, f"expected 16 layers, got {len(LAYERS)}"
 
 # Profile definitions — each is a strict superset of the previous.
-_QUICK_NAMES = [l.name for l in LAYERS if l.profile == "quick"]
-_STANDARD_NAMES = _QUICK_NAMES + [l.name for l in LAYERS if l.profile == "standard"]
-_DEEP_NAMES = _STANDARD_NAMES + [l.name for l in LAYERS if l.profile == "deep"]
+_QUICK_NAMES = [layer.name for layer in LAYERS if layer.profile == "quick"]
+_STANDARD_NAMES = _QUICK_NAMES + [
+    layer.name for layer in LAYERS if layer.profile == "standard"
+]
+_DEEP_NAMES = _STANDARD_NAMES + [
+    layer.name for layer in LAYERS if layer.profile == "deep"
+]
 
 PROFILES: dict[str, list[str]] = {
     "quick": _QUICK_NAMES,
@@ -779,7 +876,7 @@ PROFILES: dict[str, list[str]] = {
     "deep": _DEEP_NAMES,
 }
 
-_LAYER_INDEX: dict[str, LayerDef] = {l.name: l for l in LAYERS}
+_LAYER_INDEX: dict[str, LayerDef] = {layer.name: layer for layer in LAYERS}
 
 
 def get_layers_for_profile(profile: str) -> list[LayerDef]:

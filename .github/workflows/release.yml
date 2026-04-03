@@ -1,8 +1,9 @@
 name: release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
@@ -43,7 +44,8 @@ jobs:
             arch: x86_64
             self_hosted: false
     env:
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      EVENT_NAME: ${{ github.event_name }}
+      REF_NAME: ${{ github.ref_name }}
       INPUT_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v4
@@ -51,8 +53,8 @@ jobs:
       - name: Resolve version
         shell: bash
         run: |
-          if [ -n "$RELEASE_TAG" ]; then
-            VERSION="$RELEASE_TAG"
+          if [ "$EVENT_NAME" = "push" ] && [ -n "$REF_NAME" ]; then
+            VERSION="$REF_NAME"
           elif [ -n "$INPUT_VERSION" ]; then
             VERSION="$INPUT_VERSION"
           else
@@ -181,7 +183,7 @@ jobs:
             dist/molt-*-${{ matrix.platform }}-${{ matrix.arch }}.*
 
       - name: Upload release assets
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}
@@ -191,7 +193,8 @@ jobs:
     runs-on: ubuntu-24.04
     needs: build
     env:
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      EVENT_NAME: ${{ github.event_name }}
+      REF_NAME: ${{ github.ref_name }}
       INPUT_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v4
@@ -199,8 +202,8 @@ jobs:
       - name: Resolve version
         shell: bash
         run: |
-          if [ -n "$RELEASE_TAG" ]; then
-            VERSION="$RELEASE_TAG"
+          if [ "$EVENT_NAME" = "push" ] && [ -n "$REF_NAME" ]; then
+            VERSION="$REF_NAME"
           elif [ -n "$INPUT_VERSION" ]; then
             VERSION="$INPUT_VERSION"
           else
@@ -234,7 +237,7 @@ jobs:
             dist/release_manifest.json
 
       - name: Upload release manifest assets
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}

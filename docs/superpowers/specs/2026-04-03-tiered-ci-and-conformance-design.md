@@ -1,6 +1,6 @@
 # Molt Tiered CI And Canonical Conformance: Cheap Presubmit, Local Authority
 
-**Status:** Draft — Pending Review
+**Status:** Approved
 **Date:** 2026-04-03
 **Scope:** GitHub workflow topology and the canonical Molt conformance lane
 **Primary goal:** Keep GitHub validation affordable and high-signal while local

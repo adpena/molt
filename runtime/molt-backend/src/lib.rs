@@ -3059,17 +3059,6 @@ impl SimpleBackend {
                         // into jump/label blocks. Rewrite phi merges only for
                         // functions that actually enter that roundtrip so the
                         // state-machine backend does not see residual phi ops.
-                        // Progress log: atomic writes via flock
-                        {
-                            use std::io::Write;
-                            if let Ok(mut f) = std::fs::OpenOptions::new()
-                                .create(true).append(true)
-                                .open("/tmp/tir_progress.log")
-                            {
-                                let msg = format!("|||START:{}:{}|||\n", tmp_func.name, tmp_func.ops.len());
-                                let _ = f.write_all(msg.as_bytes());
-                            }
-                        }
                         rewrite_phi_to_store_load(&mut tmp_func.ops);
                         // Wrap TIR pipeline in catch_unwind so any panic in
                         // lowering/optimization falls back to original ops

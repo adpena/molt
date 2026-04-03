@@ -29,11 +29,11 @@ jobs:
         run: cargo build --release -p molt-runtime
 
       - name: Run benchmarks
-        run: python3 bench/harness.py --bench --output bench/results.json
+        run: python3 bench/harness.py --bench --molt target/release/molt --output bench/results/perf-validation.json
 
       - name: Upload benchmark artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
-          path: bench/results.json
+          path: bench/results/perf-validation.json
