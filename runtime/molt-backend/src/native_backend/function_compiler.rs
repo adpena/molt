@@ -861,22 +861,58 @@ impl SimpleBackend {
         reachable_blocks.insert(entry_block);
         builder.switch_to_block(entry_block);
 
-        // Pre-declare shadow Variables for all store_var targets.
-        // Each gets def_var(0) at entry so Cranelift can resolve
-        // phi nodes on the pre-loop path (before the first store_var).
+        // Pre-declare shadow Variables for store_var targets whose source
+        // is known to be an integer.  Only these need shadow tracking across
+        // loop back-edges.  Pre-declaring ALL store_var targets would give
+        // non-integer variables (sets, lists, strings) a bogus shadow of 0,
+        // causing arithmetic operators to take the fast-int path and produce
+        // garbage (e.g., set subtraction returning an int).
         {
-            let zero = builder.ins().iconst(types::I64, 0);
-            let mut seen = std::collections::BTreeSet::new();
+            // First pass: collect variable names whose source is int-typed.
+            let mut int_store_targets: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            // Build a set of output names that produce int values.
+            let mut int_valued_outputs: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            for op in &func_ir.ops {
+                if let Some(ref out) = op.out {
+                    let is_int_op = matches!(
+                        op.kind.as_str(),
+                        "const" | "const_bool"
+                    ) || op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int")
+                        || op.type_hint.as_deref() == Some("bool")
+                        || matches!(op.kind.as_str(),
+                            "add" | "sub" | "mul" | "floordiv" | "mod_"
+                            | "inplace_add" | "inplace_sub" | "inplace_mul"
+                            | "inplace_floordiv" | "inplace_mod"
+                            | "lshift" | "rshift" | "bitand" | "bitor" | "bitxor"
+                            | "invert" | "neg" | "pos"
+                            if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
+                        );
+                    if is_int_op {
+                        int_valued_outputs.insert(out.clone());
+                    }
+                }
+            }
             for op in &func_ir.ops {
                 if op.kind == "store_var" {
                     if let Some(ref name) = op.var.as_ref().or(op.out.as_ref()) {
-                        if seen.insert(name.to_string()) {
-                            let v = builder.declare_var(types::I64);
-                            builder.def_var(v, zero);
-                            raw_int_shadow_vars.insert(name.to_string(), v);
+                        if let Some(ref args) = op.args {
+                            if let Some(src) = args.first() {
+                                if int_valued_outputs.contains(src) {
+                                    int_store_targets.insert(name.to_string());
+                                }
+                            }
                         }
                     }
                 }
+            }
+            let zero = builder.ins().iconst(types::I64, 0);
+            for name in &int_store_targets {
+                let v = builder.declare_var(types::I64);
+                builder.def_var(v, zero);
+                raw_int_shadow_vars.insert(name.clone(), v);
             }
         }
 
@@ -2607,6 +2643,15 @@ impl SimpleBackend {
                     let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
                         panic!("RHS not found in {} op {}", func_ir.name, op_idx)
                     });
+                    if std::env::var("MOLT_DEBUG_SUB_SHADOW").as_deref() == Ok("1") {
+                        eprintln!(
+                            "DEBUG sub func={} op={} lhs={} rhs={} lhs_shadow={} rhs_shadow={} fast_int={:?} type_hint={:?}",
+                            func_ir.name, op_idx, args[0], args[1],
+                            raw_int_shadow.contains_key(&args[0]),
+                            raw_int_shadow.contains_key(&args[1]),
+                            op.fast_int, op.type_hint,
+                        );
+                    }
                     let res = if op.fast_float.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("float")
                     {
@@ -17265,7 +17310,7 @@ impl SimpleBackend {
                     // Load a named variable into an output (block arg receiving / copy).
                     // Use Variable-backed shadow (phi-resolved across loop iterations)
                     // when available, falling back to Value-based shadow.
-                    let is_typed_int = op.fast_int.unwrap_or(false)
+                    let _is_typed_int = op.fast_int.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("int");
                     if let Some(ref var_name) = op.var {
                         let val = var_get(&mut builder, &vars, var_name)
@@ -17279,10 +17324,10 @@ impl SimpleBackend {
                                 raw_int_shadow.insert(out_name.clone(), raw_val);
                             } else if let Some(&raw) = raw_int_shadow.get(var_name.as_str()) {
                                 raw_int_shadow.insert(out_name.clone(), raw);
-                            } else if is_typed_int {
-                                let raw = unbox_int(&mut builder, *val, &nbc);
-                                raw_int_shadow.insert(out_name.clone(), raw);
-                                raw_int_shadow.insert(var_name.clone(), raw);
+                            // } else if is_typed_int {
+                            //     unbox_int seeding disabled — creates stale Values
+                            //     in loop contexts where the shadow doesn't participate
+                            //     in Cranelift's SSA phi resolution.
                             }
                         }
                     } else if let Some(ref args) = op.args
@@ -17294,10 +17339,8 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out_name, *val);
                             if let Some(&raw) = raw_int_shadow.get(&args[0]) {
                                 raw_int_shadow.insert(out_name.clone(), raw);
-                            } else if is_typed_int {
-                                let raw = unbox_int(&mut builder, *val, &nbc);
-                                raw_int_shadow.insert(out_name.clone(), raw);
-                                raw_int_shadow.insert(args[0].clone(), raw);
+                            // } else if is_typed_int {
+                            //     (same: disabled for loop safety)
                             }
                         }
                     }
