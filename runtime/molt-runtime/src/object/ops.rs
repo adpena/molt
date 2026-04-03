@@ -7541,7 +7541,18 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
                 TYPE_ID_PROPERTY => Cow::Borrowed("property"),
                 TYPE_ID_SUPER => Cow::Borrowed("super"),
                 TYPE_ID_OBJECT => Cow::Owned(class_name_for_error(type_of_bits(_py, obj.bits()))),
-                _ => Cow::Borrowed("object"),
+                _ => {
+                    // For unknown type_ids (custom class instances that aren't
+                    // TYPE_ID_OBJECT), try to resolve the class name via
+                    // type_of_bits. Falls back to "object" if lookup fails.
+                    let class_bits = type_of_bits(_py, obj.bits());
+                    let name = class_name_for_error(class_bits);
+                    if name != "<class>" {
+                        Cow::Owned(name)
+                    } else {
+                        Cow::Borrowed("object")
+                    }
+                }
             };
         }
     }
