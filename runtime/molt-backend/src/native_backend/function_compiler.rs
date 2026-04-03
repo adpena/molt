@@ -17233,6 +17233,11 @@ impl SimpleBackend {
                 "load_var" | "copy_var" => {
                     // Load a named variable into an output (block arg receiving / copy).
                     // Propagate raw_int_shadow from source to output.
+                    // If the source has no shadow but the op is typed (fast_int/type_hint),
+                    // seed the shadow by unboxing — this closes the type gap for TIR-typed
+                    // parameters that enter as NaN-boxed values.
+                    let is_typed_int = op.fast_int.unwrap_or(false)
+                        || op.type_hint.as_deref() == Some("int");
                     if let Some(ref var_name) = op.var {
                         let val = var_get(&mut builder, &vars, var_name)
                             .expect("load_var: var not found");
@@ -17240,6 +17245,11 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out_name, *val);
                             if let Some(&raw) = raw_int_shadow.get(var_name.as_str()) {
                                 raw_int_shadow.insert(out_name.clone(), raw);
+                            } else if is_typed_int {
+                                let raw = unbox_int(&mut builder, *val, &nbc);
+                                raw_int_shadow.insert(out_name.clone(), raw);
+                                // Also seed the source so downstream uses benefit.
+                                raw_int_shadow.insert(var_name.clone(), raw);
                             }
                         }
                     } else if let Some(ref args) = op.args
@@ -17251,6 +17261,10 @@ impl SimpleBackend {
                             def_var_named(&mut builder, &vars, out_name, *val);
                             if let Some(&raw) = raw_int_shadow.get(&args[0]) {
                                 raw_int_shadow.insert(out_name.clone(), raw);
+                            } else if is_typed_int {
+                                let raw = unbox_int(&mut builder, *val, &nbc);
+                                raw_int_shadow.insert(out_name.clone(), raw);
+                                raw_int_shadow.insert(args[0].clone(), raw);
                             }
                         }
                     }
