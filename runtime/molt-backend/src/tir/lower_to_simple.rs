@@ -1086,9 +1086,6 @@ fn emit_terminator(
             //   store_var then_args...
             //   jump → then_block
             let needs_trampoline = !then_args.is_empty();
-            {
-                use std::io::Write;
-            }
             if needs_trampoline {
                 // Allocate a fresh label for the then-path trampoline.
                 let trampoline_label = {
