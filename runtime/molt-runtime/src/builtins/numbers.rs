@@ -270,8 +270,19 @@ pub(crate) fn bigint_bits(_py: &PyToken<'_>, value: BigInt) -> u64 {
 #[inline]
 pub(crate) fn int_bits_from_i128(_py: &PyToken<'_>, val: i128) -> u64 {
     if let Some(i) = inline_int_from_i128(val) {
+        // Debug trace: log when a value near the boundary is inlined
+        if val.abs() > (1_i128 << 44) {
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/bigint_trace.log") {
+                use std::io::Write;
+                let _ = writeln!(f, "INT_BITS_I128_INLINE val={} inlined_as={}", val, i);
+            }
+        }
         MoltObject::from_int(i).bits()
     } else {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/bigint_trace.log") {
+            use std::io::Write;
+            let _ = writeln!(f, "INT_BITS_I128_BIGINT val={}", val);
+        }
         bigint_bits(_py, BigInt::from(val))
     }
 }
