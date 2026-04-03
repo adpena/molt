@@ -3083,10 +3083,10 @@ impl SimpleBackend {
                                     &tir_func, &type_map,
                                 );
                                 if !crate::tir::lower_to_simple::validate_labels(&ops) {
-                                    eprintln!("TIR LABEL VALIDATION FAILED: {}", func_name);
                                     return None;
                                 }
-                                eprintln!("TIR APPLIED: {} ({} ops -> {} ops)", func_name, tmp_func.ops.len(), ops.len());
+
+
                                 // Debug: dump before/after for all TIR functions.
                                 if func_name.contains("count") || std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| func_name.contains(&p)).unwrap_or(false) {
                                     use std::io::Write;
