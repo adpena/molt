@@ -203,7 +203,7 @@ unsafe fn guard_layout_match(
             return false;
         }
         let header = header_from_obj_ptr(obj_ptr);
-        if (*header).type_id != TYPE_ID_OBJECT {
+        if (*header).type_id != TYPE_ID_OBJECT && (*header).type_id != TYPE_ID_DATACLASS {
             profile_hit(_py, &LAYOUT_GUARD_FAIL);
             profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT);
             return false;
