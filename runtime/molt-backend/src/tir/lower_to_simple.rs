@@ -638,7 +638,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     // have a corresponding label op. If validation fails, it means the
     // TIR roundtrip lost a handler block's label mapping.
     // Debug: dump sieve TIR output to file
-    if func.name.contains("test_sieve__sieve") {
+    if func.name.contains("sieve") {
         use std::io::Write;
         if let Ok(mut f) = std::fs::File::create("/tmp/sieve_lower_output.txt") {
             for (i, op) in out.iter().enumerate() {
@@ -1773,7 +1773,23 @@ fn emit_guard_raise_path(
         // Emit ops.
         emit_block_ops_inner(blk, types, original_to_new_label, out);
 
-        // Emit terminator and follow chain.
+        // Emit terminator and follow chain.  Stop if the block
+        // contains a Raise (dead end) — don't follow into the
+        // cond block which is already emitted in the header.
+        let has_raise = blk.ops.iter().any(|op| op.opcode == OpCode::Raise);
+        if has_raise {
+            emit_terminator(
+                blk,
+                block_param_vars,
+                block_label_id,
+                &func.loop_roles,
+                out,
+                original_has_ret,
+                super::blocks::LoopRole::None,
+                &func.loop_break_kinds,
+            );
+            break;
+        }
         match &blk.terminator {
             Terminator::Branch { target, args } => {
                 emit_block_arg_stores(*target, args, block_param_vars, out);
