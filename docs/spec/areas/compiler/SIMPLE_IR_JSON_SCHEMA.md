@@ -4,6 +4,12 @@ Formal schema for the SimpleIR interchange format between the Python frontend
 (`src/molt/frontend/__init__.py`) and the Rust backend
 (`runtime/molt-backend/src/ir.rs`).
 
+> Scope note: this document describes the current transport format only. The
+> canonical IR architecture and representation contract live in
+> `docs/spec/areas/compiler/0100_MOLT_IR.md`. Fields such as `fast_int`,
+> `fast_float`, and `raw_int` are transitional lowering hints for the current
+> backend path; they are not a substitute for representation-aware SSA.
+
 ## Transport Formats
 
 ### Batch JSON
@@ -88,6 +94,10 @@ so absent fields deserialize to `None`/default.
 | `container_type`  | `string?`  | `null`  | For `contains`: known container type (`set`, `frozenset`, `dict`, `list`, `str`) |
 | `type_hint`       | `string?`  | `null`  | Type annotation from source                                    |
 | `ic_index`        | `i64?`     | `null`  | Inline cache site index for `get_attr_generic_ptr`. Transmitted inside a nested `metadata` object in JSON: `{"metadata": {"ic_index": N}}` |
+
+`fast_int`, `fast_float`, and `raw_int` exist to describe the current backend
+transport. New lowering work should prefer preserving explicit representation in
+typed IR over introducing additional transport-only hint fields.
 
 ### Validation Constraints
 

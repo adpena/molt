@@ -7,6 +7,21 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
 - **TIR (Typed IR)**: SSA with concrete `MoltType` for every value.
 - **LIR (Low-level IR)**: explicit memory operations, reference counting, and layout-level access.
 
+## Canonical backend contract
+- The canonical optimization/codegen contract is representation-aware SSA carried
+  through TIR and, where needed, made explicit in LIR.
+- Representation is part of the IR contract, not backend-local recovery
+  metadata. Values proven inline or unboxed must stay in that lane through SSA
+  values, block parameters, and join points until an explicit conversion is
+  required.
+- `Box`, `Unbox`, `Cast`, and `Widen` are first-class boundary operations. They
+  are the canonical way to cross representation boundaries.
+- The current `SimpleIR` transport and hint fields such as `fast_int`,
+  `fast_float`, and `raw_int` are transitional implementation details for the
+  existing backends, not the long-term semantic contract.
+- Backend-specific shadow state or side-channel unboxed tracking is
+  implementation debt and must not be treated as a stable interface.
+
 ## Implementation layout
 - Keep Rust crate entrypoints (`lib.rs`) thin; implement runtime/backend subsystems in focused modules under `src/` and re-export from `lib.rs`.
 
