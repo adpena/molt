@@ -376,22 +376,11 @@ fn preanalyze_function_ir(
             // the loop (e.g., the cell list created at function entry).
             // These variables are passed as Cranelift block parameters to
             // the loop header, so they must survive the entire loop.
-            let mut max_backedge = 0usize;
-            for (idx, op) in func_ir.ops.iter().enumerate() {
-                if matches!(op.kind.as_str(), "jump" | "br_if") {
-                    if let Some(target_id) = op.value {
-                        if let Some(&target_pos) = label_pos.get(&target_id) {
-                            if target_pos < idx && idx > max_backedge {
-                                max_backedge = idx;
-                            }
-                        }
-                    }
-                }
-            }
-            if max_backedge > 0 {
+            if has_back_edge {
+                let func_end = func_ir.ops.len().saturating_sub(1);
                 for entry in last_use.values_mut() {
-                    if *entry < max_backedge {
-                        *entry = max_backedge;
+                    if *entry < func_end {
+                        *entry = func_end;
                     }
                 }
             }
