@@ -78,19 +78,30 @@ and keep partial runs bounded/reproducible.
 
 ## Combined Native + WASM Report
 
-After writing `bench/results/bench.json` and `bench/results/bench_wasm.json` (or
-linked output when using `--linked`), generate the
-combined report:
+After writing the benchmark JSON artifacts, generate the canonical combined
+report and refresh the `STATUS.md` benchmark block from the checked-in manifest:
 
 ```bash
-uv run --python 3.14 python3 tools/bench_report.py
+uv run --python 3.14 python3 tools/bench_report.py \
+  --manifest bench/results/docs_manifest.json \
+  --update-status-doc
 ```
 
-This writes `docs/benchmarks/bench_summary.md` by default. Commit the report alongside
-the JSON results to keep native and WASM performance tracking aligned.
-Use `--update-status-doc` to refresh the concise benchmark summary block in
-`docs/spec/STATUS.md`. README should link to status and benchmark docs, not own
-generated benchmark data.
+The manifest is the single source of truth for which benchmark artifacts feed
+the published docs:
+- detailed generated report: `docs/benchmarks/bench_summary.md`
+- concise generated summary block: `docs/spec/STATUS.md`
+
+Check freshness without rewriting:
+
+```bash
+uv run --python 3.14 python3 tools/bench_report.py \
+  --manifest bench/results/docs_manifest.json \
+  --check \
+  --update-status-doc
+```
+
+README should link to status and benchmark docs, not own generated benchmark data.
 
 ## Benchmark Artifact Diffing
 

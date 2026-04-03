@@ -58,6 +58,7 @@ winget-pkgs/
 bench/results/*
 !bench/results/bench.json
 !bench/results/bench_wasm.json
+!bench/results/docs_manifest.json
 !bench/results/profile_analysis_*.md
 !bench/results/profiles_*
 !bench/results/full_native_baseline_*.json
