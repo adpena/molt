@@ -235,7 +235,17 @@ pub(crate) fn int_bits_from_i64(_py: &PyToken<'_>, val: i64) -> u64 {
 }
 
 pub(crate) fn bigint_bits(_py: &PyToken<'_>, value: BigInt) -> u64 {
-    let total = mem::size_of::<MoltHeader>() + mem::size_of::<BigInt>();
+    // BigInt contains a Vec<u64> which stores digits on the heap.
+    // The BigInt struct itself is fixed-size (Sign enum + Vec metadata).
+    // We allocate space for MoltHeader + the BigInt struct.
+    // The Vec's heap buffer is separate and managed by the Vec allocator.
+    let bigint_size = mem::size_of::<BigInt>();
+    let total = mem::size_of::<MoltHeader>() + bigint_size;
+    // Debug: log size info on first call
+    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("MOLT_DEBUG: BigInt size={} MoltHeader size={} total={}", bigint_size, mem::size_of::<MoltHeader>(), total);
+    }
     let ptr = alloc_object(_py, total, TYPE_ID_BIGINT);
     if ptr.is_null() {
         return MoltObject::none().bits();
