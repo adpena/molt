@@ -16900,14 +16900,21 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("store_var: src not found");
                     let var_name = op.var.as_deref().or(op.out.as_deref());
                     if let Some(name) = var_name {
-                        // inc_ref the new value so it's owned by the variable.
-                        // This is critical for heap-allocated values (bigints,
-                        // strings, etc.) that flow through loop-carried phis:
-                        // without inc_ref, the value can be freed by a dec_ref
-                        // on the old value, leaving a dangling pointer.
-                        //
-                        // molt_inc_ref_obj is a no-op for inline values (ints,
-                        // floats, bools, None) — only heap pointers are touched.
+                        // inc_ref for heap-allocated values flowing through
+                        // loop-carried phis. Inline check: only call inc_ref
+                        // when the value is a heap pointer (NaN-boxed ptr tag).
+                        // For inline ints/floats/bools/None, this is zero-cost.
+                        let tag_check_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+                        let tag_bits = builder.ins().band(*val, tag_check_mask);
+                        let ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
+                        let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
+
+                        let inc_block = builder.create_block();
+                        let cont_block = builder.create_block();
+                        builder.ins().brif(is_ptr, inc_block, &[], cont_block, &[]);
+
+                        builder.switch_to_block(inc_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, inc_block);
                         let inc_ref_callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -16917,6 +16924,10 @@ impl SimpleBackend {
                         );
                         let inc_local = self.module.declare_func_in_func(inc_ref_callee, builder.func);
                         builder.ins().call(inc_local, &[*val]);
+                        jump_block(&mut builder, cont_block, &[]);
+
+                        builder.switch_to_block(cont_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, cont_block);
                         def_var_named(&mut builder, &vars, name, *val);
                     }
                 }
