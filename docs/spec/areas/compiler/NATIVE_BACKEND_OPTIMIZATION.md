@@ -3,6 +3,12 @@
 Full pipeline audit: Python source to native binary. Each stage identifies
 concrete bottlenecks, missing optimizations, and estimated impact.
 
+> Note (2026-04-03): this audit describes the current native backend input path,
+> not the canonical long-term IR contract. The architecture source of truth is
+> `docs/spec/areas/compiler/0100_MOLT_IR.md`. Current `SimpleIR` transport plus
+> hint-driven fast paths are transitional and should be read as optimization
+> debt, not the desired end state.
+
 ---
 
 ## 1. Frontend — Python AST Parsing and Desugaring
@@ -12,8 +18,9 @@ concrete bottlenecks, missing optimizations, and estimated impact.
 
 **How it works**: Python's built-in `ast.parse` produces a CPython AST.
 `SimpleTIRGenerator` is an `ast.NodeVisitor` that walks the tree and emits
-a flat list of `MoltOp` objects (the "TIR" — Typed IR). There is no
-separate HIR stage; desugaring happens inline during the AST visit. The
+a flat list of `MoltOp` objects that feed the current frontend lowering path.
+There is no separate HIR stage in the current implementation; desugaring happens
+inline during the AST visit. The
 generator is ~35,000 lines covering all supported Python constructs.
 
 **Supported features**: Full control flow (if/elif/else, for/while/break/
@@ -33,11 +40,13 @@ operator, match/case, decorators, `*args`/`**kwargs`, type annotations
 
 ---
 
-## 2. TIR Generation (there is no separate HIR)
+## 2. Current Backend Input Transport
 
-The architecture documentation references `HIR -> TIR -> LIR` but the actual
-implementation has only one IR level: the flat `MoltOp` list produced by
-`SimpleTIRGenerator`. There is no explicit HIR or LIR data structure.
+The canonical architecture is `HIR -> TIR -> LIR`, but the current native
+backend still consumes a flattened `SimpleIR` transport emitted by the frontend
+lowering path. That transport is variable-based and string-heavy, so some
+representation facts proven upstream are compressed into hint fields before
+codegen.
 
 **IR format**: Each `MoltOp` has `kind: str`, `args: list[Any]`,
 `result: MoltValue`, `metadata: dict`. This is a simple linear IR with
@@ -57,8 +66,8 @@ structured control flow markers (`IF`/`ELSE`/`END_IF`, `LOOP_START`/
 | Issue | Location | Impact | Effort |
 |-------|----------|--------|--------|
 | **String-typed IR**. Op kinds, variable names, and type hints are all strings. The backend deserializes JSON and matches on `op.kind.as_str()` in a massive match statement (~12,000 lines). An enum-based IR would eliminate string allocation/comparison overhead in the backend. | `OpIR` struct (lib.rs:230), `match op.kind.as_str()` (lib.rs:1949) | Medium — backend compile time, not runtime | High |
-| **JSON serialization between frontend and backend**. The TIR is serialized to JSON via `json.dumps(ir)` (cli.py:9597), piped to the backend process via stdin, then deserialized with serde. For large programs (thousands of functions), this serialization overhead is significant. The daemon mode helps but still uses JSON. | `_compile_with_backend_daemon` (cli.py:5425) | Medium — 100-500ms for large programs | Medium |
-| **No SSA form in the TIR**. Variables can be reassigned; the backend builds Cranelift SSA from the variable-based IR. A pre-SSA conversion in the frontend would enable more aggressive optimizations. | `def_var_named` / `builder.def_var` usage throughout lib.rs | Low — Cranelift handles SSA construction well via `FunctionBuilder` | High |
+| **JSON serialization between frontend and backend**. The current backend transport is serialized to JSON via `json.dumps(ir)` (cli.py:9597), piped to the backend process via stdin, then deserialized with serde. For large programs (thousands of functions), this serialization overhead is significant. The daemon mode helps but still uses JSON. | `_compile_with_backend_daemon` (cli.py:5425) | Medium — 100-500ms for large programs | Medium |
+| **Representation facts degrade before codegen**. Canonical TIR is typed SSA, but the current backend transport collapses many representation facts into variable names plus hints. The backend then has to reconstruct unboxed lanes late, which increases boxing churn, complicates joins, and creates backend-only correctness hazards. | `lower_to_simple.rs`, `OpIR` transport, `compile_func` lowering | High — affects both correctness and hot-path code quality | High |
 
 ---
 
@@ -69,10 +78,15 @@ module/function/variable to type strings with trust levels (`advisory`,
 `guarded`, `trusted`). The type system is entirely optional and advisory by
 default.
 
-**Specialization mechanism**: The frontend sets `fast_int: true` on arithmetic
-ops when it can prove both operands are integers (via type hints, literal
-analysis, or loop induction variables). This is the **only** specialization
-path.
+**Current transport-level specialization mechanism**: The frontend sets
+`fast_int: true` on arithmetic ops when it can prove both operands are integers
+(via type hints, literal analysis, or loop induction variables). This is the
+main specialization hook visible on the current backend transport.
+
+This is an implementation compromise, not the desired endpoint. Upstream TIR
+type refinement and type facts can prove richer representation facts than a
+single `fast_int` bit, but the current lowering path often compresses those
+facts before native codegen.
 
 **How `fast_int` works** (backend lib.rs lines 2102-2190 for `add`):
 - `fast_int=true`: Skip the tag check; directly unbox both operands as ints,
@@ -85,6 +99,7 @@ path.
 
 | Issue | Location | Impact | Effort |
 |-------|----------|--------|--------|
+| **Specialization is hint-driven instead of representation-driven**. The backend mostly sees `fast_int`/`fast_float`/`raw_int` flags rather than first-class representation lanes carried through SSA values and block params. This leaves performance on the table and encourages backend-local complexity. | Frontend type refinement, `lower_to_simple.rs`, backend lowering | High | High |
 | **No float specialization**. There is no `fast_float` path. Float arithmetic always dispatches through `molt_add`/`molt_mul`/etc even when both operands are known floats. The NaN-boxing makes this especially wasteful since float values are the "naked" representation — no tag extraction needed. | All arithmetic ops in lib.rs | **High** — scientific/numerical code takes a ~2-3x penalty vs C for pure float loops | Medium |
 | **No container element type specialization**. `container_elem_hints` and `dict_key_hints` are tracked (frontend line 963-965) but not used for specialization. A list known to contain only ints could use a packed representation. | Frontend type tracking, backend container ops | Medium-High for numeric workloads | High |
 | **No return type propagation across calls**. If `def foo() -> int` is annotated, callers of `foo()` don't get `fast_int` on the result. The type facts system supports this but it's not wired to the call site specialization. | `FunctionFacts.returns` (type_facts.py:24), call lowering in frontend | Medium | Medium |
@@ -141,7 +156,7 @@ progressively disables expensive passes when time budget is exceeded.
 
 ---
 
-## 5. Backend IR Lowering (TIR to Cranelift CLIF)
+## 5. Backend IR Lowering (SimpleIR Transport to Cranelift CLIF)
 
 **Entry point**: `NativeCompiler::compile` (lib.rs:1171) processes the `SimpleIR`
 (deserialized JSON) through three pre-passes then calls `compile_func` per function.

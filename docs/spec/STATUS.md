@@ -35,6 +35,10 @@ It is current-state only. For forward-looking priorities, use
 - CPython coverage is incomplete across language, stdlib, and target-specific
   behavior.
 - Native and WASM parity is still incomplete for several claimed surfaces.
+- The current backend entry path still relies on stringly `SimpleIR` transport
+  plus hint-driven fast paths (`fast_int` / `fast_float` / `raw_int`) instead
+  of one shared representation-aware backend contract across the claimed native
+  and WASM backends.
 - Benchmark reporting and compatibility rollups are being simplified so they are
   generated from canonical evidence instead of maintained by hand in multiple docs.
 
