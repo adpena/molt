@@ -421,9 +421,15 @@ impl<'a> SsaContext<'a> {
                 }
             }
         }
+        // Dedup without sorting — preserve insertion order so that
+        // succs[0] = first edge added (TRUE/fall-through for if/br_if)
+        // and succs[1] = second edge (FALSE/branch target).
+        // The previous sort_unstable() destroyed this semantic ordering,
+        // causing CondBranch then/else blocks to be swapped when the
+        // else block had a smaller block ID than the then block.
         for block_succs in &mut succs {
-            block_succs.sort_unstable();
-            block_succs.dedup();
+            let mut seen = std::collections::HashSet::new();
+            block_succs.retain(|bid| seen.insert(*bid));
         }
 
         let mut live_in: Vec<HashSet<String>> = vec![HashSet::new(); n];
@@ -1182,52 +1188,30 @@ impl<'a> SsaContext<'a> {
                     });
 
                 if succs.len() >= 2 {
-                    // For conditional branches, then_block = TRUE target,
-                    // else_block = FALSE target.
+                    // Successor ordering is preserved from cfg.rs:
+                    //   if:                   succs[0] = fall-through (TRUE), succs[1] = else (FALSE)
+                    //   br_if:                succs[0] = fall-through (FALSE), succs[1] = branch target (TRUE)
+                    //   loop_break_if_true:   succs[0] = break target (TRUE), succs[1] = fall-through (FALSE)
+                    //   loop_break_if_false:  succs[0] = fall-through (TRUE), succs[1] = break target (FALSE)
                     //
-                    // For loop_break_if_true: TRUE → break (exit), so the
-                    // break target is the non-fall-through successor.
-                    // Fall-through = bid+1 = loop body continuation.
-                    //
-                    // Successors are sorted numerically by sort_unstable(),
-                    // so we can't rely on ordering. Instead, identify the
-                    // fall-through (bid+1) and the other successor.
+                    // CondBranch convention: then_block = TRUE path, else_block = FALSE path.
                     let last_kind = last_op.map(|op| op.kind.as_str()).unwrap_or("");
-                    let (then_bid, else_bid) = if matches!(last_kind, "loop_break_if_true") {
-                        // then = break target (non-fall-through)
-                        // else = fall-through (bid+1)
-                        let fall_through = bid + 1;
-                        if succs[0] == fall_through {
-                            (succs[1], succs[0])
-                        } else {
+                    let (then_bid, else_bid) = match last_kind {
+                        "if" => {
+                            // if: succs[0] = then (TRUE/fall-through), succs[1] = else (FALSE)
                             (succs[0], succs[1])
                         }
-                    } else if matches!(last_kind, "loop_break_if_false") {
-                        // then = fall-through (bid+1) = continue
-                        // else = break target (non-fall-through)
-                        let fall_through = bid + 1;
-                        if succs[0] == fall_through {
+                        "loop_break_if_true" => {
+                            // break_if_true: succs[0] = break target (TRUE), succs[1] = continue (FALSE)
                             (succs[0], succs[1])
-                        } else {
-                            (succs[1], succs[0])
                         }
-                    } else if matches!(last_kind, "if") {
-                        // Structured if: TRUE = fall-through (bid+1),
-                        // FALSE = else/end_if (non-fall-through).
-                        let fall_through = bid + 1;
-                        if succs[0] == fall_through {
+                        "loop_break_if_false" => {
+                            // break_if_false: succs[0] = continue (TRUE), succs[1] = break (FALSE)
                             (succs[0], succs[1])
-                        } else {
-                            (succs[1], succs[0])
                         }
-                    } else {
-                        // br_if: TRUE = branch target (non-fall-through),
-                        // FALSE = fall-through (bid+1).
-                        let fall_through = bid + 1;
-                        if succs[0] == fall_through {
+                        _ => {
+                            // br_if: succs[0] = fall-through (FALSE), succs[1] = target (TRUE)
                             (succs[1], succs[0])
-                        } else {
-                            (succs[0], succs[1])
                         }
                     };
                     let then_args = self.collect_branch_args(then_bid, var_stacks);
