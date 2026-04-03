@@ -3085,19 +3085,7 @@ impl SimpleBackend {
                                 if !crate::tir::lower_to_simple::validate_labels(&ops) {
                                     return None;
                                 }
-                                if func_name.contains("user_main") {
-                                    use std::io::Write as _;
-                                    if let Ok(mut f) = std::fs::File::create("/tmp/tir_after_full.txt") {
-                                        for (i, op) in ops.iter().enumerate() {
-                                            let _ = writeln!(f, "{:3}: {:20} out={:15} var={:15} val={:<10} args={:30}",
-                                                i, op.kind,
-                                                op.out.as_deref().unwrap_or(""),
-                                                op.var.as_deref().unwrap_or(""),
-                                                op.value.map(|v| v.to_string()).unwrap_or_default(),
-                                                op.args.as_ref().map(|a| a.join(",")).unwrap_or_default());
-                                        }
-                                    }
-                                }
+
 
 
                                 // Debug: dump before/after for all TIR functions.
