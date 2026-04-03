@@ -25,14 +25,25 @@ pub fn lower_function_to_lir(func: &TirFunction) -> LirFunction {
                 .blocks
                 .get(&bid)
                 .expect("sorted block id must exist");
-            (bid, lower_block(block, &type_map, &mut allocator))
+            (bid, lower_block(block, &refined, &type_map, &mut allocator))
         })
         .collect();
+    let entry_param_types = refined
+        .blocks
+        .get(&refined.entry_block)
+        .map(|block| block.args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let mut param_names = refined.param_names;
+    if param_names.len() != entry_param_types.len() {
+        param_names = (0..entry_param_types.len())
+            .map(|idx| format!("p{idx}"))
+            .collect();
+    }
 
     LirFunction {
         name: refined.name,
-        param_names: refined.param_names,
-        param_types: refined.param_types,
+        param_names,
+        param_types: entry_param_types,
         return_types: match refined.return_type {
             TirType::None => Vec::new(),
             other => vec![other],
@@ -54,11 +65,12 @@ pub fn lower_block_args(args: &[TirValue]) -> Vec<LirValue> {
 
 fn lower_block(
     block: &TirBlock,
+    func: &TirFunction,
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
 ) -> LirBlock {
     let mut ops = lower_block_ops(block.ops.as_slice(), type_map, allocator);
-    let terminator = lower_terminator(&block.terminator, type_map, allocator, &mut ops);
+    let terminator = lower_terminator(&block.terminator, func, type_map, allocator, &mut ops);
     LirBlock {
         id: block.id,
         args: lower_block_args(&block.args),
@@ -206,6 +218,7 @@ fn lir_value_from_type_map(id: ValueId, type_map: &HashMap<ValueId, TirType>) ->
 
 fn lower_terminator(
     terminator: &Terminator,
+    func: &TirFunction,
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     ops: &mut Vec<LirOp>,
@@ -213,7 +226,7 @@ fn lower_terminator(
     match terminator {
         Terminator::Branch { target, args } => LirTerminator::Branch {
             target: *target,
-            args: args.clone(),
+            args: lower_branch_args(*target, args, func, type_map, allocator, ops),
         },
         Terminator::CondBranch {
             cond,
@@ -224,9 +237,9 @@ fn lower_terminator(
         } => LirTerminator::CondBranch {
             cond: materialize_branch_condition(*cond, type_map, allocator, ops),
             then_block: *then_block,
-            then_args: then_args.clone(),
+            then_args: lower_branch_args(*then_block, then_args, func, type_map, allocator, ops),
             else_block: *else_block,
-            else_args: else_args.clone(),
+            else_args: lower_branch_args(*else_block, else_args, func, type_map, allocator, ops),
         },
         Terminator::Switch {
             value,
@@ -237,13 +250,100 @@ fn lower_terminator(
             value: *value,
             cases: cases.clone(),
             default: *default,
-            default_args: default_args.clone(),
+            default_args: lower_branch_args(*default, default_args, func, type_map, allocator, ops),
         },
         Terminator::Return { values } => LirTerminator::Return {
-            values: values.clone(),
+            values: lower_return_values(values, func, type_map, allocator, ops),
         },
         Terminator::Unreachable => LirTerminator::Unreachable,
     }
+}
+
+fn lower_branch_args(
+    target: super::blocks::BlockId,
+    args: &[ValueId],
+    func: &TirFunction,
+    type_map: &HashMap<ValueId, TirType>,
+    allocator: &mut ValueIdAllocator,
+    ops: &mut Vec<LirOp>,
+) -> Vec<ValueId> {
+    let expected_types = func
+        .blocks
+        .get(&target)
+        .map(|block| block.args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    args.iter()
+        .enumerate()
+        .map(|(idx, value_id)| {
+            let expected_ty = expected_types
+                .get(idx)
+                .cloned()
+                .unwrap_or(TirType::DynBox);
+            materialize_value_for_type(*value_id, expected_ty, type_map, allocator, ops)
+        })
+        .collect()
+}
+
+fn lower_return_values(
+    values: &[ValueId],
+    func: &TirFunction,
+    type_map: &HashMap<ValueId, TirType>,
+    allocator: &mut ValueIdAllocator,
+    ops: &mut Vec<LirOp>,
+) -> Vec<ValueId> {
+    let expected_types: Vec<TirType> = match &func.return_type {
+        TirType::None => Vec::new(),
+        other => vec![other.clone()],
+    };
+    values
+        .iter()
+        .enumerate()
+        .map(|(idx, value_id)| {
+            let expected_ty = expected_types
+                .get(idx)
+                .cloned()
+                .unwrap_or(TirType::DynBox);
+            materialize_value_for_type(*value_id, expected_ty, type_map, allocator, ops)
+        })
+        .collect()
+}
+
+fn materialize_value_for_type(
+    value_id: ValueId,
+    expected_ty: TirType,
+    type_map: &HashMap<ValueId, TirType>,
+    allocator: &mut ValueIdAllocator,
+    ops: &mut Vec<LirOp>,
+) -> ValueId {
+    let actual_ty = type_map.get(&value_id).cloned().unwrap_or(TirType::DynBox);
+    if expected_ty == actual_ty {
+        return value_id;
+    }
+    let expected_repr = LirRepr::for_type(&expected_ty);
+    let actual_repr = LirRepr::for_type(&actual_ty);
+    if expected_repr == actual_repr {
+        return value_id;
+    }
+    if expected_repr == LirRepr::DynBox && actual_repr != LirRepr::DynBox {
+        let boxed_id = allocator.fresh();
+        ops.push(LirOp {
+            tir_op: TirOp {
+                dialect: super::ops::Dialect::Molt,
+                opcode: OpCode::BoxVal,
+                operands: vec![value_id],
+                results: vec![boxed_id],
+                attrs: AttrDict::new(),
+                source_span: None,
+            },
+            result_values: vec![LirValue {
+                id: boxed_id,
+                ty: expected_ty,
+                repr: LirRepr::DynBox,
+            }],
+        });
+        return boxed_id;
+    }
+    value_id
 }
 
 fn materialize_branch_condition(
