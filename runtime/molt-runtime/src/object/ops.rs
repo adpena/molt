@@ -7513,6 +7513,17 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
                 TYPE_ID_ELLIPSIS => Cow::Borrowed("ellipsis"),
                 TYPE_ID_EXCEPTION => Cow::Borrowed("Exception"),
                 TYPE_ID_DATACLASS => {
+                    // First try the dataclass descriptor's name field (always
+                    // set at allocation time, unlike class_bits which can be
+                    // stale for inline-created instances).
+                    let desc_ptr = dataclass_desc_ptr(ptr);
+                    if !desc_ptr.is_null() {
+                        let name = &(*desc_ptr).name;
+                        if !name.is_empty() {
+                            return Cow::Owned(name.clone());
+                        }
+                    }
+                    // Fallback to class_bits → class_name_for_error.
                     Cow::Owned(class_name_for_error(type_of_bits(_py, obj.bits())))
                 }
                 TYPE_ID_BUFFER2D => Cow::Borrowed("buffer2d"),
