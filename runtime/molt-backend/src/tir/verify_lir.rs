@@ -54,7 +54,7 @@ pub fn verify_lir_function(func: &LirFunction) -> Result<(), Vec<LirVerifyError>
 
     verify_entry_block_signature(func, &mut errors);
     let values = build_value_table(func, &mut errors);
-    let dominators = compute_dominators(func);
+    let dominators = compute_dominator_tree(func);
     verify_ops(func, &values, &dominators, &mut errors);
     verify_terminators(func, &values, &dominators, &mut errors);
 
@@ -70,6 +70,31 @@ struct ValueDef {
     value: LirValue,
     block: BlockId,
     op_index: Option<usize>,
+}
+
+#[derive(Debug, Default)]
+struct DominatorInfo {
+    preorder: HashMap<BlockId, usize>,
+    postorder: HashMap<BlockId, usize>,
+}
+
+impl DominatorInfo {
+    fn dominates(&self, a: BlockId, b: BlockId) -> bool {
+        if a == b {
+            return true;
+        }
+        match (
+            self.preorder.get(&a),
+            self.preorder.get(&b),
+            self.postorder.get(&a),
+            self.postorder.get(&b),
+        ) {
+            (Some(&a_pre), Some(&b_pre), Some(&a_post), Some(&b_post)) => {
+                a_pre <= b_pre && b_post <= a_post
+            }
+            _ => false,
+        }
+    }
 }
 
 fn verify_entry_block_signature(func: &LirFunction, errors: &mut Vec<LirVerifyError>) {
@@ -194,90 +219,160 @@ fn insert_op_results(
     }
 }
 
-fn compute_dominators(func: &LirFunction) -> HashMap<BlockId, HashSet<BlockId>> {
-    let reachable = compute_reachable_blocks(func);
-    let all_blocks: HashSet<BlockId> = reachable.iter().copied().collect();
-    let predecessors = compute_predecessors(func);
-    let mut dominators = HashMap::new();
-    for bid in reachable.iter().copied() {
-        if bid == func.entry_block {
-            dominators.insert(bid, HashSet::from([bid]));
-        } else {
-            dominators.insert(bid, all_blocks.clone());
+fn compute_dominators(func: &LirFunction) -> HashMap<BlockId, Option<BlockId>> {
+    if func.blocks.is_empty() {
+        return HashMap::new();
+    }
+
+    let rpo = bfs_order(func);
+    let rpo_index: HashMap<BlockId, usize> = rpo.iter().enumerate().map(|(i, &b)| (b, i)).collect();
+
+    let mut pred: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+    for bid in func.blocks.keys() {
+        pred.entry(*bid).or_default();
+    }
+    for (bid, block) in &func.blocks {
+        for succ in terminator_successors(&block.terminator) {
+            pred.entry(succ).or_default().push(*bid);
         }
     }
+
+    let mut idom: HashMap<BlockId, Option<BlockId>> = HashMap::new();
+    let entry = func.entry_block;
+    idom.insert(entry, None);
 
     let mut changed = true;
     while changed {
         changed = false;
-        for bid in func
-            .blocks
-            .keys()
-            .copied()
-            .filter(|bid| reachable.contains(bid))
-            .filter(|bid| *bid != func.entry_block)
-        {
-            let preds = predecessors.get(&bid).cloned().unwrap_or_default();
-            let mut new_set = if preds.is_empty() {
-                HashSet::from([bid])
-            } else {
-                let mut iter = preds.iter();
-                let first = iter
-                    .next()
-                    .and_then(|pred| dominators.get(pred).cloned())
-                    .unwrap_or_default();
-                let mut acc = first;
-                for pred in iter {
-                    if let Some(pred_set) = dominators.get(pred) {
-                        acc = acc.intersection(pred_set).copied().collect();
-                    }
+        for &b in &rpo {
+            if b == entry {
+                continue;
+            }
+            let preds = pred.get(&b).cloned().unwrap_or_default();
+            let mut new_idom: Option<BlockId> = None;
+            for &p in &preds {
+                if idom.contains_key(&p) {
+                    new_idom = Some(match new_idom {
+                        None => p,
+                        Some(cur) => intersect_dom(&idom, &rpo_index, cur, p),
+                    });
                 }
-                acc.insert(bid);
-                acc
-            };
-            new_set.insert(bid);
-            let slot = dominators.get_mut(&bid).expect("dominator set initialized");
-            if *slot != new_set {
-                *slot = new_set;
+            }
+            let old = idom.get(&b).copied().flatten();
+            if !idom.contains_key(&b) || old != new_idom {
+                idom.insert(b, new_idom);
                 changed = true;
             }
         }
     }
 
-    dominators
+    idom
 }
 
-fn compute_predecessors(func: &LirFunction) -> HashMap<BlockId, Vec<BlockId>> {
-    let mut preds: HashMap<BlockId, Vec<BlockId>> = func
-        .blocks
-        .keys()
-        .copied()
-        .map(|bid| (bid, Vec::new()))
-        .collect();
+fn compute_dominator_tree(func: &LirFunction) -> DominatorInfo {
+    let idom = compute_dominators(func);
+    if idom.is_empty() {
+        return DominatorInfo::default();
+    }
 
-    for (bid, block) in &func.blocks {
-        for succ in terminator_successors(&block.terminator) {
-            preds.entry(succ).or_default().push(*bid);
+    let mut children: HashMap<BlockId, Vec<BlockId>> = HashMap::with_capacity(idom.len());
+    for &block in idom.keys() {
+        children.entry(block).or_default();
+    }
+    for (&block, parent) in &idom {
+        if let Some(parent) = *parent {
+            children.entry(parent).or_default().push(block);
         }
     }
 
-    preds
-}
+    let mut preorder: HashMap<BlockId, usize> = HashMap::with_capacity(idom.len());
+    let mut postorder: HashMap<BlockId, usize> = HashMap::with_capacity(idom.len());
+    let mut tick = 0usize;
+    let entry = func.entry_block;
 
-fn compute_reachable_blocks(func: &LirFunction) -> HashSet<BlockId> {
-    let mut visited = HashSet::new();
-    let mut stack = vec![func.entry_block];
-    while let Some(bid) = stack.pop() {
-        if !visited.insert(bid) {
-            continue;
-        }
-        if let Some(block) = func.blocks.get(&bid) {
-            for succ in terminator_successors(&block.terminator) {
-                stack.push(succ);
+    if idom.contains_key(&entry) {
+        preorder.insert(entry, tick);
+        tick += 1;
+        let mut stack: Vec<(BlockId, usize)> = vec![(entry, 0)];
+        while let Some((node, child_idx)) = stack.last_mut() {
+            let next_child = children
+                .get(node)
+                .and_then(|child_list| child_list.get(*child_idx))
+                .copied();
+            if let Some(child) = next_child {
+                *child_idx += 1;
+                if preorder.contains_key(&child) {
+                    continue;
+                }
+                preorder.insert(child, tick);
+                tick += 1;
+                stack.push((child, 0));
+            } else {
+                postorder.insert(*node, tick);
+                tick += 1;
+                stack.pop();
             }
         }
     }
-    visited
+
+    DominatorInfo { preorder, postorder }
+}
+
+fn intersect_dom(
+    idom: &HashMap<BlockId, Option<BlockId>>,
+    rpo: &HashMap<BlockId, usize>,
+    mut a: BlockId,
+    mut b: BlockId,
+) -> BlockId {
+    let rpo_of = |x: BlockId| rpo.get(&x).copied().unwrap_or(usize::MAX);
+    let max_iters = rpo.len() * 2 + 1;
+    let mut iters = 0usize;
+    while a != b {
+        iters += 1;
+        if iters > max_iters {
+            break;
+        }
+        while rpo_of(a) > rpo_of(b) {
+            match idom.get(&a).and_then(|x| *x) {
+                Some(p) if p != a => a = p,
+                _ => break,
+            }
+        }
+        while rpo_of(b) > rpo_of(a) {
+            match idom.get(&b).and_then(|x| *x) {
+                Some(p) if p != b => b = p,
+                _ => break,
+            }
+        }
+        let a_rpo = rpo_of(a);
+        let b_rpo = rpo_of(b);
+        if a_rpo == b_rpo && a != b {
+            break;
+        }
+    }
+    a
+}
+
+fn bfs_order(func: &LirFunction) -> Vec<BlockId> {
+    let mut visited: HashSet<BlockId> = HashSet::new();
+    let mut queue = std::collections::VecDeque::new();
+    let mut order = Vec::new();
+
+    queue.push_back(func.entry_block);
+    visited.insert(func.entry_block);
+
+    while let Some(bid) = queue.pop_front() {
+        order.push(bid);
+        if let Some(block) = func.blocks.get(&bid) {
+            for succ in terminator_successors(&block.terminator) {
+                if visited.insert(succ) {
+                    queue.push_back(succ);
+                }
+            }
+        }
+    }
+
+    order
 }
 
 fn terminator_successors(terminator: &LirTerminator) -> Vec<BlockId> {
@@ -300,7 +395,7 @@ fn terminator_successors(terminator: &LirTerminator) -> Vec<BlockId> {
 fn verify_ops(
     func: &LirFunction,
     values: &HashMap<ValueId, ValueDef>,
-    dominators: &HashMap<BlockId, HashSet<BlockId>>,
+    dominators: &DominatorInfo,
     errors: &mut Vec<LirVerifyError>,
 ) {
     for (bid, block) in &func.blocks {
@@ -461,7 +556,7 @@ fn verify_box_op(
     bid: BlockId,
     op_index: usize,
     op: &LirOp,
-    values: &HashMap<ValueId, ValueDef>,
+    _values: &HashMap<ValueId, ValueDef>,
     errors: &mut Vec<LirVerifyError>,
 ) {
     if op.tir_op.operands.len() != 1 || op.result_values.len() != 1 {
@@ -527,7 +622,7 @@ fn verify_unbox_op(
 fn verify_terminators(
     func: &LirFunction,
     values: &HashMap<ValueId, ValueDef>,
-    dominators: &HashMap<BlockId, HashSet<BlockId>>,
+    dominators: &DominatorInfo,
     errors: &mut Vec<LirVerifyError>,
 ) {
     for (bid, block) in &func.blocks {
@@ -690,7 +785,7 @@ fn verify_branch_args(
     args: &[ValueId],
     func: &LirFunction,
     values: &HashMap<ValueId, ValueDef>,
-    dominators: &HashMap<BlockId, HashSet<BlockId>>,
+    dominators: &DominatorInfo,
     errors: &mut Vec<LirVerifyError>,
 ) {
     let Some(target_block) = func.blocks.get(&target) else {
@@ -755,7 +850,7 @@ fn verify_use_dominates(
     use_index: usize,
     value_id: ValueId,
     values: &HashMap<ValueId, ValueDef>,
-    dominators: &HashMap<BlockId, HashSet<BlockId>>,
+    dominators: &DominatorInfo,
     errors: &mut Vec<LirVerifyError>,
     context: &str,
 ) {
@@ -779,7 +874,7 @@ fn definition_dominates(
     def: &ValueDef,
     use_block: BlockId,
     use_index: usize,
-    dominators: &HashMap<BlockId, HashSet<BlockId>>,
+    dominators: &DominatorInfo,
 ) -> bool {
     if def.block == use_block {
         match def.op_index {
@@ -787,10 +882,7 @@ fn definition_dominates(
             Some(def_index) => def_index < use_index,
         }
     } else {
-        dominators
-            .get(&use_block)
-            .map(|doms| doms.contains(&def.block))
-            .unwrap_or(false)
+        dominators.dominates(def.block, use_block)
     }
 }
 
