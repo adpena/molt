@@ -510,8 +510,8 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - **NEVER change Python semantics just to make a differential test pass.** This is a hard-stop rule; fix behavior to match CPython or document the genuine incompatibility in specs/tests.
 - Parity-first workflow: execute the ROADMAP parity plan before large optimizations; require parity gates (matrix updates + differential coverage + native/WASM parity checks) for changes that touch runtime semantics.
 - Treat benchmark regressions as failures; run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`, `tools/dev.py lint`, and `tools/dev.py test` after the fix is in, then iterate on optimization until the regression is removed without introducing new regressions.
-- After native + WASM benches, run `uv run --python 3.14 python3 tools/bench_report.py --update-readme` and commit the updated [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md) plus the refreshed [README.md](README.md) summary block.
-- Super bench runs (`tools/bench.py --super`, `tools/bench_wasm.py --super`) execute 10 samples and emit mean/median/variance/range stats; run only on explicit request or release tagging, and summarize the stats in [README.md](README.md).
+- After native + WASM benches, run `uv run --python 3.14 python3 tools/bench_report.py --update-status-doc` and commit the updated [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md) plus the refreshed [docs/spec/STATUS.md](docs/spec/STATUS.md) benchmark block.
+- Super bench runs (`tools/bench.py --super`, `tools/bench_wasm.py --super`) execute 10 samples and emit mean/median/variance/range stats; run only on explicit request or release tagging, and summarize the stats in [docs/spec/STATUS.md](docs/spec/STATUS.md) and [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md).
 - Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop (bench → lint → test → optimize) until green, but avoid repeated cycles before the implementation is complete.
 - Prefer performance wins even if they increase compile time or binary size; document tradeoffs explicitly.
 - Always run tests via `uv run --python 3.12/3.13/3.14`; never use the raw `.venv` interpreter directly.
@@ -546,15 +546,15 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - Keep native and wasm feature sets in lockstep; treat wasm parity gaps as blockers and call them out immediately.
 - ABSOLUTE RULE: Do not "fix" tests by weakening or contorting coverage to hide missing, partial, or hacky behavior; surface the gap, ask for priority/plan if needed, and implement the correct behavior.
 - Proactively read and update [ROADMAP.md](ROADMAP.md) and relevant files under `docs/spec/` when behavior or scope changes.
-- Treat [docs/spec/STATUS.md](docs/spec/STATUS.md) as the canonical source of truth for current capabilities/limits; sync README/ROADMAP after changes.
+- Treat [docs/spec/STATUS.md](docs/spec/STATUS.md) as the canonical source of truth for current capabilities/limits; update README only for newcomer-facing framing changes and update ROADMAP only for forward-plan changes.
 - Proactively and aggressively plan for native support of popular and growing Python packages written in Rust, with a bias toward production-quality integrations.
 - Treat the long-term vision as full Python compatibility: all types, syntax, and dependencies.
 - Prioritize extending features; update existing implementations when needed to hit roadmap/spec goals, even if it requires refactors.
 - For major changes, ensure tight integration and compatibility across compiler, runtime, tooling, and tests.
 - NON-NEGOTIABLE: Document partial or interim implementations with grepable `TODO(area, owner:..., milestone:..., priority:..., status:...)` markers and mirror them in [ROADMAP.md](ROADMAP.md) in the same change.
 - NON-NEGOTIABLE: For any partial, hacky, or missing functionality (or any stub/workaround), add explicit inline TODO markers (e.g., `TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): ...`) so follow-ups are discoverable and never deferred.
-- Whenever a stub/partial feature or optimization candidate is added, update [README.md](README.md), the relevant `docs/spec/` file(s), and [ROADMAP.md](ROADMAP.md) in the same change.
-- When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the Performance & Comparisons section in [README.md](README.md) with the summarized results.
+- Whenever a stub, partial feature, or optimization candidate is added, update the relevant `docs/spec/` file(s), [docs/spec/STATUS.md](docs/spec/STATUS.md), and [ROADMAP.md](ROADMAP.md) in the same change when their owned facts move.
+- When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the generated benchmark surfaces rather than embedding benchmark summaries in README.
 - Follow [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md) for stdlib scope, tiers (core vs import vs gated), and promotion rules.
 - Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and [ROADMAP.md](ROADMAP.md).
 - Treat I/O, OS, network, and process modules as capability-gated and document the required permissions in specs.

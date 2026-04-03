@@ -10,8 +10,27 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  python-lint:
+    name: Python Lint & Docs Gates
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Sync Python environment
+        run: uv sync --group dev --python 3.12
+
+      - name: Run python lint and docs gates
+        run: uv run --python 3.12 python3 tools/dev.py lint
+
   build:
     name: Build & Unit Tests
+    needs: python-lint
     runs-on: macos-14  # ARM64 (M1)
     steps:
       - uses: actions/checkout@v4

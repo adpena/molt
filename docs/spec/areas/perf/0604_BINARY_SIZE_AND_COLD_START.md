@@ -52,4 +52,4 @@ Define cold start as:
 
 ## 5. Reporting
 - Include size and cold-start metrics in `bench/results/`.
-- Summaries must be updated in `README.md` for releases.
+- Summaries should flow into `docs/spec/STATUS.md` and the detailed benchmark report, not into README.

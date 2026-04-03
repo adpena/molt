@@ -131,6 +131,16 @@ def main() -> None:
             tty=use_tty,
         )
         run_uv(
+            ["python3", "tools/update_status_blocks.py", "--check"],
+            python=TEST_PYTHONS[0],
+            tty=use_tty,
+        )
+        run_uv(
+            ["python3", "tools/check_docs_architecture.py"],
+            python=TEST_PYTHONS[0],
+            tty=use_tty,
+        )
+        run_uv(
             [
                 "python3",
                 "tools/check_core_lane_lowering.py",

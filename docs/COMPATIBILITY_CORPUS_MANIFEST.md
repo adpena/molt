@@ -1,8 +1,6 @@
 # Compatibility Corpus Manifest
 
-Last updated: 2026-03-11
-
-This document defines the operator-facing proof corpus Molt should maintain while pursuing practical CPython 3.12+ parity.
+This document defines the proof corpus Molt should maintain while pursuing practical CPython 3.12+ parity.
 It is not a replacement for the full test suite. It is the minimal high-signal corpus that should answer:
 - what claims are we making now?
 - what artifacts prove those claims?
@@ -107,11 +105,10 @@ At minimum, promotion requires:
 - documented pass/fail contract
 
 ## Immediate highest-value additions
-These are the operator artifacts worth maintaining right now:
-1. `SUPPORTED.md`
-2. this compatibility corpus manifest
-3. standalone binary proof workflow doc
-4. continued `libmolt` ABI contract refinement and extension proof probes
+These are the proof artifacts worth maintaining right now:
+1. this compatibility corpus manifest
+2. standalone binary proof workflow doc
+3. continued `libmolt` ABI contract refinement and extension proof probes
 
 ## Non-goals
 This manifest does not try to enumerate every single test file.

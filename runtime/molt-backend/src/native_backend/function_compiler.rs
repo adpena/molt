@@ -17307,7 +17307,7 @@ impl SimpleBackend {
                         // Propagate raw_int_shadow through store_var:
                         // Value-level (within this block) + Variable-level (across back-edges).
                         if let Some(&raw) = raw_int_shadow.get(&args[0]) {
-                            raw_int_shadow.insert(name.to_string(), raw);
+                            // raw_int_shadow.insert(name.to_string(), raw);
                             // def_var the pre-declared shadow Variable so it
                             // survives phi merges at loop back-edges.
                             if let Some(&shadow_var) = raw_int_shadow_vars.get(name) {
@@ -17333,7 +17333,7 @@ impl SimpleBackend {
                                 let raw_val = builder.use_var(shadow_var);
                                 raw_int_shadow.insert(out_name.clone(), raw_val);
                             } else if let Some(&raw) = raw_int_shadow.get(var_name.as_str()) {
-                                raw_int_shadow.insert(out_name.clone(), raw);
+                            // raw_int_shadow.insert(out_name.clone(), raw);
                             // } else if is_typed_int {
                             //     unbox_int seeding disabled — creates stale Values
                             //     in loop contexts where the shadow doesn't participate
@@ -17348,7 +17348,7 @@ impl SimpleBackend {
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
                             if let Some(&raw) = raw_int_shadow.get(&args[0]) {
-                                raw_int_shadow.insert(out_name.clone(), raw);
+                            // raw_int_shadow.insert(out_name.clone(), raw);
                             // } else if is_typed_int {
                             //     (same: disabled for loop safety)
                             }
