@@ -942,7 +942,11 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }
         OpCode::Index => {
             let kind = attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "index".to_string());
-            Some(binary_op(&kind, op, out_var))
+            let mut opir = binary_op(&kind, op, out_var);
+            // Restore container_type (e.g., "list_int") from the preserved attr
+            // so the backend can emit inline list access.
+            opir.container_type = attr_str(&op.attrs, "container_type");
+            Some(opir)
         }
         OpCode::StoreIndex => {
             let kind =
@@ -951,6 +955,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 kind,
                 args: Some(operand_args(op)),
                 out: out_var,
+                container_type: attr_str(&op.attrs, "container_type"),
                 ..OpIR::default()
             })
         }
