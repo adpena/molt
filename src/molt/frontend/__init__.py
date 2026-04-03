@@ -13302,23 +13302,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if hint is not None:
                         self._emit_guard_type(self.locals[arg.arg], hint)
             self._prebox_scope_cell_vars(body=item.body, arg_nodes=arg_nodes)
-            # Only box variables that genuinely need cells (closure-captured).
-            # Non-closure locals use store_var/load_var for SSA-visible mutations.
-            param_names = {arg.arg for arg in arg_nodes}
+            # Box ALL scope-assigned variables into cell lists.
+            # Cell lists provide correct refcount management (inc_ref/
+            # dec_ref in molt_store_index). The TIR backend's Memory SSA
+            # rewrite converts cell store_index/index to store_var/load_var
+            # for SSA phi visibility when optimization is enabled.
             for name in sorted(self.scope_assigned):
-                if name in self.closure_locals:
-                    self._box_local(name)
-                elif name not in param_names:
-                    init = self._emit_missing_value()
-                    self.locals[name] = init
-                    self.emit(
-                        MoltOp(
-                            kind="STORE_VAR",
-                            args=[init],
-                            result=MoltValue("none"),
-                            metadata={"var": name},
-                        )
-                    )
+                self._box_local(name)
             for arg in arg_nodes:
                 pval = self.locals.get(arg.arg)
                 if pval is not None and arg.arg not in self.boxed_locals:
@@ -27744,23 +27734,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._prebox_scope_cell_vars(
                 body=[ast.Expr(value=node.body)], arg_nodes=arg_nodes
             )
-            # Only box variables that genuinely need cells (closure-captured).
-            # Non-closure locals use store_var/load_var for SSA-visible mutations.
-            param_names = {arg.arg for arg in arg_nodes}
+            # Box ALL scope-assigned variables into cell lists.
+            # Cell lists provide correct refcount management (inc_ref/
+            # dec_ref in molt_store_index). The TIR backend's Memory SSA
+            # rewrite converts cell store_index/index to store_var/load_var
+            # for SSA phi visibility when optimization is enabled.
             for name in sorted(self.scope_assigned):
-                if name in self.closure_locals:
-                    self._box_local(name)
-                elif name not in param_names:
-                    init = self._emit_missing_value()
-                    self.locals[name] = init
-                    self.emit(
-                        MoltOp(
-                            kind="STORE_VAR",
-                            args=[init],
-                            result=MoltValue("none"),
-                            metadata={"var": name},
-                        )
-                    )
+                self._box_local(name)
             for arg in arg_nodes:
                 pval = self.locals.get(arg.arg)
                 if pval is not None and arg.arg not in self.boxed_locals:
@@ -31888,6 +31868,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+                # Propagate list_int container hint through load_var:
+                # if the variable being loaded is a list_int container,
+                # the output name is also a list_int container.
+                li_set = getattr(self, "_list_int_containers", set())
+                if var_name in li_set:
+                    li_set.add(op.result.name)
             elif op.kind == "ret":
                 json_ops.append({"kind": "ret", "var": op.args[0].name})
             elif op.kind == "ALLOC_TASK":

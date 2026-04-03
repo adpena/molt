@@ -2799,11 +2799,8 @@ impl SimpleBackend {
         // handles back-edges via has_loop_or_backedge detection.
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        // TIR default OFF: for-loop iteration inside functions is broken when
-        // TIR is enabled (iter_next returns done=true on first call, producing
-        // zero iterations). The TIR SSA roundtrip corrupts the loop-carried
-        // iterator state. Enable with MOLT_TIR_OPT=1 for performance testing.
-        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
+        // TIR default ON: loop markers preserved, EH functions bypassed.
+        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
@@ -3086,8 +3083,10 @@ impl SimpleBackend {
                                     &tir_func, &type_map,
                                 );
                                 if !crate::tir::lower_to_simple::validate_labels(&ops) {
+                                    eprintln!("TIR LABEL VALIDATION FAILED: {}", func_name);
                                     return None;
                                 }
+                                eprintln!("TIR APPLIED: {} ({} ops -> {} ops)", func_name, tmp_func.ops.len(), ops.len());
                                 // Debug: dump before/after for all TIR functions.
                                 if func_name.contains("count") || std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| func_name.contains(&p)).unwrap_or(false) {
                                     use std::io::Write;
