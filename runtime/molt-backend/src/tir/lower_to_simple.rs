@@ -27,18 +27,20 @@ use super::values::ValueId;
 /// Used by structured loop emission to re-wrap linearised TIR control
 /// flow into loop_start/loop_break_if_X/loop_continue/loop_end sequences.
 struct LoopRegion {
-    /// Blocks between the LoopHeader and the CondBranch block (exclusive).
-    /// These are emitted as part of the header before the break op.
-    /// Empty when the LoopHeader itself has the CondBranch.
-    header_chain: Vec<BlockId>,
+    /// Guard blocks with CondBranch terminators (type checks, bounds
+    /// checks) in the header chain.  These are emitted inline in the
+    /// header region (before break) with br_if + raise-path handling.
+    guard_chain: Vec<BlockId>,
+    /// Raise-path blocks reachable from guard CondBranches.
+    /// Consumed so they are not double-emitted in the main loop.
+    guard_raise_blocks: Vec<BlockId>,
+    /// The block whose CondBranch controls the loop (body vs exit).
+    cond_block: BlockId,
     body_entry: BlockId,
     exit_block: BlockId,
     body_set: HashSet<BlockId>,
     break_kind: LoopBreakKind,
     cond: ValueId,
-    /// The block containing the loop-controlling CondBranch.
-    /// May differ from the header when guard blocks precede the condition.
-    cond_block: BlockId,
     body_args: Vec<ValueId>,
     exit_args: Vec<ValueId>,
 }
@@ -171,12 +173,57 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         // controls the loop body.  TIR may insert guard blocks (type
         // checks, bounds checks) with their own CondBranch terminators
         // in the header region.  We identify the loop-controlling
-        // CondBranch as the one where one successor has a path back to
-        // the header (the loop body).
+        // CondBranch as the one whose successors do NOT contain Raise.
+        //
+        // The chain is split into:
+        //   header_chain: non-guard blocks with Branch terminators
+        //                 (emitted inline before break)
+        //   guard_chain:  guard blocks with CondBranch + Raise path
+        //                 (emitted after break, with labels + br_if)
         let mut header_chain: Vec<BlockId> = Vec::new();
+        let mut guard_chain: Vec<BlockId> = Vec::new();
+        let mut guard_raise_blocks: Vec<BlockId> = Vec::new();
         let mut cond_bid = *bid;
         let mut chain_visited: HashSet<BlockId> = HashSet::new();
         chain_visited.insert(*bid);
+
+        // Helper: detect if a block is a raise/error path (within 2 hops).
+        let is_guard_raise_path = |check_bid: &BlockId| -> bool {
+            let Some(blk) = func.blocks.get(check_bid) else {
+                return false;
+            };
+            if blk.ops.iter().any(|op| op.opcode == OpCode::Raise) {
+                return true;
+            }
+            // One hop further (guard → join block → raise)
+            if let Terminator::Branch { target, .. } = &blk.terminator {
+                if let Some(next) = func.blocks.get(target) {
+                    if next.ops.iter().any(|op| op.opcode == OpCode::Raise) {
+                        return true;
+                    }
+                }
+            }
+            false
+        };
+
+        // Collect all raise-path blocks reachable from a given block
+        // (the raise successor of a guard CondBranch).  Follows Branch
+        // chains up to 2 hops to capture guard → join → raise patterns.
+        let collect_raise_path_blocks = |start: &BlockId| -> Vec<BlockId> {
+            let mut raise_blocks = Vec::new();
+            let mut cur = *start;
+            for _ in 0..3 {
+                raise_blocks.push(cur);
+                let Some(blk) = func.blocks.get(&cur) else { break };
+                if let Terminator::Branch { target, .. } = &blk.terminator {
+                    cur = *target;
+                } else {
+                    break;
+                }
+            }
+            raise_blocks
+        };
+
         loop {
             let Some(blk) = func.blocks.get(&cond_bid) else { break };
             match &blk.terminator {
@@ -185,42 +232,20 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     else_block,
                     ..
                 } => {
-                    // Distinguish guard CondBranches (type checks, bounds
-                    // checks) from the loop-controlling CondBranch.
-                    //
-                    // A guard has one successor that is a raise/error path
-                    // (contains OpCode::Raise within 2 hops).  The loop
-                    // control's exit path may Return or Unreachable, but
-                    // does NOT raise — it's the normal loop-exit path.
-                    //
-                    // Key: check for Raise specifically, not Return.
-                    let is_guard_raise_path = |bid: &BlockId| -> bool {
-                        let Some(blk) = func.blocks.get(bid) else {
-                            return false;
-                        };
-                        if blk.ops.iter().any(|op| op.opcode == OpCode::Raise) {
-                            return true;
-                        }
-                        // One hop further (guard → join block → raise)
-                        if let Terminator::Branch { target, .. } = &blk.terminator {
-                            if let Some(next) = func.blocks.get(target) {
-                                if next.ops.iter().any(|op| op.opcode == OpCode::Raise) {
-                                    return true;
-                                }
-                            }
-                        }
-                        false
-                    };
                     let then_raises = is_guard_raise_path(then_block);
                     let else_raises = is_guard_raise_path(else_block);
                     if !then_raises && !else_raises {
                         break; // Neither path raises — this is the loop control
                     }
                     // One path raises — this is a guard CondBranch.
-                    // Follow the non-raising path.
+                    // Record it as a guard (not a non-guard chain block).
                     if cond_bid != *bid {
-                        header_chain.push(cond_bid);
+                        guard_chain.push(cond_bid);
                     }
+                    // Collect raise-path blocks for consumption.
+                    let raise_bid = if then_raises { *then_block } else { *else_block };
+                    guard_raise_blocks.extend(collect_raise_path_blocks(&raise_bid));
+                    // Follow the non-raising path.
                     let next = if then_raises { *else_block } else { *then_block };
                     if !chain_visited.insert(next) {
                         break; // Cycle — this IS the loop control
@@ -239,7 +264,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 _ => break, // Return/Unreachable — give up
             }
         }
-        let Some(cond_block) = func.blocks.get(&cond_bid) else {
+        let Some(cond_block_data) = func.blocks.get(&cond_bid) else {
             continue;
         };
         let Terminator::CondBranch {
@@ -248,7 +273,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             then_args,
             else_block,
             else_args,
-        } = &cond_block.terminator
+        } = &cond_block_data.terminator
         else {
             continue;
         };
@@ -266,12 +291,16 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             }
         };
         // Collect body blocks via DFS from body_entry, stopping at the
-        // header (back-edge), header chain blocks, cond block, and exit.
+        // header (back-edge), header chain blocks, guard chain blocks,
+        // cond block, and exit.
         let mut header_set: HashSet<BlockId> = HashSet::new();
         header_set.insert(*bid);
         header_set.insert(cond_bid);
         for hc in &header_chain {
             header_set.insert(*hc);
+        }
+        for gc in &guard_chain {
+            header_set.insert(*gc);
         }
         let mut body_set = HashSet::new();
         {
@@ -295,10 +324,17 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 .unwrap_or(super::blocks::LoopRole::None)
                 != super::blocks::LoopRole::LoopEnd
         });
-        // Mark body blocks AND header chain blocks as consumed.
+        // Mark body blocks, header chain, guard chain, cond block, AND
+        // guard raise-path blocks as consumed.
         loop_consumed.extend(body_set.iter().copied());
         for hc in &header_chain {
             loop_consumed.insert(*hc);
+        }
+        for gc in &guard_chain {
+            loop_consumed.insert(*gc);
+        }
+        for rb in &guard_raise_blocks {
+            loop_consumed.insert(*rb);
         }
         if cond_bid != *bid {
             loop_consumed.insert(cond_bid);
@@ -306,13 +342,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         loop_regions.insert(
             *bid,
             LoopRegion {
-                header_chain,
+                guard_chain,
+                guard_raise_blocks,
+                cond_block: cond_bid,
                 body_entry,
                 exit_block,
                 body_set,
                 break_kind,
                 cond: *cond,
-                cond_block: cond_bid,
                 body_args,
                 exit_args,
             },
@@ -334,8 +371,8 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         else_bid: BlockId,
         join_bid: Option<BlockId>,
     }
-    let mut if_patterns: HashMap<BlockId, IfPattern> = HashMap::new();
-    let mut if_inlined_blocks: HashSet<BlockId> = HashSet::new();
+    let if_patterns: HashMap<BlockId, IfPattern> = HashMap::new();
+    let if_inlined_blocks: HashSet<BlockId> = HashSet::new();
 
     for bid in &rpo {
         let role = func.loop_roles.get(bid).cloned()
@@ -372,7 +409,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             Terminator::Return { .. } | Terminator::Unreachable => None,
             _ => { continue; }
         };
-        let join_bid = match (then_target, else_target) {
+        let _join_bid = match (then_target, else_target) {
             (Some(t), Some(e)) if t == e => Some(t),
             (Some(t), None) => Some(t),
             (None, Some(e)) => Some(e),
@@ -1200,6 +1237,11 @@ fn emit_structured_loop_region(
         .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
         .unwrap_or(false);
 
+    // Collect deferred raise-path blocks from guard CondBranches
+    // where the raise successor is targeted by br_if (not fallthrough).
+    // These are emitted as labeled blocks before loop_end.
+    let mut deferred_raise_paths: Vec<(BlockId, Vec<ValueId>)> = Vec::new();
+
     // 1. Emit label for forward jumps to the header (entry path).
     //    The native backend's pre-analysis registers label IDs from `label`
     //    ops to create Cranelift blocks; without this, `jump(header_label)`
@@ -1235,19 +1277,58 @@ fn emit_structured_loop_region(
         }
     }
 
-    // 4. Emit all header-region blocks' ops sequentially.
-    //    The header region = [header, chain[0], chain[1], ..., cond_block].
-    //    Each block's ops are emitted inline (no labels between them).
-    //    Between blocks, emit store_var for the Branch args and load_var
-    //    for the successor's block args.
+    // 4. Emit all header-region blocks' ops sequentially in CFG order.
+    //    The header region = [header, chain blocks (guards + non-guards), cond_block].
+    //    Each block's ops are emitted inline.  Branch terminators get
+    //    store_var/load_var for phi values.  Guard CondBranch terminators
+    //    get br_if + raise-path emission inline.
     {
-        // Build the ordered list of header-region blocks.
-        // The cond block is stored in the region from detection.
+        // Build the ordered list in actual CFG order: header, then all
+        // chain blocks (non-guard and guard interleaved), then cond block.
         let mut header_region: Vec<BlockId> = vec![header];
-        header_region.extend(region.header_chain.iter().copied());
+        // Reconstruct the full chain in CFG order by re-walking the
+        // header's successor chain (guards + non-guards together).
+        {
+            let mut cur = header;
+            let mut walk_visited: HashSet<BlockId> = HashSet::new();
+            walk_visited.insert(header);
+            loop {
+                let Some(blk) = func.blocks.get(&cur) else { break };
+                let next = match &blk.terminator {
+                    Terminator::Branch { target, .. } => *target,
+                    Terminator::CondBranch {
+                        then_block,
+                        else_block,
+                        ..
+                    } => {
+                        // Guard CondBranch: follow non-raise path.
+                        if region.guard_raise_blocks.contains(then_block) {
+                            *else_block
+                        } else if region.guard_raise_blocks.contains(else_block) {
+                            *then_block
+                        } else {
+                            // This is the cond block — stop.
+                            break;
+                        }
+                    }
+                    _ => break,
+                };
+                if next == region.cond_block {
+                    break;
+                }
+                if !walk_visited.insert(next) {
+                    break;
+                }
+                header_region.push(next);
+                cur = next;
+            }
+        }
+        // Add the cond block if it's not the header itself.
         if region.cond_block != header {
             header_region.push(region.cond_block);
         }
+
+        let guard_set: HashSet<BlockId> = region.guard_chain.iter().copied().collect();
 
         for (region_idx, region_bid) in header_region.iter().enumerate() {
             let Some(region_block) = func.blocks.get(region_bid) else {
@@ -1256,82 +1337,157 @@ fn emit_structured_loop_region(
             // Emit ops for this block.
             emit_block_ops_inner(region_block, types, original_to_new_label, out);
 
-            // Connect this block to the next in the header region.
+            // Handle terminator based on type.
             if region_idx + 1 < header_region.len() {
                 let next_bid = header_region[region_idx + 1];
-                let emit_next_loads = |out: &mut Vec<OpIR>| {
-                    if let Some(next_block) = func.blocks.get(&next_bid) {
-                        if let Some(param_vars) = block_param_vars.get(&next_bid) {
-                            for (i, var_name) in param_vars.iter().enumerate() {
-                                if i < next_block.args.len() {
-                                    out.push(OpIR {
-                                        kind: "load_var".to_string(),
-                                        var: Some(var_name.clone()),
-                                        out: Some(value_var(next_block.args[i].id)),
-                                        ..OpIR::default()
-                                    });
+                match &region_block.terminator {
+                    Terminator::Branch { target, args } => {
+                        // Store args for the Branch target, load args for
+                        // the next block in the emission sequence.
+                        emit_block_arg_stores(*target, args, block_param_vars, out);
+                        // If target != next_bid (e.g., Branch → guard, but
+                        // next is a non-guard), also load for next_bid.
+                        if *target != next_bid {
+                            if let Some(next_block) = func.blocks.get(&next_bid) {
+                                if let Some(param_vars) = block_param_vars.get(&next_bid) {
+                                    for (i, var_name) in param_vars.iter().enumerate() {
+                                        if i < next_block.args.len() {
+                                            out.push(OpIR {
+                                                kind: "load_var".to_string(),
+                                                var: Some(var_name.clone()),
+                                                out: Some(value_var(next_block.args[i].id)),
+                                                ..OpIR::default()
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        } else if let Some(next_block) = func.blocks.get(&next_bid) {
+                            if let Some(param_vars) = block_param_vars.get(&next_bid) {
+                                for (i, var_name) in param_vars.iter().enumerate() {
+                                    if i < next_block.args.len() {
+                                        out.push(OpIR {
+                                            kind: "load_var".to_string(),
+                                            var: Some(var_name.clone()),
+                                            out: Some(value_var(next_block.args[i].id)),
+                                            ..OpIR::default()
+                                        });
+                                    }
                                 }
                             }
                         }
                     }
-                };
-                match &region_block.terminator {
-                    Terminator::Branch { target, args } => {
-                        emit_block_arg_stores(*target, args, block_param_vars, out);
-                        emit_next_loads(out);
-                    }
                     Terminator::CondBranch {
-                        cond,
-                        then_block,
-                        then_args,
-                        else_block,
-                        else_args,
-                    } => {
-                        // Guard CondBranch: one path raises, the other
-                        // continues to the next header-region block.
-                        // Emit br_if for the raise path, fall through for continue.
-                        let then_is_continue = *then_block == next_bid;
-                        let (raise_bid, raise_args, cont_args) = if then_is_continue {
-                            (*else_block, else_args, then_args)
-                        } else {
-                            (*then_block, then_args, else_args)
-                        };
-                        emit_block_arg_stores(raise_bid, raise_args, block_param_vars, out);
-                        if !then_is_continue {
-                            // then = raise: br_if cond -> raise label
+                        cond: guard_cond,
+                        then_block: guard_then,
+                        then_args: guard_then_args,
+                        else_block: guard_else,
+                        else_args: guard_else_args,
+                    } if guard_set.contains(region_bid) => {
+                        // Guard CondBranch: emit br_if to raise path,
+                        // fallthrough to non-raise continuation.
+                        let then_is_raise =
+                            region.guard_raise_blocks.contains(guard_then);
+
+                        if then_is_raise {
+                            // then = raise, else = continue.
+                            // br_if cond → raise_label (deferred).
+                            // Fallthrough → non-raise continuation.
+                            let raise_label = block_label_id(guard_then);
                             out.push(OpIR {
                                 kind: "br_if".to_string(),
-                                args: Some(vec![value_var(*cond)]),
-                                value: Some(block_label_id(&raise_bid)),
+                                args: Some(vec![value_var(*guard_cond)]),
+                                value: Some(raise_label),
                                 ..OpIR::default()
                             });
+                            // Defer the raise-path block emission to
+                            // just before loop_end (dead-end blocks).
+                            deferred_raise_paths.push((
+                                *guard_then,
+                                guard_then_args.clone(),
+                            ));
+                            // Store args for the non-raise continuation.
+                            emit_block_arg_stores(
+                                *guard_else,
+                                guard_else_args,
+                                block_param_vars,
+                                out,
+                            );
+                            // Load args for next block in emission sequence.
+                            if let Some(next_block) = func.blocks.get(&next_bid) {
+                                if let Some(param_vars) = block_param_vars.get(&next_bid) {
+                                    for (i, var_name) in param_vars.iter().enumerate() {
+                                        if i < next_block.args.len() {
+                                            out.push(OpIR {
+                                                kind: "load_var".to_string(),
+                                                var: Some(var_name.clone()),
+                                                out: Some(value_var(
+                                                    next_block.args[i].id,
+                                                )),
+                                                ..OpIR::default()
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                         } else {
-                            // else = raise: branch when cond is FALSE.
-                            let skip_label = out.iter()
-                                .filter_map(|op| op.value)
-                                .max()
-                                .unwrap_or(0) + 1;
+                            // else = raise, then = continue.
+                            // br_if cond → continue (skip raise on true).
+                            // Fallthrough → raise path.
+                            let continue_label = block_label_id(&next_bid);
                             out.push(OpIR {
                                 kind: "br_if".to_string(),
-                                args: Some(vec![value_var(*cond)]),
-                                value: Some(skip_label),
+                                args: Some(vec![value_var(*guard_cond)]),
+                                value: Some(continue_label),
                                 ..OpIR::default()
                             });
-                            out.push(OpIR {
-                                kind: "jump".to_string(),
-                                value: Some(block_label_id(&raise_bid)),
-                                ..OpIR::default()
-                            });
+                            // Fallthrough is raise path — emit it inline.
+                            // emit_guard_raise_path handles its own
+                            // entry store_var for guard_else args.
+                            emit_guard_raise_path(
+                                *guard_else,
+                                guard_else_args,
+                                func,
+                                block_param_vars,
+                                block_label_id,
+                                types,
+                                original_to_new_label,
+                                out,
+                            );
+                            // Emit label for the continuation (br_if target).
                             out.push(OpIR {
                                 kind: "label".to_string(),
-                                value: Some(skip_label),
+                                value: Some(continue_label),
                                 ..OpIR::default()
                             });
+                            emit_block_arg_stores(
+                                *guard_then,
+                                guard_then_args,
+                                block_param_vars,
+                                out,
+                            );
+                            if let Some(next_block) = func.blocks.get(&next_bid) {
+                                if let Some(param_vars) = block_param_vars.get(&next_bid) {
+                                    for (i, var_name) in param_vars.iter().enumerate() {
+                                        if i < next_block.args.len() {
+                                            out.push(OpIR {
+                                                kind: "load_var".to_string(),
+                                                var: Some(var_name.clone()),
+                                                out: Some(value_var(
+                                                    next_block.args[i].id,
+                                                )),
+                                                ..OpIR::default()
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        emit_block_arg_stores(next_bid, cont_args, block_param_vars, out);
-                        emit_next_loads(out);
                     }
-                    _ => {}
+                    _ => {
+                        // Other terminators for non-last blocks (unexpected
+                        // but handle gracefully).
+                    }
                 }
             }
         }
@@ -1414,15 +1570,6 @@ fn emit_structured_loop_region(
             );
             if let Some(inner_region) = loop_regions.get(body_bid) {
                 inner_consumed.extend(inner_region.body_set.iter().copied());
-                // Also consume the inner loop's header chain blocks and
-                // cond_block — they're emitted inline as part of the inner
-                // header region and must not be re-emitted by the outer loop.
-                for hc in &inner_region.header_chain {
-                    inner_consumed.insert(*hc);
-                }
-                if inner_region.cond_block != *body_bid {
-                    inner_consumed.insert(inner_region.cond_block);
-                }
             }
             is_first_body = false;
             continue;
@@ -1490,11 +1637,105 @@ fn emit_structured_loop_region(
         }
     }
 
-    // 8. loop_end — seals loop_block, switches to after_block.
+    // 8a. Emit deferred raise-path blocks.  These are dead-end blocks
+    //     (end with `raise`) targeted by br_if from guard CondBranches
+    //     in the header region.  They must exist within the loop as
+    //     labeled blocks so the br_if targets resolve.
+    for (raise_bid, raise_args) in &deferred_raise_paths {
+        emit_guard_raise_path(
+            *raise_bid,
+            raise_args,
+            func,
+            block_param_vars,
+            block_label_id,
+            types,
+            original_to_new_label,
+            out,
+        );
+    }
+
+    // 8b. loop_end — seals loop_block, switches to after_block.
     out.push(OpIR {
         kind: "loop_end".to_string(),
         ..OpIR::default()
     });
+}
+
+/// Emit the raise-path blocks for a guard CondBranch.
+///
+/// Follows Branch chains from `start_bid`, emitting each block with a
+/// label, block arg loads, ops, and terminators.  This handles patterns
+/// like guard → join → raise where the raise is 1-2 hops away.
+fn emit_guard_raise_path(
+    start_bid: BlockId,
+    start_args: &[ValueId],
+    func: &TirFunction,
+    block_param_vars: &HashMap<BlockId, Vec<String>>,
+    block_label_id: &dyn Fn(&BlockId) -> i64,
+    types: &HashMap<ValueId, TirType>,
+    original_to_new_label: &HashMap<i64, i64>,
+    out: &mut Vec<OpIR>,
+) {
+    let original_has_ret = func
+        .attrs
+        .get("_original_has_ret")
+        .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
+        .unwrap_or(false);
+
+    // Emit store_var for entry args before the first block label.
+    emit_block_arg_stores(start_bid, start_args, block_param_vars, out);
+
+    let mut cur = start_bid;
+    let mut visited: HashSet<BlockId> = HashSet::new();
+    while visited.insert(cur) {
+        let Some(blk) = func.blocks.get(&cur) else { break };
+
+        // Emit label.
+        out.push(OpIR {
+            kind: "label".to_string(),
+            value: Some(block_label_id(&cur)),
+            ..OpIR::default()
+        });
+
+        // Load block args.
+        if let Some(param_vars) = block_param_vars.get(&cur) {
+            for (i, var_name) in param_vars.iter().enumerate() {
+                if i < blk.args.len() {
+                    out.push(OpIR {
+                        kind: "load_var".to_string(),
+                        var: Some(var_name.clone()),
+                        out: Some(value_var(blk.args[i].id)),
+                        ..OpIR::default()
+                    });
+                }
+            }
+        }
+
+        // Emit ops.
+        emit_block_ops_inner(blk, types, original_to_new_label, out);
+
+        // Emit terminator and follow chain.
+        match &blk.terminator {
+            Terminator::Branch { target, args } => {
+                emit_block_arg_stores(*target, args, block_param_vars, out);
+                cur = *target;
+            }
+            _ => {
+                // Terminal block (raise, return, unreachable).
+                emit_terminator(
+                    blk,
+                    block_param_vars,
+                    block_label_id,
+                    &func.loop_roles,
+                    out,
+                    original_has_ret,
+                    super::blocks::LoopRole::None,
+                    &func.loop_break_kinds,
+                );
+                break;
+            }
+        }
+    }
 }
 
 /// Emit a block's ops with type annotations and label remapping.
