@@ -16900,29 +16900,23 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("store_var: src not found");
                     let var_name = op.var.as_deref().or(op.out.as_deref());
                     if let Some(name) = var_name {
-                        // Check if this is a user-local variable (starts with a letter,
-                        // not an internal _v123 or _bb0_arg0 variable).
-                        let is_user_local = !name.starts_with('_')
-                            && !name.starts_with("p")
-                            && name.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false);
-                        if is_user_local {
-                            // inc_ref the new value so it's owned by the variable.
-                            // dec_ref the old value to release the previous reference.
-                            // Uses NaN-boxed u64 variants (no-op for inline ints/bools).
-                            //
-                            // We always inc_ref the new value. We only dec_ref the
-                            // old if the variable has been defined before (use_var
-                            // would panic on undefined variables at the entry block).
-                            let inc_ref_callee = Self::import_func_id_split(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                "molt_inc_ref_obj",
-                                &[types::I64],
-                                &[],
-                            );
-                            let inc_local = self.module.declare_func_in_func(inc_ref_callee, builder.func);
-                            builder.ins().call(inc_local, &[*val]);
-                        }
+                        // inc_ref the new value so it's owned by the variable.
+                        // This is critical for heap-allocated values (bigints,
+                        // strings, etc.) that flow through loop-carried phis:
+                        // without inc_ref, the value can be freed by a dec_ref
+                        // on the old value, leaving a dangling pointer.
+                        //
+                        // molt_inc_ref_obj is a no-op for inline values (ints,
+                        // floats, bools, None) — only heap pointers are touched.
+                        let inc_ref_callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_inc_ref_obj",
+                            &[types::I64],
+                            &[],
+                        );
+                        let inc_local = self.module.declare_func_in_func(inc_ref_callee, builder.func);
+                        builder.ins().call(inc_local, &[*val]);
                         def_var_named(&mut builder, &vars, name, *val);
                     }
                 }
