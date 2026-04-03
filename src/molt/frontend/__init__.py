@@ -39070,6 +39070,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # be treated as borrowed (no inc_ref on entry, no dec_ref on exit).
             if data["params"]:
                 borrowed = self._analyze_borrowing(data["params"], json_ops)
+                # Methods: `self` is always borrowed — the caller (class
+                # dispatch / bound method) owns the reference. Without this,
+                # the compiled __init__ dec-refs self on return, freeing the
+                # instance before the caller can use it.
+                if data["params"][0] == "self" and 0 not in borrowed:
+                    borrowed.append(0)
+                    borrowed.sort()
                 if borrowed:
                     func_entry["borrowed_params"] = borrowed
             funcs_json.append(func_entry)

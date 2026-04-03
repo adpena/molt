@@ -845,8 +845,15 @@ pub(crate) unsafe fn call_class_init_with_args(
             }
             InitArgPolicy::ForwardArgs => {}
         }
+        // Inc-ref the instance before passing to __init__. The compiled
+        // __init__ receives `self` as a block param and the function
+        // epilogue dec-refs all tracked locals (including self). Without
+        // this extra inc-ref, the dec-ref drops the instance to refcount 0,
+        // freeing it — and the caller's inst_bits becomes a dangling pointer.
+        inc_ref_bits(_py, inst_bits);
         let builder_bits = molt_callargs_new(args.len() as u64, 0);
         if builder_bits == 0 {
+            dec_ref_bits(_py, inst_bits);
             return inst_bits;
         }
         for &arg in args {
