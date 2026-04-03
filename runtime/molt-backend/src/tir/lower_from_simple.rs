@@ -54,6 +54,7 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
         params: ir.params.clone(),
         param_types: ir.param_types.clone(),
         source_file: ir.source_file.clone(),
+        is_extern: false,
     };
     let ir_ref = &tmp_ir;
     let ops = &working_ops[..];
