@@ -460,6 +460,14 @@ fn preanalyze_function_ir(
                         | "const_bool"
                         | "load_var"
                         | "copy_var"
+                        // store_index/load_index/index return or alias
+                        // existing containers, not new heap allocations.
+                        // Per-iteration dec_ref of the container itself
+                        // corrupts the cell list (the container's refcount
+                        // drops to 0 and the cell is freed).
+                        | "store_index"
+                        | "load_index"
+                        | "index"
                 ) {
                     continue;
                 }
@@ -1523,6 +1531,12 @@ impl SimpleBackend {
                         | "state_label"
                         | "state_switch"
                         | "state_transition"
+                        // Container-aliasing ops: these return the same
+                        // container pointer, not a new heap allocation.
+                        // dec_ref of the container corrupts cell lists.
+                        | "store_index"
+                        | "load_index"
+                        | "index"
                 ) {
                 // Check the precomputed loop_body_out_vars: this variable must
                 // appear in at least one enclosing loop's assignment set.
