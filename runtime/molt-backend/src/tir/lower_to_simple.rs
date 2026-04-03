@@ -638,7 +638,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     // have a corresponding label op. If validation fails, it means the
     // TIR roundtrip lost a handler block's label mapping.
     // Debug: dump sieve TIR output to file
-    if func.name.contains("sieve") && !func.name.contains("module") {
+    if func.name.contains("test_sieve__sieve") {
         use std::io::Write;
         if let Ok(mut f) = std::fs::File::create("/tmp/sieve_lower_output.txt") {
             for (i, op) in out.iter().enumerate() {
