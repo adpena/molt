@@ -91,9 +91,11 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
         }
         profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
         let slot = obj_ptr.add(offset) as *mut u64;
+        let old_val = *slot;
         if std::env::var("MOLT_DEBUG_FIELD").is_ok() {
             eprintln!(
-                "[field_set_raw] ptr=0x{:x} offset={} slot=0x{:x} val=0x{:x}",
+                "[field_set_raw] ptr=0x{:x} offset={} slot=0x{:x} old=0x{:x} val=0x{:x}",
+                obj_ptr as usize, offset, slot as usize, old_val,
                 obj_ptr as usize, offset, slot as usize, val_bits
             );
         }
