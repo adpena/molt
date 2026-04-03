@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -159,7 +160,7 @@ def _baseline_summary(native_bench: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
-def _readme_summary(
+def _status_summary(
     native: dict[str, Any],
     wasm: dict[str, Any],
     native_bench: dict[str, Any],
@@ -228,18 +229,18 @@ def _readme_summary(
     return "\n".join(summary_lines)
 
 
-def _update_readme(readme_path: Path, summary_block: str) -> None:
-    marker_start = "<!-- BENCH_SUMMARY_START -->"
-    marker_end = "<!-- BENCH_SUMMARY_END -->"
-    content = readme_path.read_text()
+def _update_status_doc(status_path: Path, summary_block: str) -> None:
+    marker_start = "<!-- GENERATED:bench-summary:start -->"
+    marker_end = "<!-- GENERATED:bench-summary:end -->"
+    content = status_path.read_text()
     if marker_start not in content or marker_end not in content:
         raise SystemExit(
-            f"missing README markers {marker_start}/{marker_end} in {readme_path}"
+            f"missing status markers {marker_start}/{marker_end} in {status_path}"
         )
     before, rest = content.split(marker_start, maxsplit=1)
     _, after = rest.split(marker_end, maxsplit=1)
     updated = f"{before}{marker_start}\n{summary_block}\n{marker_end}{after}"
-    readme_path.write_text(updated)
+    status_path.write_text(updated)
 
 
 def _render_report(
@@ -473,7 +474,7 @@ def _render_report(
     out_path.write_text("\n".join(lines) + "\n")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Generate a combined native+WASM benchmark report."
     )
@@ -496,26 +497,31 @@ def main() -> None:
         help="Output Markdown report path.",
     )
     parser.add_argument(
-        "--update-readme",
+        "--update-status-doc",
         action="store_true",
-        help="Update README Performance & Comparisons summary block.",
+        help="Update docs/spec/STATUS.md benchmark summary block.",
     )
     parser.add_argument(
-        "--readme",
+        "--status-doc-path",
         type=Path,
-        default=Path("README.md"),
-        help="Path to README for summary updates.",
+        default=Path("docs/spec/STATUS.md"),
+        help="Path to STATUS.md for benchmark summary updates.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     native = _load_json(args.native)
     wasm = _load_json(args.wasm)
     _render_report(args.native, args.wasm, args.out, native, wasm)
-    if args.update_readme:
+    if args.update_status_doc:
         _, native_bench, wasm_bench = _collect_benchmarks(native, wasm)
-        summary_block = _readme_summary(native, wasm, native_bench, wasm_bench)
-        _update_readme(args.readme, summary_block)
+        summary_block = _status_summary(native, wasm, native_bench, wasm_bench)
+        try:
+            _update_status_doc(args.status_doc_path, summary_block)
+        except SystemExit as exc:
+            print(exc, file=sys.stderr)
+            return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
