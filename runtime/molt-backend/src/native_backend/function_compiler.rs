@@ -458,6 +458,8 @@ fn preanalyze_function_ir(
                         | "const_float"
                         | "const_none"
                         | "const_bool"
+                        | "load_var"
+                        | "copy_var"
                 ) {
                     continue;
                 }
@@ -1453,6 +1455,7 @@ impl SimpleBackend {
                         | "loop_end"
                         | "phi"
                         | "load_var"
+                        | "copy_var"
                         | "store_var"
                         | "label"
                         | "state_label"

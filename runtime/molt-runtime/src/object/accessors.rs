@@ -316,25 +316,30 @@ pub(crate) unsafe fn mirror_field_to_instance_dict(
     attr_name_len: usize,
     val_bits: u64,
 ) {
-    if let Some(attr_bits) = crate::builtins::attr::attr_name_bits_from_bytes(
-        _py, std::slice::from_raw_parts(attr_name_ptr, attr_name_len),
-    ) {
-        let mut dict_bits = super::instance_dict_bits(obj_ptr);
-        if dict_bits == 0 {
-            let dict_ptr = crate::object::builders::alloc_dict_with_pairs(_py, &[]);
-            if !dict_ptr.is_null() {
-                dict_bits = crate::MoltObject::from_ptr(dict_ptr).bits();
-                super::instance_set_dict_bits(_py, obj_ptr, dict_bits);
+    // SAFETY: caller guarantees attr_name_ptr/attr_name_len form a valid slice,
+    // obj_ptr points to a live instance, and all unsafe helpers are called with
+    // valid pointers.
+    unsafe {
+        if let Some(attr_bits) = crate::builtins::attr::attr_name_bits_from_bytes(
+            _py, std::slice::from_raw_parts(attr_name_ptr, attr_name_len),
+        ) {
+            let mut dict_bits = super::instance_dict_bits(obj_ptr);
+            if dict_bits == 0 {
+                let dict_ptr = crate::object::builders::alloc_dict_with_pairs(_py, &[]);
+                if !dict_ptr.is_null() {
+                    dict_bits = crate::MoltObject::from_ptr(dict_ptr).bits();
+                    super::instance_set_dict_bits(_py, obj_ptr, dict_bits);
+                }
             }
-        }
-        if dict_bits != 0 {
-            if let Some(dict_ptr) = crate::obj_from_bits(dict_bits).as_ptr()
-                && crate::object_type_id(dict_ptr) == crate::TYPE_ID_DICT
-            {
-                crate::object::ops::dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
+            if dict_bits != 0 {
+                if let Some(dict_ptr) = crate::obj_from_bits(dict_bits).as_ptr()
+                    && crate::object_type_id(dict_ptr) == crate::TYPE_ID_DICT
+                {
+                    crate::object::ops::dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
+                }
             }
+            crate::dec_ref_bits(_py, attr_bits);
         }
-        crate::dec_ref_bits(_py, attr_bits);
     }
 }
 
