@@ -437,6 +437,7 @@ pub unsafe extern "C" fn molt_tuple_builder_finish(builder_bits: u64) -> u64 {
 /// Caller must ensure `builder_bits` is valid. Elements in the builder's Vec
 /// are assumed to already have their own reference (the compiler emitted
 /// inc_ref before each append). No additional inc_ref is performed.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_tuple_builder_finish_owned(builder_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry!(_py, {
