@@ -8211,7 +8211,13 @@ def _build_lock(project_root: Path, name: str):
         os.fspath(_build_state_root(project_root)),
     )
     lock_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = lock_dir / f"{name}.lock"
+    # Incorporate MOLT_SESSION_ID into the lock name so parallel sessions
+    # don't compete for the same lock.  Without this, `molt run` in one
+    # session blocks for up to 300s while another session's build holds the
+    # backend/compile lock.
+    session_id = os.environ.get("MOLT_SESSION_ID", "")
+    lock_suffix = f".{session_id}" if session_id else ""
+    lock_path = lock_dir / f"{name}{lock_suffix}.lock"
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
     timeout_raw = os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", "").strip()
     lock_timeout: float | None = 300.0
