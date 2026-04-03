@@ -8146,6 +8146,37 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::Equal, lhs_f, rhs_f);
                         box_bool_value(&mut builder, cmp, &nbc)
+                    } else if op.fast_int.unwrap_or(false) {
+                        // Guarded fast_int path with inline tag check.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_int = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder.ins().brif(both_int, fast_block, &[], slow_block, &[]);
+                        builder.switch_to_block(fast_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
+                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                        let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
+                        let fast_res = box_bool_value(&mut builder, cmp, &nbc);
+                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        builder.switch_to_block(slow_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                        let eq_callee = Self::import_func_id_split(
+                            &mut self.module, &mut self.import_ids,
+                            "molt_eq", &[types::I64, types::I64], &[types::I64],
+                        );
+                        let eq_local = self.module.declare_func_in_func(eq_callee, builder.func);
+                        let eq_call = builder.ins().call(eq_local, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(eq_call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        builder.switch_to_block(merge_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                        builder.block_params(merge_block)[0]
                     } else {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -8172,6 +8203,37 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::NotEqual, lhs_f, rhs_f);
                         box_bool_value(&mut builder, cmp, &nbc)
+                    } else if op.fast_int.unwrap_or(false) {
+                        // Guarded fast_int: verify both are inline ints at runtime.
+                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
+                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
+                        let both_int = builder.ins().band(lhs_is_int, rhs_is_int);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        builder.set_cold_block(slow_block);
+                        let merge_block = builder.create_block();
+                        builder.append_block_param(merge_block, types::I64);
+                        builder.ins().brif(both_int, fast_block, &[], slow_block, &[]);
+                        builder.switch_to_block(fast_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
+                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
+                        let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
+                        let fast_res = box_bool_value(&mut builder, cmp, &nbc);
+                        jump_block(&mut builder, merge_block, &[fast_res]);
+                        builder.switch_to_block(slow_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                        let ne_callee = Self::import_func_id_split(
+                            &mut self.module, &mut self.import_ids,
+                            "molt_ne", &[types::I64, types::I64], &[types::I64],
+                        );
+                        let ne_local = self.module.declare_func_in_func(ne_callee, builder.func);
+                        let ne_call = builder.ins().call(ne_local, &[*lhs, *rhs]);
+                        let slow_res = builder.inst_results(ne_call)[0];
+                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        builder.switch_to_block(merge_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                        builder.block_params(merge_block)[0]
                     } else {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
