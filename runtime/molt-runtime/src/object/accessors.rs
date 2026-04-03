@@ -106,6 +106,11 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
         }
         if !old_is_ptr && !new_is_ptr {
             *slot = val_bits;
+        // DEBUG: verify write persisted
+        let readback = *slot;
+        if std::env::var("MOLT_DEBUG_FIELD").is_ok() && readback != val_bits {
+            eprintln!("[field_set_raw] WRITE FAILED! readback=0x{:x} expected=0x{:x}", readback, val_bits);
+        }
             return MoltObject::none().bits();
         }
         if old_bits != val_bits {
