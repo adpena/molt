@@ -563,6 +563,11 @@ def _run_wrapper_build(
                 except OSError:
                     pass
 
+    # Show progress when building (no silent hangs).
+    if not json_output and not verbose:
+        _source = Path(file_path).name if file_path else module or "module"
+        print(f"Compiling {_source}...", file=sys.stderr, flush=True)
+
     build_cmd = [sys.executable, "-m", "molt.cli", "build"]
     if not _build_args_has_json_flag(build_args):
         build_cmd.append("--json")

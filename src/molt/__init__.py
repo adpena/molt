@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__version__ = "0.1.0-alpha"
+
 from typing import Any
 
 from molt import intrinsics as _intrinsics
