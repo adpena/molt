@@ -59,6 +59,12 @@
 - Never create branches or worktrees without explicit user approval for that specific task.
 - If explicit approval is missing, stop and ask before running commands such as `git switch -c`, `git checkout -b`, `git branch`, or `git worktree add`.
 
+## Default Execution Mode (Non-Negotiable)
+- Default to multi-hour autonomous execution behavior: work in long uninterrupted bursts, batch multiple related product slices per turn, and use minimal worker orchestration.
+- Proactively clean stale Codex and `rbx-studio-mcp` processes when needed to keep execution stable and deterministic.
+- Do not stop at neat local checkpoints. Only stop for a real blocker, a safety constraint, or when remote proof on tertiary is the next required step.
+- Do not emit tranche summaries after every small fix. Keep going until a substantial bundled burndown is complete.
+
 ## Non-Negotiable: Raise On Missing Features
 - Always raise on missing features; never fallback silently.
 - Never build coverage or implementations that rely on host Python in any way.
