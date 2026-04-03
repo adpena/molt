@@ -885,7 +885,7 @@ impl SimpleBackend {
         // non-integer variables (sets, lists, strings) a bogus shadow of 0,
         // causing arithmetic operators to take the fast-int path and produce
         // garbage (e.g., set subtraction returning an int).
-        {
+        let int_store_target_names = {
             // First pass: collect variable names whose source is int-typed.
             let mut int_store_targets: std::collections::BTreeSet<String> =
                 std::collections::BTreeSet::new();
@@ -936,7 +936,8 @@ impl SimpleBackend {
                 builder.def_var(v, zero);
                 raw_int_shadow.insert(name.clone(), v);
             }
-        }
+            int_store_targets
+        };
 
         let _local_dec_ref = import_func_ref(
             &mut self.module,
@@ -1568,17 +1569,13 @@ impl SimpleBackend {
                         let iconst = builder.ins().iconst(types::I64, boxed);
                         if let Some(ref out__) = op.out {
                             def_var_named(&mut builder, &vars, out__, iconst);
-                            // Seed raw shadow when type hints indicate fast_int context.
-                            if op.fast_int.unwrap_or(false)
-                                || op.type_hint.as_deref() == Some("int")
-                                || op.type_hint.as_deref() == Some("bool")
-                            {
-                                let raw_val = builder.ins().iconst(types::I64, val);
-                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                    builder.def_var(shadow_var, raw_val);
-                                }
-                                raw_int_shadow_vals.insert(out__.clone(), raw_val);
+                            // Integer constants are unconditionally int-typed.
+                            // Always seed the shadow — no type hint needed.
+                            let raw_val = builder.ins().iconst(types::I64, val);
+                            if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                builder.def_var(shadow_var, raw_val);
                             }
+                            raw_int_shadow_vals.insert(out__.clone(), raw_val);
                         }
                     } else {
                         // Value exceeds 47-bit signed inline range — use bigint path.
@@ -15084,9 +15081,18 @@ impl SimpleBackend {
                     }
                 }
                 "loop_start" => {
-                    // Variable-backed shadows are phi-correct across loop
-                    // back-edges — Cranelift inserts phis for Variables
-                    // automatically.  No clear needed.
+                    // Clear Value-based shadows (stale across blocks) and
+                    // load_var aliases.  Keep Variable entries for store_var
+                    // targets — their Variables are phi-correct across
+                    // back-edges.  Re-populate from use_var so the first
+                    // iteration sees the pre-loop value, not the init zero.
+                    raw_int_shadow_vals.clear();
+                    // Rebuild: keep only pre-declared Variables (store_var targets)
+                    raw_int_shadow.retain(|_, _| true); // keep all Variable entries
+                    // Remove aliases (entries that share a Variable with a store target)
+                    // by keeping only entries that were in the original pre-declaration.
+                    // The simplest correct approach: clear aliases, keep store targets.
+                    raw_int_shadow.retain(|k, _| int_store_target_names.contains(k));
 
                     let indexed_loop_follows = loop_start_has_index_prelude(&func_ir.ops, op_idx);
                     if indexed_loop_follows {

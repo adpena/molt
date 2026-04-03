@@ -2187,6 +2187,30 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
                 _ => {}
             }
         }
+
+        // For comparison ops, the RESULT type is Bool but the backend needs
+        // OPERAND types to choose fast paths (icmp for int, fcmp for float).
+        // Check operand types and set fast_int/fast_float so the backend can
+        // skip tag-check and use direct hardware comparison instructions.
+        let is_comparison = matches!(
+            tir_op.opcode,
+            OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge
+        );
+        if is_comparison && tir_op.operands.len() >= 2 {
+            let lhs_ty = types.get(&tir_op.operands[0]);
+            let rhs_ty = types.get(&tir_op.operands[1]);
+            match (lhs_ty, rhs_ty) {
+                (Some(TirType::I64), Some(TirType::I64)) => {
+                    opir.fast_int = Some(true);
+                }
+                (Some(TirType::F64), Some(TirType::F64))
+                | (Some(TirType::I64), Some(TirType::F64))
+                | (Some(TirType::F64), Some(TirType::I64)) => {
+                    opir.fast_float = Some(true);
+                }
+                _ => {}
+            }
+        }
     }
 
     // Propagate StackAlloc: if the TIR op is StackAlloc, mark the SimpleIR op
