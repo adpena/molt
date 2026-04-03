@@ -841,18 +841,20 @@ impl SimpleBackend {
         let mut already_decrefed: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
 
-        // Shadow map: raw (unboxed) i64 Cranelift Variables for fast_int values.
+        // Raw int shadow: two-tier unboxed i64 tracking.
         //
-        // Each entry maps an SSA variable name to a Cranelift Variable holding
-        // the unboxed i64 value.  Using Variables (not Values) ensures shadows
-        // survive SSA phi merges at loop back-edges — Cranelift automatically
-        // inserts phis for Variables when control flow merges.
+        // Tier 1 (Variable-backed): named variables that cross block boundaries
+        // (loop induction variables via store_var/load_var).  Pre-declared at
+        // entry; Cranelift inserts phis at loop headers automatically.
         //
-        // Pre-declared at function entry with def_var(0) to satisfy Cranelift's
-        // requirement that all paths to a use_var have a definition.  Updated
-        // via def_var at each producer (const_int, arithmetic, store_var).
-        // Read via use_var at each consumer (comparisons, list_int access).
+        // Tier 2 (Value-based): SSA intermediates within a single basic block
+        // (const_int → add → compare chains).  Cheap, no pre-declaration needed.
+        // Cleared at block boundaries (label, if, else, end_if).
+        //
+        // Read order: try Tier 2 first (no function call), fall back to Tier 1
+        // (use_var).  Write order: write to both tiers on every def.
         let mut raw_int_shadow: std::collections::BTreeMap<String, Variable> = std::collections::BTreeMap::new();
+        let mut raw_int_shadow_vals: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
         // Cache data_ptr and len for list_int containers using Cranelift Variables
         // (not Values) so they persist across loop iterations via phi nodes.
         // Valid only while the list is not resized (no append/insert inside the loop).
@@ -1574,6 +1576,7 @@ impl SimpleBackend {
                                 if let Some(&shadow_var) = raw_int_shadow.get(out__) {
                                     builder.def_var(shadow_var, raw_val);
                                 }
+                                raw_int_shadow_vals.insert(out__.clone(), raw_val);
                             }
                         }
                     } else {
@@ -1647,6 +1650,7 @@ impl SimpleBackend {
                         if let Some(&shadow_var) = raw_int_shadow.get(out__) {
                             builder.def_var(shadow_var, raw);
                         }
+                        raw_int_shadow_vals.insert(out__.clone(), raw);
                     }
                 }
                 "const_none" => {
@@ -1859,8 +1863,8 @@ impl SimpleBackend {
                         // If result overflows 47-bit inline range, fall to slow path.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let lhs_raw = raw_int_shadow.get(lhs_name).map(|&v| builder.use_var(v));
-                        let rhs_raw = raw_int_shadow.get(rhs_name).map(|&v| builder.use_var(v));
+                        let lhs_raw = raw_int_shadow_vals.get(lhs_name).copied().or_else(|| raw_int_shadow.get(lhs_name).map(|&v| builder.use_var(v)));
+                        let rhs_raw = raw_int_shadow_vals.get(rhs_name).copied().or_else(|| raw_int_shadow.get(rhs_name).map(|&v| builder.use_var(v)));
 
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -1909,6 +1913,7 @@ impl SimpleBackend {
                                 if let Some(&shadow_var) = raw_int_shadow.get(out__) {
                                     builder.def_var(shadow_var, merged_raw);
                                 }
+                                raw_int_shadow_vals.insert(out__.clone(), merged_raw);
                             }
                             merged_boxed
                         } else {
@@ -1994,13 +1999,14 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some()
+                    } else if (raw_int_shadow_vals.contains_key(&args[0]) || raw_int_shadow.contains_key(&args[0]))
+                        && (raw_int_shadow_vals.contains_key(&args[1]) || raw_int_shadow.contains_key(&args[1]))
                         && (op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int"))
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = builder.use_var(*raw_int_shadow.get(&args[0]).unwrap());
-                        let rhs_val = builder.use_var(*raw_int_shadow.get(&args[1]).unwrap());
+                        let lhs_val = raw_int_shadow_vals.get(&args[0]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[0]).unwrap()));
+                        let rhs_val = raw_int_shadow_vals.get(&args[1]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[1]).unwrap()));
                         let raw_result = builder.ins().iadd(lhs_val, rhs_val);
                         let fits_inline = int_value_fits_inline(&mut builder, raw_result);
                         let callee = Self::import_func_id_split(
@@ -2042,6 +2048,7 @@ impl SimpleBackend {
                             if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
                                 builder.def_var(shadow_var, merge_raw);
                             }
+                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2566,13 +2573,14 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some()
+                    } else if (raw_int_shadow_vals.contains_key(&args[0]) || raw_int_shadow.contains_key(&args[0]))
+                        && (raw_int_shadow_vals.contains_key(&args[1]) || raw_int_shadow.contains_key(&args[1]))
                         && (op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int"))
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = builder.use_var(*raw_int_shadow.get(&args[0]).unwrap());
-                        let rhs_val = builder.use_var(*raw_int_shadow.get(&args[1]).unwrap());
+                        let lhs_val = raw_int_shadow_vals.get(&args[0]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[0]).unwrap()));
+                        let rhs_val = raw_int_shadow_vals.get(&args[1]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[1]).unwrap()));
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
                         let fits_inline = int_value_fits_inline(&mut builder, raw_result);
                         let callee = Self::import_func_id_split(
@@ -2614,6 +2622,7 @@ impl SimpleBackend {
                             if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
                                 builder.def_var(shadow_var, merge_raw);
                             }
+                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2697,13 +2706,14 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some()
+                    } else if (raw_int_shadow_vals.contains_key(&args[0]) || raw_int_shadow.contains_key(&args[0]))
+                        && (raw_int_shadow_vals.contains_key(&args[1]) || raw_int_shadow.contains_key(&args[1]))
                         && (op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int"))
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = builder.use_var(*raw_int_shadow.get(&args[0]).unwrap());
-                        let rhs_val = builder.use_var(*raw_int_shadow.get(&args[1]).unwrap());
+                        let lhs_val = raw_int_shadow_vals.get(&args[0]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[0]).unwrap()));
+                        let rhs_val = raw_int_shadow_vals.get(&args[1]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[1]).unwrap()));
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
                         let fits_inline = int_value_fits_inline(&mut builder, raw_result);
                         let callee = Self::import_func_id_split(
@@ -2745,6 +2755,7 @@ impl SimpleBackend {
                             if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
                                 builder.def_var(shadow_var, merge_raw);
                             }
+                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2853,13 +2864,14 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some()
+                    } else if (raw_int_shadow_vals.contains_key(&args[0]) || raw_int_shadow.contains_key(&args[0]))
+                        && (raw_int_shadow_vals.contains_key(&args[1]) || raw_int_shadow.contains_key(&args[1]))
                         && (op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int"))
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = builder.use_var(*raw_int_shadow.get(&args[0]).unwrap());
-                        let rhs_val = builder.use_var(*raw_int_shadow.get(&args[1]).unwrap());
+                        let lhs_val = raw_int_shadow_vals.get(&args[0]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[0]).unwrap()));
+                        let rhs_val = raw_int_shadow_vals.get(&args[1]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[1]).unwrap()));
                         let (raw_result, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -2900,6 +2912,7 @@ impl SimpleBackend {
                             if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
                                 builder.def_var(shadow_var, merge_raw);
                             }
+                            raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2978,12 +2991,13 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some()
+                    } else if (raw_int_shadow_vals.contains_key(&args[0]) || raw_int_shadow.contains_key(&args[0]))
+                        && (raw_int_shadow_vals.contains_key(&args[1]) || raw_int_shadow.contains_key(&args[1]))
                         && (op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int"))
                     {
                         // Raw chain: both operands already unboxed + overflow guard
-                        let lhs_val = builder.use_var(*raw_int_shadow.get(&args[0]).unwrap());
-                        let rhs_val = builder.use_var(*raw_int_shadow.get(&args[1]).unwrap());
+                        let lhs_val = raw_int_shadow_vals.get(&args[0]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[0]).unwrap()));
+                        let rhs_val = raw_int_shadow_vals.get(&args[1]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[1]).unwrap()));
                         let (raw_result, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -5954,8 +5968,7 @@ impl SimpleBackend {
                             //
                             // Requires raw_int_shadow index for bounds-checked inline path.
                             // Falls back to the safe runtime function otherwise.
-                            if let Some(&shadow_var) = raw_int_shadow.get(&args[1]) {
-                                let raw_idx = builder.use_var(shadow_var);
+                            if let Some(raw_idx) = raw_int_shadow_vals.get(&args[1]).copied().or_else(|| raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v))) {
                                 // Extract storage_ptr, data_ptr, len (cached across loop iterations).
                                 let (data_ptr, len_val) = {
                                     let dp = if let Some(&var) = list_int_data_cache.get(&args[0]) {
@@ -6041,6 +6054,7 @@ impl SimpleBackend {
                                     if let Some(&shadow_var) = raw_int_shadow.get(out__) {
                                         builder.def_var(shadow_var, merged_raw);
                                     }
+                                    raw_int_shadow_vals.insert(out__.clone(), merged_raw);
                                 }
                             } else {
                                 // Fallback: NaN-boxed index, call the standard variant.
@@ -6100,8 +6114,8 @@ impl SimpleBackend {
                     if op.container_type.as_deref() == Some("list_int") {
                         // Inline list[int] setitem with bounds check using
                         // ListIntStorage (#[repr(C)]): [data@0, len@8, cap@16].
-                        let raw_idx_opt = raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v));
-                        let raw_val_opt = raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v));
+                        let raw_idx_opt = raw_int_shadow_vals.get(&args[1]).copied().or_else(|| raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v)));
+                        let raw_val_opt = raw_int_shadow_vals.get(&args[2]).copied().or_else(|| raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v)));
                         if let (Some(raw_idx), Some(raw_val)) = (raw_idx_opt, raw_val_opt) {
                             // Extract storage_ptr, data_ptr, len (cached).
                             let (data_ptr, len_val) = {
@@ -6228,8 +6242,8 @@ impl SimpleBackend {
                     // - default: full dict/generic dispatch
                     if op.container_type.as_deref() == Some("list_int") {
                         // raw_int_shadow fast path for list_int dict_set
-                        let raw_key_opt = raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v));
-                        let raw_val_opt = raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v));
+                        let raw_key_opt = raw_int_shadow_vals.get(&args[1]).copied().or_else(|| raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v)));
+                        let raw_val_opt = raw_int_shadow_vals.get(&args[2]).copied().or_else(|| raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v)));
                         if let (Some(raw_key), Some(raw_val)) = (raw_key_opt, raw_val_opt) {
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
@@ -7962,8 +7976,8 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let lr = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v));
-                    let rr = raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v));
+                    let lr = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)));
+                    let rr = raw_int_shadow_vals.get(&args[1]).copied().or_else(|| raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v)));
                     let res = if lr.is_some() && rr.is_some() {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lr.unwrap(), rr.unwrap());
                         box_bool_value(&mut builder, cmp, &nbc)
@@ -8006,8 +8020,8 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let lr = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v));
-                    let rr = raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v));
+                    let lr = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)));
+                    let rr = raw_int_shadow_vals.get(&args[1]).copied().or_else(|| raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v)));
                     let res = if lr.is_some() && rr.is_some() {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr.unwrap(), rr.unwrap());
                         box_bool_value(&mut builder, cmp, &nbc)
@@ -8049,9 +8063,9 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if let (Some(&lv), Some(&rv)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
-                        let lr = builder.use_var(lv);
-                        let rr = builder.use_var(rv);
+                    let lhs_shadow = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)));
+                    let rhs_shadow = raw_int_shadow_vals.get(&args[1]).copied().or_else(|| raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v)));
+                    let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_float.unwrap_or(false) {
@@ -8086,9 +8100,9 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if let (Some(&lv), Some(&rv)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
-                        let lr = builder.use_var(lv);
-                        let rr = builder.use_var(rv);
+                    let lhs_shadow = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)));
+                    let rhs_shadow = raw_int_shadow_vals.get(&args[1]).copied().or_else(|| raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v)));
+                    let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_float.unwrap_or(false) {
@@ -8132,11 +8146,6 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::Equal, lhs_f, rhs_f);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op.fast_int.unwrap_or(false) {
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
-                        box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -8162,11 +8171,6 @@ impl SimpleBackend {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::NotEqual, lhs_f, rhs_f);
-                        box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op.fast_int.unwrap_or(false) {
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else {
                         let callee = Self::import_func_id_split(
@@ -8387,7 +8391,7 @@ impl SimpleBackend {
                     let res = if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
                         // For known ints, bool(x) is simply x != 0.
                         // Use raw shadow if available to skip unboxing.
-                        let int_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
+                        let int_val = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)))
                             .unwrap_or_else(|| unbox_int(&mut builder, *val, &nbc));
                         let zero = builder.ins().iconst(types::I64, 0);
                         let is_nonzero = builder.ins().icmp(IntCC::NotEqual, int_val, zero);
@@ -8422,7 +8426,7 @@ impl SimpleBackend {
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let cond = if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
                         // Known int: inline unbox + compare, no function call.
-                        let raw_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
+                        let raw_val = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)))
                             .unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op.type_hint.as_deref() == Some("bool") {
@@ -8461,7 +8465,7 @@ impl SimpleBackend {
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let cond = if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
                         // Known int: inline unbox + compare, no function call.
-                        let raw_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
+                        let raw_val = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)))
                             .unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op.type_hint.as_deref() == Some("bool") {
@@ -13203,7 +13207,7 @@ impl SimpleBackend {
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
                         // NaN-boxed int: unbox and check != 0.
                         // If we have a raw shadow, use that directly.
-                        let raw_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
+                        let raw_val = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)))
                             .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else {
@@ -14244,7 +14248,7 @@ impl SimpleBackend {
                             builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
                         } else if cond_is_int_typed {
                             // NaN-boxed int: unbox and check != 0.
-                            let raw_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
+                            let raw_val = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)))
                                 .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
@@ -14383,7 +14387,7 @@ impl SimpleBackend {
                             builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
                         } else if cond_is_int_typed {
                             // NaN-boxed int: unbox and check != 0.
-                            let raw_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
+                            let raw_val = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)))
                                 .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
@@ -16049,7 +16053,7 @@ impl SimpleBackend {
                         builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
                     } else if op.fast_int.unwrap_or(false) || cond_type_hint == Some("int") {
                         // NaN-boxed int: unbox and check != 0.
-                        let raw_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
+                        let raw_val = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)))
                             .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else {
@@ -16263,13 +16267,13 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, name, *val);
                         // Propagate raw_int_shadow through store_var:
                         // Value-level (within this block) + Variable-level (across back-edges).
-                        if let Some(&src_var) = raw_int_shadow.get(&args[0]) {
-                            let raw_val = builder.use_var(src_var);
+                        if let Some(raw_val) = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))) {
                             // def_var the pre-declared shadow Variable so it
                             // survives phi merges at loop back-edges.
                             if let Some(&dst_var) = raw_int_shadow.get(name) {
                                 builder.def_var(dst_var, raw_val);
                             }
+                            raw_int_shadow_vals.insert(name.to_string(), raw_val);
                         }
                     }
                 }
@@ -16284,13 +16288,14 @@ impl SimpleBackend {
                             .expect("load_var: var not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
-                            // Propagate Variable-backed shadow from source var
-                            // to output name (survives phis across loop back-edges).
-                            if let Some(&src_var) = raw_int_shadow.get(var_name.as_str()) {
-                                let raw_val = builder.use_var(src_var);
+                            // Propagate shadow from source var to output name.
+                            // Read: Value tier first, fall back to Variable tier.
+                            // Write: both tiers on destination.
+                            if let Some(raw_val) = raw_int_shadow_vals.get(var_name.as_str()).copied().or_else(|| raw_int_shadow.get(var_name.as_str()).map(|&v| builder.use_var(v))) {
                                 if let Some(&dst_var) = raw_int_shadow.get(out_name.as_str()) {
                                     builder.def_var(dst_var, raw_val);
                                 }
+                                raw_int_shadow_vals.insert(out_name.clone(), raw_val);
                             }
                         }
                     } else if let Some(ref args) = op.args
@@ -16300,11 +16305,11 @@ impl SimpleBackend {
                             .expect("copy_var: src not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
-                            if let Some(&src_var) = raw_int_shadow.get(&args[0]) {
-                                let raw_val = builder.use_var(src_var);
+                            if let Some(raw_val) = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))) {
                                 if let Some(&dst_var) = raw_int_shadow.get(out_name.as_str()) {
                                     builder.def_var(dst_var, raw_val);
                                 }
+                                raw_int_shadow_vals.insert(out_name.clone(), raw_val);
                             }
                         }
                     }
