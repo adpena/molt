@@ -16545,6 +16545,9 @@ impl SimpleBackend {
                                     {
                                         continue;
                                     }
+                                    if param_name_set.contains(name.as_str()) {
+                                        continue;
+                                    }
                                     let val = resolve_cleanup_value(
                                         &mut builder,
                                         &vars,
@@ -16591,12 +16594,23 @@ impl SimpleBackend {
                             if already_decrefed.contains(alias_root_name(&alias_roots, name)) {
                                 continue;
                             }
+                            // Parameters are borrowed from the caller — do not
+                            // dec-ref them. The caller owns the reference and
+                            // will handle cleanup. Without this skip, __init__
+                            // methods free `self` on return, causing the caller
+                            // to see a dangling instance pointer.
+                            if param_name_set.contains(name.as_str()) {
+                                continue;
+                            }
                             if let Some(val) = var_get(&mut builder, &vars, name) {
                                 builder.ins().call(local_dec_ref_obj, &[*val]);
                             }
                         }
                         for name in &tracked_obj_vars {
                             if already_decrefed.contains(alias_root_name(&alias_roots, name)) {
+                                continue;
+                            }
+                            if param_name_set.contains(name.as_str()) {
                                 continue;
                             }
                             if let Some(val) = var_get(&mut builder, &vars, name) {
@@ -16679,6 +16693,9 @@ impl SimpleBackend {
                         if already_decrefed.contains(alias_root_name(&alias_roots, name)) {
                             continue;
                         }
+                        if param_name_set.contains(name.as_str()) {
+                            continue;
+                        }
                         let val = entry_vars
                             .get(name)
                             .copied()
@@ -16689,6 +16706,9 @@ impl SimpleBackend {
                     }
                     for name in &tracked_obj_vars {
                         if already_decrefed.contains(alias_root_name(&alias_roots, name)) {
+                            continue;
+                        }
+                        if param_name_set.contains(name.as_str()) {
                             continue;
                         }
                         let val = entry_vars
@@ -17241,6 +17261,9 @@ impl SimpleBackend {
                 // RC coalescing: skip tracking for variables whose dec_ref
                 // was elided because the matching inc_ref was also elided.
                 && !rc_skip_dec.contains(name.as_str())
+                // Parameters are borrowed from the caller — never track them
+                // for cleanup dec_ref. The caller owns the reference.
+                && !param_name_set.contains(name.as_str())
             {
                 if block == entry_block && loop_depth == 0 {
                     if output_is_ptr {

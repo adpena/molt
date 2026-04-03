@@ -203,6 +203,12 @@ unsafe fn guard_layout_match(
 ) -> bool {
     unsafe {
         profile_hit(_py, &LAYOUT_GUARD_COUNT);
+        if std::env::var("MOLT_DEBUG_GUARD").is_ok() {
+            let header = header_from_obj_ptr(obj_ptr);
+            let tid = (*header).type_id;
+            let ocb = object_class_bits(obj_ptr);
+            eprintln!("[guard] ptr=0x{:x} type_id={} obj_class_bits=0x{:x} expected_class=0x{:x}", obj_ptr as usize, tid, ocb, class_bits);
+        }
         if obj_ptr.is_null() {
             profile_hit(_py, &LAYOUT_GUARD_FAIL);
             profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT);
