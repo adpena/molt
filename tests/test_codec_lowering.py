@@ -501,7 +501,7 @@ a = f(1)
 b = f(1.0)
 c = a + 1
 d = b + 1
-    """
+"""
     ir = compile_to_tir(src, type_hint_policy="check")
     add_ops = _ops_by_kind(ir, "add")
     assert len(add_ops) == 2
