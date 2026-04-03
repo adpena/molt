@@ -270,6 +270,11 @@ fn terminator_successors(terminator: &LirTerminator) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
+        LirTerminator::Switch { cases, default, .. } => {
+            let mut targets = cases.iter().map(|(_, block, _)| *block).collect::<Vec<_>>();
+            targets.push(*default);
+            targets
+        }
         LirTerminator::Return { .. } | LirTerminator::Unreachable => Vec::new(),
     }
 }
@@ -533,6 +538,37 @@ fn verify_terminators(
                         None => {}
                     }
                 }
+            }
+            LirTerminator::Switch {
+                value,
+                cases,
+                default,
+                default_args,
+            } => {
+                verify_use_dominates(
+                    *bid,
+                    use_index,
+                    *value,
+                    values,
+                    dominators,
+                    errors,
+                    "switch value",
+                );
+                for (_, target, args) in cases {
+                    verify_branch_args(
+                        *bid, use_index, *target, args, func, values, dominators, errors,
+                    );
+                }
+                verify_branch_args(
+                    *bid,
+                    use_index,
+                    *default,
+                    default_args,
+                    func,
+                    values,
+                    dominators,
+                    errors,
+                );
             }
             LirTerminator::Unreachable => {}
         }
