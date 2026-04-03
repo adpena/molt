@@ -1403,12 +1403,11 @@ impl SimpleBackend {
                         let iconst = builder.ins().iconst(types::I64, boxed);
                         if let Some(ref out__) = op.out {
                             def_var_named(&mut builder, &vars, out__, iconst);
-                            // Seed raw shadow for consts used by fast_int ops.
-                            // Only seed when type hints are active (fast_int likely).
-                            if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
-                                let raw_val = builder.ins().iconst(types::I64, val);
-                                raw_int_shadow.insert(out__.clone(), raw_val);
-                            }
+                            // Seed raw shadow for ALL integer constants — enables
+                            // list_int unchecked access and fast_int arithmetic
+                            // without needing explicit type hints on every const.
+                            let raw_val = builder.ins().iconst(types::I64, val);
+                            raw_int_shadow.insert(out__.clone(), raw_val);
                         }
                     } else {
                         // Value exceeds 47-bit signed inline range — use bigint path.
@@ -1473,8 +1472,12 @@ impl SimpleBackend {
                     let val = op.value.unwrap_or(0);
                     let boxed = box_bool(val);
                     let iconst = builder.ins().iconst(types::I64, boxed);
-                    if let Some(out__) = op.out {
+                    if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, iconst);
+                        // Bool constants are 0/1 — add to raw_int_shadow so
+                        // list_int setitem can use them without NaN-unboxing.
+                        let raw = builder.ins().iconst(types::I64, val);
+                        raw_int_shadow.insert(out__.clone(), raw);
                     }
                 }
                 "const_none" => {
@@ -5007,10 +5010,13 @@ impl SimpleBackend {
                         builder.ins().call(append_local, &[builder_ptr, *val]);
                     }
 
+                    // Use _owned variant: the compiler already inc-refed each
+                    // element before list_builder_append. The _owned finish
+                    // transfers ownership without double inc-ref.
                     let finish_callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
-                        "molt_list_builder_finish",
+                        "molt_list_builder_finish_owned",
                         &[types::I64],
                         &[types::I64],
                     );
@@ -5204,10 +5210,13 @@ impl SimpleBackend {
                         builder.ins().call(append_local, &[builder_ptr, *val]);
                     }
 
+                    // Use _owned variant: the compiler already inc-refed each
+                    // element before list_builder_append. The _owned finish
+                    // transfers ownership without double inc-ref.
                     let finish_callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
-                        "molt_tuple_builder_finish",
+                        "molt_tuple_builder_finish_owned",
                         &[types::I64],
                         &[types::I64],
                     );

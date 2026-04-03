@@ -433,6 +433,39 @@ pub unsafe extern "C" fn molt_tuple_builder_finish(builder_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+/// Caller must ensure `builder_bits` is valid. Elements in the builder's Vec
+/// are assumed to already have their own reference (the compiler emitted
+/// inc_ref before each append). No additional inc_ref is performed.
+pub unsafe extern "C" fn molt_tuple_builder_finish_owned(builder_bits: u64) -> u64 {
+    unsafe {
+        crate::with_gil_entry!(_py, {
+            let builder_ptr = ptr_from_bits(builder_bits);
+            if builder_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let _guard = PtrDropGuard::new(builder_ptr);
+            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+            if vec_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
+
+            let vec = Box::from_raw(vec_ptr);
+            let slice = vec.as_slice();
+            let capacity = vec.capacity().max(MAX_SMALL_LIST);
+            let tuple_ptr = alloc_tuple_with_capacity_owned(_py, slice, capacity);
+
+            if tuple_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_builder_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
@@ -646,6 +679,35 @@ pub(crate) fn alloc_tuple_with_capacity(
         for &elem in elems {
             inc_ref_bits(_py, elem);
         }
+        let vec_ptr = Box::into_raw(Box::new(vec));
+        *(ptr as *mut *mut Vec<u64>) = vec_ptr;
+        if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+        }
+    }
+    ptr
+}
+
+/// Like `alloc_tuple_with_capacity` but assumes the caller already owns
+/// a reference to each element (no inc_ref). Used when the compiler
+/// has already emitted inc_ref for each element before builder_append.
+pub(crate) fn alloc_tuple_with_capacity_owned(
+    _py: &PyToken<'_>,
+    elems: &[u64],
+    capacity: usize,
+) -> *mut u8 {
+    let cap = capacity.max(elems.len());
+    let total = std::mem::size_of::<MoltHeader>()
+        + std::mem::size_of::<*mut Vec<u64>>()
+        + std::mem::size_of::<u64>();
+    let ptr = alloc_object(_py, total, TYPE_ID_TUPLE);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        let mut vec = Vec::with_capacity(cap);
+        vec.extend_from_slice(elems);
+        // No inc_ref — ownership transferred from caller.
         let vec_ptr = Box::into_raw(Box::new(vec));
         *(ptr as *mut *mut Vec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
