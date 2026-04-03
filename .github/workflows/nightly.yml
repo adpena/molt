@@ -63,8 +63,12 @@ jobs:
         run: uv sync --group dev --python 3.12
 
       - name: Run differential correctness lane
+        env:
+          MOLT_DIFF_MEASURE_RSS: "1"
+          MOLT_DIFF_RLIMIT_GB: "10"
         run: |
           PYTHONPATH=src uv run --python 3.12 python3 -u tests/molt_diff.py \
+            --build-profile dev \
             tests/differential/basic \
             tests/differential/stdlib
 
@@ -162,18 +166,19 @@ jobs:
 
       - name: Reproducible build sweep
         run: |
+          REPRO_ROOT="$PWD/tmp/repro_sweep"
           failures=0
           for example in examples/*.py; do
             echo "=== Testing $example ==="
-            mkdir -p /tmp/repro_sweep
-            # Use --emit obj to skip linker, separate caches
-            MOLT_CACHE=/tmp/repro_sweep/cache_a PYTHONPATH=src PYTHONHASHSEED=0 \
-              uv run --python 3.12 python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > /tmp/repro_sweep/a.json 2>/dev/null || { echo "SKIP: build failed"; continue; }
-            rm -rf /tmp/repro_sweep/cache_a ~/.molt/build/
-            MOLT_CACHE=/tmp/repro_sweep/cache_b PYTHONPATH=src PYTHONHASHSEED=0 \
-              uv run --python 3.12 python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > /tmp/repro_sweep/b.json 2>/dev/null || { echo "SKIP: build failed"; continue; }
-            uv run --python 3.12 python3 tools/check_reproducible_build.py --object /tmp/repro_sweep/a.json /tmp/repro_sweep/b.json || failures=$((failures + 1))
-            rm -rf /tmp/repro_sweep
+            rm -rf "$REPRO_ROOT"
+            mkdir -p "$REPRO_ROOT"
+            # Use --emit obj to skip linker and keep all sweep state repo-local.
+            MOLT_CACHE="$REPRO_ROOT/cache_a" MOLT_BUILD_STATE_DIR="$REPRO_ROOT/state_a" TMPDIR="$REPRO_ROOT/tmp_a" PYTHONPATH=src PYTHONHASHSEED=0 \
+              uv run --python 3.12 python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > "$REPRO_ROOT/a.json" 2>/dev/null || { echo "SKIP: build failed"; continue; }
+            MOLT_CACHE="$REPRO_ROOT/cache_b" MOLT_BUILD_STATE_DIR="$REPRO_ROOT/state_b" TMPDIR="$REPRO_ROOT/tmp_b" PYTHONPATH=src PYTHONHASHSEED=0 \
+              uv run --python 3.12 python3 -m molt.cli build --profile dev --emit obj --deterministic --json "$example" > "$REPRO_ROOT/b.json" 2>/dev/null || { echo "SKIP: build failed"; continue; }
+            uv run --python 3.12 python3 tools/check_reproducible_build.py --object "$REPRO_ROOT/a.json" "$REPRO_ROOT/b.json" || failures=$((failures + 1))
+            rm -rf "$REPRO_ROOT"
           done
           echo "Reproducible build sweep: $failures failures"
           [ "$failures" -eq 0 ]

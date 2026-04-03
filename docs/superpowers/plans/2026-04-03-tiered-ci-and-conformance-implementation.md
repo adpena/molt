@@ -15,8 +15,8 @@
 | Path | Responsibility |
 | --- | --- |
 | `.github/workflows/ci.yml` | Cheap required presubmit only |
-| `.github/workflows/nightly-correctness.yml` | Scheduled/manual correctness-heavy hosted validation |
-| `.github/workflows/release-validation.yml` | Tag/manual hosted cross-platform release validation |
+| `.github/workflows/nightly.yml` | Scheduled/manual correctness-heavy hosted validation |
+| `.github/workflows/release.yml` | Tag/manual hosted cross-platform release validation |
 | `.github/workflows/perf-validation.yml` | Manual or optional scheduled benchmark lane |
 | `src/molt/harness_conformance.py` | Shared env builder, suite loader, summary writer, exit policy |
 | `tests/harness/corpus/monty_compat/SMOKE.txt` | Canonical smoke-suite manifest |
@@ -43,8 +43,8 @@
 
 **Files:**
 - Modify: `.github/workflows/ci.yml`
-- Create: `.github/workflows/nightly-correctness.yml`
-- Create: `.github/workflows/release-validation.yml`
+- Modify: `.github/workflows/nightly.yml`
+- Reuse existing: `.github/workflows/release.yml`
 - Create: `.github/workflows/perf-validation.yml`
 - Modify: `docs/spec/areas/tooling/0011-ci.md`
 - Modify: `docs/DEVELOPER_GUIDE.md`
@@ -86,7 +86,7 @@ Implement:
 
 - [ ] **Step 4: Add nightly correctness workflow**
 
-Create `.github/workflows/nightly-correctness.yml` with:
+Update `.github/workflows/nightly.yml` with:
 
 - `schedule` trigger;
 - `workflow_dispatch` trigger;
@@ -95,9 +95,9 @@ Create `.github/workflows/nightly-correctness.yml` with:
 
 - [ ] **Step 5: Add release and perf workflows**
 
-Create:
+Use:
 
-- `.github/workflows/release-validation.yml` with explicit:
+- existing `.github/workflows/release.yml` with explicit:
   - `push` tags trigger for release validation;
   - `workflow_dispatch` trigger for manual release validation;
   - one Linux release build/package validation job;
@@ -134,7 +134,7 @@ Expected: PASS
 - [ ] **Step 8: Commit**
 
 ```bash
-git add .github/workflows/ci.yml .github/workflows/nightly-correctness.yml .github/workflows/release-validation.yml .github/workflows/perf-validation.yml docs/spec/areas/tooling/0011-ci.md docs/DEVELOPER_GUIDE.md tests/test_ci_workflow_topology.py
+git add .github/workflows/ci.yml .github/workflows/nightly.yml .github/workflows/perf-validation.yml docs/spec/areas/tooling/0011-ci.md docs/DEVELOPER_GUIDE.md tests/test_ci_workflow_topology.py
 git commit -m "ci: split presubmit and hosted validation lanes"
 ```
 
