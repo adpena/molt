@@ -1403,11 +1403,14 @@ impl SimpleBackend {
                         let iconst = builder.ins().iconst(types::I64, boxed);
                         if let Some(ref out__) = op.out {
                             def_var_named(&mut builder, &vars, out__, iconst);
-                            // Seed raw shadow for ALL integer constants — enables
-                            // list_int unchecked access and fast_int arithmetic
-                            // without needing explicit type hints on every const.
-                            let raw_val = builder.ins().iconst(types::I64, val);
-                            raw_int_shadow.insert(out__.clone(), raw_val);
+                            // Seed raw shadow when type hints indicate fast_int context.
+                            if op.fast_int.unwrap_or(false)
+                                || op.type_hint.as_deref() == Some("int")
+                                || op.type_hint.as_deref() == Some("bool")
+                            {
+                                let raw_val = builder.ins().iconst(types::I64, val);
+                                raw_int_shadow.insert(out__.clone(), raw_val);
+                            }
                         }
                     } else {
                         // Value exceeds 47-bit signed inline range — use bigint path.
