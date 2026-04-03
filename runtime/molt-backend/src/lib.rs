@@ -3078,6 +3078,9 @@ impl SimpleBackend {
                                 let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
                                     &tir_func, &type_map,
                                 );
+                                // lower_to_simple_ir now fixes up dangling
+                                // check_exception labels internally.  Only fail
+                                // if non-check_exception labels are dangling.
                                 if !crate::tir::lower_to_simple::validate_labels(&ops) {
                                     return None;
                                 }
