@@ -9747,14 +9747,17 @@ def _backend_daemon_enabled() -> bool:
 def _backend_daemon_start_timeout_cached(raw: str) -> float | None:
     value = raw.strip()
     if not value:
-        # 10s default: daemon startup includes stdlib compilation on first
-        # run after a clean cache. 2s was too aggressive — caused false
-        # "not ready" restarts that killed in-progress compilations.
-        return 10.0
+        # 120s default: daemon startup includes stdlib compilation on first
+        # run after a clean cache. Cold stdlib takes 25-60s (300+ functions
+        # compiled in batches of 64, merged with ld -r).  Previous values
+        # of 2s and 10s were too aggressive — caused false "not ready"
+        # restarts that killed in-progress compilations, creating an
+        # infinite loop of start → compile 10s → kill → restart → ...
+        return 120.0
     try:
         parsed = float(value)
     except ValueError:
-        return 10.0
+        return 120.0
     return parsed if parsed > 0 else None
 
 
