@@ -841,19 +841,18 @@ impl SimpleBackend {
         let mut already_decrefed: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
 
-        // Shadow map: raw (unboxed) i64 values for fast_int variables.
-        // When a fast_int op produces a result, it stores the raw i64 here
-        // alongside the boxed value in the SSA variable. Subsequent fast_int
-        // consumers read from this map (skipping unbox). Non-fast_int consumers
-        // use the normal SSA variable (boxed). LuaJIT-style optimization.
-        let mut raw_int_shadow: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
-        // Cranelift Variable-backed shadows for named variables (store_var/load_var).
-        // Values don't survive phi merges at loop back-edges; Variables do.
-        // store_var def_var's the shadow Variable with the raw value.
-        // load_var use_var's it, getting the phi-resolved value across iterations.
-        // Each Variable is declared and def_var'd(0) at function entry to satisfy
-        // Cranelift's requirement that all paths to a use_var have a definition.
-        let mut raw_int_shadow_vars: std::collections::BTreeMap<String, Variable> = std::collections::BTreeMap::new();
+        // Shadow map: raw (unboxed) i64 Cranelift Variables for fast_int values.
+        //
+        // Each entry maps an SSA variable name to a Cranelift Variable holding
+        // the unboxed i64 value.  Using Variables (not Values) ensures shadows
+        // survive SSA phi merges at loop back-edges — Cranelift automatically
+        // inserts phis for Variables when control flow merges.
+        //
+        // Pre-declared at function entry with def_var(0) to satisfy Cranelift's
+        // requirement that all paths to a use_var have a definition.  Updated
+        // via def_var at each producer (const_int, arithmetic, store_var).
+        // Read via use_var at each consumer (comparisons, list_int access).
+        let mut raw_int_shadow: std::collections::BTreeMap<String, Variable> = std::collections::BTreeMap::new();
         // Cache data_ptr and len for list_int containers using Cranelift Variables
         // (not Values) so they persist across loop iterations via phi nodes.
         // Valid only while the list is not resized (no append/insert inside the loop).
@@ -917,10 +916,23 @@ impl SimpleBackend {
                 }
             }
             let zero = builder.ins().iconst(types::I64, 0);
+            // Pre-declare shadow Variables for store_var targets (loop variables).
             for name in &int_store_targets {
                 let v = builder.declare_var(types::I64);
                 builder.def_var(v, zero);
-                raw_int_shadow_vars.insert(name.clone(), v);
+                raw_int_shadow.insert(name.clone(), v);
+            }
+            // Also pre-declare for SSA output names of int-producing ops.
+            // This covers const_int, const_bool, arithmetic results, and
+            // load_index results that feed into downstream consumers.
+            for op in &func_ir.ops {
+                if let Some(ref out) = op.out {
+                    if int_valued_outputs.contains(out) && !raw_int_shadow.contains_key(out) {
+                        let v = builder.declare_var(types::I64);
+                        builder.def_var(v, zero);
+                        raw_int_shadow.insert(out.clone(), v);
+                    }
+                }
             }
         }
 
@@ -1897,7 +1909,7 @@ impl SimpleBackend {
                             builder.switch_to_block(merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                             let merged_boxed = builder.block_params(merge_block)[0];
-                            let merged_raw = builder.block_params(merge_block)[1];
+                            let _merged_raw = builder.block_params(merge_block)[1];
                             if let Some(ref out__) = op.out {
                                 // // DISABLED: raw_int_shadow.insert(out__.clone(), merged_raw); // DISABLED: merged_raw is stale across loop iterations
                             }
@@ -2083,7 +2095,7 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
-                        let merge_raw = builder.block_params(merge_block)[1];
+                        let _merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
                             // // DISABLED: raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
@@ -2708,7 +2720,7 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
-                        let merge_raw = builder.block_params(merge_block)[1];
+                        let _merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
                             // // DISABLED: raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
@@ -2892,7 +2904,7 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
-                        let merge_raw = builder.block_params(merge_block)[1];
+                        let _merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
                             // // DISABLED: raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
@@ -3100,7 +3112,7 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
-                        let merge_raw = builder.block_params(merge_block)[1];
+                        let _merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
                             // // DISABLED: raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
@@ -6824,7 +6836,7 @@ impl SimpleBackend {
                                 builder.switch_to_block(merge_block);
                                 seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                                 let merged_boxed = builder.block_params(merge_block)[0];
-                                let merged_raw = builder.block_params(merge_block)[1];
+                                let _merged_raw = builder.block_params(merge_block)[1];
                                 if let Some(ref out__) = op.out {
                                     def_var_named(&mut builder, &vars, out__, merged_boxed);
                                     // Propagate raw shadow — on fast path this is the true
