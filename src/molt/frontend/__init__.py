@@ -11723,7 +11723,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # Post-loop: restore the saved cell value so that the outer scope sees
         # its original value (e.g. ``print(i)`` after the comp returns the
         # outer for-loop's final ``i``, not the comp's last iteration value).
-        if cell is not None and saved_cell_val is not None:
+        # Exception: if a lambda inside the comp captures the iteration variable
+        # via late binding (``lambda: i``), leave the cell with the final loop
+        # value — the closure needs it.  Default-arg capture (``lambda i=i: i``)
+        # does NOT appear in lambda_free_vars since ``i`` is a parameter.
+        _closure_captured = target_name in lambda_free_vars
+        if cell is not None and saved_cell_val is not None and not _closure_captured:
             _post_idx = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[0], result=_post_idx))
             self.emit(
@@ -27383,24 +27388,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             has_closure = False
             if self.current_func_name != "molt_main":
                 free_vars = self._collect_free_vars_expr(node)
-                if free_vars:
-                    self.unbound_check_names.update(free_vars)
-                    for name in free_vars:
-                        self._box_local(name)
-                        self.closure_locals.add(name)
-                    for name in free_vars:
-                        hint = self.boxed_local_hints.get(name)
-                        if hint is None:
-                            value = self.locals.get(name)
-                            if value is not None and value.type_hint:
-                                hint = value.type_hint
-                        free_var_hints[name] = hint or "Any"
-                    closure_items = self._closure_cells_for(free_vars)
-                    closure_val = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
-                    )
-                    has_closure = True
+            else:
+                raw_free = self._collect_free_vars_expr_raw(node)
+                free_vars = sorted(
+                    name for name in raw_free if name in self.boxed_locals
+                )
+            if free_vars:
+                self.unbound_check_names.update(free_vars)
+                for name in free_vars:
+                    self._box_local(name)
+                    self.closure_locals.add(name)
+                for name in free_vars:
+                    hint = self.boxed_local_hints.get(name)
+                    if hint is None:
+                        value = self.locals.get(name)
+                        if value is not None and value.type_hint:
+                            hint = value.type_hint
+                    free_var_hints[name] = hint or "Any"
+                closure_items = self._closure_cells_for(free_vars)
+                closure_val = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(
+                    MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
+                )
+                has_closure = True
 
             func_kind = "GenClosureFunc" if has_closure else "GenFunc"
             payload_slots = len(params) + (1 if has_closure else 0)
@@ -27619,24 +27629,32 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         has_closure = False
         if self.current_func_name != "molt_main":
             free_vars = self._collect_free_vars_expr(node)
-            if free_vars:
-                self.unbound_check_names.update(free_vars)
-                for name in free_vars:
-                    self._box_local(name)
-                    self.closure_locals.add(name)
-                for name in free_vars:
-                    hint = self.boxed_local_hints.get(name)
-                    if hint is None:
-                        value = self.locals.get(name)
-                        if value is not None and value.type_hint:
-                            hint = value.type_hint
-                    free_var_hints[name] = hint or "Any"
-                closure_items = self._closure_cells_for(free_vars)
-                closure_val = MoltValue(self.next_var(), type_hint="tuple")
-                self.emit(
-                    MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
-                )
-                has_closure = True
+        else:
+            # At module level, only capture variables that are already boxed
+            # (e.g., comprehension iteration variables). Module-level names
+            # accessed via module dict don't need closure cells.
+            raw_free = self._collect_free_vars_expr_raw(node)
+            free_vars = sorted(
+                name for name in raw_free if name in self.boxed_locals
+            )
+        if free_vars:
+            self.unbound_check_names.update(free_vars)
+            for name in free_vars:
+                self._box_local(name)
+                self.closure_locals.add(name)
+            for name in free_vars:
+                hint = self.boxed_local_hints.get(name)
+                if hint is None:
+                    value = self.locals.get(name)
+                    if value is not None and value.type_hint:
+                        hint = value.type_hint
+                free_var_hints[name] = hint or "Any"
+            closure_items = self._closure_cells_for(free_vars)
+            closure_val = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(
+                MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
+            )
+            has_closure = True
 
         func_hint = f"Func:{func_symbol}"
         if has_closure:
