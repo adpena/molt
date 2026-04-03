@@ -47,7 +47,7 @@ Molt aims to bridge the gap between Python's developer productivity and C/Rust's
 - **Tooling:** Automated via `tools/bench.py`.
 
 ## 🔁 Refreshing This Doc
-- Generate combined native+WASM summaries with `tools/bench_report.py` and update this table to reflect the latest numbers in `bench/results/bench.json` and `bench/results/bench_wasm.json`.
+- Generate combined native+WASM summaries with `tools/bench_report.py`, keep the detailed generated report in `docs/benchmarks/bench_summary.md`, and treat `docs/spec/STATUS.md` as the canonical concise benchmark snapshot.
 
 ---
 
