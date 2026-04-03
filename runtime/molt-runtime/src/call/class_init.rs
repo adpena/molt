@@ -178,14 +178,13 @@ pub(crate) unsafe fn alloc_instance_for_default_object_new(
     class_ptr: *mut u8,
 ) -> u64 {
     unsafe {
-        if let Some(inst_bits) = alloc_dataclass_for_class(_py, class_ptr) {
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            inst_bits
-        } else {
-            alloc_instance_for_class(_py, class_ptr)
-        }
+        // Skip dataclass path — use TYPE_ID_OBJECT for all classes.
+        // The dataclass path creates TYPE_ID_DATACLASS instances with
+        // a different payload layout that is incompatible with the
+        // guarded_field_set/load field-slot-offset access pattern.
+        // TODO: re-enable for actual @dataclass classes only (check
+        // for __dataclass_fields__ instead of __molt_dataclass_field_names__).
+        alloc_instance_for_class(_py, class_ptr)
     }
 }
 
