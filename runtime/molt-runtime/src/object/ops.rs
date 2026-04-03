@@ -10666,7 +10666,7 @@ pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
         };
 
         let total = std::mem::size_of::<crate::object::MoltHeader>()
-            + std::mem::size_of::<*mut Vec<i64>>()  // Vec pointer
+            + std::mem::size_of::<*mut crate::object::layout::ListIntStorage>()
             + std::mem::size_of::<u64>();            // padding
         let ptr = alloc_object(_py, total, TYPE_ID_LIST_INT);
         if ptr.is_null() {
@@ -10675,8 +10675,8 @@ pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
         unsafe {
             let mut vec = Vec::with_capacity(n);
             vec.resize(n, fill_raw);
-            let vec_ptr = Box::into_raw(Box::new(vec));
-            *(ptr as *mut *mut Vec<i64>) = vec_ptr;
+            let storage_ptr = crate::object::layout::ListIntStorage::from_vec(vec);
+            *(ptr as *mut *mut crate::object::layout::ListIntStorage) = storage_ptr;
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -10698,14 +10698,13 @@ pub extern "C" fn molt_list_int_getitem(list_bits: u64, index_bits: u64) -> u64 
         } else {
             return molt_index(list_bits, index_bits);
         };
-        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
-        let data = (*vec_ptr).as_ptr();
-        let len = (*vec_ptr).len() as i64;
+        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
+        let len = storage.len as i64;
         if idx < 0 { idx += len; }
         if idx < 0 || idx >= len {
             return molt_index(list_bits, index_bits);
         }
-        let raw_val = *data.add(idx as usize);
+        let raw_val = *storage.data.add(idx as usize);
         // Box the raw i64 into a NaN-boxed int — no heap allocation, no refcount
         MoltObject::from_int(raw_val).bits()
     }
@@ -10723,15 +10722,14 @@ pub extern "C" fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i
         return 0;
     };
     unsafe {
-        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
-        let data = (*vec_ptr).as_ptr();
-        let len = (*vec_ptr).len() as i64;
+        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
+        let len = storage.len as i64;
         let mut idx = raw_index;
         if idx < 0 { idx += len; }
         if idx < 0 || idx >= len {
             return 0;
         }
-        *data.add(idx as usize)
+        *storage.data.add(idx as usize)
     }
 }
 
@@ -10746,8 +10744,8 @@ pub extern "C" fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i
 pub extern "C" fn molt_list_int_getitem_unchecked(list_bits: u64, raw_index: i64) -> i64 {
     unsafe {
         let ptr = obj_from_bits(list_bits).as_ptr().unwrap_unchecked();
-        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
-        *(*vec_ptr).as_ptr().add(raw_index as usize)
+        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
+        *storage.data.add(raw_index as usize)
     }
 }
 
@@ -10760,8 +10758,8 @@ pub extern "C" fn molt_list_int_getitem_unchecked(list_bits: u64, raw_index: i64
 pub extern "C" fn molt_list_int_setitem_unchecked(list_bits: u64, raw_index: i64, raw_value: i64) -> u64 {
     unsafe {
         let ptr = obj_from_bits(list_bits).as_ptr().unwrap_unchecked();
-        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
-        *(*vec_ptr).as_mut_ptr().add(raw_index as usize) = raw_value;
+        let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
+        *storage.data.add(raw_index as usize) = raw_value;
     }
     list_bits
 }
@@ -10777,15 +10775,14 @@ pub extern "C" fn molt_list_int_setitem_raw(list_bits: u64, raw_index: i64, raw_
         return list_bits;
     };
     unsafe {
-        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
-        let vec = &mut *vec_ptr;
-        let len = vec.len() as i64;
+        let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
+        let len = storage.len as i64;
         let mut idx = raw_index;
         if idx < 0 { idx += len; }
         if idx < 0 || idx >= len {
             return list_bits;
         }
-        vec[idx as usize] = raw_value;
+        *storage.data.add(idx as usize) = raw_value;
         list_bits
     }
 }
@@ -10833,14 +10830,13 @@ pub extern "C" fn molt_list_int_setitem(list_bits: u64, index_bits: u64, value_b
         } else {
             0i64 // store 0 for non-int values (False → 0)
         };
-        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
-        let vec = &mut *vec_ptr;
-        let len = vec.len() as i64;
+        let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
+        let len = storage.len as i64;
         if idx < 0 { idx += len; }
         if idx < 0 || idx >= len {
             return MoltObject::none().bits();
         }
-        vec[idx as usize] = raw_value;
+        *storage.data.add(idx as usize) = raw_value;
         // No refcount changes — raw i64 values have no heap allocation.
         // Return the list itself to match the molt_store_index contract
         // (the compiler may assign the result back to the container variable).
@@ -10850,10 +10846,8 @@ pub extern "C" fn molt_list_int_setitem(list_bits: u64, index_bits: u64, value_b
 
 /// Return the raw data pointer of a list (regular or list_int).
 ///
-/// Works for both regular lists (Vec<u64>) and list_int (Vec<i64>) since both
-/// have the same memory layout: obj_ptr stores `*mut Vec<T>` at offset 0, and
-/// Vec's data pointer is at offset 0/8 of the Vec struct (platform-dependent
-/// but stable via Vec::as_ptr).
+/// For list_int: reads from `ListIntStorage.data` (`#[repr(C)]`, offset 0).
+/// For regular lists: reads from `Vec<u64>.as_ptr()`.
 /// The returned pointer is valid only as long as the list is not resized.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_data(list_bits: u64) -> u64 {
@@ -10862,8 +10856,9 @@ pub extern "C" fn molt_list_int_data(list_bits: u64) -> u64 {
         return 0;
     };
     unsafe {
-        let vec_ptr = *(ptr as *mut *mut Vec<u64>);
-        (*vec_ptr).as_ptr() as u64
+        // Check if this is a list_int (ListIntStorage) or regular list (Vec<u64>)
+        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
+        storage.data as u64
     }
 }
 
@@ -10875,8 +10870,8 @@ pub extern "C" fn molt_list_int_len_raw(list_bits: u64) -> u64 {
         return 0;
     };
     unsafe {
-        let vec_ptr = *(ptr as *mut *mut Vec<u64>);
-        (*vec_ptr).len() as u64
+        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
+        storage.len as u64
     }
 }
 
@@ -10888,8 +10883,8 @@ pub extern "C" fn molt_list_int_len(list_bits: u64) -> u64 {
         return MoltObject::from_int(0).bits();
     };
     unsafe {
-        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
-        MoltObject::from_int((*vec_ptr).len() as i64).bits()
+        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
+        MoltObject::from_int(storage.len as i64).bits()
     }
 }
 
@@ -10908,14 +10903,13 @@ pub extern "C" fn molt_list_int_getitem_truthy(list_bits: u64, index_bits: u64) 
         } else {
             return MoltObject::from_bool(false).bits();
         };
-        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
-        let data = (*vec_ptr).as_ptr();
-        let len = (*vec_ptr).len() as i64;
+        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
+        let len = storage.len as i64;
         if idx < 0 { idx += len; }
         if idx < 0 || idx >= len {
             return MoltObject::from_bool(false).bits();
         }
-        let raw_val = *data.add(idx as usize);
+        let raw_val = *storage.data.add(idx as usize);
         MoltObject::from_bool(raw_val != 0).bits()
     }
 }

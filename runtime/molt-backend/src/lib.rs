@@ -246,6 +246,12 @@ mod native_backend_consts {
     pub(super) const TAG_PENDING: u64 = 0x0005_0000_0000_0000;
     pub(super) const TAG_MASK: u64 = 0x0007_0000_0000_0000;
     pub(super) const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+
+    // ListIntStorage (#[repr(C)]) field offsets — MUST match
+    // runtime/molt-runtime/src/object/layout.rs.
+    // Layout: [data: *mut i64 @0, len: usize @8, cap: usize @16].
+    pub(super) const LIST_INT_STORAGE_DATA_OFFSET: i32 = 0;
+    pub(super) const LIST_INT_STORAGE_LEN_OFFSET: i32 = 8;
     pub(super) const INT_WIDTH: u64 = 47;
     pub(super) const INT_MASK: u64 = (1u64 << INT_WIDTH) - 1;
     pub(super) const INT_SHIFT: i64 = (64 - INT_WIDTH) as i64;
