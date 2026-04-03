@@ -322,6 +322,7 @@ pub fn inline_functions(ir: &mut SimpleIR) {
             ops: func.ops.clone(),
             param_types: func.param_types.clone(),
             source_file: None,
+            is_extern: false,
         };
         if is_inlineable_with_limit(&func_copy, &defined_functions, effective_limit) {
             inlineable.insert(
@@ -2538,7 +2539,8 @@ pub fn split_large_function(
             params: func.params.clone(),
             ops: chunk_ops,
             param_types: func.param_types.clone(),
-        source_file: None,
+            source_file: None,
+            is_extern: false,
         });
     }
 
@@ -2579,6 +2581,7 @@ pub fn split_large_function(
         ops: stub_ops,
         param_types: func.param_types,
         source_file: None,
+        is_extern: false,
     };
 
     Ok((stub, chunks))

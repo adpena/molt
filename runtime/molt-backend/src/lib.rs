@@ -2846,11 +2846,9 @@ impl SimpleBackend {
                 if gpu_kernel_names.contains(&func_ir.name) {
                     continue;
                 }
-                // Extern functions have their bodies in stdlib_shared.o.
-                // Register them so the backend declares Import linkage
-                // (resolved by the linker), and skip TIR/compilation.
+                // Extern functions: bodies live in stdlib_shared.o.
+                // Skip TIR — they're registered as external before codegen.
                 if func_ir.is_extern {
-                    backend.external_function_names.insert(func_ir.name.clone());
                     continue;
                 }
 
@@ -2962,6 +2960,7 @@ impl SimpleBackend {
                             ops: input.ops,
                             param_types: input.param_types,
                             source_file: None,
+                            is_extern: false,
                         };
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
@@ -3353,6 +3352,15 @@ impl SimpleBackend {
         // retained (no batching) because Cranelift 0.130's ObjectModule
         // handles large function counts efficiently when individual
         // function compilations are bounded.
+        // Register extern functions (bodies in stdlib_shared.o) so the
+        // backend declares them as Import linkage, resolved by the linker.
+        for func in &ir.functions {
+            if func.is_extern {
+                self.external_function_names.insert(func.name.clone());
+            }
+        }
+        // Filter out extern functions — they have no ops to compile.
+        ir.functions.retain(|f| !f.is_extern);
         let func_count = ir.functions.len();
         let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
         eprintln!("MOLT_BACKEND: compiling {func_count} functions ({total_ops} total ops)");
