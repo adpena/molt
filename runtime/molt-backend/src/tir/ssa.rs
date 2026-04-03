@@ -1182,8 +1182,39 @@ impl<'a> SsaContext<'a> {
                     });
 
                 if succs.len() >= 2 {
-                    let then_bid = succs[0];
-                    let else_bid = succs[1];
+                    // For conditional branches, then_block = TRUE target,
+                    // else_block = FALSE target.
+                    //
+                    // For loop_break_if_true: TRUE → break (exit), so the
+                    // break target is the non-fall-through successor.
+                    // Fall-through = bid+1 = loop body continuation.
+                    //
+                    // Successors are sorted numerically by sort_unstable(),
+                    // so we can't rely on ordering. Instead, identify the
+                    // fall-through (bid+1) and the other successor.
+                    let last_kind = last_op.map(|op| op.kind.as_str()).unwrap_or("");
+                    let (then_bid, else_bid) = if matches!(last_kind, "loop_break_if_true") {
+                        // then = break target (non-fall-through)
+                        // else = fall-through (bid+1)
+                        let fall_through = bid + 1;
+                        if succs[0] == fall_through {
+                            (succs[1], succs[0])
+                        } else {
+                            (succs[0], succs[1])
+                        }
+                    } else if matches!(last_kind, "loop_break_if_false") {
+                        // then = fall-through (bid+1) = continue
+                        // else = break target (non-fall-through)
+                        let fall_through = bid + 1;
+                        if succs[0] == fall_through {
+                            (succs[0], succs[1])
+                        } else {
+                            (succs[1], succs[0])
+                        }
+                    } else {
+                        // Generic if/br_if: succs[0] = then, succs[1] = else
+                        (succs[0], succs[1])
+                    };
                     let then_args = self.collect_branch_args(then_bid, var_stacks);
                     let else_args = self.collect_branch_args(else_bid, var_stacks);
                     Terminator::CondBranch {
