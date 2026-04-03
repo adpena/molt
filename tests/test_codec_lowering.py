@@ -492,6 +492,22 @@ e ^= b
         assert all(op.get("fast_int") is True for op in ops)
 
 
+def test_direct_call_result_hints_do_not_poison_fast_int() -> None:
+    src = """
+def f(x):
+    return x
+
+a = f(1)
+b = f(1.0)
+c = a + 1
+d = b + 1
+    """
+    ir = compile_to_tir(src, type_hint_policy="check")
+    add_ops = _ops_by_kind(ir, "add")
+    assert len(add_ops) == 2
+    assert add_ops[1].get("fast_int") is not True
+
+
 def test_tuple_lowering():
     src = "t = (1, 2, 3)"
     ir = compile_to_tir(src)
