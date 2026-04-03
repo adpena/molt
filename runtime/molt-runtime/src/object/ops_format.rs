@@ -817,17 +817,17 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return out;
             }
             if type_id == TYPE_ID_LIST_INT {
-                // Specialized list[int]: flat Vec<i64> storage.
+                // Specialized list[int]: flat i64 storage via ListIntStorage (#[repr(C)]).
                 // Format as a regular Python list for display parity.
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
                     return "[...]".to_string();
                 }
-                let vec_ptr = *(ptr as *const *const Vec<i64>);
-                if !vec_ptr.is_null() {
-                    let vec = &*vec_ptr;
+                let storage_ptr = crate::object::layout::list_int_storage_ptr(ptr);
+                if !storage_ptr.is_null() {
+                    let elems = crate::object::layout::list_int_vec_ref(ptr);
                     let mut out = String::from("[");
-                    for (idx, val) in vec.iter().enumerate() {
+                    for (idx, val) in elems.iter().enumerate() {
                         if idx > 0 {
                             out.push_str(", ");
                         }

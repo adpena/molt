@@ -837,9 +837,11 @@ impl SimpleBackend {
         // consumers read from this map (skipping unbox). Non-fast_int consumers
         // use the normal SSA variable (boxed). LuaJIT-style optimization.
         let mut raw_int_shadow: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
-        // Cache data_ptr for list_int containers using Cranelift Variables
+        // Cache data_ptr and len for list_int containers using Cranelift Variables
         // (not Values) so they persist across loop iterations via phi nodes.
+        // Valid only while the list is not resized (no append/insert inside the loop).
         let mut list_int_data_cache: std::collections::BTreeMap<String, Variable> = std::collections::BTreeMap::new();
+        let mut list_int_len_cache: std::collections::BTreeMap<String, Variable> = std::collections::BTreeMap::new();
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -1784,14 +1786,19 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
 
                         if lhs_raw.is_some() && rhs_raw.is_some() {
-                            // Both-shadow chain: zero-overhead iadd + overflow guard
+                            // Both-shadow chain: zero-overhead iadd + overflow guard.
+                            // Propagate raw shadow through merge via a second phi:
+                            // fast path passes `sum` (correct unboxed i64), slow path
+                            // passes 0.  Downstream bounds checks on list_int inline
+                            // paths catch the 0 sentinel safely.
                             let sum = builder.ins().iadd(lhs_raw.unwrap(), rhs_raw.unwrap());
                             let fits_inline = int_value_fits_inline(&mut builder, sum);
                             let fast_block = builder.create_block();
                             let slow_block = builder.create_block();
                             builder.set_cold_block(slow_block);
                             let merge_block = builder.create_block();
-                            builder.append_block_param(merge_block, types::I64);
+                            builder.append_block_param(merge_block, types::I64); // boxed result
+                            builder.append_block_param(merge_block, types::I64); // raw shadow
                             builder
                                 .ins()
                                 .brif(fits_inline, fast_block, &[], slow_block, &[]);
@@ -1799,17 +1806,23 @@ impl SimpleBackend {
                             builder.switch_to_block(fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                             let fast_res = box_int_value(&mut builder, sum, &nbc);
-                            jump_block(&mut builder, merge_block, &[fast_res]);
+                            jump_block(&mut builder, merge_block, &[fast_res, sum]);
 
                             builder.switch_to_block(slow_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                             let slow_res = builder.inst_results(call)[0];
-                            jump_block(&mut builder, merge_block, &[slow_res]);
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
                             builder.switch_to_block(merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                            builder.block_params(merge_block)[0]
+                            let merged_boxed = builder.block_params(merge_block)[0];
+                            let merged_raw = builder.block_params(merge_block)[1];
+                            if let Some(ref out__) = op.out {
+                                raw_int_shadow.insert(out__.clone(), merged_raw);
+                            }
+                            merged_boxed
                         } else {
                             // Tag-check + unbox path (one or both operands not in shadow)
                             let lhs_is_int = is_int_or_bool_tag(&mut builder, *lhs, &nbc);
@@ -1920,9 +1933,10 @@ impl SimpleBackend {
                     };
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
-                        // Addition can overflow into heap bigints on some paths,
-                        // so its merged result is not representation-stable
-                        // enough to shadow as a raw inline int here.
+                        // raw_int_shadow propagation is handled inside the
+                        // both-shadow path above (via merge phi).  Other paths
+                        // (tag-check, generic) don't shadow because the output
+                        // representation is unknown.
                     }
                 }
                 "inplace_add" => {
@@ -1949,7 +1963,8 @@ impl SimpleBackend {
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
-                        // Raw chain: both operands already unboxed + overflow guard
+                        // Raw chain: both operands already unboxed + overflow guard.
+                        // Propagate raw shadow via second merge phi.
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
                         let raw_result = builder.ins().iadd(lhs_val, rhs_val);
@@ -1966,7 +1981,8 @@ impl SimpleBackend {
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        builder.append_block_param(merge_block, types::I64); // boxed
+                        builder.append_block_param(merge_block, types::I64); // raw shadow
                         builder
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
@@ -1974,19 +1990,22 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        jump_block(&mut builder, merge_block, &[boxed]);
+                        jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
                         builder.switch_to_block(slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
+                        let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
+                            raw_int_shadow.insert(out_name.clone(), merge_raw);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2567,7 +2586,8 @@ impl SimpleBackend {
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
-                        // Raw chain: both operands already unboxed + overflow guard
+                        // Raw chain: both operands already unboxed + overflow guard.
+                        // Propagate raw shadow via second merge phi.
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
@@ -2584,7 +2604,8 @@ impl SimpleBackend {
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        builder.append_block_param(merge_block, types::I64); // boxed
+                        builder.append_block_param(merge_block, types::I64); // raw shadow
                         builder
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
@@ -2592,19 +2613,22 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        jump_block(&mut builder, merge_block, &[boxed]);
+                        jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
                         builder.switch_to_block(slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
+                        let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
+                            raw_int_shadow.insert(out_name.clone(), merge_raw);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2744,7 +2768,8 @@ impl SimpleBackend {
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
-                        // Raw chain: both operands already unboxed + overflow guard
+                        // Raw chain: both operands already unboxed + overflow guard.
+                        // Propagate raw shadow via second merge phi.
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
@@ -2761,7 +2786,8 @@ impl SimpleBackend {
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        builder.append_block_param(merge_block, types::I64); // boxed
+                        builder.append_block_param(merge_block, types::I64); // raw shadow
                         builder
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
@@ -2769,19 +2795,22 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        jump_block(&mut builder, merge_block, &[boxed]);
+                        jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
                         builder.switch_to_block(slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
+                        let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
+                            raw_int_shadow.insert(out_name.clone(), merge_raw);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2946,7 +2975,8 @@ impl SimpleBackend {
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
-                        // Raw chain: both operands already unboxed + overflow guard
+                        // Raw chain: both operands already unboxed + overflow guard.
+                        // Propagate raw shadow via second merge phi.
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
                         let (raw_result, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
@@ -2962,7 +2992,8 @@ impl SimpleBackend {
                         let slow_block = builder.create_block();
                         builder.set_cold_block(slow_block);
                         let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
+                        builder.append_block_param(merge_block, types::I64); // boxed result
+                        builder.append_block_param(merge_block, types::I64); // raw shadow
                         builder
                             .ins()
                             .brif(fits, fast_block, &[], slow_block, &[]);
@@ -2970,19 +3001,22 @@ impl SimpleBackend {
                         builder.switch_to_block(fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
-                        jump_block(&mut builder, merge_block, &[boxed]);
+                        jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
                         builder.switch_to_block(slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
+                        let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
+                            raw_int_shadow.insert(out_name.clone(), merge_raw);
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -6619,37 +6653,95 @@ impl SimpleBackend {
                         sig.params.push(AbiParam::new(types::I64));
                         sig.returns.push(AbiParam::new(types::I64));
                         if op.container_type.as_deref() == Some("list_int") {
-                            // Inline list[int] getitem — no function call.
+                            // Inline list[int] getitem — direct memory access using
+                            // ListIntStorage (#[repr(C)]): [data@0, len@8, cap@16].
+                            //
+                            // Requires raw_int_shadow index for bounds-checked inline path.
+                            // Falls back to the safe runtime function otherwise.
                             if let Some(&raw_idx) = raw_int_shadow.get(&args[1]) {
-                                // Cache the data_ptr extraction across loop iterations.
-                                // The list pointer doesn't change within a loop body
-                                // (no list resize ops), so we extract obj→vec→data
-                                // once and reuse for subsequent accesses.
-                                let data_ptr = if let Some(&var) = list_int_data_cache.get(&args[0]) {
-                                    builder.use_var(var)
-                                } else {
-                                    let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
-                                    let shifted = builder.ins().ishl_imm(masked, 16);
-                                    let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                                    let vec_ptr = builder.ins().load(types::I64, MemFlags::trusted(), obj_ptr, 0);
-                                    let dp = builder.ins().load(types::I64, MemFlags::trusted(), vec_ptr, 0);
-                                    let var = builder.declare_var(types::I64);
-                                    builder.def_var(var, dp);
-                                    list_int_data_cache.insert(args[0].clone(), var);
-                                    dp
+                                // Extract storage_ptr, data_ptr, len (cached across loop iterations).
+                                let (data_ptr, len_val) = {
+                                    let dp = if let Some(&var) = list_int_data_cache.get(&args[0]) {
+                                        builder.use_var(var)
+                                    } else {
+                                        let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                                        let shifted = builder.ins().ishl_imm(masked, 16);
+                                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                                        let storage_ptr = builder.ins().load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+                                        let dp = builder.ins().load(types::I64, MemFlags::trusted(), storage_ptr, LIST_INT_STORAGE_DATA_OFFSET);
+                                        let var = builder.declare_var(types::I64);
+                                        builder.def_var(var, dp);
+                                        list_int_data_cache.insert(args[0].clone(), var);
+                                        // Also cache len
+                                        let len = builder.ins().load(types::I64, MemFlags::trusted(), storage_ptr, LIST_INT_STORAGE_LEN_OFFSET);
+                                        let lvar = builder.declare_var(types::I64);
+                                        builder.def_var(lvar, len);
+                                        list_int_len_cache.insert(args[0].clone(), lvar);
+                                        dp
+                                    };
+                                    let lv = if let Some(&var) = list_int_len_cache.get(&args[0]) {
+                                        builder.use_var(var)
+                                    } else {
+                                        // Len not cached yet (data was cached in a prior op).
+                                        let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                                        let shifted = builder.ins().ishl_imm(masked, 16);
+                                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                                        let storage_ptr = builder.ins().load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+                                        let len = builder.ins().load(types::I64, MemFlags::trusted(), storage_ptr, LIST_INT_STORAGE_LEN_OFFSET);
+                                        let lvar = builder.declare_var(types::I64);
+                                        builder.def_var(lvar, len);
+                                        list_int_len_cache.insert(args[0].clone(), lvar);
+                                        len
+                                    };
+                                    (dp, lv)
                                 };
-                                // Load element: data_ptr[index * 8]
-                                let offset = builder.ins().imul_imm(raw_idx, 8);
-                                let elem_addr = builder.ins().iadd(data_ptr, offset);
+                                // Bounds check: 0 <= raw_idx < len.
+                                // On failure, fall through to the safe runtime function.
+                                let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, raw_idx, len_val);
+                                let fast_block = builder.create_block();
+                                let slow_block = builder.create_block();
+                                builder.set_cold_block(slow_block);
+                                let merge_block = builder.create_block();
+                                builder.append_block_param(merge_block, types::I64); // boxed result
+                                builder.append_block_param(merge_block, types::I64); // raw result (valid only on fast path)
+                                builder.ins().brif(in_bounds, fast_block, &[], slow_block, &[]);
+
+                                // Fast path: direct load
+                                builder.switch_to_block(fast_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                                let byte_offset = builder.ins().imul_imm(raw_idx, 8);
+                                let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
                                 let raw_result = builder.ins().load(types::I64, MemFlags::trusted(), elem_addr, 0);
-                                // Box the result for the NaN-boxed world (variables must
-                                // hold NaN-boxed values for interop with generic ops).
                                 let boxed_res = box_int_value(&mut builder, raw_result, &nbc);
+                                jump_block(&mut builder, merge_block, &[boxed_res, raw_result]);
+
+                                // Slow path: safe runtime call (handles negative index, IndexError)
+                                builder.switch_to_block(slow_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                                let callee = Self::import_func_id_split(
+                                    &mut self.module,
+                                    &mut self.import_ids,
+                                    "molt_list_int_getitem",
+                                    &[types::I64, types::I64],
+                                    &[types::I64],
+                                );
+                                let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                                let call = builder.ins().call(local_callee, &[*obj, *idx]);
+                                let slow_res = builder.inst_results(call)[0];
+                                let zero_raw = builder.ins().iconst(types::I64, 0);
+                                jump_block(&mut builder, merge_block, &[slow_res, zero_raw]);
+
+                                // Merge
+                                builder.switch_to_block(merge_block);
+                                seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
+                                let merged_boxed = builder.block_params(merge_block)[0];
+                                let merged_raw = builder.block_params(merge_block)[1];
                                 if let Some(ref out__) = op.out {
-                                    def_var_named(&mut builder, &vars, out__, boxed_res);
-                                    // Keep the raw result in shadow so downstream
-                                    // arithmetic / truthiness checks skip unboxing.
-                                    raw_int_shadow.insert(out__.clone(), raw_result);
+                                    def_var_named(&mut builder, &vars, out__, merged_boxed);
+                                    // Propagate raw shadow — on fast path this is the true
+                                    // unboxed value; on slow path it's 0 (which is a valid
+                                    // i64 and will produce correct but slower downstream ops).
+                                    raw_int_shadow.insert(out__.clone(), merged_raw);
                                 }
                             } else {
                                 // Fallback: NaN-boxed index, call the standard variant.
@@ -6707,28 +6799,77 @@ impl SimpleBackend {
                         panic!("Value not found in {} op {}", func_ir.name, op_idx)
                     });
                     if op.container_type.as_deref() == Some("list_int") {
-                        // Branchless inline list[int] setitem — zero function
-                        // calls, zero extra blocks.
+                        // Inline list[int] setitem with bounds check using
+                        // ListIntStorage (#[repr(C)]): [data@0, len@8, cap@16].
                         let raw_idx_opt = raw_int_shadow.get(&args[1]).copied();
                         let raw_val_opt = raw_int_shadow.get(&args[2]).copied();
                         if let (Some(raw_idx), Some(raw_val)) = (raw_idx_opt, raw_val_opt) {
-                            // Inline setitem with cached data_ptr Variable.
-                            let data_ptr = if let Some(&var) = list_int_data_cache.get(&args[0]) {
-                                builder.use_var(var)
-                            } else {
-                                let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
-                                let shifted = builder.ins().ishl_imm(masked, 16);
-                                let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                                let vec_ptr = builder.ins().load(types::I64, MemFlags::trusted(), obj_ptr, 0);
-                                let dp = builder.ins().load(types::I64, MemFlags::trusted(), vec_ptr, 0);
-                                let cvar = builder.declare_var(types::I64);
-                                builder.def_var(cvar, dp);
-                                list_int_data_cache.insert(args[0].clone(), cvar);
-                                dp
+                            // Extract storage_ptr, data_ptr, len (cached).
+                            let (data_ptr, len_val) = {
+                                let dp = if let Some(&var) = list_int_data_cache.get(&args[0]) {
+                                    builder.use_var(var)
+                                } else {
+                                    let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                                    let shifted = builder.ins().ishl_imm(masked, 16);
+                                    let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                                    let storage_ptr = builder.ins().load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+                                    let dp = builder.ins().load(types::I64, MemFlags::trusted(), storage_ptr, LIST_INT_STORAGE_DATA_OFFSET);
+                                    let cvar = builder.declare_var(types::I64);
+                                    builder.def_var(cvar, dp);
+                                    list_int_data_cache.insert(args[0].clone(), cvar);
+                                    let len = builder.ins().load(types::I64, MemFlags::trusted(), storage_ptr, LIST_INT_STORAGE_LEN_OFFSET);
+                                    let lvar = builder.declare_var(types::I64);
+                                    builder.def_var(lvar, len);
+                                    list_int_len_cache.insert(args[0].clone(), lvar);
+                                    dp
+                                };
+                                let lv = if let Some(&var) = list_int_len_cache.get(&args[0]) {
+                                    builder.use_var(var)
+                                } else {
+                                    let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
+                                    let shifted = builder.ins().ishl_imm(masked, 16);
+                                    let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                                    let storage_ptr = builder.ins().load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+                                    let len = builder.ins().load(types::I64, MemFlags::trusted(), storage_ptr, LIST_INT_STORAGE_LEN_OFFSET);
+                                    let lvar = builder.declare_var(types::I64);
+                                    builder.def_var(lvar, len);
+                                    list_int_len_cache.insert(args[0].clone(), lvar);
+                                    len
+                                };
+                                (dp, lv)
                             };
-                            let offset = builder.ins().imul_imm(raw_idx, 8);
-                            let elem_addr = builder.ins().iadd(data_ptr, offset);
+                            // Bounds check: 0 <= raw_idx < len (unsigned comparison).
+                            let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, raw_idx, len_val);
+                            let fast_block = builder.create_block();
+                            let slow_block = builder.create_block();
+                            builder.set_cold_block(slow_block);
+                            let merge_block = builder.create_block();
+                            builder.ins().brif(in_bounds, fast_block, &[], slow_block, &[]);
+
+                            // Fast path: direct store
+                            builder.switch_to_block(fast_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
+                            let byte_offset = builder.ins().imul_imm(raw_idx, 8);
+                            let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
                             builder.ins().store(MemFlags::trusted(), raw_val, elem_addr, 0);
+                            jump_block(&mut builder, merge_block, &[]);
+
+                            // Slow path: safe runtime call
+                            builder.switch_to_block(slow_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_list_int_setitem",
+                                &[types::I64, types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                            builder.ins().call(local_callee, &[*obj, *idx, *val]);
+                            jump_block(&mut builder, merge_block, &[]);
+
+                            builder.switch_to_block(merge_block);
+                            seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                             if let Some(out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, *obj);
                             }
@@ -17079,15 +17220,24 @@ impl SimpleBackend {
                             builder.ins().call(inc_local, &[*val]);
                         }
                         def_var_named(&mut builder, &vars, name, *val);
+                        // Propagate raw_int_shadow through store_var:
+                        // if the source has a shadow, the target name inherits it.
+                        if let Some(&raw) = raw_int_shadow.get(&args[0]) {
+                            raw_int_shadow.insert(name.to_string(), raw);
+                        }
                     }
                 }
                 "load_var" | "copy_var" => {
-                    // Load a named variable into an output (block arg receiving / copy)
+                    // Load a named variable into an output (block arg receiving / copy).
+                    // Propagate raw_int_shadow from source to output.
                     if let Some(ref var_name) = op.var {
                         let val = var_get(&mut builder, &vars, var_name)
                             .expect("load_var: var not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
+                            if let Some(&raw) = raw_int_shadow.get(var_name.as_str()) {
+                                raw_int_shadow.insert(out_name.clone(), raw);
+                            }
                         }
                     } else if let Some(ref args) = op.args
                         && !args.is_empty()
@@ -17096,6 +17246,9 @@ impl SimpleBackend {
                             .expect("copy_var: src not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
+                            if let Some(&raw) = raw_int_shadow.get(&args[0]) {
+                                raw_int_shadow.insert(out_name.clone(), raw);
+                            }
                         }
                     }
                 }

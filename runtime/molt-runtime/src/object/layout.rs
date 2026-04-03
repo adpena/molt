@@ -22,12 +22,138 @@ pub(crate) unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
     }
 }
 
-/// Read the backing `Vec<i64>` from a `TYPE_ID_LIST_INT` object.
+/// Layout-stable storage for `TYPE_ID_LIST_INT` objects.
+///
+/// `#[repr(C)]` guarantees field order: `[data, len, cap]` at offsets `[0, 8, 16]`.
+/// The Cranelift inline codegen depends on these offsets for direct load/store
+/// without function calls.  Changing field order here WILL break the JIT.
+///
+/// Replaces `Box<Vec<i64>>` which has `#[repr(Rust)]` layout — the compiler
+/// reorders fields arbitrarily between versions (on aarch64-apple-darwin
+/// with Rust 1.94 it is `[cap@0, data@8, len@16]`, NOT `[data@0, len@8, cap@16]`).
+#[repr(C)]
+pub struct ListIntStorage {
+    pub data: *mut i64,
+    pub len: usize,
+    pub cap: usize,
+}
+
+/// Byte offset of `data` within `ListIntStorage`.  Used by the Cranelift codegen.
+pub const LIST_INT_OFFSET_DATA: i32 = 0;
+/// Byte offset of `len` within `ListIntStorage`.  Used by the Cranelift codegen.
+pub const LIST_INT_OFFSET_LEN: i32 = 8;
+
+impl ListIntStorage {
+    /// Convert a `Vec<i64>` into a heap-allocated `ListIntStorage`.
+    /// The Vec's buffer is taken over; the Vec itself is NOT dropped.
+    pub fn from_vec(mut vec: Vec<i64>) -> *mut ListIntStorage {
+        let storage = ListIntStorage {
+            data: vec.as_mut_ptr(),
+            len: vec.len(),
+            cap: vec.capacity(),
+        };
+        std::mem::forget(vec);
+        Box::into_raw(Box::new(storage))
+    }
+
+    /// Reconstruct a `Vec<i64>` that owns the buffer.
+    ///
+    /// # Safety
+    /// Must only be called once (e.g. during dealloc).  After this call
+    /// the `ListIntStorage`'s `data` pointer is invalid.
+    pub unsafe fn into_vec(self) -> Vec<i64> {
+        unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) }
+    }
+
+    /// Temporarily borrow the data as a slice.
+    #[inline]
+    pub unsafe fn as_slice(&self) -> &[i64] {
+        unsafe { std::slice::from_raw_parts(self.data, self.len) }
+    }
+
+    /// Temporarily borrow the data as a mutable slice.
+    #[inline]
+    pub unsafe fn as_mut_slice(&mut self) -> &mut [i64] {
+        unsafe { std::slice::from_raw_parts_mut(self.data, self.len) }
+    }
+
+    /// Push a value, potentially reallocating.
+    ///
+    /// # Safety
+    /// The `ListIntStorage` must have been created via `from_vec`.
+    pub unsafe fn push(&mut self, value: i64) {
+        // Reconstruct a temporary Vec, push, then sync fields back.
+        let mut vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
+        vec.push(value);
+        self.data = vec.as_mut_ptr();
+        self.len = vec.len();
+        self.cap = vec.capacity();
+        std::mem::forget(vec);
+    }
+}
+
+/// Read the `ListIntStorage` pointer from a `TYPE_ID_LIST_INT` object's data area.
+#[inline]
+pub(crate) unsafe fn list_int_storage_ptr(ptr: *mut u8) -> *mut ListIntStorage {
+    unsafe { *(ptr as *mut *mut ListIntStorage) }
+}
+
+/// Read the backing data from a `TYPE_ID_LIST_INT` object as a slice.
 /// The layout stores raw i64 values (not NaN-boxed).
-pub(crate) unsafe fn list_int_vec_ref(ptr: *mut u8) -> &'static Vec<i64> {
+pub(crate) unsafe fn list_int_vec_ref(ptr: *mut u8) -> ListIntSliceRef {
     unsafe {
-        let vec_ptr = *(ptr as *mut *mut Vec<i64>);
-        &*vec_ptr
+        let storage = &*list_int_storage_ptr(ptr);
+        ListIntSliceRef {
+            data: storage.data,
+            len: storage.len,
+        }
+    }
+}
+
+/// Thin wrapper providing `Vec<i64>`-like interface for `ListIntStorage`.
+/// Avoids depending on `Vec` internal layout while maintaining call-site compatibility.
+pub(crate) struct ListIntSliceRef {
+    data: *const i64,
+    len: usize,
+}
+
+impl ListIntSliceRef {
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    pub fn iter(&self) -> std::slice::Iter<'_, i64> {
+        unsafe { std::slice::from_raw_parts(self.data, self.len).iter() }
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[i64] {
+        unsafe { std::slice::from_raw_parts(self.data, self.len) }
+    }
+
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<&i64> {
+        if index < self.len {
+            unsafe { Some(&*self.data.add(index)) }
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl std::ops::Index<usize> for ListIntSliceRef {
+    type Output = i64;
+    #[inline]
+    fn index(&self, index: usize) -> &i64 {
+        assert!(index < self.len, "ListIntSliceRef index out of bounds");
+        unsafe { &*self.data.add(index) }
     }
 }
 
