@@ -2027,7 +2027,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
+                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some()
+                        && (op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int"))
+                    {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
                         let lhs_val = raw_int_shadow[&args[0]];
@@ -2643,15 +2645,6 @@ impl SimpleBackend {
                     let rhs = var_get(&mut builder, &vars, &args[1]).unwrap_or_else(|| {
                         panic!("RHS not found in {} op {}", func_ir.name, op_idx)
                     });
-                    if std::env::var("MOLT_DEBUG_SUB_SHADOW").as_deref() == Ok("1") {
-                        eprintln!(
-                            "DEBUG sub func={} op={} lhs={} rhs={} lhs_shadow={} rhs_shadow={} fast_int={:?} type_hint={:?}",
-                            func_ir.name, op_idx, args[0], args[1],
-                            raw_int_shadow.contains_key(&args[0]),
-                            raw_int_shadow.contains_key(&args[1]),
-                            op.fast_int, op.type_hint,
-                        );
-                    }
                     let res = if op.fast_float.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("float")
                     {
@@ -2659,7 +2652,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
+                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some()
+                        && (op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int"))
+                    {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
                         let lhs_val = raw_int_shadow[&args[0]];
@@ -2841,7 +2836,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
+                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some()
+                        && (op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int"))
+                    {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
                         let lhs_val = raw_int_shadow[&args[0]];
@@ -3048,7 +3045,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
+                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some()
+                        && (op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int"))
+                    {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
                         let lhs_val = raw_int_shadow[&args[0]];
@@ -3223,7 +3222,9 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some() {
+                    } else if raw_int_shadow.get(&args[0]).is_some() && raw_int_shadow.get(&args[1]).is_some()
+                        && (op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int"))
+                    {
                         // Raw chain: both operands already unboxed + overflow guard
                         let lhs_val = raw_int_shadow[&args[0]];
                         let rhs_val = raw_int_shadow[&args[1]];
