@@ -345,12 +345,17 @@ fn build_edges(
 
             // Conditional loop break.
             "loop_break_if_true" | "loop_break_if_false" => {
-                // Fall-through (continue path).
-                if bid + 1 < n {
-                    add_edge(&mut successors, &mut predecessors, bid, bid + 1);
-                }
-                // Break target: from explicit label, or inferred from the
-                // enclosing loop's post-loop_end block.
+                // IMPORTANT: successor ordering matters for SSA CondBranch
+                // construction — succs[0] = then_block (TRUE path),
+                // succs[1] = else_block (FALSE path).
+                //
+                // For loop_break_if_true: TRUE → break (exit), FALSE → continue.
+                // For loop_break_if_false: TRUE → continue, FALSE → break (exit).
+                //
+                // Break target is added FIRST so it becomes succs[0] (then).
+                // Fall-through is added SECOND so it becomes succs[1] (else).
+                // For loop_break_if_false, the sense is inverted at the SSA
+                // level (the CondBranch condition is negated).
                 let mut break_added = false;
                 if let Some(target_label) = last_op.value
                     && let Some(&target_op) = label_map.get(&target_label)
@@ -367,6 +372,10 @@ fn build_edges(
                     {
                         add_edge(&mut successors, &mut predecessors, bid, post_loop_bid);
                     }
+                }
+                // Fall-through (continue path) — added SECOND to be succs[1] (else).
+                if bid + 1 < n {
+                    add_edge(&mut successors, &mut predecessors, bid, bid + 1);
                 }
             }
 

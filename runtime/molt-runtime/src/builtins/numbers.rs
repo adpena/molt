@@ -253,7 +253,17 @@ pub(crate) fn bigint_bits(_py: &PyToken<'_>, value: BigInt) -> u64 {
     unsafe {
         std::ptr::write(ptr as *mut BigInt, value);
     }
-    MoltObject::from_ptr(ptr).bits()
+    let bits = MoltObject::from_ptr(ptr).bits();
+    // Debug: verify the bigint is correctly allocated
+    if std::env::var("MOLT_DEBUG_BIGINT_RC").is_ok() {
+        let header = unsafe { &*(ptr.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader) };
+        eprintln!(
+            "BIGINT_ALLOC ptr=0x{:x} bits=0x{:x} type_id={} rc={}",
+            ptr as usize, bits, header.type_id,
+            header.ref_count.load(std::sync::atomic::Ordering::Relaxed)
+        );
+    }
+    bits
 }
 
 #[inline]
