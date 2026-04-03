@@ -14963,15 +14963,15 @@ impl SimpleBackend {
                     }
                 }
                 "loop_start" => {
-                    // Clear Value-based raw_int_shadow entries at loop boundaries.
-                    // Values produced by arithmetic merge phis (iadd overflow guard)
-                    // are block-local Cranelift Values that become stale across outer
-                    // loop iterations in nested loops.  Only Variable-backed shadows
-                    // (raw_int_shadow_vars) survive correctly through SSA phi resolution.
+                    // Clear ALL Value-based raw_int_shadow entries at loop boundaries.
+                    // Arithmetic merge phi Values (from iadd overflow guards) do NOT
+                    // participate in Cranelift's loop-header phi resolution — they
+                    // become stale after the first iteration.  Only Variable-backed
+                    // shadows (raw_int_shadow_vars, accessed via use_var in load_var)
+                    // correctly resolve across iterations.
                     //
-                    // Retain: entries backed by raw_int_shadow_vars (they use use_var).
-                    // Clear: all others (they hold stale merge-block Values).
-                    raw_int_shadow.retain(|name, _| raw_int_shadow_vars.contains_key(name));
+                    // Clear everything: load_var will re-populate from Variables.
+                    raw_int_shadow.clear();
 
                     let indexed_loop_follows = loop_start_has_index_prelude(&func_ir.ops, op_idx);
                     if indexed_loop_follows {
