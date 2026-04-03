@@ -1583,11 +1583,52 @@ fn emit_structured_loop_region(
             );
             if let Some(inner_region) = loop_regions.get(body_bid) {
                 // Consume ALL blocks owned by the inner loop: body,
-                // guard chain, guard raise paths, and cond block.
+                // guard chain, guard raise paths, cond block, AND
+                // all intermediate blocks between header and cond.
                 inner_consumed.extend(inner_region.body_set.iter().copied());
                 inner_consumed.extend(inner_region.guard_chain.iter().copied());
                 inner_consumed.extend(inner_region.guard_raise_blocks.iter().copied());
                 inner_consumed.insert(inner_region.cond_block);
+                // Follow the chain from the inner header to the cond
+                // block, consuming all intermediate blocks.
+                let mut cur = *body_bid;
+                let mut visited = std::collections::HashSet::new();
+                visited.insert(cur);
+                loop {
+                    let Some(blk) = func.blocks.get(&cur) else { break };
+                    match &blk.terminator {
+                        Terminator::Branch { target, .. } => {
+                            if !visited.insert(*target) || *target == inner_region.cond_block {
+                                inner_consumed.insert(*target);
+                                break;
+                            }
+                            inner_consumed.insert(*target);
+                            cur = *target;
+                        }
+                        Terminator::CondBranch { then_block, else_block, .. } => {
+                            // Guard: follow non-raise path, consume both
+                            let then_raises = func.blocks.get(then_block)
+                                .map(|b| b.ops.iter().any(|op| op.opcode == OpCode::Raise))
+                                .unwrap_or(false);
+                            let raise_bid = if then_raises { *then_block } else { *else_block };
+                            let cont_bid = if then_raises { *else_block } else { *then_block };
+                            inner_consumed.insert(raise_bid);
+                            // Follow raise path successors
+                            if let Some(rblk) = func.blocks.get(&raise_bid) {
+                                for succ in successors_of(rblk) {
+                                    inner_consumed.insert(succ);
+                                }
+                            }
+                            if !visited.insert(cont_bid) || cont_bid == inner_region.cond_block {
+                                inner_consumed.insert(cont_bid);
+                                break;
+                            }
+                            inner_consumed.insert(cont_bid);
+                            cur = cont_bid;
+                        }
+                        _ => break,
+                    }
+                }
             }
             is_first_body = false;
             continue;
