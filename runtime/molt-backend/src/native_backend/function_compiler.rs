@@ -16888,46 +16888,17 @@ impl SimpleBackend {
                 }
                 // TIR round-trip variable ops — wire SSA values between blocks
                 "store_var" => {
-                    // Store a value into a named variable.
-                    // For user-local variables (emitted by the frontend for
-                    // non-closure locals), we must manage refcounts:
-                    //   inc_ref(new_val) — the variable now owns a reference
-                    //   dec_ref(old_val) — release the previous value
-                    // This mirrors what store_index does in the runtime for
-                    // cell-based locals.
+                    // Store a value into a named variable (SSA definition).
+                    // No refcount management here — SSA variables are aliases,
+                    // not owners. The tracked_vars/tracked_obj_vars cleanup at
+                    // `ret` handles final dec-ref. Adding inc_ref here breaks
+                    // loop iteration (spurious refcount growth without matching
+                    // dec_ref causes iterator state corruption).
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val =
                         var_get(&mut builder, &vars, &args[0]).expect("store_var: src not found");
                     let var_name = op.var.as_deref().or(op.out.as_deref());
                     if let Some(name) = var_name {
-                        // inc_ref for heap-allocated values flowing through
-                        // loop-carried phis. Inline check: only call inc_ref
-                        // when the value is a heap pointer (NaN-boxed ptr tag).
-                        // For inline ints/floats/bools/None, this is zero-cost.
-                        let tag_check_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
-                        let tag_bits = builder.ins().band(*val, tag_check_mask);
-                        let ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
-                        let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
-
-                        let inc_block = builder.create_block();
-                        let cont_block = builder.create_block();
-                        builder.ins().brif(is_ptr, inc_block, &[], cont_block, &[]);
-
-                        builder.switch_to_block(inc_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, inc_block);
-                        let inc_ref_callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_inc_ref_obj",
-                            &[types::I64],
-                            &[],
-                        );
-                        let inc_local = self.module.declare_func_in_func(inc_ref_callee, builder.func);
-                        builder.ins().call(inc_local, &[*val]);
-                        jump_block(&mut builder, cont_block, &[]);
-
-                        builder.switch_to_block(cont_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, cont_block);
                         def_var_named(&mut builder, &vars, name, *val);
                     }
                 }
