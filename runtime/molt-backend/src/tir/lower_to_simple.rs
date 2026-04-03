@@ -228,13 +228,20 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             None => continue,
         };
 
-        // Emit a label for every non-entry block (including loop headers).
+        // Emit block header: loop_start for LoopHeader blocks, label for others.
         if *bid != func.entry_block {
-            out.push(OpIR {
-                kind: "label".to_string(),
-                value: Some(block_label_id(bid)),
-                ..OpIR::default()
-            });
+            if loop_role == super::blocks::LoopRole::LoopHeader {
+                out.push(OpIR {
+                    kind: "loop_start".to_string(),
+                    ..OpIR::default()
+                });
+            } else {
+                out.push(OpIR {
+                    kind: "label".to_string(),
+                    value: Some(block_label_id(bid)),
+                    ..OpIR::default()
+                });
+            }
 
             // Load block argument variables into SSA-named vars.
             if let Some(param_vars) = block_param_vars.get(bid) {
@@ -1049,14 +1056,26 @@ fn emit_terminator(
         }
 
         Terminator::Branch { target, args } => {
-            // If the block ends with a check_exception op, the native
-            // backend handles the fallthrough implicitly -- suppress the
-            // jump so the next block's ops follow sequentially.
             let last_op_is_check_exception = block.ops.last()
                 .map(|op| op.opcode == OpCode::CheckException)
                 .unwrap_or(false);
             emit_block_arg_stores(*target, args, block_param_vars, out);
-            if !last_op_is_check_exception {
+
+            // If target is a LoopHeader, this is a back-edge → loop_continue.
+            let target_is_loop_header = _loop_roles
+                .get(target)
+                .map(|r| *r == super::blocks::LoopRole::LoopHeader)
+                .unwrap_or(false);
+            if target_is_loop_header && !last_op_is_check_exception {
+                out.push(OpIR {
+                    kind: "loop_continue".to_string(),
+                    ..OpIR::default()
+                });
+                out.push(OpIR {
+                    kind: "loop_end".to_string(),
+                    ..OpIR::default()
+                });
+            } else if !last_op_is_check_exception {
                 out.push(OpIR {
                     kind: "jump".to_string(),
                     value: Some(block_label_id(target)),
@@ -1072,19 +1091,36 @@ fn emit_terminator(
             else_block,
             else_args,
         } => {
-            // Conditional branch: the then/else arg stores must execute
-            // on the CORRECT path. If both targets share the same
-            // parameter variables (e.g. loop header phis), unconditionally
-            // storing both would clobber the else values with then values.
-            //
-            // Pattern:
-            //   br_if cond → label_then_trampoline
-            //   ; else fall-through:
-            //   store_var else_args...
-            //   jump → else_block
-            //   label_then_trampoline:
-            //   store_var then_args...
-            //   jump → then_block
+            // ── Structured loop break ──
+            // If this block is a LoopHeader, emit loop_break_if_false/true
+            // instead of br_if. The break kind determines which polarity:
+            //   BreakIfFalse: `while cond:` → break when cond is false
+            //   BreakIfTrue:  `for x in iter:` → break when done is true
+            // Then-block = body (continue), else-block = exit (break).
+            if _loop_role == super::blocks::LoopRole::LoopHeader {
+                let break_kind = _loop_break_kinds.get(&block.id).copied()
+                    .unwrap_or(LoopBreakKind::BreakIfFalse);
+                let kind_str = match break_kind {
+                    LoopBreakKind::BreakIfTrue => "loop_break_if_true",
+                    LoopBreakKind::BreakIfFalse => "loop_break_if_false",
+                };
+                let mut break_op = OpIR {
+                    kind: kind_str.to_string(),
+                    args: Some(vec![value_var(*cond)]),
+                    ..OpIR::default()
+                };
+                // Copy type hint from the condition value for inline truthiness.
+                break_op.type_hint = Some("bool".to_string());
+                out.push(break_op);
+                // Store exit-path (else) args for when the loop breaks.
+                emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
+                // Store body-path (then) args.
+                emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
+                // Body ops follow sequentially — no jump needed.
+                return;
+            }
+
+            // ── Non-loop conditional ──
             let needs_trampoline = !then_args.is_empty();
             if needs_trampoline {
                 // Allocate a fresh label for the then-path trampoline.
