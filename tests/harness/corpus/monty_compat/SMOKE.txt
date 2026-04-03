@@ -1,0 +1,6 @@
+# Small, stable push-time conformance subset.
+assert__ops.py
+async__basic.py
+bool__ops.py
+builtin__repr.py
+bytes__ops.py
