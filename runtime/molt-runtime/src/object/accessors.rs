@@ -95,8 +95,7 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
         if std::env::var("MOLT_DEBUG_FIELD").is_ok() {
             eprintln!(
                 "[field_set_raw] ptr=0x{:x} offset={} slot=0x{:x} old=0x{:x} val=0x{:x}",
-                obj_ptr as usize, offset, slot as usize, old_val,
-                obj_ptr as usize, offset, slot as usize, val_bits
+                obj_ptr as usize, offset, slot as usize, old_val, val_bits
             );
         }
         let old_bits = *slot;
