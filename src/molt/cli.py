@@ -10775,6 +10775,11 @@ def _start_backend_daemon(
                         for _entry in list(cache_dir.iterdir()):
                             if _entry.name.startswith("stdlib_shared_"):
                                 continue
+                            # Preserve compiled binaries (home/bin/) across daemon
+                            # restarts — they're validated by mtime in the fast-path.
+                            # Only clear intermediate build artifacts (home/build/).
+                            if _entry.name == "bin":
+                                continue
                             if _entry.is_dir():
                                 shutil.rmtree(_entry, ignore_errors=True)
                             else:
@@ -28191,7 +28196,8 @@ def main() -> int:
         ),
     )
     parser.add_argument("--version", action="version", version=f"molt {__version__}")
-    subparsers = parser.add_subparsers(dest="command", required=True, title="commands")
+    # Don't require command — show help when no args (like `go` with no args).
+    subparsers = parser.add_subparsers(dest="command", title="commands")
 
     build_parser = subparsers.add_parser(
         "build",
@@ -29654,6 +29660,9 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    if args.command is None:
+        parser.print_help()
+        sys.exit(0)
 
     config_root = _find_project_root(Path.cwd())
     if getattr(args, "file", None):
