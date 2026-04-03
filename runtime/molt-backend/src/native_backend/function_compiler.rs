@@ -839,6 +839,13 @@ impl SimpleBackend {
         // consumers read from this map (skipping unbox). Non-fast_int consumers
         // use the normal SSA variable (boxed). LuaJIT-style optimization.
         let mut raw_int_shadow: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+        // Cranelift Variable-backed shadows for named variables (store_var/load_var).
+        // Values don't survive phi merges at loop back-edges; Variables do.
+        // store_var def_var's the shadow Variable with the raw value.
+        // load_var use_var's it, getting the phi-resolved value across iterations.
+        // Each Variable is declared and def_var'd(0) at function entry to satisfy
+        // Cranelift's requirement that all paths to a use_var have a definition.
+        let mut raw_int_shadow_vars: std::collections::BTreeMap<String, Variable> = std::collections::BTreeMap::new();
         // Cache data_ptr and len for list_int containers using Cranelift Variables
         // (not Values) so they persist across loop iterations via phi nodes.
         // Valid only while the list is not resized (no append/insert inside the loop).
@@ -853,6 +860,25 @@ impl SimpleBackend {
 
         reachable_blocks.insert(entry_block);
         builder.switch_to_block(entry_block);
+
+        // Pre-declare shadow Variables for all store_var targets.
+        // Each gets def_var(0) at entry so Cranelift can resolve
+        // phi nodes on the pre-loop path (before the first store_var).
+        {
+            let zero = builder.ins().iconst(types::I64, 0);
+            let mut seen = std::collections::BTreeSet::new();
+            for op in &func_ir.ops {
+                if op.kind == "store_var" {
+                    if let Some(ref name) = op.var.as_ref().or(op.out.as_ref()) {
+                        if seen.insert(name.to_string()) {
+                            let v = builder.declare_var(types::I64);
+                            builder.def_var(v, zero);
+                            raw_int_shadow_vars.insert(name.to_string(), v);
+                        }
+                    }
+                }
+            }
+        }
 
         let _local_dec_ref = import_func_ref(
             &mut self.module,
@@ -17224,18 +17250,21 @@ impl SimpleBackend {
                         }
                         def_var_named(&mut builder, &vars, name, *val);
                         // Propagate raw_int_shadow through store_var:
-                        // if the source has a shadow, the target name inherits it.
+                        // Value-level (within this block) + Variable-level (across back-edges).
                         if let Some(&raw) = raw_int_shadow.get(&args[0]) {
                             raw_int_shadow.insert(name.to_string(), raw);
+                            // def_var the pre-declared shadow Variable so it
+                            // survives phi merges at loop back-edges.
+                            if let Some(&shadow_var) = raw_int_shadow_vars.get(name) {
+                                builder.def_var(shadow_var, raw);
+                            }
                         }
                     }
                 }
                 "load_var" | "copy_var" => {
                     // Load a named variable into an output (block arg receiving / copy).
-                    // Propagate raw_int_shadow from source to output.
-                    // If the source has no shadow but the op is typed (fast_int/type_hint),
-                    // seed the shadow by unboxing — this closes the type gap for TIR-typed
-                    // parameters that enter as NaN-boxed values.
+                    // Use Variable-backed shadow (phi-resolved across loop iterations)
+                    // when available, falling back to Value-based shadow.
                     let is_typed_int = op.fast_int.unwrap_or(false)
                         || op.type_hint.as_deref() == Some("int");
                     if let Some(ref var_name) = op.var {
@@ -17243,12 +17272,16 @@ impl SimpleBackend {
                             .expect("load_var: var not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
-                            if let Some(&raw) = raw_int_shadow.get(var_name.as_str()) {
+                            // Prefer Variable-backed shadow (survives phis across
+                            // loop back-edges) over stale Value-based shadow.
+                            if let Some(&shadow_var) = raw_int_shadow_vars.get(var_name.as_str()) {
+                                let raw_val = builder.use_var(shadow_var);
+                                raw_int_shadow.insert(out_name.clone(), raw_val);
+                            } else if let Some(&raw) = raw_int_shadow.get(var_name.as_str()) {
                                 raw_int_shadow.insert(out_name.clone(), raw);
                             } else if is_typed_int {
                                 let raw = unbox_int(&mut builder, *val, &nbc);
                                 raw_int_shadow.insert(out_name.clone(), raw);
-                                // Also seed the source so downstream uses benefit.
                                 raw_int_shadow.insert(var_name.clone(), raw);
                             }
                         }
