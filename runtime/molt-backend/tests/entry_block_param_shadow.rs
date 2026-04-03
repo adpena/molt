@@ -79,3 +79,78 @@ fn structured_if_phi_merges_compile() {
     let bytes = SimpleBackend::new().compile(ir);
     assert!(!bytes.is_empty());
 }
+
+#[test]
+fn nested_structured_if_phi_merges_compile() {
+    let mut outer_cond = op("const_bool");
+    outer_cond.value = Some(1);
+    outer_cond.out = Some("outer_cond".to_string());
+
+    let mut inner_cond = op("const_bool");
+    inner_cond.value = Some(1);
+    inner_cond.out = Some("inner_cond".to_string());
+
+    let mut base = op("const");
+    base.value = Some(0);
+    base.out = Some("base".to_string());
+
+    let mut outer_if = op("if");
+    outer_if.args = Some(vec!["outer_cond".to_string()]);
+
+    let mut inner_if = op("if");
+    inner_if.args = Some(vec!["inner_cond".to_string()]);
+
+    let mut inner_then = op("const");
+    inner_then.value = Some(1);
+    inner_then.out = Some("inner_then".to_string());
+
+    let inner_else = op("else");
+
+    let mut inner_else_val = op("const");
+    inner_else_val.value = Some(2);
+    inner_else_val.out = Some("inner_else".to_string());
+
+    let inner_end_if = op("end_if");
+
+    let mut inner_phi = op("phi");
+    inner_phi.out = Some("outer_then".to_string());
+    inner_phi.args = Some(vec!["inner_then".to_string(), "inner_else".to_string()]);
+
+    let outer_end_if = op("end_if");
+
+    let mut outer_phi = op("phi");
+    outer_phi.out = Some("joined".to_string());
+    outer_phi.args = Some(vec!["outer_then".to_string(), "base".to_string()]);
+
+    let mut ret_joined = op("ret");
+    ret_joined.var = Some("joined".to_string());
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "nested_structured_if_phi_regression".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                outer_cond,
+                inner_cond,
+                base,
+                outer_if,
+                inner_if,
+                inner_then,
+                inner_else,
+                inner_else_val,
+                inner_end_if,
+                inner_phi,
+                outer_end_if,
+                outer_phi,
+                ret_joined,
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+
+    let bytes = SimpleBackend::new().compile(ir);
+    assert!(!bytes.is_empty());
+}
