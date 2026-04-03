@@ -39056,8 +39056,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 "params": data["params"],
                 "ops": json_ops,
             }
-            if data.get("param_types"):
-                func_entry["param_types"] = data["param_types"]
+            # Always emit param_types so the backend creates Cranelift block
+            # params for function arguments. Without this, parameters are
+            # uninitialized (read as 0x0 = float +0.0 in NaN-boxing).
+            explicit_types = data.get("param_types") or []
+            if explicit_types:
+                func_entry["param_types"] = explicit_types
+            elif data["params"]:
+                func_entry["param_types"] = ["i64"] * len(data["params"])
             if self.source_path:
                 func_entry["source_file"] = self.source_path
             # Perceus-style borrowing analysis: identify parameters that can

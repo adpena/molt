@@ -368,7 +368,15 @@ impl<'a> SsaContext<'a> {
                     self.block_arg_vars[bid].push(var.clone());
                 }
             }
-            // Debug: dump phi placement decisions for functions with "count" in name
+            if var == "is_prime" || var == "i" || var == "j" || var == "count" || var == "k" {
+                let def_list: Vec<_> = def_blocks.iter().copied().collect();
+                let phi_list: Vec<_> = phi_blocks.iter().copied().collect();
+                let live_list: Vec<_> = phi_blocks.iter()
+                    .filter(|b| live_in[**b].contains(&var))
+                    .copied().collect();
+                { let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/ssa_trace.log").and_then(|mut f| { use std::io::Write; writeln!(f, "[SSA-PHI] var={:?} def_blocks={:?} phi_blocks={:?} live_at_phi={:?}",
+                    var, def_list, phi_list, live_list) }); }
+            }
             if std::env::var("MOLT_SSA_TRACE").as_deref() == Ok("1") {
                 let def_list: Vec<_> = def_blocks.iter().copied().collect();
                 let phi_list: Vec<_> = phi_blocks.iter().copied().collect();
@@ -377,6 +385,7 @@ impl<'a> SsaContext<'a> {
                     .copied().collect();
                 eprintln!("[SSA] var={:?} def_blocks={:?} phi_blocks={:?} live_at_phi={:?}",
                     var, def_list, phi_list, live_list);
+            }
             }
         }
     }
