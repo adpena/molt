@@ -13817,8 +13817,17 @@ def _shared_stdlib_cache_payload(
     *,
     entry_module: str,
 ) -> bytes:
+    """Build a cache payload for the stdlib shared object.
+
+    The key is based on sorted stdlib function NAMES only — not their
+    full IR bodies.  Function bodies are deterministic for a given
+    compiler version (captured by the cache_variant / backend fingerprint).
+    This ensures all programs that import the same stdlib module set
+    share one cached stdlib_shared.o, eliminating redundant 25s cold
+    compiles for each unique user program.
+    """
     functions = ir.get("functions")
-    selected: list[Any] = []
+    names: list[str] = []
     seen: set[str] = set()
     if isinstance(functions, list):
         for func in functions:
@@ -13830,16 +13839,12 @@ def _shared_stdlib_cache_payload(
             if name in seen:
                 continue
             seen.add(name)
-            selected.append(func)
-    payload_ir: dict[str, Any] = {
-        "functions": _sorted_ir_functions(selected),
-        "profile": ir.get("profile"),
-    }
+            names.append(name)
+    names.sort()
     return json.dumps(
-        payload_ir,
+        {"stdlib_names": names, "profile": ir.get("profile")},
         sort_keys=True,
         separators=(",", ":"),
-        default=_json_ir_default,
     ).encode("utf-8")
 
 
