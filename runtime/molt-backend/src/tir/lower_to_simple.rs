@@ -1062,20 +1062,7 @@ fn emit_terminator(
             emit_block_arg_stores(*target, args, block_param_vars, out);
 
             // If target is a LoopHeader, this is a back-edge → loop_continue.
-            let target_is_loop_header = _loop_roles
-                .get(target)
-                .map(|r| *r == super::blocks::LoopRole::LoopHeader)
-                .unwrap_or(false);
-            if target_is_loop_header && !last_op_is_check_exception {
-                out.push(OpIR {
-                    kind: "loop_continue".to_string(),
-                    ..OpIR::default()
-                });
-                out.push(OpIR {
-                    kind: "loop_end".to_string(),
-                    ..OpIR::default()
-                });
-            } else if !last_op_is_check_exception {
+            if !last_op_is_check_exception {
                 out.push(OpIR {
                     kind: "jump".to_string(),
                     value: Some(block_label_id(target)),
@@ -1097,30 +1084,6 @@ fn emit_terminator(
             //   BreakIfFalse: `while cond:` → break when cond is false
             //   BreakIfTrue:  `for x in iter:` → break when done is true
             // Then-block = body (continue), else-block = exit (break).
-            if _loop_role == super::blocks::LoopRole::LoopHeader {
-                let break_kind = _loop_break_kinds.get(&block.id).copied()
-                    .unwrap_or(LoopBreakKind::BreakIfFalse);
-                let kind_str = match break_kind {
-                    LoopBreakKind::BreakIfTrue => "loop_break_if_true",
-                    LoopBreakKind::BreakIfFalse => "loop_break_if_false",
-                };
-                let mut break_op = OpIR {
-                    kind: kind_str.to_string(),
-                    args: Some(vec![value_var(*cond)]),
-                    ..OpIR::default()
-                };
-                // Copy type hint from the condition value for inline truthiness.
-                break_op.type_hint = Some("bool".to_string());
-                out.push(break_op);
-                // Store exit-path (else) args for when the loop breaks.
-                emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
-                // Store body-path (then) args.
-                emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
-                // Body ops follow sequentially — no jump needed.
-                return;
-            }
-
-            // ── Non-loop conditional ──
             let needs_trampoline = !then_args.is_empty();
             if needs_trampoline {
                 // Allocate a fresh label for the then-path trampoline.

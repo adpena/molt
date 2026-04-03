@@ -335,17 +335,12 @@ fn preanalyze_function_ir(
             }
         }
 
-        // Post-pass 2: extend variable lifetimes for TIR-generated control
-        // flow. When TIR linearizes loops into label/jump/br_if patterns,
-        // the loop_start/loop_end markers are absent, so the structured loop
-        // extension above doesn't fire. Back-edge jumps can cause dec_ref to
-        // free values that are still live in the next iteration.
-        //
-        // Fix: if the function has any back-edge (jump to a label at a lower
-        // position), extend ALL variable lifetimes to the last op. This is
-        // conservative but correct — cleanup happens at function return.
-        {
-            let mut has_back_edge = false;
+        // Post-pass 2: detect back-edge loops for TIR-generated control flow.
+        // When TIR linearizes loops into label/jump/br_if, store_var ops
+        // inside these loops need explicit inc_ref/dec_ref (the store_var
+        // handler checks `back_edge_ranges` to decide).
+        let back_edge_ranges: Vec<(usize, usize)> = {
+            let mut ranges = Vec::new();
             let mut label_pos: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 if matches!(op.kind.as_str(), "label" | "state_label") {
@@ -359,28 +354,44 @@ fn preanalyze_function_ir(
                     if let Some(target_id) = op.value {
                         if let Some(&target_pos) = label_pos.get(&target_id) {
                             if target_pos < idx {
-                                has_back_edge = true;
-                                break;
+                                ranges.push((target_pos, idx));
                             }
                         }
                     }
                 }
             }
-            // When a back-edge exists (TIR-generated loop), extend ALL
-            // variable lifetimes to at least the back-edge jump position.
-            // This prevents drain_cleanup_tracked from emitting dec_ref
-            // for values that are still live in the next loop iteration.
-            //
-            // Why ALL variables, not just loop-body variables: the dec_ref
-            // at the back-edge point can fire for variables defined BEFORE
-            // the loop (e.g., the cell list created at function entry).
-            // These variables are passed as Cranelift block parameters to
-            // the loop header, so they must survive the entire loop.
-            if has_back_edge {
-                let func_end = func_ir.ops.len().saturating_sub(1);
-                for entry in last_use.values_mut() {
-                    if *entry < func_end {
-                        *entry = func_end;
+            ranges
+        };
+        // Also extend last_use for variables in back-edge ranges to the
+        // back-edge jump position. This prevents drain_cleanup_tracked
+        // from emitting ADDITIONAL dec_ref beyond what store_var handles.
+        for &(start, end) in &back_edge_ranges {
+            for idx in start..=end {
+                let op = &func_ir.ops[idx];
+                if let Some(args) = &op.args {
+                    for name in args {
+                        if name != "none" {
+                            let entry = last_use.entry(name.clone()).or_insert(end);
+                            if *entry < end {
+                                *entry = end;
+                            }
+                        }
+                    }
+                }
+                if let Some(var) = &op.var {
+                    if var != "none" {
+                        let entry = last_use.entry(var.clone()).or_insert(end);
+                        if *entry < end {
+                            *entry = end;
+                        }
+                    }
+                }
+                if let Some(out) = &op.out {
+                    if out != "none" {
+                        let entry = last_use.entry(out.clone()).or_insert(end);
+                        if *entry < end {
+                            *entry = end;
+                        }
                     }
                 }
             }
@@ -16969,17 +16980,79 @@ impl SimpleBackend {
                 }
                 // TIR round-trip variable ops — wire SSA values between blocks
                 "store_var" => {
-                    // Store a value into a named variable (SSA definition).
-                    // No refcount management here — SSA variables are aliases,
-                    // not owners. The tracked_vars/tracked_obj_vars cleanup at
-                    // `ret` handles final dec-ref. Adding inc_ref here breaks
-                    // loop iteration (spurious refcount growth without matching
-                    // dec_ref causes iterator state corruption).
+                    // Store a value into a named variable.
+                    //
+                    // For variables inside back-edge loops (TIR-generated
+                    // label/jump/br_if control flow), we emit:
+                    //   old = use_var(name)
+                    //   inc_ref_obj(new)
+                    //   dec_ref_obj(old)
+                    //   def_var(name, new)
+                    //
+                    // This mirrors molt_store_index's refcount management
+                    // and prevents bigint use-after-free when values are
+                    // reassigned across loop iterations.
+                    //
+                    // For non-loop store_var, drain_cleanup_tracked handles
+                    // the final dec_ref at the ret point.
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val =
                         var_get(&mut builder, &vars, &args[0]).expect("store_var: src not found");
                     let var_name = op.var.as_deref().or(op.out.as_deref());
                     if let Some(name) = var_name {
+                        // Check if this store_var is inside a back-edge loop.
+                        // If so, emit inc_ref(new) + dec_ref(old) for correct
+                        // refcount management of heap-allocated values (bigints).
+                        // Detect if this store_var is inside a back-edge loop
+                        // by checking if any jump/br_if in the function targets
+                        // a label at a position before the jump.
+                        let in_loop = {
+                            let mut found = false;
+                            let mut lbl_pos: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+                            for (i, o) in func_ir.ops.iter().enumerate() {
+                                if matches!(o.kind.as_str(), "label" | "state_label") {
+                                    if let Some(id) = o.value {
+                                        lbl_pos.insert(id, i);
+                                    }
+                                }
+                            }
+                            for (i, o) in func_ir.ops.iter().enumerate() {
+                                if matches!(o.kind.as_str(), "jump" | "br_if") {
+                                    if let Some(tid) = o.value {
+                                        if let Some(&tp) = lbl_pos.get(&tid) {
+                                            if tp < i && op_idx >= tp && op_idx <= i {
+                                                found = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            found
+                        };
+                        if in_loop && vars.contains_key(name) {
+                            // Read old value BEFORE overwriting
+                            let old_val = builder.use_var(vars[name]);
+                            // inc_ref new, dec_ref old (opaque calls — no CFG split)
+                            let inc_callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_inc_ref_obj",
+                                &[types::I64],
+                                &[],
+                            );
+                            let dec_callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_dec_ref_obj",
+                                &[types::I64],
+                                &[],
+                            );
+                            let inc_local = self.module.declare_func_in_func(inc_callee, builder.func);
+                            let dec_local = self.module.declare_func_in_func(dec_callee, builder.func);
+                            builder.ins().call(inc_local, &[*val]);
+                            builder.ins().call(dec_local, &[old_val]);
+                        }
                         def_var_named(&mut builder, &vars, name, *val);
                     }
                 }
