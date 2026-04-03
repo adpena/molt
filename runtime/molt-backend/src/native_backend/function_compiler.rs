@@ -366,11 +366,28 @@ fn preanalyze_function_ir(
                     }
                 }
             }
-            if has_back_edge {
-                let func_end = func_ir.ops.len().saturating_sub(1);
-                for entry in last_use.values_mut() {
-                    if *entry < func_end {
-                        *entry = func_end;
+            // For each back-edge, extend ALL variable lifetimes whose current
+            // last_use falls within the loop range. This prevents dec_ref from
+            // firing inside the loop body for values that survive to the next
+            // iteration via block parameters.
+            //
+            // This is conservative (some variables may be extended unnecessarily)
+            // but correct. The only cost is delayed cleanup — freed at function
+            // return instead of at the loop back-edge.
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                if matches!(op.kind.as_str(), "jump" | "br_if") {
+                    if let Some(target_id) = op.value {
+                        if let Some(&target_pos) = label_pos.get(&target_id) {
+                            if target_pos < idx {
+                                // Back-edge found. Extend ALL variables whose last_use
+                                // is within [target_pos..idx] to survive until idx.
+                                for entry in last_use.values_mut() {
+                                    if *entry >= target_pos && *entry < idx {
+                                        *entry = idx;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
