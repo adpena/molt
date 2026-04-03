@@ -6861,8 +6861,11 @@ impl SimpleBackend {
                                 let local_callee = self.module.declare_func_in_func(callee, builder.func);
                                 let call = builder.ins().call(local_callee, &[*obj, *idx]);
                                 let slow_res = builder.inst_results(call)[0];
-                                let zero_raw = builder.ins().iconst(types::I64, 0);
-                                jump_block(&mut builder, merge_block, &[slow_res, zero_raw]);
+                                // Unbox the runtime result to get the true raw i64.
+                                // Using a 0 sentinel here would poison downstream shadows
+                                // (e.g., lst[-1] used in a comparison would compare 0).
+                                let slow_raw = unbox_int(&mut builder, slow_res, &nbc);
+                                jump_block(&mut builder, merge_block, &[slow_res, slow_raw]);
 
                                 // Merge
                                 builder.switch_to_block(merge_block);
@@ -6871,9 +6874,8 @@ impl SimpleBackend {
                                 let merged_raw = builder.block_params(merge_block)[1];
                                 if let Some(ref out__) = op.out {
                                     def_var_named(&mut builder, &vars, out__, merged_boxed);
-                                    // Propagate raw shadow — on fast path this is the true
-                                    // unboxed value; on slow path it's 0 (which is a valid
-                                    // i64 and will produce correct but slower downstream ops).
+                                    // Propagate raw shadow — both fast and slow paths
+                                    // provide the true unboxed i64 value.
                                     if let Some(&shadow_var) = raw_int_shadow.get(out__) {
                                         builder.def_var(shadow_var, merged_raw);
                                     }
