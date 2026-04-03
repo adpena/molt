@@ -3020,25 +3020,6 @@ impl SimpleBackend {
                                 && tmp_func.ops.iter().any(|op| op.kind == "loop_start")
                                 && tmp_func.ops.iter().any(|op| op.kind == "store_index")
                         };
-                        // Debug: log skip reason for sieve
-                        if tmp_func.name.contains("sieve") && !tmp_func.name.contains("module") && !tmp_func.name.contains("main") {
-                            use std::io::Write;
-                            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tir_skip_log.txt") {
-                                let _ = writeln!(f, "SKIP_CHECK {}: ops={} cf={} eh={} cell={} chunk={}",
-                                    tmp_func.name, tmp_func.ops.len(), cf_complexity,
-                                    has_exception_handling, uses_cell_vars,
-                                    tmp_func.name.contains("__molt_module_chunk_"));
-                                if tmp_func.name.contains("__molt_module_chunk_")
-                                    || tmp_func.ops.len() > 2000
-                                    || cf_complexity > 30
-                                    || (has_exception_handling && force_eh_bypass)
-                                    || uses_cell_vars {
-                                    let _ = writeln!(f, "  -> SKIPPED");
-                                } else {
-                                    let _ = writeln!(f, "  -> PASSED");
-                                }
-                            }
-                        }
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
@@ -3107,26 +3088,6 @@ impl SimpleBackend {
                                     &tir_func, &type_map,
                                 );
                                 if !crate::tir::lower_to_simple::validate_labels(&ops) {
-                                    if func_name.contains("sieve") && !func_name.contains("module") {
-                                        use std::io::Write;
-                                        if let Ok(mut f) = std::fs::File::create("/tmp/sieve_tir_fail.txt") {
-                                            let mut defined = std::collections::HashSet::new();
-                                            for op in &ops {
-                                                if matches!(op.kind.as_str(), "label" | "state_label") {
-                                                    if let Some(id) = op.value { defined.insert(id); }
-                                                }
-                                            }
-                                            for (i, op) in ops.iter().enumerate() {
-                                                let dangling = matches!(op.kind.as_str(), "jump" | "br_if" | "check_exception")
-                                                    && op.value.map(|id| !defined.contains(&id)).unwrap_or(false);
-                                                let _ = writeln!(f, "{}{:3}: {:25} out={:15} var={:15} val={:?} args={:?}",
-                                                    if dangling { ">>>" } else { "   " },
-                                                    i, op.kind, op.out.as_deref().unwrap_or(""),
-                                                    op.var.as_deref().unwrap_or(""), op.value,
-                                                    op.args.as_ref().map(|a| a.join(",")));
-                                            }
-                                        }
-                                    }
                                     return None;
                                 }
 
