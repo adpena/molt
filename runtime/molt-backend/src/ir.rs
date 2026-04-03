@@ -34,6 +34,11 @@ pub struct FunctionIR {
     /// Source file path for traceback formatting.
     #[serde(default)]
     pub source_file: Option<String>,
+    /// When true, this function's body was stripped (already compiled into
+    /// stdlib_shared.o).  The backend emits a declaration (no body) so
+    /// the linker resolves the symbol from the shared object.
+    #[serde(default)]
+    pub is_extern: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
@@ -215,6 +220,7 @@ impl FunctionIR {
             ops,
             param_types: optional_string_list(obj, "param_types", ctx)?,
             source_file: obj.get("source_file").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            is_extern: false,
         })
     }
 }

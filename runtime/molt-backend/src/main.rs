@@ -639,24 +639,28 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                         );
                     });
 
-                    // Stdlib partition disabled — compile everything into one .o.
-                    // The partition system has cache key mismatches that cause
-                    // linker errors (undefined molt_init_* symbols). Re-enable
-                    // after the CLI and daemon agree on stdlib cache paths.
-                    if false && stdlib_path.exists() {
+                    if stdlib_path.exists() {
                         if shared_stdlib_cache_matches(
                             stdlib_path,
                             expected_stdlib_cache_key.as_deref(),
                         ) {
-                            // Cache matches — strip stdlib functions, compile user only.
-                            let total = ir.functions.len();
-                            ir.functions
-                                .retain(|f| is_user_owned_symbol(&f.name, &entry_module));
-                            let kept = ir.functions.len();
+                            // Cache matches — mark stdlib functions as extern stubs.
+                            // The backend will declare them as Import (no body); the
+                            // linker resolves symbols from stdlib_shared.o.
+                            let mut user_count = 0;
+                            let mut extern_count = 0;
+                            for func in ir.functions.iter_mut() {
+                                if !is_user_owned_symbol(&func.name, &entry_module) {
+                                    func.is_extern = true;
+                                    func.ops.clear();
+                                    extern_count += 1;
+                                } else {
+                                    user_count += 1;
+                                }
+                            }
                             eprintln!(
-                                "MOLT_BACKEND(daemon): incremental — compiling {kept} user functions \
-                                 (cached {} stdlib in {})",
-                                total - kept,
+                                "MOLT_BACKEND(daemon): incremental — compiling {user_count} user functions \
+                                 ({extern_count} stdlib extern from {})",
                                 stdlib_path.display()
                             );
                         } else {
@@ -1554,13 +1558,22 @@ fn main() -> io::Result<()> {
                         stdlib_path,
                         expected_stdlib_cache_key.as_deref(),
                     ) {
-                        // Cache exactly matches the requested stdlib IR — use it.
-                        ir.functions
-                            .retain(|f| is_user_owned_symbol(&f.name, &entry_module));
-                        let kept = ir.functions.len();
+                        // Cache exactly matches the requested stdlib IR — mark
+                        // stdlib functions as extern stubs so the backend declares
+                        // them as Import.  The linker resolves from stdlib_shared.o.
+                        let mut user_count = 0;
+                        let mut extern_count = 0;
+                        for func in ir.functions.iter_mut() {
+                            if !is_user_owned_symbol(&func.name, &entry_module) {
+                                func.is_extern = true;
+                                func.ops.clear();
+                                extern_count += 1;
+                            } else {
+                                user_count += 1;
+                            }
+                        }
                         eprintln!(
-                            "MOLT_BACKEND: incremental — compiling {kept} user functions (cached {} stdlib in {})",
-                            total - kept,
+                            "MOLT_BACKEND: incremental — compiling {user_count} user functions ({extern_count} stdlib extern from {})",
                             stdlib_path.display()
                         );
                     } else {
