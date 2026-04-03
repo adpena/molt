@@ -1211,9 +1211,24 @@ impl<'a> SsaContext<'a> {
                         } else {
                             (succs[1], succs[0])
                         }
+                    } else if matches!(last_kind, "if") {
+                        // Structured if: TRUE = fall-through (bid+1),
+                        // FALSE = else/end_if (non-fall-through).
+                        let fall_through = bid + 1;
+                        if succs[0] == fall_through {
+                            (succs[0], succs[1])
+                        } else {
+                            (succs[1], succs[0])
+                        }
                     } else {
-                        // Generic if/br_if: succs[0] = then, succs[1] = else
-                        (succs[0], succs[1])
+                        // br_if: TRUE = branch target (non-fall-through),
+                        // FALSE = fall-through (bid+1).
+                        let fall_through = bid + 1;
+                        if succs[0] == fall_through {
+                            (succs[1], succs[0])
+                        } else {
+                            (succs[0], succs[1])
+                        }
                     };
                     let then_args = self.collect_branch_args(then_bid, var_stacks);
                     let else_args = self.collect_branch_args(else_bid, var_stacks);
