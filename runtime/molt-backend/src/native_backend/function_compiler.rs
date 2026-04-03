@@ -14963,7 +14963,16 @@ impl SimpleBackend {
                     }
                 }
                 "loop_start" => {
-                    // raw_int_shadow preserved across loop iterations (LuaJIT-style)
+                    // Clear Value-based raw_int_shadow entries at loop boundaries.
+                    // Values produced by arithmetic merge phis (iadd overflow guard)
+                    // are block-local Cranelift Values that become stale across outer
+                    // loop iterations in nested loops.  Only Variable-backed shadows
+                    // (raw_int_shadow_vars) survive correctly through SSA phi resolution.
+                    //
+                    // Retain: entries backed by raw_int_shadow_vars (they use use_var).
+                    // Clear: all others (they hold stale merge-block Values).
+                    raw_int_shadow.retain(|name, _| raw_int_shadow_vars.contains_key(name));
+
                     let indexed_loop_follows = loop_start_has_index_prelude(&func_ir.ops, op_idx);
                     if indexed_loop_follows {
                         // Indexed loops may carry a constant-materialization
