@@ -176,7 +176,13 @@ fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
 // Reachability
 // ---------------------------------------------------------------------------
 
-/// Collect the set of reachable BlockIds via DFS from the entry block.
+/// Collect the set of BlockIds that must survive DCE.
+///
+/// Starts from the entry block and also seeds traversal with loop-structural
+/// blocks recorded in `loop_roles`. Lowering back to SimpleIR still depends on
+/// the full structural loop region, not just the loop-end/header markers
+/// themselves, so descendants reachable from preserved loop-role blocks must
+/// survive as well.
 ///
 /// Also includes exception handler blocks that are reachable via implicit
 /// `check_exception` edges (their target label ID maps back to a BlockId
@@ -184,6 +190,11 @@ fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
 fn reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
     let mut visited: HashSet<BlockId> = HashSet::new();
     let mut stack: Vec<BlockId> = vec![func.entry_block];
+    for bid in func.loop_roles.keys().copied() {
+        if bid != func.entry_block {
+            stack.push(bid);
+        }
+    }
 
     // Build reverse label map: original_label_id → BlockId
     // so we can follow check_exception target references.
