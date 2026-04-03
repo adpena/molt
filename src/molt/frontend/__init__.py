@@ -1061,6 +1061,7 @@ class ClassInfo(TypedDict, total=False):
 class FuncInfo(TypedDict):
     params: list[str]
     param_types: list[str]  # type hints from annotations ("int", "float", "Any", ...)
+    return_hint: str | None
     ops: list[MoltOp]
 
 
@@ -1172,7 +1173,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._module_pressure_function_count = 0
         self._module_pressure_total_ops = 0
         self.funcs_map: dict[str, FuncInfo] = {
-            "molt_main": {"params": [], "ops": self._new_tracked_ops()}
+            "molt_main": {
+                "params": [],
+                "param_types": [],
+                "return_hint": None,
+                "ops": self._new_tracked_ops(),
+            }
         }
         self._module_pressure_funcs_map_ref = self.funcs_map
         self.current_func_name: str = "molt_main"
@@ -1645,6 +1651,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.funcs_map[symbol] = FuncInfo(
             params=[_MOLT_MODULE_CHUNK_PARAM],
             param_types=[],
+            return_hint=None,
             ops=self._new_tracked_ops(count_function=True),
         )
         self.module_chunk_symbols.append(symbol)
@@ -2740,11 +2747,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.funcs_map[name] = FuncInfo(
                 params=params or [],
                 param_types=param_types or [],
+                return_hint=None,
                 ops=self._new_tracked_ops(count_function=True),
             )
         else:
             self.funcs_map[name]["params"] = params or []
             self.funcs_map[name]["param_types"] = param_types or []
+            self.funcs_map[name].setdefault("return_hint", None)
             self.funcs_map[name]["ops"].clear()
         self.current_func_name = name
         self.current_ops = self.funcs_map[name]["ops"]
@@ -3194,6 +3203,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "posonly": len(args.posonlyargs),
             "kwonly": len(args.kwonlyargs),
         }
+
+    def _normalized_return_hint(self, returns: ast.expr | None) -> str | None:
+        hint = self._annotation_to_hint(returns)
+        if hint and hint[:1] in {"'", '"'} and hint[-1:] == hint[:1]:
+            hint = hint[1:-1]
+        return hint
+
+    def _function_result_hint(self, func_symbol: str) -> str:
+        info = self.funcs_map.get(func_symbol)
+        hint = info.get("return_hint") if info is not None else None
+        return hint or "Any"
 
     def _module_stable_funcs(self, node: ast.Module) -> set[str]:
         counts, funcs, dynamic = self._collect_module_assignments(node)
@@ -18976,6 +18996,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
             if target_info and str(target_info.type_hint).startswith("Func:"):
                 target_name = target_info.type_hint.split(":")[1]
+                res_hint = self._function_result_hint(target_name)
                 direct_ok = target_name in self.func_default_specs
                 if not direct_ok:
                     func_name = self.func_symbol_names.get(target_name)
@@ -18990,7 +19011,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         and func_id not in self.async_locals
                     ):
                         callee = self._emit_module_attr_get(func_id)
-                    res = MoltValue(self.next_var(), type_hint="int")
+                    res = MoltValue(self.next_var(), type_hint=res_hint)
                     self.emit(
                         MoltOp(
                             kind="CALL_BIND",
@@ -19011,7 +19032,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         and func_id not in self.async_locals
                     ):
                         callee = self._emit_module_attr_get(func_id)
-                    res = MoltValue(self.next_var(), type_hint="int")
+                    res = MoltValue(self.next_var(), type_hint=res_hint)
                     self.emit(
                         MoltOp(
                             kind="CALL_BIND",
@@ -19020,7 +19041,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     )
                     return res
-                res = MoltValue(self.next_var(), type_hint="int")
+                res = MoltValue(self.next_var(), type_hint=res_hint)
                 if self.is_async() or (
                     isinstance(node.func, ast.Name)
                     and node.func.id in self.stable_module_funcs
@@ -19061,8 +19082,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         callee.type_hint, str
                     ) and callee.type_hint.startswith("Func:"):
                         func_symbol = callee.type_hint.split(":", 1)[1]
+                        res_hint = self._function_result_hint(func_symbol)
                         if func_symbol not in self.func_default_specs:
-                            res = MoltValue(self.next_var(), type_hint="Any")
+                            res = MoltValue(self.next_var(), type_hint=res_hint)
                             callargs = self._emit_call_args_builder(node)
                             self.emit(
                                 MoltOp(
@@ -19077,7 +19099,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                         if args is None:
                             callargs = self._emit_call_args_builder(node)
-                            res = MoltValue(self.next_var(), type_hint="Any")
+                            res = MoltValue(self.next_var(), type_hint=res_hint)
                             self.emit(
                                 MoltOp(
                                     kind="CALL_BIND",
@@ -19086,7 +19108,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 )
                             )
                             return res
-                        res = MoltValue(self.next_var(), type_hint="Any")
+                        res = MoltValue(self.next_var(), type_hint=res_hint)
                         self.emit(
                             MoltOp(
                                 kind="CALL_GUARDED",
@@ -19100,8 +19122,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         callee.type_hint, str
                     ) and callee.type_hint.startswith("ClosureFunc:"):
                         func_symbol = callee.type_hint.split(":", 1)[1]
+                        res_hint = self._function_result_hint(func_symbol)
                         if func_symbol not in self.func_default_specs:
-                            res = MoltValue(self.next_var(), type_hint="Any")
+                            res = MoltValue(self.next_var(), type_hint=res_hint)
                             callargs = self._emit_call_args_builder(node)
                             self.emit(
                                 MoltOp(
@@ -19116,7 +19139,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                         if args is None:
                             callargs = self._emit_call_args_builder(node)
-                            res = MoltValue(self.next_var(), type_hint="Any")
+                            res = MoltValue(self.next_var(), type_hint=res_hint)
                             self.emit(
                                 MoltOp(
                                     kind="CALL_BIND",
@@ -19125,7 +19148,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                                 )
                             )
                             return res
-                        res = MoltValue(self.next_var(), type_hint="Any")
+                        res = MoltValue(self.next_var(), type_hint=res_hint)
                         self.emit(
                             MoltOp(
                                 kind="CALL_GUARDED",
@@ -19296,7 +19319,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 #   str(bytes, encoding=..., errors=...) → decoded str
                 kw_object = next((kw.value for kw in node.keywords if kw.arg == "object"), None)
                 kw_encoding = next((kw.value for kw in node.keywords if kw.arg == "encoding"), None)
-                kw_errors = next((kw.value for kw in node.keywords if kw.arg == "errors"), None)
                 known_kw = {"object", "encoding", "errors"}
                 has_unsupported_kw = any(kw.arg not in known_kw for kw in node.keywords if kw.arg is not None)
                 has_star_kw = any(kw.arg is None for kw in node.keywords)
@@ -27113,6 +27135,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # compilation entirely so the backend never sees duplicate function
             # declarations with incompatible signatures.
             return None
+        self.funcs_map.setdefault(
+            func_symbol,
+            FuncInfo(params=[], param_types=[], return_hint=None, ops=[]),
+        )
+        self.funcs_map[func_symbol]["return_hint"] = self._normalized_return_hint(
+            node.returns
+        )
         prev_func = self.current_func_name
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(node.args)
         posonly_names = [arg.arg for arg in posonly]
@@ -27607,6 +27636,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         func_symbol = self._lambda_symbol()
         qualname = self._qualname_for_def("<lambda>")
         self._record_func_default_specs(func_symbol, node.args)
+        self.funcs_map.setdefault(
+            func_symbol,
+            FuncInfo(params=[], param_types=[], return_hint=None, ops=[]),
+        )
+        self.funcs_map[func_symbol]["return_hint"] = None
         prev_func = self.current_func_name
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(node.args)
         posonly_names = [arg.arg for arg in posonly]
