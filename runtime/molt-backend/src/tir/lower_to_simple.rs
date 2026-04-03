@@ -637,6 +637,19 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     // Validate: every label referenced by check_exception/jump/br_if must
     // have a corresponding label op. If validation fails, it means the
     // TIR roundtrip lost a handler block's label mapping.
+    // Debug: dump sieve TIR output to file
+    if func.name.contains("sieve") && !func.name.contains("module") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::File::create("/tmp/sieve_lower_output.txt") {
+            for (i, op) in out.iter().enumerate() {
+                let _ = writeln!(f, "{:3}: {:25} out={:15} var={:15} val={:?} args={:?}",
+                    i, op.kind, op.out.as_deref().unwrap_or(""),
+                    op.var.as_deref().unwrap_or(""), op.value,
+                    op.args.as_ref().map(|a| a.join(",")));
+            }
+        }
+    }
+
     if !validate_labels(&out) {
         eprintln!(
             "[TIR] WARNING: label validation failed for {} — check_exception targets may be stale",
@@ -1569,7 +1582,12 @@ fn emit_structured_loop_region(
                 loop_consumed,
             );
             if let Some(inner_region) = loop_regions.get(body_bid) {
+                // Consume ALL blocks owned by the inner loop: body,
+                // guard chain, guard raise paths, and cond block.
                 inner_consumed.extend(inner_region.body_set.iter().copied());
+                inner_consumed.extend(inner_region.guard_chain.iter().copied());
+                inner_consumed.extend(inner_region.guard_raise_blocks.iter().copied());
+                inner_consumed.insert(inner_region.cond_block);
             }
             is_first_body = false;
             continue;
