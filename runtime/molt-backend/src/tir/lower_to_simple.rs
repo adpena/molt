@@ -2087,6 +2087,7 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
         | OpCode::Not | OpCode::And | OpCode::Or
         | OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor
         | OpCode::Shl | OpCode::Shr
+        | OpCode::Copy | OpCode::TypeGuard
     );
 
     // Look up the type of the first result value (most ops have 0 or 1 result).
