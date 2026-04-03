@@ -22143,16 +22143,12 @@ def _cache_fingerprint() -> str:
     rustflags = os.environ.get("RUSTFLAGS", "")
     hasher.update(f"rustc:{rustc_info}\n".encode("utf-8"))
     hasher.update(f"rustflags:{rustflags}\n".encode("utf-8"))
-    # Include the backend binary's content hash so that recompilation with
-    # different TIR/optimisation settings invalidates the stdlib cache even
-    # when source files haven't changed.
-    backend_bin = _backend_bin_path(root, "release-fast")
-    if backend_bin.exists():
-        try:
-            hasher.update(hashlib.sha256(backend_bin.read_bytes()).digest())
-        except OSError:
-            pass
-    # Include TIR opt setting — different TIR configs produce different object code.
+    # TIR setting affects codegen output — different TIR configs need
+    # different caches. Source file hashing (below) already catches
+    # backend code changes. We intentionally do NOT hash the backend
+    # binary itself — that over-invalidates on every incremental
+    # rebuild even without source changes, destroying the user's
+    # cached binaries and causing 30s+ cold starts.
     tir_opt = os.environ.get("MOLT_TIR_OPT", "")
     hasher.update(f"tir_opt:{tir_opt}\n".encode("utf-8"))
     seen: set[Path] = set()
