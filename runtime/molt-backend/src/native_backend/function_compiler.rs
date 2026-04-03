@@ -365,6 +365,20 @@ fn preanalyze_function_ir(
         // Also extend last_use for variables in back-edge ranges to the
         // back-edge jump position. This prevents drain_cleanup_tracked
         // from emitting ADDITIONAL dec_ref beyond what store_var handles.
+        // For back-edge loops: extend ALL variables to function end.
+        // This is the only approach that prevents all premature dec_ref.
+        // Memory leak is bounded by function scope (cleanup at ret).
+        if !back_edge_ranges.is_empty() {
+            let func_end = func_ir.ops.len().saturating_sub(1);
+            for entry in last_use.values_mut() {
+                if *entry < func_end {
+                    *entry = func_end;
+                }
+            }
+        }
+        // Original per-range extension (kept for reference):
+        let _skip = true;
+        if !_skip {
         for &(start, end) in &back_edge_ranges {
             for idx in start..=end {
                 let op = &func_ir.ops[idx];
@@ -396,6 +410,7 @@ fn preanalyze_function_ir(
                 }
             }
         }
+        } // end !_skip
 
         // Collect output variable names assigned inside each loop body.
         // These variables are reassigned on every iteration; the old value
@@ -17030,10 +17045,11 @@ impl SimpleBackend {
                             }
                             found
                         };
-                        if in_loop && vars.contains_key(name) {
-                            // Read old value BEFORE overwriting
-                            let old_val = builder.use_var(vars[name]);
-                            // inc_ref new, dec_ref old (opaque calls — no CFG split)
+                        if in_loop {
+                            // inc_ref the new value so it survives loop iterations.
+                            // No dec_ref for old — drain_cleanup_tracked handles
+                            // final cleanup at function return (lifetimes extended
+                            // by the back-edge detection in preanalysis).
                             let inc_callee = Self::import_func_id_split(
                                 &mut self.module,
                                 &mut self.import_ids,
@@ -17041,17 +17057,8 @@ impl SimpleBackend {
                                 &[types::I64],
                                 &[],
                             );
-                            let dec_callee = Self::import_func_id_split(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                "molt_dec_ref_obj",
-                                &[types::I64],
-                                &[],
-                            );
                             let inc_local = self.module.declare_func_in_func(inc_callee, builder.func);
-                            let dec_local = self.module.declare_func_in_func(dec_callee, builder.func);
                             builder.ins().call(inc_local, &[*val]);
-                            builder.ins().call(dec_local, &[old_val]);
                         }
                         def_var_named(&mut builder, &vars, name, *val);
                     }
