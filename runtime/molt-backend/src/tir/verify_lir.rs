@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::blocks::BlockId;
 use super::lir::{LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
-use super::ops::OpCode;
+use super::ops::{AttrValue, OpCode};
 use super::types::TirType;
 use super::values::ValueId;
 
@@ -302,6 +302,10 @@ fn verify_ops(
             match op.tir_op.opcode {
                 OpCode::BoxVal => verify_box_op(*bid, op_index, op, values, errors),
                 OpCode::UnboxVal => verify_unbox_op(*bid, op_index, op, values, errors),
+                OpCode::Add | OpCode::Sub | OpCode::Mul => {
+                    verify_checked_i64_arithmetic(*bid, op_index, op, errors)
+                }
+                OpCode::CallBuiltin => verify_truthy_materialization(*bid, op_index, op, errors),
                 _ => {}
             }
         }
@@ -342,6 +346,99 @@ fn verify_op_surface(bid: BlockId, op_index: usize, op: &LirOp, errors: &mut Vec
     }
 }
 
+fn verify_checked_i64_arithmetic(
+    bid: BlockId,
+    op_index: usize,
+    op: &LirOp,
+    errors: &mut Vec<LirVerifyError>,
+) {
+    let checked = matches!(
+        op.tir_op.attrs.get("lir.checked_overflow"),
+        Some(AttrValue::Bool(true))
+    );
+    if !checked {
+        return;
+    }
+    if op.result_values.len() != 3 {
+        errors.push(LirVerifyError {
+            block: Some(bid),
+            op_index: Some(op_index),
+            message: format!(
+                "checked i64 arithmetic requires 3 results, found {}",
+                op.result_values.len()
+            ),
+        });
+        return;
+    }
+    let main = &op.result_values[0];
+    let overflow_box = &op.result_values[1];
+    let overflow_flag = &op.result_values[2];
+    if main.ty != TirType::I64 || main.repr != LirRepr::I64 {
+        errors.push(LirVerifyError {
+            block: Some(bid),
+            op_index: Some(op_index),
+            message: format!(
+                "checked i64 arithmetic main result must be I64/I64, found {:?}/{:?}",
+                main.ty, main.repr
+            ),
+        });
+    }
+    if overflow_box.ty != TirType::DynBox || overflow_box.repr != LirRepr::DynBox {
+        errors.push(LirVerifyError {
+            block: Some(bid),
+            op_index: Some(op_index),
+            message: format!(
+                "checked i64 arithmetic overflow box must be DynBox/DynBox, found {:?}/{:?}",
+                overflow_box.ty, overflow_box.repr
+            ),
+        });
+    }
+    if overflow_flag.ty != TirType::Bool || overflow_flag.repr != LirRepr::Bool1 {
+        errors.push(LirVerifyError {
+            block: Some(bid),
+            op_index: Some(op_index),
+            message: format!(
+                "checked i64 arithmetic overflow flag must be Bool/Bool1, found {:?}/{:?}",
+                overflow_flag.ty, overflow_flag.repr
+            ),
+        });
+    }
+}
+
+fn verify_truthy_materialization(
+    bid: BlockId,
+    op_index: usize,
+    op: &LirOp,
+    errors: &mut Vec<LirVerifyError>,
+) {
+    let truthy = matches!(
+        op.tir_op.attrs.get("lir.truthy_cond"),
+        Some(AttrValue::Bool(true))
+    );
+    if !truthy {
+        return;
+    }
+    if op.tir_op.operands.len() != 1 || op.result_values.len() != 1 {
+        errors.push(LirVerifyError {
+            block: Some(bid),
+            op_index: Some(op_index),
+            message: "truthiness materialization requires one operand and one result".to_string(),
+        });
+        return;
+    }
+    let result = &op.result_values[0];
+    if result.ty != TirType::Bool || result.repr != LirRepr::Bool1 {
+        errors.push(LirVerifyError {
+            block: Some(bid),
+            op_index: Some(op_index),
+            message: format!(
+                "truthiness materialization must produce Bool/Bool1, found {:?}/{:?}",
+                result.ty, result.repr
+            ),
+        });
+    }
+}
+
 fn verify_box_op(
     bid: BlockId,
     op_index: usize,
@@ -358,12 +455,12 @@ fn verify_box_op(
         return;
     }
     let result = &op.result_values[0];
-    if result.repr != LirRepr::DynBox || result.ty != TirType::DynBox {
+    if result.repr != LirRepr::DynBox || !matches!(result.ty, TirType::DynBox | TirType::Box(_)) {
         errors.push(LirVerifyError {
             block: Some(bid),
             op_index: Some(op_index),
             message: format!(
-                "box op must produce DynBox/DynBox, found {:?}/{:?}",
+                "box op must produce Box(_) or DynBox with DynBox repr, found {:?}/{:?}",
                 result.ty, result.repr
             ),
         });
@@ -403,12 +500,14 @@ fn verify_unbox_op(
         });
     }
     match values.get(&op.tir_op.operands[0]) {
-        Some(def) if def.value.repr == LirRepr::DynBox && def.value.ty == TirType::DynBox => {}
+        Some(def)
+            if def.value.repr == LirRepr::DynBox
+                && matches!(def.value.ty, TirType::DynBox | TirType::Box(_)) => {}
         Some(def) => errors.push(LirVerifyError {
             block: Some(bid),
             op_index: Some(op_index),
             message: format!(
-                "unbox op requires DynBox operand, found {:?}/{:?}",
+                "unbox op requires Box(_) or DynBox operand with DynBox repr, found {:?}/{:?}",
                 def.value.ty, def.value.repr
             ),
         }),

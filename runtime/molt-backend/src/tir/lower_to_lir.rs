@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 
-use super::blocks::Terminator;
+use super::blocks::{Terminator, TirBlock};
 use super::function::TirFunction;
 use super::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
-use super::ops::{AttrValue, OpCode, TirOp};
+use super::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use super::type_refine::{extract_type_map, refine_types};
 use super::types::TirType;
 use super::values::{TirValue, ValueId};
@@ -16,19 +16,16 @@ pub fn lower_function_to_lir(func: &TirFunction) -> LirFunction {
     let type_map = extract_type_map(&refined);
     let mut allocator = ValueIdAllocator::new(refined.next_value);
 
-    let blocks = refined
-        .blocks
-        .iter()
-        .map(|(bid, block)| {
-            (
-                *bid,
-                LirBlock {
-                    id: block.id,
-                    args: lower_block_args(&block.args),
-                    ops: lower_block_ops(block.ops.as_slice(), &type_map, &mut allocator),
-                    terminator: lower_terminator(&block.terminator),
-                },
-            )
+    let mut block_ids: Vec<_> = refined.blocks.keys().copied().collect();
+    block_ids.sort_by_key(|bid| bid.0);
+    let blocks = block_ids
+        .into_iter()
+        .map(|bid| {
+            let block = refined
+                .blocks
+                .get(&bid)
+                .expect("sorted block id must exist");
+            (bid, lower_block(block, &type_map, &mut allocator))
         })
         .collect();
 
@@ -55,6 +52,21 @@ pub fn lower_block_args(args: &[TirValue]) -> Vec<LirValue> {
         .collect()
 }
 
+fn lower_block(
+    block: &TirBlock,
+    type_map: &HashMap<ValueId, TirType>,
+    allocator: &mut ValueIdAllocator,
+) -> LirBlock {
+    let mut ops = lower_block_ops(block.ops.as_slice(), type_map, allocator);
+    let terminator = lower_terminator(&block.terminator, type_map, allocator, &mut ops);
+    LirBlock {
+        id: block.id,
+        args: lower_block_args(&block.args),
+        ops,
+        terminator,
+    }
+}
+
 fn lower_block_ops(
     ops: &[TirOp],
     type_map: &HashMap<ValueId, TirType>,
@@ -72,6 +84,12 @@ fn lower_op(
 ) -> LirOp {
     if lowers_to_checked_i64_arithmetic(op, type_map) {
         return lower_checked_i64_arithmetic(op, type_map, allocator);
+    }
+    if op.opcode == OpCode::BoxVal {
+        return lower_box_op(op, type_map);
+    }
+    if op.opcode == OpCode::UnboxVal {
+        return lower_unbox_op(op, type_map);
     }
 
     LirOp {
@@ -126,6 +144,57 @@ fn lower_checked_i64_arithmetic(
     }
 }
 
+fn lower_box_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -> LirOp {
+    let operand_ty = op
+        .operands
+        .first()
+        .and_then(|id| type_map.get(id))
+        .cloned()
+        .unwrap_or(TirType::DynBox);
+    let result_ty = op
+        .results
+        .first()
+        .and_then(|id| type_map.get(id))
+        .cloned()
+        .unwrap_or_else(|| TirType::Box(Box::new(operand_ty)));
+    let result_id = op.results[0];
+    LirOp {
+        tir_op: op.clone(),
+        result_values: vec![LirValue {
+            id: result_id,
+            ty: result_ty,
+            repr: LirRepr::DynBox,
+        }],
+    }
+}
+
+fn lower_unbox_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -> LirOp {
+    let operand_ty = op
+        .operands
+        .first()
+        .and_then(|id| type_map.get(id))
+        .cloned()
+        .unwrap_or(TirType::DynBox);
+    let result_ty = op
+        .results
+        .first()
+        .and_then(|id| type_map.get(id))
+        .cloned()
+        .unwrap_or_else(|| match operand_ty {
+            TirType::Box(inner) => inner.as_ref().clone(),
+            _ => TirType::DynBox,
+        });
+    let result_id = op.results[0];
+    LirOp {
+        tir_op: op.clone(),
+        result_values: vec![LirValue {
+            id: result_id,
+            repr: LirRepr::for_type(&result_ty),
+            ty: result_ty,
+        }],
+    }
+}
+
 fn lir_value_from_type_map(id: ValueId, type_map: &HashMap<ValueId, TirType>) -> LirValue {
     let ty = type_map.get(&id).cloned().unwrap_or(TirType::DynBox);
     LirValue {
@@ -135,7 +204,12 @@ fn lir_value_from_type_map(id: ValueId, type_map: &HashMap<ValueId, TirType>) ->
     }
 }
 
-fn lower_terminator(terminator: &Terminator) -> LirTerminator {
+fn lower_terminator(
+    terminator: &Terminator,
+    type_map: &HashMap<ValueId, TirType>,
+    allocator: &mut ValueIdAllocator,
+    ops: &mut Vec<LirOp>,
+) -> LirTerminator {
     match terminator {
         Terminator::Branch { target, args } => LirTerminator::Branch {
             target: *target,
@@ -148,7 +222,7 @@ fn lower_terminator(terminator: &Terminator) -> LirTerminator {
             else_block,
             else_args,
         } => LirTerminator::CondBranch {
-            cond: *cond,
+            cond: materialize_branch_condition(*cond, type_map, allocator, ops),
             then_block: *then_block,
             then_args: then_args.clone(),
             else_block: *else_block,
@@ -170,6 +244,41 @@ fn lower_terminator(terminator: &Terminator) -> LirTerminator {
         },
         Terminator::Unreachable => LirTerminator::Unreachable,
     }
+}
+
+fn materialize_branch_condition(
+    cond: ValueId,
+    type_map: &HashMap<ValueId, TirType>,
+    allocator: &mut ValueIdAllocator,
+    ops: &mut Vec<LirOp>,
+) -> ValueId {
+    if matches!(type_map.get(&cond), Some(TirType::Bool)) {
+        return cond;
+    }
+
+    let result_id = allocator.fresh();
+    let mut attrs = AttrDict::new();
+    attrs.insert(
+        "callee".to_string(),
+        AttrValue::Str("molt_is_truthy".to_string()),
+    );
+    attrs.insert("lir.truthy_cond".to_string(), AttrValue::Bool(true));
+    ops.push(LirOp {
+        tir_op: TirOp {
+            dialect: super::ops::Dialect::Molt,
+            opcode: OpCode::CallBuiltin,
+            operands: vec![cond],
+            results: vec![result_id],
+            attrs,
+            source_span: None,
+        },
+        result_values: vec![LirValue {
+            id: result_id,
+            ty: TirType::Bool,
+            repr: LirRepr::Bool1,
+        }],
+    });
+    result_id
 }
 
 struct ValueIdAllocator {
