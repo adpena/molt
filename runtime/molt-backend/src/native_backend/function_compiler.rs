@@ -366,28 +366,32 @@ fn preanalyze_function_ir(
                     }
                 }
             }
-            // For each back-edge, extend ALL variable lifetimes whose current
-            // last_use falls within the loop range. This prevents dec_ref from
-            // firing inside the loop body for values that survive to the next
-            // iteration via block parameters.
+            // When a back-edge exists (TIR-generated loop), extend ALL
+            // variable lifetimes to at least the back-edge jump position.
+            // This prevents drain_cleanup_tracked from emitting dec_ref
+            // for values that are still live in the next loop iteration.
             //
-            // This is conservative (some variables may be extended unnecessarily)
-            // but correct. The only cost is delayed cleanup — freed at function
-            // return instead of at the loop back-edge.
+            // Why ALL variables, not just loop-body variables: the dec_ref
+            // at the back-edge point can fire for variables defined BEFORE
+            // the loop (e.g., the cell list created at function entry).
+            // These variables are passed as Cranelift block parameters to
+            // the loop header, so they must survive the entire loop.
+            let mut max_backedge = 0usize;
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 if matches!(op.kind.as_str(), "jump" | "br_if") {
                     if let Some(target_id) = op.value {
                         if let Some(&target_pos) = label_pos.get(&target_id) {
-                            if target_pos < idx {
-                                // Back-edge found. Extend ALL variables whose last_use
-                                // is within [target_pos..idx] to survive until idx.
-                                for entry in last_use.values_mut() {
-                                    if *entry >= target_pos && *entry < idx {
-                                        *entry = idx;
-                                    }
-                                }
+                            if target_pos < idx && idx > max_backedge {
+                                max_backedge = idx;
                             }
                         }
+                    }
+                }
+            }
+            if max_backedge > 0 {
+                for entry in last_use.values_mut() {
+                    if *entry < max_backedge {
+                        *entry = max_backedge;
                     }
                 }
             }
