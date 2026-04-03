@@ -3099,6 +3099,27 @@ impl SimpleBackend {
                                     &tir_func, &type_map,
                                 );
                                 if !crate::tir::lower_to_simple::validate_labels(&ops) {
+                                    // Dump dangling labels to file for debugging.
+                                    if func_name.contains("sieve") && !func_name.contains("module") {
+                                        use std::io::Write;
+                                        if let Ok(mut f) = std::fs::File::create("/tmp/sieve_tir_ops.txt") {
+                                            let mut defined = std::collections::HashSet::new();
+                                            for op in &ops {
+                                                if matches!(op.kind.as_str(), "label" | "state_label") {
+                                                    if let Some(id) = op.value { defined.insert(id); }
+                                                }
+                                            }
+                                            for (i, op) in ops.iter().enumerate() {
+                                                let dangling = matches!(op.kind.as_str(), "jump" | "br_if" | "check_exception")
+                                                    && op.value.map(|id| !defined.contains(&id)).unwrap_or(false);
+                                                let _ = writeln!(f, "{}{:3}: {:25} out={:15} var={:15} val={:?} args={:?}",
+                                                    if dangling { ">>>" } else { "   " },
+                                                    i, op.kind, op.out.as_deref().unwrap_or(""),
+                                                    op.var.as_deref().unwrap_or(""), op.value,
+                                                    op.args.as_ref().map(|a| a.join(",")));
+                                            }
+                                        }
+                                    }
                                     return None;
                                 }
 
