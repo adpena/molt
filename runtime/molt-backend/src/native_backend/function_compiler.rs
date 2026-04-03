@@ -5514,7 +5514,6 @@ impl SimpleBackend {
                 }
                 "list_pop" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    // Invalidate cached data_ptr/len — pop changes length.
                     list_int_data_cache.remove(&args[0]);
                     list_int_len_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
@@ -6820,6 +6819,7 @@ impl SimpleBackend {
                                 builder.set_cold_block(slow_block);
                                 let merge_block = builder.create_block();
                                 builder.append_block_param(merge_block, types::I64); // boxed result
+                                builder.append_block_param(merge_block, types::I64); // raw result (valid only on fast path)
                                 builder.ins().brif(in_bounds, fast_block, &[], slow_block, &[]);
 
                                 // Fast path: direct load
@@ -6829,14 +6829,7 @@ impl SimpleBackend {
                                 let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
                                 let raw_result = builder.ins().load(types::I64, MemFlags::trusted(), elem_addr, 0);
                                 let boxed_res = box_int_value(&mut builder, raw_result, &nbc);
-                                // def_var the shadow on fast path only — the raw
-                                // value is correct here.  Slow path does NOT update.
-                                if let Some(ref out__) = op.out {
-                                    if let Some(&shadow_var) = raw_int_shadow.get(out__) {
-                                        builder.def_var(shadow_var, raw_result);
-                                    }
-                                }
-                                jump_block(&mut builder, merge_block, &[boxed_res]);
+                                jump_block(&mut builder, merge_block, &[boxed_res, raw_result]);
 
                                 // Slow path: safe runtime call (handles negative index, IndexError)
                                 builder.switch_to_block(slow_block);
@@ -6851,22 +6844,22 @@ impl SimpleBackend {
                                 let local_callee = self.module.declare_func_in_func(callee, builder.func);
                                 let call = builder.ins().call(local_callee, &[*obj, *idx]);
                                 let slow_res = builder.inst_results(call)[0];
-                                jump_block(&mut builder, merge_block, &[slow_res]);
+                                let zero_raw = builder.ins().iconst(types::I64, 0);
+                                jump_block(&mut builder, merge_block, &[slow_res, zero_raw]);
 
                                 // Merge
                                 builder.switch_to_block(merge_block);
                                 seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                                 let merged_boxed = builder.block_params(merge_block)[0];
+                                let merged_raw = builder.block_params(merge_block)[1];
                                 if let Some(ref out__) = op.out {
                                     def_var_named(&mut builder, &vars, out__, merged_boxed);
-                                    // Do NOT propagate shadow on the merged path.
-                                    // The slow path (negative index, out-of-bounds)
-                                    // produces a NaN-boxed result whose raw value is
-                                    // unknown.  Propagating a 0 sentinel would cause
-                                    // downstream comparisons to use 0 instead of the
-                                    // real value.  The shadow Variable retains its
-                                    // prior def_var'd value (from the last iteration
-                                    // or the entry-block zero), which is harmless.
+                                    // Propagate raw shadow — on fast path this is the true
+                                    // unboxed value; on slow path it's 0 (which is a valid
+                                    // i64 and will produce correct but slower downstream ops).
+                                    if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                        builder.def_var(shadow_var, merged_raw);
+                                    }
                                 }
                             } else {
                                 // Fallback: NaN-boxed index, call the standard variant.
