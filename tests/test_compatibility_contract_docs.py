@@ -17,6 +17,22 @@ def test_readme_declares_parity_target_and_no_host_python_fallback() -> None:
     assert "runtime monkeypatching" in text
 
 
+def test_readme_links_to_getting_started_and_status_and_drops_internal_sections() -> None:
+    text = _read_text("README.md")
+    assert "docs/getting-started.md" in text
+    assert "docs/spec/STATUS.md" in text
+    assert "Optimization Program Kickoff" not in text
+    assert "Capabilities (Current)" not in text
+    assert "Limitations (Current)" not in text
+
+
+def test_getting_started_exists_with_install_verify_and_first_run() -> None:
+    text = _read_text("docs/getting-started.md")
+    assert "molt doctor --json" in text
+    assert "examples/hello.py" in text
+    assert "Getting Started" in text
+
+
 def test_status_and_roadmap_keep_same_core_contract() -> None:
     for rel_path in ("docs/spec/STATUS.md", "ROADMAP.md"):
         text = _read_text(rel_path)
