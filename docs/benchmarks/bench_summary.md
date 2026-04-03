@@ -1,7 +1,5 @@
 # Molt Bench Summary
 
-Generated: 2026-04-03T18:03:19Z
-
 ## Inputs
 - Native: `bench/results/full_native_baseline_20260320.json`; git_rev=72e5368164a59fd7cedb6073af82fa2796a6430a; created_at=2026-03-21T02:52:46.950072+00:00; system=cpu_count=18, load_avg=[12.78857421875, 14.8154296875, 11.0595703125], machine=arm64, platform=macOS-26.3.1-arm64-arm-64bit, python=3.12.13
 - WASM: `bench/results/bench_wasm_20260328_102249.json`; git_rev=2b80788b94edbe8a99b883e09e78decbf798ed45; created_at=2026-03-28T10:22:49.339021+00:00; system=cpu_count=18, load_avg=[5.90234375, 5.3505859375, 4.70947265625], machine=arm64, platform=macOS-26.4-arm64-arm-64bit, python=3.12.13
