@@ -1513,6 +1513,13 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             return; // Already freed — no-op
         }
         let prev = header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+        if type_id == TYPE_ID_OBJECT && std::env::var("MOLT_DEBUG_OBJECT_RC").is_ok() {
+            if prev == 1 {
+                eprintln!("[OBJECT DEC→0 FREE] ptr=0x{:x}", ptr as usize);
+            } else {
+                eprintln!("[OBJECT DEC {}→{}] ptr=0x{:x}", prev, prev.saturating_sub(1), ptr as usize);
+            }
+        }
         // Debug: trace bigint refcount decrements
         if type_id == TYPE_ID_BIGINT && std::env::var("MOLT_DEBUG_BIGINT_RC").is_ok() {
             eprintln!(
