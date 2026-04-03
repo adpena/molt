@@ -1548,7 +1548,7 @@ fn main() -> io::Result<()> {
                 if have_entry_module && stdlib_path.exists() {
                     // Cached stdlib exists — only reuse it when the CLI and
                     // backend agree on the exact stdlib IR identity.
-                    let total = ir.functions.len();
+                    let _total = ir.functions.len();
                     let current_stdlib_count = ir
                         .functions
                         .iter()
