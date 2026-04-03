@@ -5,7 +5,6 @@ from pathlib import Path
 
 
 def build_molt_conformance_env(project_root: Path, session_id: str) -> dict[str, str]:
-    project_root = project_root.resolve()
     target_dir = project_root / "target"
     tmp_dir = project_root / "tmp"
     return {
@@ -51,11 +50,11 @@ def load_molt_conformance_suite(
     return selected
 
 
-def write_molt_conformance_summary(
-    path: Path, summary: dict[str, object]
-) -> None:
+def write_molt_conformance_summary(path: Path, summary: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(summary, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(summary, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+    )
 
 
 def conformance_exit_code(summary: dict[str, object]) -> int:

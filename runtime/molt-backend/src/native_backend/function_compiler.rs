@@ -916,23 +916,14 @@ impl SimpleBackend {
                 }
             }
             let zero = builder.ins().iconst(types::I64, 0);
-            // Pre-declare shadow Variables for store_var targets (loop variables).
+            // Pre-declare shadow Variables ONLY for store_var targets (loop variables).
+            // These need phi resolution across loop back-edges.  SSA-internal
+            // outputs (const_int, arithmetic) don't cross block boundaries and
+            // are handled by lazy declaration at the def_var site.
             for name in &int_store_targets {
                 let v = builder.declare_var(types::I64);
                 builder.def_var(v, zero);
                 raw_int_shadow.insert(name.clone(), v);
-            }
-            // Also pre-declare for SSA output names of int-producing ops.
-            // This covers const_int, const_bool, arithmetic results, and
-            // load_index results that feed into downstream consumers.
-            for op in &func_ir.ops {
-                if let Some(ref out) = op.out {
-                    if int_valued_outputs.contains(out) && !raw_int_shadow.contains_key(out) {
-                        let v = builder.declare_var(types::I64);
-                        builder.def_var(v, zero);
-                        raw_int_shadow.insert(out.clone(), v);
-                    }
-                }
             }
         }
 
@@ -1580,7 +1571,9 @@ impl SimpleBackend {
                                 || op.type_hint.as_deref() == Some("bool")
                             {
                                 let raw_val = builder.ins().iconst(types::I64, val);
-                                // DISABLED: raw_int_shadow.insert(out__.clone(), raw_val);
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, raw_val);
+                                }
                             }
                         }
                     } else {
@@ -1651,7 +1644,9 @@ impl SimpleBackend {
                         // Bool constants are 0/1 — add to raw_int_shadow so
                         // list_int setitem can use them without NaN-unboxing.
                         let raw = builder.ins().iconst(types::I64, val);
-                        // DISABLED: raw_int_shadow.insert(out__.clone(), raw);
+                        if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                            builder.def_var(shadow_var, raw);
+                        }
                     }
                 }
                 "const_none" => {
@@ -1864,8 +1859,8 @@ impl SimpleBackend {
                         // If result overflows 47-bit inline range, fall to slow path.
                         let lhs_name = &args[0];
                         let rhs_name = &args[1];
-                        let lhs_raw = raw_int_shadow.get(lhs_name).copied();
-                        let rhs_raw = raw_int_shadow.get(rhs_name).copied();
+                        let lhs_raw = raw_int_shadow.get(lhs_name).map(|&v| builder.use_var(v));
+                        let rhs_raw = raw_int_shadow.get(rhs_name).map(|&v| builder.use_var(v));
 
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -1909,9 +1904,11 @@ impl SimpleBackend {
                             builder.switch_to_block(merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                             let merged_boxed = builder.block_params(merge_block)[0];
-                            let _merged_raw = builder.block_params(merge_block)[1];
+                            let merged_raw = builder.block_params(merge_block)[1];
                             if let Some(ref out__) = op.out {
-                                // // DISABLED: raw_int_shadow.insert(out__.clone(), merged_raw); // DISABLED: merged_raw is stale across loop iterations
+                                if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                    builder.def_var(shadow_var, merged_raw);
+                                }
                             }
                             merged_boxed
                         } else {
@@ -2058,8 +2055,8 @@ impl SimpleBackend {
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = raw_int_shadow[&args[0]];
-                        let rhs_val = raw_int_shadow[&args[1]];
+                        let lhs_val = builder.use_var(*raw_int_shadow.get(&args[0]).unwrap());
+                        let rhs_val = builder.use_var(*raw_int_shadow.get(&args[1]).unwrap());
                         let raw_result = builder.ins().iadd(lhs_val, rhs_val);
                         let fits_inline = int_value_fits_inline(&mut builder, raw_result);
                         let callee = Self::import_func_id_split(
@@ -2095,10 +2092,12 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
-                        let _merge_raw = builder.block_params(merge_block)[1];
+                        let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
-                            // // DISABLED: raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
+                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
+                                builder.def_var(shadow_var, merge_raw);
+                            }
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2683,8 +2682,8 @@ impl SimpleBackend {
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = raw_int_shadow[&args[0]];
-                        let rhs_val = raw_int_shadow[&args[1]];
+                        let lhs_val = builder.use_var(*raw_int_shadow.get(&args[0]).unwrap());
+                        let rhs_val = builder.use_var(*raw_int_shadow.get(&args[1]).unwrap());
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
                         let fits_inline = int_value_fits_inline(&mut builder, raw_result);
                         let callee = Self::import_func_id_split(
@@ -2720,10 +2719,12 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
-                        let _merge_raw = builder.block_params(merge_block)[1];
+                        let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
-                            // // DISABLED: raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
+                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
+                                builder.def_var(shadow_var, merge_raw);
+                            }
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -2867,8 +2868,8 @@ impl SimpleBackend {
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = raw_int_shadow[&args[0]];
-                        let rhs_val = raw_int_shadow[&args[1]];
+                        let lhs_val = builder.use_var(*raw_int_shadow.get(&args[0]).unwrap());
+                        let rhs_val = builder.use_var(*raw_int_shadow.get(&args[1]).unwrap());
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
                         let fits_inline = int_value_fits_inline(&mut builder, raw_result);
                         let callee = Self::import_func_id_split(
@@ -2904,10 +2905,12 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
-                        let _merge_raw = builder.block_params(merge_block)[1];
+                        let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
-                            // // DISABLED: raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
+                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
+                                builder.def_var(shadow_var, merge_raw);
+                            }
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -3076,8 +3079,8 @@ impl SimpleBackend {
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = raw_int_shadow[&args[0]];
-                        let rhs_val = raw_int_shadow[&args[1]];
+                        let lhs_val = builder.use_var(*raw_int_shadow.get(&args[0]).unwrap());
+                        let rhs_val = builder.use_var(*raw_int_shadow.get(&args[1]).unwrap());
                         let (raw_result, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -3112,10 +3115,12 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
-                        let _merge_raw = builder.block_params(merge_block)[1];
+                        let merge_raw = builder.block_params(merge_block)[1];
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, merge_res);
-                            // // DISABLED: raw_int_shadow.insert(out_name.clone(), merge_raw); // DISABLED: merge_raw is stale across loop iterations
+                            if let Some(&shadow_var) = raw_int_shadow.get(out_name) {
+                                builder.def_var(shadow_var, merge_raw);
+                            }
                         }
                         continue;
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
@@ -3252,8 +3257,8 @@ impl SimpleBackend {
                         && (op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int"))
                     {
                         // Raw chain: both operands already unboxed + overflow guard
-                        let lhs_val = raw_int_shadow[&args[0]];
-                        let rhs_val = raw_int_shadow[&args[1]];
+                        let lhs_val = builder.use_var(*raw_int_shadow.get(&args[0]).unwrap());
+                        let rhs_val = builder.use_var(*raw_int_shadow.get(&args[1]).unwrap());
                         let (raw_result, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -6759,7 +6764,8 @@ impl SimpleBackend {
                             //
                             // Requires raw_int_shadow index for bounds-checked inline path.
                             // Falls back to the safe runtime function otherwise.
-                            if let Some(&raw_idx) = raw_int_shadow.get(&args[1]) {
+                            if let Some(&shadow_var) = raw_int_shadow.get(&args[1]) {
+                                let raw_idx = builder.use_var(shadow_var);
                                 // Extract storage_ptr, data_ptr, len (cached across loop iterations).
                                 let (data_ptr, len_val) = {
                                     let dp = if let Some(&var) = list_int_data_cache.get(&args[0]) {
@@ -6836,13 +6842,15 @@ impl SimpleBackend {
                                 builder.switch_to_block(merge_block);
                                 seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                                 let merged_boxed = builder.block_params(merge_block)[0];
-                                let _merged_raw = builder.block_params(merge_block)[1];
+                                let merged_raw = builder.block_params(merge_block)[1];
                                 if let Some(ref out__) = op.out {
                                     def_var_named(&mut builder, &vars, out__, merged_boxed);
                                     // Propagate raw shadow — on fast path this is the true
                                     // unboxed value; on slow path it's 0 (which is a valid
                                     // i64 and will produce correct but slower downstream ops).
-                                    // // DISABLED: raw_int_shadow.insert(out__.clone(), merged_raw); // DISABLED: merged_raw is stale across loop iterations
+                                    if let Some(&shadow_var) = raw_int_shadow.get(out__) {
+                                        builder.def_var(shadow_var, merged_raw);
+                                    }
                                 }
                             } else {
                                 // Fallback: NaN-boxed index, call the standard variant.
@@ -6902,8 +6910,8 @@ impl SimpleBackend {
                     if op.container_type.as_deref() == Some("list_int") {
                         // Inline list[int] setitem with bounds check using
                         // ListIntStorage (#[repr(C)]): [data@0, len@8, cap@16].
-                        let raw_idx_opt = raw_int_shadow.get(&args[1]).copied();
-                        let raw_val_opt = raw_int_shadow.get(&args[2]).copied();
+                        let raw_idx_opt = raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v));
+                        let raw_val_opt = raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v));
                         if let (Some(raw_idx), Some(raw_val)) = (raw_idx_opt, raw_val_opt) {
                             // Extract storage_ptr, data_ptr, len (cached).
                             let (data_ptr, len_val) = {
@@ -7030,8 +7038,8 @@ impl SimpleBackend {
                     // - default: full dict/generic dispatch
                     if op.container_type.as_deref() == Some("list_int") {
                         // raw_int_shadow fast path for list_int dict_set
-                        let raw_key_opt = raw_int_shadow.get(&args[1]).copied();
-                        let raw_val_opt = raw_int_shadow.get(&args[2]).copied();
+                        let raw_key_opt = raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v));
+                        let raw_val_opt = raw_int_shadow.get(&args[2]).map(|&v| builder.use_var(v));
                         if let (Some(raw_key), Some(raw_val)) = (raw_key_opt, raw_val_opt) {
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
@@ -8764,8 +8772,8 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let lr = raw_int_shadow.get(&args[0]).copied();
-                    let rr = raw_int_shadow.get(&args[1]).copied();
+                    let lr = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v));
+                    let rr = raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v));
                     let res = if lr.is_some() && rr.is_some() {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lr.unwrap(), rr.unwrap());
                         box_bool_value(&mut builder, cmp, &nbc)
@@ -8854,8 +8862,8 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let lr = raw_int_shadow.get(&args[0]).copied();
-                    let rr = raw_int_shadow.get(&args[1]).copied();
+                    let lr = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v));
+                    let rr = raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v));
                     let res = if lr.is_some() && rr.is_some() {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr.unwrap(), rr.unwrap());
                         box_bool_value(&mut builder, cmp, &nbc)
@@ -8946,7 +8954,9 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if let (Some(&lr), Some(&rr)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
+                    let res = if let (Some(&lv), Some(&rv)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
+                        let lr = builder.use_var(lv);
+                        let rr = builder.use_var(rv);
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_float.unwrap_or(false) {
@@ -9029,7 +9039,9 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if let (Some(&lr), Some(&rr)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
+                    let res = if let (Some(&lv), Some(&rv)) = (raw_int_shadow.get(&args[0]), raw_int_shadow.get(&args[1])) {
+                        let lr = builder.use_var(lv);
+                        let rr = builder.use_var(rv);
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if op.fast_float.unwrap_or(false) {
@@ -9435,7 +9447,7 @@ impl SimpleBackend {
                     let res = if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
                         // For known ints, bool(x) is simply x != 0.
                         // Use raw shadow if available to skip unboxing.
-                        let int_val = raw_int_shadow.get(&args[0]).copied()
+                        let int_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
                             .unwrap_or_else(|| unbox_int(&mut builder, *val, &nbc));
                         let zero = builder.ins().iconst(types::I64, 0);
                         let is_nonzero = builder.ins().icmp(IntCC::NotEqual, int_val, zero);
@@ -9470,7 +9482,7 @@ impl SimpleBackend {
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let cond = if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
                         // Known int: inline unbox + compare, no function call.
-                        let raw_val = raw_int_shadow.get(&args[0]).copied()
+                        let raw_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
                             .unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op.type_hint.as_deref() == Some("bool") {
@@ -9509,7 +9521,7 @@ impl SimpleBackend {
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
                     let cond = if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
                         // Known int: inline unbox + compare, no function call.
-                        let raw_val = raw_int_shadow.get(&args[0]).copied()
+                        let raw_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
                             .unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else if op.type_hint.as_deref() == Some("bool") {
@@ -14237,24 +14249,9 @@ impl SimpleBackend {
                     }
                 }
                 "if" => {
-                    // Preserve raw_int_shadow across if-boundaries for
-                    // variables NOT defined inside the if/else body.
-                    // Only invalidate shadows for vars assigned in the branch.
-                    if let Some(&end_idx) = if_to_end_if.get(&op_idx) {
-                        let else_idx = if_to_else.get(&op_idx).copied();
-                        let body_start = op_idx + 1;
-                        let body_end = end_idx;
-                        let mut modified_vars: HashSet<String> = HashSet::new();
-                        for scan in body_start..body_end {
-                            if let Some(ref out_name) = func_ir.ops[scan].out {
-                                modified_vars.insert(out_name.clone());
-                            }
-                        }
-                        raw_int_shadow.retain(|k, _| !modified_vars.contains(k));
-                        let _ = else_idx; // suppress unused warning
-                    } else {
-                        raw_int_shadow.clear(); // fallback: no structural info
-                    }
+                    // Variable-backed shadows are phi-correct across branches —
+                    // use_var returns the merged value at any point.  No need to
+                    // clear or retain entries; the name→Variable mapping is static.
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
                     // Inline truthiness for bool/int types to avoid function call overhead.
@@ -14266,7 +14263,7 @@ impl SimpleBackend {
                     } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
                         // NaN-boxed int: unbox and check != 0.
                         // If we have a raw shadow, use that directly.
-                        let raw_val = raw_int_shadow.get(&args[0]).copied()
+                        let raw_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
                             .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else {
@@ -14427,7 +14424,7 @@ impl SimpleBackend {
                     });
                 }
                 "else" => {
-                    raw_int_shadow.clear();
+                    // Variable-backed shadows: no clear needed (phi-correct).
                     let frame = if_stack.last_mut().expect("No if on stack");
                     frame.then_terminal = is_block_filled;
                     if frame.phi_ops.is_empty() {
@@ -14559,7 +14556,7 @@ impl SimpleBackend {
                     frame.has_else = true;
                 }
                 "end_if" => {
-                    raw_int_shadow.clear();
+                    // Variable-backed shadows: no clear needed (phi-correct).
                     let mut frame = if_stack.pop().expect("No if on stack");
                     if frame.phi_ops.is_empty() {
                         let mut phi_ops: Vec<(String, String, String)> = Vec::new();
@@ -14989,15 +14986,9 @@ impl SimpleBackend {
                     }
                 }
                 "loop_start" => {
-                    // Clear ALL Value-based raw_int_shadow entries at loop boundaries.
-                    // Arithmetic merge phi Values (from iadd overflow guards) do NOT
-                    // participate in Cranelift's loop-header phi resolution — they
-                    // become stale after the first iteration.  Only Variable-backed
-                    // shadows (raw_int_shadow_vars, accessed via use_var in load_var)
-                    // correctly resolve across iterations.
-                    //
-                    // Clear everything: load_var will re-populate from Variables.
-                    raw_int_shadow.clear();
+                    // Variable-backed shadows are phi-correct across loop
+                    // back-edges — Cranelift inserts phis for Variables
+                    // automatically.  No clear needed.
 
                     let indexed_loop_follows = loop_start_has_index_prelude(&func_ir.ops, op_idx);
                     if indexed_loop_follows {
@@ -15313,7 +15304,7 @@ impl SimpleBackend {
                             builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
                         } else if cond_is_int_typed {
                             // NaN-boxed int: unbox and check != 0.
-                            let raw_val = raw_int_shadow.get(&args[0]).copied()
+                            let raw_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
                                 .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
@@ -15452,7 +15443,7 @@ impl SimpleBackend {
                             builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
                         } else if cond_is_int_typed {
                             // NaN-boxed int: unbox and check != 0.
-                            let raw_val = raw_int_shadow.get(&args[0]).copied()
+                            let raw_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
                                 .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
                             builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                         } else {
@@ -17118,7 +17109,7 @@ impl SimpleBackend {
                         builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
                     } else if op.fast_int.unwrap_or(false) || cond_type_hint == Some("int") {
                         // NaN-boxed int: unbox and check != 0.
-                        let raw_val = raw_int_shadow.get(&args[0]).copied()
+                        let raw_val = raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v))
                             .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
                     } else {
@@ -17332,12 +17323,12 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, name, *val);
                         // Propagate raw_int_shadow through store_var:
                         // Value-level (within this block) + Variable-level (across back-edges).
-                        if let Some(&raw) = raw_int_shadow.get(&args[0]) {
-                            // // DISABLED: raw_int_shadow.insert(name.to_string(), raw);
+                        if let Some(&src_var) = raw_int_shadow.get(&args[0]) {
+                            let raw_val = builder.use_var(src_var);
                             // def_var the pre-declared shadow Variable so it
                             // survives phi merges at loop back-edges.
-                            if let Some(&shadow_var) = raw_int_shadow_vars.get(name) {
-                                builder.def_var(shadow_var, raw);
+                            if let Some(&dst_var) = raw_int_shadow.get(name) {
+                                builder.def_var(dst_var, raw_val);
                             }
                         }
                     }
@@ -17353,17 +17344,13 @@ impl SimpleBackend {
                             .expect("load_var: var not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
-                            // Prefer Variable-backed shadow (survives phis across
-                            // loop back-edges) over stale Value-based shadow.
-                            if let Some(&shadow_var) = raw_int_shadow_vars.get(var_name.as_str()) {
-                                let raw_val = builder.use_var(shadow_var);
-                                // DISABLED: raw_int_shadow.insert(out_name.clone(), raw_val);
-                            } else if let Some(&raw) = raw_int_shadow.get(var_name.as_str()) {
-                            // // DISABLED: raw_int_shadow.insert(out_name.clone(), raw);
-                            // } else if is_typed_int {
-                            //     unbox_int seeding disabled — creates stale Values
-                            //     in loop contexts where the shadow doesn't participate
-                            //     in Cranelift's SSA phi resolution.
+                            // Propagate Variable-backed shadow from source var
+                            // to output name (survives phis across loop back-edges).
+                            if let Some(&src_var) = raw_int_shadow.get(var_name.as_str()) {
+                                let raw_val = builder.use_var(src_var);
+                                if let Some(&dst_var) = raw_int_shadow.get(out_name.as_str()) {
+                                    builder.def_var(dst_var, raw_val);
+                                }
                             }
                         }
                     } else if let Some(ref args) = op.args
@@ -17373,10 +17360,11 @@ impl SimpleBackend {
                             .expect("copy_var: src not found");
                         if let Some(ref out_name) = op.out {
                             def_var_named(&mut builder, &vars, out_name, *val);
-                            if let Some(&raw) = raw_int_shadow.get(&args[0]) {
-                            // // DISABLED: raw_int_shadow.insert(out_name.clone(), raw);
-                            // } else if is_typed_int {
-                            //     (same: disabled for loop safety)
+                            if let Some(&src_var) = raw_int_shadow.get(&args[0]) {
+                                let raw_val = builder.use_var(src_var);
+                                if let Some(&dst_var) = raw_int_shadow.get(out_name.as_str()) {
+                                    builder.def_var(dst_var, raw_val);
+                                }
                             }
                         }
                     }
