@@ -61,6 +61,12 @@ pub enum LirTerminator {
         else_block: BlockId,
         else_args: Vec<ValueId>,
     },
+    Switch {
+        value: ValueId,
+        cases: Vec<(i64, BlockId, Vec<ValueId>)>,
+        default: BlockId,
+        default_args: Vec<ValueId>,
+    },
     Return {
         values: Vec<ValueId>,
     },

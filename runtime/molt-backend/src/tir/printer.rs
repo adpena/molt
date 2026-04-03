@@ -309,6 +309,27 @@ fn print_lir_terminator(terminator: &LirTerminator) -> String {
             else_block,
             print_value_list(else_args)
         ),
+        LirTerminator::Switch {
+            value,
+            cases,
+            default,
+            default_args,
+        } => {
+            let cases = cases
+                .iter()
+                .map(|(case, block, args)| {
+                    format!("{case}: ^{}({})", block, print_value_list(args))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "switch {} [{}] default ^{}({})",
+                value,
+                cases,
+                default,
+                print_value_list(default_args)
+            )
+        }
         LirTerminator::Return { values } => format!("return {}", print_value_list(values)),
         LirTerminator::Unreachable => "unreachable".to_string(),
     }
