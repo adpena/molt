@@ -1196,6 +1196,7 @@ fn box_ptr_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) 
 /// Returns (data_ptr, in_bounds) — the caller must branch on in_bounds
 /// BEFORE loading/storing the element.
 #[cfg(feature = "native-backend")]
+#[allow(dead_code)]
 fn emit_list_int_bounds_check(
     builder: &mut FunctionBuilder,
     list_bits: Value,
@@ -3026,21 +3027,11 @@ impl SimpleBackend {
                                 && tmp_func.ops.iter().any(|op| op.kind == "loop_start")
                                 && tmp_func.ops.iter().any(|op| op.kind == "store_index")
                         };
-                        let skip = tmp_func.name.contains("__molt_module_chunk_")
+                        if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30
                             || (has_exception_handling && force_eh_bypass)
-                            || uses_cell_vars;
-                        if skip {
-                            if tmp_func.name.contains("sieve") && !tmp_func.name.contains("module") {
-                                eprintln!("MOLT_BACKEND: TIR skip for {}: chunk={} large={} cf={} eh={} cell={}",
-                                    tmp_func.name,
-                                    tmp_func.name.contains("__molt_module_chunk_"),
-                                    tmp_func.ops.len() > 2000,
-                                    cf_complexity > 30,
-                                    has_exception_handling && force_eh_bypass,
-                                    uses_cell_vars);
-                            }
+                        {
                             return (idx, content_hash, Vec::new());
                         }
                         // Debug skip: MOLT_TIR_SKIP_PATTERN=<pat1,pat2,...> skips
@@ -3099,68 +3090,7 @@ impl SimpleBackend {
                                     &tir_func, &type_map,
                                 );
                                 if !crate::tir::lower_to_simple::validate_labels(&ops) {
-                                    // Dump dangling labels to file for debugging.
-                                    if func_name.contains("sieve") && !func_name.contains("module") {
-                                        use std::io::Write;
-                                        if let Ok(mut f) = std::fs::File::create("/tmp/sieve_tir_ops.txt") {
-                                            let mut defined = std::collections::HashSet::new();
-                                            for op in &ops {
-                                                if matches!(op.kind.as_str(), "label" | "state_label") {
-                                                    if let Some(id) = op.value { defined.insert(id); }
-                                                }
-                                            }
-                                            for (i, op) in ops.iter().enumerate() {
-                                                let dangling = matches!(op.kind.as_str(), "jump" | "br_if" | "check_exception")
-                                                    && op.value.map(|id| !defined.contains(&id)).unwrap_or(false);
-                                                let _ = writeln!(f, "{}{:3}: {:25} out={:15} var={:15} val={:?} args={:?}",
-                                                    if dangling { ">>>" } else { "   " },
-                                                    i, op.kind, op.out.as_deref().unwrap_or(""),
-                                                    op.var.as_deref().unwrap_or(""), op.value,
-                                                    op.args.as_ref().map(|a| a.join(",")));
-                                            }
-                                        }
-                                    }
                                     return None;
-                                }
-
-
-
-                                // Debug: dump before/after for all TIR functions.
-                                if func_name.contains("sieve") || func_name.contains("count") || std::env::var("MOLT_TIR_DUMP_DIFF").map(|p| func_name.contains(&p)).unwrap_or(false) {
-                                    use std::io::Write;
-                                    let path = format!("/tmp/tir_diff_{}.txt", tir_func.name);
-                                    if let Ok(mut f) = std::fs::File::create(&path) {
-                                        let _ = writeln!(f, "=== TIR BEFORE ({}) ===", tir_func.name);
-                                        for (i, op) in tmp_func.ops.iter().enumerate() {
-                                            let _ = writeln!(f, "  {:3}: {:20} out={:15} var={:15} args={:30} val={:?} sval={:?}",
-                                                i, op.kind,
-                                                op.out.as_deref().unwrap_or(""),
-                                                op.var.as_deref().unwrap_or(""),
-                                                op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
-                                                op.value, op.s_value);
-                                        }
-                                        let _ = writeln!(f, "=== TIR AFTER ({}) ===", tir_func.name);
-                                        for (i, op) in ops.iter().enumerate() {
-                                            let _ = writeln!(f, "  {:3}: {:20} out={:15} var={:15} args={:30} val={:?} sval={:?}",
-                                                i, op.kind,
-                                                op.out.as_deref().unwrap_or(""),
-                                                op.var.as_deref().unwrap_or(""),
-                                                op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
-                                                op.value, op.s_value);
-                                        }
-                                        let _ = writeln!(f, "=== END DIFF ===");
-                                    }
-                                }
-                                // Progress log: TIR complete
-                                {
-                                    use std::io::Write;
-                                    if let Ok(mut f) = std::fs::OpenOptions::new()
-                                        .create(true).append(true)
-                                        .open("/tmp/tir_progress.log")
-                                    {
-                                        let msg = format!("|||DONE:{}:{}|||\n", func_name, ops.len());
-                                        let _ = f.write_all(msg.as_bytes());
-                                    }
                                 }
                                 Some(ops)
                             }),

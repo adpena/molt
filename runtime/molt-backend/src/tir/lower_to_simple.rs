@@ -637,19 +637,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     // Validate: every label referenced by check_exception/jump/br_if must
     // have a corresponding label op. If validation fails, it means the
     // TIR roundtrip lost a handler block's label mapping.
-    // Debug: dump sieve TIR output to file
-    if func.name.contains("sieve") {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::File::create("/tmp/sieve_lower_output.txt") {
-            for (i, op) in out.iter().enumerate() {
-                let _ = writeln!(f, "{:3}: {:25} out={:15} var={:15} val={:?} args={:?}",
-                    i, op.kind, op.out.as_deref().unwrap_or(""),
-                    op.var.as_deref().unwrap_or(""), op.value,
-                    op.args.as_ref().map(|a| a.join(",")));
-            }
-        }
-    }
-
     if !validate_labels(&out) {
         eprintln!(
             "[TIR] WARNING: label validation failed for {} — check_exception targets may be stale",
