@@ -23,6 +23,23 @@ use super::ops::{AttrValue, OpCode, TirOp};
 use super::types::TirType;
 use super::values::ValueId;
 
+/// A detected natural-loop region, keyed by the loop header block.
+/// Used by structured loop emission to re-wrap linearised TIR control
+/// flow into loop_start/loop_break_if_X/loop_continue/loop_end sequences.
+struct LoopRegion {
+    /// Blocks between the LoopHeader and the CondBranch block (exclusive).
+    /// These are emitted as part of the header before the break op.
+    /// Empty when the LoopHeader itself has the CondBranch.
+    header_chain: Vec<BlockId>,
+    body_entry: BlockId,
+    exit_block: BlockId,
+    body_set: HashSet<BlockId>,
+    break_kind: LoopBreakKind,
+    cond: ValueId,
+    body_args: Vec<ValueId>,
+    exit_args: Vec<ValueId>,
+}
+
 thread_local! {
     static VALUE_NAME_OVERRIDES: RefCell<HashMap<ValueId, String>> = RefCell::new(HashMap::new());
 }
@@ -129,18 +146,175 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         })
         .collect();
 
-    // ── Structured loop emission is disabled ──
-    // The TIR roundtrip linearises all control flow into label/jump/br_if
-    // patterns.  Re-wrapping loops in loop_start/loop_end after
-    // linearisation is unsound: the structured loop markers cannot capture
-    // all body blocks when the loop contains conditional branches (e.g.
-    // `if` inside `while`), leaving the loop_start/loop_end body hollow
-    // and creating infinite loops at runtime.
-    //
-    // Pure label/jump/br_if control flow is handled correctly by the
-    // Cranelift function compiler (back-edges are detected by
-    // `has_loop_or_backedge`), so all loops from TIR are emitted as
-    // unstructured label/jump/br_if blocks.
+    // ── Structured loop region detection (MLIR ControlFlowToSCF) ──
+    // For each LoopHeader with a CondBranch terminator, identify the loop
+    // body blocks by DFS from the body-entry successor, stopping at the
+    // header (back-edge) and exit block.  These regions are emitted as
+    // contiguous loop_start / loop_break_if_X / body / loop_continue /
+    // loop_end sequences, enabling the native backend's structured loop
+    // optimisations (raw_int_shadow, inline list access, NoGIL fast paths).
+    let mut loop_regions: HashMap<BlockId, LoopRegion> = HashMap::new();
+    let mut loop_consumed: HashSet<BlockId> = HashSet::new();
+    for bid in &rpo {
+        let role = func
+            .loop_roles
+            .get(bid)
+            .cloned()
+            .unwrap_or(super::blocks::LoopRole::None);
+        if role != super::blocks::LoopRole::LoopHeader {
+            continue;
+        }
+        // Follow the chain from the LoopHeader to the CondBranch that
+        // controls the loop body.  TIR may insert guard blocks (type
+        // checks, bounds checks) with their own CondBranch terminators
+        // in the header region.  We identify the loop-controlling
+        // CondBranch as the one where one successor has a path back to
+        // the header (the loop body).
+        let mut header_chain: Vec<BlockId> = Vec::new();
+        let mut cond_bid = *bid;
+        let mut chain_visited: HashSet<BlockId> = HashSet::new();
+        chain_visited.insert(*bid);
+        loop {
+            let Some(blk) = func.blocks.get(&cond_bid) else { break };
+            match &blk.terminator {
+                Terminator::CondBranch {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    // Distinguish guard CondBranches (type checks, bounds
+                    // checks) from the loop-controlling CondBranch.
+                    //
+                    // A guard has one successor that is a raise/error path
+                    // (contains OpCode::Raise within 2 hops).  The loop
+                    // control's exit path may Return or Unreachable, but
+                    // does NOT raise — it's the normal loop-exit path.
+                    //
+                    // Key: check for Raise specifically, not Return.
+                    let is_guard_raise_path = |bid: &BlockId| -> bool {
+                        let Some(blk) = func.blocks.get(bid) else {
+                            return false;
+                        };
+                        if blk.ops.iter().any(|op| op.opcode == OpCode::Raise) {
+                            return true;
+                        }
+                        // One hop further (guard → join block → raise)
+                        if let Terminator::Branch { target, .. } = &blk.terminator {
+                            if let Some(next) = func.blocks.get(target) {
+                                if next.ops.iter().any(|op| op.opcode == OpCode::Raise) {
+                                    return true;
+                                }
+                            }
+                        }
+                        false
+                    };
+                    let then_raises = is_guard_raise_path(then_block);
+                    let else_raises = is_guard_raise_path(else_block);
+                    if !then_raises && !else_raises {
+                        break; // Neither path raises — this is the loop control
+                    }
+                    // One path raises — this is a guard CondBranch.
+                    // Follow the non-raising path.
+                    if cond_bid != *bid {
+                        header_chain.push(cond_bid);
+                    }
+                    let next = if then_raises { *else_block } else { *then_block };
+                    if !chain_visited.insert(next) {
+                        break; // Cycle — this IS the loop control
+                    }
+                    cond_bid = next;
+                }
+                Terminator::Branch { target, .. } => {
+                    if !chain_visited.insert(*target) {
+                        break; // Cycle
+                    }
+                    if cond_bid != *bid {
+                        header_chain.push(cond_bid);
+                    }
+                    cond_bid = *target;
+                }
+                _ => break, // Return/Unreachable — give up
+            }
+        }
+        let Some(cond_block) = func.blocks.get(&cond_bid) else {
+            continue;
+        };
+        let Terminator::CondBranch {
+            cond,
+            then_block,
+            then_args,
+            else_block,
+            else_args,
+        } = &cond_block.terminator
+        else {
+            continue;
+        };
+        let break_kind = func
+            .loop_break_kinds
+            .get(bid)
+            .copied()
+            .unwrap_or(LoopBreakKind::BreakIfFalse);
+        let (body_entry, exit_block, body_args, exit_args) = match break_kind {
+            LoopBreakKind::BreakIfFalse => {
+                (*then_block, *else_block, then_args.clone(), else_args.clone())
+            }
+            LoopBreakKind::BreakIfTrue => {
+                (*else_block, *then_block, else_args.clone(), then_args.clone())
+            }
+        };
+        // Collect body blocks via DFS from body_entry, stopping at the
+        // header (back-edge), header chain blocks, cond block, and exit.
+        let mut header_set: HashSet<BlockId> = HashSet::new();
+        header_set.insert(*bid);
+        header_set.insert(cond_bid);
+        for hc in &header_chain {
+            header_set.insert(*hc);
+        }
+        let mut body_set = HashSet::new();
+        {
+            let mut stack = vec![body_entry];
+            while let Some(b) = stack.pop() {
+                if header_set.contains(&b) || b == exit_block || !body_set.insert(b) {
+                    continue;
+                }
+                if let Some(blk) = func.blocks.get(&b) {
+                    for succ in successors_of(blk) {
+                        stack.push(succ);
+                    }
+                }
+            }
+        }
+        // Exclude LoopEnd structural markers — they are not real body blocks.
+        body_set.retain(|b| {
+            func.loop_roles
+                .get(b)
+                .cloned()
+                .unwrap_or(super::blocks::LoopRole::None)
+                != super::blocks::LoopRole::LoopEnd
+        });
+        // Mark body blocks AND header chain blocks as consumed.
+        loop_consumed.extend(body_set.iter().copied());
+        for hc in &header_chain {
+            loop_consumed.insert(*hc);
+        }
+        if cond_bid != *bid {
+            loop_consumed.insert(cond_bid);
+        }
+        loop_regions.insert(
+            *bid,
+            LoopRegion {
+                header_chain,
+                body_entry,
+                exit_block,
+                body_set,
+                break_kind,
+                cond: *cond,
+                body_args,
+                exit_args,
+            },
+        );
+    }
+
     // ── Structured if/else/end_if detection ──
     // Detect simple CondBranch patterns where both successors:
     //   (a) have no check_exception ops (which require label blocks for implicit edges)
@@ -207,6 +381,11 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         // if_inlined_blocks.insert(else_bid);
     }
     for bid in &rpo {
+        // Skip blocks consumed by structured loop emission.
+        if loop_consumed.contains(bid) {
+            continue;
+        }
+
         let loop_role = func
             .loop_roles
             .get(bid)
@@ -223,12 +402,36 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             continue;
         }
 
+        // ── Structured loop emission ──
+        // If this block is a LoopHeader with a detected region, emit the
+        // entire structured loop (header + body + back-edge) and skip to
+        // the next RPO block.
+        if loop_role == super::blocks::LoopRole::LoopHeader {
+            if loop_regions.contains_key(bid) {
+                emit_structured_loop_region(
+                    *bid,
+                    func,
+                    &loop_regions,
+                    &rpo,
+                    &block_param_vars,
+                    &block_label_id,
+                    types,
+                    &original_to_new_label,
+                    &mut out,
+                    &mut loop_consumed,
+                );
+                continue;
+            }
+        }
+
         let block = match func.blocks.get(bid) {
             Some(b) => b,
             None => continue,
         };
 
-        // Emit block header: loop_start for LoopHeader blocks, label for others.
+        // Emit block header: label for non-entry blocks.
+        // LoopHeaders with regions are handled above; remaining LoopHeaders
+        // (no CondBranch terminator) fall through to emit loop_start + label.
         if *bid != func.entry_block {
             if loop_role == super::blocks::LoopRole::LoopHeader {
                 out.push(OpIR {
@@ -260,21 +463,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
 
         // Helper: emit a block's ops with type annotation.
         let emit_block_ops = |block: &TirBlock, out: &mut Vec<OpIR>| {
-            for op in &block.ops {
-                if let Some(mut opir) = lower_op(op) {
-                    annotate_type_flags(&mut opir, op, types);
-                    // Remap label IDs in check_exception/try_start/try_end ops
-                    // to match post-roundtrip block label assignments.
-                    if matches!(opir.kind.as_str(), "check_exception" | "try_start" | "try_end") {
-                        if let Some(orig_id) = opir.value {
-                            if let Some(&new_id) = original_to_new_label.get(&orig_id) {
-                                opir.value = Some(new_id);
-                            }
-                        }
-                    }
-                    out.push(opir);
-                }
-            }
+            emit_block_ops_inner(block, types, &original_to_new_label, out);
         };
 
         if let Some(pattern) = if_patterns.get(bid) {
@@ -457,7 +646,7 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
     for i in 0..ops.len() {
         let kind = ops[i].kind.as_str();
         match kind {
-            "jump" | "ret" | "raise" | "loop_continue" => {
+            "jump" | "ret" | "raise" | "loop_continue" | "loop_break" => {
                 is_filled = true;
             }
             "label" | "state_label" => {
@@ -478,8 +667,9 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
             "loop_end" => {
                 is_filled = false;
             }
-            // loop_start, loop_break_if_false do not fill.
-            "loop_start" | "loop_break_if_false" | "loop_index_start" => {
+            // loop_start, loop_break_if_false/true do not fill.
+            "loop_start" | "loop_break_if_false" | "loop_break_if_true"
+            | "loop_index_start" => {
                 // These are control-flow markers that don't terminate blocks.
             }
             "br_if" => {
@@ -976,6 +1166,306 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
 }
 
 // ---------------------------------------------------------------------------
+// Structured loop emission
+// ---------------------------------------------------------------------------
+
+/// Emit a structured loop region: label → loop_start → header ops →
+/// loop_break_if_X → body blocks → loop_continue → loop_end.
+///
+/// Body blocks are emitted in RPO order with labels for internal control
+/// flow.  Nested loops within the body are emitted recursively.
+/// Back-edges (Branch → header) become `loop_continue`.
+/// Branches to the exit block become `loop_break`.
+fn emit_structured_loop_region(
+    header: BlockId,
+    func: &TirFunction,
+    loop_regions: &HashMap<BlockId, LoopRegion>,
+    rpo: &[BlockId],
+    block_param_vars: &HashMap<BlockId, Vec<String>>,
+    block_label_id: &dyn Fn(&BlockId) -> i64,
+    types: &HashMap<ValueId, TirType>,
+    original_to_new_label: &HashMap<i64, i64>,
+    out: &mut Vec<OpIR>,
+    loop_consumed: &mut HashSet<BlockId>,
+) {
+    let region = loop_regions.get(&header).expect("loop region missing");
+    let block = func.blocks.get(&header).expect("loop header block missing");
+    let original_has_ret = func
+        .attrs
+        .get("_original_has_ret")
+        .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
+        .unwrap_or(false);
+
+    // 1. Emit label for forward jumps to the header (entry path).
+    //    The native backend's pre-analysis registers label IDs from `label`
+    //    ops to create Cranelift blocks; without this, `jump(header_label)`
+    //    from the entry path would reference a non-existent block.
+    if header != func.entry_block {
+        out.push(OpIR {
+            kind: "label".to_string(),
+            value: Some(block_label_id(&header)),
+            ..OpIR::default()
+        });
+    }
+
+    // 2. loop_start — creates loop_block, body_block, after_block in the
+    //    native backend and pushes a LoopFrame.
+    out.push(OpIR {
+        kind: "loop_start".to_string(),
+        ..OpIR::default()
+    });
+
+    // 3. Header block argument loads (phi values from entry/back-edge).
+    if header != func.entry_block {
+        if let Some(param_vars) = block_param_vars.get(&header) {
+            for (i, var_name) in param_vars.iter().enumerate() {
+                if i < block.args.len() {
+                    out.push(OpIR {
+                        kind: "load_var".to_string(),
+                        var: Some(var_name.clone()),
+                        out: Some(value_var(block.args[i].id)),
+                        ..OpIR::default()
+                    });
+                }
+            }
+        }
+    }
+
+    // 4. Emit all header-region blocks' ops sequentially.
+    //    The header region = [header, chain[0], chain[1], ..., cond_block].
+    //    Each block's ops are emitted inline (no labels between them).
+    //    Between blocks, emit store_var for the Branch args and load_var
+    //    for the successor's block args.
+    {
+        // Build the ordered list of header-region blocks.
+        let mut header_region: Vec<BlockId> = vec![header];
+        header_region.extend(region.header_chain.iter().copied());
+        // Find the cond block (successor of last block in chain, or header itself).
+        let last_in_chain = *header_region.last().unwrap();
+        let cond_block_id = if let Some(last_blk) = func.blocks.get(&last_in_chain) {
+            if let Terminator::Branch { target, .. } = &last_blk.terminator {
+                *target
+            } else {
+                header // Header itself has the CondBranch
+            }
+        } else {
+            header
+        };
+        if cond_block_id != header {
+            header_region.push(cond_block_id);
+        }
+
+        for (region_idx, region_bid) in header_region.iter().enumerate() {
+            let Some(region_block) = func.blocks.get(region_bid) else {
+                continue;
+            };
+            // Emit ops for this block.
+            emit_block_ops_inner(region_block, types, original_to_new_label, out);
+
+            // If this block has a Branch terminator to the next block in
+            // the chain, emit store_var for its args and load_var for the
+            // successor's block args.
+            if region_idx + 1 < header_region.len() {
+                if let Terminator::Branch { target, args } = &region_block.terminator {
+                    emit_block_arg_stores(*target, args, block_param_vars, out);
+                    let next_bid = header_region[region_idx + 1];
+                    if let Some(next_block) = func.blocks.get(&next_bid) {
+                        if let Some(param_vars) = block_param_vars.get(&next_bid) {
+                            for (i, var_name) in param_vars.iter().enumerate() {
+                                if i < next_block.args.len() {
+                                    out.push(OpIR {
+                                        kind: "load_var".to_string(),
+                                        var: Some(var_name.clone()),
+                                        out: Some(value_var(next_block.args[i].id)),
+                                        ..OpIR::default()
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Store args for body entry and exit blocks (CondBranch phi values).
+    emit_block_arg_stores(region.body_entry, &region.body_args, block_param_vars, out);
+    emit_block_arg_stores(region.exit_block, &region.exit_args, block_param_vars, out);
+
+    // 6. loop_break_if_X(cond) — the native backend branches to body_block
+    //    (continue) or cleanup→after_block (break) based on the condition.
+    let break_kind_str = match region.break_kind {
+        LoopBreakKind::BreakIfFalse => "loop_break_if_false",
+        LoopBreakKind::BreakIfTrue => "loop_break_if_true",
+    };
+    let mut break_op = OpIR {
+        kind: break_kind_str.to_string(),
+        args: Some(vec![value_var(region.cond)]),
+        ..OpIR::default()
+    };
+    // Propagate type hint so the backend can extract bool/int inline.
+    if let Some(ty) = types.get(&region.cond) {
+        match ty {
+            TirType::Bool => {
+                break_op.type_hint = Some("bool".to_string());
+            }
+            TirType::I64 => {
+                break_op.type_hint = Some("int".to_string());
+                break_op.fast_int = Some(true);
+            }
+            _ => {}
+        }
+    }
+    out.push(break_op);
+
+    // 7. Body blocks in RPO order.  The first body block (body_entry) is
+    //    emitted without a label — the backend is already in body_block
+    //    after the break op.  Subsequent blocks get labels for internal
+    //    control flow (if/else, nested loops, etc.).
+    let body_rpo: Vec<BlockId> = rpo
+        .iter()
+        .filter(|b| region.body_set.contains(b))
+        .copied()
+        .collect();
+
+    let mut is_first_body = true;
+    let mut inner_consumed: HashSet<BlockId> = HashSet::new();
+
+    for body_bid in &body_rpo {
+        if inner_consumed.contains(body_bid) {
+            continue;
+        }
+
+        let Some(body_block) = func.blocks.get(body_bid) else {
+            continue;
+        };
+        let body_role = func
+            .loop_roles
+            .get(body_bid)
+            .cloned()
+            .unwrap_or(super::blocks::LoopRole::None);
+
+        // Nested LoopHeader: recursively emit its structured loop.
+        // The recursive call handles label, loop_start, ops, break,
+        // body, continue, loop_end — so we just call it and skip.
+        if body_role == super::blocks::LoopRole::LoopHeader
+            && loop_regions.contains_key(body_bid)
+        {
+            emit_structured_loop_region(
+                *body_bid,
+                func,
+                loop_regions,
+                rpo,
+                block_param_vars,
+                block_label_id,
+                types,
+                original_to_new_label,
+                out,
+                loop_consumed,
+            );
+            if let Some(inner_region) = loop_regions.get(body_bid) {
+                inner_consumed.extend(inner_region.body_set.iter().copied());
+            }
+            is_first_body = false;
+            continue;
+        }
+
+        // Emit label for non-first body blocks (internal control flow).
+        if !is_first_body {
+            out.push(OpIR {
+                kind: "label".to_string(),
+                value: Some(block_label_id(body_bid)),
+                ..OpIR::default()
+            });
+        }
+        is_first_body = false;
+
+        // Load block args.
+        if let Some(param_vars) = block_param_vars.get(body_bid) {
+            for (i, var_name) in param_vars.iter().enumerate() {
+                if i < body_block.args.len() {
+                    out.push(OpIR {
+                        kind: "load_var".to_string(),
+                        var: Some(var_name.clone()),
+                        out: Some(value_var(body_block.args[i].id)),
+                        ..OpIR::default()
+                    });
+                }
+            }
+        }
+
+        // Emit ops.
+        emit_block_ops_inner(body_block, types, original_to_new_label, out);
+
+        // Emit terminator — replace back-edges with loop_continue,
+        // exit jumps with loop_break, and other terminators normally.
+        match &body_block.terminator {
+            Terminator::Branch { target, args } if *target == header => {
+                // Back-edge → store updated phi values, then loop_continue.
+                emit_block_arg_stores(*target, args, block_param_vars, out);
+                out.push(OpIR {
+                    kind: "loop_continue".to_string(),
+                    ..OpIR::default()
+                });
+            }
+            Terminator::Branch { target, args } if *target == region.exit_block => {
+                // Explicit break (jump to exit) → store exit args, loop_break.
+                emit_block_arg_stores(*target, args, block_param_vars, out);
+                out.push(OpIR {
+                    kind: "loop_break".to_string(),
+                    ..OpIR::default()
+                });
+            }
+            _ => {
+                // Internal control flow — emit normally.
+                emit_terminator(
+                    body_block,
+                    block_param_vars,
+                    block_label_id,
+                    &func.loop_roles,
+                    out,
+                    original_has_ret,
+                    body_role,
+                    &func.loop_break_kinds,
+                );
+            }
+        }
+    }
+
+    // 8. loop_end — seals loop_block, switches to after_block.
+    out.push(OpIR {
+        kind: "loop_end".to_string(),
+        ..OpIR::default()
+    });
+}
+
+/// Emit a block's ops with type annotations and label remapping.
+/// Shared by both the main emission loop and structured loop emission.
+fn emit_block_ops_inner(
+    block: &TirBlock,
+    types: &HashMap<ValueId, TirType>,
+    original_to_new_label: &HashMap<i64, i64>,
+    out: &mut Vec<OpIR>,
+) {
+    for op in &block.ops {
+        if let Some(mut opir) = lower_op(op) {
+            annotate_type_flags(&mut opir, op, types);
+            if matches!(
+                opir.kind.as_str(),
+                "check_exception" | "try_start" | "try_end"
+            ) {
+                if let Some(orig_id) = opir.value {
+                    if let Some(&new_id) = original_to_new_label.get(&orig_id) {
+                        opir.value = Some(new_id);
+                    }
+                }
+            }
+            out.push(opir);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Terminator emission
 /// Emit return ops for inlined if/else blocks.
 fn emit_return_ops(values: &[ValueId], original_has_ret: bool, out: &mut Vec<OpIR>) {
@@ -1245,6 +1735,7 @@ fn reverse_postorder(func: &TirFunction) -> Vec<BlockId> {
 
     postorder
 }
+
 
 fn successors_of(block: &TirBlock) -> Vec<BlockId> {
     match &block.terminator {

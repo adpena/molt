@@ -4317,6 +4317,37 @@ Use static modules or pre-generated code paths instead."
                 }
                 best.map(|(n, _)| n)
             } else { None };
+            // Also search builtins dict for suggestions (CPython does this).
+            let suggestion = suggestion.or_else(|| {
+                let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                let guard = cache.lock().ok()?;
+                let builtins_bits = guard.get("builtins").copied()?;
+                drop(guard);
+                let builtins_ptr = obj_from_bits(builtins_bits).as_ptr()?;
+                let bdict_bits = module_dict_bits(builtins_ptr);
+                let bdict_ptr = obj_from_bits(bdict_bits).as_ptr()?;
+                if object_type_id(bdict_ptr) != TYPE_ID_DICT { return None; }
+                let order = crate::builtins::containers::dict_order(bdict_ptr);
+                let mut best: Option<(String, usize)> = None;
+                let mut i = 0;
+                while i + 1 < order.len() {
+                    if let Some(key_ptr) = obj_from_bits(order[i]).as_ptr()
+                        && object_type_id(key_ptr) == TYPE_ID_STRING
+                    {
+                        let len = string_len(key_ptr);
+                        let bytes = std::slice::from_raw_parts(string_bytes(key_ptr), len);
+                        if let Ok(cand) = std::str::from_utf8(bytes) {
+                            let d = simple_edit_distance(&name, cand);
+                            let t = if name.len() <= 2 { 1 } else { 2 };
+                            if d > 0 && d <= t && (best.is_none() || d < best.as_ref().unwrap().1) {
+                                best = Some((cand.to_string(), d));
+                            }
+                        }
+                    }
+                    i += 2;
+                }
+                best.map(|(n, _)| n)
+            });
             let msg = if let Some(similar) = suggestion {
                 format!("name '{name}' is not defined. Did you mean: '{similar}'?")
             } else {
