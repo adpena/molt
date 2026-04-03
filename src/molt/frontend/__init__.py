@@ -2093,6 +2093,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return self.type_hint_policy in {"trust", "check"} or self.stdlib_hint_trust
 
     def _should_fast_int(self, op: MoltOp) -> bool:
+        # DISABLED: fast_int causes bigint corruption when loop variables
+        # overflow the 47-bit inline range. The inline iadd + overflow guard
+        # doesn't properly fall back to molt_add for values > 2^46.
+        return False
         if op.kind not in _FAST_ARITH_OPS:
             return False
         # Bitwise ops on bools must NOT use the fast_int path because the
