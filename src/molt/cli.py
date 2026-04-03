@@ -28172,9 +28172,10 @@ class _MoltHelpFormatter(argparse.RawDescriptionHelpFormatter):
 
 def main() -> int:
     _ensure_cli_hash_seed()
+    from molt import __version__
     parser = argparse.ArgumentParser(
         prog="molt",
-        usage="molt [-h] <command> [options]",
+        usage="molt [-h] [--version] <command> [options]",
         description="The Molt Python compiler",
         formatter_class=_MoltHelpFormatter,
         epilog=(
@@ -28189,6 +28190,7 @@ def main() -> int:
             "  molt test                          Run test suites\n"
         ),
     )
+    parser.add_argument("--version", action="version", version=f"molt {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True, title="commands")
 
     build_parser = subparsers.add_parser(

@@ -2799,12 +2799,11 @@ impl SimpleBackend {
         // handles back-edges via has_loop_or_backedge detection.
         let mut tir_optimized_names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
-        // TIR default ON: loop markers preserved, EH functions bypassed.
-        // TIR opt-in: MOLT_TIR_OPT=1. SSA phi-placement doesn't create phis
-        // for store_var/load_var at loop headers — ALL function-level while
-        // loops infinite-loop. This is the fundamental blocker to default ON.
-        // TIR default ON. loop_index→store_var rewrite enables proper SSA phis.
-        if env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
+        // TIR default OFF: for-loop iteration inside functions is broken when
+        // TIR is enabled (iter_next returns done=true on first call, producing
+        // zero iterations). The TIR SSA roundtrip corrupts the loop-carried
+        // iterator state. Enable with MOLT_TIR_OPT=1 for performance testing.
+        if env_setting("MOLT_TIR_OPT").as_deref() == Some("1") {
             use rayon::prelude::*;
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
