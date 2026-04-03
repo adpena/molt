@@ -866,9 +866,18 @@ impl SimpleBackend {
         if has_ret {
             builder.append_block_param(master_return_block, types::I64);
         }
+        let entry_param_values: Vec<Value> = param_types
+            .iter()
+            .map(|ty| builder.append_block_param(entry_block, *ty))
+            .collect();
 
         reachable_blocks.insert(entry_block);
         builder.switch_to_block(entry_block);
+
+        for (i, val) in entry_param_values.iter().copied().enumerate() {
+            let name = &func_ir.params[i];
+            def_var_named(&mut builder, &vars, name, val);
+        }
 
         // Pre-declare shadow Variables for store_var targets whose source
         // is known to be an integer.  Only these need shadow tracking across
@@ -1065,14 +1074,6 @@ impl SimpleBackend {
                 &[types::I64, types::I64, types::I64],
                 &[types::I64],
             ));
-        }
-
-        for (i, ty) in param_types.iter().enumerate() {
-            let val = builder.append_block_param(entry_block, *ty);
-
-            let name = &func_ir.params[i];
-
-            def_var_named(&mut builder, &vars, name, val);
         }
 
         let nbc = NanBoxConsts::new(&mut builder);
@@ -14487,6 +14488,28 @@ impl SimpleBackend {
                         seal_block_once(&mut builder, &mut sealed_blocks, else_block);
                     }
 
+                    let mut phi_ops: Vec<(String, String, String)> = Vec::new();
+                    if let Some(end_if_idx) = if_to_end_if.get(&op_idx).copied() {
+                        let mut scan_idx = end_if_idx + 1;
+                        while scan_idx < ops.len() {
+                            let next = &ops[scan_idx];
+                            if next.kind != "phi" {
+                                break;
+                            }
+                            let args = next.args.as_ref().expect("phi args missing");
+                            if args.len() != 2 {
+                                panic!("phi expects exactly two args");
+                            }
+                            let out = next.out.clone().expect("phi output missing");
+                            phi_ops.push((out, args[0].clone(), args[1].clone()));
+                            skip_ops.insert(scan_idx);
+                            scan_idx += 1;
+                        }
+                    }
+                    let phi_params: Vec<Value> = (0..phi_ops.len())
+                        .map(|_| builder.append_block_param(merge_block, types::I64))
+                        .collect();
+
                     switch_to_block_tracking(&mut builder, then_block, &mut is_block_filled);
                     if_stack.push(IfFrame {
                         else_block,
@@ -14494,8 +14517,8 @@ impl SimpleBackend {
                         has_else: false,
                         then_terminal: false,
                         else_terminal: false,
-                        phi_ops: Vec::new(),
-                        phi_params: Vec::new(),
+                        phi_ops,
+                        phi_params,
                     });
                 }
                 "else" => {

@@ -191,7 +191,7 @@ impl ValueIdAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::TirBlock;
+    use crate::tir::blocks::{BlockId, TirBlock};
     use crate::tir::ops::{AttrDict, Dialect};
 
     fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
