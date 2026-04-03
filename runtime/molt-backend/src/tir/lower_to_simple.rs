@@ -2203,11 +2203,14 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
                 (Some(TirType::I64), Some(TirType::I64)) => {
                     opir.fast_int = Some(true);
                 }
-                (Some(TirType::F64), Some(TirType::F64))
-                | (Some(TirType::I64), Some(TirType::F64))
-                | (Some(TirType::F64), Some(TirType::I64)) => {
+                (Some(TirType::F64), Some(TirType::F64)) => {
                     opir.fast_float = Some(true);
                 }
+                // Mixed I64/F64: do NOT set fast_float — the backend's
+                // bitcast path assumes both operands are f64.  A NaN-boxed
+                // integer bitcast to f64 is NOT its numeric value.  Fall
+                // through to the runtime call which handles promotion.
+
                 _ => {}
             }
         }

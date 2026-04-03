@@ -106,7 +106,7 @@ fn verify_entry_block_signature(func: &LirFunction, errors: &mut Vec<LirVerifyEr
         .enumerate()
     {
         let expected_repr = LirRepr::for_type(expected_ty);
-        if actual.ty != *expected_ty {
+        if expected_repr != LirRepr::DynBox && actual.ty != *expected_ty {
             errors.push(LirVerifyError::block(
                 func.entry_block,
                 format!(
@@ -195,10 +195,11 @@ fn insert_op_results(
 }
 
 fn compute_dominators(func: &LirFunction) -> HashMap<BlockId, HashSet<BlockId>> {
-    let all_blocks: HashSet<BlockId> = func.blocks.keys().copied().collect();
+    let reachable = compute_reachable_blocks(func);
+    let all_blocks: HashSet<BlockId> = reachable.iter().copied().collect();
     let predecessors = compute_predecessors(func);
     let mut dominators = HashMap::new();
-    for bid in func.blocks.keys().copied() {
+    for bid in reachable.iter().copied() {
         if bid == func.entry_block {
             dominators.insert(bid, HashSet::from([bid]));
         } else {
@@ -213,6 +214,7 @@ fn compute_dominators(func: &LirFunction) -> HashMap<BlockId, HashSet<BlockId>> 
             .blocks
             .keys()
             .copied()
+            .filter(|bid| reachable.contains(bid))
             .filter(|bid| *bid != func.entry_block)
         {
             let preds = predecessors.get(&bid).cloned().unwrap_or_default();
@@ -260,6 +262,22 @@ fn compute_predecessors(func: &LirFunction) -> HashMap<BlockId, Vec<BlockId>> {
     }
 
     preds
+}
+
+fn compute_reachable_blocks(func: &LirFunction) -> HashSet<BlockId> {
+    let mut visited = HashSet::new();
+    let mut stack = vec![func.entry_block];
+    while let Some(bid) = stack.pop() {
+        if !visited.insert(bid) {
+            continue;
+        }
+        if let Some(block) = func.blocks.get(&bid) {
+            for succ in terminator_successors(&block.terminator) {
+                stack.push(succ);
+            }
+        }
+    }
+    visited
 }
 
 fn terminator_successors(terminator: &LirTerminator) -> Vec<BlockId> {
@@ -455,24 +473,15 @@ fn verify_box_op(
         return;
     }
     let result = &op.result_values[0];
-    if result.repr != LirRepr::DynBox || !matches!(result.ty, TirType::DynBox | TirType::Box(_)) {
+    if result.repr != LirRepr::DynBox {
         errors.push(LirVerifyError {
             block: Some(bid),
             op_index: Some(op_index),
             message: format!(
-                "box op must produce Box(_) or DynBox with DynBox repr, found {:?}/{:?}",
-                result.ty, result.repr
+                "box op must produce a DynBox-lane result, found {:?}/{:?}",
+                result.ty, result.repr,
             ),
         });
-    }
-    if let Some(def) = values.get(&op.tir_op.operands[0]) {
-        if def.value.repr == LirRepr::DynBox {
-            errors.push(LirVerifyError {
-                block: Some(bid),
-                op_index: Some(op_index),
-                message: "box op operand is already DynBox".to_string(),
-            });
-        }
     }
 }
 
@@ -615,7 +624,7 @@ fn verify_terminators(
                     let expected_repr = LirRepr::for_type(expected_ty);
                     match values.get(value_id) {
                         Some(def) => {
-                            if def.value.ty != *expected_ty {
+                            if expected_repr != LirRepr::DynBox && def.value.ty != *expected_ty {
                                 errors.push(LirVerifyError::block(
                                     *bid,
                                     format!(
@@ -717,7 +726,7 @@ fn verify_branch_args(
         );
         match values.get(arg_id) {
             Some(actual) => {
-                if actual.value.ty != expected.ty {
+                if expected.repr != LirRepr::DynBox && actual.value.ty != expected.ty {
                     errors.push(LirVerifyError::block(
                         source,
                         format!(

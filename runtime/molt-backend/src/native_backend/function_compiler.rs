@@ -5591,6 +5591,9 @@ impl SimpleBackend {
                 }
                 "list_remove" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    // Invalidate cached data_ptr/len — remove shifts elements and changes length.
+                    list_int_data_cache.remove(&args[0]);
+                    list_int_len_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let val = var_get(&mut builder, &vars, &args[1])
                         .expect("List remove value not found");
@@ -5610,6 +5613,9 @@ impl SimpleBackend {
                 }
                 "list_clear" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    // Invalidate cached data_ptr/len — clear empties the list.
+                    list_int_data_cache.remove(&args[0]);
+                    list_int_len_cache.remove(&args[0]);
                     let list = var_get(&mut builder, &vars, &args[0]).expect("List not found");
                     let callee = Self::import_func_id_split(
                         &mut self.module,

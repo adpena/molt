@@ -3060,65 +3060,42 @@ impl SimpleBackend {
                         // functions that actually enter that roundtrip so the
                         // state-machine backend does not see residual phi ops.
                         rewrite_phi_to_store_load(&mut tmp_func.ops);
-                        // Wrap TIR pipeline in catch_unwind so any panic in
-                        // lowering/optimization falls back to original ops
-                        // instead of crashing the entire compilation.
                         let func_name = tmp_func.name.clone();
-                        let tir_result = std::panic::catch_unwind(
-                            std::panic::AssertUnwindSafe(|| {
-                                let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
-                                crate::tir::type_refine::refine_types(&mut tir_func);
-                                let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
-                                crate::tir::type_refine::refine_types(&mut tir_func);
-                                let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
-                                    std::collections::HashMap::new()
-                                } else {
-                                    crate::tir::type_refine::extract_type_map(&tir_func)
-                                };
-                                let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
-                                    &tir_func, &type_map,
-                                );
-                                if !crate::tir::lower_to_simple::validate_labels(&ops) {
-                                    return None;
-                                }
-                                Some(ops)
-                            }),
-                        );
-                        match tir_result {
-                            Ok(Some(ops)) => (idx, content_hash, ops),
-                            Ok(None) => {
-                                eprintln!(
-                                    "MOLT_BACKEND: TIR roundtrip emitted invalid labels for '{}'; using original ops",
-                                    func_name
-                                );
-                                (idx, content_hash, Vec::new())
-                            }
-                            Err(_panic) => {
-                                eprintln!(
-                                    "MOLT_BACKEND: TIR roundtrip panicked for '{}'; using original ops",
-                                    func_name
-                                );
-                                (idx, content_hash, Vec::new())
-                            }
+                        let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
+                        crate::tir::type_refine::refine_types(&mut tir_func);
+                        let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                        crate::tir::type_refine::refine_types(&mut tir_func);
+                        let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
+                            std::collections::HashMap::new()
+                        } else {
+                            crate::tir::type_refine::extract_type_map(&tir_func)
+                        };
+                        let lir_func = crate::tir::lower_to_lir::lower_function_to_lir(&tir_func);
+                        if let Err(errors) = crate::tir::verify_lir::verify_lir_function(&lir_func)
+                        {
+                            panic!(
+                                "[LIR] verification failed for '{}': {:?}",
+                                func_name, errors
+                            );
                         }
+                        let ops =
+                            crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map);
+                        assert!(
+                            crate::tir::lower_to_simple::validate_labels(&ops),
+                            "TIR roundtrip emitted invalid labels for '{}'",
+                            func_name
+                        );
+                        (idx, content_hash, ops)
                     })
                     .collect()
                 );
 
                 // Phase 3 (sequential): apply validated TIR ops and cache them.
-                // Empty ops = TIR roundtrip failed validation; keep original ops.
-                // Save original ops so we can fall back if Cranelift compilation fails.
-                let mut tir_original_ops: std::collections::HashMap<String, Vec<OpIR>> = std::collections::HashMap::new();
                 for (idx, content_hash, ops) in &results {
-                    if !ops.is_empty() {
-                        tir_original_ops.insert(
-                            ir.functions[*idx].name.clone(),
-                            std::mem::replace(&mut ir.functions[*idx].ops, ops.clone()),
-                        );
-                        tir_optimized_names.insert(ir.functions[*idx].name.clone());
-                        let bytes = crate::tir::serialize::serialize_ops(ops);
-                        tir_cache.put(content_hash, &bytes, vec![]);
-                    }
+                    let _ = std::mem::replace(&mut ir.functions[*idx].ops, ops.clone());
+                    tir_optimized_names.insert(ir.functions[*idx].name.clone());
+                    let bytes = crate::tir::serialize::serialize_ops(ops);
+                    tir_cache.put(content_hash, &bytes, vec![]);
                 }
 
                 let tir_elapsed = tir_start.elapsed();
@@ -3970,6 +3947,11 @@ mod tests {
         let _stats = crate::tir::passes::run_pipeline(&mut tir);
         crate::tir::type_refine::refine_types(&mut tir);
         let type_map = crate::tir::type_refine::extract_type_map(&tir);
+        let lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir);
+        assert!(
+            crate::tir::verify_lir::verify_lir_function(&lir).is_ok(),
+            "LIR verification failed after TIR optimization"
+        );
         let ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir, &type_map);
         assert!(
             crate::tir::lower_to_simple::validate_labels(&ops),
