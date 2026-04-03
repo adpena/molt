@@ -1661,6 +1661,17 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     // inc_ref_bits on the cached result.
                     bump_type_version();
                 }
+                TYPE_ID_LIST_INT => {
+                    // list_int stores a *mut ListIntStorage (#[repr(C)]).
+                    // Reconstruct the Vec to free the backing buffer.
+                    let storage_ptr = layout::list_int_storage_ptr(ptr);
+                    if !storage_ptr.is_null() {
+                        let storage = *Box::from_raw(storage_ptr);
+                        // Drop the backing buffer by reconstructing the Vec.
+                        // Raw i64 elements have no inner refs to dec-ref.
+                        drop(storage.into_vec());
+                    }
+                }
                 TYPE_ID_LIST => {
                     let vec_ptr = seq_vec_ptr(ptr);
                     if !vec_ptr.is_null() {
