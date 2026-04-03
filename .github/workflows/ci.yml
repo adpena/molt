@@ -56,8 +56,14 @@ jobs:
       - name: Run Python smoke tests
         run: |
           uv run --python 3.12 python3 -m pytest -q \
+            tests/test_bench_harness.py \
+            tests/test_bench_tool.py \
+            tests/test_ci_workflow_topology.py \
+            tests/test_harness_conformance.py \
+            tests/test_harness_layers.py \
             tests/test_harness_report.py \
-            tests/test_manifest_env.py
+            tests/test_manifest_env.py \
+            tests/test_monty_conformance_runner.py
 
       - name: Test capability manifest import
         run: |
