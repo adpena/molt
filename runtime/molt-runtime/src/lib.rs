@@ -31,9 +31,11 @@ pub extern "C" fn molt_isolate_bootstrap() -> u64 {
     molt_obj_model::MoltObject::none().bits()
 }
 
-#[cfg(test)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
+    // Stub: isolate imports are resolved at link time by the stdlib
+    // shared object. In production, this is called for deferred imports
+    // and returns None to signal "not found, try normal import path".
     molt_obj_model::MoltObject::none().bits()
 }
 
