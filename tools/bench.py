@@ -17,6 +17,20 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+BENCH_RESULTS_DIR = REPO_ROOT / "bench" / "results"
+BENCH_TMP_ROOT = REPO_ROOT / "tmp" / "bench"
+DEFAULT_BASELINE_PATH = BENCH_RESULTS_DIR / "baseline.json"
+
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from molt.harness_conformance import (  # noqa: E402
+    build_molt_conformance_env,
+    ensure_molt_conformance_dirs,
+)
+
 SUPER_SAMPLES = 10
 
 BENCHMARKS = [
@@ -322,10 +336,20 @@ def _default_codon_taq_file() -> Path:
     explicit = os.environ.get("MOLT_BENCH_CODON_TAQ_FILE")
     if explicit:
         return Path(explicit).expanduser().resolve()
-    repo_sample = Path("bench/friends/repos/codon_benchmarks/bench/data/taq.txt")
+    repo_sample = (
+        REPO_ROOT
+        / "bench"
+        / "friends"
+        / "repos"
+        / "codon_benchmarks"
+        / "bench"
+        / "data"
+        / "taq.txt"
+    )
     if repo_sample.exists():
         return repo_sample.resolve()
-    generated = Path(tempfile.gettempdir()) / "molt_codon_taq_sample.txt"
+    BENCH_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    generated = BENCH_TMP_ROOT / "molt_codon_taq_sample.txt"
     if generated.exists():
         return generated.resolve()
     lines = ["timestamp|source|symbol|price|volume\n"]
@@ -407,7 +431,22 @@ def _resolve_molt_output(payload: dict) -> Path | None:
     return None
 
 
-def _molt_build_cmd() -> list[str]:
+def _bench_session_id(env: dict[str, str] | None = None) -> str:
+    source = env if env is not None else os.environ
+    explicit = source.get("MOLT_SESSION_ID", "").strip()
+    return explicit or "bench"
+
+
+def _canonical_bench_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    env = (base_env or os.environ.copy()).copy()
+    env.update(build_molt_conformance_env(REPO_ROOT, _bench_session_id(env)))
+    ensure_molt_conformance_dirs(env)
+    BENCH_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    BENCH_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    return env
+
+
+def _molt_build_cmd(build_profile: str) -> list[str]:
     """Return the command prefix for invoking the Molt compiler.
 
     Uses ``uv run --python 3.12 python3`` so the subprocess gets a
@@ -415,24 +454,35 @@ def _molt_build_cmd() -> list[str]:
     dependencies, regardless of how the benchmark harness itself was
     launched.
     """
-    return ["uv", "run", "--python", "3.12", "python3"]
+    return [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python3",
+        "-m",
+        "molt.cli",
+        "build",
+        "--build-profile",
+        build_profile,
+    ]
 
 
 def prepare_molt_binary(
-    script: str, extra_args: list[str] | None = None, env: dict[str, str] | None = None
+    script: str,
+    extra_args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    *,
+    build_profile: str = "release",
 ) -> MoltBinary | None:
     _prune_backend_daemons()
-    env = (env or os.environ.copy()).copy()
-    env["PYTHONPATH"] = "src"
+    env = _canonical_bench_env(env)
 
     def _attempt_build() -> MoltBinary | None:
-        temp_dir = tempfile.TemporaryDirectory(prefix="molt-bench-")
+        temp_dir = tempfile.TemporaryDirectory(prefix="molt-bench-", dir=BENCH_TMP_ROOT)
         out_dir = Path(temp_dir.name)
         args = [
-            *_molt_build_cmd(),
-            "-m",
-            "molt.cli",
-            "build",
+            *_molt_build_cmd(build_profile),
             "--trusted",
             "--json",
             "--out-dir",
@@ -472,7 +522,9 @@ def prepare_molt_binary(
     if result is not None:
         return result
 
-    print("Backend build failed; pruning stale daemons and retrying...", file=sys.stderr)
+    print(
+        "Backend build failed; pruning stale daemons and retrying...", file=sys.stderr
+    )
     _prune_backend_daemons()
     time.sleep(1)
     return _attempt_build()
@@ -713,6 +765,7 @@ def bench_results(
     use_pyodide,
     super_run,
     runtime_timeout_s,
+    molt_build_profile,
     *,
     tty: bool,
     nuitka_cmd: str | None,
@@ -754,9 +807,9 @@ def bench_results(
     print(header)
     print("-" * len(header))
 
-    base_env = _base_python_env()
-    codon_root = Path("bench/codon")
-    nuitka_root = Path("bench/nuitka")
+    base_env = _canonical_bench_env(_base_python_env())
+    codon_root = REPO_ROOT / "bench" / "codon"
+    nuitka_root = REPO_ROOT / "bench" / "nuitka"
 
     data = {}
     for script in benchmarks:
@@ -879,7 +932,12 @@ def bench_results(
         molt_args = MOLT_ARGS_BY_BENCH.get(script, [])
         molt_ok = False
         molt_samples: list[float] = []
-        molt_runner = prepare_molt_binary(script, molt_args, env=base_env)
+        molt_runner = prepare_molt_binary(
+            script,
+            molt_args,
+            env=base_env,
+            build_profile=molt_build_profile,
+        )
         if molt_runner is not None:
             try:
                 molt_samples, molt_ok = collect_samples(
@@ -1106,6 +1164,12 @@ def main():
         default=None,
         help="Optional per-run timeout in seconds for each benchmark process.",
     )
+    parser.add_argument(
+        "--molt-profile",
+        choices=["dev", "release"],
+        default="release",
+        help="Build profile used for Molt benchmark binaries (default: release).",
+    )
     args = parser.parse_args()
 
     if args.super and args.smoke:
@@ -1162,6 +1226,7 @@ def main():
         use_pyodide,
         args.super,
         args.runtime_timeout_sec,
+        args.molt_profile,
         tty=use_tty,
         nuitka_cmd=args.nuitka_cmd,
         pyodide_cmd=args.pyodide_cmd,
@@ -1193,13 +1258,13 @@ def main():
     json_out = args.json_out
     if json_out is None:
         timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
-        json_out = Path("bench/results") / f"bench_{timestamp}.json"
+        json_out = BENCH_RESULTS_DIR / f"bench_{timestamp}.json"
     write_json(json_out, payload)
 
     baseline_path = args.baseline
     if args.update_baseline:
         if baseline_path is None:
-            baseline_path = Path("bench/baseline.json")
+            baseline_path = DEFAULT_BASELINE_PATH
         write_json(baseline_path, payload)
         print(f"Baseline updated: {baseline_path}")
         return

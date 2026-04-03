@@ -122,7 +122,7 @@ Notes:
 - Use `--metrics` to constrain analysis (for example `--metrics molt_time_s molt_codon_ratio`).
 - Use `--fail-regression-count`, `--fail-regression-pct`, and
   `--fail-regression-abs` to make regressions fail with exit code `2` in CI/swarms.
-- CI perf-smoke lane runs this gate against `bench/baseline.json` for
+- Manual perf validation can run this gate against `bench/results/baseline.json` for
   `molt_cpython_ratio`, `molt_time_s`, and `molt_build_s`.
 
 ## Friend-Owned Suite Benchmarking

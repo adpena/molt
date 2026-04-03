@@ -11,6 +11,16 @@ jobs:
     name: Benchmark Validation
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      MOLT_SESSION_ID: perf-validation
+      MOLT_EXT_ROOT: ${{ github.workspace }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      MOLT_CACHE: ${{ github.workspace }}/.molt_cache
+      MOLT_DIFF_ROOT: ${{ github.workspace }}/tmp/diff
+      MOLT_DIFF_TMPDIR: ${{ github.workspace }}/tmp
+      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
+      TMPDIR: ${{ github.workspace }}/tmp
     steps:
       - uses: actions/checkout@v4
 
@@ -25,11 +35,8 @@ jobs:
       - name: Sync Python environment
         run: uv sync --group bench --group dev --python 3.12
 
-      - name: Build release runtime
-        run: cargo build --release -p molt-runtime
-
       - name: Run benchmarks
-        run: python3 bench/harness.py --bench --molt target/release/molt --output bench/results/perf-validation.json
+        run: python3 tools/bench.py --molt-profile release --json-out bench/results/perf-validation.json
 
       - name: Upload benchmark artifact
         if: always()
