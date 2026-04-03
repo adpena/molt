@@ -572,3 +572,54 @@ fn print_lir_function_emits_representation_annotations() {
         "expected unbox op rendering, got: {rendered}"
     );
 }
+
+#[test]
+fn verify_lir_rejects_malformed_checked_i64_arithmetic_contract() {
+    let mut attrs = AttrDict::new();
+    attrs.insert("lir.checked_overflow".to_string(), AttrValue::Bool(true));
+
+    let entry = LirBlock {
+        id: BlockId(0),
+        args: vec![
+            lir_value(0, TirType::I64, LirRepr::I64),
+            lir_value(1, TirType::I64, LirRepr::I64),
+        ],
+        ops: vec![LirOp {
+            tir_op: TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Add,
+                operands: vec![ValueId(0), ValueId(1)],
+                results: vec![ValueId(2)],
+                attrs,
+                source_span: None,
+            },
+            result_values: vec![lir_value(2, TirType::I64, LirRepr::I64)],
+        }],
+        terminator: LirTerminator::Return {
+            values: vec![ValueId(2)],
+        },
+    };
+
+    let mut blocks = HashMap::new();
+    blocks.insert(BlockId(0), entry);
+
+    let func = LirFunction {
+        name: "bad_checked_add".to_string(),
+        param_names: vec!["a".to_string(), "b".to_string()],
+        param_types: vec![TirType::I64, TirType::I64],
+        return_types: vec![TirType::I64],
+        blocks,
+        entry_block: BlockId(0),
+    };
+
+    let err = verify_lir_function(&func).expect_err("expected malformed checked add");
+    let messages = err
+        .iter()
+        .map(|item| item.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        messages.contains("checked i64 arithmetic"),
+        "expected checked arithmetic contract error, got: {messages}"
+    );
+}

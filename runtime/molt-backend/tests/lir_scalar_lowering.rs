@@ -6,6 +6,7 @@ use molt_backend::tir::lower_to_lir::lower_function_to_lir;
 use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::{TirValue, ValueId};
+use molt_backend::tir::verify_lir::verify_lir_function;
 
 fn single_block_func(ops: Vec<TirOp>, return_type: TirType, next_value: u32) -> TirFunction {
     let entry_id = BlockId(0);
@@ -247,5 +248,149 @@ fn lower_i64_add_with_explicit_overflow_materialization() {
     assert_eq!(
         add.tir_op.attrs.get("lir.checked_overflow"),
         Some(&AttrValue::Bool(true))
+    );
+    assert!(
+        verify_lir_function(&lir).is_ok(),
+        "lowered checked add should satisfy verifier"
+    );
+}
+
+#[test]
+fn lower_box_and_unbox_align_with_verifier_contract() {
+    let entry_id = BlockId(0);
+    let block = TirBlock {
+        id: entry_id,
+        args: vec![TirValue {
+            id: ValueId(0),
+            ty: TirType::I64,
+        }],
+        ops: vec![
+            make_op(
+                OpCode::BoxVal,
+                vec![ValueId(0)],
+                vec![ValueId(1)],
+                AttrDict::new(),
+            ),
+            make_op(
+                OpCode::UnboxVal,
+                vec![ValueId(1)],
+                vec![ValueId(2)],
+                AttrDict::new(),
+            ),
+        ],
+        terminator: Terminator::Return {
+            values: vec![ValueId(2)],
+        },
+    };
+    let mut blocks = HashMap::new();
+    blocks.insert(entry_id, block);
+    let func = TirFunction {
+        name: "box_unbox".into(),
+        param_names: vec!["x".into()],
+        param_types: vec![TirType::I64],
+        return_type: TirType::I64,
+        blocks,
+        entry_block: entry_id,
+        next_value: 3,
+        next_block: 1,
+        attrs: AttrDict::new(),
+        has_exception_handling: false,
+        label_id_map: HashMap::new(),
+        loop_roles: HashMap::new(),
+        loop_pairs: HashMap::new(),
+        loop_break_kinds: HashMap::new(),
+    };
+
+    let lir = lower_function_to_lir(&func);
+    let entry = &lir.blocks[&lir.entry_block];
+    assert_eq!(
+        entry.ops[0].result_values[0].repr,
+        molt_backend::tir::lir::LirRepr::DynBox
+    );
+    assert_eq!(
+        entry.ops[1].result_values[0].repr,
+        molt_backend::tir::lir::LirRepr::I64
+    );
+    assert!(
+        verify_lir_function(&lir).is_ok(),
+        "lowered box/unbox should satisfy verifier"
+    );
+}
+
+#[test]
+fn lower_truthy_condition_materializes_bool1_before_branch() {
+    let entry_id = BlockId(0);
+    let then_id = BlockId(1);
+    let else_id = BlockId(2);
+    let mut blocks = HashMap::new();
+    blocks.insert(
+        entry_id,
+        TirBlock {
+            id: entry_id,
+            args: vec![TirValue {
+                id: ValueId(0),
+                ty: TirType::DynBox,
+            }],
+            ops: vec![],
+            terminator: Terminator::CondBranch {
+                cond: ValueId(0),
+                then_block: then_id,
+                then_args: vec![],
+                else_block: else_id,
+                else_args: vec![],
+            },
+        },
+    );
+    blocks.insert(
+        then_id,
+        TirBlock {
+            id: then_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    blocks.insert(
+        else_id,
+        TirBlock {
+            id: else_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    let func = TirFunction {
+        name: "truthy_branch".into(),
+        param_names: vec!["x".into()],
+        param_types: vec![TirType::DynBox],
+        return_type: TirType::None,
+        blocks,
+        entry_block: entry_id,
+        next_value: 1,
+        next_block: 3,
+        attrs: AttrDict::new(),
+        has_exception_handling: false,
+        label_id_map: HashMap::new(),
+        loop_roles: HashMap::new(),
+        loop_pairs: HashMap::new(),
+        loop_break_kinds: HashMap::new(),
+    };
+
+    let lir = lower_function_to_lir(&func);
+    let entry = &lir.blocks[&entry_id];
+    assert_eq!(
+        entry.ops.len(),
+        1,
+        "expected explicit truthiness materialization op"
+    );
+    assert_eq!(entry.ops[0].tir_op.opcode, OpCode::CallBuiltin);
+    assert_eq!(
+        entry.ops[0].tir_op.attrs.get("lir.truthy_cond"),
+        Some(&AttrValue::Bool(true))
+    );
+    assert!(
+        verify_lir_function(&lir).is_ok(),
+        "truthiness materialization should satisfy verifier"
     );
 }
