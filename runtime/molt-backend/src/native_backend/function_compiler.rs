@@ -762,9 +762,9 @@ impl SimpleBackend {
         // consumers read from this map (skipping unbox). Non-fast_int consumers
         // use the normal SSA variable (boxed). LuaJIT-style optimization.
         let mut raw_int_shadow: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
-        // Cache data_ptr for list_int containers — avoids re-extracting
-        // the 3-load pointer chase (obj→vec→data) on every access.
-        let mut list_int_data_cache: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+        // Cache data_ptr for list_int containers using Cranelift Variables
+        // (not Values) so they persist across loop iterations via phi nodes.
+        let mut list_int_data_cache: std::collections::BTreeMap<String, Variable> = std::collections::BTreeMap::new();
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -6550,13 +6550,19 @@ impl SimpleBackend {
                                 // The list pointer doesn't change within a loop body
                                 // (no list resize ops), so we extract obj→vec→data
                                 // once and reuse for subsequent accesses.
-                                let data_ptr = *list_int_data_cache.entry(args[0].clone()).or_insert_with(|| {
+                                let data_ptr = if let Some(&var) = list_int_data_cache.get(&args[0]) {
+                                    builder.use_var(var)
+                                } else {
                                     let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
                                     let shifted = builder.ins().ishl_imm(masked, 16);
                                     let obj_ptr = builder.ins().sshr_imm(shifted, 16);
                                     let vec_ptr = builder.ins().load(types::I64, MemFlags::trusted(), obj_ptr, 0);
-                                    builder.ins().load(types::I64, MemFlags::trusted(), vec_ptr, 0)
-                                });
+                                    let dp = builder.ins().load(types::I64, MemFlags::trusted(), vec_ptr, 0);
+                                    let var = builder.declare_var(types::I64);
+                                    builder.def_var(var, dp);
+                                    list_int_data_cache.insert(args[0].clone(), var);
+                                    dp
+                                };
                                 // Load element: data_ptr[index * 8]
                                 let offset = builder.ins().imul_imm(raw_idx, 8);
                                 let elem_addr = builder.ins().iadd(data_ptr, offset);
@@ -6631,14 +6637,20 @@ impl SimpleBackend {
                         let raw_idx_opt = raw_int_shadow.get(&args[1]).copied();
                         let raw_val_opt = raw_int_shadow.get(&args[2]).copied();
                         if let (Some(raw_idx), Some(raw_val)) = (raw_idx_opt, raw_val_opt) {
-                            // Inline setitem with cached data_ptr.
-                            let data_ptr = *list_int_data_cache.entry(args[0].clone()).or_insert_with(|| {
+                            // Inline setitem with cached data_ptr Variable.
+                            let data_ptr = if let Some(&var) = list_int_data_cache.get(&args[0]) {
+                                builder.use_var(var)
+                            } else {
                                 let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
                                 let shifted = builder.ins().ishl_imm(masked, 16);
                                 let obj_ptr = builder.ins().sshr_imm(shifted, 16);
                                 let vec_ptr = builder.ins().load(types::I64, MemFlags::trusted(), obj_ptr, 0);
-                                builder.ins().load(types::I64, MemFlags::trusted(), vec_ptr, 0)
-                            });
+                                let dp = builder.ins().load(types::I64, MemFlags::trusted(), vec_ptr, 0);
+                                let cvar = builder.declare_var(types::I64);
+                                builder.def_var(cvar, dp);
+                                list_int_data_cache.insert(args[0].clone(), cvar);
+                                dp
+                            };
                             let offset = builder.ins().imul_imm(raw_idx, 8);
                             let elem_addr = builder.ins().iadd(data_ptr, offset);
                             builder.ins().store(MemFlags::trusted(), raw_val, elem_addr, 0);

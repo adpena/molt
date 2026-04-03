@@ -1196,6 +1196,9 @@ impl<'a> SsaContext<'a> {
                     //
                     // CondBranch convention: then_block = TRUE path, else_block = FALSE path.
                     let last_kind = last_op.map(|op| op.kind.as_str()).unwrap_or("");
+                    if last_kind.contains("loop_break") || last_kind == "if" {
+                        eprintln!("SSA CondBranch: bid={} kind={} succs={:?}", bid, last_kind, succs);
+                    }
                     let (then_bid, else_bid) = match last_kind {
                         "if" => {
                             // if: succs[0] = then (TRUE/fall-through), succs[1] = else (FALSE)
