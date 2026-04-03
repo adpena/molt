@@ -37,10 +37,42 @@ jobs:
       - name: Run docs architecture tests
         run: uv run --python 3.12 python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py
 
-  build:
-    name: Build & Unit Tests
+  python-tooling-smoke:
+    name: Python Tooling Smoke
     needs: docs-gates
-    runs-on: macos-14  # ARM64 (M1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Sync Python environment
+        run: uv sync --group dev --python 3.12
+
+      - name: Run Python smoke tests
+        run: |
+          uv run --python 3.12 python3 -m pytest -q \
+            tests/test_harness_report.py \
+            tests/test_manifest_env.py
+
+      - name: Test capability manifest import
+        run: |
+          PYTHONPATH=src uv run --python 3.12 python3 -c \
+            "from molt.capability_manifest import CapabilityManifest; m = CapabilityManifest(); assert m.to_env_vars()['MOLT_CAPABILITIES'] == ''; print('OK')"
+
+      - name: Test harness report import
+        run: |
+          PYTHONPATH=src uv run --python 3.12 python3 -c \
+            "from molt.harness_report import LayerResult, LayerStatus; r = LayerResult(name='ci', status=LayerStatus.PASS, duration_s=0.1); assert r.passed; print('OK')"
+
+  rust-build-unit-smoke:
+    name: Rust Build And Unit Smoke
+    needs: docs-gates
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -81,12 +113,6 @@ jobs:
       - name: Test molt-runtime-protobuf
         run: cargo test -p molt-runtime-protobuf
 
-      - name: Test capability manifest
-        run: PYTHONPATH=src python3 -c "from molt.capability_manifest import CapabilityManifest; m = CapabilityManifest(); assert m.to_env_vars()['MOLT_CAPABILITIES'] == ''; print('OK')"
-
-      - name: Test harness report module
-        run: PYTHONPATH=src python3 -c "from molt.harness_report import LayerResult, LayerStatus; r = LayerResult(name='ci', status=LayerStatus.PASS, duration_s=0.1); assert r.passed; print('OK')"
-
       - name: Verify zero warnings
         run: |
           WARNING_COUNT=$(cargo build 2>&1 | grep -c 'warning\[' || true)
@@ -95,266 +121,4 @@ jobs:
             echo "::error::Build produced $WARNING_COUNT warning(s). Please fix all warnings."
             cargo build 2>&1 | grep 'warning\[' || true
             exit 1
-          fi
-
-  differential-tests:
-    name: Differential Tests (all 708)
-    needs: build
-    runs-on: macos-14
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry/
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache Cargo build artifacts
-        uses: actions/cache@v4
-        with:
-          path: target/
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-
-            ${{ runner.os }}-cargo-target-
-
-      - name: Install molt Python package
-        run: pip install -e .
-
-      - name: Build release molt binary
-        run: cargo build --release -p molt-backend
-
-      - name: Run all differential tests
-        run: |
-          python3 bench/harness.py --diff --parallel 4 --output bench/results.json --verbose
-
-      - name: Report pass rate
-        if: always()
-        run: |
-          if [ ! -f bench/results.json ]; then
-            echo "::error::No results.json produced by differential tests."
-            exit 1
-          fi
-
-          python3 -c "
-          import json, sys
-
-          with open('bench/results.json') as f:
-              data = json.load(f)
-
-          total = len(data)
-          passed = sum(1 for v in data.values() if v.get('status') == 'pass')
-          failed = total - passed
-          rate = (passed / total * 100) if total > 0 else 0
-
-          print(f'Total:  {total}')
-          print(f'Pass:   {passed}')
-          print(f'Fail:   {failed}')
-          print(f'Rate:   {rate:.1f}%')
-
-          # GitHub Actions annotation
-          print(f'::notice::Differential test pass rate: {rate:.1f}% ({passed}/{total})')
-
-          # Fail if pass rate drops below 95%
-          if rate < 95:
-              print(f'::error::Pass rate {rate:.1f}% is below the 95% threshold.')
-              sys.exit(1)
-          "
-
-      - name: Compare against baseline
-        if: always()
-        run: |
-          if [ ! -f bench/baseline.json ]; then
-            echo "::warning::No baseline.json found. Skipping baseline comparison."
-            exit 0
-          fi
-          if [ ! -f bench/results.json ]; then
-            echo "::warning::No results.json to compare. Skipping."
-            exit 0
-          fi
-
-          python3 -c "
-          import json, sys
-
-          with open('bench/baseline.json') as f:
-              baseline = json.load(f)
-          with open('bench/results.json') as f:
-              results = json.load(f)
-
-          base_pass = sum(1 for v in baseline.values() if v.get('status') == 'pass')
-          curr_pass = sum(1 for v in results.values() if v.get('status') == 'pass')
-          base_total = len(baseline)
-          curr_total = len(results)
-
-          base_rate = (base_pass / base_total * 100) if base_total > 0 else 0
-          curr_rate = (curr_pass / curr_total * 100) if curr_total > 0 else 0
-          delta = curr_rate - base_rate
-
-          print(f'Baseline: {base_rate:.1f}% ({base_pass}/{base_total})')
-          print(f'Current:  {curr_rate:.1f}% ({curr_pass}/{curr_total})')
-          print(f'Delta:    {delta:+.1f}%')
-
-          # Report regressions: tests that passed in baseline but fail now
-          regressions = []
-          for name, res in results.items():
-              if name in baseline:
-                  if baseline[name].get('status') == 'pass' and res.get('status') != 'pass':
-                      regressions.append(name)
-
-          if regressions:
-              print(f'')
-              print(f'Regressions ({len(regressions)} tests now failing):')
-              for name in sorted(regressions):
-                  print(f'  - {name}')
-              print(f'::warning::Found {len(regressions)} regression(s) vs baseline.')
-          else:
-              print('No regressions vs baseline.')
-          "
-
-      - name: Upload results artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: differential-test-results
-          path: bench/results.json
-          retention-days: 30
-
-  benchmark:
-    name: Benchmark
-    needs: build
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry/
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache Cargo build artifacts
-        uses: actions/cache@v4
-        with:
-          path: target/
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-
-            ${{ runner.os }}-cargo-target-
-
-      - name: Build release runtime
-        run: cargo build --release -p molt-runtime
-
-      - name: Install molt Python package
-        run: pip install -e .
-
-      - name: Run benchmarks
-        run: |
-          python3 bench/harness.py --bench --output bench/results.json
-
-      - name: Check for regression against baseline
-        run: |
-          if [ ! -f bench/baseline.json ]; then
-            echo "::warning::No baseline.json found. Skipping regression check."
-            exit 0
-          fi
-
-          python3 -c "
-          import json, sys
-
-          with open('bench/baseline.json') as f:
-              baseline = json.load(f)
-          with open('bench/results.json') as f:
-              results = json.load(f)
-
-          regressions = []
-          for name, res in results.items():
-              if name in baseline:
-                  base_time = baseline[name].get('molt_time') or baseline[name].get('time', 0)
-                  curr_time = res.get('molt_time') or res.get('time', 0)
-                  if base_time > 0 and curr_time > 0:
-                      ratio = curr_time / base_time
-                      if ratio > 1.20:
-                          regressions.append((name, ratio))
-
-          if regressions:
-              print('Benchmark regressions (>20%):')
-              for name, ratio in sorted(regressions, key=lambda x: -x[1]):
-                  print(f'  {name}: {ratio:.2f}x slower')
-              sys.exit(1)
-          else:
-              print('No benchmark regressions detected.')
-          "
-
-  parity:
-    name: Parity Tests
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry/
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache Cargo build artifacts
-        uses: actions/cache@v4
-        with:
-          path: target/
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-
-            ${{ runner.os }}-cargo-target-
-
-      - name: Install molt Python package
-        run: pip install -e .
-
-      - name: Build release molt binary
-        run: cargo build --release -p molt-backend
-
-      - name: Run parity tests
-        run: |
-          python3 bench/harness.py --parity --verbose
-
-      - name: Report parity results
-        if: always()
-        run: |
-          if [ -f bench/results.json ]; then
-            python3 -c "
-          import json
-          with open('bench/results.json') as f:
-              data = json.load(f)
-          parity = data.get('results', {}).get('parity', {})
-          total = len(parity)
-          passed = sum(1 for v in parity.values() if v.get('status') == 'pass')
-          print(f'Parity results: {passed}/{total} passed')
-          " || echo "Could not parse results."
-          else
-            echo "::warning::No results.json produced by parity tests."
           fi

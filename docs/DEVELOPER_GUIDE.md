@@ -80,6 +80,22 @@ Treat `--all` as a coordinated change: rebuild the touched crates and rerun the 
 - **Shared diff Cargo target**: set `MOLT_DIFF_CARGO_TARGET_DIR` to reuse one shared Cargo artifact root across diff workers; `tools/throughput_env.sh --apply` sets this to `CARGO_TARGET_DIR` by default.
 - **Diff run lock**: the harness now uses `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock` to serialize overlapping full diff runs across agents. Tune waiting via `MOLT_DIFF_RUN_LOCK_WAIT_SEC` (default 900) and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 
+## Local Validation Entry Points
+
+Use these as the canonical local gates:
+
+```bash
+python3 tools/dev.py lint
+python3 tools/dev.py test
+PYTHONPATH=src python3 tests/harness/run_molt_conformance.py --suite smoke
+PYTHONPATH=src python3 tests/harness/run_molt_conformance.py --suite full
+```
+
+Interpretation:
+- `tools/dev.py lint` and `tools/dev.py test` are the full local presubmit baseline.
+- `--suite smoke` is the fast Molt conformance subset for routine iteration.
+- `--suite full` is the heavier local correctness lane that matches hosted nightly intent.
+
 ## Fast Build Playbook
 
 Use this workflow for high-velocity multi-agent iteration:
