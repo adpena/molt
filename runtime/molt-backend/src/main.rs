@@ -639,7 +639,12 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                         );
                     });
 
-                    if stdlib_path.exists() {
+                    // Only use the stdlib partition cache when the CLI provides
+                    // MOLT_ENTRY_MODULE — without it, entry_module defaults to
+                    // "__main__" which misclassifies ALL user functions as stdlib
+                    // (their names start with e.g. "test_sieve__", not "__main____").
+                    let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
+                    if have_entry_module && stdlib_path.exists() {
                         if shared_stdlib_cache_matches(
                             stdlib_path,
                             expected_stdlib_cache_key.as_deref(),
