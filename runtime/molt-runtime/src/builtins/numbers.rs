@@ -241,11 +241,6 @@ pub(crate) fn bigint_bits(_py: &PyToken<'_>, value: BigInt) -> u64 {
     // The Vec's heap buffer is separate and managed by the Vec allocator.
     let bigint_size = mem::size_of::<BigInt>();
     let total = mem::size_of::<MoltHeader>() + bigint_size;
-    // Debug: log size info on first call
-    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        eprintln!("MOLT_DEBUG: BigInt size={} MoltHeader size={} total={}", bigint_size, mem::size_of::<MoltHeader>(), total);
-    }
     let ptr = alloc_object(_py, total, TYPE_ID_BIGINT);
     if ptr.is_null() {
         return MoltObject::none().bits();
