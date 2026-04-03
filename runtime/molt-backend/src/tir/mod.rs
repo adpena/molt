@@ -17,8 +17,10 @@ pub mod gpu_runtime;
 pub mod gpu_webgpu;
 pub mod gpu_wgsl;
 pub mod lower_from_simple;
+pub mod lower_to_lir;
 pub mod lower_to_simple;
 pub mod lower_to_wasm;
+pub mod lir;
 pub mod mlir_bridge;
 pub mod mlir_compat;
 pub mod ops;
@@ -32,6 +34,7 @@ pub mod type_refine;
 pub mod types;
 pub mod values;
 pub mod verify;
+pub mod verify_lir;
 pub mod wasm_component;
 pub mod wasm_split;
 pub mod wasm_streaming;
@@ -69,6 +72,7 @@ pub(crate) fn is_structural(kind: &str) -> bool {
 // Re-export primary types for convenience.
 pub use self::blocks::{BlockId, Terminator, TirBlock};
 pub use self::function::{TirFunction, TirModule};
+pub use self::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
 pub use self::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 pub use self::types::{FuncSignature, TirType};
 pub use self::values::{TirValue, ValueId};
