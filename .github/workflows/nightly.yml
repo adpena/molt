@@ -7,6 +7,67 @@ on:
   workflow_dispatch:
 
 jobs:
+  molt-conformance-full:
+    name: Molt Conformance Full
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Sync Python environment
+        run: uv sync --group dev --python 3.12
+
+      - name: Add local venv tools to PATH
+        run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Run Molt conformance full suite
+        run: |
+          mkdir -p logs/conformance
+          PYTHONPATH=src python3 tests/harness/run_molt_conformance.py \
+            --suite full \
+            --json-out logs/conformance/full.json
+
+      - name: Upload conformance artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: molt-conformance-full
+          path: logs/conformance/full.json
+
+  differential-basic-stdlib:
+    name: Differential Basic And Stdlib
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Sync Python environment
+        run: uv sync --group dev --python 3.12
+
+      - name: Run differential correctness lane
+        run: |
+          PYTHONPATH=src uv run --python 3.12 python3 -u tests/molt_diff.py \
+            tests/differential/basic \
+            tests/differential/stdlib
+
   regrtest:
     name: CPython Regrtest (G5)
     runs-on: ubuntu-latest
