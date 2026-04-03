@@ -1534,6 +1534,7 @@ fn main() -> io::Result<()> {
             // recompile.  This reduces builds from ~5min to ~3sec.
             let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok();
             let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
+            let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
             let entry_module =
                 std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
 
@@ -1544,7 +1545,7 @@ fn main() -> io::Result<()> {
                 ensure_output_parent_dir(stdlib_path.to_str().unwrap_or("")).unwrap_or_else(|e| {
                     eprintln!("MOLT_BACKEND: warning: failed to create stdlib parent: {e}");
                 });
-                if stdlib_path.exists() {
+                if have_entry_module && stdlib_path.exists() {
                     // Cached stdlib exists — only reuse it when the CLI and
                     // backend agree on the exact stdlib IR identity.
                     let total = ir.functions.len();

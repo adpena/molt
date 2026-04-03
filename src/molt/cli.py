@@ -14384,8 +14384,6 @@ def _build_native_link_command(
     _link_inputs = [str(stub_path), str(output_obj)]
     if stdlib_obj_path is not None and stdlib_obj_path.exists():
         _link_inputs.append(str(stdlib_obj_path))
-    elif stdlib_obj_path is not None:
-    else:
     # Use -force_load on macOS to ensure ALL objects from the static archive
     # are included, resolving circular references between molt-runtime and
     # molt-runtime-serial (e.g. serial bridge FFI symbols).
