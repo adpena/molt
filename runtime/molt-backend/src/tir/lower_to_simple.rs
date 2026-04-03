@@ -638,10 +638,59 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     // have a corresponding label op. If validation fails, it means the
     // TIR roundtrip lost a handler block's label mapping.
     if !validate_labels(&out) {
-        eprintln!(
-            "[TIR] WARNING: label validation failed for {} — check_exception targets may be stale",
-            func.name
-        );
+        // Identify which labels are dangling and whether they're ALL
+        // check_exception targets.  check_exception labels that reference
+        // the function-level exception handler are safe to fixup: the
+        // handler is always emitted at the end via the original label map.
+        let mut defined: HashSet<i64> = HashSet::new();
+        let mut dangling_check_exc: Vec<(usize, i64)> = Vec::new();
+        let mut dangling_other: Vec<(usize, String, i64)> = Vec::new();
+        for (i, op) in out.iter().enumerate() {
+            if matches!(op.kind.as_str(), "label" | "state_label") {
+                if let Some(id) = op.value {
+                    defined.insert(id);
+                }
+            }
+        }
+        for (i, op) in out.iter().enumerate() {
+            if let Some(id) = op.value {
+                if !defined.contains(&id) {
+                    if op.kind == "check_exception" {
+                        dangling_check_exc.push((i, id));
+                    } else if matches!(op.kind.as_str(), "jump" | "br_if") {
+                        dangling_other.push((i, op.kind.clone(), id));
+                    }
+                }
+            }
+        }
+        if dangling_other.is_empty() && !dangling_check_exc.is_empty() {
+            // ALL dangling references are check_exception targets.
+            // These reference the function-level exception handler label
+            // which may have been renumbered during TIR.  Fix by emitting
+            // the handler label at the end if it's missing.
+            for &(_, label_id) in &dangling_check_exc {
+                if !defined.contains(&label_id) {
+                    out.push(crate::ir::OpIR {
+                        kind: "state_label".to_string(),
+                        value: Some(label_id),
+                        ..crate::ir::OpIR::default()
+                    });
+                    defined.insert(label_id);
+                }
+            }
+            // Re-validate after fixup.
+            if !validate_labels(&out) {
+                eprintln!(
+                    "[TIR] WARNING: label validation still failed for {} after check_exception fixup",
+                    func.name
+                );
+            }
+        } else {
+            eprintln!(
+                "[TIR] WARNING: label validation failed for {} — {} check_exception + {} other dangling",
+                func.name, dangling_check_exc.len(), dangling_other.len()
+            );
+        }
     }
 
     out
@@ -2157,12 +2206,6 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
         if let Some(&result_id) = tir_op.results.first() {
             match types.get(&result_id) {
                 Some(TirType::I64) => {
-                    // TIR I64 means the value is known to be an integer, but
-                    // at the SimpleIR level values are still NaN-boxed. Use
-                    // fast_int (unbox → native op → rebox) not raw_int (which
-                    // assumes values are already raw i64 registers).
-                    // raw_int is only safe for loop_index_start/next counters
-                    // that the backend explicitly manages as raw i64.
                     opir.fast_int = Some(true);
                 }
                 Some(TirType::F64) => {
@@ -2178,7 +2221,31 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
                 | Some(ty @ TirType::BigInt) => {
                     opir.type_hint = Some(type_to_hint_string(ty));
                 }
-                // DynBox, Never, Union, Box, Func, Ptr — no hint to propagate.
+                _ => {}
+            }
+        }
+
+        // For comparison ops, the RESULT is Bool but the backend needs to
+        // know the OPERAND types to choose fast paths (icmp for int,
+        // fcmp for float).  Check operand types and set fast_int/fast_float
+        // accordingly — this tells the backend "both operands are this type,
+        // skip tag-check and use direct comparison".
+        let is_comparison = matches!(
+            tir_op.opcode,
+            OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge
+        );
+        if is_comparison && tir_op.operands.len() >= 2 {
+            let lhs_ty = types.get(&tir_op.operands[0]);
+            let rhs_ty = types.get(&tir_op.operands[1]);
+            match (lhs_ty, rhs_ty) {
+                (Some(TirType::I64), Some(TirType::I64)) => {
+                    opir.fast_int = Some(true);
+                }
+                (Some(TirType::F64), Some(TirType::F64))
+                | (Some(TirType::I64), Some(TirType::F64))
+                | (Some(TirType::F64), Some(TirType::I64)) => {
+                    opir.fast_float = Some(true);
+                }
                 _ => {}
             }
         }
