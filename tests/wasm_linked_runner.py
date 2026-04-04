@@ -174,6 +174,11 @@ def build_wasm_linked(
     allow_external = use_external not in {"0", "false", "no", "off"}
     out_dir = _select_out_dir(out_dir, root)
     env["CARGO_TARGET_DIR"] = str(_wasm_test_target_dir(root, out_dir, artifact_root))
+    env.setdefault(
+        "MOLT_SESSION_ID",
+        f"test-wasm-{_WASM_TEST_LANE}-{src.stem}-{out_dir.name}",
+    )
+    env.setdefault("CARGO_BUILD_JOBS", "1")
     env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
