@@ -688,8 +688,6 @@ impl SimpleBackend {
             closure_functions,
             return_alias_summaries,
             emit_traces,
-            false,
-            &BTreeSet::new(),
             leaf_functions,
             known_function_arities,
             function_has_ret,
@@ -711,10 +709,7 @@ impl SimpleBackend {
         }
     }
 
-    /// Inner compilation with optional `raw_int_mode` for typed-int twin
-    /// functions.  When `raw_int_mode` is true, function parameters and
-    /// return values use raw i64 instead of NaN-boxed representations,
-    /// and all fast_int arithmetic ops skip boxing/unboxing.
+    /// Inner compilation for the current native backend path.
     pub(crate) fn compile_func_inner(
         &mut self,
         func_ir: FunctionIR,
@@ -725,8 +720,6 @@ impl SimpleBackend {
         closure_functions: &BTreeSet<String>,
         return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
         emit_traces: bool,
-        _raw_int_mode: bool,
-        _typed_int_functions: &BTreeSet<String>,
         leaf_functions: &BTreeSet<String>,
         known_function_arities: &BTreeMap<String, usize>,
         function_has_ret: &BTreeMap<String, bool>,
@@ -17621,8 +17614,6 @@ impl SimpleBackend {
                     // Load a named variable into an output (block arg receiving / copy).
                     // Use Variable-backed shadow (phi-resolved across loop iterations)
                     // when available, falling back to Value-based shadow.
-                    let _is_typed_int = op.fast_int.unwrap_or(false)
-                        || op.type_hint.as_deref() == Some("int");
                     if let Some(ref var_name) = op.var {
                         let val = var_get(&mut builder, &vars, var_name)
                             .expect("load_var: var not found");
