@@ -673,7 +673,9 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     // Validate: every label referenced by check_exception/jump/br_if must
     // have a corresponding label op. If validation fails, it means the
     // TIR roundtrip lost a handler block's label mapping.
-    if !validate_labels(&out) {
+    let warn_invalid_labels = func.has_exception_handling
+        || std::env::var("MOLT_TIR_WARN_INVALID_LABELS").as_deref() == Ok("1");
+    if warn_invalid_labels && !validate_labels(&out) {
         let missing = missing_label_references(&out);
         eprintln!(
             "[TIR] WARNING: label validation failed for {} — missing labels {:?}",
