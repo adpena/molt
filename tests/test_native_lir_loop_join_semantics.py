@@ -34,7 +34,7 @@ def _compile_and_run(source: str, profile: str) -> str:
             "MOLT_DIFF_TMPDIR": os.environ.get("MOLT_DIFF_TMPDIR", str(ROOT / "tmp")),
             "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR", str(ROOT / ".uv-cache")),
             "TMPDIR": os.environ.get("TMPDIR", str(ROOT / "tmp")),
-            "MOLT_SESSION_ID": f"test-loop-join-{profile}",
+            "MOLT_SESSION_ID": f"test-loop-join-{profile}-{tmp_path.name}",
         }
 
         build = subprocess.run(
