@@ -189,11 +189,11 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Test 7: fast_int hint is preserved through pipeline
+    // Test 7: integer compatibility hint survives the transport round-trip
     // ---------------------------------------------------------------------------
 
     #[test]
-    fn roundtrip_fast_int() {
+    fn roundtrip_integer_compat_hint() {
         let mut add_op = op_out_args("add", "z", &["x", "y"]);
         add_op.fast_int = Some(true);
         let ops = vec![
@@ -278,7 +278,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Test 11: Function with typed parameters (fast_int param hint)
+    // Test 11: Function with typed parameters (transport compatibility hint)
     // ---------------------------------------------------------------------------
 
     #[test]
@@ -706,7 +706,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Test 24: fast_int / fast_float preserved for known ops
+    // Test 24: compatibility hints preserved for known transport ops
     // ---------------------------------------------------------------------------
 
     #[test]
@@ -729,8 +729,9 @@ mod tests {
             op_args("ret", &["x"]),
         ];
         let result = roundtrip_no_opt(ops);
-        // Note: fast_int/fast_float are type-refinement driven in TIR, so they
-        // may not be identical. But they must not crash.
+        // Compatibility hints are transport metadata rather than the canonical
+        // backend contract, so this test only requires the round-trip to remain
+        // stable and non-crashing.
         assert!(!result.is_empty());
     }
 
