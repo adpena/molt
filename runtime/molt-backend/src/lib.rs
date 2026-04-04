@@ -2942,6 +2942,7 @@ impl SimpleBackend {
                     .collect();
 
                 // Each element: (func_index, content_hash, optimized_ops)
+                // `optimized_ops = None` means "skip TIR and keep original ops".
                 // Use a custom thread pool with 16MB stacks for TIR.
                 // lower_to_simple_ir has deeply nested closures capturing
                 // many HashMaps, which exceeds rayon's default 8MB stacks.
@@ -2949,7 +2950,7 @@ impl SimpleBackend {
                     .stack_size(64 * 1024 * 1024)
                     .build()
                     .expect("Failed to build TIR thread pool");
-                let results: Vec<(usize, String, Vec<OpIR>)> = tir_pool.install(|| inputs
+                let results: Vec<(usize, String, Option<Vec<OpIR>>)> = tir_pool.install(|| inputs
                     .into_par_iter()
                     .map(|input| {
                         let idx = input.index;
@@ -3032,7 +3033,7 @@ impl SimpleBackend {
                             || cf_complexity > 30
                             || (has_exception_handling && force_eh_bypass)
                         {
-                            return (idx, content_hash, Vec::new());
+                            return (idx, content_hash, None);
                         }
                         // Debug skip: MOLT_TIR_SKIP_PATTERN=<pat1,pat2,...> skips
                         // TIR for any function whose name contains any pattern.
@@ -3040,7 +3041,7 @@ impl SimpleBackend {
                             for skip_pat in skip_pats.split(',') {
                                 let pat = skip_pat.trim();
                                 if !pat.is_empty() && tmp_func.name.contains(pat) {
-                                    return (idx, content_hash, Vec::new());
+                                    return (idx, content_hash, None);
                                 }
                             }
                         }
@@ -3052,14 +3053,16 @@ impl SimpleBackend {
                                 .filter(|p| !p.is_empty())
                                 .collect();
                             if !pats.is_empty() && !pats.iter().any(|p| tmp_func.name.contains(p)) {
-                                return (idx, content_hash, Vec::new());
+                                return (idx, content_hash, None);
                             }
                         }
                         // The TIR roundtrip linearizes structured control flow
                         // into jump/label blocks. Rewrite phi merges only for
                         // functions that actually enter that roundtrip so the
                         // state-machine backend does not see residual phi ops.
-                        rewrite_phi_to_store_load(&mut tmp_func.ops);
+                        if tmp_func.ops.iter().any(|op| op.kind == "phi") {
+                            rewrite_phi_to_store_load(&mut tmp_func.ops);
+                        }
                         let func_name = tmp_func.name.clone();
                         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
                         crate::tir::type_refine::refine_types(&mut tir_func);
@@ -3085,17 +3088,19 @@ impl SimpleBackend {
                             "TIR roundtrip emitted invalid labels for '{}'",
                             func_name
                         );
-                        (idx, content_hash, ops)
+                        (idx, content_hash, Some(ops))
                     })
                     .collect()
                 );
 
                 // Phase 3 (sequential): apply validated TIR ops and cache them.
                 for (idx, content_hash, ops) in &results {
-                    let _ = std::mem::replace(&mut ir.functions[*idx].ops, ops.clone());
-                    tir_optimized_names.insert(ir.functions[*idx].name.clone());
-                    let bytes = crate::tir::serialize::serialize_ops(ops);
-                    tir_cache.put(content_hash, &bytes, vec![]);
+                    if let Some(ops) = ops {
+                        let _ = std::mem::replace(&mut ir.functions[*idx].ops, ops.clone());
+                        tir_optimized_names.insert(ir.functions[*idx].name.clone());
+                        let bytes = crate::tir::serialize::serialize_ops(ops);
+                        tir_cache.put(content_hash, &bytes, vec![]);
+                    }
                 }
 
                 let tir_elapsed = tir_start.elapsed();
@@ -5071,6 +5076,49 @@ mod tests {
                     && op.out.as_deref() == Some("merged")
             }),
             "merged phi should become load_var"
+        );
+    }
+
+    #[test]
+    fn native_tir_skip_pattern_keeps_original_ops() {
+        let key = "MOLT_TIR_SKIP_PATTERN";
+        let prev = std::env::var(key).ok();
+        unsafe {
+            std::env::set_var(key, "molt_main");
+        }
+        let bytes = SimpleBackend::new().compile(SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("x".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["x".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+            }],
+            profile: None,
+        });
+        match prev {
+            Some(value) => unsafe {
+                std::env::set_var(key, value);
+            },
+            None => unsafe {
+                std::env::remove_var(key);
+            },
+        }
+        assert!(
+            !bytes.is_empty(),
+            "skip-pattern compile must preserve original function body"
         );
     }
 
