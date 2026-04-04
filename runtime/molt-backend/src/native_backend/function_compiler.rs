@@ -21,6 +21,32 @@ fn loop_start_has_index_prelude(ops: &[OpIR], start_idx: usize) -> bool {
 }
 
 #[cfg(feature = "native-backend")]
+#[inline]
+fn op_prefers_int_lane(op: &OpIR) -> bool {
+    op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
+}
+
+#[cfg(feature = "native-backend")]
+#[inline]
+fn op_prefers_bool_lane(op: &OpIR) -> bool {
+    op.type_hint.as_deref() == Some("bool")
+}
+
+#[cfg(feature = "native-backend")]
+#[inline]
+fn shadow_value_for(
+    builder: &mut FunctionBuilder<'_>,
+    raw_int_shadow: &BTreeMap<String, Variable>,
+    raw_int_shadow_vals: &BTreeMap<String, Value>,
+    name: &str,
+) -> Option<Value> {
+    raw_int_shadow_vals
+        .get(name)
+        .copied()
+        .or_else(|| raw_int_shadow.get(name).map(|&var| builder.use_var(var)))
+}
+
+#[cfg(feature = "native-backend")]
 struct FunctionPreanalysis {
     has_ret: bool,
     stateful: bool,
@@ -1883,7 +1909,7 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
                         box_float_value(&mut builder, result_f, &nbc)
-                    } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
+                    } else if op_prefers_int_lane(&op)
                     {
                         // LuaJIT-style unboxed arithmetic chain with overflow guard.
                         // If both operands have raw i64 shadows, skip tag check + unbox.
@@ -1894,12 +1920,12 @@ impl SimpleBackend {
                         let lhs_raw = if in_active_loop {
                             None
                         } else {
-                            raw_int_shadow_vals.get(lhs_name).copied().or_else(|| raw_int_shadow.get(lhs_name).map(|&v| builder.use_var(v)))
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, lhs_name)
                         };
                         let rhs_raw = if in_active_loop {
                             None
                         } else {
-                            raw_int_shadow_vals.get(rhs_name).copied().or_else(|| raw_int_shadow.get(rhs_name).map(|&v| builder.use_var(v)))
+                            shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, rhs_name)
                         };
 
                         let callee = Self::import_func_id_split(
@@ -2093,12 +2119,12 @@ impl SimpleBackend {
                         box_float_value(&mut builder, result_f, &nbc)
                     } else if (raw_int_shadow_vals.contains_key(&args[0]) || raw_int_shadow.contains_key(&args[0]))
                         && (raw_int_shadow_vals.contains_key(&args[1]) || raw_int_shadow.contains_key(&args[1]))
-                        && (op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int"))
+                        && op_prefers_int_lane(&op)
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = raw_int_shadow_vals.get(&args[0]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[0]).unwrap()));
-                        let rhs_val = raw_int_shadow_vals.get(&args[1]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[1]).unwrap()));
+                        let lhs_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0]).unwrap();
+                        let rhs_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1]).unwrap();
                         let raw_result = builder.ins().iadd(lhs_val, rhs_val);
                         let fits_inline = int_value_fits_inline(&mut builder, raw_result);
                         let callee = Self::import_func_id_split(
@@ -2143,7 +2169,7 @@ impl SimpleBackend {
                             raw_int_shadow_vals.insert(out_name.clone(), merge_raw);
                         }
                         continue;
-                    } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
+                    } else if op_prefers_int_lane(&op)
                     {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -9605,15 +9631,15 @@ impl SimpleBackend {
                 "bool" | "cast_bool" | "builtin_bool" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let res = if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                    let res = if op_prefers_int_lane(&op) {
                         // For known ints, bool(x) is simply x != 0.
                         // Use raw shadow if available to skip unboxing.
-                        let int_val = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)))
+                        let int_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0])
                             .unwrap_or_else(|| unbox_int(&mut builder, *val, &nbc));
                         let zero = builder.ins().iconst(types::I64, 0);
                         let is_nonzero = builder.ins().icmp(IntCC::NotEqual, int_val, zero);
                         box_bool_value(&mut builder, is_nonzero, &nbc)
-                    } else if op.type_hint.as_deref() == Some("bool") {
+                    } else if op_prefers_bool_lane(&op) {
                         // For known bools, extract bit 0 directly — no function call.
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*val, one);
@@ -9641,12 +9667,12 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let cond = if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                    let cond = if op_prefers_int_lane(&op) {
                         // Known int: inline unbox + compare, no function call.
-                        let raw_val = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)))
+                        let raw_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0])
                             .unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
-                    } else if op.type_hint.as_deref() == Some("bool") {
+                    } else if op_prefers_bool_lane(&op) {
                         // Known bool: extract bit 0.
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*lhs, one);
@@ -9680,12 +9706,12 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let cond = if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                    let cond = if op_prefers_int_lane(&op) {
                         // Known int: inline unbox + compare, no function call.
-                        let raw_val = raw_int_shadow_vals.get(&args[0]).copied().or_else(|| raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)))
+                        let raw_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0])
                             .unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
                         builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
-                    } else if op.type_hint.as_deref() == Some("bool") {
+                    } else if op_prefers_bool_lane(&op) {
                         // Known bool: extract bit 0.
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*lhs, one);
