@@ -15182,8 +15182,6 @@ impl SimpleBackend {
                     // back-edges.  Re-populate from use_var so the first
                     // iteration sees the pre-loop value, not the init zero.
                     raw_int_shadow_vals.clear();
-                    // Rebuild: keep only pre-declared Variables (store_var targets)
-                    raw_int_shadow.retain(|_, _| true); // keep all Variable entries
                     // Remove aliases (entries that share a Variable with a store target)
                     // by keeping only entries that were in the original pre-declaration.
                     // The simplest correct approach: clear aliases, keep store targets.
