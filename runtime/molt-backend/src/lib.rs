@@ -52,7 +52,7 @@ use crate::native_backend::TrampolineKey;
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, elide_dead_struct_allocs,
     elide_safe_exception_checks, eliminate_dead_functions, escape_analysis, fold_constants,
-    fold_constants_cross_block, hoist_loop_invariants, inline_functions, propagate_loop_fast_int,
+    fold_constants_cross_block, hoist_loop_invariants, inline_functions,
     rc_coalescing, rewrite_stateful_loops, split_megafunctions,
 };
 
@@ -2688,14 +2688,13 @@ impl SimpleBackend {
                 fold_constants_cross_block(&mut func_ir.ops);
                 elide_safe_exception_checks(func_ir);
                 hoist_loop_invariants(func_ir);
-                propagate_loop_fast_int(func_ir);
             });
         }
         // ── GPU kernel detection ──
         // Functions containing GPU intrinsic ops (gpu_thread_id, gpu_block_id,
         // etc.) are GPU kernels.  Flag them in metadata so the GPU pipeline can
-        // handle them separately.  For now we log detection and skip TIR
-        // optimization on these functions — the GPU pipeline handles lowering.
+        // handle them separately, but they still flow through the canonical
+        // TIR/LIR pipeline like every other function.
         let mut gpu_kernel_names: Vec<String> = Vec::new();
         for func_ir in &ir.functions {
             let is_gpu = func_ir.ops.iter().any(|op| {
@@ -2768,11 +2767,8 @@ impl SimpleBackend {
             let dump_func_pattern = std::env::var("MOLT_DUMP_FUNC_IR").ok();
 
             for (i, func_ir) in ir.functions.iter_mut().enumerate() {
-                if gpu_kernel_names.contains(&func_ir.name) {
-                    continue;
-                }
                 // Extern functions: bodies live in stdlib_shared.o.
-                // Skip TIR — they're registered as external before codegen.
+                // They are registered as external before codegen.
                 if func_ir.is_extern {
                     continue;
                 }
@@ -2866,7 +2862,6 @@ impl SimpleBackend {
                     .collect();
 
                 // Each element: (func_index, content_hash, optimized_ops)
-                // `optimized_ops = None` means "skip TIR and keep original ops".
                 // Use a custom thread pool with 16MB stacks for TIR.
                 // lower_to_simple_ir has deeply nested closures capturing
                 // many HashMaps, which exceeds rayon's default 8MB stacks.
@@ -2874,7 +2869,7 @@ impl SimpleBackend {
                     .stack_size(64 * 1024 * 1024)
                     .build()
                     .expect("Failed to build TIR thread pool");
-                let results: Vec<(usize, String, Option<Vec<OpIR>>)> = tir_pool.install(|| inputs
+                let results: Vec<(usize, String, Vec<OpIR>)> = tir_pool.install(|| inputs
                     .into_par_iter()
                     .map(|input| {
                         let idx = input.index;
@@ -2890,63 +2885,6 @@ impl SimpleBackend {
                         };
                         if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
                             eprintln!("[TIR-TRACE] {}", tmp_func.name);
-                        }
-                        // Skip TIR for module chunks (complex megafunction splits),
-                        // very large functions, and functions with complex control
-                        // flow (many nested if/else) where the TIR roundtrip is
-                        // still not proven end to end.
-                        //
-                        // Exception-handling functions bypass TIR: while
-                        // lower_to_simple now preserves exception handler labels
-                        // (exception_handler_blocks set), the full exception
-                        // dispatch semantics (handler block content, branch targets
-                        // within handlers, try/except scope nesting) are not yet
-                        // roundtrip-safe.  validate_labels passes but runtime
-                        // behavior is wrong for function-level try/except.
-                        let cf_complexity = tmp_func.ops.iter()
-                            .filter(|op| matches!(op.kind.as_str(), "if" | "br_if" | "check_exception"))
-                            .count();
-                        // Exception-handling functions now go through TIR:
-                        // the exception_handler_blocks set in lower_to_simple
-                        // preserves handler labels, LAST_EXCEPTION_COL stashes
-                        // col_offset at raise time, and the polarity fixes ensure
-                        // correct loop body/exit ordering.  Verified 50/50 on core
-                        // conformance suite with MOLT_TIR_ENABLE_EH=1.
-                        //
-                        // Keep the bypass debug-only. The default path must run
-                        // exception-handling functions through TIR so regressions
-                        // surface in normal builds instead of being masked.
-                        let has_exception_handling = tmp_func.ops.iter()
-                            .any(|op| op.kind == "check_exception");
-                        let force_eh_bypass =
-                            env_setting("MOLT_TIR_SKIP_EH").as_deref() == Some("1");
-                        if tmp_func.name.contains("__molt_module_chunk_")
-                            || tmp_func.ops.len() > 2000
-                            || cf_complexity > 30
-                            || (has_exception_handling && force_eh_bypass)
-                        {
-                            return (idx, content_hash, None);
-                        }
-                        // Debug skip: MOLT_TIR_SKIP_PATTERN=<pat1,pat2,...> skips
-                        // TIR for any function whose name contains any pattern.
-                        if let Ok(skip_pats) = std::env::var("MOLT_TIR_SKIP_PATTERN") {
-                            for skip_pat in skip_pats.split(',') {
-                                let pat = skip_pat.trim();
-                                if !pat.is_empty() && tmp_func.name.contains(pat) {
-                                    return (idx, content_hash, None);
-                                }
-                            }
-                        }
-                        // Debug: MOLT_TIR_ONLY_PATTERN=<pat1,pat2,...> runs TIR ONLY
-                        // on functions matching at least one pattern, skip all others.
-                        if let Ok(only_pats) = std::env::var("MOLT_TIR_ONLY_PATTERN") {
-                            let pats: Vec<&str> = only_pats.split(',')
-                                .map(|p| p.trim())
-                                .filter(|p| !p.is_empty())
-                                .collect();
-                            if !pats.is_empty() && !pats.iter().any(|p| tmp_func.name.contains(p)) {
-                                return (idx, content_hash, None);
-                            }
                         }
                         // The TIR roundtrip linearizes structured control flow
                         // into jump/label blocks. Rewrite phi merges only for
@@ -2980,19 +2918,17 @@ impl SimpleBackend {
                             "TIR roundtrip emitted invalid labels for '{}'",
                             func_name
                         );
-                        (idx, content_hash, Some(ops))
+                        (idx, content_hash, ops)
                     })
                     .collect()
                 );
 
                 // Phase 3 (sequential): apply validated TIR ops and cache them.
                 for (idx, content_hash, ops) in &results {
-                    if let Some(ops) = ops {
-                        let _ = std::mem::replace(&mut ir.functions[*idx].ops, ops.clone());
-                        tir_optimized_names.insert(ir.functions[*idx].name.clone());
-                        let bytes = crate::tir::serialize::serialize_ops(ops);
-                        tir_cache.put(content_hash, &bytes, vec![]);
-                    }
+                    let _ = std::mem::replace(&mut ir.functions[*idx].ops, ops.clone());
+                    tir_optimized_names.insert(ir.functions[*idx].name.clone());
+                    let bytes = crate::tir::serialize::serialize_ops(ops);
+                    tir_cache.put(content_hash, &bytes, vec![]);
                 }
 
                 let tir_elapsed = tir_start.elapsed();
