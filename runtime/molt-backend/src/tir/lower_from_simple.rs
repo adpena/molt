@@ -18,14 +18,15 @@ use super::values::ValueId;
 ///
 /// Pipeline: SimpleIR ops → CFG extraction → SSA conversion → TIR construction.
 ///
-/// Type hints from the SimpleIR metadata (`fast_int`, `fast_float`, `type_hint`)
-/// are propagated as initial seed types on the SSA values that correspond to
-/// ops carrying those hints. All other values start as `DynBox`.
+/// Compatibility metadata from the SimpleIR transport (`fast_int`,
+/// `fast_float`, `type_hint`) is propagated as initial seed types on the SSA
+/// values that correspond to ops carrying those hints. All other values start
+/// as `DynBox`.
 pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     // 0. Memory SSA: rewrite cell-based local variables (store_index/index on
     //    the locals list) into store_var/load_var. This enables the SSA pass
     //    to track local variable mutations through loop iterations — the key
-    //    enabler for type specialization and fast_int optimization on loops.
+    //    enabler for type specialization and integer-lane optimization on loops.
     //
     //    The rewrite is safe because lower_to_simple_ir restores the original
     //    store_index/index patterns from the SSA output.
@@ -442,8 +443,9 @@ fn detect_loop_structure(
     (roles, loop_pairs, loop_break_kinds)
 }
 
-/// Walk the original ops and propagate `fast_int` / `fast_float` / `type_hint`
-/// metadata to the corresponding SSA result values.
+/// Walk the original ops and propagate transport compatibility metadata
+/// (`fast_int` / `fast_float` / `type_hint`) to the corresponding SSA result
+/// values.
 ///
 /// The SSA pass creates result ValueIds sequentially as it visits ops. We
 /// replay the same visitation order (skipping structural ops) to correlate
@@ -694,7 +696,7 @@ mod tests {
         }
     }
 
-    /// Helper: create an op with fast_int hint.
+    /// Helper: create an op with integer compatibility hint.
     fn op_fast_int(kind: &str, args: &[&str], out: &str) -> OpIR {
         OpIR {
             kind: kind.to_string(),
@@ -705,7 +707,7 @@ mod tests {
         }
     }
 
-    /// Helper: create an op with fast_float hint.
+    /// Helper: create an op with float compatibility hint.
     fn op_fast_float(kind: &str, args: &[&str], out: &str) -> OpIR {
         OpIR {
             kind: kind.to_string(),
@@ -807,10 +809,10 @@ mod tests {
     }
 
     // =======================================================================
-    // Test 3: fast_int propagation
+    // Test 3: integer compatibility metadata seeds I64
     // =======================================================================
     #[test]
-    fn fast_int_type_propagation() {
+    fn integer_compatibility_hint_seeds_i64_type() {
         let func_ir = make_func(
             "int_add",
             &[],
@@ -830,22 +832,23 @@ mod tests {
         assert!(entry.ops.len() >= 3, "should have at least 3 ops");
         let add_op = &entry.ops[2];
         assert!(!add_op.results.is_empty(), "add op should have a result");
-        // The result's type in the function should be I64 because fast_int was set.
+        // The result's type in the function should be I64 because the integer
+        // compatibility hint was set.
         // We don't store types on TirFunction directly, but we can verify via
         // the return type inference — since the only return is `c` which is I64,
         // the return type should be I64.
         assert_eq!(
             tir.return_type,
             TirType::I64,
-            "return type should be I64 from fast_int propagation"
+            "return type should be I64 from integer compatibility hint seeding"
         );
     }
 
     // =======================================================================
-    // Test 4: fast_float propagation
+    // Test 4: float compatibility metadata seeds F64
     // =======================================================================
     #[test]
-    fn fast_float_type_propagation() {
+    fn float_compatibility_hint_seeds_f64_type() {
         let func_ir = make_func(
             "float_add",
             &[],
@@ -862,7 +865,7 @@ mod tests {
         assert_eq!(
             tir.return_type,
             TirType::F64,
-            "return type should be F64 from fast_float propagation"
+            "return type should be F64 from float compatibility hint seeding"
         );
     }
 
