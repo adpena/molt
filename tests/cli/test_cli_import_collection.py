@@ -8087,6 +8087,19 @@ def test_read_cached_json_object_reuses_same_payload_instance(
     assert second["hash"] == "abc"
 
 
+def test_write_cached_json_object_creates_parent_directories(tmp_path: Path) -> None:
+    cache_path = tmp_path / "nested" / "cache" / "payload.json"
+    cli._PERSISTED_JSON_OBJECT_CACHE.clear()
+
+    cli._write_cached_json_object(cache_path, {"version": 1, "hash": "abc"})
+
+    assert cache_path.exists()
+    assert json.loads(cache_path.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "hash": "abc",
+    }
+
+
 def test_stage_backend_output_and_caches_promotes_module_cache(
     tmp_path: Path,
 ) -> None:

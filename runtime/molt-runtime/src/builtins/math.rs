@@ -1572,10 +1572,6 @@ pub extern "C" fn molt_math_isinf(val_bits: u64) -> u64 {
 pub extern "C" fn molt_math_isnan(val_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(val_bits);
-        eprintln!("DEBUG isnan: val_bits={:#018x} is_float={} is_ptr={} as_float_ext={:?}", val_bits, obj.is_float(), obj.is_ptr(), as_float_extended(obj));
-        if let Some(ptr) = obj.as_ptr() {
-            eprintln!("DEBUG isnan: type_id={} TYPE_ID_FLOAT={}", unsafe { object_type_id(ptr) }, TYPE_ID_FLOAT);
-        }
         let Some(value) = coerce_real_named(_py, val_bits, "isnan") else {
             return MoltObject::none().bits();
         };
