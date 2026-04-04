@@ -73,6 +73,25 @@ const POLL_TABLE_FUNCS: &[&str] = &[
     "contextlib_async_exitstack_enter_context_poll",
 ];
 
+fn prepare_lir_wasm_fast_output(
+    tir_func: &crate::tir::function::TirFunction,
+) -> Option<crate::tir::lower_to_wasm::WasmFunctionOutput> {
+    let output = crate::tir::lower_to_wasm::lower_tir_to_wasm_boxed_i64_abi(tir_func)?;
+    let has_placeholder_call = output
+        .instructions
+        .iter()
+        .any(|inst| matches!(inst, Instruction::Call(0)));
+    if has_placeholder_call {
+        None
+    } else {
+        Some(output)
+    }
+}
+
+fn is_production_lir_wasm_fast_path_name(func_name: &str) -> bool {
+    func_name.contains("____molt_globals_builtin__")
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ReservedRuntimeCallableSpec {
     index: u32,
@@ -271,6 +290,8 @@ struct CompileFuncContext<'a> {
     class_def_spill_offset: u32,
     /// Data segment ref for the 8-byte scratch slot used by `const_str` ops.
     const_str_scratch_segment: DataSegmentRef,
+    /// Precomputed production-safe LIR-based wasm outputs keyed by function name.
+    lir_fast_outputs: &'a BTreeMap<String, crate::tir::lower_to_wasm::WasmFunctionOutput>,
 }
 
 trait TypeSectionExt {
@@ -1587,6 +1608,10 @@ impl WasmBackend {
             crate::fold_constants(&mut func_ir.ops);
             crate::passes::hoist_loop_invariants(func_ir);
         }
+        let mut lir_fast_outputs: BTreeMap<
+            String,
+            crate::tir::lower_to_wasm::WasmFunctionOutput,
+        > = BTreeMap::new();
         // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
         if crate::env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             let tir_dump = crate::env_setting("TIR_DUMP").as_deref() == Some("1");
@@ -1608,6 +1633,13 @@ impl WasmBackend {
                     if let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
                     {
                         func_ir.ops = cached_ops;
+                        let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
+                        crate::tir::type_refine::refine_types(&mut tir_func);
+                        if is_production_lir_wasm_fast_path_name(&func_ir.name)
+                            && let Some(output) = prepare_lir_wasm_fast_output(&tir_func)
+                        {
+                            lir_fast_outputs.insert(func_ir.name.clone(), output);
+                        }
                         continue;
                     }
                 }
@@ -1627,6 +1659,11 @@ impl WasmBackend {
                             s.name, s.values_changed, s.ops_removed, s.ops_added
                         );
                     }
+                }
+                if is_production_lir_wasm_fast_path_name(&func_ir.name)
+                    && let Some(output) = prepare_lir_wasm_fast_output(&tir_func)
+                {
+                    lir_fast_outputs.insert(func_ir.name.clone(), output);
                 }
                 let optimized_ops =
                     crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map);
@@ -3564,6 +3601,7 @@ impl WasmBackend {
             call_func_spill_offset,
             class_def_spill_offset,
             const_str_scratch_segment,
+            lir_fast_outputs: &lir_fast_outputs,
         };
         for func_ir in &ir.functions {
             let type_idx = if func_ir.name.ends_with("_poll") {
@@ -4337,6 +4375,17 @@ impl WasmBackend {
                 .export(&func_ir.name, ExportKind::Func, self.func_count);
         }
         self.func_count += 1;
+        if is_production_lir_wasm_fast_path_name(&func_ir.name)
+            && !ctx.escaped_callable_targets.contains(&func_ir.name)
+            && let Some(lir_output) = ctx.lir_fast_outputs.get(&func_ir.name)
+        {
+            let mut func = Function::new_with_locals_types(lir_output.locals.clone());
+            for instruction in &lir_output.instructions {
+                func.instruction(instruction);
+            }
+            self.codes.function(&func);
+            return;
+        }
         let func_map = ctx.func_map;
         let func_indices = ctx.func_indices;
         let trampoline_map = ctx.trampoline_map;
@@ -14490,6 +14539,19 @@ fn add_reloc_sections(
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn production_lir_wasm_fast_path_is_reserved_for_global_builtin_lane() {
+        assert!(is_production_lir_wasm_fast_path_name(
+            "molt_test____molt_globals_builtin__"
+        ));
+        assert!(!is_production_lir_wasm_fast_path_name(
+            "molt_test_regular_helper"
+        ));
+        assert!(!is_production_lir_wasm_fast_path_name(
+            "molt_test_user_callable"
+        ));
+    }
 
     // ---------------------------------------------------------------
     // br_table state dispatch

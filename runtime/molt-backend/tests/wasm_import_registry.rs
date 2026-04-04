@@ -19,6 +19,8 @@ fn empty_ir() -> SimpleIR {
                 ..OpIR::default()
             }],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     }

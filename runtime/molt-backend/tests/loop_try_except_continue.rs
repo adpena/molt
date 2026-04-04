@@ -49,6 +49,8 @@ fn loop_start_after_unreachable_code() {
             params: Vec::new(),
             ops,
             param_types: None,
+           source_file: None,
+            is_extern: false,
         }],
         profile: None,
     };
@@ -83,6 +85,8 @@ fn loop_index_start_after_unreachable_code() {
             params: Vec::new(),
             ops,
             param_types: None,
+           source_file: None,
+            is_extern: false,
         }],
         profile: None,
     };
@@ -127,6 +131,8 @@ fn loop_start_in_reachable_code_still_works() {
             params: Vec::new(),
             ops,
             param_types: None,
+           source_file: None,
+            is_extern: false,
         }],
         profile: None,
     };

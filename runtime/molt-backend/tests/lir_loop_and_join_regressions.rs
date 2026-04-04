@@ -51,6 +51,7 @@ fn nested_loop_carried_values_with_inner_if_phi_compile() {
     store_acc.args = Some(vec!["acc_init".to_string()]);
     ops.push(store_acc);
 
+    ops.push(op("loop_start"));
     let mut outer_idx = op("loop_index_start");
     outer_idx.args = Some(vec!["zero".to_string()]);
     outer_idx.out = Some("i".to_string());
@@ -65,6 +66,7 @@ fn nested_loop_carried_values_with_inner_if_phi_compile() {
     outer_break.args = Some(vec!["outer_cond".to_string()]);
     ops.push(outer_break);
 
+    ops.push(op("loop_start"));
     let mut inner_idx = op("loop_index_start");
     inner_idx.args = Some(vec!["zero".to_string()]);
     inner_idx.out = Some("j".to_string());
@@ -187,6 +189,7 @@ fn loop_body_if_join_then_continue_compiles() {
     stop.out = Some("stop".to_string());
     ops.push(stop);
 
+    ops.push(op("loop_start"));
     let mut idx = op("loop_index_start");
     idx.args = Some(vec!["zero".to_string()]);
     idx.out = Some("idx".to_string());
@@ -293,6 +296,7 @@ fn nested_loop_if_phi_survives_tir_pipeline_without_fallback() {
     store_acc.args = Some(vec!["acc_init".to_string()]);
     ops.push(store_acc);
 
+    ops.push(op("loop_start"));
     let mut outer_idx = op("loop_index_start");
     outer_idx.args = Some(vec!["zero".to_string()]);
     outer_idx.out = Some("i".to_string());
@@ -307,6 +311,7 @@ fn nested_loop_if_phi_survives_tir_pipeline_without_fallback() {
     outer_break.args = Some(vec!["outer_cond".to_string()]);
     ops.push(outer_break);
 
+    ops.push(op("loop_start"));
     let mut inner_idx = op("loop_index_start");
     inner_idx.args = Some(vec!["zero".to_string()]);
     inner_idx.out = Some("j".to_string());

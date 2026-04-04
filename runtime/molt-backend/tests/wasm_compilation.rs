@@ -27,6 +27,8 @@ fn compile_single_function(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
             params: params.iter().map(|p| (*p).to_string()).collect(),
             ops,
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     })
@@ -116,6 +118,8 @@ fn empty_module_compiles_to_valid_wasm() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -133,6 +137,8 @@ fn empty_module_is_structurally_valid_wasm() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -148,6 +154,8 @@ fn empty_module_exports_molt_main() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -168,6 +176,8 @@ fn empty_module_exports_memory() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -350,12 +360,16 @@ fn call_guarded_escaped_function_dispatches_on_object() {
                 params: vec!["p0".to_string(), "p1".to_string()],
                 ops: vec![func_new, call, ret_value("v0")],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
             FunctionIR {
                 name: "guarded_target".to_string(),
                 params: vec!["arg0".to_string(), "arg1".to_string()],
                 ops: vec![op("ret_void")],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
         ],
         profile: None,
@@ -444,6 +458,8 @@ fn multiple_functions_compile() {
                 params: vec![],
                 ops: vec![op("ret_void")],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
             FunctionIR {
                 name: "molt_helper".to_string(),
@@ -454,6 +470,8 @@ fn multiple_functions_compile() {
                     ret
                 }],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
         ],
         profile: None,

@@ -38,6 +38,8 @@ fn jumpful_else_without_end_if_does_not_panic() {
             params: Vec::new(),
             ops,
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     };

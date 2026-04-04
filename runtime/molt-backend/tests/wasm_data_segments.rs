@@ -15,6 +15,12 @@ fn op(kind: &str) -> OpIR {
     }
 }
 
+fn use_value(name: &str) -> OpIR {
+    let mut op = op("print_obj");
+    op.args = Some(vec![name.to_string()]);
+    op
+}
+
 fn compile_ir(ir: SimpleIR) -> Vec<u8> {
     WasmBackend::new().compile(ir)
 }
@@ -72,6 +78,8 @@ fn empty_module_has_data_segments() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -95,8 +103,10 @@ fn const_str_creates_data_segment_with_string_bytes() {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![c, op("ret_void")],
+            ops: vec![c, use_value("v0"), op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -123,8 +133,10 @@ fn multiple_const_strs_create_separate_segments() {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![c1, c2, op("ret_void")],
+            ops: vec![c1, c2, use_value("v0"), use_value("v1"), op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -150,8 +162,10 @@ fn duplicate_const_strs_are_deduplicated() {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![c1, c2, op("ret_void")],
+            ops: vec![c1, c2, use_value("v0"), use_value("v1"), op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -191,6 +205,8 @@ fn data_segments_are_8_byte_aligned() {
             params: vec![],
             ops: vec![c1, c2, c3, op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -223,6 +239,8 @@ fn data_segments_do_not_overlap() {
             params: vec![],
             ops: vec![c1, c2, op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -258,8 +276,10 @@ fn scratch_buffer_for_const_str_exists() {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![c, op("ret_void")],
+            ops: vec![c, use_value("v0"), op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -280,7 +300,7 @@ fn scratch_buffer_for_const_str_exists() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn empty_string_constant_creates_zero_length_segment() {
+fn empty_string_constant_does_not_allocate_payload_segment() {
     let mut c = op("const_str");
     c.s_value = Some(String::new());
     c.out = Some("v0".to_string());
@@ -291,6 +311,8 @@ fn empty_string_constant_creates_zero_length_segment() {
             params: vec![],
             ops: vec![c, op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -298,7 +320,7 @@ fn empty_string_constant_creates_zero_length_segment() {
     let segments = extract_data_segments(&wasm);
     let has_empty = segments.iter().any(|seg| seg.data.is_empty());
     assert!(
-        has_empty,
-        "should have a zero-length data segment for empty string"
+        !has_empty,
+        "empty string payloads should not allocate zero-length data segments"
     );
 }

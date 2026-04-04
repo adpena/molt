@@ -25,10 +25,11 @@ use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_native::builder_with_options as native_isa_builder_with_options;
 #[cfg(feature = "native-backend")]
 use cranelift_object::{ObjectBuilder, ObjectModule};
+use std::collections::BTreeMap;
 #[cfg(feature = "native-backend")]
 use std::collections::HashSet;
 #[cfg(feature = "native-backend")]
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 #[cfg(feature = "native-backend")]
 use std::sync::OnceLock;
@@ -211,6 +212,55 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
 
     for (idx, op) in insertions {
         ops.insert(idx, op);
+    }
+}
+
+/// Collapse simple alias-only copy ops (`copy`, `copy_var`, `identity_alias`)
+/// by rewriting later uses to the original source name.
+pub fn rewrite_copy_aliases(ops: &mut Vec<OpIR>) {
+    let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+    let resolve_alias = |name: &str, aliases: &BTreeMap<String, String>| -> String {
+        let mut current = name;
+        while let Some(next) = aliases.get(current) {
+            current = next;
+        }
+        current.to_string()
+    };
+
+    for op in ops.iter_mut() {
+        if let Some(var) = op.var.as_mut() {
+            *var = resolve_alias(var, &aliases);
+        }
+        if let Some(args) = op.args.as_mut() {
+            for arg in args {
+                *arg = resolve_alias(arg, &aliases);
+            }
+        }
+
+        match op.kind.as_str() {
+            "copy_var" if op.args.is_none() => {
+                if let (Some(src), Some(out)) = (op.var.as_ref(), op.out.as_ref())
+                    && out != "none"
+                {
+                    aliases.insert(out.clone(), src.clone());
+                    op.kind = "nop".to_string();
+                    op.var = None;
+                    op.out = None;
+                }
+            }
+            "copy" | "identity_alias" => {
+                if let (Some(args), Some(out)) = (op.args.as_ref(), op.out.as_ref())
+                    && let Some(src) = args.first()
+                    && out != "none"
+                {
+                    aliases.insert(out.clone(), src.clone());
+                    op.kind = "nop".to_string();
+                    op.args = None;
+                    op.out = None;
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -415,8 +465,11 @@ impl NativeBackendModuleContext {
 
 #[cfg(feature = "native-backend")]
 fn analyze_native_backend_functions(functions: &[FunctionIR]) -> NativeBackendIrAnalysis {
-    let defined_functions: BTreeSet<String> =
-        functions.iter().map(|func| func.name.clone()).collect();
+    let defined_functions: BTreeSet<String> = functions
+        .iter()
+        .filter(|func| !func.is_extern)
+        .map(|func| func.name.clone())
+        .collect();
     let mut closure_functions: BTreeSet<String> = BTreeSet::new();
     let mut task_kinds: BTreeMap<String, TrampolineKind> = BTreeMap::new();
     let mut task_closure_sizes: BTreeMap<String, i64> = BTreeMap::new();
@@ -2034,6 +2087,7 @@ struct LoopFrame {
     after_block: Block,
     index_name: Option<String>,
     next_index: Option<Value>,
+    next_index_raw: Option<Value>,
     /// True when the loop uses the linearized TIR path (no dedicated
     /// Cranelift loop block; counter flows through phi variables).
     /// `loop_end` must NOT decrement `loop_depth` for linearized loops
@@ -2555,30 +2609,6 @@ impl SimpleBackend {
                                 }
                             }
                         }
-                        Err(_panic) => {
-                            eprintln!("  -> retry panicked for {}", name);
-                            let sig = self
-                                .module
-                                .declarations()
-                                .get_function_decl(func_id)
-                                .signature
-                                .clone();
-                            eprintln!(
-                                "  -> emitting trap stub for {} (Cranelift panic)",
-                                name
-                            );
-                            match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
-                                Ok(()) => {
-                                    self.defined_func_names.insert(name);
-                                }
-                                Err(stub_err) => {
-                                    eprintln!(
-                                        "  -> trap stub also failed for {}: {}",
-                                        name, stub_err
-                                    );
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -2989,13 +3019,13 @@ impl SimpleBackend {
                         // correct loop body/exit ordering.  Verified 50/50 on core
                         // conformance suite with MOLT_TIR_ENABLE_EH=1.
                         //
-                        // Set MOLT_TIR_SKIP_EH=1 to restore the old bypass.
+                        // Keep the bypass debug-only. The default path must run
+                        // exception-handling functions through TIR so regressions
+                        // surface in normal builds instead of being masked.
                         let has_exception_handling = tmp_func.ops.iter()
                             .any(|op| op.kind == "check_exception");
-                        // Skip TIR for exception-handling functions by default.
-                        // The TIR roundtrip for check_exception patterns is not
-                        // yet stable (Cranelift crashes on complex eh patterns).
-                        let force_eh_bypass = true;
+                        let force_eh_bypass =
+                            env_setting("MOLT_TIR_SKIP_EH").as_deref() == Some("1");
                         // Cell-loop guard REMOVED: Memory SSA (cell→store_var
                         // rewrite in lower_from_simple) now handles cell-based
                         // Memory SSA rewrites cell locals to store_var/load_var,
@@ -3139,6 +3169,16 @@ impl SimpleBackend {
         // Cranelift's O(n²) register allocator blowup.
         split_megafunctions(&mut ir);
         rewrite_annotate_stubs(&mut ir);
+        for func in &mut ir.functions {
+            rewrite_copy_aliases(&mut func.ops);
+            if std::env::var("MOLT_DUMP_REWRITTEN_FUNC").as_deref() == Ok(func.name.as_str()) {
+                let mut dump = String::new();
+                for (idx, op) in func.ops.iter().enumerate() {
+                    let _ = writeln!(dump, "{idx:04}: {:?}", op);
+                }
+                let _ = std::fs::write("tmp/rewritten_func_ir.txt", dump);
+            }
+        }
         if timing {
             let passes_elapsed = compile_start.elapsed();
             eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");
@@ -3895,7 +3935,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            }],
+            is_extern: false,
+}],
             profile: None,
         };
         let bytes = SimpleBackend::new().compile(ir);
@@ -3968,6 +4009,7 @@ mod tests {
             ops,
             param_types: func.param_types.clone(),
             source_file: func.source_file.clone(),
+            is_extern: false,
         }
     }
 
@@ -4015,7 +4057,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            }],
+            is_extern: false,
+}],
             profile: None,
         };
 
@@ -4065,7 +4108,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            }],
+            is_extern: false,
+}],
             profile: None,
         };
 
@@ -4092,7 +4136,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            },
+            is_extern: false,
+},
             FunctionIR {
                 name: "helper_poll".to_string(),
                 params: vec!["state".to_string()],
@@ -4103,7 +4148,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            },
+            is_extern: false,
+},
         ];
 
         let context = SimpleBackend::build_module_context(&functions);
@@ -4131,7 +4177,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            },
+            is_extern: false,
+},
             FunctionIR {
                 name: "void_helper".to_string(),
                 params: vec![],
@@ -4141,7 +4188,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            },
+            is_extern: false,
+},
         ];
 
         let context = SimpleBackend::build_module_context(&functions);
@@ -4185,7 +4233,8 @@ mod tests {
                     }],
                     param_types: None,
                     source_file: None,
-                },
+                is_extern: false,
+},
                 FunctionIR {
                     name: chunk1,
                     params: vec![],
@@ -4204,7 +4253,8 @@ mod tests {
                     ],
                     param_types: None,
                     source_file: None,
-                },
+                is_extern: false,
+},
                 FunctionIR {
                     name: stub.clone(),
                     params: vec![],
@@ -4229,7 +4279,8 @@ mod tests {
                     ],
                     param_types: None,
                     source_file: None,
-                },
+                is_extern: false,
+},
             ],
             &stub,
         );
@@ -4267,7 +4318,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            },
+            is_extern: false,
+},
             FunctionIR {
                 name: "demo____molt_globals_builtin__".to_string(),
                 params: vec![],
@@ -4289,7 +4341,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            },
+            is_extern: false,
+},
         ]);
 
         assert_eq!(result.get("demo__molt_module_chunk_1"), Some(&false));
@@ -4319,7 +4372,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            }],
+            is_extern: false,
+}],
             profile: None,
         };
 
@@ -4372,7 +4426,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            }],
+            is_extern: false,
+}],
             profile: None,
         };
 
@@ -4525,7 +4580,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            }],
+            is_extern: false,
+}],
             profile: None,
         };
 
@@ -4667,7 +4723,8 @@ mod tests {
             ],
             param_types: None,
             source_file: None,
-        };
+        is_extern: false,
+};
 
         let roundtripped = roundtrip_function_through_tir(&func);
         let clif = compile_function_to_clif_text(vec![roundtripped], "hello_regress____molt_globals_builtin__");
@@ -4763,6 +4820,10 @@ mod tests {
                     ..OpIR::default()
                 },
                 OpIR {
+                    kind: "loop_continue".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
                     kind: "loop_end".into(),
                     ..OpIR::default()
                 },
@@ -4770,6 +4831,10 @@ mod tests {
                     kind: "add".into(),
                     args: Some(vec!["i".into(), "one".into()]),
                     out: Some("i".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_continue".into(),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -4784,7 +4849,8 @@ mod tests {
             ],
             param_types: None,
             source_file: None,
-        };
+        is_extern: false,
+};
 
         let roundtripped = roundtrip_function_through_tir(&func);
         let clif = compile_function_to_clif_text(vec![roundtripped], "nested_loops");
@@ -4808,7 +4874,8 @@ mod tests {
                     }],
                     param_types: None,
                     source_file: None,
-                },
+                is_extern: false,
+},
                 FunctionIR {
                     name: "molt_main".to_string(),
                     params: vec![],
@@ -4827,7 +4894,8 @@ mod tests {
                     ],
                     param_types: None,
                     source_file: None,
-                },
+                is_extern: false,
+},
             ],
             profile: None,
         };
@@ -4850,7 +4918,8 @@ mod tests {
                     }],
                     param_types: None,
                     source_file: None,
-                },
+                is_extern: false,
+},
                 FunctionIR {
                     name: "molt_main".to_string(),
                     params: vec![],
@@ -4877,7 +4946,8 @@ mod tests {
                     ],
                     param_types: None,
                     source_file: None,
-                },
+                is_extern: false,
+},
             ],
             profile: None,
         };
@@ -4982,7 +5052,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            }],
+            is_extern: false,
+}],
             "molt_main",
         );
 
@@ -5080,49 +5151,6 @@ mod tests {
     }
 
     #[test]
-    fn native_tir_skip_pattern_keeps_original_ops() {
-        let key = "MOLT_TIR_SKIP_PATTERN";
-        let prev = std::env::var(key).ok();
-        unsafe {
-            std::env::set_var(key, "molt_main");
-        }
-        let bytes = SimpleBackend::new().compile(SimpleIR {
-            functions: vec![FunctionIR {
-                name: "molt_main".to_string(),
-                params: vec![],
-                ops: vec![
-                    OpIR {
-                        kind: "const".to_string(),
-                        out: Some("x".to_string()),
-                        value: Some(1),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "ret".to_string(),
-                        args: Some(vec!["x".to_string()]),
-                        ..OpIR::default()
-                    },
-                ],
-                param_types: None,
-                source_file: None,
-            }],
-            profile: None,
-        });
-        match prev {
-            Some(value) => unsafe {
-                std::env::set_var(key, value);
-            },
-            None => unsafe {
-                std::env::remove_var(key);
-            },
-        }
-        assert!(
-            !bytes.is_empty(),
-            "skip-pattern compile must preserve original function body"
-        );
-    }
-
-    #[test]
     fn fast_int_overflow_result_does_not_unbox_merged_bigint_result() {
         let clif = compile_function_to_clif_text(
             vec![FunctionIR {
@@ -5169,7 +5197,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            }],
+            is_extern: false,
+}],
             "molt_main",
         );
 

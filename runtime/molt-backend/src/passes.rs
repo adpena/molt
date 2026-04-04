@@ -1305,6 +1305,7 @@ mod tests {
             params: vec![],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_const_int("total_init", 0),                               // 0
                 make_const_int("start", 0),                                    // 1
@@ -1339,6 +1340,7 @@ mod tests {
             params: vec![],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_const_int("a", 1),
                 make_const_int("b", 2),
@@ -1365,6 +1367,7 @@ mod tests {
             params: vec![],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_const_int("a", 1),
                 make_const_int("b", 2),
@@ -1387,6 +1390,7 @@ mod tests {
             params: vec![],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_const_int("a", 1),
                 make_op("loop_start"),
@@ -1412,6 +1416,7 @@ mod tests {
             params: vec![],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_const_int("a", 1),
                 make_const_int("b", 2),
@@ -1444,6 +1449,7 @@ mod tests {
             params: vec![],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_const_int("a", 1),
                 {
@@ -1484,6 +1490,7 @@ mod tests {
             params: vec!["x".to_string()],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_ref_op("inc_ref", "x"),
                 make_ref_op("dec_ref", "x"),
@@ -1505,6 +1512,7 @@ mod tests {
             params: vec!["x".to_string()],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_ref_op("inc_ref", "x"),
                 make_op("if"),
@@ -1526,6 +1534,7 @@ mod tests {
             params: vec!["y".to_string()],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_ref_op("borrow", "y"),
                 make_ref_op("release", "y"),
@@ -1546,6 +1555,7 @@ mod tests {
             params: vec!["x".to_string()],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_ref_op("inc_ref", "x"),
                 // An op that uses x as an argument — breaks the window.
@@ -1568,6 +1578,7 @@ mod tests {
             params: vec!["a".to_string(), "b".to_string()],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_ref_op("inc_ref", "a"),
                 make_ref_op("inc_ref", "b"),
@@ -1609,6 +1620,7 @@ mod tests {
                     ops: vec![make_op("ret_void")],
                     param_types: None,
                     source_file: None,
+                    is_extern: false,
                 },
                 FunctionIR {
                     name: "molt_isolate_import".to_string(),
@@ -1628,6 +1640,7 @@ mod tests {
                     ],
                     param_types: None,
                     source_file: None,
+                    is_extern: false,
                 },
                 FunctionIR {
                     name: "molt_init_math".to_string(),
@@ -1635,6 +1648,7 @@ mod tests {
                     ops: vec![make_op("ret_void")],
                     param_types: None,
                     source_file: None,
+                    is_extern: false,
                 },
             ],
             profile: None,
@@ -1666,6 +1680,7 @@ mod tests {
             params: vec!["p0".to_string()],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_const_int("v0", 1),
                 make_const_int("v1", 2),
@@ -1694,6 +1709,7 @@ mod tests {
             params: vec![],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_op("const_none"),
                 make_op("const_none"),
@@ -1718,6 +1734,7 @@ mod tests {
             params: vec!["p0".to_string()],
             param_types: None,
             source_file: None,
+            is_extern: false,
             ops: vec![
                 make_const_int("v0", 1),
                 make_const_int("v1", 2),

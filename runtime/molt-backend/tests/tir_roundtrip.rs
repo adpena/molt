@@ -117,6 +117,8 @@ fn make_comprehension_ir() -> FunctionIR {
         ops,
         params: vec![],
         param_types: None,
+       source_file: None,
+            is_extern: false,
     }
 }
 
