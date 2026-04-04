@@ -3,11 +3,11 @@
 Full pipeline audit: Python source to native binary. Each stage identifies
 concrete bottlenecks, missing optimizations, and estimated impact.
 
-> Note (2026-04-03): this audit describes the current native backend input path,
-> not the canonical long-term IR contract. The architecture source of truth is
-> `docs/spec/areas/compiler/0100_MOLT_IR.md`. Current `SimpleIR` transport plus
-> hint-driven fast paths are transitional and should be read as optimization
-> debt, not the desired end state.
+> Note (2026-04-03): this audit describes the current native backend input
+> path, not the canonical long-term IR contract. The architecture source of
+> truth is `docs/spec/areas/compiler/0100_MOLT_IR.md`. Current `SimpleIR`
+> transport plus hint-driven fast paths are transitional compatibility debt and
+> should not be treated as the desired end state.
 
 ---
 

@@ -52,12 +52,21 @@ pub struct OpIR {
     pub var: Option<String>,
     pub args: Option<Vec<String>>,
     pub out: Option<String>,
+    /// Transitional transport compatibility hint for legacy consumers.
+    /// Not the canonical backend representation contract.
     pub fast_int: Option<bool>,
+    /// Transitional transport compatibility hint for legacy consumers.
+    /// Not the canonical backend representation contract.
     pub fast_float: Option<bool>,
+    /// Transitional transport compatibility hint for specific transport-only
+    /// patterns. Not the canonical backend representation contract.
     pub raw_int: Option<bool>,
     pub stack_eligible: Option<bool>,
     pub task_kind: Option<String>,
     pub container_type: Option<String>,
+    /// Transitional semantic hint preserved on the transport surface for
+    /// compatibility consumers. The canonical representation contract lives in
+    /// TIR/LIR, not this field.
     pub type_hint: Option<String>,
     /// Inline-cache site index for attribute access acceleration.
     /// Assigned by the frontend for `get_attr_generic_ptr` ops.

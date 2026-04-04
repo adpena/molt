@@ -37,8 +37,10 @@ This file is forward-looking only.
 ### Medium Term
 
 - Expand language and stdlib coverage under the Rust-first lowering model.
-- Retire `fast_int` / `fast_float` / `raw_int` as the architectural center of
-  backend optimization in favor of a shared representation-aware lowering path.
+- Retire `fast_int` / `fast_float` / `raw_int` / `type_hint` as the
+  architectural center of backend optimization in favor of a shared
+  representation-aware lowering path, keeping any surviving transport hints as
+  passive compatibility data only.
 - Harden daemon, build, and harness workflows for multi-agent development.
 - Move more hot semantics into runtime primitives and intrinsics.
 

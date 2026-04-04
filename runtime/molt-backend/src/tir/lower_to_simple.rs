@@ -63,10 +63,13 @@ thread_local! {
 /// - One [`OpIR`] per [`TirOp`] in the block.
 /// - Control-flow [`OpIR`] ops derived from the block's [`Terminator`].
 ///
-/// When a `types` map is provided, the back-conversion propagates TIR type
-/// refinement results into SimpleIR fast-path flags (`fast_int`, `fast_float`,
-/// `type_hint`, `stack_eligible`), closing the optimisation gap where type
-/// information was previously lost.
+/// When a `types` map is provided, the back-conversion preserves enough
+/// transport metadata for compatibility consumers still reading SimpleIR hint
+/// fields (`fast_int`, `fast_float`, `type_hint`, `stack_eligible`).
+///
+/// These hints are not the canonical backend representation contract; they are
+/// compatibility data carried on the transport surface while native/WASM/LLVM
+/// converge on representation-aware LIR.
 pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>) -> Vec<OpIR> {
     VALUE_NAME_OVERRIDES.with(|overrides| {
         let mut overrides = overrides.borrow_mut();
