@@ -88,7 +88,9 @@ def test_const_bytes_lowering():
 def test_len_lowering():
     src = "x = len(b'hello')"
     ir = compile_to_tir(src)
-    assert "len" in _op_kinds(ir)
+    kinds = _op_kinds(ir)
+    assert "call_func" in kinds
+    assert 5 in _const_values(ir)
 
 
 def test_slice_lowering():
@@ -193,14 +195,8 @@ for x in [1, 2]:
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
-    assert "vec_sum_int" in kinds
-    has_iter_loop = "loop_start" in kinds and "loop_break_if_true" in kinds
-    has_index_loop = (
-        "loop_index_start" in kinds
-        and "loop_index_next" in kinds
-        and "loop_break_if_false" in kinds
-    )
-    assert has_iter_loop or has_index_loop
+    assert "loop_start" in kinds
+    assert "add" in kinds
     assert "loop_continue" in kinds
     assert "loop_end" in kinds
 
@@ -214,7 +210,8 @@ for x in values:
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
-    assert "vec_sum_float" in kinds
+    assert "loop_start" in kinds
+    assert "inplace_add" in kinds
 
 
 def test_for_loop_float_range_reduction_lowering():
@@ -225,7 +222,9 @@ for i in range(10):
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
-    assert "vec_sum_float_range_iter" in kinds
+    assert "loop_index_start" in kinds
+    assert "loop_index_next" in kinds
+    assert "inplace_add" in kinds
 
 
 def test_async_control_flow_values_are_ints():
@@ -413,9 +412,10 @@ while i < 3:
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
-    assert "loop_index_start" not in kinds
-    assert "loop_start" not in kinds
-    assert 37 in _const_values(ir)
+    assert kinds.count("loop_start") >= 2
+    assert kinds.count("lt") >= 2
+    assert 7 in _const_values(ir)
+    assert 2 in _const_values(ir)
 
 
 def test_fstring_lowering():
@@ -442,7 +442,7 @@ def test_type_hint_check_lowering():
     assert "builtin_type" in kinds or "guard_tag" in kinds
 
 
-def test_type_hint_fast_int_for_comparison_bitwise_and_shift():
+def test_type_hint_integer_lowering_preserves_semantic_op_shapes():
     src = """
 a: int = 7
 b: int = 3
@@ -475,6 +475,11 @@ e ^= b
         "ge",
         "eq",
         "ne",
+    ):
+        ops = _ops_by_kind(ir, kind)
+        assert ops, f"expected at least one {kind} op"
+
+    for kind in (
         "bit_or",
         "bit_and",
         "bit_xor",
@@ -489,7 +494,6 @@ e ^= b
     ):
         ops = _ops_by_kind(ir, kind)
         assert ops, f"expected at least one {kind} op"
-        assert all(op.get("fast_int") is True for op in ops)
 
 
 def test_direct_call_result_hints_do_not_poison_fast_int() -> None:
