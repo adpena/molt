@@ -3026,38 +3026,6 @@ impl SimpleBackend {
                             .any(|op| op.kind == "check_exception");
                         let force_eh_bypass =
                             env_setting("MOLT_TIR_SKIP_EH").as_deref() == Some("1");
-                        // Cell-loop guard REMOVED: Memory SSA (cell→store_var
-                        // rewrite in lower_from_simple) now handles cell-based
-                        // Memory SSA rewrites cell locals to store_var/load_var,
-                        // so cell-loop functions now go through TIR correctly.
-                        // Detect cell-based variable pattern: missing → list_new → store_index.
-                        // Functions using this pattern need Memory SSA (cell rewrite)
-                        // which is not yet production-ready for multi-list functions.
-                        let uses_cell_vars = {
-                            // The cell list follows: missing → store_var; ... ; missing → list_new
-                            // But the sieve uses store_var/load_var directly — no cell list.
-                            // Check for the specific pattern: a list_new whose input is a missing value.
-                            let mut missing_outputs: std::collections::HashSet<String> = std::collections::HashSet::new();
-                            let mut cell_list_found = false;
-                            for op in &tmp_func.ops {
-                                if op.kind == "missing" {
-                                    if let Some(out) = &op.out {
-                                        missing_outputs.insert(out.clone());
-                                    }
-                                }
-                                if op.kind == "list_new" {
-                                    if let Some(args) = &op.args {
-                                        if args.iter().any(|a| missing_outputs.contains(a)) {
-                                            cell_list_found = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            cell_list_found
-                                && tmp_func.ops.iter().any(|op| op.kind == "loop_start")
-                                && tmp_func.ops.iter().any(|op| op.kind == "store_index")
-                        };
                         if tmp_func.name.contains("__molt_module_chunk_")
                             || tmp_func.ops.len() > 2000
                             || cf_complexity > 30

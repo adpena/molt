@@ -455,3 +455,85 @@ git add docs/spec/STATUS.md ROADMAP.md docs/superpowers/specs/2026-04-03-dynamic
 git rm docs/superpowers/specs/2026-03-30-conformance-perf-sprint-design.md docs/superpowers/plans/2026-03-30-conformance-perf-sprint.md
 git commit -m "docs: consolidate backend architecture around representation-aware LIR"
 ```
+
+## Task 7: End-To-End CLI, Profile, Target, And Backend Validation Matrix
+
+**Files:**
+- Modify: `tests/cli/test_cli_import_collection.py`
+- Modify: `tests/test_wasm_class_smoke.py`
+- Modify: `tests/test_native_lir_loop_join_semantics.py`
+- Modify: `tests/test_native_tir_skip_pattern.py`
+- Add targeted smoke helpers under `tests/` if needed
+- Modify: `docs/spec/STATUS.md`
+- Modify: `ROADMAP.md`
+
+- [ ] **Step 1: Define the canonical local E2E matrix**
+
+Cover at minimum:
+
+- CLI commands: `build`, `run`, `compare`, linked-WASM build/run helpers
+- profiles: `dev`, `release`
+- targets/backends: native/Cranelift and linked WASM
+- proof shape: successful build/run, honest rebuild behavior, and clean failure
+  behavior for intentionally unsupported semantics
+
+- [ ] **Step 2: Add/refresh end-to-end tests for native lanes**
+
+Cover:
+
+- `molt.cli build` on `dev` and `release`
+- direct binary execution after build
+- runtime rebuild correctness after source/runtime changes
+- unsupported dynamic-execution helpers (`eval`/`exec`) fail honestly without
+  bypassing TIR/LIR
+
+- [ ] **Step 3: Add/refresh end-to-end tests for linked-WASM lanes**
+
+Cover:
+
+- linked WASM build success from the CLI
+- linked module execution with Node
+- class/module-body smoke
+- runtime-heavy smoke that exercises the real linked runtime path
+
+- [ ] **Step 4: Add end-to-end UX assertions for failure surfaces**
+
+Cover:
+
+- no false `Successfully built ...` messages after linker/runtime failure
+- rebuild-required paths surface the correct error text and nonzero exit
+- backend feature mismatches fail with actionable messages
+
+- [ ] **Step 5: Run the canonical E2E matrix**
+
+Run:
+
+```bash
+export MOLT_SESSION_ID=lir-e2e
+export MOLT_EXT_ROOT=$PWD
+export CARGO_TARGET_DIR=$PWD/target
+export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR
+export MOLT_CACHE=$PWD/.molt_cache
+export MOLT_DIFF_ROOT=$PWD/tmp/diff
+export MOLT_DIFF_TMPDIR=$PWD/tmp
+export UV_CACHE_DIR=$PWD/.uv-cache
+export TMPDIR=$PWD/tmp
+PYTHONPATH=src ./.venv/bin/python -m pytest -q tests/test_native_tir_skip_pattern.py tests/test_native_lir_loop_join_semantics.py tests/test_wasm_class_smoke.py
+```
+
+- [ ] **Step 6: Sync current-state docs**
+
+Update:
+
+- `docs/spec/STATUS.md`
+- `ROADMAP.md`
+
+to state that the backend migration now includes an explicit CLI/profile/target
+validation matrix rather than only backend-internal proof targets.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add tests/cli/test_cli_import_collection.py tests/test_native_tir_skip_pattern.py tests/test_native_lir_loop_join_semantics.py tests/test_wasm_class_smoke.py docs/spec/STATUS.md ROADMAP.md
+git commit -m "tests: add end-to-end CLI/profile/target validation matrix"
+```
