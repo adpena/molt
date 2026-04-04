@@ -407,7 +407,6 @@ pub fn inline_functions(ir: &mut SimpleIR) {
                             out: Some(call_out.clone()),
                             fast_int: None,
                             fast_float: None,
-                            raw_int: None,
                             stack_eligible: None,
                             task_kind: None,
                             container_type: None,

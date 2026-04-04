@@ -58,9 +58,6 @@ pub struct OpIR {
     /// Transitional transport compatibility hint for legacy consumers.
     /// Not the canonical backend representation contract.
     pub fast_float: Option<bool>,
-    /// Transitional transport compatibility hint for specific transport-only
-    /// patterns. Not the canonical backend representation contract.
-    pub raw_int: Option<bool>,
     pub stack_eligible: Option<bool>,
     pub task_kind: Option<String>,
     pub container_type: Option<String>,
@@ -254,7 +251,6 @@ impl OpIR {
             out: optional_string(obj, "out", ctx)?,
             fast_int: optional_bool(obj, "fast_int", ctx)?,
             fast_float: optional_bool(obj, "fast_float", ctx)?,
-            raw_int: optional_bool(obj, "raw_int", ctx)?,
             stack_eligible: optional_bool(obj, "stack_eligible", ctx)?,
             task_kind: optional_string(obj, "task_kind", ctx)?,
             container_type: optional_string(obj, "container_type", ctx)?,
@@ -265,16 +261,6 @@ impl OpIR {
         })
     }
 }
-
-const RAW_INT_ALLOWED_OP_KINDS: &[&str] = &[
-    "add",
-    "box_from_raw_int",
-    "const",
-    "loop_index_next",
-    "loop_index_start",
-    "lt",
-    "unbox_to_raw_int",
-];
 
 fn op_uses(op: &OpIR) -> impl Iterator<Item = (&str, usize)> {
     op.args
@@ -303,15 +289,6 @@ pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
         let mut defined: BTreeSet<&str> = func.params.iter().map(String::as_str).collect();
         for op in &func.ops {
             ir_schema::validate_required_fields(op)?;
-            if op.fast_int == Some(true) && op.raw_int == Some(true) {
-                return Err(format!(
-                    "op `{}` cannot set both `fast_int` and `raw_int`",
-                    op.kind
-                ));
-            }
-            if op.raw_int == Some(true) && !RAW_INT_ALLOWED_OP_KINDS.contains(&op.kind.as_str()) {
-                return Err(format!("op `{}` does not support `raw_int`", op.kind));
-            }
             for (name, position) in op_uses(op) {
                 if !is_defined_value_name(name) {
                     continue;
