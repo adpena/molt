@@ -31,6 +31,8 @@ fn hello_world_ir() -> SimpleIR {
             params: vec![],
             ops: vec![const_str, print, op("print_newline"), op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     }
@@ -47,6 +49,8 @@ fn ir_with_async_ops() -> SimpleIR {
             params: vec!["p0".to_string()],
             ops: vec![sleep, op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     }
@@ -81,12 +85,16 @@ fn ir_with_escaped_call_guarded() -> SimpleIR {
                 params: vec!["p0".to_string(), "p1".to_string()],
                 ops: vec![func_new, call_guarded, ret],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
             FunctionIR {
                 name: "callee".to_string(),
                 params: vec!["a".to_string(), "b".to_string()],
                 ops: vec![callee_none, callee_ret],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
         ],
         profile: None,
@@ -121,6 +129,8 @@ fn ir_with_socket_ops() -> SimpleIR {
             ],
             ops: vec![sock, op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     }
@@ -137,6 +147,8 @@ fn ir_with_time_ops() -> SimpleIR {
             params: vec![],
             ops: vec![time, op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     }

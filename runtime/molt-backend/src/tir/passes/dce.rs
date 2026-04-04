@@ -270,15 +270,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let has_eh = func.has_exception_handling;
 
     // --- Phase 1: remove unreachable blocks ---
-    // Preserve blocks with loop roles (LoopHeader, LoopEnd) even if
-    // unreachable — lower_to_simple_ir depends on them for loop
-    // structure reconstruction.
     let reachable = reachable_blocks(func);
     let unreachable: Vec<BlockId> = func
         .blocks
         .keys()
         .copied()
-        .filter(|id| !reachable.contains(id) && !func.loop_roles.contains_key(id))
+        .filter(|id| !reachable.contains(id))
         .collect();
     for id in &unreachable {
         func.blocks.remove(id);

@@ -81,6 +81,7 @@ packaging/out/
 .codex/
 .gemini/worktrees/
 .claude/todos/
+.omx/
 type_facts.json
 *.profraw
 .claire/

@@ -10737,6 +10737,7 @@ def _start_backend_daemon(
                         "-p", "molt-runtime",
                         *_profile_flag,
                     ]
+                    _rebuild_cmd.extend(["--features", "native-backend"])
                     # Per-session build isolation: use a separate
                     # CARGO_TARGET_DIR when MOLT_SESSION_ID is set.
                     _rebuild_env = None
@@ -11464,6 +11465,7 @@ def _write_cached_json_object(
     default: Any | None = None,
 ) -> None:
     text = json.dumps(payload, indent=2, default=default) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     try:
         written_stat = path.stat()
@@ -14413,10 +14415,6 @@ def _build_native_link_command(
     if target_triple:
         if "apple" in target_triple or "darwin" in target_triple:
             link_cmd.append("-Wl,-dead_strip")
-            # stdlib_shared.o and output.o emit overlapping function symbols
-            # (both contain builtins/sys stubs from chunked module compilation).
-            # The duplicates are identical code; suppress the linker error.
-            link_cmd.append("-Wl,-multiply_defined,suppress")
             # Do NOT use -exported_symbol,_main — the runtime uses dlsym()
             # to resolve intrinsic functions at runtime. Restricting exports
             # to _main makes all #[no_mangle] symbols invisible to dlsym,
@@ -14446,7 +14444,6 @@ def _build_native_link_command(
     else:
         if sys.platform == "darwin":
             link_cmd.append("-Wl,-dead_strip")
-            link_cmd.append("-Wl,-multiply_defined,suppress")
             link_cmd.extend(["-Wl,-x", "-Wl,-S"])
             if suppress_linker_warnings:
                 link_cmd.append("-Wl,-w")
@@ -20174,7 +20171,14 @@ def _ensure_backend_binary(
             candidate_artifact=canonical_backend_bin,
             candidate_fingerprint_path=canonical_fingerprint_path,
         ):
-            return True
+            _probe_target = (
+                "wasm"
+                if "wasm-backend" in backend_features
+                else ("luau" if "luau-backend" in backend_features else "native")
+            )
+            _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
+            if _probe_ok:
+                return True
         # Fast path: if the backend binary exists and is newer than every
         # source file that contributes to the fingerprint, skip the expensive
         # cargo build and just update the stored fingerprint.  This handles
@@ -20183,8 +20187,15 @@ def _ensure_backend_binary(
             backend_bin,
             _backend_source_paths(project_root, backend_features),
         ):
-            _write_runtime_fingerprint(fingerprint_path, fingerprint)
-            return True
+            _probe_target = (
+                "wasm"
+                if "wasm-backend" in backend_features
+                else ("luau" if "luau-backend" in backend_features else "native")
+            )
+            _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
+            if _probe_ok:
+                _write_runtime_fingerprint(fingerprint_path, fingerprint)
+                return True
         if not json_output:
             print("Backend sources changed; rebuilding backend...", file=sys.stderr)
         # Kill any running backend daemon so it doesn't serve stale code

@@ -82,6 +82,8 @@ fn loop_continue_in_if_compiles() {
             params: Vec::new(),
             ops,
             param_types: None,
+           source_file: None,
+            is_extern: false,
         }],
         profile: None,
     };

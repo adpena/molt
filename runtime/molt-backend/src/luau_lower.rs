@@ -737,6 +737,7 @@ mod tests {
                 params: vec![],
                 param_types: None,
                 source_file: None,
+                is_extern: false,
                 ops: vec![
                     OpIR {
                         kind: "const".to_string(),
@@ -768,6 +769,7 @@ mod tests {
                 params: vec!["x".to_string()],
                 param_types: Some(vec!["int".to_string()]),
                 source_file: None,
+                is_extern: false,
                 ops: vec![
                     OpIR {
                         kind: "add".to_string(),
@@ -801,6 +803,7 @@ mod tests {
                 params: vec![],
                 param_types: None,
                 source_file: None,
+                is_extern: false,
                 ops: vec![
                     OpIR {
                         kind: "const_bool".to_string(),
@@ -851,6 +854,7 @@ mod tests {
                 params: vec![],
                 param_types: None,
                 source_file: None,
+                is_extern: false,
                 ops: vec![
                     OpIR {
                         kind: "loop_start".to_string(),

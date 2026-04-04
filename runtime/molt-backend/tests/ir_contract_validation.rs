@@ -1,9 +1,20 @@
-use molt_backend::{FunctionIR, OpIR, SimpleIR, validate_simple_ir};
+use molt_backend::{validate_simple_ir, FunctionIR, OpIR, SimpleIR};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
         kind: kind.to_string(),
         ..OpIR::default()
+    }
+}
+
+fn test_func(name: &str, ops: Vec<OpIR>) -> FunctionIR {
+    FunctionIR {
+        name: name.to_string(),
+        params: Vec::new(),
+        ops,
+        param_types: None,
+        source_file: None,
+        is_extern: false,
     }
 }
 
@@ -17,12 +28,7 @@ fn validate_simple_ir_accepts_well_formed_value_uses() {
     ret.args = Some(vec!["v0".to_string()]);
 
     let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            name: "molt_test_validate_ok".to_string(),
-            params: Vec::new(),
-            ops: vec![c0, ret],
-            param_types: None,
-        }],
+        functions: vec![test_func("molt_test_validate_ok", vec![c0, ret])],
         profile: None,
     };
     assert!(validate_simple_ir(&ir).is_ok());
@@ -35,12 +41,7 @@ fn validate_simple_ir_rejects_missing_value_definition() {
     idx.out = Some("v1".to_string());
 
     let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            name: "molt_test_validate_missing".to_string(),
-            params: Vec::new(),
-            ops: vec![idx],
-            param_types: None,
-        }],
+        functions: vec![test_func("molt_test_validate_missing", vec![idx])],
         profile: None,
     };
     let err = validate_simple_ir(&ir).expect_err("expected undefined value rejection");
@@ -66,12 +67,10 @@ fn validate_simple_ir_allows_dict_receiver_merge_placeholders() {
     dict_set.out = Some("none".to_string());
 
     let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            name: "molt_test_validate_dict_receiver_placeholder".to_string(),
-            params: Vec::new(),
-            ops: vec![k, v, dict_set],
-            param_types: None,
-        }],
+        functions: vec![test_func(
+            "molt_test_validate_dict_receiver_placeholder",
+            vec![k, v, dict_set],
+        )],
         profile: None,
     };
     assert!(validate_simple_ir(&ir).is_ok());
@@ -95,12 +94,7 @@ fn validate_simple_ir_rejects_unsupported_raw_int_kinds() {
     sub.raw_int = Some(true);
 
     let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            name: "molt_test_validate_raw_int_kind".to_string(),
-            params: Vec::new(),
-            ops: vec![lhs, rhs, sub],
-            param_types: None,
-        }],
+        functions: vec![test_func("molt_test_validate_raw_int_kind", vec![lhs, rhs, sub])],
         profile: None,
     };
     let err = validate_simple_ir(&ir).expect_err("expected raw_int kind rejection");
@@ -124,12 +118,10 @@ fn validate_simple_ir_rejects_conflicting_specialized_int_flags() {
     add.raw_int = Some(true);
 
     let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            name: "molt_test_validate_specialized_int_conflict".to_string(),
-            params: Vec::new(),
-            ops: vec![lhs, rhs, add],
-            param_types: None,
-        }],
+        functions: vec![test_func(
+            "molt_test_validate_specialized_int_conflict",
+            vec![lhs, rhs, add],
+        )],
         profile: None,
     };
     let err = validate_simple_ir(&ir).expect_err("expected specialized-int conflict rejection");
@@ -172,12 +164,10 @@ fn validate_simple_ir_accepts_raw_loop_index_carriers() {
     lt.raw_int = Some(true);
 
     let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            name: "molt_test_validate_raw_loop_index_carriers".to_string(),
-            params: Vec::new(),
-            ops: vec![start, loop_index_start, one, add, loop_index_next, stop, lt],
-            param_types: None,
-        }],
+        functions: vec![test_func(
+            "molt_test_validate_raw_loop_index_carriers",
+            vec![start, loop_index_start, one, add, loop_index_next, stop, lt],
+        )],
         profile: None,
     };
 
@@ -211,42 +201,12 @@ fn tree_shake_luau_rewrites_main_and_drops_runtime_bootstrap_helpers() {
 
     let mut ir = SimpleIR {
         functions: vec![
-            FunctionIR {
-                name: "molt_main".to_string(),
-                params: Vec::new(),
-                ops: vec![main_runtime_init, main_init, main_ret],
-                param_types: None,
-            },
-            FunctionIR {
-                name: "molt_init___main__".to_string(),
-                params: Vec::new(),
-                ops: vec![init_sys, user_call, init_ret],
-                param_types: None,
-            },
-            FunctionIR {
-                name: "molt_runtime_init".to_string(),
-                params: Vec::new(),
-                ops: vec![helper_ret.clone()],
-                param_types: None,
-            },
-            FunctionIR {
-                name: "molt_init_sys".to_string(),
-                params: Vec::new(),
-                ops: vec![helper_ret.clone()],
-                param_types: None,
-            },
-            FunctionIR {
-                name: "user_kernel".to_string(),
-                params: Vec::new(),
-                ops: vec![user_ret],
-                param_types: None,
-            },
-            FunctionIR {
-                name: "unused_helper".to_string(),
-                params: Vec::new(),
-                ops: vec![helper_ret],
-                param_types: None,
-            },
+            test_func("molt_main", vec![main_runtime_init, main_init, main_ret]),
+            test_func("molt_init___main__", vec![init_sys, user_call, init_ret]),
+            test_func("molt_runtime_init", vec![helper_ret.clone()]),
+            test_func("molt_init_sys", vec![helper_ret.clone()]),
+            test_func("user_kernel", vec![user_ret]),
+            test_func("unused_helper", vec![helper_ret]),
         ],
         profile: None,
     };

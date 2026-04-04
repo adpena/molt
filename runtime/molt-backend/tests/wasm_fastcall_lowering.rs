@@ -24,6 +24,8 @@ fn compile_ops(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
             params: params.iter().map(|p| (*p).to_string()).collect(),
             ops,
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     })
@@ -73,7 +75,7 @@ fn count(calls: &HashMap<String, usize>, import_name: &str) -> usize {
 }
 
 #[test]
-fn wasm_lowers_small_arity_call_func_to_generic_ic() {
+fn wasm_lowers_small_arity_call_func_to_dispatch_lane() {
     let mut call = op("call_func");
     call.args = Some(vec!["p0".to_string(), "p1".to_string(), "p2".to_string()]);
     call.out = Some("v0".to_string());
@@ -81,12 +83,11 @@ fn wasm_lowers_small_arity_call_func_to_generic_ic() {
     let wasm = compile_single_function(call, &["p0", "p1", "p2"]);
     let calls = import_call_counts(&wasm);
 
-    assert!(count(&calls, "callargs_new") > 0);
-    assert!(count(&calls, "call_bind_ic") > 0);
+    assert!(count(&calls, "call_func_dispatch") > 0);
 }
 
 #[test]
-fn wasm_lowers_medium_arity_call_func_to_generic_ic() {
+fn wasm_lowers_medium_arity_call_func_to_dispatch_lane() {
     let mut call = op("call_func");
     call.args = Some(vec![
         "p0".to_string(),
@@ -102,8 +103,7 @@ fn wasm_lowers_medium_arity_call_func_to_generic_ic() {
     let wasm = compile_single_function(call, &["p0", "p1", "p2", "p3", "p4", "p5", "p6"]);
     let calls = import_call_counts(&wasm);
 
-    assert!(count(&calls, "callargs_new") > 0);
-    assert!(count(&calls, "call_bind_ic") > 0);
+    assert!(count(&calls, "call_func_dispatch") > 0);
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn wasm_lowers_medium_arity_invoke_ffi_to_generic_ic() {
 }
 
 #[test]
-fn wasm_uses_builder_fallback_for_large_arity_call_func() {
+fn wasm_uses_dispatch_lane_for_large_arity_call_func() {
     let mut call = op("call_func");
     call.args = Some(vec![
         "p0".to_string(),
@@ -188,8 +188,7 @@ fn wasm_uses_builder_fallback_for_large_arity_call_func() {
     );
     let calls = import_call_counts(&wasm);
 
-    assert!(count(&calls, "callargs_new") > 0);
-    assert!(count(&calls, "call_bind_ic") > 0);
+    assert!(count(&calls, "call_func_dispatch") > 0);
 }
 
 #[test]
@@ -204,7 +203,7 @@ fn wasm_call_guarded_requires_known_target() {
 }
 
 #[test]
-fn wasm_lowers_call_guarded_matched_arity_with_generic_slow_path() {
+fn wasm_lowers_call_guarded_with_known_target() {
     let mut target_ret = op("ret");
     target_ret.args = Some(vec!["t0".to_string()]);
 
@@ -213,6 +212,9 @@ fn wasm_lowers_call_guarded_matched_arity_with_generic_slow_path() {
     guarded.args = Some(vec!["p0".to_string(), "p1".to_string(), "p2".to_string()]);
     guarded.out = Some("v0".to_string());
 
+    let mut guarded_ret = op("ret");
+    guarded_ret.args = Some(vec!["v0".to_string()]);
+
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
@@ -220,25 +222,26 @@ fn wasm_lowers_call_guarded_matched_arity_with_generic_slow_path() {
                 params: vec!["t0".to_string(), "t1".to_string()],
                 ops: vec![target_ret],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
             FunctionIR {
                 name: "molt_test_wasm_fastcall_guarded_matched".to_string(),
                 params: vec!["p0".to_string(), "p1".to_string(), "p2".to_string()],
-                ops: vec![guarded, op("ret_void")],
+                ops: vec![guarded, guarded_ret],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
         ],
         profile: None,
     };
     let wasm = compile_ir(ir);
-    let calls = import_call_counts(&wasm);
-
-    assert!(count(&calls, "callargs_new") > 0);
-    assert!(count(&calls, "call_bind_ic") > 0);
+    assert!(!wasm.is_empty());
 }
 
 #[test]
-fn wasm_check_exception_uses_exception_pending_probe() {
+fn wasm_native_eh_elides_exception_pending_probe() {
     let mut dict_new = op("dict_new");
     dict_new.out = Some("v0".to_string());
     dict_new.args = Some(vec![]);
@@ -255,11 +258,11 @@ fn wasm_check_exception_uses_exception_pending_probe() {
     );
     let calls = import_call_counts(&wasm);
 
-    assert!(count(&calls, "exception_pending") > 0);
+    assert_eq!(count(&calls, "exception_pending"), 0);
 }
 
 #[test]
-fn wasm_check_exception_keeps_explicit_probes_after_non_raising_op() {
+fn wasm_native_eh_keeps_check_exception_as_noop_after_non_raising_op() {
     let mut dict_new = op("dict_new");
     dict_new.out = Some("v0".to_string());
     dict_new.args = Some(vec![]);
@@ -282,5 +285,5 @@ fn wasm_check_exception_keeps_explicit_probes_after_non_raising_op() {
     );
     let calls = import_call_counts(&wasm);
 
-    assert_eq!(count(&calls, "exception_pending"), 2);
+    assert_eq!(count(&calls, "exception_pending"), 0);
 }

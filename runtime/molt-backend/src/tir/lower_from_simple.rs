@@ -174,6 +174,12 @@ fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::O
     let rewrite_vars: std::collections::HashSet<&str> = patterns.iter()
         .map(|p| p.var_name.as_str())
         .collect();
+    let loop_carrier_for_start: std::collections::HashMap<usize, String> = patterns
+        .iter()
+        .map(|pat| (pat.loop_start_idx, pat.var_name.clone()))
+        .collect();
+
+    let mut active_loop_carriers: Vec<Option<String>> = Vec::new();
 
     // Pass 2: emit rewritten ops.
     for (idx, op) in ops.iter().enumerate() {
@@ -190,6 +196,10 @@ fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::O
         }
 
         match op.kind.as_str() {
+            "loop_start" => {
+                active_loop_carriers.push(loop_carrier_for_start.get(&idx).cloned());
+                result.push(op.clone());
+            }
             "loop_index_start" => {
                 let var_name = op.out.clone().unwrap_or_default();
                 if rewrite_vars.contains(var_name.as_str()) {
@@ -205,8 +215,12 @@ fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::O
                 }
             }
             "loop_index_next" => {
-                let var_name = op.out.clone().unwrap_or_default();
-                if rewrite_vars.contains(var_name.as_str()) {
+                let carrier_name = active_loop_carriers
+                    .iter()
+                    .rev()
+                    .find_map(|carrier| carrier.as_ref())
+                    .cloned();
+                if let Some(var_name) = carrier_name {
                     // Rewrite to store_var: update V.
                     let updated_arg = op.args.as_ref()
                         .and_then(|a| a.first())
@@ -221,6 +235,10 @@ fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::O
                 } else {
                     result.push(op.clone());
                 }
+            }
+            "loop_end" => {
+                active_loop_carriers.pop();
+                result.push(op.clone());
             }
             _ => {
                 result.push(op.clone());
@@ -635,6 +653,7 @@ mod tests {
             ops,
             param_types: None,
             source_file: None,
+            is_extern: false,
         }
     }
 
@@ -871,6 +890,7 @@ mod tests {
             ops: vec![op_args_out("add", &["a", "b"], "c"), op_args("ret", &["c"])],
             param_types: Some(vec!["int".to_string(), "float".to_string()]),
             source_file: None,
+            is_extern: false,
         };
 
         let tir = lower_to_tir(&func_ir);

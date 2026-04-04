@@ -33,23 +33,43 @@ pub fn lower_function_to_lir(func: &TirFunction) -> LirFunction {
         .get(&refined.entry_block)
         .map(|block| block.args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>())
         .unwrap_or_default();
-    let mut param_names = refined.param_names;
+    let mut param_names = refined.param_names.clone();
     if param_names.len() != entry_param_types.len() {
         param_names = (0..entry_param_types.len())
             .map(|idx| format!("p{idx}"))
             .collect();
     }
+    let return_types = lir_return_types(&refined);
 
     LirFunction {
         name: refined.name,
         param_names,
         param_types: entry_param_types,
-        return_types: match refined.return_type {
-            TirType::None => Vec::new(),
-            other => vec![other],
-        },
+        return_types,
         blocks,
         entry_block: refined.entry_block,
+    }
+}
+
+fn lir_return_types(func: &TirFunction) -> Vec<TirType> {
+    let mut arities = func
+        .blocks
+        .values()
+        .filter_map(|block| match &block.terminator {
+            Terminator::Return { values } => Some(values.len()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    arities.sort_unstable();
+    arities.dedup();
+    match arities.as_slice() {
+        [] => Vec::new(),
+        [0] => Vec::new(),
+        [1] => vec![func.return_type.clone()],
+        _ => match &func.return_type {
+            TirType::Tuple(items) if items.len() == *arities.iter().max().unwrap_or(&0) => items.clone(),
+            other => vec![other.clone()],
+        },
     }
 }
 
@@ -291,10 +311,32 @@ fn lower_return_values(
     allocator: &mut ValueIdAllocator,
     ops: &mut Vec<LirOp>,
 ) -> Vec<ValueId> {
-    let expected_types: Vec<TirType> = match &func.return_type {
-        TirType::None => Vec::new(),
-        other => vec![other.clone()],
-    };
+    let expected_types = lir_return_types(func);
+    if values.is_empty() && !expected_types.is_empty() {
+        return expected_types
+            .iter()
+            .cloned()
+            .map(|expected_ty| {
+                let none_id = allocator.fresh();
+                ops.push(LirOp {
+                    tir_op: TirOp {
+                        dialect: super::ops::Dialect::Molt,
+                        opcode: OpCode::ConstNone,
+                        operands: vec![],
+                        results: vec![none_id],
+                        attrs: AttrDict::new(),
+                        source_span: None,
+                    },
+                    result_values: vec![LirValue {
+                        id: none_id,
+                        ty: TirType::None,
+                        repr: LirRepr::DynBox,
+                    }],
+                });
+                materialize_value_for_type(none_id, expected_ty, type_map, allocator, ops)
+            })
+            .collect();
+    }
     values
         .iter()
         .enumerate()
@@ -457,5 +499,45 @@ mod tests {
             add.tir_op.attrs.get("lir.checked_overflow"),
             Some(&AttrValue::Bool(true))
         );
+    }
+
+    #[test]
+    fn lower_return_values_follow_lir_return_surface_not_raw_function_return_type() {
+        let entry = BlockId(0);
+        let mut blocks = HashMap::new();
+        blocks.insert(
+            entry,
+            TirBlock {
+                id: entry,
+                args: vec![],
+                ops: vec![make_op(OpCode::ConstNone, vec![], vec![ValueId(0)])],
+                terminator: Terminator::Return {
+                    values: vec![ValueId(0)],
+                },
+            },
+        );
+        let func = TirFunction {
+            name: "implicit_raise_helper".into(),
+            param_names: vec![],
+            param_types: vec![],
+            return_type: TirType::None,
+            blocks,
+            entry_block: entry,
+            next_value: 1,
+            next_block: 1,
+            attrs: AttrDict::new(),
+            has_exception_handling: false,
+            label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+        };
+
+        let lir = lower_function_to_lir(&func);
+        assert_eq!(lir.return_types, vec![TirType::None]);
+        match &lir.blocks[&entry].terminator {
+            LirTerminator::Return { values } => assert_eq!(values.len(), 1),
+            other => panic!("expected return terminator, got {other:?}"),
+        }
     }
 }

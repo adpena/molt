@@ -56,6 +56,8 @@ fn type_section_has_at_least_39_static_types() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -75,6 +77,8 @@ fn type_0_is_nullary_to_i64() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -93,6 +97,8 @@ fn type_1_is_unary_to_void() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -111,6 +117,8 @@ fn type_8_is_void_to_void() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -133,6 +141,8 @@ fn multi_return_type_31_is_2_to_2() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -155,6 +165,8 @@ fn multi_return_type_32_is_3_to_3() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -177,6 +189,8 @@ fn multi_return_type_33_is_1_to_2() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -195,6 +209,8 @@ fn multi_return_type_34_is_0_to_2() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -218,6 +234,8 @@ fn user_function_with_params_adds_dynamic_type() {
                 params: vec![],
                 ops: vec![op("ret_void")],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
             FunctionIR {
                 name: "molt_user_func".to_string(),
@@ -228,6 +246,8 @@ fn user_function_with_params_adds_dynamic_type() {
                     ret
                 }],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
         ],
         profile: None,
@@ -251,6 +271,8 @@ fn functions_with_same_arity_share_type() {
                 params: vec![],
                 ops: vec![op("ret_void")],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
             FunctionIR {
                 name: "molt_func_a".to_string(),
@@ -261,6 +283,8 @@ fn functions_with_same_arity_share_type() {
                     ret
                 }],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
         ],
         profile: None,
@@ -273,6 +297,8 @@ fn functions_with_same_arity_share_type() {
                 params: vec![],
                 ops: vec![op("ret_void")],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
             FunctionIR {
                 name: "molt_func_a".to_string(),
@@ -283,6 +309,8 @@ fn functions_with_same_arity_share_type() {
                     ret
                 }],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
             FunctionIR {
                 name: "molt_func_b".to_string(),
@@ -293,6 +321,8 @@ fn functions_with_same_arity_share_type() {
                     ret
                 }],
                 param_types: None,
+                source_file: None,
+                is_extern: false,
             },
         ],
         profile: None,
@@ -318,6 +348,8 @@ fn type_section_contains_expected_arity_signatures() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });
@@ -353,6 +385,8 @@ fn high_arity_static_types_exist() {
             params: vec![],
             ops: vec![op("ret_void")],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     });

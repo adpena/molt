@@ -14,6 +14,8 @@ fn single_func_ir(op: OpIR, params: Vec<&str>) -> SimpleIR {
             params: params.into_iter().map(str::to_string).collect(),
             ops: vec![op],
             param_types: None,
+           source_file: None,
+            is_extern: false,
         }],
         profile: None,
     }
