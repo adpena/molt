@@ -969,8 +969,8 @@ impl<'a> SsaContext<'a> {
             attrs.insert("bytes".into(), AttrValue::Bytes(v.clone()));
         }
         // Preserve additional SimpleIR metadata fields that the native backend
-        // reads on specific op kinds (task_kind, container_type, ic_index, var,
-        // raw_int). Without these, passthrough ops lose critical information.
+        // reads on specific op kinds (task_kind, container_type, ic_index, var).
+        // Without these, passthrough ops lose critical information.
         if let Some(ref v) = op.task_kind {
             attrs.insert("task_kind".into(), AttrValue::Str(v.clone()));
         }
@@ -979,9 +979,6 @@ impl<'a> SsaContext<'a> {
         }
         if let Some(v) = op.ic_index {
             attrs.insert("ic_index".into(), AttrValue::Int(v));
-        }
-        if op.raw_int == Some(true) {
-            attrs.insert("raw_int".into(), AttrValue::Bool(true));
         }
         // Preserve fast_int / fast_float / type_hint so that the round-trip does
         // not lose type annotations even without the type-refine pass running.

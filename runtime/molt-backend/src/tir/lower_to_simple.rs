@@ -1050,7 +1050,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                         task_kind: attr_str(&op.attrs, "task_kind"),
                         container_type: attr_str(&op.attrs, "container_type"),
                         ic_index: attr_int(&op.attrs, "ic_index"),
-                        raw_int: attr_bool(&op.attrs, "raw_int"),
                         ..OpIR::default()
                     });
                 }
@@ -1074,7 +1073,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                     task_kind: attr_str(&op.attrs, "task_kind"),
                     container_type: attr_str(&op.attrs, "container_type"),
                     ic_index: attr_int(&op.attrs, "ic_index"),
-                    raw_int: attr_bool(&op.attrs, "raw_int"),
                     ..OpIR::default()
                 })
             } else if let (Some(src), Some(dst)) = (op.operands.first(), op.results.first()) {
