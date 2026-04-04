@@ -1,7 +1,9 @@
-/// Test that lower_to_tir → lower_to_simple_ir roundtrip preserves type annotations.
+/// Test that lower_to_tir → lower_to_simple_ir roundtrip preserves transport
+/// compatibility metadata while the SimpleIR surface still exists.
 ///
-/// The TIR pass interaction bug (comprehensions returning empty lists) is caused by
-/// type annotations (fast_int, fast_float, type_hint) being lost during the roundtrip.
+/// The canonical backend contract is representation-aware TIR/LIR, but some
+/// transport consumers still read compatibility hints on SimpleIR ops. These
+/// tests make sure the roundtrip does not silently erase those fields.
 use molt_backend::{FunctionIR, OpIR};
 
 fn make_comprehension_ir() -> FunctionIR {
@@ -123,10 +125,10 @@ fn make_comprehension_ir() -> FunctionIR {
 }
 
 #[test]
-fn roundtrip_preserves_fast_int() {
+fn roundtrip_preserves_integer_compatibility_hint() {
     let ir = make_comprehension_ir();
 
-    // Check original has fast_int
+    // Check original carries integer compatibility hints.
     let orig_consts: Vec<_> = ir
         .ops
         .iter()
@@ -134,7 +136,7 @@ fn roundtrip_preserves_fast_int() {
         .collect();
     assert!(
         !orig_consts.is_empty(),
-        "original IR should have fast_int consts"
+        "original IR should carry integer compatibility hints on consts"
     );
 
     // Round-trip through TIR
@@ -142,19 +144,19 @@ fn roundtrip_preserves_fast_int() {
     let type_map = molt_backend::tir::type_refine::extract_type_map(&tir_func);
     let roundtripped = molt_backend::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map);
 
-    // Check roundtripped still has fast_int
+    // Check roundtripped transport still carries the compatibility hint.
     let rt_consts: Vec<_> = roundtripped
         .iter()
         .filter(|op| op.kind == "const" && op.fast_int == Some(true))
         .collect();
     assert!(
         !rt_consts.is_empty(),
-        "roundtripped IR lost fast_int on const ops"
+        "roundtripped IR lost integer compatibility hints on const ops"
     );
 }
 
 #[test]
-fn roundtrip_preserves_type_hint_on_list_new() {
+fn roundtrip_preserves_container_hint_on_list_new() {
     let ir = make_comprehension_ir();
 
     let orig_list_new: Vec<_> = ir
@@ -165,7 +167,7 @@ fn roundtrip_preserves_type_hint_on_list_new() {
     assert_eq!(
         orig_list_new.len(),
         2,
-        "original should have 2 list_new with type_hint=list"
+        "original should have 2 list_new ops with list compatibility hints"
     );
 
     let tir_func = molt_backend::tir::lower_from_simple::lower_to_tir(&ir);
@@ -179,7 +181,7 @@ fn roundtrip_preserves_type_hint_on_list_new() {
     assert_eq!(
         rt_list_new.len(),
         2,
-        "roundtripped lost type_hint=list on list_new ops. Found: {:?}",
+        "roundtripped lost list compatibility hint on list_new ops. Found: {:?}",
         roundtripped
             .iter()
             .filter(|op| op.kind == "list_new")
@@ -189,7 +191,7 @@ fn roundtrip_preserves_type_hint_on_list_new() {
 }
 
 #[test]
-fn roundtrip_preserves_type_hint_on_list_append() {
+fn roundtrip_preserves_container_hint_on_list_append() {
     let ir = make_comprehension_ir();
 
     let orig_append: Vec<_> = ir
@@ -200,7 +202,7 @@ fn roundtrip_preserves_type_hint_on_list_append() {
     assert_eq!(
         orig_append.len(),
         1,
-        "original should have list_append with type_hint=list"
+        "original should have list_append with list compatibility hint"
     );
 
     let tir_func = molt_backend::tir::lower_from_simple::lower_to_tir(&ir);
@@ -218,7 +220,7 @@ fn roundtrip_preserves_type_hint_on_list_append() {
     assert_eq!(
         rt_append[0].type_hint.as_deref(),
         Some("list"),
-        "list_append lost type_hint=list after roundtrip. Got: {:?}",
+        "list_append lost list compatibility hint after roundtrip. Got: {:?}",
         rt_append[0].type_hint
     );
 }
