@@ -9,8 +9,7 @@
 //! to SimpleIR control-flow markers.
 //!
 //! # Phase 2
-//! Full round-trip with type annotations, phi elimination, and all OpCode
-//! mappings.
+//! Full round-trip with phi elimination and all OpCode mappings.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -63,13 +62,9 @@ thread_local! {
 /// - One [`OpIR`] per [`TirOp`] in the block.
 /// - Control-flow [`OpIR`] ops derived from the block's [`Terminator`].
 ///
-/// When a `types` map is provided, the back-conversion preserves enough
-/// transport metadata for compatibility consumers still reading SimpleIR hint
-/// fields (`fast_int`, `fast_float`, `type_hint`, `stack_eligible`).
-///
-/// These hints are not the canonical backend representation contract; they are
-/// compatibility data carried on the transport surface while native/WASM/LLVM
-/// converge on representation-aware LIR.
+/// When a `types` map is provided, the back-conversion may use it for
+/// structural emission decisions, but it does not mint backend-authoritative
+/// optimization hints on the SimpleIR transport.
 pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>) -> Vec<OpIR> {
     VALUE_NAME_OVERRIDES.with(|overrides| {
         let mut overrides = overrides.borrow_mut();
@@ -1044,9 +1039,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                         s_value: attr_str(&op.attrs, "s_value"),
                         bytes: attr_bytes(&op.attrs, "bytes"),
                         var: attr_str(&op.attrs, "_var"),
-                        fast_int: attr_bool(&op.attrs, "_fast_int"),
-                        fast_float: attr_bool(&op.attrs, "_fast_float"),
-                        type_hint: attr_str(&op.attrs, "_type_hint"),
                         task_kind: attr_str(&op.attrs, "task_kind"),
                         container_type: attr_str(&op.attrs, "container_type"),
                         ic_index: attr_int(&op.attrs, "ic_index"),
@@ -1067,9 +1059,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                     s_value: attr_str(&op.attrs, "s_value"),
                     bytes: attr_bytes(&op.attrs, "bytes"),
                     var: attr_str(&op.attrs, "_var"),
-                    fast_int: attr_bool(&op.attrs, "_fast_int"),
-                    fast_float: attr_bool(&op.attrs, "_fast_float"),
-                    type_hint: attr_str(&op.attrs, "_type_hint"),
                     task_kind: attr_str(&op.attrs, "task_kind"),
                     container_type: attr_str(&op.attrs, "container_type"),
                     ic_index: attr_int(&op.attrs, "ic_index"),
@@ -1577,24 +1566,11 @@ fn emit_structured_loop_region(
         LoopBreakKind::BreakIfFalse => "loop_break_if_false",
         LoopBreakKind::BreakIfTrue => "loop_break_if_true",
     };
-    let mut break_op = OpIR {
+    let break_op = OpIR {
         kind: break_kind_str.to_string(),
         args: Some(vec![value_var(region.cond)]),
         ..OpIR::default()
     };
-    // Propagate type hint so the backend can extract bool/int inline.
-    if let Some(ty) = types.get(&region.cond) {
-        match ty {
-            TirType::Bool => {
-                break_op.type_hint = Some("bool".to_string());
-            }
-            TirType::I64 => {
-                break_op.type_hint = Some("int".to_string());
-                break_op.fast_int = Some(true);
-            }
-            _ => {}
-        }
-    }
     out.push(break_op);
 
     // 7. Body blocks in RPO order.  The first body block (body_entry) is
@@ -2205,98 +2181,13 @@ fn successors_of(block: &TirBlock) -> Vec<BlockId> {
 }
 
 // ---------------------------------------------------------------------------
-// Type annotation propagation
+// Structural annotation propagation
 // ---------------------------------------------------------------------------
 
-/// Annotate a SimpleIR [`OpIR`] with fast-path flags derived from TIR type
-/// refinement results.  This is the critical bridge that makes TIR type
-/// analysis visible to downstream backends (Cranelift, WASM, Luau).
+/// Annotate a SimpleIR [`OpIR`] with non-semantic transport metadata that is
+/// still required by specific backend consumers.
 fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId, TirType>) {
-    // If the op already has type metadata from the original IR (preserved
-    // through the passthrough path), respect it — the original frontend
-    // annotation is authoritative for ops the type refiner doesn't understand
-    // (iter, list_new, etc.).  Only apply type refinement when there's no
-    // existing annotation or when the op is a known arithmetic/comparison op.
-    let has_original_hint = opir.type_hint.is_some()
-        || opir.fast_int.is_some()
-        || opir.fast_float.is_some();
-
-    // Only apply TIR type refinement to ops where the refiner's inference is
-    // trustworthy.  For passthrough ops (iter, iter_next, list_new, etc.) the
-    // refiner may incorrectly infer I64 for results that are actually tuples
-    // or lists.  Restrict refinement to known arithmetic/comparison/const ops.
-    let is_refinable = matches!(
-        tir_op.opcode,
-        OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div
-        | OpCode::FloorDiv | OpCode::Mod | OpCode::Pow | OpCode::Neg | OpCode::Pos
-        | OpCode::InplaceAdd | OpCode::InplaceSub | OpCode::InplaceMul
-        | OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge
-        | OpCode::ConstInt | OpCode::ConstFloat | OpCode::ConstBool
-        | OpCode::BoxVal | OpCode::UnboxVal
-        | OpCode::Not | OpCode::And | OpCode::Or
-        | OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor
-        | OpCode::Shl | OpCode::Shr
-        | OpCode::Copy | OpCode::TypeGuard
-    );
-
-    // Look up the type of the first result value (most ops have 0 or 1 result).
-    if !has_original_hint && is_refinable {
-        if let Some(&result_id) = tir_op.results.first() {
-            match types.get(&result_id) {
-                Some(TirType::I64) => {
-                    // TIR I64 means the value is known to be an integer, but
-                    // at the SimpleIR level values are still NaN-boxed. Use
-                    // fast_int (unbox → native op → rebox) not raw_int (which
-                    // assumes values are already raw i64 registers).
-                    // raw_int is only safe for loop_index_start/next counters
-                    // that the backend explicitly manages as raw i64.
-                    opir.fast_int = Some(true);
-                }
-                Some(TirType::F64) => {
-                    opir.fast_float = Some(true);
-                }
-                Some(ty @ TirType::Bool)
-                | Some(ty @ TirType::Str)
-                | Some(ty @ TirType::Bytes)
-                | Some(ty @ TirType::List(_))
-                | Some(ty @ TirType::Dict(_, _))
-                | Some(ty @ TirType::Set(_))
-                | Some(ty @ TirType::Tuple(_))
-                | Some(ty @ TirType::BigInt) => {
-                    opir.type_hint = Some(type_to_hint_string(ty));
-                }
-                // DynBox, Never, Union, Box, Func, Ptr — no hint to propagate.
-                _ => {}
-            }
-        }
-
-        // For comparison ops, the RESULT type is Bool but the backend needs
-        // OPERAND types to choose fast paths (icmp for int, fcmp for float).
-        // Check operand types and set fast_int/fast_float so the backend can
-        // skip tag-check and use direct hardware comparison instructions.
-        let is_comparison = matches!(
-            tir_op.opcode,
-            OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge
-        );
-        if is_comparison && tir_op.operands.len() >= 2 {
-            let lhs_ty = types.get(&tir_op.operands[0]);
-            let rhs_ty = types.get(&tir_op.operands[1]);
-            match (lhs_ty, rhs_ty) {
-                (Some(TirType::I64), Some(TirType::I64)) => {
-                    opir.fast_int = Some(true);
-                }
-                (Some(TirType::F64), Some(TirType::F64)) => {
-                    opir.fast_float = Some(true);
-                }
-                // Mixed I64/F64: do NOT set fast_float — the backend's
-                // bitcast path assumes both operands are f64.  A NaN-boxed
-                // integer bitcast to f64 is NOT its numeric value.  Fall
-                // through to the runtime call which handles promotion.
-
-                _ => {}
-            }
-        }
-    }
+    let _ = types;
 
     // Propagate StackAlloc: if the TIR op is StackAlloc, mark the SimpleIR op
     // so the native backend can emit stack allocation instead of heap allocation.
@@ -2304,20 +2195,6 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
         opir.stack_eligible = Some(true);
     }
 
-    // Preserve original fast_int / fast_float / type_hint from the input IR
-    // when the type refiner did not produce a more specific type.  This ensures
-    // the round-trip is lossless even when type refinement yields DynBox.
-    if opir.fast_int.is_none() && attr_bool(&tir_op.attrs, "_fast_int") == Some(true) {
-        opir.fast_int = Some(true);
-    }
-    if opir.fast_float.is_none() && attr_bool(&tir_op.attrs, "_fast_float") == Some(true) {
-        opir.fast_float = Some(true);
-    }
-    if opir.type_hint.is_none()
-        && let Some(th) = attr_str(&tir_op.attrs, "_type_hint")
-    {
-        opir.type_hint = Some(th);
-    }
     // Restore col_offset/end_col_offset for traceback caret annotations.
     if opir.col_offset.is_none() {
         if let Some(AttrValue::Int(col)) = tir_op.attrs.get("_col_offset") {
@@ -2328,31 +2205,6 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
         if let Some(AttrValue::Int(ecol)) = tir_op.attrs.get("_end_col_offset") {
             opir.end_col_offset = Some(*ecol);
         }
-    }
-}
-
-fn type_to_hint_string(ty: &TirType) -> String {
-    match ty {
-        TirType::I64 => "int".to_string(),
-        TirType::F64 => "float".to_string(),
-        TirType::Bool => "bool".to_string(),
-        TirType::Str => "str".to_string(),
-        TirType::Bytes => "bytes".to_string(),
-        TirType::None => "none".to_string(),
-        TirType::List(_) => "list".to_string(),
-        TirType::Dict(_, _) => "dict".to_string(),
-        TirType::Set(_) => "set".to_string(),
-        TirType::Tuple(_) => "tuple".to_string(),
-        TirType::BigInt => "bigint".to_string(),
-        TirType::Func(_) => "func".to_string(),
-        TirType::Ptr(_) => "ptr".to_string(),
-        TirType::Box(inner) => format!("box<{}>", type_to_hint_string(inner)),
-        TirType::Union(members) => {
-            let parts: Vec<String> = members.iter().map(type_to_hint_string).collect();
-            format!("union<{}>", parts.join(","))
-        }
-        TirType::DynBox => "any".to_string(),
-        TirType::Never => "never".to_string(),
     }
 }
 
@@ -2410,13 +2262,6 @@ fn attr_float(attrs: &super::ops::AttrDict, key: &str) -> Option<f64> {
 fn attr_str(attrs: &super::ops::AttrDict, key: &str) -> Option<String> {
     match attrs.get(key) {
         Some(AttrValue::Str(s)) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn attr_bool(attrs: &super::ops::AttrDict, key: &str) -> Option<bool> {
-    match attrs.get(key) {
-        Some(AttrValue::Bool(b)) => Some(*b),
         _ => None,
     }
 }
@@ -2837,12 +2682,9 @@ mod tests {
         assert_eq!(value_var(ValueId(42)), "_v42");
     }
 
-    /// Verify that TIR type refinement results are propagated back to SimpleIR
-    /// fast-path flags.  This is the critical test for the type-propagation fix:
-    /// ops that TIR proves are I64 must have `fast_int = Some(true)` in the
-    /// output SimpleIR.
+    /// Verify that typed TIR does not re-emit integer transport hints.
     #[test]
-    fn type_propagation_sets_fast_int_on_arithmetic() {
+    fn type_propagation_does_not_emit_fast_int_on_arithmetic() {
         use crate::tir::type_refine::{extract_type_map, refine_types};
 
         // Build: func @add_ints() -> I64
@@ -2904,37 +2746,21 @@ mod tests {
             "v2 should be I64 (add of two I64s)"
         );
 
-        // Lower to SimpleIR with the type map.
         let ops = lower_to_simple_ir(&func, &type_map);
-
-        // The 'add' op in the output must have fast_int = Some(true).
         let add_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "add").collect();
         assert!(!add_ops.is_empty(), "expected an 'add' op in output");
         for add_op in &add_ops {
-            assert_eq!(
-                add_op.fast_int,
-                Some(true),
-                "add op should have fast_int=true after type propagation, got: {:?}",
+            assert!(
+                add_op.fast_int.is_none(),
+                "typed TIR must not emit fast_int transport hints: {:?}",
                 add_op
-            );
-        }
-
-        // The const ops must also have fast_int = Some(true).
-        let const_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "const").collect();
-        assert!(const_ops.len() >= 2, "expected at least 2 const ops");
-        for const_op in &const_ops {
-            assert_eq!(
-                const_op.fast_int,
-                Some(true),
-                "const int op should have fast_int=true, got: {:?}",
-                const_op
             );
         }
     }
 
-    /// Verify that F64 types produce fast_float flags.
+    /// Verify that typed TIR does not re-emit float transport hints.
     #[test]
-    fn type_propagation_sets_fast_float_on_float_arithmetic() {
+    fn type_propagation_does_not_emit_fast_float_on_float_arithmetic() {
         use crate::tir::type_refine::{extract_type_map, refine_types};
 
         let mut func = TirFunction::new("add_floats".into(), vec![], TirType::F64);
@@ -2985,18 +2811,17 @@ mod tests {
         let add_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "add").collect();
         assert!(!add_ops.is_empty());
         for add_op in &add_ops {
-            assert_eq!(
-                add_op.fast_float,
-                Some(true),
-                "float add should have fast_float=true, got: {:?}",
+            assert!(
+                add_op.fast_float.is_none(),
+                "typed TIR must not emit fast_float transport hints: {:?}",
                 add_op
             );
         }
     }
 
-    /// Verify that comparison ops get type_hint="bool" (not fast_int/fast_float).
+    /// Verify that typed TIR does not re-emit bool type hints.
     #[test]
-    fn type_propagation_sets_type_hint_for_bool() {
+    fn type_propagation_does_not_emit_type_hint_for_bool() {
         use crate::tir::type_refine::{extract_type_map, refine_types};
 
         let mut func = TirFunction::new("cmp".into(), vec![], TirType::Bool);
@@ -3047,22 +2872,18 @@ mod tests {
         let eq_ops: Vec<&OpIR> = ops.iter().filter(|o| o.kind == "eq").collect();
         assert!(!eq_ops.is_empty());
         for eq_op in &eq_ops {
-            assert_eq!(
-                eq_op.type_hint.as_deref(),
-                Some("bool"),
-                "eq op should have type_hint='bool', got: {:?}",
+            assert!(
+                eq_op.type_hint.is_none(),
+                "typed TIR must not emit bool type_hint metadata: {:?}",
                 eq_op
-            );
-            // Bool result type is preserved, while integer operand comparisons
-            // still carry fast_int so the backend can emit direct icmp.
-            assert_eq!(
-                eq_op.fast_int,
-                Some(true),
-                "integer comparison should preserve fast_int operand specialization"
             );
             assert!(
                 eq_op.fast_float.is_none(),
                 "bool op should not have fast_float"
+            );
+            assert!(
+                eq_op.fast_int.is_none(),
+                "comparison op should not carry fast_int metadata"
             );
         }
     }
