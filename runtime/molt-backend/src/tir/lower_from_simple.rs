@@ -18,10 +18,9 @@ use super::values::ValueId;
 ///
 /// Pipeline: SimpleIR ops → CFG extraction → SSA conversion → TIR construction.
 ///
-/// Compatibility metadata from the SimpleIR transport (`fast_int`,
-/// `fast_float`, `type_hint`) is propagated as initial seed types on the SSA
-/// values that correspond to ops carrying those hints. All other values start
-/// as `DynBox`.
+/// TIR typing must come from structural sources only: explicit function
+/// parameter types plus canonical propagation over the SSA graph. Transport
+/// compatibility metadata on SimpleIR is intentionally ignored here.
 pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     // 0. Memory SSA: rewrite cell-based local variables (store_index/index on
     //    the locals list) into store_var/load_var. This enables the SSA pass
@@ -258,13 +257,8 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         next_value,
     } = ssa;
 
-    // Apply initial type hints from fast_int / fast_float / type_hint metadata.
-    apply_type_hints(ir, cfg, &tir_blocks, &mut types);
-
     // Forward type propagation: when all operands of an arithmetic op are
-    // known-typed (e.g., I64), infer the result type. This closes the gap
-    // where the frontend doesn't set fast_int but the operands are typed
-    // (e.g., from param_types or const type hints).
+    // known-typed (e.g., I64), infer the result type.
     propagate_arithmetic_types(&tir_blocks, &mut types);
 
     // Determine parameter types — default to DynBox, but honour param_types if
@@ -443,57 +437,6 @@ fn detect_loop_structure(
     (roles, loop_pairs, loop_break_kinds)
 }
 
-/// Walk the original ops and propagate transport compatibility metadata
-/// (`fast_int` / `fast_float` / `type_hint`) to the corresponding SSA result
-/// values.
-///
-/// The SSA pass creates result ValueIds sequentially as it visits ops. We
-/// replay the same visitation order (skipping structural ops) to correlate
-/// each SimpleIR op with its TIR result(s).
-fn apply_type_hints(
-    ir: &FunctionIR,
-    cfg: &CFG,
-    tir_blocks: &[TirBlock],
-    types: &mut HashMap<ValueId, TirType>,
-) {
-    // For each TIR block, walk its ops and match against the original OpIR
-    // to propagate type hints.
-    for (bid, tir_block) in tir_blocks.iter().enumerate() {
-        // Each TIR op's results correspond to an op from the original stream.
-        // We can correlate via the CFG block's op range and the SSA's skip
-        // of structural ops. The TIR ops in each block correspond 1:1 to the
-        // non-structural ops in that CFG block.
-        if bid >= cfg.blocks.len() {
-            continue;
-        }
-        let bb = &cfg.blocks[bid];
-
-        // Collect non-structural op indices from the CFG block (same logic as SSA).
-        let mut non_structural_idx = 0;
-        for op_idx in bb.start_op..bb.end_op {
-            if is_structural(&ir.ops[op_idx].kind) {
-                continue;
-            }
-
-            // Match this to the tir_block op at the same position.
-            if non_structural_idx >= tir_block.ops.len() {
-                break;
-            }
-            let tir_op = &tir_block.ops[non_structural_idx];
-            let src_op = &ir.ops[op_idx];
-
-            // Apply type hints to each result of this TIR op.
-            if let Some(hint_type) = resolve_type_hint(src_op) {
-                for &result_vid in &tir_op.results {
-                    types.insert(result_vid, hint_type.clone());
-                }
-            }
-
-            non_structural_idx += 1;
-        }
-    }
-}
-
 /// Forward type propagation for arithmetic and comparison ops.
 ///
 /// When all operands of an Add/Sub/Mul/etc. are I64 (from param_types,
@@ -564,25 +507,6 @@ fn propagate_arithmetic_types(
             }
         }
     }
-}
-
-/// Determine a type hint from a SimpleIR op's metadata fields.
-fn resolve_type_hint(op: &crate::ir::OpIR) -> Option<TirType> {
-    // Explicit type_hint string takes priority.
-    if let Some(ref hint) = op.type_hint {
-        let ty = string_to_tir_type(hint);
-        if ty != TirType::DynBox {
-            return Some(ty);
-        }
-    }
-    // fast_int / fast_float flags.
-    if op.fast_int == Some(true) {
-        return Some(TirType::I64);
-    }
-    if op.fast_float == Some(true) {
-        return Some(TirType::F64);
-    }
-    None
 }
 
 /// Convert a string type annotation to a `TirType`.
@@ -707,17 +631,6 @@ mod tests {
         }
     }
 
-    /// Helper: create an op with float compatibility hint.
-    fn op_fast_float(kind: &str, args: &[&str], out: &str) -> OpIR {
-        OpIR {
-            kind: kind.to_string(),
-            args: Some(args.iter().map(|s| s.to_string()).collect()),
-            out: Some(out.to_string()),
-            fast_float: Some(true),
-            ..OpIR::default()
-        }
-    }
-
     // =======================================================================
     // Test 1: Trivial function — const + add + ret
     // =======================================================================
@@ -809,68 +722,33 @@ mod tests {
     }
 
     // =======================================================================
-    // Test 3: integer compatibility metadata seeds I64
+    // Test 3: transport hints do not seed canonical SSA types
     // =======================================================================
     #[test]
-    fn integer_compatibility_hint_seeds_i64_type() {
-        let func_ir = make_func(
-            "int_add",
-            &[],
-            vec![
-                op_val_out("const", 1, "a"),
-                op_val_out("const", 2, "b"),
+    fn transport_hints_do_not_seed_canonical_types() {
+        let func_ir = FunctionIR {
+            name: "hint_only_add".into(),
+            params: vec!["a".into(), "b".into()],
+            ops: vec![
                 op_fast_int("add", &["a", "b"], "c"),
                 op_args("ret", &["c"]),
             ],
-        );
-
-        let tir = lower_to_tir(&func_ir);
-
-        // Find the add op's result and check its type is I64.
-        let entry = &tir.blocks[&tir.entry_block];
-        // The add op is the third op (index 2).
-        assert!(entry.ops.len() >= 3, "should have at least 3 ops");
-        let add_op = &entry.ops[2];
-        assert!(!add_op.results.is_empty(), "add op should have a result");
-        // The result's type in the function should be I64 because the integer
-        // compatibility hint was set.
-        // We don't store types on TirFunction directly, but we can verify via
-        // the return type inference — since the only return is `c` which is I64,
-        // the return type should be I64.
-        assert_eq!(
-            tir.return_type,
-            TirType::I64,
-            "return type should be I64 from integer compatibility hint seeding"
-        );
-    }
-
-    // =======================================================================
-    // Test 4: float compatibility metadata seeds F64
-    // =======================================================================
-    #[test]
-    fn float_compatibility_hint_seeds_f64_type() {
-        let func_ir = make_func(
-            "float_add",
-            &[],
-            vec![
-                op_val_out("const", 1, "a"),
-                op_val_out("const", 2, "b"),
-                op_fast_float("add", &["a", "b"], "c"),
-                op_args("ret", &["c"]),
-            ],
-        );
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
 
         let tir = lower_to_tir(&func_ir);
 
         assert_eq!(
             tir.return_type,
-            TirType::F64,
-            "return type should be F64 from float compatibility hint seeding"
+            TirType::DynBox,
+            "transport-only hints must not seed canonical TIR types"
         );
     }
 
     // =======================================================================
-    // Test 5: Empty function
+    // Test 4: Empty function
     // =======================================================================
     #[test]
     fn empty_function() {
@@ -883,7 +761,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Test 6: Function with param_types annotation
+    // Test 5: Function with param_types annotation
     // =======================================================================
     #[test]
     fn param_types_from_annotation() {
@@ -904,7 +782,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Test 7: string_to_tir_type coverage
+    // Test 6: string_to_tir_type coverage
     // =======================================================================
     #[test]
     fn string_type_conversion() {
@@ -1072,10 +950,6 @@ fn rewrite_cell_locals_to_store_load(ops: &mut Vec<crate::ir::OpIR>) -> bool {
                             kind: "load_var".to_string(),
                             var: Some(var_name),
                             out: Some(out.clone()),
-                            // Preserve type hints from the original op.
-                            fast_int: op.fast_int,
-                            fast_float: op.fast_float,
-                            type_hint: op.type_hint.clone(),
                             ..OpIR::default()
                         }));
                     }

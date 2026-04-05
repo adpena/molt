@@ -21,21 +21,104 @@ fn loop_start_has_index_prelude(ops: &[OpIR], start_idx: usize) -> bool {
 }
 
 #[cfg(feature = "native-backend")]
-#[inline]
-fn op_prefers_int_lane(op: &OpIR) -> bool {
-    op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int")
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScalarLane {
+    Int,
+    Bool,
+    Float,
+    Str,
 }
 
 #[cfg(feature = "native-backend")]
 #[inline]
-fn op_prefers_bool_lane(op: &OpIR) -> bool {
-    op.type_hint.as_deref() == Some("bool")
+fn name_is_int_like(
+    name: &str,
+    int_like_vars: &BTreeSet<String>,
+    bool_like_vars: &BTreeSet<String>,
+) -> bool {
+    int_like_vars.contains(name) || bool_like_vars.contains(name)
 }
 
 #[cfg(feature = "native-backend")]
-#[inline]
-fn op_prefers_float_lane(op: &OpIR) -> bool {
-    op.fast_float.unwrap_or(false) || op.type_hint.as_deref() == Some("float")
+fn infer_scalar_lane(
+    op: &OpIR,
+    int_like_vars: &BTreeSet<String>,
+    bool_like_vars: &BTreeSet<String>,
+    float_like_vars: &BTreeSet<String>,
+    str_like_vars: &BTreeSet<String>,
+) -> Option<ScalarLane> {
+    let first_source = || {
+        op.var
+            .as_deref()
+            .or_else(|| op.args.as_ref().and_then(|args| args.first()).map(String::as_str))
+    };
+    let args = op.args.as_deref().unwrap_or(&[]);
+    let args_all = |pred: &dyn Fn(&str) -> bool| !args.is_empty() && args.iter().all(|arg| pred(arg));
+    let args_any = |pred: &dyn Fn(&str) -> bool| args.iter().any(|arg| pred(arg));
+    let is_float = |name: &str| float_like_vars.contains(name);
+    let is_str = |name: &str| str_like_vars.contains(name);
+    let is_int = |name: &str| name_is_int_like(name, int_like_vars, bool_like_vars);
+    match op.kind.as_str() {
+        "const" | "loop_index_start" | "loop_index_next" => Some(ScalarLane::Int),
+        "const_bool" => Some(ScalarLane::Bool),
+        "const_float" => Some(ScalarLane::Float),
+        "const_str" => Some(ScalarLane::Str),
+        "copy" | "copy_var" | "load_var" | "identity_alias" => first_source().and_then(|src| {
+            if int_like_vars.contains(src) {
+                Some(ScalarLane::Int)
+            } else if bool_like_vars.contains(src) {
+                Some(ScalarLane::Bool)
+            } else if float_like_vars.contains(src) {
+                Some(ScalarLane::Float)
+            } else if str_like_vars.contains(src) {
+                Some(ScalarLane::Str)
+            } else {
+                None
+            }
+        }),
+        "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "bool" | "cast_bool" | "builtin_bool"
+        | "is_truthy" | "is" | "not" => Some(ScalarLane::Bool),
+        "add" | "inplace_add" => {
+            if args_all(&is_str) {
+                Some(ScalarLane::Str)
+            } else if args_all(&is_float)
+                || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
+            {
+                Some(ScalarLane::Float)
+            } else if args_all(&is_int) {
+                Some(ScalarLane::Int)
+            } else {
+                None
+            }
+        }
+        "sub" | "mul" | "inplace_sub" | "inplace_mul" | "floordiv" | "mod" | "mod_"
+        | "inplace_floordiv" | "inplace_mod" | "bit_and" | "bit_or" | "bit_xor"
+        | "bitand" | "bitor" | "bitxor" | "inplace_bit_and" | "inplace_bit_or"
+        | "inplace_bit_xor" | "lshift" | "rshift" => {
+            if args_all(&is_float)
+                || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
+            {
+                Some(ScalarLane::Float)
+            } else if args_all(&is_int) {
+                Some(ScalarLane::Int)
+            } else {
+                None
+            }
+        }
+        "neg" | "pos" | "abs" | "builtin_abs" => first_source().and_then(|src| {
+            if float_like_vars.contains(src) {
+                Some(ScalarLane::Float)
+            } else if name_is_int_like(src, int_like_vars, bool_like_vars) {
+                Some(ScalarLane::Int)
+            } else {
+                None
+            }
+        }),
+        "invert" => first_source()
+            .filter(|src| name_is_int_like(src, int_like_vars, bool_like_vars))
+            .map(|_| ScalarLane::Int),
+        _ => None,
+    }
 }
 
 #[cfg(feature = "native-backend")]
@@ -87,6 +170,10 @@ struct FunctionPreanalysis {
     /// dec_ref at the loop back-edge so reassigned containers are freed
     /// instead of leaking.
     loop_body_out_vars: BTreeMap<usize, Vec<String>>,
+    int_like_vars: BTreeSet<String>,
+    bool_like_vars: BTreeSet<String>,
+    float_like_vars: BTreeSet<String>,
+    str_like_vars: BTreeSet<String>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -205,11 +292,34 @@ fn preanalyze_function_ir(
     let mut resume_states = BTreeSet::new();
     let mut exception_label_ids = BTreeSet::new();
     let mut label_positions = Vec::new();
+    let mut int_like_vars: BTreeSet<String> = BTreeSet::new();
+    let mut bool_like_vars: BTreeSet<String> = BTreeSet::new();
+    let mut float_like_vars: BTreeSet<String> = BTreeSet::new();
+    let mut str_like_vars: BTreeSet<String> = BTreeSet::new();
 
     for name in &func_ir.params {
         if name != "none" {
             var_names.insert(name.clone());
             alias_roots.insert(name.clone(), name.clone());
+        }
+    }
+    if let Some(param_types) = &func_ir.param_types {
+        for (name, ty) in func_ir.params.iter().zip(param_types.iter()) {
+            match ty.as_str() {
+                "int" => {
+                    int_like_vars.insert(name.clone());
+                }
+                "bool" => {
+                    bool_like_vars.insert(name.clone());
+                }
+                "float" => {
+                    float_like_vars.insert(name.clone());
+                }
+                "str" => {
+                    str_like_vars.insert(name.clone());
+                }
+                _ => {}
+            }
         }
     }
 
@@ -561,6 +671,63 @@ fn preanalyze_function_ir(
         }
     }
 
+    let mut changed_types = true;
+    while changed_types {
+        changed_types = false;
+        for op in &func_ir.ops {
+            let Some(out) = op.out.as_ref() else {
+                continue;
+            };
+            let inserted = match op.kind.as_str() {
+                "const" | "loop_index_start" | "loop_index_next" => int_like_vars.insert(out.clone()),
+                "const_bool" => bool_like_vars.insert(out.clone()),
+                "const_float" => float_like_vars.insert(out.clone()),
+                "const_str" => str_like_vars.insert(out.clone()),
+                "copy" | "copy_var" | "load_var" | "identity_alias" => {
+                    let src = op.var.as_ref().or_else(|| op.args.as_ref().and_then(|args| args.first()));
+                    if let Some(src) = src {
+                        if int_like_vars.contains(src) {
+                            int_like_vars.insert(out.clone())
+                        } else if bool_like_vars.contains(src) {
+                            bool_like_vars.insert(out.clone())
+                        } else if float_like_vars.contains(src) {
+                            float_like_vars.insert(out.clone())
+                        } else if str_like_vars.contains(src) {
+                            str_like_vars.insert(out.clone())
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                }
+                "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "bool" | "cast_bool" | "builtin_bool"
+                | "is_truthy" | "is" | "not" => bool_like_vars.insert(out.clone()),
+                "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul"
+                | "floordiv" | "mod" | "bit_and" | "bit_or" | "bit_xor" | "lshift" | "rshift"
+                | "neg" | "abs" | "invert" | "builtin_abs" => {
+                    match infer_scalar_lane(
+                        op,
+                        &int_like_vars,
+                        &bool_like_vars,
+                        &float_like_vars,
+                        &str_like_vars,
+                    ) {
+                        Some(ScalarLane::Int) => int_like_vars.insert(out.clone()),
+                        Some(ScalarLane::Bool) => bool_like_vars.insert(out.clone()),
+                        Some(ScalarLane::Float) => float_like_vars.insert(out.clone()),
+                        Some(ScalarLane::Str) => str_like_vars.insert(out.clone()),
+                        None => false,
+                    }
+                }
+                _ => false,
+            };
+            if inserted {
+                changed_types = true;
+            }
+        }
+    }
+
     let mut var_names: Vec<String> = var_names.into_iter().collect();
     var_names.sort();
     let function_exception_label_id = label_positions
@@ -586,6 +753,10 @@ fn preanalyze_function_ir(
         exception_label_ids,
         const_int_map,
         loop_body_out_vars,
+        int_like_vars,
+        bool_like_vars,
+        float_like_vars,
+        str_like_vars,
     }
 }
 
@@ -793,6 +964,10 @@ impl SimpleBackend {
             exception_label_ids,
             const_int_map: _const_int_map,
             loop_body_out_vars,
+            int_like_vars,
+            bool_like_vars,
+            float_like_vars,
+            str_like_vars,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries);
         let (rc_skip_inc, mut rc_skip_dec) =
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use);
@@ -896,6 +1071,57 @@ impl SimpleBackend {
         // Valid only while the list is not resized (no append/insert inside the loop).
         let mut list_int_data_cache: std::collections::BTreeMap<String, Variable> = std::collections::BTreeMap::new();
         let mut list_int_len_cache: std::collections::BTreeMap<String, Variable> = std::collections::BTreeMap::new();
+        let var_is_int = |name: &str| int_like_vars.contains(name);
+        let var_is_bool = |name: &str| bool_like_vars.contains(name);
+        let var_is_str = |name: &str| str_like_vars.contains(name);
+        let op_prefers_int_lane = |op: &OpIR| {
+            matches!(
+                infer_scalar_lane(
+                    op,
+                    &int_like_vars,
+                    &bool_like_vars,
+                    &float_like_vars,
+                    &str_like_vars,
+                ),
+                Some(ScalarLane::Int)
+            )
+        };
+        let op_prefers_bool_lane = |op: &OpIR| {
+            matches!(
+                infer_scalar_lane(
+                    op,
+                    &int_like_vars,
+                    &bool_like_vars,
+                    &float_like_vars,
+                    &str_like_vars,
+                ),
+                Some(ScalarLane::Bool)
+            )
+        };
+        let op_prefers_float_lane = |op: &OpIR| {
+            matches!(
+                infer_scalar_lane(
+                    op,
+                    &int_like_vars,
+                    &bool_like_vars,
+                    &float_like_vars,
+                    &str_like_vars,
+                ),
+                Some(ScalarLane::Float)
+            )
+        };
+        let op_prefers_str_lane = |op: &OpIR| {
+            matches!(
+                infer_scalar_lane(
+                    op,
+                    &int_like_vars,
+                    &bool_like_vars,
+                    &float_like_vars,
+                    &str_like_vars,
+                ),
+                Some(ScalarLane::Str)
+            )
+        };
 
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -935,33 +1161,16 @@ impl SimpleBackend {
                     let Some(ref out) = op.out else {
                         continue;
                     };
-                    let is_seed_int = matches!(op.kind.as_str(), "const" | "const_bool")
-                        || op.fast_int.unwrap_or(false)
-                        || op.type_hint.as_deref() == Some("int")
-                        || op.type_hint.as_deref() == Some("bool")
-                        || matches!(
-                            op.kind.as_str(),
-                            "add"
-                                | "sub"
-                                | "mul"
-                                | "floordiv"
-                                | "mod_"
-                                | "inplace_add"
-                                | "inplace_sub"
-                                | "inplace_mul"
-                                | "inplace_floordiv"
-                                | "inplace_mod"
-                                | "lshift"
-                                | "rshift"
-                                | "bitand"
-                                | "bitor"
-                                | "bitxor"
-                                | "invert"
-                                | "neg"
-                                | "pos"
-                                if op.fast_int.unwrap_or(false)
-                                    || op.type_hint.as_deref() == Some("int")
-                        );
+                    let is_seed_int = matches!(
+                        infer_scalar_lane(
+                            op,
+                            &int_valued_outputs,
+                            &bool_like_vars,
+                            &float_like_vars,
+                            &str_like_vars,
+                        ),
+                        Some(ScalarLane::Int) | Some(ScalarLane::Bool)
+                    );
                     let is_alias_of_int = matches!(
                         op.kind.as_str(),
                         "copy_var" | "copy" | "load_var" | "loop_index_start" | "identity_alias"
@@ -1875,7 +2084,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.type_hint.as_deref() == Some("str") {
+                    let res = if op_prefers_str_lane(&op) {
                         // Both operands known to be strings — direct concat,
                         // skips the 8-branch dispatch in molt_add.
                         let callee = Self::import_func_id_split(
@@ -1888,9 +2097,7 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         builder.inst_results(call)[0]
-                    } else if op.fast_float.unwrap_or(false)
-                        || op.type_hint.as_deref() == Some("float")
-                    {
+                    } else if op_prefers_float_lane(&op) {
                         // Both operands known to be f64 — direct float arithmetic.
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -2085,7 +2292,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.type_hint.as_deref() == Some("str") {
+                    let res = if op_prefers_str_lane(&op) {
                         // Both operands known to be strings — direct concat.
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -2097,9 +2304,7 @@ impl SimpleBackend {
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         builder.inst_results(call)[0]
-                    } else if op.fast_float.unwrap_or(false)
-                        || op.type_hint.as_deref() == Some("float")
-                    {
+                    } else if op_prefers_float_lane(&op) {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
@@ -2736,8 +2941,8 @@ impl SimpleBackend {
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = raw_int_shadow_vals.get(&args[0]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[0]).unwrap()));
-                        let rhs_val = raw_int_shadow_vals.get(&args[1]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[1]).unwrap()));
+                        let lhs_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0]).unwrap();
+                        let rhs_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1]).unwrap();
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
                         let fits_inline = int_value_fits_inline(&mut builder, raw_result);
                         let callee = Self::import_func_id_split(
@@ -2921,8 +3126,8 @@ impl SimpleBackend {
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = raw_int_shadow_vals.get(&args[0]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[0]).unwrap()));
-                        let rhs_val = raw_int_shadow_vals.get(&args[1]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[1]).unwrap()));
+                        let lhs_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0]).unwrap();
+                        let rhs_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1]).unwrap();
                         let raw_result = builder.ins().isub(lhs_val, rhs_val);
                         let fits_inline = int_value_fits_inline(&mut builder, raw_result);
                         let callee = Self::import_func_id_split(
@@ -3102,8 +3307,8 @@ impl SimpleBackend {
                     {
                         // Raw chain: both operands already unboxed + overflow guard.
                         // Propagate raw shadow via second merge phi.
-                        let lhs_val = raw_int_shadow_vals.get(&args[0]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[0]).unwrap()));
-                        let rhs_val = raw_int_shadow_vals.get(&args[1]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[1]).unwrap()));
+                        let lhs_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0]).unwrap();
+                        let rhs_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1]).unwrap();
                         let (raw_result, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -3279,8 +3484,8 @@ impl SimpleBackend {
                         && op_prefers_int_lane(&op)
                     {
                         // Raw chain: both operands already unboxed + overflow guard
-                        let lhs_val = raw_int_shadow_vals.get(&args[0]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[0]).unwrap()));
-                        let rhs_val = raw_int_shadow_vals.get(&args[1]).copied().unwrap_or_else(|| builder.use_var(*raw_int_shadow.get(&args[1]).unwrap()));
+                        let lhs_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0]).unwrap();
+                        let rhs_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1]).unwrap();
                         let (raw_result, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -3440,7 +3645,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -3545,7 +3750,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -3650,7 +3855,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -3755,7 +3960,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -3860,7 +4065,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -3965,7 +4170,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4070,7 +4275,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4221,7 +4426,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4364,7 +4569,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if op_prefers_float_lane(&op) {
                         // Both operands known to be f64.  CPython raises
                         // ZeroDivisionError for float division by zero, so
                         // we must check before using fdiv (which produces
@@ -4402,7 +4607,7 @@ impl SimpleBackend {
                         builder.switch_to_block(merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op_prefers_int_lane(&op) {
                         // Python true division: int / int always returns float.
                         // Convert to f64 and do fdiv.
                         let callee = Self::import_func_id_split(
@@ -4548,7 +4753,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4698,7 +4903,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4836,7 +5041,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         // Python floor_div: divide and floor towards negative infinity.
                         // sdiv truncates towards zero; we adjust when signs differ and
                         // there is a remainder.
@@ -4928,7 +5133,7 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         // Inline pow for small non-negative exponents (0, 1, 2).
                         // Exponent >= 3 or negative falls back to runtime.
                         let callee = Self::import_func_id_split(
@@ -5087,30 +5292,6 @@ impl SimpleBackend {
                         if let Some(out__) = op.out {
                             def_var_named(&mut builder, &vars, out__, len_boxed);
                         }
-                    } else if matches!(op.type_hint.as_deref(), Some("list") | Some("tuple")) {
-                        // Inline fast path for list/tuple: read len from the
-                        // underlying Vec<u64> without calling into the runtime.
-                        //   raw_ptr  = unbox_ptr(val)
-                        //   vec_ptr  = *(raw_ptr as *mut *mut Vec<u64>)  // first field of payload
-                        //   len      = *(vec_ptr + 8)                   // Vec.len (second field)
-                        //   result   = box_int(len)
-                        let val =
-                            var_get(&mut builder, &vars, &args[0]).expect("Len arg not found");
-                        let raw_ptr = unbox_ptr_value(&mut builder, *val, &nbc);
-                        let vec_ptr =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlags::trusted(), raw_ptr, 0);
-                        let len_val = builder.ins().load(
-                            types::I64,
-                            MemFlags::trusted(),
-                            vec_ptr,
-                            8, // offset to Vec::len (after the data pointer)
-                        );
-                        let res = box_int_value(&mut builder, len_val, &nbc);
-                        if let Some(out__) = op.out {
-                            def_var_named(&mut builder, &vars, out__, res);
-                        }
                     } else {
                         let val =
                             var_get(&mut builder, &vars, &args[0]).expect("Len arg not found");
@@ -5122,12 +5303,8 @@ impl SimpleBackend {
                             Some("dict") => "molt_len_dict",
                             Some("tuple") => "molt_len_tuple",
                             Some("set") | Some("frozenset") => "molt_len_set",
-                            _ => match op.type_hint.as_deref() {
-                                Some("str") => "molt_len_str",
-                                Some("dict") => "molt_len_dict",
-                                Some("set") | Some("frozenset") => "molt_len_set",
-                                _ => "molt_len",
-                            },
+                            _ if var_is_str(&args[0]) => "molt_len_str",
+                            _ => "molt_len",
                         };
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -6916,7 +7093,7 @@ impl SimpleBackend {
                             let fn_name = match op.container_type.as_deref() {
                                 Some("dict") => "molt_dict_getitem",
                                 Some("tuple") => "molt_tuple_getitem",
-                                _ if op.fast_int.unwrap_or(false) => "molt_list_getitem_int_fast",
+                                _ if op_prefers_int_lane(&op) => "molt_list_getitem_int_fast",
                                 _ => "molt_index",
                             };
                             let callee = Self::import_func_id_split(
@@ -7113,7 +7290,7 @@ impl SimpleBackend {
                             }
                         }
                     } else {
-                        let fn_name = if op.fast_int.unwrap_or(false) {
+                        let fn_name = if op_prefers_int_lane(&op) {
                             "molt_list_setitem_int_fast"
                         } else {
                             "molt_dict_set"
@@ -8815,18 +8992,12 @@ impl SimpleBackend {
                     let lr = if in_active_loop {
                         None
                     } else {
-                        raw_int_shadow
-                            .get(&args[0])
-                            .map(|&v| builder.use_var(v))
-                            .or_else(|| raw_int_shadow_vals.get(&args[0]).copied())
+                        shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0])
                     };
                     let rr = if in_active_loop {
                         None
                     } else {
-                        raw_int_shadow
-                            .get(&args[1])
-                            .map(|&v| builder.use_var(v))
-                            .or_else(|| raw_int_shadow_vals.get(&args[1]).copied())
+                        shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1])
                     };
                     let res = if lr.is_some() && rr.is_some() {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lr.unwrap(), rr.unwrap());
@@ -8842,7 +9013,7 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::LessThan, lhs_f, rhs_f);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op_prefers_int_lane(&op) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
@@ -8917,12 +9088,12 @@ impl SimpleBackend {
                     let lr = if in_active_loop {
                         None
                     } else {
-                        raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)).or_else(|| raw_int_shadow_vals.get(&args[0]).copied())
+                        shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0])
                     };
                     let rr = if in_active_loop {
                         None
                     } else {
-                        raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v)).or_else(|| raw_int_shadow_vals.get(&args[1]).copied())
+                        shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1])
                     };
                     let res = if lr.is_some() && rr.is_some() {
                         let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr.unwrap(), rr.unwrap());
@@ -8937,7 +9108,7 @@ impl SimpleBackend {
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_f, rhs_f);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op_prefers_int_lane(&op) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp =
@@ -9018,22 +9189,22 @@ impl SimpleBackend {
                     let lhs_shadow = if in_active_loop {
                         None
                     } else {
-                        raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)).or_else(|| raw_int_shadow_vals.get(&args[0]).copied())
+                        shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0])
                     };
                     let rhs_shadow = if in_active_loop {
                         None
                     } else {
-                        raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v)).or_else(|| raw_int_shadow_vals.get(&args[1]).copied())
+                        shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1])
                     };
                     let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op.fast_float.unwrap_or(false) {
+                    } else if op_prefers_float_lane(&op) {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::GreaterThan, lhs_f, rhs_f);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op_prefers_int_lane(&op) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder
@@ -9112,24 +9283,24 @@ impl SimpleBackend {
                     let lhs_shadow = if in_active_loop {
                         None
                     } else {
-                        raw_int_shadow.get(&args[0]).map(|&v| builder.use_var(v)).or_else(|| raw_int_shadow_vals.get(&args[0]).copied())
+                        shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0])
                     };
                     let rhs_shadow = if in_active_loop {
                         None
                     } else {
-                        raw_int_shadow.get(&args[1]).map(|&v| builder.use_var(v)).or_else(|| raw_int_shadow_vals.get(&args[1]).copied())
+                        shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[1])
                     };
                     let res = if let (Some(lr), Some(rr)) = (lhs_shadow, rhs_shadow) {
                         let cmp = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op.fast_float.unwrap_or(false) {
+                    } else if op_prefers_float_lane(&op) {
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder
                             .ins()
                             .fcmp(FloatCC::GreaterThanOrEqual, lhs_f, rhs_f);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op_prefers_int_lane(&op) {
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp =
@@ -9208,13 +9379,13 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if op_prefers_float_lane(&op) {
                         // Both operands known to be f64 — direct float equality.
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::Equal, lhs_f, rhs_f);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op_prefers_int_lane(&op) {
                         // Guarded fast_int path with inline tag check.
                         let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
                         let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
@@ -9293,13 +9464,13 @@ impl SimpleBackend {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op.fast_float.unwrap_or(false) {
+                    let res = if op_prefers_float_lane(&op) {
                         // Both operands known to be f64 — direct float inequality.
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
                         let cmp = builder.ins().fcmp(FloatCC::NotEqual, lhs_f, rhs_f);
                         box_bool_value(&mut builder, cmp, &nbc)
-                    } else if op.fast_int.unwrap_or(false) {
+                    } else if op_prefers_int_lane(&op) {
                         // Guarded fast_int: verify both are inline ints at runtime.
                         let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
                         let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
@@ -9431,7 +9602,7 @@ impl SimpleBackend {
                 "neg" | "unary_neg" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         // -x == 0 - x; overflow only when x == INT_MIN of the
                         // inline payload range.
                         let callee = Self::import_func_id_split(
@@ -9489,7 +9660,7 @@ impl SimpleBackend {
                 "abs" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         // abs(x): select(x < 0, -x, x) with overflow check for INT_MIN.
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -9548,7 +9719,7 @@ impl SimpleBackend {
                 "invert" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let val = var_get(&mut builder, &vars, &args[0]).expect("Value not found");
-                    let res = if op.fast_int.unwrap_or(false) {
+                    let res = if op_prefers_int_lane(&op) {
                         // ~x == x ^ -1 for integers; result always fits if input fits
                         // (magnitude changes by at most 1).
                         let int_val = unbox_int(&mut builder, *val, &nbc);
@@ -15474,18 +15645,9 @@ impl SimpleBackend {
                         );
                         // Fast path: extract bool payload directly for NaN-boxed
                         // booleans from fast_int comparisons or type hints.
-                        let prev_is_fast_bool = op_idx > 0 && {
-                            let prev = &func_ir.ops[op_idx - 1];
-                            prev.fast_int.unwrap_or(false)
-                                && matches!(
-                                    prev.kind.as_str(),
-                                    "lt" | "le" | "gt" | "ge" | "eq" | "ne"
-                                )
-                        };
-                        let cond_type_hint = op.type_hint.as_deref();
-                        let cond_is_bool_typed = cond_type_hint == Some("bool") || prev_is_fast_bool;
-                        let cond_is_int_typed = !cond_is_bool_typed
-                            && (op.fast_int.unwrap_or(false) || cond_type_hint == Some("int"));
+                        let cond_name = &args[0];
+                        let cond_is_bool_typed = var_is_bool(cond_name);
+                        let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
                         let cond_bool = if cond_is_bool_typed {
                             // NaN-boxed bool: bit 0 is the boolean value.
                             let one = builder.ins().iconst(types::I64, 1);
@@ -15613,18 +15775,9 @@ impl SimpleBackend {
                         // and body — keeping SSA variable propagation clean so the
                         // loop induction variable is correctly threaded through the
                         // back-edge.
-                        let prev_is_fast_bool = op_idx > 0 && {
-                            let prev = &func_ir.ops[op_idx - 1];
-                            prev.fast_int.unwrap_or(false)
-                                && matches!(
-                                    prev.kind.as_str(),
-                                    "lt" | "le" | "gt" | "ge" | "eq" | "ne"
-                                )
-                        };
-                        let cond_type_hint = op.type_hint.as_deref();
-                        let cond_is_bool_typed = cond_type_hint == Some("bool") || prev_is_fast_bool;
-                        let cond_is_int_typed = !cond_is_bool_typed
-                            && (op.fast_int.unwrap_or(false) || cond_type_hint == Some("int"));
+                        let cond_name = &args[0];
+                        let cond_is_bool_typed = var_is_bool(cond_name);
+                        let cond_is_int_typed = !cond_is_bool_typed && var_is_int(cond_name);
                         let cond_bool = if cond_is_bool_typed {
                             // Condition is QNAN|TAG_BOOL|{0,1}: low bit is the bool.
                             let one = builder.ins().iconst(types::I64, 1);
@@ -17345,13 +17498,13 @@ impl SimpleBackend {
                     let fallthrough_block = builder.create_block();
                     // cond is NaN-boxed — dispatch based on type hint to avoid
                     // unnecessary GIL-wrapped molt_is_truthy calls.
-                    let cond_type_hint = op.type_hint.as_deref();
-                    let cond_bool = if cond_type_hint == Some("bool") {
+                    let cond_name = &args[0];
+                    let cond_bool = if var_is_bool(cond_name) {
                         // NaN-boxed bool: bit 0 is the boolean value.
                         let one = builder.ins().iconst(types::I64, 1);
                         let bit0 = builder.ins().band(*cond, one);
                         builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
-                    } else if op.fast_int.unwrap_or(false) || cond_type_hint == Some("int") {
+                    } else if var_is_int(cond_name) {
                         // NaN-boxed int: unbox and check != 0.
                         let raw_val = shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0])
                             .unwrap_or_else(|| unbox_int(&mut builder, *cond, &nbc));
@@ -17626,7 +17779,7 @@ impl SimpleBackend {
                             let src_shadow_var = raw_int_shadow.get(&args[0]).copied();
                             let raw_val = src_shadow_var
                                 .map(|v| builder.use_var(v))
-                                .or_else(|| raw_int_shadow_vals.get(&args[0]).copied());
+                                .or_else(|| shadow_value_for(&mut builder, &raw_int_shadow, &raw_int_shadow_vals, &args[0]));
                             if let Some(raw_val) = raw_val {
                                 if let Some(_src_shadow_var) = src_shadow_var {
                                     let dst_shadow_var =

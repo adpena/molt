@@ -501,8 +501,8 @@ pub fn apply_profile_order(ir: &mut SimpleIR) {
 // Constant folding pass (peephole, pre-emission)
 //
 // Scans IR ops in forward order, tracking which variables hold known constant
-// values.  When an arithmetic op's inputs are all constants (and `fast_int` is
-// set), the op is replaced with a `const` op holding the computed result.
+// values. When an integer arithmetic op's inputs are both known integer
+// constants, the op is replaced with a `const` op holding the computed result.
 // This eliminates redundant unbox-compute-box sequences in the emitted code,
 // yielding a 3-5% binary size reduction on constant-heavy code.
 // ---------------------------------------------------------------------------
@@ -531,8 +531,7 @@ pub fn fold_constants(ops: &mut [OpIR]) {
             }
 
             // Binary integer arithmetic: add, sub, mul, inplace_add, inplace_sub, inplace_mul
-            "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul"
-                if op.fast_int.unwrap_or(false) =>
+            "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" =>
             {
                 if let Some(ref args) = op.args
                     && args.len() == 2
@@ -549,7 +548,6 @@ pub fn fold_constants(ops: &mut [OpIR]) {
                         op.kind = "const".to_string();
                         op.value = Some(result);
                         op.args = None;
-                        op.fast_int = None;
                         if let Some(ref out) = op.out {
                             const_ints.insert(out.clone(), result);
                         }
@@ -565,8 +563,7 @@ pub fn fold_constants(ops: &mut [OpIR]) {
 
             // Bitwise integer ops: bit_and, bit_or, bit_xor and inplace variants
             "bit_and" | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
-            | "inplace_bit_xor"
-                if op.fast_int.unwrap_or(false) =>
+            | "inplace_bit_xor" =>
             {
                 if let Some(ref args) = op.args
                     && args.len() == 2
@@ -583,7 +580,6 @@ pub fn fold_constants(ops: &mut [OpIR]) {
                         op.kind = "const".to_string();
                         op.value = Some(result);
                         op.args = None;
-                        op.fast_int = None;
                         if let Some(ref out) = op.out {
                             const_ints.insert(out.clone(), result);
                         }
@@ -685,8 +681,7 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
             }
 
             // ----- binary integer arithmetic -----
-            "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul"
-                if op.fast_int.unwrap_or(false) =>
+            "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" =>
             {
                 if let Some(ref args) = op.args
                     && args.len() == 2
@@ -703,7 +698,6 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
                         op.kind = "const".to_string();
                         op.value = Some(result);
                         op.args = None;
-                        op.fast_int = None;
                         if let Some(ref out) = op.out {
                             const_ints.insert(out.clone(), result);
                         }
@@ -718,8 +712,7 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
 
             // ----- bitwise integer ops -----
             "bit_and" | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
-            | "inplace_bit_xor"
-                if op.fast_int.unwrap_or(false) =>
+            | "inplace_bit_xor" =>
             {
                 if let Some(ref args) = op.args
                     && args.len() == 2
@@ -736,7 +729,6 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
                         op.kind = "const".to_string();
                         op.value = Some(result);
                         op.args = None;
-                        op.fast_int = None;
                         if let Some(ref out) = op.out {
                             const_ints.insert(out.clone(), result);
                         }
