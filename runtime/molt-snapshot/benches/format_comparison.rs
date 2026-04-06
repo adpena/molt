@@ -2,6 +2,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use molt_snapshot::{
     ExecutionSnapshot, PendingExternalCall, ProgramCounter, ResourceSnapshot,
 };
+use std::hint::black_box;
 
 fn sample_snapshot(memory_size: usize) -> ExecutionSnapshot {
     ExecutionSnapshot {
@@ -16,7 +17,7 @@ fn sample_snapshot(memory_size: usize) -> ExecutionSnapshot {
         },
         pending_call: PendingExternalCall {
             function_name: "fetch_user_data".into(),
-            args: vec![0x7ff8_0001_0000_002A; 5],
+            args: vec![0x7ff8_0001_0000_002a; 5],
             call_id: 99999,
         },
         resource_state: ResourceSnapshot {
@@ -36,14 +37,14 @@ fn bench_hand_rolled(c: &mut Criterion) {
     c.bench_function("hand_rolled_serialize_64kb", |b| {
         b.iter(|| {
             let bytes = snap.serialize();
-            criterion::black_box(bytes);
+            black_box(bytes);
         })
     });
 
     c.bench_function("hand_rolled_deserialize_64kb", |b| {
         b.iter(|| {
             let restored = ExecutionSnapshot::deserialize(&serialized).unwrap();
-            criterion::black_box(restored);
+            black_box(restored);
         })
     });
 
@@ -51,7 +52,7 @@ fn bench_hand_rolled(c: &mut Criterion) {
         b.iter(|| {
             let bytes = snap.serialize();
             let restored = ExecutionSnapshot::deserialize(&bytes).unwrap();
-            criterion::black_box(restored);
+            black_box(restored);
         })
     });
 }

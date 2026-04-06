@@ -511,7 +511,7 @@ fn urllib_error_set_attr(
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) else {
         return false;
     };
-    let _ = crate::bridge::molt_object_setattr(self_bits, name_bits, value_bits);
+    crate::bridge::molt_object_setattr(self_bits, name_bits, value_bits);
     dec_ref_bits(_py, name_bits);
     !exception_pending(_py)
 }
@@ -1525,7 +1525,7 @@ fn urllib_request_set_attr(
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return false;
     };
-    let _ = crate::bridge::molt_object_setattr(obj_bits, name_bits, value_bits);
+    crate::bridge::molt_object_setattr(obj_bits, name_bits, value_bits);
     dec_ref_bits(_py, name_bits);
     !exception_pending(_py)
 }

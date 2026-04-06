@@ -3839,21 +3839,20 @@ pub extern "C" fn molt_re_match_group(
                 return Some(idx as usize);
             }
             // Try as string name.
-            if let Some(name) = string_obj_to_owned(obj_from_bits(sel_bits)) {
-                if let Some(gn_ptr) = obj_from_bits(group_names_bits).as_ptr() {
-                    let gn_ty = unsafe { object_type_id(gn_ptr) };
-                    if gn_ty == TYPE_ID_DICT {
-                        // Look up name in the dict.
-                        if let Some(name_key_bits) = attr_name_bits_from_bytes(_py, name.as_bytes())
+            if let Some(name) = string_obj_to_owned(obj_from_bits(sel_bits))
+                && let Some(gn_ptr) = obj_from_bits(group_names_bits).as_ptr()
+            {
+                let gn_ty = unsafe { object_type_id(gn_ptr) };
+                if gn_ty == TYPE_ID_DICT {
+                    // Look up name in the dict.
+                    if let Some(name_key_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) {
+                        if let Some(val_bits) =
+                            unsafe { dict_get_in_place(_py, gn_ptr, name_key_bits) }
                         {
-                            if let Some(val_bits) =
-                                unsafe { dict_get_in_place(_py, gn_ptr, name_key_bits) }
-                            {
-                                dec_ref_bits(_py, name_key_bits);
-                                return to_i64(obj_from_bits(val_bits)).map(|v| v as usize);
-                            }
                             dec_ref_bits(_py, name_key_bits);
+                            return to_i64(obj_from_bits(val_bits)).map(|v| v as usize);
                         }
+                        dec_ref_bits(_py, name_key_bits);
                     }
                 }
             }
@@ -4095,7 +4094,7 @@ pub extern "C" fn molt_re_match_groupdict(
         }
 
         // Iterate over group_names dict.
-        let order = dict_order_clone(_py, gn_ptr);
+        let order = unsafe { dict_order_clone(_py, gn_ptr) };
         for pair in order.chunks(2) {
             if pair.len() != 2 {
                 continue;

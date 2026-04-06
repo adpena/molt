@@ -337,7 +337,7 @@ fn f64_from_bits(_py: &PyToken, bits: u64, param_name: &str) -> Option<f64> {
         return Some(i as f64);
     }
     if let Some(ptr) = bigint_ptr_from_bits(bits) {
-        let big = bigint_ref(ptr);
+        let big = unsafe { bigint_ref(ptr) };
         return Some(big.to_f64().unwrap_or(f64::INFINITY));
     }
     let _ = raise_exception::<u64>(_py, "TypeError", &format!("{param_name} must be a number"));
@@ -386,7 +386,7 @@ fn seed_bigint_from_bits(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
 
     // bigint heap
     if let Some(ptr) = bigint_ptr_from_bits(seed_bits) {
-        return Some(bigint_ref(ptr).abs());
+        return Some(unsafe { bigint_ref(ptr) }.abs());
     }
 
     // float → hash it
@@ -399,7 +399,7 @@ fn seed_bigint_from_bits(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
         let hash_u64 = if let Some(i) = to_i64(hash_obj) {
             i as u64
         } else if let Some(ptr) = bigint_ptr_from_bits(hash_bits) {
-            let hash_big = bigint_ref(ptr).clone();
+            let hash_big = unsafe { bigint_ref(ptr) }.clone();
             let modulus = BigInt::one() << 64;
             hash_big
                 .mod_floor(&modulus)
@@ -618,7 +618,7 @@ pub extern "C" fn molt_random_randbelow(handle_bits: u64, n_bits: u64) -> u64 {
         let n_big: BigInt = if let Some(i) = to_i64(n_obj) {
             BigInt::from(i)
         } else if let Some(ptr) = bigint_ptr_from_bits(n_bits) {
-            bigint_ref(ptr).clone()
+            unsafe { bigint_ref(ptr) }.clone()
         } else {
             return raise_exception::<u64>(_py, "TypeError", "n must be an integer");
         };

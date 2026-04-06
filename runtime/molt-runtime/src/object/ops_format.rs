@@ -11,7 +11,6 @@ use super::ops_string::wtf8_from_bytes;
 
 #[unsafe(no_mangle)]
 /// Print a bare newline to stdout (used by the `print_newline` op).
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_print_newline() {
     use std::io::Write;
     let _ = std::io::stdout().write_all(b"\n");
@@ -50,7 +49,6 @@ pub extern "C" fn molt_warn_stderr(msg_bits: u64) {
         }
     })
 }
-
 
 fn format_float(f: f64) -> String {
     if f.is_nan() {
@@ -1106,7 +1104,7 @@ fn format_string_repr_bytes(bytes: &[u8]) -> String {
 fn is_printable_for_repr(ch: char) -> bool {
     // Fast path: ASCII printable (0x20-0x7E)
     let code = ch as u32;
-    if code >= 0x20 && code <= 0x7E {
+    if (0x20..=0x7E).contains(&code) {
         return true;
     }
     // Control characters (C0, DEL, C1)

@@ -107,6 +107,10 @@ pub fn alloc_list(_py: &PyToken, elems: &[u64]) -> *mut u8 {
 // Object inspection
 // ---------------------------------------------------------------------------
 
+/// # Safety
+///
+/// `ptr` must be a valid Molt runtime object pointer for the duration of this
+/// call.
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { molt_object_type_id(ptr) }
 }
@@ -115,6 +119,9 @@ pub fn is_truthy(_py: &PyToken, obj: MoltObject) -> bool {
     unsafe { ffi::molt_is_truthy(obj.bits()) == 1 }
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
 pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
     unsafe { &*molt_seq_vec_ptr(ptr) }
 }
@@ -227,6 +234,10 @@ pub fn bridge_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
 }
 
 /// Read the class bits from an object.
+/// # Safety
+///
+/// `ptr` must be a valid Molt runtime object pointer for the duration of this
+/// call.
 pub unsafe fn object_class_bits(ptr: *mut u8) -> u64 {
     unsafe { molt_itertools_object_class_bits(ptr) }
 }

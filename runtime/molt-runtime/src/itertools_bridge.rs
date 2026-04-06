@@ -40,10 +40,8 @@ pub extern "C" fn molt_itertools_call_callable2_bridge(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_tuple_from_iter(iter_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        match unsafe { tuple_from_iter_bits(_py, iter_bits) } {
-            Some(bits) => bits,
-            None => 0, // signal failure (not None — caller checks for 0)
-        }
+        let bits: u64 = unsafe { tuple_from_iter_bits(_py, iter_bits) }.unwrap_or_default();
+        bits // signal failure (not None — caller checks for 0)
     })
 }
 

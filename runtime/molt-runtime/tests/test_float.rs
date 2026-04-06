@@ -1,6 +1,7 @@
 // Float arithmetic tests — CPython parity for float operations.
 
 use molt_obj_model::MoltObject;
+use std::f64::consts::PI;
 use std::sync::Once;
 
 #[unsafe(no_mangle)]
@@ -32,9 +33,6 @@ fn as_f(bits: u64) -> f64 {
     MoltObject::from_bits(bits)
         .as_float()
         .expect("expected float")
-}
-fn as_i(bits: u64) -> i64 {
-    MoltObject::from_bits(bits).as_int().expect("expected int")
 }
 fn as_bool(bits: u64) -> bool {
     MoltObject::from_bits(bits).as_bool().unwrap_or(false)
@@ -93,7 +91,7 @@ fn test_lt() {
 #[test]
 fn test_eq() {
     init();
-    assert!(as_bool(molt_runtime::molt_eq(f(3.14), f(3.14))));
+    assert!(as_bool(molt_runtime::molt_eq(f(PI), f(PI))));
 }
 #[test]
 fn test_ne() {
@@ -103,7 +101,7 @@ fn test_ne() {
 #[test]
 fn test_abs_neg() {
     init();
-    assert_eq!(as_f(molt_runtime::molt_abs_builtin(f(-3.14))), 3.14);
+    assert_eq!(as_f(molt_runtime::molt_abs_builtin(f(-PI))), PI);
 }
 #[test]
 fn test_abs_pos() {

@@ -86,8 +86,9 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let ok =
         unsafe { __molt_stringprep_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None

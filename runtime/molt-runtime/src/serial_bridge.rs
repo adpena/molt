@@ -454,10 +454,9 @@ extern "C" fn bridge_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64
 
 extern "C" fn bridge_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        match unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) } {
-            Some(bits) => bits,
-            None => 0,
-        }
+        let bits: u64 =
+            unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) }.unwrap_or_default();
+        bits
     })
 }
 

@@ -713,7 +713,7 @@ pub extern "C" fn molt_hash_drop(handle_bits: u64) -> u64 {
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
-        release_ptr(ptr);
+        unsafe { release_ptr(ptr) };
         let _ = unsafe { Box::from_raw(ptr as *mut HashHandle) };
         MoltObject::none().bits()
     })

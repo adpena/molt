@@ -141,7 +141,7 @@ pub extern "C" fn molt_ffi_init() -> u64 {
         if result != 0 {
             FFI_INITIALIZED.store(true, Ordering::Release);
         }
-        return result;
+        result
     }
     #[cfg(not(feature = "runtime_linked"))]
     {
@@ -165,7 +165,7 @@ pub extern "C" fn molt_ffi_shutdown() -> u64 {
     FFI_INITIALIZED.store(false, Ordering::Release);
     #[cfg(feature = "runtime_linked")]
     {
-        return molt_runtime::lifecycle::shutdown();
+        molt_runtime::lifecycle::shutdown()
     }
     #[cfg(not(feature = "runtime_linked"))]
     {
@@ -215,7 +215,7 @@ pub extern "C" fn molt_ffi_is_initialized() -> u32 {
 pub extern "C" fn molt_ffi_json_loads(json_str_bits: u64) -> u64 {
     #[cfg(feature = "runtime_linked")]
     {
-        return molt_runtime::molt_json_loads(json_str_bits);
+        molt_runtime::molt_json_loads(json_str_bits)
     }
     #[cfg(not(feature = "runtime_linked"))]
     {
@@ -247,7 +247,7 @@ pub extern "C" fn molt_ffi_json_dumps(obj_bits: u64) -> u64 {
         // Default options: indent=None, sort_keys=False, ensure_ascii=False
         let none_bits = molt_obj_model::MoltObject::none().bits();
         let false_bits = molt_obj_model::MoltObject::from_bool(false).bits();
-        return molt_runtime::molt_json_dumps(obj_bits, none_bits, false_bits, false_bits);
+        molt_runtime::molt_json_dumps(obj_bits, none_bits, false_bits, false_bits)
     }
     #[cfg(not(feature = "runtime_linked"))]
     {
@@ -306,7 +306,7 @@ pub extern "C" fn molt_ffi_math_fabs(x_bits: u64) -> u64 {
 pub extern "C" fn molt_ffi_len(obj_bits: u64) -> u64 {
     #[cfg(feature = "runtime_linked")]
     {
-        return molt_runtime::molt_len(obj_bits);
+        molt_runtime::molt_len(obj_bits)
     }
     #[cfg(not(feature = "runtime_linked"))]
     {
@@ -327,7 +327,7 @@ pub extern "C" fn molt_ffi_len(obj_bits: u64) -> u64 {
 pub extern "C" fn molt_ffi_str(obj_bits: u64) -> u64 {
     #[cfg(feature = "runtime_linked")]
     {
-        return molt_runtime::molt_str_from_obj(obj_bits);
+        molt_runtime::molt_str_from_obj(obj_bits)
     }
     #[cfg(not(feature = "runtime_linked"))]
     {
@@ -346,7 +346,7 @@ pub extern "C" fn molt_ffi_str(obj_bits: u64) -> u64 {
 pub extern "C" fn molt_ffi_repr(obj_bits: u64) -> u64 {
     #[cfg(feature = "runtime_linked")]
     {
-        return molt_runtime::molt_repr_from_obj(obj_bits);
+        molt_runtime::molt_repr_from_obj(obj_bits)
     }
     #[cfg(not(feature = "runtime_linked"))]
     {
@@ -488,18 +488,18 @@ mod tests {
 
     #[test]
     fn ffi_math_fabs_negative_float() {
-        let neg = molt_obj_model::MoltObject::from_float(-3.14);
+        let neg = molt_obj_model::MoltObject::from_float(-std::f64::consts::PI);
         let result = molt_ffi_math_fabs(neg.bits());
         let obj = molt_obj_model::MoltObject::from_bits(result);
-        assert_eq!(obj.as_float(), Some(3.14));
+        assert_eq!(obj.as_float(), Some(std::f64::consts::PI));
     }
 
     #[test]
     fn ffi_math_fabs_positive_float() {
-        let pos = molt_obj_model::MoltObject::from_float(2.718);
+        let pos = molt_obj_model::MoltObject::from_float(std::f64::consts::E);
         let result = molt_ffi_math_fabs(pos.bits());
         let obj = molt_obj_model::MoltObject::from_bits(result);
-        assert_eq!(obj.as_float(), Some(2.718));
+        assert_eq!(obj.as_float(), Some(std::f64::consts::E));
     }
 
     #[test]
