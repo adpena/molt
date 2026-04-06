@@ -164,6 +164,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_asyncgen_locals(_py, state);
     trace_shutdown("clear_thread_local_state");
     clear_thread_local_state(_py);
+    trace_shutdown("clear_builder_singletons");
+    clear_builder_singletons(_py);
     trace_shutdown("clear_fn_ptr_code_map");
     clear_fn_ptr_code_map(_py, state);
     // Keep builtin classes alive until after cache + TLS teardown: releasing
@@ -304,7 +306,6 @@ fn clear_thread_local_state(_py: &PyToken<'_>) {
     let _ = PARSE_ARENA.try_with(|arena| arena.borrow_mut().clear());
     clear_attr_tls_caches(_py);
     clear_const_str_cache(_py);
-    clear_builder_singletons(_py);
     clear_utf8_count_tls();
     let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
 }

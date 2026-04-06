@@ -354,6 +354,7 @@ fn build_runtime_function(
     fn_ptr: u64,
     arity: u8,
 ) -> Option<u64> {
+    let _nursery_guard = crate::object::NurserySuspendGuard::new();
     let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity as u64);
     if ptr.is_null() {
         return None;
@@ -372,6 +373,7 @@ fn build_bootstrap_function(
     arity: u8,
     defaults: &[u64],
 ) -> Option<u64> {
+    let _nursery_guard = crate::object::NurserySuspendGuard::new();
     let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity as u64);
     if ptr.is_null() {
         return None;
