@@ -3688,8 +3688,8 @@ fn cext_loader_dlopen(
     if let Some(module_ptr) = module_obj.as_ptr() {
         let module_dict_bits = unsafe { crate::object::layout::module_dict_bits(module_ptr) };
         let module_dict = obj_from_bits(module_dict_bits);
-        if let Some(dict_ptr) = module_dict.as_ptr() {
-            if unsafe { object_type_id(dict_ptr) == TYPE_ID_DICT } {
+        if let Some(dict_ptr) = module_dict.as_ptr()
+            && unsafe { object_type_id(dict_ptr) == TYPE_ID_DICT } {
                 unsafe {
                     crate::object::ops_dict::dict_update_apply(
                         _py,
@@ -3699,7 +3699,6 @@ fn cext_loader_dlopen(
                     );
                 }
             }
-        }
     }
 
     Ok(())
@@ -6976,8 +6975,8 @@ fn importlib_import_with_fallback(
     // If every import mechanism failed with ModuleNotFoundError, try loading a
     // native C extension (.so / .dylib) from sys.path before giving up.
     #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
-    if let Err(_) = &result {
-        if importlib_exception_should_fallback(_py) {
+    if result.is_err()
+        && importlib_exception_should_fallback(_py) {
             if let Some(module_bits) = importlib_try_cext_on_sys_path(_py, resolved, modules_ptr) {
                 return Ok(module_bits);
             }
@@ -6988,7 +6987,6 @@ fn importlib_import_with_fallback(
                 &format!("No module named '{resolved}'"),
             ));
         }
-    }
 
     result
 }

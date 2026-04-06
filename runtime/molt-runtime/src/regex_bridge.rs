@@ -254,10 +254,7 @@ pub extern "C" fn __molt_regex_attr_name_bits_from_bytes(
 ) -> u64 {
     crate::with_gil_entry!(_py, {
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
-        match crate::builtins::attr::attr_name_bits_from_bytes(_py, key) {
-            Some(bits) => bits,
-            None => 0,
-        }
+        crate::builtins::attr::attr_name_bits_from_bytes(_py, key).unwrap_or_default()
     })
 }
 

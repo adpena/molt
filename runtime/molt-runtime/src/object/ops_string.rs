@@ -37,9 +37,9 @@ pub extern "C" fn molt_string_find(hay_bits: u64, needle_bits: u64) -> u64 {
                 if object_type_id(hay_ptr) == TYPE_ID_STRING {
                     let hay_len = string_len(hay_ptr);
                     let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), hay_len);
-                    if hay_bytes.is_ascii() {
-                        if let Some(needle_ptr) = obj_from_bits(needle_bits).as_ptr() {
-                            if object_type_id(needle_ptr) == TYPE_ID_STRING {
+                    if hay_bytes.is_ascii()
+                        && let Some(needle_ptr) = obj_from_bits(needle_bits).as_ptr()
+                            && object_type_id(needle_ptr) == TYPE_ID_STRING {
                                 let needle_bytes = std::slice::from_raw_parts(
                                     string_bytes(needle_ptr),
                                     string_len(needle_ptr),
@@ -49,8 +49,6 @@ pub extern "C" fn molt_string_find(hay_bits: u64, needle_bits: u64) -> u64 {
                                     return MoltObject::from_int(idx).bits();
                                 }
                             }
-                        }
-                    }
                 }
             }
         }
@@ -76,9 +74,9 @@ pub extern "C" fn molt_string_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
                 if object_type_id(hay_ptr) == TYPE_ID_STRING {
                     let hay_len = string_len(hay_ptr);
                     let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), hay_len);
-                    if hay_bytes.is_ascii() {
-                        if let Some(needle_ptr) = obj_from_bits(needle_bits).as_ptr() {
-                            if object_type_id(needle_ptr) == TYPE_ID_STRING {
+                    if hay_bytes.is_ascii()
+                        && let Some(needle_ptr) = obj_from_bits(needle_bits).as_ptr()
+                            && object_type_id(needle_ptr) == TYPE_ID_STRING {
                                 let needle_bytes = std::slice::from_raw_parts(
                                     string_bytes(needle_ptr),
                                     string_len(needle_ptr),
@@ -88,8 +86,6 @@ pub extern "C" fn molt_string_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
                                     return MoltObject::from_int(idx).bits();
                                 }
                             }
-                        }
-                    }
                 }
             }
         }
@@ -3913,7 +3909,7 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
                 // no heap pointer, so check before the as_ptr() gate.
                 if mapped_obj.is_int() {
                     let code = mapped_obj.as_int_unchecked();
-                    if code < 0 || code > 0x10FFFF {
+                    if !(0..=0x10FFFF).contains(&code) {
                         if mapped_owned {
                             dec_ref_bits(_py, mapped_bits);
                         }

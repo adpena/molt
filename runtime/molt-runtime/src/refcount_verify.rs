@@ -60,8 +60,8 @@ pub fn track_inc_ref(bits: u64, location: &'static str) {
 #[cfg(feature = "refcount_verify")]
 pub fn track_dec_ref(bits: u64) {
     let mut map_guard = REFCOUNT_MAP.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(ref mut map) = *map_guard {
-        if let Some(entry) = map.get_mut(&bits) {
+    if let Some(ref mut map) = *map_guard
+        && let Some(entry) = map.get_mut(&bits) {
             entry.refcount -= 1;
             if entry.refcount < 0 {
                 panic!(
@@ -70,7 +70,6 @@ pub fn track_dec_ref(bits: u64) {
                 );
             }
         }
-    }
 }
 
 /// Verify that all tracked objects have been freed (refcount == 0).
