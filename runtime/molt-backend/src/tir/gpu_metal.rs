@@ -41,6 +41,22 @@ mod real {
     }
 
     impl MetalDevice {
+        fn metal_buffer_from_handle<'a>(
+            &self,
+            buffer: &'a GpuBufferHandle,
+        ) -> Result<&'a MetalBuffer, GpuError> {
+            let ptr_val = usize::from_ne_bytes(
+                buffer
+                    ._handle_bytes()
+                    .try_into()
+                    .map_err(|_| GpuError::TransferFailed("Invalid buffer handle".into()))?,
+            );
+            if ptr_val == 0 {
+                return Err(GpuError::TransferFailed("Null Metal buffer handle".into()));
+            }
+            Ok(unsafe { &*(ptr_val as *const MetalBuffer) })
+        }
+
         /// Create a Metal device using the system default GPU.
         pub fn new() -> Result<Self, GpuError> {
             let device = Device::system_default()
@@ -174,13 +190,7 @@ mod real {
             Ok(GpuBufferHandle::new(size_bytes, GpuPlatform::Metal, bytes))
         }
         fn copy_to_device(&self, buffer: &GpuBufferHandle, data: &[u8]) -> Result<(), GpuError> {
-            let ptr_val = usize::from_ne_bytes(
-                buffer
-                    ._handle_bytes()
-                    .try_into()
-                    .map_err(|_| GpuError::TransferFailed("Invalid buffer handle".into()))?,
-            );
-            let metal_buf: &MetalBuffer = unsafe { &*(ptr_val as *const MetalBuffer) };
+            let metal_buf = self.metal_buffer_from_handle(buffer)?;
             let contents = metal_buf.contents() as *mut u8;
             unsafe {
                 std::ptr::copy_nonoverlapping(data.as_ptr(), contents, data.len());
@@ -192,13 +202,7 @@ mod real {
             buffer: &GpuBufferHandle,
             data: &mut [u8],
         ) -> Result<(), GpuError> {
-            let ptr_val = usize::from_ne_bytes(
-                buffer
-                    ._handle_bytes()
-                    .try_into()
-                    .map_err(|_| GpuError::TransferFailed("Invalid buffer handle".into()))?,
-            );
-            let metal_buf: &MetalBuffer = unsafe { &*(ptr_val as *const MetalBuffer) };
+            let metal_buf = self.metal_buffer_from_handle(buffer)?;
             let contents = metal_buf.contents() as *const u8;
             unsafe {
                 std::ptr::copy_nonoverlapping(contents, data.as_mut_ptr(), data.len());
@@ -210,11 +214,13 @@ mod real {
             kernel: &CompiledKernel,
             grid: [u32; 3],
             block: [u32; 3],
-            _buffers: &[&GpuBufferHandle],
+            buffers: &[&GpuBufferHandle],
         ) -> Result<(), GpuError> {
-            // For the trait-based dispatch we don't pass real MetalBuffers through.
-            // Production code would dereference the GpuBufferHandle internals.
-            self.dispatch(kernel, grid, block, &[])
+            let metal_buffers: Result<Vec<&MetalBuffer>, GpuError> = buffers
+                .iter()
+                .map(|handle| self.metal_buffer_from_handle(handle))
+                .collect();
+            self.dispatch(kernel, grid, block, &metal_buffers?)
         }
         fn synchronize(&self) -> Result<(), GpuError> {
             // Metal command buffers are synchronous after wait_until_completed.

@@ -19,6 +19,7 @@ pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
 // molt_runtime_init is pub extern "C" but not re-exported in the Rust API.
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;
+    fn molt_exception_clear() -> u64;
 }
 
 static INIT: Once = Once::new();
@@ -27,6 +28,7 @@ fn init_runtime() {
     INIT.call_once(|| unsafe {
         molt_runtime_init();
     });
+    let _ = unsafe { molt_exception_clear() };
 }
 
 fn int(v: i64) -> u64 {
