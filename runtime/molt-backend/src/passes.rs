@@ -1052,354 +1052,6 @@ pub fn build_const_int_map(ops: &[OpIR]) -> BTreeMap<String, i64> {
     map
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_op(kind: &str) -> OpIR {
-        OpIR {
-            kind: kind.to_string(),
-            ..Default::default()
-        }
-    }
-
-    fn make_const_int(out: &str, val: i64) -> OpIR {
-        OpIR {
-            kind: "const".to_string(),
-            value: Some(val),
-            out: Some(out.to_string()),
-            ..Default::default()
-        }
-    }
-
-    fn make_arith(kind: &str, args: &[&str], out: &str) -> OpIR {
-        OpIR {
-            kind: kind.to_string(),
-            args: Some(args.iter().map(|s| s.to_string()).collect()),
-            out: Some(out.to_string()),
-            ..Default::default()
-        }
-    }
-
-    // --- RC coalescing tests ---
-
-    fn make_ref_op(kind: &str, arg: &str) -> OpIR {
-        OpIR {
-            kind: kind.to_string(),
-            args: Some(vec![arg.to_string()]),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn rc_coalescing_eliminates_adjacent_inc_dec_pair() {
-        let mut func = FunctionIR {
-            name: "test".to_string(),
-            params: vec!["x".to_string()],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            ops: vec![
-                make_ref_op("inc_ref", "x"),
-                make_ref_op("dec_ref", "x"),
-                make_op("ret_void"),
-            ],
-        };
-
-        rc_coalescing(&mut func);
-
-        // Both inc_ref and dec_ref should be eliminated.
-        assert_eq!(func.ops.len(), 1);
-        assert_eq!(func.ops[0].kind, "ret_void");
-    }
-
-    #[test]
-    fn rc_coalescing_preserves_pair_across_control_flow() {
-        let mut func = FunctionIR {
-            name: "test".to_string(),
-            params: vec!["x".to_string()],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            ops: vec![
-                make_ref_op("inc_ref", "x"),
-                make_op("if"),
-                make_ref_op("dec_ref", "x"),
-                make_op("ret_void"),
-            ],
-        };
-
-        rc_coalescing(&mut func);
-
-        // The pair should NOT be eliminated because `if` is control flow.
-        assert_eq!(func.ops.len(), 4);
-    }
-
-    #[test]
-    fn rc_coalescing_handles_borrow_release_pair() {
-        let mut func = FunctionIR {
-            name: "test".to_string(),
-            params: vec!["y".to_string()],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            ops: vec![
-                make_ref_op("borrow", "y"),
-                make_ref_op("release", "y"),
-                make_op("ret_void"),
-            ],
-        };
-
-        rc_coalescing(&mut func);
-
-        assert_eq!(func.ops.len(), 1);
-        assert_eq!(func.ops[0].kind, "ret_void");
-    }
-
-    #[test]
-    fn rc_coalescing_preserves_pair_with_intervening_use() {
-        let mut func = FunctionIR {
-            name: "test".to_string(),
-            params: vec!["x".to_string()],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            ops: vec![
-                make_ref_op("inc_ref", "x"),
-                // An op that uses x as an argument — breaks the window.
-                make_arith("add", &["x", "x"], "y"),
-                make_ref_op("dec_ref", "x"),
-                make_op("ret_void"),
-            ],
-        };
-
-        rc_coalescing(&mut func);
-
-        // The pair should NOT be eliminated because of the intervening use.
-        assert_eq!(func.ops.len(), 4);
-    }
-
-    #[test]
-    fn rc_coalescing_eliminates_different_vars_independently() {
-        let mut func = FunctionIR {
-            name: "test".to_string(),
-            params: vec!["a".to_string(), "b".to_string()],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            ops: vec![
-                make_ref_op("inc_ref", "a"),
-                make_ref_op("inc_ref", "b"),
-                make_ref_op("dec_ref", "a"),
-                make_ref_op("dec_ref", "b"),
-                make_op("ret_void"),
-            ],
-        };
-
-        rc_coalescing(&mut func);
-
-        // inc_ref(a)/dec_ref(a) cannot be eliminated because inc_ref(b) intervenes
-        // (it doesn't use 'a' though). Let's check what actually happens.
-        // The scan finds inc_ref(a) at 0, then looks at 1 (inc_ref(b) — not a
-        // dec_ref of a, and doesn't use a), then at 2 (dec_ref(a) — match!).
-        // So indices 0,2 are eliminated. Then inc_ref(b) at 1, looks at 3
-        // (dec_ref(b) — match!), indices 1,3 eliminated.
-        assert_eq!(func.ops.len(), 1);
-        assert_eq!(func.ops[0].kind, "ret_void");
-    }
-
-    #[test]
-    fn protected_runtime_entrypoint_detection_is_explicit() {
-        assert!(is_protected_runtime_entrypoint("molt_main"));
-        assert!(is_protected_runtime_entrypoint("_start"));
-        assert!(is_protected_runtime_entrypoint("molt_isolate_import"));
-        assert!(is_protected_runtime_entrypoint("molt_isolate_bootstrap"));
-        assert!(!is_protected_runtime_entrypoint("molt_init_math"));
-        assert!(!is_protected_runtime_entrypoint("user_entry"));
-    }
-
-    #[test]
-    fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
-        let mut ir = SimpleIR {
-            functions: vec![
-                FunctionIR {
-                    name: "entry".to_string(),
-                    params: vec![],
-                    ops: vec![make_op("ret_void")],
-                    param_types: None,
-                    source_file: None,
-                    is_extern: false,
-                },
-                FunctionIR {
-                    name: "molt_isolate_import".to_string(),
-                    params: vec!["p0".to_string()],
-                    ops: vec![
-                        OpIR {
-                            kind: "call".to_string(),
-                            s_value: Some("molt_init_math".to_string()),
-                            out: Some("v0".to_string()),
-                            ..OpIR::default()
-                        },
-                        OpIR {
-                            kind: "ret".to_string(),
-                            args: Some(vec!["v0".to_string()]),
-                            ..OpIR::default()
-                        },
-                    ],
-                    param_types: None,
-                    source_file: None,
-                    is_extern: false,
-                },
-                FunctionIR {
-                    name: "molt_init_math".to_string(),
-                    params: vec![],
-                    ops: vec![make_op("ret_void")],
-                    param_types: None,
-                    source_file: None,
-                    is_extern: false,
-                },
-            ],
-            profile: None,
-        };
-
-        eliminate_dead_functions(&mut ir);
-
-        let retained: BTreeSet<&str> = ir.functions.iter().map(|func| func.name.as_str()).collect();
-        assert!(retained.contains("molt_isolate_import"));
-        assert!(retained.contains("molt_init_math"));
-        let dispatch = ir
-            .functions
-            .iter()
-            .find(|func| func.name == "molt_isolate_import")
-            .expect("runtime dispatch entrypoint must remain");
-        assert!(
-            dispatch
-                .ops
-                .iter()
-                .any(|op| op.s_value.as_deref() == Some("molt_init_math")),
-            "runtime dispatch body must keep its transitive module-init references",
-        );
-    }
-
-    #[test]
-    fn split_large_function_preserves_protected_runtime_import_entrypoint() {
-        let func = FunctionIR {
-            name: "molt_isolate_import".to_string(),
-            params: vec!["p0".to_string()],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            ops: vec![
-                make_const_int("v0", 1),
-                make_const_int("v1", 2),
-                make_arith("add", &["p0", "v0"], "v2"),
-                make_arith("add", &["v2", "v1"], "v3"),
-                OpIR {
-                    kind: "ret".to_string(),
-                    args: Some(vec!["v3".to_string()]),
-                    ..OpIR::default()
-                },
-            ],
-        };
-
-        let result = split_large_function(func, 2);
-
-        let original = result.expect_err("protected import entrypoint must not split");
-        assert_eq!(original.name, "molt_isolate_import");
-        assert_eq!(original.params, vec!["p0".to_string()]);
-        assert_eq!(original.ops.len(), 5);
-    }
-
-    #[test]
-    fn split_large_function_preserves_protected_runtime_bootstrap_entrypoint() {
-        let func = FunctionIR {
-            name: "molt_isolate_bootstrap".to_string(),
-            params: vec![],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            ops: vec![
-                make_op("const_none"),
-                make_op("const_none"),
-                make_op("const_none"),
-                make_op("const_none"),
-                make_op("ret_void"),
-            ],
-        };
-
-        let result = split_large_function(func, 2);
-
-        let original = result.expect_err("protected bootstrap entrypoint must not split");
-        assert_eq!(original.name, "molt_isolate_bootstrap");
-        assert!(original.params.is_empty());
-        assert_eq!(original.ops.len(), 5);
-    }
-
-    #[test]
-    fn split_large_function_still_splits_regular_large_functions() {
-        let func = FunctionIR {
-            name: "user_large".to_string(),
-            params: vec!["p0".to_string()],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            ops: vec![
-                make_const_int("v0", 1),
-                make_const_int("v1", 2),
-                make_arith("add", &["p0", "v0"], "v2"),
-                make_arith("add", &["v2", "v1"], "v3"),
-                OpIR {
-                    kind: "ret".to_string(),
-                    args: Some(vec!["v3".to_string()]),
-                    ..OpIR::default()
-                },
-            ],
-        };
-
-        let (stub, chunks) = split_large_function(func, 2).expect("expected split");
-
-        assert_eq!(stub.name, "user_large");
-        assert!(!chunks.is_empty());
-        let stub_chunk_calls: Vec<&OpIR> = stub
-            .ops
-            .iter()
-            .filter(|op| op.kind == "call_internal")
-            .collect();
-        assert_eq!(stub_chunk_calls.len(), chunks.len());
-        assert!(
-            stub_chunk_calls
-                .iter()
-                .all(|op| op.args.as_ref() == Some(&vec!["p0".to_string()])),
-            "split stub must forward original params into each chunk call"
-        );
-        assert_eq!(
-            stub.ops.last().map(|op| op.kind.as_str()),
-            Some("ret"),
-            "split stub must return the propagated chunk result",
-        );
-        assert_eq!(
-            stub.ops.last().and_then(|op| op.var.as_deref()),
-            Some("__chunk_ret"),
-            "split stub must return the named propagated chunk result",
-        );
-        assert!(
-            chunks
-                .iter()
-                .all(|chunk| chunk.name.starts_with("__molt_chunk_user_large_"))
-        );
-        assert!(
-            chunks
-                .iter()
-                .all(|chunk| chunk.params == vec!["p0".to_string()]),
-            "split chunks must preserve original params"
-        );
-    }
-}
-
 /// Identify pairs of `inc_ref`/`dec_ref` ops that cancel within a basic block.
 /// Returns: (set of op indices to skip, set of variable names whose dec_ref to skip).
 pub fn compute_rc_coalesce_skips(
@@ -1953,13 +1605,13 @@ const DEFAULT_MAX_FUNCTION_OPS: usize = 4000;
 pub fn split_large_function(
     func: FunctionIR,
     max_ops: usize,
-) -> Result<(FunctionIR, Vec<FunctionIR>), FunctionIR> {
+) -> Result<(FunctionIR, Vec<FunctionIR>), Box<FunctionIR>> {
     if is_protected_runtime_entrypoint(&func.name) {
-        return Err(func);
+        return Err(Box::new(func));
     }
 
     if func.ops.len() <= max_ops {
-        return Err(func);
+        return Err(Box::new(func));
     }
 
     // Exception handling ops (check_exception) are protected by the
@@ -2078,7 +1730,7 @@ pub fn split_large_function(
     }
 
     if split_candidates.is_empty() {
-        return Err(func);
+        return Err(Box::new(func));
     }
 
     // ---------------------------------------------------------------
@@ -2096,7 +1748,7 @@ pub fn split_large_function(
 
     // If no selected splits, the function is too deeply nested to split.
     if selected.is_empty() {
-        return Err(func);
+        return Err(Box::new(func));
     }
 
     // ---------------------------------------------------------------
@@ -2114,7 +1766,7 @@ pub fn split_large_function(
         if chunk_size > max_ops * 2 {
             // Allow up to 2x max_ops for the final chunk — beyond that,
             // return Err to fall back to single-module compilation.
-            return Err(func);
+            return Err(Box::new(func));
         }
     }
 
@@ -2250,7 +1902,7 @@ pub fn split_megafunctions(ir: &mut SimpleIR) {
                 new_functions.push(stub);
             }
             Err(original) => {
-                new_functions.push(original);
+                new_functions.push(*original);
             }
         }
     }
@@ -2497,4 +2149,352 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
     }
 
     func_ir.ops = new_ops;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_op(kind: &str) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn make_const_int(out: &str, val: i64) -> OpIR {
+        OpIR {
+            kind: "const".to_string(),
+            value: Some(val),
+            out: Some(out.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn make_arith(kind: &str, args: &[&str], out: &str) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            args: Some(args.iter().map(|s| s.to_string()).collect()),
+            out: Some(out.to_string()),
+            ..Default::default()
+        }
+    }
+
+    // --- RC coalescing tests ---
+
+    fn make_ref_op(kind: &str, arg: &str) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            args: Some(vec![arg.to_string()]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rc_coalescing_eliminates_adjacent_inc_dec_pair() {
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec!["x".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                make_ref_op("inc_ref", "x"),
+                make_ref_op("dec_ref", "x"),
+                make_op("ret_void"),
+            ],
+        };
+
+        rc_coalescing(&mut func);
+
+        // Both inc_ref and dec_ref should be eliminated.
+        assert_eq!(func.ops.len(), 1);
+        assert_eq!(func.ops[0].kind, "ret_void");
+    }
+
+    #[test]
+    fn rc_coalescing_preserves_pair_across_control_flow() {
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec!["x".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                make_ref_op("inc_ref", "x"),
+                make_op("if"),
+                make_ref_op("dec_ref", "x"),
+                make_op("ret_void"),
+            ],
+        };
+
+        rc_coalescing(&mut func);
+
+        // The pair should NOT be eliminated because `if` is control flow.
+        assert_eq!(func.ops.len(), 4);
+    }
+
+    #[test]
+    fn rc_coalescing_handles_borrow_release_pair() {
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec!["y".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                make_ref_op("borrow", "y"),
+                make_ref_op("release", "y"),
+                make_op("ret_void"),
+            ],
+        };
+
+        rc_coalescing(&mut func);
+
+        assert_eq!(func.ops.len(), 1);
+        assert_eq!(func.ops[0].kind, "ret_void");
+    }
+
+    #[test]
+    fn rc_coalescing_preserves_pair_with_intervening_use() {
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec!["x".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                make_ref_op("inc_ref", "x"),
+                // An op that uses x as an argument — breaks the window.
+                make_arith("add", &["x", "x"], "y"),
+                make_ref_op("dec_ref", "x"),
+                make_op("ret_void"),
+            ],
+        };
+
+        rc_coalescing(&mut func);
+
+        // The pair should NOT be eliminated because of the intervening use.
+        assert_eq!(func.ops.len(), 4);
+    }
+
+    #[test]
+    fn rc_coalescing_eliminates_different_vars_independently() {
+        let mut func = FunctionIR {
+            name: "test".to_string(),
+            params: vec!["a".to_string(), "b".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                make_ref_op("inc_ref", "a"),
+                make_ref_op("inc_ref", "b"),
+                make_ref_op("dec_ref", "a"),
+                make_ref_op("dec_ref", "b"),
+                make_op("ret_void"),
+            ],
+        };
+
+        rc_coalescing(&mut func);
+
+        // inc_ref(a)/dec_ref(a) cannot be eliminated because inc_ref(b) intervenes
+        // (it doesn't use 'a' though). Let's check what actually happens.
+        // The scan finds inc_ref(a) at 0, then looks at 1 (inc_ref(b) — not a
+        // dec_ref of a, and doesn't use a), then at 2 (dec_ref(a) — match!).
+        // So indices 0,2 are eliminated. Then inc_ref(b) at 1, looks at 3
+        // (dec_ref(b) — match!), indices 1,3 eliminated.
+        assert_eq!(func.ops.len(), 1);
+        assert_eq!(func.ops[0].kind, "ret_void");
+    }
+
+    #[test]
+    fn protected_runtime_entrypoint_detection_is_explicit() {
+        assert!(is_protected_runtime_entrypoint("molt_main"));
+        assert!(is_protected_runtime_entrypoint("_start"));
+        assert!(is_protected_runtime_entrypoint("molt_isolate_import"));
+        assert!(is_protected_runtime_entrypoint("molt_isolate_bootstrap"));
+        assert!(!is_protected_runtime_entrypoint("molt_init_math"));
+        assert!(!is_protected_runtime_entrypoint("user_entry"));
+    }
+
+    #[test]
+    fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
+        let mut ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "entry".to_string(),
+                    params: vec![],
+                    ops: vec![make_op("ret_void")],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_isolate_import".to_string(),
+                    params: vec!["p0".to_string()],
+                    ops: vec![
+                        OpIR {
+                            kind: "call".to_string(),
+                            s_value: Some("molt_init_math".to_string()),
+                            out: Some("v0".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".to_string(),
+                            args: Some(vec!["v0".to_string()]),
+                            ..OpIR::default()
+                        },
+                    ],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_init_math".to_string(),
+                    params: vec![],
+                    ops: vec![make_op("ret_void")],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            profile: None,
+        };
+
+        eliminate_dead_functions(&mut ir);
+
+        let retained: BTreeSet<&str> = ir.functions.iter().map(|func| func.name.as_str()).collect();
+        assert!(retained.contains("molt_isolate_import"));
+        assert!(retained.contains("molt_init_math"));
+        let dispatch = ir
+            .functions
+            .iter()
+            .find(|func| func.name == "molt_isolate_import")
+            .expect("runtime dispatch entrypoint must remain");
+        assert!(
+            dispatch
+                .ops
+                .iter()
+                .any(|op| op.s_value.as_deref() == Some("molt_init_math")),
+            "runtime dispatch body must keep its transitive module-init references",
+        );
+    }
+
+    #[test]
+    fn split_large_function_preserves_protected_runtime_import_entrypoint() {
+        let func = FunctionIR {
+            name: "molt_isolate_import".to_string(),
+            params: vec!["p0".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                make_const_int("v0", 1),
+                make_const_int("v1", 2),
+                make_arith("add", &["p0", "v0"], "v2"),
+                make_arith("add", &["v2", "v1"], "v3"),
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["v3".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        };
+
+        let result = split_large_function(func, 2);
+
+        let original = result.expect_err("protected import entrypoint must not split");
+        assert_eq!(original.name, "molt_isolate_import");
+        assert_eq!(original.params, vec!["p0".to_string()]);
+        assert_eq!(original.ops.len(), 5);
+    }
+
+    #[test]
+    fn split_large_function_preserves_protected_runtime_bootstrap_entrypoint() {
+        let func = FunctionIR {
+            name: "molt_isolate_bootstrap".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                make_op("const_none"),
+                make_op("const_none"),
+                make_op("const_none"),
+                make_op("const_none"),
+                make_op("ret_void"),
+            ],
+        };
+
+        let result = split_large_function(func, 2);
+
+        let original = result.expect_err("protected bootstrap entrypoint must not split");
+        assert_eq!(original.name, "molt_isolate_bootstrap");
+        assert!(original.params.is_empty());
+        assert_eq!(original.ops.len(), 5);
+    }
+
+    #[test]
+    fn split_large_function_still_splits_regular_large_functions() {
+        let func = FunctionIR {
+            name: "user_large".to_string(),
+            params: vec!["p0".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                make_const_int("v0", 1),
+                make_const_int("v1", 2),
+                make_arith("add", &["p0", "v0"], "v2"),
+                make_arith("add", &["v2", "v1"], "v3"),
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["v3".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        };
+
+        let (stub, chunks) = split_large_function(func, 2).expect("expected split");
+
+        assert_eq!(stub.name, "user_large");
+        assert!(!chunks.is_empty());
+        let stub_chunk_calls: Vec<&OpIR> = stub
+            .ops
+            .iter()
+            .filter(|op| op.kind == "call_internal")
+            .collect();
+        assert_eq!(stub_chunk_calls.len(), chunks.len());
+        assert!(
+            stub_chunk_calls
+                .iter()
+                .all(|op| op.args.as_ref() == Some(&vec!["p0".to_string()])),
+            "split stub must forward original params into each chunk call"
+        );
+        assert_eq!(
+            stub.ops.last().map(|op| op.kind.as_str()),
+            Some("ret"),
+            "split stub must return the propagated chunk result",
+        );
+        assert_eq!(
+            stub.ops.last().and_then(|op| op.var.as_deref()),
+            Some("__chunk_ret"),
+            "split stub must return the named propagated chunk result",
+        );
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.name.starts_with("__molt_chunk_user_large_"))
+        );
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.params == vec!["p0".to_string()]),
+            "split chunks must preserve original params"
+        );
+    }
 }

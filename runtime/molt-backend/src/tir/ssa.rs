@@ -162,9 +162,9 @@ impl<'a> SsaContext<'a> {
             let scan_end = (i + 20).min(ops.len());
             for j in (i + 1)..scan_end {
                 let scan_op = &ops[j];
-                if scan_op.kind == "index" {
-                    if let Some(args) = &scan_op.args {
-                        if args.len() >= 2 && args[0] == pair_var {
+                if scan_op.kind == "index"
+                    && let Some(args) = &scan_op.args
+                        && args.len() >= 2 && args[0] == pair_var {
                             let idx_name = &args[1];
                             let const_val = ops[..j].iter().rev().take(20).find_map(|c| {
                                 if c.kind == "const" && c.out.as_deref() == Some(idx_name) {
@@ -179,8 +179,6 @@ impl<'a> SsaContext<'a> {
                                 val_idx = Some(j);
                             }
                         }
-                    }
-                }
             }
             if let (Some(di), Some(vi)) = (done_idx, val_idx) {
                 let done_var = ops[di].out.clone().unwrap_or_default();
@@ -664,22 +662,20 @@ impl<'a> SsaContext<'a> {
             let fix_args = |args: &mut Vec<ValueId>, target_bid: usize| {
                 let target_vars = &self.block_arg_vars[target_bid];
                 for (i, arg) in args.iter_mut().enumerate() {
-                    if *arg == undef_vid {
-                        if let Some(var_name) = target_vars.get(i) {
+                    if *arg == undef_vid
+                        && let Some(var_name) = target_vars.get(i) {
                             // Walk dominator chain from bid upward to find
                             // the nearest dominator that defines this variable.
                             // Values in block_exit_vars[d] dominate d, and
                             // since d dominates bid, they also dominate bid.
                             let mut d = Some(bid);
                             while let Some(dom_bid) = d {
-                                if let Some(vars) = block_exit_vars.get(&dom_bid) {
-                                    if let Some(&val) = vars.get(var_name) {
-                                        if val != undef_vid {
+                                if let Some(vars) = block_exit_vars.get(&dom_bid)
+                                    && let Some(&val) = vars.get(var_name)
+                                        && val != undef_vid {
                                             *arg = val;
                                             break;
                                         }
-                                    }
-                                }
                                 let next = self.cfg.dominators[dom_bid];
                                 if next == Some(dom_bid) || next == d {
                                     break; // entry block or cycle
@@ -687,7 +683,6 @@ impl<'a> SsaContext<'a> {
                                 d = next;
                             }
                         }
-                    }
                 }
             };
             match terminator {

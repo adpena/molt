@@ -1,6 +1,6 @@
 //! CUDA runtime device implementation.
 //!
-//! Provides a `CudaDevice` that wraps `cudarc::driver::CudaDevice` for
+//! Provides a `CudaDevice` that wraps `cudarc::driver::CudaContext` for
 //! compiling and launching CUDA kernels at runtime.
 //!
 //! Enabled by the `gpu-cuda` feature flag. Without the feature, a
@@ -9,7 +9,7 @@
 /// CUDA device — real implementation backed by cudarc.
 #[cfg(feature = "gpu-cuda")]
 pub struct CudaDevice {
-    inner: std::sync::Arc<cudarc::driver::CudaDevice>,
+    inner: std::sync::Arc<cudarc::driver::CudaContext>,
 }
 
 #[cfg(feature = "gpu-cuda")]
@@ -19,16 +19,16 @@ impl CudaDevice {
     /// Returns `GpuError::DeviceNotAvailable` if no CUDA-capable device is
     /// present or the driver is not installed.
     pub fn new() -> Result<Self, super::gpu_runtime::GpuError> {
-        match cudarc::driver::CudaDevice::new(0) {
+        match cudarc::driver::CudaContext::new(0) {
             Ok(dev) => Ok(Self { inner: dev }),
             Err(e) => Err(super::gpu_runtime::GpuError::DeviceNotAvailable(format!(
-                "CUDA init failed: {e}"
+                "CUDA init failed: {e:?}"
             ))),
         }
     }
 
     /// Return a reference to the underlying cudarc device.
-    pub fn inner(&self) -> &std::sync::Arc<cudarc::driver::CudaDevice> {
+    pub fn inner(&self) -> &std::sync::Arc<cudarc::driver::CudaContext> {
         &self.inner
     }
 }
@@ -54,8 +54,6 @@ impl CudaDevice {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// Without the feature, `CudaDevice::new()` must return an error — never
     /// panic. With the feature enabled the test is skipped (it would require
     /// an actual GPU in the test environment).

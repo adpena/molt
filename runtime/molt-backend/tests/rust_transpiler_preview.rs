@@ -116,6 +116,8 @@ fn rust_backend_lowers_class_slots_without_stub_placeholders() {
                 ret,
             ],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     };
@@ -170,6 +172,8 @@ fn rust_backend_lowers_module_attr_round_trip() {
                 module_new, attr_name, class_new, module_set, module_get, ret,
             ],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     };

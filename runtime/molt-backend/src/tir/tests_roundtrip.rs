@@ -9,6 +9,7 @@ mod tests {
     use crate::tir::passes::run_pipeline;
     use crate::tir::type_refine::{extract_type_map, refine_types};
     use crate::tir::verify::verify_function;
+    use std::f64::consts::PI;
 
     // ---------------------------------------------------------------------------
     // Helpers
@@ -665,7 +666,7 @@ mod tests {
             OpIR {
                 kind: "some_float_op".to_string(),
                 out: Some("result".into()),
-                f_value: Some(3.14),
+                f_value: Some(PI),
                 ..OpIR::default()
             },
             op_args("ret", &["result"]),
@@ -675,7 +676,7 @@ mod tests {
         assert!(fop.is_some(), "float op must survive round-trip");
         assert_eq!(
             fop.unwrap().f_value,
-            Some(3.14),
+            Some(PI),
             "f_value field must be preserved"
         );
     }

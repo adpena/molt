@@ -36,29 +36,26 @@ fn extract_data_segments(wasm: &[u8]) -> Vec<DataSegment> {
         if let Payload::DataSection(section) = payload.expect("valid payload") {
             for data in section.into_iter() {
                 let data = data.expect("valid data");
-                match data.kind {
-                    DataKind::Active {
+                if let DataKind::Active {
                         memory_index: 0,
                         offset_expr,
-                    } => {
-                        // Parse the const expr to get the offset.
-                        let mut reader = offset_expr.get_operators_reader();
-                        let mut offset = 0u32;
-                        while let Ok(op) = reader.read() {
-                            match op {
-                                wasmparser::Operator::I32Const { value } => {
-                                    offset = value as u32;
-                                }
-                                wasmparser::Operator::End => break,
-                                _ => {}
+                    } = data.kind {
+                    // Parse the const expr to get the offset.
+                    let mut reader = offset_expr.get_operators_reader();
+                    let mut offset = 0u32;
+                    while let Ok(op) = reader.read() {
+                        match op {
+                            wasmparser::Operator::I32Const { value } => {
+                                offset = value as u32;
                             }
+                            wasmparser::Operator::End => break,
+                            _ => {}
                         }
-                        segments.push(DataSegment {
-                            offset,
-                            data: data.data.to_vec(),
-                        });
                     }
-                    _ => {}
+                    segments.push(DataSegment {
+                        offset,
+                        data: data.data.to_vec(),
+                    });
                 }
             }
         }

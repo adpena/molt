@@ -4,14 +4,14 @@ mod cbor_tests {
 
     #[test]
     fn cbor_round_trip_minimal_ir() {
-        let mut c0 = OpIR {
+        let c0 = OpIR {
             kind: "const".to_string(),
             value: Some(42),
             out: Some("v0".to_string()),
             ..OpIR::default()
         };
 
-        let mut ret = OpIR {
+        let ret = OpIR {
             kind: "ret".to_string(),
             args: Some(vec!["v0".to_string()]),
             ..OpIR::default()
@@ -23,6 +23,8 @@ mod cbor_tests {
                 params: vec!["x".to_string()],
                 ops: vec![c0, ret],
                 param_types: Some(vec!["int".to_string()]),
+                source_file: None,
+                is_extern: false,
             }],
             profile: None,
         };
@@ -55,7 +57,7 @@ mod cbor_tests {
 #[test]
 #[cfg(feature = "cbor")]
 fn test_cbor_nan_infinity_round_trip() {
-    use molt_backend::ir::{FunctionIR, OpIR, SimpleIR};
+    use molt_backend::{FunctionIR, OpIR, SimpleIR};
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -82,6 +84,8 @@ fn test_cbor_nan_infinity_round_trip() {
                 },
             ],
             param_types: None,
+            source_file: None,
+            is_extern: false,
         }],
         profile: None,
     };

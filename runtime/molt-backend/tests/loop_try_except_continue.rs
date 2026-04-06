@@ -32,16 +32,14 @@ fn op_args_out(kind: &str, args: &[&str], out: &str) -> OpIR {
 /// on stack" panics.
 #[test]
 fn loop_start_after_unreachable_code() {
-    let mut ops: Vec<OpIR> = Vec::new();
-
-    // Return immediately — everything after is dead code.
-    ops.push(op("ret_void"));
-
-    // Dead loop — must not panic.
-    ops.push(op("loop_start"));
-    ops.push(op("loop_end"));
-
-    ops.push(op("ret_void"));
+    let ops: Vec<OpIR> = vec![
+        // Return immediately — everything after is dead code.
+        op("ret_void"),
+        // Dead loop — must not panic.
+        op("loop_start"),
+        op("loop_end"),
+        op("ret_void"),
+    ];
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -65,19 +63,16 @@ fn loop_start_after_unreachable_code() {
 /// Same as above but for indexed loops (`loop_index_start`).
 #[test]
 fn loop_index_start_after_unreachable_code() {
-    let mut ops: Vec<OpIR> = Vec::new();
-
-    ops.push(op_val_out("const", 0, "v0"));
-
-    // Return immediately — everything after is dead code.
-    ops.push(op("ret_void"));
-
-    // Dead indexed loop — must not panic.
-    ops.push(op("loop_start"));
-    ops.push(op_args_out("loop_index_start", &["v0"], "v1"));
-    ops.push(op("loop_end"));
-
-    ops.push(op("ret_void"));
+    let ops: Vec<OpIR> = vec![
+        op_val_out("const", 0, "v0"),
+        // Return immediately — everything after is dead code.
+        op("ret_void"),
+        // Dead indexed loop — must not panic.
+        op("loop_start"),
+        op_args_out("loop_index_start", &["v0"], "v1"),
+        op("loop_end"),
+        op("ret_void"),
+    ];
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -105,25 +100,21 @@ fn loop_index_start_after_unreachable_code() {
 /// the existing test: a live loop with continue inside an if still works.
 #[test]
 fn loop_start_in_reachable_code_still_works() {
-    let mut ops: Vec<OpIR> = Vec::new();
-
-    ops.push(op_val_out("const", 0, "v0"));
-    ops.push(op_val_out("const", 3, "v1"));
-    ops.push(op_val_out("const", 1, "v2"));
-
-    ops.push(op("loop_start"));
-    ops.push(op_args_out("loop_index_start", &["v0"], "v3"));
-
-    ops.push(op_args_out("lt", &["v3", "v1"], "v4"));
-    ops.push(op_args_out("loop_break_if_false", &["v4"], "none"));
-
-    // Increment and continue.
-    ops.push(op_args_out("add", &["v3", "v2"], "v5"));
-    ops.push(op_args_out("loop_index_next", &["v5"], "v5"));
-    ops.push(op("loop_continue"));
-
-    ops.push(op("loop_end"));
-    ops.push(op("ret_void"));
+    let ops: Vec<OpIR> = vec![
+        op_val_out("const", 0, "v0"),
+        op_val_out("const", 3, "v1"),
+        op_val_out("const", 1, "v2"),
+        op("loop_start"),
+        op_args_out("loop_index_start", &["v0"], "v3"),
+        op_args_out("lt", &["v3", "v1"], "v4"),
+        op_args_out("loop_break_if_false", &["v4"], "none"),
+        // Increment and continue.
+        op_args_out("add", &["v3", "v2"], "v5"),
+        op_args_out("loop_index_next", &["v5"], "v5"),
+        op("loop_continue"),
+        op("loop_end"),
+        op("ret_void"),
+    ];
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {

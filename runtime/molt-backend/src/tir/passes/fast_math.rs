@@ -200,7 +200,7 @@ mod tests {
         ];
         let result = run_pass(ops, false);
         assert!(
-            result[2].attrs.get("fast_math").is_none(),
+            !result[2].attrs.contains_key("fast_math"),
             "without function fast_math attr, ops must not be annotated"
         );
     }
@@ -215,7 +215,7 @@ mod tests {
         ];
         let result = run_pass(ops, true);
         assert!(
-            result[2].attrs.get("fast_math").is_none(),
+            !result[2].attrs.contains_key("fast_math"),
             "I64 Add in fast_math function must NOT be marked"
         );
     }
@@ -236,7 +236,7 @@ mod tests {
             "F64 Add should be marked"
         );
         assert!(
-            result[3].attrs.get("fast_math").is_none(),
+            !result[3].attrs.contains_key("fast_math"),
             "I64 Add must NOT be marked"
         );
     }
