@@ -357,13 +357,12 @@ unsafe fn issubclass_walk_bases(sub_ptr: *mut u8, class_bits: u64) -> bool {
                 return true;
             }
             let base_obj = obj_from_bits(base_bits);
-            if let Some(base_ptr) = base_obj.as_ptr() {
-                if object_type_id(base_ptr) == TYPE_ID_TYPE
+            if let Some(base_ptr) = base_obj.as_ptr()
+                && object_type_id(base_ptr) == TYPE_ID_TYPE
                     && issubclass_walk_bases(base_ptr, class_bits)
                 {
                     return true;
                 }
-            }
         }
         false
     }
@@ -432,9 +431,9 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
     // generic __instancecheck__ / metaclass path which can fail for exception
     // objects whose metaclass doesn't support it (the same logic that `except`
     // clauses use).
-    if let Some(val_ptr) = obj_from_bits(val_bits).as_ptr() {
-        if unsafe { object_type_id(val_ptr) } == TYPE_ID_EXCEPTION {
-            if let Some(cls_ptr) = obj_from_bits(class_bits).as_ptr() {
+    if let Some(val_ptr) = obj_from_bits(val_bits).as_ptr()
+        && unsafe { object_type_id(val_ptr) } == TYPE_ID_EXCEPTION
+            && let Some(cls_ptr) = obj_from_bits(class_bits).as_ptr() {
                 let cls_tid = unsafe { object_type_id(cls_ptr) };
                 if cls_tid == TYPE_ID_TYPE {
                     let builtins = builtin_classes(_py);
@@ -465,8 +464,6 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
                     }
                 }
             }
-        }
-    }
 
     // Fast-path for builtin types: resolve the value's type via type_of_bits and
     // check with issubclass_bits directly.  This avoids the metaclass

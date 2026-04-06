@@ -1945,7 +1945,7 @@ impl ConstStrCache {
 use std::cell::RefCell;
 
 thread_local! {
-    static CONST_STR_TLS: RefCell<ConstStrCache> = RefCell::new(ConstStrCache::new());
+    static CONST_STR_TLS: RefCell<ConstStrCache> = const { RefCell::new(ConstStrCache::new()) };
 }
 
 /// Clear the const-string intern cache (called during runtime teardown).

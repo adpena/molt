@@ -1051,15 +1051,14 @@ pub extern "C" fn molt_sys_path() -> u64 {
         }
 
         // 3. Executable's parent lib directory
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(parent) = exe.parent() {
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(parent) = exe.parent() {
                 let lib_dir = parent.join("lib");
                 if lib_dir.is_dir() {
                     entries.push(lib_dir.to_string_lossy().into_owned());
                 }
                 entries.push(parent.to_string_lossy().into_owned());
             }
-        }
 
         let mut bits_vec: Vec<u64> = Vec::with_capacity(entries.len());
         for entry in &entries {

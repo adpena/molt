@@ -151,7 +151,7 @@ pub extern "C" fn molt_bridge_free_string(ptr: *mut u8, len: usize) {
 pub extern "C" fn molt_bridge_type_name(obj_bits: u64, out_len: *mut usize) -> *const u8 {
     use std::cell::RefCell;
     thread_local! {
-        static BUF: RefCell<String> = RefCell::new(String::new());
+        static BUF: RefCell<String> = const { RefCell::new(String::new()) };
     }
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(obj_bits);

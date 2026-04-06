@@ -368,12 +368,11 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
         let cls_bits = MoltObject::from_ptr(cls_ptr).bits();
 
         // Set bases if provided
-        if !obj_from_bits(bases_bits).is_none() {
-            if let Some(_bases_ptr) = obj_from_bits(bases_bits).as_ptr() {
+        if !obj_from_bits(bases_bits).is_none()
+            && let Some(_bases_ptr) = obj_from_bits(bases_bits).as_ptr() {
                 unsafe { class_set_bases_bits(cls_ptr, bases_bits) };
                 inc_ref_bits(_py, bases_bits);
             }
-        }
 
         // Build __members__ dict from member tuples
         let members_obj = obj_from_bits(members_bits);

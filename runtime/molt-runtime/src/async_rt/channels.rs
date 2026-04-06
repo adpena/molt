@@ -2092,12 +2092,10 @@ pub(crate) fn capability_fix_hint(name: &str) -> String {
         );
     }
     if TIER_STANDARD_EXTRA.contains(&name) {
-        return format!(
-            "Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITY_TIER=standard (default for molt run)"
-        );
+        return "Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITY_TIER=standard (default for molt run)".to_string();
     }
     if TIER_FULL_EXTRA.contains(&name) {
-        return format!("Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITY_TIER=full");
+        return "Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITY_TIER=full".to_string();
     }
     format!("Use --trusted, MOLT_TRUSTED=1, or MOLT_CAPABILITIES={name}")
 }

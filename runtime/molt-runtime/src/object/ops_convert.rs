@@ -388,12 +388,11 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
         }
         // Heap-allocated NaN float (TYPE_ID_FLOAT): `float(x)` returns the
         // same object when x is already a float, matching CPython semantics.
-        if let Some(ptr) = obj.as_ptr() {
-            if unsafe { object_type_id(ptr) } == TYPE_ID_FLOAT {
+        if let Some(ptr) = obj.as_ptr()
+            && unsafe { object_type_id(ptr) } == TYPE_ID_FLOAT {
                 unsafe { inc_ref_ptr(_py, ptr) };
                 return val_bits;
             }
-        }
         if complex_ptr_from_bits(val_bits).is_some() {
             let type_label = type_name(_py, obj);
             let msg =
