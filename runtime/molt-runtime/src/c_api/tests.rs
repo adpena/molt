@@ -10,6 +10,22 @@
 use super::*;
 use crate::builtins::exceptions::molt_exception_class;
 
+struct CApiTestGuard {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl CApiTestGuard {
+    fn new() -> Self {
+        let guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        Self { _guard: guard }
+    }
+}
+
+impl Drop for CApiTestGuard {
+    fn drop(&mut self) {
+    }
+}
+
 extern "C" fn c_api_test_meth_varargs(self_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         if obj_from_bits(self_bits).is_none() {
@@ -188,12 +204,13 @@ fn create_test_heap_class(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]
 
 #[test]
 fn c_api_version_is_nonzero() {
+    let _guard = CApiTestGuard::new();
     assert!(molt_c_api_version() >= 1);
 }
 
 #[test]
 fn err_set_matches_fetch_roundtrip() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     let runtime_error = crate::with_gil_entry!(_py, { runtime_error_type_bits(_py) });
     let msg = b"boom";
     let rc = unsafe { molt_err_set(runtime_error, msg.as_ptr(), msg.len() as u64) };
@@ -216,7 +233,7 @@ fn err_set_matches_fetch_roundtrip() {
 
 #[test]
 fn object_call_numeric_and_sequence_wrappers() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let list_ptr = alloc_list(
             _py,
@@ -266,7 +283,7 @@ fn object_call_numeric_and_sequence_wrappers() {
 
 #[test]
 fn buffer_acquire_and_release_pins_owner() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     let bytes_bits = unsafe { molt_bytes_from(b"abc".as_ptr(), 3) };
     assert!(!obj_from_bits(bytes_bits).is_none());
     let mut view = MoltBufferView {
@@ -297,7 +314,7 @@ fn buffer_acquire_and_release_pins_owner() {
 
 #[test]
 fn err_pending_peek_restore_roundtrip() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     let runtime_error = crate::with_gil_entry!(_py, { runtime_error_type_bits(_py) });
     let msg = b"boom";
     let rc = unsafe { molt_err_set(runtime_error, msg.as_ptr(), msg.len() as u64) };
@@ -323,7 +340,7 @@ fn err_pending_peek_restore_roundtrip() {
 
 #[test]
 fn err_clear_resets_last_exception_slot() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     let runtime_error = crate::with_gil_entry!(_py, { runtime_error_type_bits(_py) });
     let msg = b"boom";
     let rc = unsafe { molt_err_set(runtime_error, msg.as_ptr(), msg.len() as u64) };
@@ -347,7 +364,7 @@ fn err_clear_resets_last_exception_slot() {
 
 #[test]
 fn mapping_length_success_and_failure_paths() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         assert!(!dict_ptr.is_null());
@@ -369,7 +386,7 @@ fn mapping_length_success_and_failure_paths() {
 
 #[test]
 fn mapping_keys_success_and_failure_paths() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         assert!(!dict_ptr.is_null());
@@ -398,7 +415,7 @@ fn mapping_keys_success_and_failure_paths() {
 
 #[test]
 fn string_from_as_ptr_roundtrip_and_type_errors() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     let text = b"hello";
     let string_bits = unsafe { molt_string_from(text.as_ptr(), text.len() as u64) };
     assert!(!obj_from_bits(string_bits).is_none());
@@ -429,7 +446,7 @@ fn string_from_as_ptr_roundtrip_and_type_errors() {
 
 #[test]
 fn object_setattr_symbol_roundtrip() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let runtime_error = runtime_error_type_bits(_py);
         let msg_ptr = alloc_string(_py, b"msg");
@@ -457,7 +474,7 @@ fn object_setattr_symbol_roundtrip() {
 
 #[test]
 fn attr_object_ic_keeps_type_objects_distinct_per_site() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         crate::object::bump_type_version();
         let class_a_bits = create_test_heap_class(_py, b"A", &[]);
@@ -506,7 +523,7 @@ fn attr_object_ic_keeps_type_objects_distinct_per_site() {
 
 #[test]
 fn attr_object_ic_keeps_class_attrs_distinct_per_site() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         // Invalidate stale IC entries from prior tests that may hold
         // dangling pointers to freed heap objects.
@@ -542,13 +559,11 @@ fn attr_object_ic_keeps_class_attrs_distinct_per_site() {
         dec_ref_bits(_py, class_b_bits);
         dec_ref_bits(_py, class_a_bits);
     });
-    let _ = molt_runtime_shutdown();
-    crate::state::runtime_state::molt_runtime_reset_for_testing();
 }
 
 #[test]
 fn plain_function_object_has_no_set_name_attr() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
@@ -578,7 +593,7 @@ fn plain_function_object_has_no_set_name_attr() {
 
 #[test]
 fn class_apply_set_name_tolerates_plain_function_attrs() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
@@ -600,7 +615,7 @@ fn class_apply_set_name_tolerates_plain_function_attrs() {
 
 #[test]
 fn scalar_handle_helpers_roundtrip() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     assert!(obj_from_bits(molt_none()).is_none());
 
     let true_bits = molt_bool_from_i32(1);
@@ -629,7 +644,7 @@ fn scalar_handle_helpers_roundtrip() {
 
 #[test]
 fn object_bytes_compare_and_contains_helpers() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let runtime_error = runtime_error_type_bits(_py);
         let msg_ptr = alloc_string(_py, b"msg");
@@ -696,7 +711,7 @@ fn object_bytes_compare_and_contains_helpers() {
 
 #[test]
 fn array_constructors_roundtrip() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     let elems = [
         MoltObject::from_int(10).bits(),
         MoltObject::from_int(20).bits(),
@@ -737,7 +752,7 @@ fn array_constructors_roundtrip() {
 
 #[test]
 fn type_ready_and_module_parity_wrappers_roundtrip() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let builtins = crate::builtins::classes::builtin_classes(_py);
         assert_eq!(molt_type_ready(builtins.type_obj), 0);
@@ -825,7 +840,7 @@ fn type_ready_and_module_parity_wrappers_roundtrip() {
 
 #[test]
 fn module_capi_metadata_and_state_registry_roundtrip() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let module_name_bits = unsafe { molt_string_from(b"demo_meta".as_ptr(), 9) };
         assert!(!obj_from_bits(module_name_bits).is_none());
@@ -872,7 +887,7 @@ fn module_capi_metadata_and_state_registry_roundtrip() {
 
 #[test]
 fn module_capi_method_bridge_handles_supported_flags() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let module_name_bits = unsafe { molt_string_from(b"demo_capi".as_ptr(), 9) };
         assert!(!obj_from_bits(module_name_bits).is_none());
@@ -1015,7 +1030,7 @@ fn module_capi_method_bridge_handles_supported_flags() {
 
 #[test]
 fn module_capi_method_bridge_rejects_unsupported_flags() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let module_name_bits = unsafe { molt_string_from(b"demo_bad".as_ptr(), 8) };
         assert!(!obj_from_bits(module_name_bits).is_none());
@@ -1044,7 +1059,7 @@ fn module_capi_method_bridge_rejects_unsupported_flags() {
 
 #[test]
 fn c_api_method_dispatch_supports_dynamic_self_callbacks() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let dyn_varargs_bits = unsafe {
             molt_cfunction_create_bytes(
@@ -1162,7 +1177,7 @@ fn c_api_method_dispatch_supports_dynamic_self_callbacks() {
 
 #[test]
 fn c_api_method_dispatch_supports_null_self_for_static_callbacks() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let static_noargs_bits = unsafe {
             molt_cfunction_create_bytes(
@@ -1204,7 +1219,7 @@ fn c_api_method_dispatch_supports_null_self_for_static_callbacks() {
 
 #[test]
 fn c_api_list_new_size_getitem_setitem() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let list = PyList_New(3);
         assert_ne!(list, 0);
@@ -1244,7 +1259,7 @@ fn c_api_list_new_size_getitem_setitem() {
 
 #[test]
 fn c_api_list_new_negative_size_fails() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let list = PyList_New(-1);
         assert_eq!(list, 0);
@@ -1255,7 +1270,7 @@ fn c_api_list_new_negative_size_fails() {
 
 #[test]
 fn c_api_dict_new_setitem_getitem_contains_size() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let dict = PyDict_New();
         assert_ne!(dict, 0);
@@ -1285,7 +1300,7 @@ fn c_api_dict_new_setitem_getitem_contains_size() {
 
 #[test]
 fn c_api_dict_set_item_string() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let dict = PyDict_New();
         assert_ne!(dict, 0);
@@ -1309,7 +1324,7 @@ fn c_api_dict_set_item_string() {
 
 #[test]
 fn c_api_tuple_new_size_getitem_setitem() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let tuple = PyTuple_New(3);
         assert_ne!(tuple, 0);
@@ -1346,7 +1361,7 @@ fn c_api_tuple_new_size_getitem_setitem() {
 
 #[test]
 fn c_api_type_checks() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         // Int
         let int_val = MoltObject::from_int(42).bits();
@@ -1407,7 +1422,7 @@ fn c_api_type_checks() {
 
 #[test]
 fn c_api_iter_protocol_on_list() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         // Build a list [10, 20, 30]
         let list_ptr = alloc_list(
@@ -1460,7 +1475,7 @@ fn c_api_iter_protocol_on_list() {
 
 #[test]
 fn c_api_get_iter_on_non_iterable_fails() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let int_val = MoltObject::from_int(42).bits();
         let iter = PyObject_GetIter(int_val);
@@ -1472,8 +1487,8 @@ fn c_api_get_iter_on_non_iterable_fails() {
 
 #[test]
 fn c_api_list_setitem_steals_ref_on_error() {
+    let _guard = CApiTestGuard::new();
     // Verify that PyList_SetItem steals the reference even when the call fails.
-    let _ = molt_runtime_init();
     crate::with_gil_entry!(_py, {
         let dict = PyDict_New();
         assert_ne!(dict, 0);
@@ -1494,7 +1509,7 @@ fn c_api_list_setitem_steals_ref_on_error() {
 
 #[test]
 fn c_api_number_add_int() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(10).bits();
         let b = MoltObject::from_int(20).bits();
@@ -1507,7 +1522,7 @@ fn c_api_number_add_int() {
 
 #[test]
 fn c_api_number_add_float() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_float(1.5).bits();
         let b = MoltObject::from_float(2.5).bits();
@@ -1520,7 +1535,7 @@ fn c_api_number_add_float() {
 
 #[test]
 fn c_api_number_subtract() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(50).bits();
         let b = MoltObject::from_int(30).bits();
@@ -1533,7 +1548,7 @@ fn c_api_number_subtract() {
 
 #[test]
 fn c_api_number_multiply() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(6).bits();
         let b = MoltObject::from_int(7).bits();
@@ -1546,7 +1561,7 @@ fn c_api_number_multiply() {
 
 #[test]
 fn c_api_number_truedivide() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(10).bits();
         let b = MoltObject::from_int(4).bits();
@@ -1559,7 +1574,7 @@ fn c_api_number_truedivide() {
 
 #[test]
 fn c_api_number_truedivide_by_zero() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(10).bits();
         let b = MoltObject::from_int(0).bits();
@@ -1572,7 +1587,7 @@ fn c_api_number_truedivide_by_zero() {
 
 #[test]
 fn c_api_number_floordivide() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(17).bits();
         let b = MoltObject::from_int(5).bits();
@@ -1585,7 +1600,7 @@ fn c_api_number_floordivide() {
 
 #[test]
 fn c_api_number_remainder() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(17).bits();
         let b = MoltObject::from_int(5).bits();
@@ -1598,7 +1613,7 @@ fn c_api_number_remainder() {
 
 #[test]
 fn c_api_number_power() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(2).bits();
         let b = MoltObject::from_int(10).bits();
@@ -1611,7 +1626,7 @@ fn c_api_number_power() {
 
 #[test]
 fn c_api_number_power_with_mod() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         // pow(2, 10, 100) = 1024 % 100 = 24
         let a = MoltObject::from_int(2).bits();
@@ -1626,7 +1641,7 @@ fn c_api_number_power_with_mod() {
 
 #[test]
 fn c_api_number_negative() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(42).bits();
         let res = PyNumber_Negative(a);
@@ -1638,7 +1653,7 @@ fn c_api_number_negative() {
 
 #[test]
 fn c_api_number_positive() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(-7).bits();
         let res = PyNumber_Positive(a);
@@ -1650,7 +1665,7 @@ fn c_api_number_positive() {
 
 #[test]
 fn c_api_number_absolute() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(-42).bits();
         let res = PyNumber_Absolute(a);
@@ -1668,7 +1683,7 @@ fn c_api_number_absolute() {
 
 #[test]
 fn c_api_number_invert() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(0).bits();
         let res = PyNumber_Invert(a);
@@ -1686,7 +1701,7 @@ fn c_api_number_invert() {
 
 #[test]
 fn c_api_number_lshift_rshift() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(1).bits();
         let b = MoltObject::from_int(4).bits();
@@ -1706,7 +1721,7 @@ fn c_api_number_lshift_rshift() {
 
 #[test]
 fn c_api_number_and_or_xor() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let a = MoltObject::from_int(0b1100).bits();
         let b = MoltObject::from_int(0b1010).bits();
@@ -1730,7 +1745,7 @@ fn c_api_number_and_or_xor() {
 
 #[test]
 fn c_api_number_check() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         assert_eq!(PyNumber_Check(MoltObject::from_int(42).bits()), 1);
         assert_eq!(PyNumber_Check(MoltObject::from_float(3.125).bits()), 1);
@@ -1752,7 +1767,7 @@ fn c_api_number_check() {
 
 #[test]
 fn c_api_number_long_and_float() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         // int(3.7) == 3
         let f = MoltObject::from_float(3.7).bits();
@@ -1776,7 +1791,7 @@ fn c_api_number_long_and_float() {
 
 #[test]
 fn c_api_mapping_length() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let dict = PyDict_New();
         assert_ne!(dict, 0);
@@ -1793,7 +1808,7 @@ fn c_api_mapping_length() {
 
 #[test]
 fn c_api_mapping_keys_values_items() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let dict = PyDict_New();
         assert_ne!(dict, 0);
@@ -1826,6 +1841,7 @@ fn c_api_mapping_keys_values_items() {
 
 #[test]
 fn c_api_mapping_getitemstring() {
+    let _guard = CApiTestGuard::new();
     // PyMapping_GetItemString → molt_getitem_method → molt_index
     // each re-enter with_gil_entry!, producing 3 nested GIL frames.
     // In debug mode this overflows the 2MB default thread stack when
@@ -1845,7 +1861,6 @@ fn c_api_mapping_getitemstring() {
 }
 
 fn c_api_mapping_getitemstring_body() {
-    let _ = molt_runtime_init();
     let dict = PyDict_New();
     assert_ne!(dict, 0);
 
@@ -1891,7 +1906,7 @@ fn c_api_mapping_getitemstring_body() {
 
 #[test]
 fn c_api_mapping_haskey() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let dict = PyDict_New();
         assert_ne!(dict, 0);
@@ -1913,7 +1928,7 @@ fn c_api_mapping_haskey() {
 
 #[test]
 fn c_api_sequence_getitem() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let list_ptr = alloc_list(
             _py,
@@ -1949,7 +1964,7 @@ fn c_api_sequence_getitem() {
 
 #[test]
 fn c_api_sequence_length() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let list_ptr = alloc_list(
             _py,
@@ -1973,7 +1988,7 @@ fn c_api_sequence_length() {
 
 #[test]
 fn c_api_sequence_contains() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let list_ptr = alloc_list(
             _py,
@@ -2005,7 +2020,7 @@ fn c_api_sequence_contains() {
 
 #[test]
 fn c_api_bytes_from_string_and_size() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let data = b"hello bytes";
         let bytes = unsafe { PyBytes_FromStringAndSize(data.as_ptr(), data.len() as isize) };
@@ -2025,7 +2040,7 @@ fn c_api_bytes_from_string_and_size() {
 
 #[test]
 fn c_api_bytes_empty() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let bytes = unsafe { PyBytes_FromStringAndSize(std::ptr::null(), 0) };
         assert_ne!(bytes, 0);
@@ -2036,7 +2051,7 @@ fn c_api_bytes_empty() {
 
 #[test]
 fn c_api_bytes_null_with_nonzero_len_fails() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let bytes = unsafe { PyBytes_FromStringAndSize(std::ptr::null(), 5) };
         assert_eq!(bytes, 0);
@@ -2047,7 +2062,7 @@ fn c_api_bytes_null_with_nonzero_len_fails() {
 
 #[test]
 fn c_api_bytes_negative_len_fails() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let bytes = unsafe { PyBytes_FromStringAndSize(b"abc".as_ptr(), -1) };
         assert_eq!(bytes, 0);
@@ -2058,7 +2073,7 @@ fn c_api_bytes_negative_len_fails() {
 
 #[test]
 fn c_api_bytes_asstring_type_error() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let int_val = MoltObject::from_int(42).bits();
         let ptr = PyBytes_AsString(int_val);
@@ -2070,7 +2085,7 @@ fn c_api_bytes_asstring_type_error() {
 
 #[test]
 fn c_api_bytes_size_type_error() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let int_val = MoltObject::from_int(42).bits();
         let size = PyBytes_Size(int_val);
@@ -2082,7 +2097,7 @@ fn c_api_bytes_size_type_error() {
 
 #[test]
 fn c_api_unicode_from_string() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let str_bits = unsafe { PyUnicode_FromString(c"hello world".as_ptr()) };
         assert_ne!(str_bits, 0);
@@ -2108,7 +2123,7 @@ fn c_api_unicode_from_string() {
 
 #[test]
 fn c_api_unicode_from_string_null_fails() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let str_bits = unsafe { PyUnicode_FromString(std::ptr::null()) };
         assert_eq!(str_bits, 0);
@@ -2119,7 +2134,7 @@ fn c_api_unicode_from_string_null_fails() {
 
 #[test]
 fn c_api_unicode_asutf8_type_error() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let int_val = MoltObject::from_int(42).bits();
         let ptr = PyUnicode_AsUTF8(int_val);
@@ -2131,7 +2146,7 @@ fn c_api_unicode_asutf8_type_error() {
 
 #[test]
 fn c_api_unicode_asutf8andsize_null_size_ok() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let str_bits = unsafe { PyUnicode_FromString(c"abc".as_ptr()) };
         assert_ne!(str_bits, 0);
@@ -2148,6 +2163,7 @@ fn c_api_unicode_asutf8andsize_null_size_ok() {
 
 #[test]
 fn c_api_pymem_malloc_realloc_free() {
+    let _guard = CApiTestGuard::new();
     let ptr = unsafe { PyMem_Malloc(64) };
     assert!(!ptr.is_null());
     // Write to the allocated memory to verify it is usable.
@@ -2168,6 +2184,7 @@ fn c_api_pymem_malloc_realloc_free() {
 
 #[test]
 fn c_api_pymem_malloc_zero_size() {
+    let _guard = CApiTestGuard::new();
     // CPython returns a non-NULL pointer for size 0.
     let ptr = unsafe { PyMem_Malloc(0) };
     assert!(!ptr.is_null());
@@ -2178,6 +2195,7 @@ fn c_api_pymem_malloc_zero_size() {
 
 #[test]
 fn c_api_pymem_free_null_is_safe() {
+    let _guard = CApiTestGuard::new();
     // Freeing NULL should be a no-op.
     unsafe {
         PyMem_Free(std::ptr::null_mut());
@@ -2186,6 +2204,7 @@ fn c_api_pymem_free_null_is_safe() {
 
 #[test]
 fn c_api_pyobject_malloc_realloc_free() {
+    let _guard = CApiTestGuard::new();
     let ptr = unsafe { PyObject_Malloc(32) };
     assert!(!ptr.is_null());
     unsafe {
@@ -2203,6 +2222,7 @@ fn c_api_pyobject_malloc_realloc_free() {
 
 #[test]
 fn c_api_pyobject_free_null_is_safe() {
+    let _guard = CApiTestGuard::new();
     // PyObject_Free delegates to PyMem_Free; NULL should be safe.
     unsafe {
         PyObject_Free(std::ptr::null_mut());
@@ -2215,7 +2235,7 @@ fn c_api_pyobject_free_null_is_safe() {
 
 #[test]
 fn c_api_number_mixed_int_float_arithmetic() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         // int + float -> float
         let a = MoltObject::from_int(3).bits();
@@ -2238,7 +2258,7 @@ fn c_api_number_mixed_int_float_arithmetic() {
 
 #[test]
 fn c_api_sequence_and_mapping_on_dict() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let dict = PyDict_New();
         assert_ne!(dict, 0);
@@ -2270,7 +2290,7 @@ fn c_api_sequence_and_mapping_on_dict() {
 
 #[test]
 fn c_api_bytes_roundtrip_via_protocol() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let data = b"\x00\x01\x02\xff";
         let bytes = unsafe { PyBytes_FromStringAndSize(data.as_ptr(), data.len() as isize) };
@@ -2286,7 +2306,7 @@ fn c_api_bytes_roundtrip_via_protocol() {
 
 #[test]
 fn c_api_object_protocol_repr_str_hash_truthy() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let int_val = MoltObject::from_int(42).bits();
 
@@ -2316,7 +2336,7 @@ fn c_api_object_protocol_repr_str_hash_truthy() {
 
 #[test]
 fn c_api_object_type_and_length() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     // C-API functions acquire GIL internally — don't nest
     let list = PyList_New(3);
     assert_ne!(list, 0);
@@ -2333,7 +2353,7 @@ fn c_api_object_type_and_length() {
 
 #[test]
 fn c_api_rich_compare() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     let a = MoltObject::from_int(10).bits();
     let b = MoltObject::from_int(20).bits();
 
@@ -2358,7 +2378,7 @@ fn c_api_rich_compare() {
 
 #[test]
 fn c_api_callable_check_and_isinstance() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     let int_val = MoltObject::from_int(5).bits();
     assert_eq!(PyCallable_Check(int_val), 0);
 
@@ -2376,7 +2396,7 @@ fn c_api_callable_check_and_isinstance() {
 
 #[test]
 fn c_api_set_protocol() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         // Create empty set — capacity is raw u64, NOT NaN-boxed
         let set = molt_set_new(0u64);
@@ -2433,7 +2453,7 @@ fn c_api_set_protocol() {
 
 #[test]
 fn c_api_dict_extended_operations() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     let dict = PyDict_New();
     assert_ne!(dict, 0);
 
@@ -2478,7 +2498,7 @@ fn c_api_dict_extended_operations() {
 
 #[test]
 fn c_api_list_extended_operations() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     let list = PyList_New(0);
     assert_ne!(list, 0);
 
@@ -2504,7 +2524,7 @@ fn c_api_list_extended_operations() {
 
 #[test]
 fn c_api_exception_protocol() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     assert_eq!(PyErr_Occurred(), 0);
 
     PyErr_SetString(0, c"test error".as_ptr());
@@ -2520,7 +2540,7 @@ fn c_api_exception_protocol() {
 
 #[test]
 fn c_api_refcount_and_conversions() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     // PyLong_FromLong / PyLong_AsLong — inline NaN-boxed, no GIL needed
     let long = PyLong_FromLong(42);
     assert_ne!(long, 0);
@@ -2552,7 +2572,7 @@ fn c_api_refcount_and_conversions() {
 
 #[test]
 fn c_api_unicode_extended() {
-    let _ = molt_runtime_init();
+    let _guard = CApiTestGuard::new();
     crate::with_gil_entry!(_py, {
         let s_ptr = alloc_string(_py, b"hello");
         assert!(!s_ptr.is_null());

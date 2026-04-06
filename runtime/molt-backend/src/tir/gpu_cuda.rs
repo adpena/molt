@@ -111,6 +111,9 @@ impl<'a> CudaGenContext<'a> {
 
     /// Get the C variable name for a ValueId.
     fn value_name(&self, id: &ValueId) -> String {
+        if id.0 == self.kernel.buffers.len() as u32 + self.kernel.scalar_params.len() as u32 {
+            return "tid".to_string();
+        }
         format!("_v{}", id.0)
     }
 

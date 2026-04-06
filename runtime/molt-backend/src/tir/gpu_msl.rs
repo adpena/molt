@@ -102,6 +102,9 @@ impl<'a> MslGenContext<'a> {
     /// Buffer operands are mapped to their buffer name; the thread ID
     /// operand maps to `tid`; everything else is a temporary `_vN`.
     fn value_name(&self, id: &ValueId) -> String {
+        if id.0 == self.kernel.buffers.len() as u32 + self.kernel.scalar_params.len() as u32 {
+            return "tid".to_string();
+        }
         format!("_v{}", id.0)
     }
 
