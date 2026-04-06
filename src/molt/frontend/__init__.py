@@ -6258,24 +6258,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[0], result=res))
             return res
-        # Restore the original exception after evaluating the handler type.
-        # EXCEPTION_CLEAR above was needed so the type lookup (e.g.
-        # `ZeroDivisionError`) doesn't fail with an active exception.
-        # We restore it so isinstance can match the original exception.
-        #
-        # Note: we do NOT guard against the type evaluation raising, because
-        # simple name lookups (Exception, ValueError, etc.) never raise, and
-        # the check_exception ops emitted around the visit() call handle
-        # complex expressions. The previous IS-None guard was incompatible
-        # with the restore — exception_last() always returned the restored
-        # exception, causing the guard to always re-raise.
-        self.emit(
-            MoltOp(
-                kind="EXCEPTION_SET_LAST",
-                args=[exc_val],
-                result=MoltValue("none"),
-            )
-        )
+        # Keep the pending exception cleared while matching. `isinstance`
+        # only needs the explicit exception object and resolved class value;
+        # restoring the global "last exception" here reintroduces stale
+        # exception state into the handler CFG and is not semantically needed
+        # for the match itself.
         res = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="ISINSTANCE", args=[exc_val, class_val], result=res))
         return res
@@ -23488,7 +23475,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         subject_name = f"__molt_match_subject_{self.next_label()}"
         self._store_local_value(subject_name, subject)
         subject_val = self._load_local_value_unchecked(subject_name) or subject
-        if not self.is_async():
+        if not self.is_async() and self.current_func_name != "molt_main":
             assigned = self._collect_assigned_names([node])
             for name in sorted(assigned):
                 if name not in self.scope_assigned or name in self.closure_locals:
@@ -24775,7 +24762,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 detail="try/else requires an except handler",
             )
             return None
-        if not self.is_async():
+        if not self.is_async() and self.current_func_name != "molt_main":
             assigned = self._collect_assigned_names([node])
             for name in sorted(assigned):
                 if name not in self.scope_assigned or name in self.closure_locals:

@@ -225,7 +225,10 @@ impl FunctionIR {
             params: required_string_list(obj, "params", ctx)?,
             ops,
             param_types: optional_string_list(obj, "param_types", ctx)?,
-            source_file: obj.get("source_file").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            source_file: obj
+                .get("source_file")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             is_extern: false,
         })
     }

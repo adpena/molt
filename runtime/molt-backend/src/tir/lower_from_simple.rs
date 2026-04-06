@@ -71,7 +71,6 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     assemble_function(ir_ref, &cfg, ssa)
 }
 
-
 /// Rewrite `loop_index_start`/`loop_index_next` into `store_var`/`load_var`
 /// patterns so the SSA conversion creates proper phi nodes at loop headers.
 ///
@@ -142,7 +141,9 @@ fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::O
             "loop_index_start" => {
                 if let Some(&ls_idx) = loop_start_stack.last() {
                     let var_name = op.out.clone().unwrap_or_default();
-                    let init_arg = op.args.as_ref()
+                    let init_arg = op
+                        .args
+                        .as_ref()
                         .and_then(|a| a.first())
                         .cloned()
                         .unwrap_or_default();
@@ -165,15 +166,15 @@ fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::O
 
     // Build sets for quick lookup.
     let insert_before: std::collections::HashMap<usize, Vec<&LoopIndexPattern>> = {
-        let mut map: std::collections::HashMap<usize, Vec<&LoopIndexPattern>> = std::collections::HashMap::new();
+        let mut map: std::collections::HashMap<usize, Vec<&LoopIndexPattern>> =
+            std::collections::HashMap::new();
         for pat in &patterns {
             map.entry(pat.loop_start_idx).or_default().push(pat);
         }
         map
     };
-    let rewrite_vars: std::collections::HashSet<&str> = patterns.iter()
-        .map(|p| p.var_name.as_str())
-        .collect();
+    let rewrite_vars: std::collections::HashSet<&str> =
+        patterns.iter().map(|p| p.var_name.as_str()).collect();
     let loop_carrier_for_start: std::collections::HashMap<usize, String> = patterns
         .iter()
         .map(|pat| (pat.loop_start_idx, pat.var_name.clone()))
@@ -222,7 +223,9 @@ fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::O
                     .cloned();
                 if let Some(var_name) = carrier_name {
                     // Rewrite to store_var: update V.
-                    let updated_arg = op.args.as_ref()
+                    let updated_arg = op
+                        .args
+                        .as_ref()
                         .and_then(|a| a.first())
                         .cloned()
                         .unwrap_or_default();
@@ -349,7 +352,10 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         attrs: {
             let mut a = super::ops::AttrDict::new();
             if ir.ops.iter().any(|op| op.kind == "ret") {
-                a.insert("_original_has_ret".into(), super::ops::AttrValue::Bool(true));
+                a.insert(
+                    "_original_has_ret".into(),
+                    super::ops::AttrValue::Bool(true),
+                );
             }
             a
         },
@@ -442,18 +448,23 @@ fn detect_loop_structure(
 /// When all operands of an Add/Sub/Mul/etc. are I64 (from param_types,
 /// const hints, or prior propagation), the result is also I64.
 /// This runs iteratively until no new types are discovered.
-fn propagate_arithmetic_types(
-    blocks: &[TirBlock],
-    types: &mut HashMap<ValueId, TirType>,
-) {
+fn propagate_arithmetic_types(blocks: &[TirBlock], types: &mut HashMap<ValueId, TirType>) {
     use super::ops::OpCode;
     let arithmetic_ops = [
-        OpCode::Add, OpCode::Sub, OpCode::Mul,
-        OpCode::InplaceAdd, OpCode::InplaceSub, OpCode::InplaceMul,
+        OpCode::Add,
+        OpCode::Sub,
+        OpCode::Mul,
+        OpCode::InplaceAdd,
+        OpCode::InplaceSub,
+        OpCode::InplaceMul,
     ];
     let comparison_ops = [
-        OpCode::Lt, OpCode::Le, OpCode::Gt, OpCode::Ge,
-        OpCode::Eq, OpCode::Ne,
+        OpCode::Lt,
+        OpCode::Le,
+        OpCode::Gt,
+        OpCode::Ge,
+        OpCode::Eq,
+        OpCode::Ne,
     ];
 
     let mut changed = true;
@@ -658,7 +669,11 @@ mod tests {
         // Entry block should have 2 ops (const + add; ret is structural).
         let entry = &tir.blocks[&tir.entry_block];
         // 3 ops: ConstNone (SSA undef sentinel) + ConstInt + Add; ret is structural.
-        assert_eq!(entry.ops.len(), 3, "entry should have undef sentinel, const, and add ops");
+        assert_eq!(
+            entry.ops.len(),
+            3,
+            "entry should have undef sentinel, const, and add ops"
+        );
 
         // Terminator should be Return.
         assert!(
@@ -729,10 +744,7 @@ mod tests {
         let func_ir = FunctionIR {
             name: "hint_only_add".into(),
             params: vec!["a".into(), "b".into()],
-            ops: vec![
-                op_fast_int("add", &["a", "b"], "c"),
-                op_args("ret", &["c"]),
-            ],
+            ops: vec![op_fast_int("add", &["a", "b"], "c"), op_args("ret", &["c"])],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -898,9 +910,20 @@ fn rewrite_cell_locals_to_store_load(ops: &mut Vec<crate::ir::OpIR>) -> bool {
         // Check each store_index: if the value arg was produced by a heap-allocating op,
         // mark that slot as heap.
         let heap_ops: HashSet<&str> = [
-            "list_new", "dict_new", "set_new", "tuple_new", "call", "call_method",
-            "call_function", "call_builtin", "CALL_BIND", "call_bind",
-        ].iter().copied().collect();
+            "list_new",
+            "dict_new",
+            "set_new",
+            "tuple_new",
+            "call",
+            "call_method",
+            "call_function",
+            "call_builtin",
+            "CALL_BIND",
+            "call_bind",
+        ]
+        .iter()
+        .copied()
+        .collect();
         for op in ops.iter() {
             if op.kind == "store_index" {
                 if let Some(args) = &op.args {
@@ -932,12 +955,15 @@ fn rewrite_cell_locals_to_store_load(ops: &mut Vec<crate::ir::OpIR>) -> bool {
                         continue;
                     }
                     let var_name = format!("_cell_{}", slot_val);
-                    replacements.push((i, OpIR {
-                        kind: "store_var".to_string(),
-                        var: Some(var_name),
-                        args: Some(vec![args[2].clone()]),
-                        ..OpIR::default()
-                    }));
+                    replacements.push((
+                        i,
+                        OpIR {
+                            kind: "store_var".to_string(),
+                            var: Some(var_name),
+                            args: Some(vec![args[2].clone()]),
+                            ..OpIR::default()
+                        },
+                    ));
                 }
             } else if op.kind == "index" && args.len() == 2 && args[0] == cell_var {
                 if let Some(&slot_val) = const_values.get(&args[1]) {
@@ -946,12 +972,15 @@ fn rewrite_cell_locals_to_store_load(ops: &mut Vec<crate::ir::OpIR>) -> bool {
                     }
                     if let Some(out) = &op.out {
                         let var_name = format!("_cell_{}", slot_val);
-                        replacements.push((i, OpIR {
-                            kind: "load_var".to_string(),
-                            var: Some(var_name),
-                            out: Some(out.clone()),
-                            ..OpIR::default()
-                        }));
+                        replacements.push((
+                            i,
+                            OpIR {
+                                kind: "load_var".to_string(),
+                                var: Some(var_name),
+                                out: Some(out.clone()),
+                                ..OpIR::default()
+                            },
+                        ));
                     }
                 }
             }

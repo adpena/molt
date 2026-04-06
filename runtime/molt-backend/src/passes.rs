@@ -531,8 +531,7 @@ pub fn fold_constants(ops: &mut [OpIR]) {
             }
 
             // Binary integer arithmetic: add, sub, mul, inplace_add, inplace_sub, inplace_mul
-            "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" =>
-            {
+            "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" => {
                 if let Some(ref args) = op.args
                     && args.len() == 2
                 {
@@ -563,8 +562,7 @@ pub fn fold_constants(ops: &mut [OpIR]) {
 
             // Bitwise integer ops: bit_and, bit_or, bit_xor and inplace variants
             "bit_and" | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
-            | "inplace_bit_xor" =>
-            {
+            | "inplace_bit_xor" => {
                 if let Some(ref args) = op.args
                     && args.len() == 2
                 {
@@ -681,8 +679,7 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
             }
 
             // ----- binary integer arithmetic -----
-            "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" =>
-            {
+            "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" => {
                 if let Some(ref args) = op.args
                     && args.len() == 2
                 {
@@ -712,8 +709,7 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
 
             // ----- bitwise integer ops -----
             "bit_and" | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
-            | "inplace_bit_xor" =>
-            {
+            | "inplace_bit_xor" => {
                 if let Some(ref args) = op.args
                     && args.len() == 2
                 {
@@ -2183,7 +2179,9 @@ pub fn split_large_function(
     //    the return value. The last chunk with a `ret` is the one
     //    whose result is returned.
     // ---------------------------------------------------------------
-    let has_returning_chunk = chunks.iter().any(|c| c.ops.iter().any(|op| op.kind == "ret"));
+    let has_returning_chunk = chunks
+        .iter()
+        .any(|c| c.ops.iter().any(|op| op.kind == "ret"));
     let mut stub_ops: Vec<OpIR> = Vec::with_capacity(chunks.len() + 1);
     for (ci, chunk) in chunks.iter().enumerate() {
         let chunk_has_ret = chunk.ops.iter().any(|op| op.kind == "ret");

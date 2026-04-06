@@ -20,7 +20,7 @@ mod tests {
             params: vec![],
             ops,
             param_types: None,
-           source_file: None,
+            source_file: None,
             is_extern: false,
         }
     }
@@ -261,7 +261,7 @@ mod tests {
                 op_args("ret", &["r"]),
             ],
             param_types: None,
-           source_file: None,
+            source_file: None,
             is_extern: false,
         };
         let mut tir = lower_to_tir(&ir);
@@ -292,7 +292,7 @@ mod tests {
                 op_args("ret", &["result"]),
             ],
             param_types: Some(vec!["int".to_string()]),
-           source_file: None,
+            source_file: None,
             is_extern: false,
         };
         let mut tir = lower_to_tir(&ir);
