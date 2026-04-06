@@ -631,6 +631,11 @@ fn exception_slot_is_valid(ptr: PtrSlot) -> bool {
 pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
     let state = runtime_state(_py);
     let debug_pending = debug_exception_pending();
+    if exception_handler_active()
+        && exception_context_active_bits().is_some()
+    {
+        return false;
+    }
     if let Some(task_key) = current_task_key() {
         let pending_ptr = if state
             .task_last_exception_pending
@@ -5441,6 +5446,10 @@ pub extern "C" fn molt_exception_last() -> u64 {
             .last_exception_pending
             .load(AtomicOrdering::Relaxed);
         if !task_pending && !global_pending {
+            if let Some(bits) = exception_context_active_bits() {
+                inc_ref_bits(_py, bits);
+                return bits;
+            }
             return MoltObject::none().bits();
         }
         let debug_flow = debug_exception_flow();
@@ -5462,6 +5471,17 @@ pub extern "C" fn molt_exception_last() -> u64 {
                 }
             };
             if let Some(ptr) = ptr {
+                let bits = MoltObject::from_ptr(ptr.0).bits();
+                if exception_handler_active() {
+                    if let Some(active_bits) = exception_context_active_bits() {
+                        inc_ref_bits(_py, active_bits);
+                        return active_bits;
+                    }
+                    exception_context_set(_py, bits);
+                    runtime_state(_py)
+                        .task_last_exception_pending
+                        .store(false, AtomicOrdering::Relaxed);
+                }
                 if debug_flow {
                     let kind_bits = unsafe { exception_kind_bits(ptr.0) };
                     let kind = string_obj_to_owned(obj_from_bits(kind_bits))
@@ -5475,7 +5495,6 @@ pub extern "C" fn molt_exception_last() -> u64 {
                         task_key.0 as usize, kind, ptr.0 as usize, rc
                     );
                 }
-                let bits = MoltObject::from_ptr(ptr.0).bits();
                 inc_ref_bits(_py, bits);
                 return bits;
             }
@@ -5495,6 +5514,17 @@ pub extern "C" fn molt_exception_last() -> u64 {
             }
         };
         if let Some(ptr) = ptr {
+            let bits = MoltObject::from_ptr(ptr.0).bits();
+            if exception_handler_active() {
+                if let Some(active_bits) = exception_context_active_bits() {
+                    inc_ref_bits(_py, active_bits);
+                    return active_bits;
+                }
+                exception_context_set(_py, bits);
+                state
+                    .last_exception_pending
+                    .store(false, AtomicOrdering::Relaxed);
+            }
             if debug_flow {
                 let kind_bits = unsafe { exception_kind_bits(ptr.0) };
                 let kind = string_obj_to_owned(obj_from_bits(kind_bits))
@@ -5508,7 +5538,6 @@ pub extern "C" fn molt_exception_last() -> u64 {
                     kind, ptr.0 as usize, rc
                 );
             }
-            let bits = MoltObject::from_ptr(ptr.0).bits();
             inc_ref_bits(_py, bits);
             return bits;
         }

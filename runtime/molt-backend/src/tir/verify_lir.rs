@@ -315,7 +315,10 @@ fn compute_dominator_tree(func: &LirFunction) -> DominatorInfo {
         }
     }
 
-    DominatorInfo { preorder, postorder }
+    DominatorInfo {
+        preorder,
+        postorder,
+    }
 }
 
 fn intersect_dom(

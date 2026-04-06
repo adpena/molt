@@ -150,7 +150,9 @@ impl<'a> SsaContext<'a> {
     fn build_iter_fuse_map(&mut self) {
         let ops = self.ops;
         for (i, op) in ops.iter().enumerate() {
-            if op.kind != "iter_next" { continue; }
+            if op.kind != "iter_next" {
+                continue;
+            }
             let pair_var = match &op.out {
                 Some(v) if v != "none" => v.clone(),
                 _ => continue,
@@ -164,14 +166,13 @@ impl<'a> SsaContext<'a> {
                     if let Some(args) = &scan_op.args {
                         if args.len() >= 2 && args[0] == pair_var {
                             let idx_name = &args[1];
-                            let const_val = ops[..j].iter().rev().take(20)
-                                .find_map(|c| {
-                                    if c.kind == "const" && c.out.as_deref() == Some(idx_name) {
-                                        c.value
-                                    } else {
-                                        None
-                                    }
-                                });
+                            let const_val = ops[..j].iter().rev().take(20).find_map(|c| {
+                                if c.kind == "const" && c.out.as_deref() == Some(idx_name) {
+                                    c.value
+                                } else {
+                                    None
+                                }
+                            });
                             if const_val == Some(1) && done_idx.is_none() {
                                 done_idx = Some(j);
                             } else if const_val == Some(0) && val_idx.is_none() {
@@ -547,7 +548,9 @@ impl<'a> SsaContext<'a> {
                 if let Some(fuse_entry) = self.iter_fuse_map.get(&op_idx) {
                     let done_var = fuse_entry.2.clone();
                     let val_var = fuse_entry.3.clone();
-                    let iter_vid = op.args.as_ref()
+                    let iter_vid = op
+                        .args
+                        .as_ref()
                         .and_then(|a| a.first())
                         .and_then(|a| Self::resolve_var(a, &var_stacks))
                         .or(self.undef_value)
@@ -566,19 +569,31 @@ impl<'a> SsaContext<'a> {
                     };
                     // Push val and done onto their variable stacks.
                     var_stacks.entry(val_var.clone()).or_default().push(val_vid);
-                    block_pushed.iter_mut().find(|(v,_)| v == &val_var)
-                        .map(|(_,c)| *c += 1)
+                    block_pushed
+                        .iter_mut()
+                        .find(|(v, _)| v == &val_var)
+                        .map(|(_, c)| *c += 1)
                         .unwrap_or_else(|| block_pushed.push((val_var.clone(), 1)));
-                    var_stacks.entry(done_var.clone()).or_default().push(done_vid);
-                    block_pushed.iter_mut().find(|(v,_)| v == &done_var)
-                        .map(|(_,c)| *c += 1)
+                    var_stacks
+                        .entry(done_var.clone())
+                        .or_default()
+                        .push(done_vid);
+                    block_pushed
+                        .iter_mut()
+                        .find(|(v, _)| v == &done_var)
+                        .map(|(_, c)| *c += 1)
                         .unwrap_or_else(|| block_pushed.push((done_var.clone(), 1)));
                     // Also push the pair var (referenced by loop_break_if_true).
                     let pair_var = op.out.clone().unwrap_or_default();
                     if !pair_var.is_empty() && pair_var != "none" {
-                        var_stacks.entry(pair_var.clone()).or_default().push(done_vid);
-                        block_pushed.iter_mut().find(|(v,_)| v == &pair_var)
-                            .map(|(_,c)| *c += 1)
+                        var_stacks
+                            .entry(pair_var.clone())
+                            .or_default()
+                            .push(done_vid);
+                        block_pushed
+                            .iter_mut()
+                            .find(|(v, _)| v == &pair_var)
+                            .map(|(_, c)| *c += 1)
                             .unwrap_or_else(|| block_pushed.push((pair_var, 1)));
                     }
                     for const_op in self.pending_inline_consts.drain(..) {
@@ -679,7 +694,13 @@ impl<'a> SsaContext<'a> {
                 Terminator::Branch { target, args } => {
                     fix_args(args, target.0 as usize);
                 }
-                Terminator::CondBranch { then_block, then_args, else_block, else_args, .. } => {
+                Terminator::CondBranch {
+                    then_block,
+                    then_args,
+                    else_block,
+                    else_args,
+                    ..
+                } => {
                     fix_args(then_args, then_block.0 as usize);
                     fix_args(else_args, else_block.0 as usize);
                 }
@@ -864,7 +885,8 @@ impl<'a> SsaContext<'a> {
         // Variables resolve via var_stacks; constants get a fresh ConstInt/ConstFloat value.
         let mut operands = Vec::new();
         if let Some(args) = &op.args {
-            let args_iter: Box<dyn Iterator<Item = &String> + '_> = if op.kind == "unpack_sequence" {
+            let args_iter: Box<dyn Iterator<Item = &String> + '_> = if op.kind == "unpack_sequence"
+            {
                 Box::new(args.iter().take(1))
             } else {
                 Box::new(args.iter())
@@ -1165,7 +1187,8 @@ impl<'a> SsaContext<'a> {
                     })
                     .or(self.undef_value)
                     .unwrap_or_else(|| {
-                        self.undef_value.expect("SSA undef value must be initialized")
+                        self.undef_value
+                            .expect("SSA undef value must be initialized")
                     });
 
                 if succs.len() >= 2 {
@@ -1872,7 +1895,11 @@ mod tests {
             .flat_map(|block| block.ops.iter())
             .filter(|op| op.opcode == OpCode::CheckException)
             .collect();
-        assert_eq!(check_ops.len(), 1, "expected exactly one check_exception op");
+        assert_eq!(
+            check_ops.len(),
+            1,
+            "expected exactly one check_exception op"
+        );
         assert!(
             check_ops[0].operands.is_empty(),
             "check_exception should not carry dead handler args, got operands {:?}",

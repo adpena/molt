@@ -194,6 +194,48 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
             Some(inkwell::module::Linkage::External),
         );
     }
+    // exception handler stack helpers
+    {
+        let noarg_ret_i64 = i64_ty.fn_type(&[], false);
+        let unary_ret_i64 = i64_ty.fn_type(&[i64_ty.into()], false);
+        for name in &[
+            "molt_exception_pending",
+            "molt_exception_clear",
+            "molt_exception_last",
+            "molt_exception_push",
+            "molt_exception_pop",
+            "molt_exception_stack_enter",
+            "molt_exception_stack_depth",
+            "molt_exception_stack_clear",
+        ] {
+            module.add_function(
+                name,
+                noarg_ret_i64,
+                Some(inkwell::module::Linkage::External),
+            );
+        }
+        for name in &[
+            "molt_exception_stack_exit",
+            "molt_exception_stack_set_depth",
+        ] {
+            module.add_function(
+                name,
+                unary_ret_i64,
+                Some(inkwell::module::Linkage::External),
+            );
+        }
+    }
+
+    // ── Diagnostics ──
+    // molt_warn_stderr(msg_bits: u64) -> void
+    {
+        let fn_ty = void_ty.fn_type(&[i64_ty.into()], false);
+        module.add_function(
+            "molt_warn_stderr",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
 
     // ── Call infrastructure ──
     // molt_callargs_new(pos_capacity: u64, kw_capacity: u64) -> u64
@@ -305,54 +347,72 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
     }
 
     // ── Container builders ──
-    // molt_list_new(capacity: u64) -> u64
-    // molt_list_push(list: u64, item: u64) -> u64  (returns same list for chaining)
+    // list uses builder_new/append/finish
     {
         let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
         module.add_function(
-            "molt_list_new",
+            "molt_list_builder_new",
             fn_ty,
             Some(inkwell::module::Linkage::External),
         );
-        let fn_ty2 = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
+        let fn_ty2 = void_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
         module.add_function(
-            "molt_list_push",
+            "molt_list_builder_append",
             fn_ty2,
             Some(inkwell::module::Linkage::External),
         );
+        module.add_function(
+            "molt_list_builder_finish",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
     }
-    // molt_tuple_new(capacity: u64) -> u64
-    // molt_tuple_push(tup: u64, item: u64) -> u64
+    // tuple reuses the list-shaped builder payload, but finalizes to tuple
     {
         let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
         module.add_function(
-            "molt_tuple_new",
+            "molt_tuple_builder_finish",
             fn_ty,
             Some(inkwell::module::Linkage::External),
         );
-        let fn_ty2 = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
+    }
+    // dict builder
+    {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
         module.add_function(
-            "molt_tuple_push",
+            "molt_dict_builder_new",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+        let fn_ty2 = void_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
+        module.add_function(
+            "molt_dict_builder_append",
             fn_ty2,
             Some(inkwell::module::Linkage::External),
         );
-    }
-    // molt_set_new already declared above; add molt_set_push
-    // molt_set_push(set: u64, item: u64) -> u64
-    {
-        let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
         module.add_function(
-            "molt_set_push",
-            fn_ty,
+            "molt_dict_builder_finish",
+            i64_ty.fn_type(&[i64_ty.into()], false),
             Some(inkwell::module::Linkage::External),
         );
     }
-    // molt_dict_set(dict: u64, key: u64, val: u64) -> u64
+    // set builder
     {
-        let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
         module.add_function(
-            "molt_dict_set",
+            "molt_set_builder_new",
             fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+        let fn_ty2 = void_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
+        module.add_function(
+            "molt_set_builder_append",
+            fn_ty2,
+            Some(inkwell::module::Linkage::External),
+        );
+        module.add_function(
+            "molt_set_builder_finish",
+            i64_ty.fn_type(&[i64_ty.into()], false),
             Some(inkwell::module::Linkage::External),
         );
     }

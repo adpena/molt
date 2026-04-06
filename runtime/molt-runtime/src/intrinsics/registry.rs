@@ -230,13 +230,15 @@ pub extern "C" fn molt_intrinsic_resolve(name_bits: u64) -> u64 {
 /// non-standard intrinsic names (e.g. `globals` -> `molt_globals_builtin`).
 static PYTHON_BUILTIN_ALIASES: &[(&str, &str)] = &[("globals", "molt_globals_builtin")];
 
+fn find_spec_by_name(name: &str) -> Option<&'static crate::intrinsics::generated::IntrinsicSpec> {
+    INTRINSICS.iter().find(|spec| spec.name == name)
+}
+
 /// Find an `IntrinsicSpec` by primary name or `_molt_` alias.
 fn find_spec(name: &str) -> Option<&'static crate::intrinsics::generated::IntrinsicSpec> {
     // Try primary name first.
-    for spec in INTRINSICS {
-        if spec.name == name {
-            return Some(spec);
-        }
+    if let Some(spec) = find_spec_by_name(name) {
+        return Some(spec);
     }
     // Try alias: `_molt_foo` -> `molt_foo`.
     if let Some(rest) = name.strip_prefix("_molt_") {
@@ -246,19 +248,29 @@ fn find_spec(name: &str) -> Option<&'static crate::intrinsics::generated::Intrin
             s.push_str(rest);
             s
         };
-        for spec in INTRINSICS {
-            if spec.name == primary {
-                return Some(spec);
-            }
+        if let Some(spec) = find_spec_by_name(&primary) {
+            return Some(spec);
+        }
+    }
+    // Try generic Python builtin spellings first as `molt_<name>` and then
+    // `molt_<name>_builtin`. This keeps compiler-generated builtin calls off
+    // the fragile builtins-module bootstrap path when a direct runtime
+    // intrinsic exists.
+    if !name.starts_with("molt_") {
+        let prefixed = format!("molt_{name}");
+        if let Some(spec) = find_spec_by_name(&prefixed) {
+            return Some(spec);
+        }
+        let builtin = format!("molt_{name}_builtin");
+        if let Some(spec) = find_spec_by_name(&builtin) {
+            return Some(spec);
         }
     }
     // Try Python builtin aliases (e.g. `globals` -> `molt_globals_builtin`).
     for &(py_name, intrinsic_name) in PYTHON_BUILTIN_ALIASES {
         if name == py_name {
-            for spec in INTRINSICS {
-                if spec.name == intrinsic_name {
-                    return Some(spec);
-                }
+            if let Some(spec) = find_spec_by_name(intrinsic_name) {
+                return Some(spec);
             }
         }
     }
@@ -447,6 +459,14 @@ fn resolve_intrinsic_func(
         cache_resolved_intrinsic(_py, requested_name, spec.name, func_bits);
     }
     Ok(func_bits)
+}
+
+pub(crate) fn try_resolve_intrinsic_func(
+    _py: &PyToken<'_>,
+    requested_name: &str,
+    cache_result: bool,
+) -> Option<u64> {
+    resolve_intrinsic_func(_py, requested_name, cache_result).ok()
 }
 
 /// Register a synthetic `_intrinsics` module in the module cache so that

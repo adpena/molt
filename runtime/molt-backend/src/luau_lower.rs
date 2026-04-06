@@ -529,8 +529,8 @@ fn lower_ops(ops: &[OpIR], ctx: &mut LowerCtx) -> Vec<LuauStmt> {
                 if args.len() >= 2 {
                     let container = var_expr(&args[0]);
                     let key = var_expr(&args[1]);
-                    let key_is_int = op.fast_int == Some(true)
-                        || matches!(op.type_hint.as_deref(), Some("int"));
+                    let key_is_int =
+                        op.fast_int == Some(true) || matches!(op.type_hint.as_deref(), Some("int"));
                     let index_expr = if key_is_int {
                         LuauExpr::Index(
                             Box::new(container),

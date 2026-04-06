@@ -31,7 +31,13 @@ pub fn lower_function_to_lir(func: &TirFunction) -> LirFunction {
     let entry_param_types = refined
         .blocks
         .get(&refined.entry_block)
-        .map(|block| block.args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>())
+        .map(|block| {
+            block
+                .args
+                .iter()
+                .map(|arg| arg.ty.clone())
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     let mut param_names = refined.param_names.clone();
     if param_names.len() != entry_param_types.len() {
@@ -67,7 +73,9 @@ fn lir_return_types(func: &TirFunction) -> Vec<TirType> {
         [0] => Vec::new(),
         [1] => vec![func.return_type.clone()],
         _ => match &func.return_type {
-            TirType::Tuple(items) if items.len() == *arities.iter().max().unwrap_or(&0) => items.clone(),
+            TirType::Tuple(items) if items.len() == *arities.iter().max().unwrap_or(&0) => {
+                items.clone()
+            }
             other => vec![other.clone()],
         },
     }
@@ -290,15 +298,18 @@ fn lower_branch_args(
     let expected_types = func
         .blocks
         .get(&target)
-        .map(|block| block.args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>())
+        .map(|block| {
+            block
+                .args
+                .iter()
+                .map(|arg| arg.ty.clone())
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     args.iter()
         .enumerate()
         .map(|(idx, value_id)| {
-            let expected_ty = expected_types
-                .get(idx)
-                .cloned()
-                .unwrap_or(TirType::DynBox);
+            let expected_ty = expected_types.get(idx).cloned().unwrap_or(TirType::DynBox);
             materialize_value_for_type(*value_id, expected_ty, type_map, allocator, ops)
         })
         .collect()
@@ -341,10 +352,7 @@ fn lower_return_values(
         .iter()
         .enumerate()
         .map(|(idx, value_id)| {
-            let expected_ty = expected_types
-                .get(idx)
-                .cloned()
-                .unwrap_or(TirType::DynBox);
+            let expected_ty = expected_types.get(idx).cloned().unwrap_or(TirType::DynBox);
             materialize_value_for_type(*value_id, expected_ty, type_map, allocator, ops)
         })
         .collect()

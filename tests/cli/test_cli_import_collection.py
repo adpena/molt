@@ -8423,6 +8423,8 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
         cache_key="module-key",
         function_cache_key="function-key",
         cache_path=cache_path,
+        stdlib_object_path=None,
+        stdlib_object_cache_key=None,
         warnings=warnings,
     )
 
@@ -8437,6 +8439,34 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
     )
     assert skip_module is True
     assert skip_function is False
+
+
+def test_try_cached_backend_candidates_rejects_native_hit_without_shared_stdlib(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "cache" / "module.o"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    stdlib_object = tmp_path / "cache" / "stdlib_shared_test.o"
+    warnings: list[str] = []
+
+    ok, cache_hit_tier = cli._try_cached_backend_candidates(
+        project_root=tmp_path,
+        cache_candidates=[("module", candidate)],
+        output_artifact=output_artifact,
+        is_wasm=False,
+        cache_key="module-key",
+        function_cache_key=None,
+        cache_path=candidate,
+        stdlib_object_path=stdlib_object,
+        stdlib_object_cache_key="stdlib-key",
+        warnings=warnings,
+    )
+
+    assert ok is False
+    assert cache_hit_tier is None
+    assert not output_artifact.exists()
 
 
 def test_materialize_cached_backend_artifact_skips_recopy_when_synced(

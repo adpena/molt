@@ -1608,10 +1608,8 @@ impl WasmBackend {
             crate::fold_constants(&mut func_ir.ops);
             crate::passes::hoist_loop_invariants(func_ir);
         }
-        let mut lir_fast_outputs: BTreeMap<
-            String,
-            crate::tir::lower_to_wasm::WasmFunctionOutput,
-        > = BTreeMap::new();
+        let mut lir_fast_outputs: BTreeMap<String, crate::tir::lower_to_wasm::WasmFunctionOutput> =
+            BTreeMap::new();
         // ── TIR optimization pipeline (default ON; set MOLT_TIR_OPT=0 to disable) ──
         if crate::env_setting("MOLT_TIR_OPT").as_deref() != Some("0") {
             let tir_dump = crate::env_setting("TIR_DUMP").as_deref() == Some("1");
@@ -4965,6 +4963,47 @@ impl WasmBackend {
         // Uses Cell so the closure can mutate it while also being borrowed
         // by multiple call sites (stateful dispatch emits ops one-at-a-time).
         let tail_call_count: Cell<usize> = Cell::new(0);
+
+        let exception_handler_region_indices: BTreeSet<usize> = {
+            let mut label_to_op_index: BTreeMap<i64, usize> = BTreeMap::new();
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                if matches!(op.kind.as_str(), "label" | "state_label")
+                    && let Some(label_id) = op.value
+                {
+                    label_to_op_index.insert(label_id, idx);
+                }
+            }
+
+            let mut regions = BTreeSet::new();
+            let handler_labels: Vec<i64> = func_ir
+                .ops
+                .iter()
+                .filter_map(|op| (op.kind == "check_exception").then_some(op.value).flatten())
+                .collect();
+
+            for label in handler_labels {
+                let Some(&start_idx) = label_to_op_index.get(&label) else {
+                    continue;
+                };
+                let mut nested_pushes = 0usize;
+                for handler_idx in start_idx..func_ir.ops.len() {
+                    let handler_op = &func_ir.ops[handler_idx];
+                    regions.insert(handler_idx);
+                    match handler_op.kind.as_str() {
+                        "exception_push" => nested_pushes += 1,
+                        "exception_pop" => {
+                            if nested_pushes == 0 {
+                                break;
+                            }
+                            nested_pushes -= 1;
+                        }
+                        "ret" | "ret_void" => break,
+                        _ => {}
+                    }
+                }
+            }
+            regions
+        };
 
         let mut emit_ops = |func: &mut Function,
                             ops: &[OpIR],
@@ -10965,22 +11004,14 @@ impl WasmBackend {
                                     let arg = locals[&args_names[1]];
                                     func.instruction(&Instruction::LocalGet(method_bits));
                                     func.instruction(&Instruction::LocalGet(arg));
-                                    emit_call(
-                                        func,
-                                        reloc_enabled,
-                                        import_ids["fast_list_append"],
-                                    );
+                                    emit_call(func, reloc_enabled, import_ids["fast_list_append"]);
                                     true
                                 }
                                 "BoundMethod:str:join" if arity == 1 => {
                                     let arg = locals[&args_names[1]];
                                     func.instruction(&Instruction::LocalGet(method_bits));
                                     func.instruction(&Instruction::LocalGet(arg));
-                                    emit_call(
-                                        func,
-                                        reloc_enabled,
-                                        import_ids["fast_str_join"],
-                                    );
+                                    emit_call(func, reloc_enabled, import_ids["fast_str_join"]);
                                     true
                                 }
                                 "BoundMethod:dict:get" if arity == 2 => {
@@ -10989,11 +11020,7 @@ impl WasmBackend {
                                     func.instruction(&Instruction::LocalGet(method_bits));
                                     func.instruction(&Instruction::LocalGet(key));
                                     func.instruction(&Instruction::LocalGet(default));
-                                    emit_call(
-                                        func,
-                                        reloc_enabled,
-                                        import_ids["fast_dict_get"],
-                                    );
+                                    emit_call(func, reloc_enabled, import_ids["fast_dict_get"]);
                                     true
                                 }
                                 _ => false,
@@ -11014,11 +11041,7 @@ impl WasmBackend {
                                 let arg = locals[arg_name];
                                 func.instruction(&Instruction::LocalGet(callargs_tmp));
                                 func.instruction(&Instruction::LocalGet(arg));
-                                emit_call(
-                                    func,
-                                    reloc_enabled,
-                                    import_ids["callargs_push_pos"],
-                                );
+                                emit_call(func, reloc_enabled, import_ids["callargs_push_pos"]);
                                 func.instruction(&Instruction::Drop);
                             }
                             let site_bits = box_int(stable_ic_site_id(
@@ -11883,7 +11906,9 @@ impl WasmBackend {
                         let cond = locals[&args[0]];
                         let truthy_import = if op.type_hint.as_deref() == Some("bool") {
                             "is_truthy_bool"
-                        } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                        } else if op.fast_int.unwrap_or(false)
+                            || op.type_hint.as_deref() == Some("int")
+                        {
                             "is_truthy_int"
                         } else {
                             "is_truthy"
@@ -12064,6 +12089,10 @@ impl WasmBackend {
                     "check_exception" => {
                         if native_eh_enabled {
                             // Native EH: no-op; WASM catches automatically.
+                        } else if exception_handler_region_indices.contains(&op_idx) {
+                            // Handler bodies work against the currently pending
+                            // exception. Re-polling before exception_clear would
+                            // re-branch out of the handler and skip its body.
                         } else if let Some(&try_index) = try_stack.last() {
                             emit_call(func, reloc_enabled, import_ids["exception_pending"]);
                             func.instruction(&Instruction::I64Const(0));
@@ -12181,6 +12210,36 @@ impl WasmBackend {
             let end_for_else = &dispatch_control_maps.end_for_else;
             let loop_continue_target = &dispatch_control_maps.loop_continue_target;
             let loop_break_target = &dispatch_control_maps.loop_break_target;
+            let exception_handler_region_indices: std::collections::BTreeSet<usize> = {
+                let mut regions = std::collections::BTreeSet::new();
+                let handler_labels: Vec<i64> = func_ir
+                    .ops
+                    .iter()
+                    .filter_map(|op| (op.kind == "check_exception").then_some(op.value).flatten())
+                    .collect();
+                for label in handler_labels {
+                    let Some(&start_idx) = label_to_index.get(&label) else {
+                        continue;
+                    };
+                    let mut nested_pushes = 0usize;
+                    for handler_idx in start_idx..op_count {
+                        let handler_op = &func_ir.ops[handler_idx];
+                        regions.insert(handler_idx);
+                        match handler_op.kind.as_str() {
+                            "exception_push" => nested_pushes += 1,
+                            "exception_pop" => {
+                                if nested_pushes == 0 {
+                                    break;
+                                }
+                                nested_pushes -= 1;
+                            }
+                            "ret" | "ret_void" => break,
+                            _ => {}
+                        }
+                    }
+                }
+                regions
+            };
             let (state_map, const_ints, state_remap_table) = state_resume_maps
                 .as_ref()
                 .expect("state resume maps missing for stateful wasm");
@@ -12521,7 +12580,9 @@ impl WasmBackend {
                             let false_block = false_target;
                             let truthy_import = if op.type_hint.as_deref() == Some("bool") {
                                 "is_truthy_bool"
-                            } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                            } else if op.fast_int.unwrap_or(false)
+                                || op.type_hint.as_deref() == Some("int")
+                            {
                                 "is_truthy_int"
                             } else {
                                 "is_truthy"
@@ -12759,6 +12820,16 @@ impl WasmBackend {
                                 func.instruction(&Instruction::LocalSet(state_local));
                                 func.instruction(&Instruction::Br(depth));
                                 block_terminated = true;
+                            } else if exception_handler_region_indices.contains(&idx) {
+                                // Exception-handler regions operate on the currently
+                                // pending exception. Re-polling here would immediately
+                                // re-branch back into the same handler before
+                                // exception_clear/print/cleanup can run.
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
                             } else {
                                 let Some(target_label) = op.value else {
                                     eprintln!(
@@ -12878,6 +12949,36 @@ impl WasmBackend {
             let end_for_else = &dispatch_control_maps.end_for_else;
             let loop_continue_target = &dispatch_control_maps.loop_continue_target;
             let loop_break_target = &dispatch_control_maps.loop_break_target;
+            let exception_handler_region_indices: std::collections::BTreeSet<usize> = {
+                let mut regions = std::collections::BTreeSet::new();
+                let handler_labels: Vec<i64> = func_ir
+                    .ops
+                    .iter()
+                    .filter_map(|op| (op.kind == "check_exception").then_some(op.value).flatten())
+                    .collect();
+                for label in handler_labels {
+                    let Some(&start_idx) = label_to_index.get(&label) else {
+                        continue;
+                    };
+                    let mut nested_pushes = 0usize;
+                    for handler_idx in start_idx..op_count {
+                        let handler_op = &func_ir.ops[handler_idx];
+                        regions.insert(handler_idx);
+                        match handler_op.kind.as_str() {
+                            "exception_push" => nested_pushes += 1,
+                            "exception_pop" => {
+                                if nested_pushes == 0 {
+                                    break;
+                                }
+                                nested_pushes -= 1;
+                            }
+                            "ret" | "ret_void" => break,
+                            _ => {}
+                        }
+                    }
+                }
+                regions
+            };
 
             let mut scratch_control: Vec<ControlKind> = Vec::new();
             let mut scratch_try: Vec<usize> = Vec::new();
@@ -12971,7 +13072,9 @@ impl WasmBackend {
                             let false_block = false_target;
                             let truthy_import = if op.type_hint.as_deref() == Some("bool") {
                                 "is_truthy_bool"
-                            } else if op.fast_int.unwrap_or(false) || op.type_hint.as_deref() == Some("int") {
+                            } else if op.fast_int.unwrap_or(false)
+                                || op.type_hint.as_deref() == Some("int")
+                            {
                                 "is_truthy_int"
                             } else {
                                 "is_truthy"
@@ -13215,6 +13318,12 @@ impl WasmBackend {
                         "check_exception" => {
                             if native_eh_enabled {
                                 // Native EH: skip polling; fall through to next state.
+                                let next_block = idx + 1;
+                                func.instruction(&Instruction::I64Const(next_block as i64));
+                                func.instruction(&Instruction::LocalSet(state_local));
+                                func.instruction(&Instruction::Br(depth));
+                                block_terminated = true;
+                            } else if exception_handler_region_indices.contains(&idx) {
                                 let next_block = idx + 1;
                                 func.instruction(&Instruction::I64Const(next_block as i64));
                                 func.instruction(&Instruction::LocalSet(state_local));

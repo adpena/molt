@@ -69,6 +69,11 @@ struct FunctionLowering<'ctx, 'func> {
     backend: &'func LlvmBackend<'ctx>,
     func: &'func TirFunction,
     llvm_fn: FunctionValue<'ctx>,
+    /// When the TIR entry block has predecessors, LLVM gets a synthetic
+    /// trampoline block as the true function entry. The original TIR entry
+    /// then behaves like a normal phi block and must receive parameter
+    /// incoming values from this trampoline.
+    entry_trampoline_bb: Option<BasicBlock<'ctx>>,
     /// Maps TIR BlockId -> LLVM BasicBlock.
     block_map: HashMap<BlockId, BasicBlock<'ctx>>,
     /// Maps TIR BlockId -> the LLVM block where the explicit terminator was emitted.
@@ -104,6 +109,8 @@ struct FunctionLowering<'ctx, 'func> {
     /// Built during lowering as branches are emitted, used by
     /// `patch_incomplete_phis` to add undef entries for missing predecessors.
     llvm_pred_map: HashMap<BasicBlock<'ctx>, Vec<BasicBlock<'ctx>>>,
+    /// Structured exception-region stack baselines for preserved TryStart/TryEnd.
+    try_stack_baselines: Vec<BasicValueEnum<'ctx>>,
 }
 
 /// Lower a TIR function to LLVM IR.
@@ -129,35 +136,13 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
     backend: &LlvmBackend<'ctx>,
     pgo_branch_weights: Option<Vec<u64>>,
 ) -> FunctionValue<'ctx> {
-    // 1. Build the LLVM function signature.
-    let param_llvm_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = func
-        .param_types
-        .iter()
-        .map(|ty| lower_type(backend.context, ty).into())
-        .collect();
-
-    let ret_ty = lower_type(backend.context, &func.return_type);
-    let fn_ty = ret_ty.fn_type(&param_llvm_types, false);
-    // Reuse an existing forward-declaration if present (e.g., from a prior
-    // Call op that referenced this function before it was defined).
-    // If not, create a new function.  This avoids LLVM appending `.1` to
-    // the name when a declaration already exists.
-    let llvm_fn = if let Some(existing) = backend.module.get_function(&func.name) {
-        // Verify it's just a declaration (no basic blocks yet).
-        if existing.count_basic_blocks() == 0 {
-            existing
-        } else {
-            // Already defined — create with unique name (shouldn't happen).
-            backend.module.add_function(&func.name, fn_ty, None)
-        }
-    } else {
-        backend.module.add_function(&func.name, fn_ty, None)
-    };
-
+    // 1. Build or reuse the LLVM function signature.
+    let llvm_fn = declare_tir_function(func, backend);
     let mut lowering = FunctionLowering {
         backend,
         func,
         llvm_fn,
+        entry_trampoline_bb: None,
         block_map: HashMap::new(),
         exit_block_map: HashMap::new(),
         values: HashMap::new(),
@@ -170,6 +155,7 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
         mid_block_branches: Vec::new(),
         all_llvm_blocks: Vec::new(),
         llvm_pred_map: HashMap::new(),
+        try_stack_baselines: Vec::new(),
     };
 
     // 2. Create LLVM basic blocks for each TIR block.
@@ -216,6 +202,7 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
             let trampoline_bb = backend
                 .context
                 .prepend_basic_block(old_entry_bb, "entry_trampoline");
+            lowering.entry_trampoline_bb = Some(trampoline_bb);
             lowering.all_llvm_blocks.push(trampoline_bb);
             lowering.record_llvm_edge(trampoline_bb, old_entry_bb);
             // The trampoline block jumps to the real entry.
@@ -288,6 +275,37 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
 }
 
 #[cfg(feature = "llvm")]
+pub fn declare_tir_function<'ctx>(
+    func: &TirFunction,
+    backend: &LlvmBackend<'ctx>,
+) -> FunctionValue<'ctx> {
+    let param_llvm_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = func
+        .param_types
+        .iter()
+        .map(|ty| lower_type(backend.context, ty).into())
+        .collect();
+
+    let ret_ty = lower_type(backend.context, &func.return_type);
+    let fn_ty = ret_ty.fn_type(&param_llvm_types, false);
+    // Reuse an existing forward-declaration if present (e.g., from a prior
+    // Call op that referenced this function before it was defined).
+    // If not, create a new function.  This avoids LLVM appending `.1` to
+    // the name when a declaration already exists.
+    let llvm_fn = if let Some(existing) = backend.module.get_function(&func.name) {
+        // Verify it's just a declaration (no basic blocks yet).
+        if existing.count_basic_blocks() == 0 {
+            existing
+        } else {
+            // Already defined — create with unique name (shouldn't happen).
+            backend.module.add_function(&func.name, fn_ty, None)
+        }
+    } else {
+        backend.module.add_function(&func.name, fn_ty, None)
+    };
+    llvm_fn
+}
+
+#[cfg(feature = "llvm")]
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Record that `from_bb` branches to `to_bb` at the LLVM level.
     /// Used by `patch_incomplete_phis` to find missing phi predecessors.
@@ -313,6 +331,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         visited: &mut std::collections::HashSet<BlockId>,
         post_order: &mut Vec<BlockId>,
     ) {
+        if !self.func.blocks.contains_key(&block_id) {
+            return;
+        }
         if !visited.insert(block_id) {
             return;
         }
@@ -347,10 +368,23 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.backend.builder.position_at_end(bb);
 
         // Entry block: map block args to function parameters.
-        if block_id == self.func.entry_block {
+        if block_id == self.func.entry_block && self.entry_trampoline_bb.is_none() {
             for (i, arg) in block.args.iter().enumerate() {
-                let param = self.llvm_fn.get_nth_param(i as u32).unwrap();
-                self.values.insert(arg.id, param);
+                let value =
+                    self.llvm_fn.get_nth_param(i as u32).unwrap_or_else(|| {
+                        match lower_type(self.backend.context, &arg.ty) {
+                            inkwell::types::BasicTypeEnum::IntType(ty) => ty.get_undef().into(),
+                            inkwell::types::BasicTypeEnum::FloatType(ty) => ty.get_undef().into(),
+                            inkwell::types::BasicTypeEnum::PointerType(ty) => ty.get_undef().into(),
+                            inkwell::types::BasicTypeEnum::ArrayType(ty) => ty.get_undef().into(),
+                            inkwell::types::BasicTypeEnum::StructType(ty) => ty.get_undef().into(),
+                            inkwell::types::BasicTypeEnum::VectorType(ty) => ty.get_undef().into(),
+                            inkwell::types::BasicTypeEnum::ScalableVectorType(ty) => {
+                                ty.get_undef().into()
+                            }
+                        }
+                    });
+                self.values.insert(arg.id, value);
                 self.value_types.insert(arg.id, arg.ty.clone());
             }
         } else {
@@ -410,6 +444,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::ConstBool => {
                 let val = match op.attrs.get("value") {
                     Some(AttrValue::Bool(v)) => *v,
+                    Some(AttrValue::Int(v)) => *v != 0,
                     other => panic!("ConstBool missing bool value attribute: {:?}", other),
                 };
                 let result_id = op.results[0];
@@ -460,6 +495,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     &format!("__const_str_{}", self.const_str_counter),
                 );
                 self.const_str_counter += 1;
+                global.set_linkage(inkwell::module::Linkage::Private);
                 global.set_initializer(&self.backend.context.const_string(&str_bytes, false));
                 global.set_constant(true);
                 global.set_unnamed_addr(true);
@@ -536,6 +572,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     &format!("__const_bytes_{}", self.const_str_counter),
                 );
                 self.const_str_counter += 1;
+                global.set_linkage(inkwell::module::Linkage::Private);
                 global.set_initializer(&self.backend.context.const_string(&raw_bytes, false));
                 global.set_constant(true);
                 global.set_unnamed_addr(true);
@@ -867,19 +904,33 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         AttrValue::Str(s) if !s.is_empty() => Some(s.clone()),
                         _ => None,
                     });
+                let direct_operands: &[ValueId] = if matches!(original_kind, Some("call_guarded")) {
+                    op.operands.get(1..).unwrap_or(&[])
+                } else {
+                    &op.operands
+                };
 
                 if let Some(ref target_name) = direct_target {
                     if let Some(target_fn) = self.backend.module.get_function(target_name) {
+                        let current_bb = self
+                            .backend
+                            .builder
+                            .get_insert_block()
+                            .expect("direct call must be emitted inside a basic block");
                         // Direct call — all operands are positional args.
-                        let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
-                            .operands
-                            .iter()
-                            .map(|&id| {
-                                let v = self.resolve(id);
-                                let v_i64 = self.ensure_i64(v);
-                                v_i64.into()
-                            })
-                            .collect();
+                        let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                            direct_operands
+                                .iter()
+                                .enumerate()
+                                .map(|(idx, &id)| {
+                                    let v = self.resolve(id);
+                                    let target_ty = target_fn
+                                        .get_nth_param(idx as u32)
+                                        .map(|param| param.get_type())
+                                        .unwrap_or_else(|| self.backend.context.i64_type().into());
+                                    self.coerce_to_type(v, target_ty, current_bb).into()
+                                })
+                                .collect();
                         let call_result = self
                             .backend
                             .builder
@@ -898,22 +949,31 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     } else {
                         // Target not yet in module — forward-declare it and call.
                         let param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
-                            op.operands.iter().map(|_| i64_ty.into()).collect();
+                            direct_operands.iter().map(|_| i64_ty.into()).collect();
                         let fn_ty = i64_ty.fn_type(&param_types, false);
                         let target_fn = self.backend.module.add_function(
                             target_name,
                             fn_ty,
                             Some(inkwell::module::Linkage::External),
                         );
-                        let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
-                            .operands
-                            .iter()
-                            .map(|&id| {
-                                let v = self.resolve(id);
-                                let v_i64 = self.ensure_i64(v);
-                                v_i64.into()
-                            })
-                            .collect();
+                        let current_bb = self
+                            .backend
+                            .builder
+                            .get_insert_block()
+                            .expect("direct call must be emitted inside a basic block");
+                        let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                            direct_operands
+                                .iter()
+                                .enumerate()
+                                .map(|(idx, &id)| {
+                                    let v = self.resolve(id);
+                                    let target_ty = target_fn
+                                        .get_nth_param(idx as u32)
+                                        .map(|param| param.get_type())
+                                        .unwrap_or_else(|| self.backend.context.i64_type().into());
+                                    self.coerce_to_type(v, target_ty, current_bb).into()
+                                })
+                                .collect();
                         let result = self
                             .backend
                             .builder
@@ -1147,16 +1207,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     }
                 };
 
-                // For "print", use the dedicated molt_print_obj runtime
-                // function which handles printing + newline in one call.
                 if builtin_name_str.as_deref() == Some("print")
                     || builtin_name_str.as_deref() == Some("builtin_print")
                 {
+                    // PRINT is a dedicated frontend op. By the time it reaches
+                    // backend IR, multi-argument CPython semantics have already
+                    // been normalized into a single joined display string plus
+                    // explicit newline behavior. Lower it directly to the
+                    // runtime print surface just like the native backend.
                     let print_fn =
                         if let Some(f) = self.backend.module.get_function("molt_print_obj") {
                             f
                         } else {
-                            // Forward-declare molt_print_obj(u64) -> void
                             let void_ty = self.backend.context.void_type();
                             let fn_ty = void_ty.fn_type(&[i64_ty.into()], false);
                             self.backend.module.add_function(
@@ -1166,14 +1228,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             )
                         };
                     for &arg_id in op.operands.get(args_start..).unwrap_or(&[]) {
-                        let arg = self.resolve(arg_id);
-                        let arg_i64 = self.ensure_i64(arg);
+                        let arg_i64 = self.materialize_dynbox_operand(arg_id);
                         self.backend
                             .builder
                             .build_call(print_fn, &[arg_i64.into()], "print")
                             .unwrap();
                     }
-                    // print returns None
                     if let Some(&result_id) = op.results.first() {
                         let none_val: BasicValueEnum<'ctx> = i64_ty
                             .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
@@ -1230,8 +1290,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .get_function("molt_callargs_push_pos")
                         .unwrap();
                     for &arg_id in op.operands.get(args_start..).unwrap_or(&[]) {
-                        let arg = self.resolve(arg_id);
-                        let arg_i64 = self.ensure_i64(arg);
+                        let arg_i64 = self.materialize_dynbox_operand(arg_id);
                         self.backend
                             .builder
                             .build_call(push_fn, &[args_builder.into(), arg_i64.into()], "cb_push")
@@ -1288,27 +1347,47 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // ── BuildList: [item0, item1, ...] ──
-            // Strategy: molt_list_new(capacity) then molt_list_push for each item.
+            // Strategy: list_builder_new(capacity) + append + finish.
             OpCode::BuildList => {
                 let i64_ty = self.backend.context.i64_type();
                 let n = op.operands.len() as u64;
-                let list_new_fn = self.backend.module.get_function("molt_list_new").unwrap();
-                let list = self
+                let list_new_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_list_builder_new")
+                    .unwrap();
+                let builder = self
                     .backend
                     .builder
                     .build_call(list_new_fn, &[i64_ty.const_int(n, false).into()], "list")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let push_fn = self.backend.module.get_function("molt_list_push").unwrap();
+                let push_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_list_builder_append")
+                    .unwrap();
                 for &item_id in &op.operands {
                     let item = self.resolve(item_id);
                     let item_i64 = self.ensure_i64(item);
                     self.backend
                         .builder
-                        .build_call(push_fn, &[list.into(), item_i64.into()], "list_push")
+                        .build_call(push_fn, &[builder.into(), item_i64.into()], "list_push")
                         .unwrap();
                 }
+                let finish_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_list_builder_finish")
+                    .unwrap();
+                let list = self
+                    .backend
+                    .builder
+                    .build_call(finish_fn, &[builder.into()], "list_finish")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, list);
                     self.value_types.insert(result_id, TirType::DynBox);
@@ -1320,19 +1399,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::BuildDict => {
                 let i64_ty = self.backend.context.i64_type();
                 let n_pairs = (op.operands.len() / 2) as u64;
-                let dict_new_fn = self.backend.module.get_function("molt_dict_new").unwrap();
-                let dict = self
+                let dict_new_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_dict_builder_new")
+                    .unwrap();
+                let builder = self
                     .backend
                     .builder
                     .build_call(
                         dict_new_fn,
                         &[i64_ty.const_int(n_pairs, false).into()],
-                        "dict",
+                        "dict_builder",
                     )
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let dict_set_fn = self.backend.module.get_function("molt_dict_set").unwrap();
+                let dict_set_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_dict_builder_append")
+                    .unwrap();
                 let mut i = 0;
                 while i + 1 < op.operands.len() {
                     let k = self.resolve(op.operands[i]);
@@ -1343,12 +1430,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .builder
                         .build_call(
                             dict_set_fn,
-                            &[dict.into(), k_i64.into(), v_i64.into()],
-                            "dict_set",
+                            &[builder.into(), k_i64.into(), v_i64.into()],
+                            "dict_append",
                         )
                         .unwrap();
                     i += 2;
                 }
+                let finish_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_dict_builder_finish")
+                    .unwrap();
+                let dict = self
+                    .backend
+                    .builder
+                    .build_call(finish_fn, &[builder.into()], "dict_finish")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, dict);
                     self.value_types.insert(result_id, TirType::DynBox);
@@ -1359,23 +1458,47 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::BuildTuple => {
                 let i64_ty = self.backend.context.i64_type();
                 let n = op.operands.len() as u64;
-                let tup_new_fn = self.backend.module.get_function("molt_tuple_new").unwrap();
-                let tup = self
+                let tuple_builder_new = self
+                    .backend
+                    .module
+                    .get_function("molt_list_builder_new")
+                    .unwrap();
+                let builder = self
                     .backend
                     .builder
-                    .build_call(tup_new_fn, &[i64_ty.const_int(n, false).into()], "tuple")
+                    .build_call(
+                        tuple_builder_new,
+                        &[i64_ty.const_int(n, false).into()],
+                        "tuple_builder",
+                    )
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let push_fn = self.backend.module.get_function("molt_tuple_push").unwrap();
+                let push_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_list_builder_append")
+                    .unwrap();
                 for &item_id in &op.operands {
                     let item = self.resolve(item_id);
                     let item_i64 = self.ensure_i64(item);
                     self.backend
                         .builder
-                        .build_call(push_fn, &[tup.into(), item_i64.into()], "tup_push")
+                        .build_call(push_fn, &[builder.into(), item_i64.into()], "tup_push")
                         .unwrap();
                 }
+                let finish_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_tuple_builder_finish")
+                    .unwrap();
+                let tup = self
+                    .backend
+                    .builder
+                    .build_call(finish_fn, &[builder.into()], "tuple_finish")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, tup);
                     self.value_types.insert(result_id, TirType::DynBox);
@@ -1386,23 +1509,47 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::BuildSet => {
                 let i64_ty = self.backend.context.i64_type();
                 let n = op.operands.len() as u64;
-                let set_new_fn = self.backend.module.get_function("molt_set_new").unwrap();
-                let set = self
+                let set_new_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_set_builder_new")
+                    .unwrap();
+                let builder = self
                     .backend
                     .builder
-                    .build_call(set_new_fn, &[i64_ty.const_int(n, false).into()], "set")
+                    .build_call(
+                        set_new_fn,
+                        &[i64_ty.const_int(n, false).into()],
+                        "set_builder",
+                    )
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let push_fn = self.backend.module.get_function("molt_set_push").unwrap();
+                let push_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_set_builder_append")
+                    .unwrap();
                 for &item_id in &op.operands {
                     let item = self.resolve(item_id);
                     let item_i64 = self.ensure_i64(item);
                     self.backend
                         .builder
-                        .build_call(push_fn, &[set.into(), item_i64.into()], "set_push")
+                        .build_call(push_fn, &[builder.into(), item_i64.into()], "set_append")
                         .unwrap();
                 }
+                let finish_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_set_builder_finish")
+                    .unwrap();
+                let set = self
+                    .backend
+                    .builder
+                    .build_call(finish_fn, &[builder.into()], "set_finish")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, set);
                     self.value_types.insert(result_id, TirType::DynBox);
@@ -1574,6 +1721,31 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if !op.results.is_empty() {
                     self.values.insert(op.results[0], result);
                     self.value_types.insert(op.results[0], TirType::DynBox);
+                }
+            }
+
+            // ── WarnStderr: side-effecting diagnostic emit ──
+            OpCode::WarnStderr => {
+                let msg = self.resolve(op.operands[0]);
+                let msg_i64 = self.ensure_i64(msg);
+                let warn_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_warn_stderr")
+                    .unwrap();
+                self.backend
+                    .builder
+                    .build_call(warn_fn, &[msg_i64.into()], "warn_stderr")
+                    .unwrap();
+                if let Some(&result_id) = op.results.first() {
+                    let none_val: BasicValueEnum<'ctx> = self
+                        .backend
+                        .context
+                        .i64_type()
+                        .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
+                        .into();
+                    self.values.insert(result_id, none_val);
+                    self.value_types.insert(result_id, TirType::DynBox);
                 }
             }
 
@@ -1949,16 +2121,43 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
-            // Exception region markers.  Molt uses polling-based exception
-            // handling (CheckException calls molt_exception_pending after each
-            // op that may throw), NOT LLVM's native landing-pad/unwind model.
-            // TryStart/TryEnd delimit the region where CheckException jumps to
-            // the handler on exception; StateBlockStart/StateBlockEnd mark
-            // generator state boundaries.  Both are structural markers consumed
-            // by the TIR passes (SCCP, escape analysis, DCE) but do not produce
-            // LLVM IR — the actual exception dispatch is in CheckException above.
-            OpCode::TryStart | OpCode::TryEnd | OpCode::StateBlockStart | OpCode::StateBlockEnd | OpCode::IterNextUnboxed => {
+            // Exception region markers. LLVM still uses polling-based Molt
+            // exceptions, but the runtime expects a handler frame to be
+            // established around try regions so raise/catch semantics match
+            // native and wasm.
+            OpCode::TryStart => {
+                let enter_fn = self.ensure_runtime_i64_fn("molt_exception_stack_enter", 0);
+                let baseline = self
+                    .backend
+                    .builder
+                    .build_call(enter_fn, &[], "try_enter")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                self.try_stack_baselines.push(baseline);
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, baseline);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
             }
+            OpCode::TryEnd => {
+                if let Some(baseline) = self.try_stack_baselines.pop() {
+                    let exit_fn = self.ensure_runtime_i64_fn("molt_exception_stack_exit", 1);
+                    let baseline_bits = self.ensure_i64(baseline);
+                    let result = self
+                        .backend
+                        .builder
+                        .build_call(exit_fn, &[baseline_bits.into()], "try_exit")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+                    if let Some(&result_id) = op.results.first() {
+                        self.values.insert(result_id, result);
+                        self.value_types.insert(result_id, TirType::DynBox);
+                    }
+                }
+            }
+            OpCode::StateBlockStart | OpCode::StateBlockEnd | OpCode::IterNextUnboxed => {}
         }
     }
 
@@ -2207,8 +2406,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     "pow" => "molt_pow",
                     _ => unreachable!("unknown arith op: {}", name),
                 };
-                let lhs_i64 = self.ensure_i64(lhs);
-                let rhs_i64 = self.ensure_i64(rhs);
+                let lhs_i64 = self.materialize_dynbox_bits(lhs, &lhs_ty);
+                let rhs_i64 = self.materialize_dynbox_bits(rhs, &rhs_ty);
                 let v = self.call_runtime_2(rt_name, lhs_i64.into(), rhs_i64.into());
                 (v, TirType::DynBox)
             }
@@ -2284,8 +2483,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     "ge" => "molt_ge",
                     _ => unreachable!(),
                 };
-                let lhs_i64 = self.ensure_i64(lhs);
-                let rhs_i64 = self.ensure_i64(rhs);
+                let lhs_i64 = self.materialize_dynbox_bits(lhs, &lhs_ty);
+                let rhs_i64 = self.materialize_dynbox_bits(rhs, &rhs_ty);
                 let v = self.call_runtime_2(rt_name, lhs_i64.into(), rhs_i64.into());
                 (v, TirType::DynBox)
             }
@@ -2497,6 +2696,80 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Box / Unbox ──
 
+    fn materialize_dynbox_bits(
+        &self,
+        operand: BasicValueEnum<'ctx>,
+        operand_ty: &TirType,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let i64_ty = self.backend.context.i64_type();
+        match operand_ty {
+            TirType::I64 => {
+                let raw = self.ensure_i64(operand);
+                let masked = self
+                    .backend
+                    .builder
+                    .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "mask")
+                    .unwrap();
+                self.backend
+                    .builder
+                    .build_or(
+                        masked,
+                        i64_ty.const_int(nanbox::QNAN | nanbox::TAG_INT, false),
+                        "box_i64",
+                    )
+                    .unwrap()
+            }
+            TirType::Bool => {
+                let raw = match operand {
+                    BasicValueEnum::IntValue(iv) if iv.get_type().get_bit_width() == 1 => self
+                        .backend
+                        .builder
+                        .build_int_z_extend(iv, i64_ty, "zext_bool")
+                        .unwrap(),
+                    _ => self.ensure_i64(operand),
+                };
+                self.backend
+                    .builder
+                    .build_or(
+                        raw,
+                        i64_ty.const_int(nanbox::QNAN | nanbox::TAG_BOOL, false),
+                        "box_bool",
+                    )
+                    .unwrap()
+            }
+            TirType::None => i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false),
+            TirType::F64 => self
+                .backend
+                .builder
+                .build_bit_cast(operand, i64_ty, "f64_to_i64")
+                .unwrap()
+                .into_int_value(),
+            TirType::DynBox
+            | TirType::BigInt
+            | TirType::Str
+            | TirType::Bytes
+            | TirType::List(_)
+            | TirType::Dict(_, _)
+            | TirType::Set(_)
+            | TirType::Tuple(_)
+            | TirType::Ptr(_)
+            | TirType::Func(_)
+            | TirType::Box(_)
+            | TirType::Union(_)
+            | TirType::Never => self.ensure_i64(operand),
+        }
+    }
+
+    fn materialize_dynbox_operand(&self, operand_id: ValueId) -> inkwell::values::IntValue<'ctx> {
+        let operand = self.resolve(operand_id);
+        let operand_ty = self
+            .value_types
+            .get(&operand_id)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
+        self.materialize_dynbox_bits(operand, &operand_ty)
+    }
+
     fn emit_box(&mut self, op: &crate::tir::ops::TirOp) {
         let result_id = op.results[0];
         let operand_id = op.operands[0];
@@ -2507,67 +2780,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .cloned()
             .unwrap_or(TirType::DynBox);
 
-        let i64_ty = self.backend.context.i64_type();
-
-        let boxed: BasicValueEnum<'ctx> = match &operand_ty {
-            TirType::I64 => {
-                // NaN-box an i64: QNAN | TAG_INT | (value & INT_MASK)
-                let raw = operand.into_int_value();
-                let masked = self
-                    .backend
-                    .builder
-                    .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "mask")
-                    .unwrap();
-                let tagged = self
-                    .backend
-                    .builder
-                    .build_or(
-                        masked,
-                        i64_ty.const_int(nanbox::QNAN | nanbox::TAG_INT, false),
-                        "box_i64",
-                    )
-                    .unwrap();
-                tagged.into()
-            }
-            TirType::Bool => {
-                // NaN-box a bool: QNAN | TAG_BOOL | (val as u64)
-                let extended = self
-                    .backend
-                    .builder
-                    .build_int_z_extend(operand.into_int_value(), i64_ty, "zext")
-                    .unwrap();
-                let tagged = self
-                    .backend
-                    .builder
-                    .build_or(
-                        extended,
-                        i64_ty.const_int(nanbox::QNAN | nanbox::TAG_BOOL, false),
-                        "box_bool",
-                    )
-                    .unwrap();
-                tagged.into()
-            }
-            TirType::None => {
-                // Already a NaN-boxed sentinel
-                i64_ty
-                    .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
-                    .into()
-            }
-            TirType::F64 => {
-                // Float boxing: bitcast f64 to i64 — but need to handle NaN canonicalization.
-                // For now, just bitcast.
-                let as_i64 = self
-                    .backend
-                    .builder
-                    .build_bit_cast(operand, i64_ty, "f64_to_i64")
-                    .unwrap();
-                as_i64
-            }
-            _ => {
-                // Already DynBox or reference type — pass through as i64.
-                self.ensure_i64(operand).into()
-            }
-        };
+        let boxed: BasicValueEnum<'ctx> = self.materialize_dynbox_bits(operand, &operand_ty).into();
 
         self.values.insert(result_id, boxed);
         self.value_types.insert(result_id, TirType::DynBox);
@@ -2840,24 +3053,38 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 } else if values.len() == 1 {
                     let val = self.resolve(values[0]);
                     let ret_ty = lower_type(self.backend.context, &self.func.return_type);
+                    let val_ty = self
+                        .value_types
+                        .get(&values[0])
+                        .cloned()
+                        .unwrap_or(TirType::DynBox);
                     let current_bb = self
                         .backend
                         .builder
                         .get_insert_block()
                         .expect("return must be lowered inside a basic block");
-                    let ret_val = self.coerce_to_type(val, ret_ty, current_bb);
+                    let ret_val =
+                        self.coerce_to_tir_type(val, &val_ty, &self.func.return_type, current_bb);
+                    let ret_val = self.coerce_to_type(ret_val, ret_ty, current_bb);
                     self.backend.builder.build_return(Some(&ret_val)).unwrap();
                 } else {
                     // Multi-value return: pack into struct.
                     // For now, just return the first value.
                     let val = self.resolve(values[0]);
                     let ret_ty = lower_type(self.backend.context, &self.func.return_type);
+                    let val_ty = self
+                        .value_types
+                        .get(&values[0])
+                        .cloned()
+                        .unwrap_or(TirType::DynBox);
                     let current_bb = self
                         .backend
                         .builder
                         .get_insert_block()
                         .expect("return must be lowered inside a basic block");
-                    let ret_val = self.coerce_to_type(val, ret_ty, current_bb);
+                    let ret_val =
+                        self.coerce_to_tir_type(val, &val_ty, &self.func.return_type, current_bb);
+                    let ret_val = self.coerce_to_type(ret_val, ret_ty, current_bb);
                     self.backend.builder.build_return(Some(&ret_val)).unwrap();
                 }
             }
@@ -2895,7 +3122,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let mid_block_branches: Vec<_> = self.mid_block_branches.clone();
 
         for (block_id, arg_index, phi_ty, phi) in &phi_info {
-            let _block = self.func.blocks.get(block_id).unwrap();
+            let block = self.func.blocks.get(block_id).unwrap();
+            let phi_tir_ty = block
+                .args
+                .get(*arg_index)
+                .map(|arg| arg.ty.clone())
+                .unwrap_or(TirType::DynBox);
 
             // 1. Wire up predecessors from TIR terminators.
             for (pred_id, pred_block) in &self.func.blocks {
@@ -2909,8 +3141,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                                 .get(pred_id)
                                 .copied()
                                 .unwrap_or(self.block_map[pred_id]);
-                            // Coerce value to phi type if they differ (e.g. i1 -> i64).
-                            let coerced = self.coerce_to_type(*val, phi_ty.clone(), pred_bb);
+                            let source_tir_ty = self
+                                .value_types
+                                .get(&val_id)
+                                .cloned()
+                                .unwrap_or(TirType::DynBox);
+                            let coerced =
+                                self.coerce_to_tir_type(*val, &source_tir_ty, &phi_tir_ty, pred_bb);
+                            let coerced = self.coerce_to_type(coerced, phi_ty.clone(), pred_bb);
                             phi.add_incoming(&[(&coerced, pred_bb)]);
                         }
                     }
@@ -2928,9 +3166,34 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     phi.add_incoming(&[(&undef, *src_bb)]);
                 }
             }
+
+            // 3. If the original TIR entry block was demoted behind a
+            // trampoline, wire the function parameters in through that
+            // synthetic predecessor. Entry args beyond the function arity are
+            // true phi values and intentionally start as undef on the initial
+            // call edge.
+            if *block_id == self.func.entry_block
+                && let Some(trampoline_bb) = self.entry_trampoline_bb
+            {
+                if let Some(param) = self.llvm_fn.get_nth_param(*arg_index as u32) {
+                    let source_tir_ty = self
+                        .func
+                        .param_types
+                        .get(*arg_index)
+                        .cloned()
+                        .unwrap_or(TirType::DynBox);
+                    let coerced =
+                        self.coerce_to_tir_type(param, &source_tir_ty, &phi_tir_ty, trampoline_bb);
+                    let coerced = self.coerce_to_type(coerced, phi_ty.clone(), trampoline_bb);
+                    phi.add_incoming(&[(&coerced, trampoline_bb)]);
+                } else {
+                    let undef = self.get_undef_for_type(phi_ty.clone());
+                    phi.add_incoming(&[(&undef, trampoline_bb)]);
+                }
+            }
         }
 
-        // 3. Final safety net: scan all phi nodes for missing predecessors.
+        // 4. Final safety net: scan all phi nodes for missing predecessors.
         //    If any LLVM predecessor block is missing from a phi's incoming
         //    list, add an undef entry. This catches edge cases from synthetic
         //    blocks, trampoline blocks, and any other control flow that the
@@ -3054,12 +3317,148 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .builder
                 .build_bit_cast(iv, target_float, "phi_i2f")
                 .unwrap(),
+            (
+                BasicValueEnum::IntValue(iv),
+                inkwell::types::BasicTypeEnum::PointerType(target_ptr),
+            ) => self
+                .backend
+                .builder
+                .build_int_to_ptr(iv, target_ptr, "phi_i2p")
+                .unwrap()
+                .into(),
+            (
+                BasicValueEnum::PointerValue(pv),
+                inkwell::types::BasicTypeEnum::IntType(target_int),
+            ) => self
+                .backend
+                .builder
+                .build_ptr_to_int(pv, target_int, "phi_p2i")
+                .unwrap()
+                .into(),
+            (
+                BasicValueEnum::PointerValue(pv),
+                inkwell::types::BasicTypeEnum::PointerType(target_ptr),
+            ) => self
+                .backend
+                .builder
+                .build_pointer_cast(pv, target_ptr, "phi_p2p")
+                .unwrap()
+                .into(),
             _ => panic!(
                 "unsupported LLVM phi coercion from {:?} to {:?} in block {:?}",
                 val_ty, target_ty, in_block
             ),
         };
         // Restore builder position.
+        if let Some(bb) = saved_block {
+            self.backend.builder.position_at_end(bb);
+        }
+        result
+    }
+
+    fn tir_type_is_dynbox_like(ty: &TirType) -> bool {
+        !matches!(
+            ty,
+            TirType::I64 | TirType::F64 | TirType::Bool | TirType::Never
+        )
+    }
+
+    fn unbox_from_dynbox(
+        &self,
+        operand: BasicValueEnum<'ctx>,
+        target_ty: &TirType,
+    ) -> BasicValueEnum<'ctx> {
+        let raw = self.ensure_i64(operand);
+        let i64_ty = self.backend.context.i64_type();
+        let f64_ty = self.backend.context.f64_type();
+        match target_ty {
+            TirType::I64 => {
+                let masked = self
+                    .backend
+                    .builder
+                    .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "payload")
+                    .unwrap();
+                let sign_test = self
+                    .backend
+                    .builder
+                    .build_and(
+                        masked,
+                        i64_ty.const_int(nanbox::INT_SIGN_BIT, false),
+                        "sign_test",
+                    )
+                    .unwrap();
+                let is_neg = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        sign_test,
+                        i64_ty.const_zero(),
+                        "is_neg",
+                    )
+                    .unwrap();
+                let sign_extend = i64_ty.const_int(!nanbox::INT_MASK, false);
+                let extended = self
+                    .backend
+                    .builder
+                    .build_or(masked, sign_extend, "sign_extend")
+                    .unwrap();
+                self.backend
+                    .builder
+                    .build_select(is_neg, extended, masked, "unbox_i64")
+                    .unwrap()
+            }
+            TirType::F64 => self
+                .backend
+                .builder
+                .build_bit_cast(raw, f64_ty, "unbox_f64")
+                .unwrap(),
+            TirType::Bool => {
+                let bit = self
+                    .backend
+                    .builder
+                    .build_and(raw, i64_ty.const_int(1, false), "bool_payload")
+                    .unwrap();
+                self.backend
+                    .builder
+                    .build_int_truncate(bit, self.backend.context.bool_type(), "unbox_bool")
+                    .unwrap()
+                    .into()
+            }
+            _ => operand,
+        }
+    }
+
+    fn coerce_to_tir_type(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        source_tir_ty: &TirType,
+        target_tir_ty: &TirType,
+        in_block: BasicBlock<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        if source_tir_ty == target_tir_ty {
+            return val;
+        }
+
+        let saved_block = self.backend.builder.get_insert_block();
+        if let Some(term) = in_block.get_terminator() {
+            self.backend.builder.position_before(&term);
+        } else {
+            self.backend.builder.position_at_end(in_block);
+        }
+
+        let result = if Self::tir_type_is_dynbox_like(target_tir_ty)
+            && !Self::tir_type_is_dynbox_like(source_tir_ty)
+        {
+            self.materialize_dynbox_bits(val, source_tir_ty).into()
+        } else if !Self::tir_type_is_dynbox_like(target_tir_ty)
+            && Self::tir_type_is_dynbox_like(source_tir_ty)
+        {
+            self.unbox_from_dynbox(val, target_tir_ty)
+        } else {
+            val
+        };
+
         if let Some(bb) = saved_block {
             self.backend.builder.position_at_end(bb);
         }
@@ -3206,8 +3605,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         arity: usize,
         has_closure: bool,
     ) -> FunctionValue<'ctx> {
+        let target_fn = self.ensure_function_symbol(name, arity, has_closure);
+        let callable_arity = target_fn
+            .count_params()
+            .saturating_sub(u32::from(has_closure)) as usize;
         let closure_suffix = if has_closure { "_closure" } else { "" };
-        let trampoline_name = format!("{name}__molt_llvm_trampoline_{arity}{closure_suffix}");
+        let trampoline_name =
+            format!("{name}__molt_llvm_trampoline_{callable_arity}{closure_suffix}");
         if let Some(func) = self.backend.module.get_function(&trampoline_name) {
             return func;
         }
@@ -3219,7 +3623,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             fn_ty,
             Some(inkwell::module::Linkage::Internal),
         );
-        let target_fn = self.ensure_function_symbol(name, arity, has_closure);
 
         let builder = self.backend.context.create_builder();
         let entry = self
@@ -3243,13 +3646,55 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let args_ptr = builder
             .build_int_to_ptr(args_bits, ptr_ty, "trampoline_args_ptr")
             .unwrap();
+        let coerce_trampoline_arg = |bits: inkwell::values::IntValue<'ctx>,
+                                     target_ty: inkwell::types::BasicTypeEnum<'ctx>,
+                                     name: &str|
+         -> inkwell::values::BasicMetadataValueEnum<'ctx> {
+            match target_ty {
+                inkwell::types::BasicTypeEnum::IntType(target_int) => {
+                    if target_int.get_bit_width() == 64 {
+                        bits.into()
+                    } else if target_int.get_bit_width() < 64 {
+                        builder
+                            .build_int_truncate(bits, target_int, name)
+                            .unwrap()
+                            .into()
+                    } else {
+                        builder
+                            .build_int_z_extend(bits, target_int, name)
+                            .unwrap()
+                            .into()
+                    }
+                }
+                inkwell::types::BasicTypeEnum::FloatType(target_float) => builder
+                    .build_bit_cast(bits, target_float, name)
+                    .unwrap()
+                    .into(),
+                inkwell::types::BasicTypeEnum::PointerType(target_ptr) => builder
+                    .build_int_to_ptr(bits, target_ptr, name)
+                    .unwrap()
+                    .into(),
+                other => panic!(
+                    "unsupported trampoline argument coercion for {} to {:?}",
+                    name, other
+                ),
+            }
+        };
 
         let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
-            Vec::with_capacity(arity + usize::from(has_closure));
+            Vec::with_capacity(callable_arity + usize::from(has_closure));
         if has_closure {
-            call_args.push(closure_bits.into());
+            let target_ty = target_fn
+                .get_nth_param(0)
+                .map(|param| param.get_type())
+                .unwrap_or_else(|| i64_ty.into());
+            call_args.push(coerce_trampoline_arg(
+                closure_bits,
+                target_ty,
+                "trampoline_closure_arg",
+            ));
         }
-        for idx in 0..arity {
+        for idx in 0..callable_arity {
             let elem_ptr = unsafe {
                 builder
                     .build_gep(
@@ -3264,7 +3709,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .build_load(i64_ty, elem_ptr, &format!("trampoline_arg_{idx}"))
                 .unwrap()
                 .into_int_value();
-            call_args.push(arg.into());
+            let target_ty = target_fn
+                .get_nth_param((idx + usize::from(has_closure)) as u32)
+                .map(|param| param.get_type())
+                .unwrap_or_else(|| i64_ty.into());
+            call_args.push(coerce_trampoline_arg(
+                arg,
+                target_ty,
+                &format!("trampoline_arg_cast_{idx}"),
+            ));
         }
 
         let result = builder
@@ -3300,6 +3753,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     })
                     .unwrap_or(0);
                 let func = self.ensure_function_symbol(func_name, arity, false);
+                let callable_arity = func.count_params() as usize;
                 let fn_ptr = self
                     .backend
                     .builder
@@ -3309,7 +3763,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "builtin_func_ptr",
                     )
                     .unwrap();
-                let trampoline = self.ensure_plain_trampoline(func_name, arity, false);
+                let trampoline = self.ensure_plain_trampoline(func_name, callable_arity, false);
                 let tramp_ptr = self
                     .backend
                     .builder
@@ -3328,7 +3782,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         &[
                             fn_ptr.into(),
                             tramp_ptr.into(),
-                            i64_ty.const_int(arity as u64, false).into(),
+                            i64_ty.const_int(callable_arity as u64, false).into(),
                         ],
                         "builtin_func_new",
                     )
@@ -3357,6 +3811,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     })
                     .unwrap_or(0);
                 let func = self.ensure_function_symbol(func_name, arity, false);
+                let callable_arity = func.count_params() as usize;
                 let fn_ptr = self
                     .backend
                     .builder
@@ -3366,7 +3821,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "func_ptr",
                     )
                     .unwrap();
-                let trampoline = self.ensure_plain_trampoline(func_name, arity, false);
+                let trampoline = self.ensure_plain_trampoline(func_name, callable_arity, false);
                 let tramp_ptr = self
                     .backend
                     .builder
@@ -3385,7 +3840,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         &[
                             fn_ptr.into(),
                             tramp_ptr.into(),
-                            i64_ty.const_int(arity as u64, false).into(),
+                            i64_ty.const_int(callable_arity as u64, false).into(),
                         ],
                         "func_new",
                     )
@@ -3418,6 +3873,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 };
                 let closure_bits = self.ensure_i64(self.resolve(closure_id));
                 let func = self.ensure_function_symbol(func_name, arity, true);
+                let callable_arity = func.count_params().saturating_sub(1) as usize;
                 let fn_ptr = self
                     .backend
                     .builder
@@ -3427,7 +3883,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "closure_func_ptr",
                     )
                     .unwrap();
-                let trampoline = self.ensure_plain_trampoline(func_name, arity, true);
+                let trampoline = self.ensure_plain_trampoline(func_name, callable_arity, true);
                 let tramp_ptr = self
                     .backend
                     .builder
@@ -3446,7 +3902,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         &[
                             fn_ptr.into(),
                             tramp_ptr.into(),
-                            i64_ty.const_int(arity as u64, false).into(),
+                            i64_ty.const_int(callable_arity as u64, false).into(),
                             closure_bits.into(),
                         ],
                         "func_new_closure",
@@ -3598,7 +4054,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 let push_fn = self.ensure_runtime_i64_fn("molt_callargs_push_pos", 2);
                 let builder_bits = self.ensure_i64(self.resolve(op.operands[0]));
-                let val_bits = self.ensure_i64(self.resolve(op.operands[1]));
+                let val_bits = self.materialize_dynbox_operand(op.operands[1]);
                 let result = self
                     .backend
                     .builder
@@ -3622,8 +4078,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 let push_fn = self.ensure_runtime_i64_fn("molt_callargs_push_kw", 3);
                 let builder_bits = self.ensure_i64(self.resolve(op.operands[0]));
-                let name_bits = self.ensure_i64(self.resolve(op.operands[1]));
-                let val_bits = self.ensure_i64(self.resolve(op.operands[2]));
+                let name_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let val_bits = self.materialize_dynbox_operand(op.operands[2]);
                 let result = self
                     .backend
                     .builder
@@ -3642,8 +4098,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             "list_new" => {
-                let list_new_fn = self.ensure_runtime_i64_fn("molt_list_new", 1);
-                let mut list = self
+                let list_new_fn = self.ensure_runtime_i64_fn("molt_list_builder_new", 1);
+                let builder = self
                     .backend
                     .builder
                     .build_call(
@@ -3654,17 +4110,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let push_fn = self.ensure_runtime_i64_fn("molt_list_push", 2);
+                let push_fn = self.ensure_runtime_i64_fn("molt_list_builder_append", 2);
                 for &item_id in &op.operands {
-                    let item_bits = self.ensure_i64(self.resolve(item_id));
-                    list = self
-                        .backend
+                    let item_bits = self.materialize_dynbox_operand(item_id);
+                    self.backend
                         .builder
-                        .build_call(push_fn, &[list.into(), item_bits.into()], "list_push")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .unwrap_basic();
+                        .build_call(push_fn, &[builder.into(), item_bits.into()], "list_append")
+                        .unwrap();
                 }
+                let finish_fn = self.ensure_runtime_i64_fn("molt_list_builder_finish", 1);
+                let list = self
+                    .backend
+                    .builder
+                    .build_call(finish_fn, &[builder.into()], "list_finish")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, list);
                     self.value_types.insert(result_id, TirType::DynBox);
@@ -3672,8 +4133,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             "dict_new" => {
-                let dict_new_fn = self.ensure_runtime_i64_fn("molt_dict_new", 1);
-                let mut dict = self
+                let dict_new_fn = self.ensure_runtime_i64_fn("molt_dict_builder_new", 1);
+                let builder = self
                     .backend
                     .builder
                     .build_call(
@@ -3686,26 +4147,105 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let set_fn = self.ensure_runtime_i64_fn("molt_dict_set", 3);
+                let set_fn = self.ensure_runtime_i64_fn("molt_dict_builder_append", 3);
                 let mut idx = 0;
                 while idx + 1 < op.operands.len() {
-                    let key_bits = self.ensure_i64(self.resolve(op.operands[idx]));
-                    let val_bits = self.ensure_i64(self.resolve(op.operands[idx + 1]));
-                    dict = self
-                        .backend
+                    let key_bits = self.materialize_dynbox_operand(op.operands[idx]);
+                    let val_bits = self.materialize_dynbox_operand(op.operands[idx + 1]);
+                    self.backend
                         .builder
                         .build_call(
                             set_fn,
-                            &[dict.into(), key_bits.into(), val_bits.into()],
-                            "dict_set",
+                            &[builder.into(), key_bits.into(), val_bits.into()],
+                            "dict_append",
                         )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .unwrap_basic();
+                        .unwrap();
                     idx += 2;
                 }
+                let finish_fn = self.ensure_runtime_i64_fn("molt_dict_builder_finish", 1);
+                let dict = self
+                    .backend
+                    .builder
+                    .build_call(finish_fn, &[builder.into()], "dict_finish")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, dict);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "tuple_new" => {
+                let tuple_new_fn = self.ensure_runtime_i64_fn("molt_list_builder_new", 1);
+                let builder = self
+                    .backend
+                    .builder
+                    .build_call(
+                        tuple_new_fn,
+                        &[i64_ty.const_int(op.operands.len() as u64, false).into()],
+                        "tuple_builder",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                let append_fn = self.ensure_runtime_i64_fn("molt_list_builder_append", 2);
+                for &item_id in &op.operands {
+                    let item_bits = self.materialize_dynbox_operand(item_id);
+                    self.backend
+                        .builder
+                        .build_call(
+                            append_fn,
+                            &[builder.into(), item_bits.into()],
+                            "tuple_append",
+                        )
+                        .unwrap();
+                }
+                let finish_fn = self.ensure_runtime_i64_fn("molt_tuple_builder_finish", 1);
+                let tuple_bits = self
+                    .backend
+                    .builder
+                    .build_call(finish_fn, &[builder.into()], "tuple_finish")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, tuple_bits);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "set_new" => {
+                let set_new_fn = self.ensure_runtime_i64_fn("molt_set_builder_new", 1);
+                let builder = self
+                    .backend
+                    .builder
+                    .build_call(
+                        set_new_fn,
+                        &[i64_ty.const_int(op.operands.len() as u64, false).into()],
+                        "set_builder",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                let append_fn = self.ensure_runtime_i64_fn("molt_set_builder_append", 2);
+                for &item_id in &op.operands {
+                    let item_bits = self.materialize_dynbox_operand(item_id);
+                    self.backend
+                        .builder
+                        .build_call(append_fn, &[builder.into(), item_bits.into()], "set_append")
+                        .unwrap();
+                }
+                let finish_fn = self.ensure_runtime_i64_fn("molt_set_builder_finish", 1);
+                let set_bits = self
+                    .backend
+                    .builder
+                    .build_call(finish_fn, &[builder.into()], "set_finish")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, set_bits);
                     self.value_types.insert(result_id, TirType::DynBox);
                 }
                 true
@@ -3813,6 +4353,119 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .build_load(i64_ty, elem_ptr, "unpack_elem")
                         .unwrap();
                     self.values.insert(result_id, elem);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "class_def" => {
+                let Some(meta) = op.attrs.get("s_value").and_then(|v| match v {
+                    AttrValue::Str(s) => Some(s.as_str()),
+                    _ => None,
+                }) else {
+                    return false;
+                };
+                let mut parts = meta.split(',');
+                let Some(nbases) = parts.next().and_then(|s| s.parse::<usize>().ok()) else {
+                    return false;
+                };
+                let Some(nattrs) = parts.next().and_then(|s| s.parse::<usize>().ok()) else {
+                    return false;
+                };
+                let Some(layout_size) = parts.next().and_then(|s| s.parse::<i64>().ok()) else {
+                    return false;
+                };
+                let Some(layout_version) = parts.next().and_then(|s| s.parse::<i64>().ok()) else {
+                    return false;
+                };
+                let Some(flags) = parts.next().and_then(|s| s.parse::<i64>().ok()) else {
+                    return false;
+                };
+                if op.operands.is_empty() || op.operands.len() != 1 + nbases + nattrs * 2 {
+                    return false;
+                }
+                let name_bits = self.ensure_i64(self.resolve(op.operands[0]));
+                let bases_count = nbases.max(1) as u64;
+                let attrs_count = (nattrs * 2).max(1) as u64;
+                let bases_alloca = self
+                    .backend
+                    .builder
+                    .build_array_alloca(i64_ty, i64_ty.const_int(bases_count, false), "class_bases")
+                    .unwrap();
+                let attrs_alloca = self
+                    .backend
+                    .builder
+                    .build_array_alloca(i64_ty, i64_ty.const_int(attrs_count, false), "class_attrs")
+                    .unwrap();
+                for idx in 0..nbases {
+                    let base_bits = self.ensure_i64(self.resolve(op.operands[1 + idx]));
+                    let elem_ptr = unsafe {
+                        self.backend
+                            .builder
+                            .build_gep(
+                                i64_ty,
+                                bases_alloca,
+                                &[i64_ty.const_int(idx as u64, false)],
+                                &format!("class_base_ptr_{idx}"),
+                            )
+                            .unwrap()
+                    };
+                    self.backend
+                        .builder
+                        .build_store(elem_ptr, base_bits)
+                        .unwrap();
+                }
+                let attrs_start = 1 + nbases;
+                for idx in 0..(nattrs * 2) {
+                    let value_bits = self.ensure_i64(self.resolve(op.operands[attrs_start + idx]));
+                    let elem_ptr = unsafe {
+                        self.backend
+                            .builder
+                            .build_gep(
+                                i64_ty,
+                                attrs_alloca,
+                                &[i64_ty.const_int(idx as u64, false)],
+                                &format!("class_attr_ptr_{idx}"),
+                            )
+                            .unwrap()
+                    };
+                    self.backend
+                        .builder
+                        .build_store(elem_ptr, value_bits)
+                        .unwrap();
+                }
+                let bases_ptr_bits = self
+                    .backend
+                    .builder
+                    .build_ptr_to_int(bases_alloca, i64_ty, "class_bases_ptr")
+                    .unwrap();
+                let attrs_ptr_bits = self
+                    .backend
+                    .builder
+                    .build_ptr_to_int(attrs_alloca, i64_ty, "class_attrs_ptr")
+                    .unwrap();
+                let class_def_fn = self.ensure_runtime_i64_fn("molt_guarded_class_def", 8);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        class_def_fn,
+                        &[
+                            name_bits.into(),
+                            bases_ptr_bits.into(),
+                            i64_ty.const_int(nbases as u64, false).into(),
+                            attrs_ptr_bits.into(),
+                            i64_ty.const_int(nattrs as u64, false).into(),
+                            i64_ty.const_int(layout_size as u64, true).into(),
+                            i64_ty.const_int(layout_version as u64, true).into(),
+                            i64_ty.const_int(flags as u64, true).into(),
+                        ],
+                        "class_def",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
                     self.value_types.insert(result_id, TirType::DynBox);
                 }
                 true
@@ -3953,6 +4606,230 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 true
             }
+            "exception_class" => {
+                let Some(&kind_id) = op.operands.first() else {
+                    return false;
+                };
+                let class_fn = self.ensure_runtime_i64_fn("molt_exception_class", 1);
+                let kind_bits = self.ensure_i64(self.resolve(kind_id));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(class_fn, &[kind_bits.into()], "exception_class")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_new" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let new_fn = self.ensure_runtime_i64_fn("molt_exception_new", 2);
+                let kind_bits = self.ensure_i64(self.resolve(op.operands[0]));
+                let args_bits = self.ensure_i64(self.resolve(op.operands[1]));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        new_fn,
+                        &[kind_bits.into(), args_bits.into()],
+                        "exception_new",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_push" => {
+                let push_fn = self.ensure_runtime_i64_fn("molt_exception_push", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(push_fn, &[], "exception_push")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_stack_enter" => {
+                let enter_fn = self.ensure_runtime_i64_fn("molt_exception_stack_enter", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(enter_fn, &[], "exception_stack_enter")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_stack_depth" => {
+                let depth_fn = self.ensure_runtime_i64_fn("molt_exception_stack_depth", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(depth_fn, &[], "exception_stack_depth")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_stack_set_depth" => {
+                let Some(&depth_id) = op.operands.first() else {
+                    return false;
+                };
+                let set_fn = self.ensure_runtime_i64_fn("molt_exception_stack_set_depth", 1);
+                let depth_bits = self.ensure_i64(self.resolve(depth_id));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(set_fn, &[depth_bits.into()], "exception_stack_set_depth")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_stack_exit" => {
+                let Some(&prev_id) = op.operands.first() else {
+                    return false;
+                };
+                let exit_fn = self.ensure_runtime_i64_fn("molt_exception_stack_exit", 1);
+                let prev_bits = self.ensure_i64(self.resolve(prev_id));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(exit_fn, &[prev_bits.into()], "exception_stack_exit")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_pop" => {
+                let pop_fn = self.ensure_runtime_i64_fn("molt_exception_pop", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(pop_fn, &[], "exception_pop")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_stack_clear" => {
+                let clear_fn = self.ensure_runtime_i64_fn("molt_exception_stack_clear", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(clear_fn, &[], "exception_stack_clear")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_last" => {
+                let last_fn = self.ensure_runtime_i64_fn("molt_exception_last", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(last_fn, &[], "exception_last")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_clear" => {
+                let clear_fn = self.ensure_runtime_i64_fn("molt_exception_clear", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(clear_fn, &[], "exception_clear")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_set_last" => {
+                let Some(&exc_id) = op.operands.first() else {
+                    return false;
+                };
+                let set_fn = self.ensure_runtime_i64_fn("molt_exception_set_last", 1);
+                let exc_bits = self.ensure_i64(self.resolve(exc_id));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(set_fn, &[exc_bits.into()], "exception_set_last")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_context_set" => {
+                let Some(&exc_id) = op.operands.first() else {
+                    return false;
+                };
+                let set_fn = self.ensure_runtime_i64_fn("molt_exception_context_set", 1);
+                let exc_bits = self.ensure_i64(self.resolve(exc_id));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(set_fn, &[exc_bits.into()], "exception_context_set")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "builtin_type" => {
                 let Some(&tag_id) = op.operands.first() else {
                     return false;
@@ -3963,6 +4840,97 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .backend
                     .builder
                     .build_call(builtin_type_fn, &[tag_bits.into()], "builtin_type")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "str_from_obj" => {
+                let Some(&src_id) = op.operands.first() else {
+                    return false;
+                };
+                let str_fn = self.ensure_runtime_i64_fn("molt_str_from_obj", 1);
+                let src_bits = self.materialize_dynbox_operand(src_id);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(str_fn, &[src_bits.into()], "str_from_obj")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "string_join" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let join_fn = self.ensure_runtime_i64_fn("molt_string_join", 2);
+                let sep_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let items_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        join_fn,
+                        &[sep_bits.into(), items_bits.into()],
+                        "string_join",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "isinstance" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let isinstance_fn = self.ensure_runtime_i64_fn("molt_isinstance", 2);
+                let obj_bits = self.ensure_i64(self.resolve(op.operands[0]));
+                let class_bits = self.ensure_i64(self.resolve(op.operands[1]));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        isinstance_fn,
+                        &[obj_bits.into(), class_bits.into()],
+                        "isinstance",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "issubclass" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let issubclass_fn = self.ensure_runtime_i64_fn("molt_issubclass", 2);
+                let sub_bits = self.ensure_i64(self.resolve(op.operands[0]));
+                let class_bits = self.ensure_i64(self.resolve(op.operands[1]));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        issubclass_fn,
+                        &[sub_bits.into(), class_bits.into()],
+                        "issubclass",
+                    )
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -4217,6 +5185,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 s.replace(|c: char| !c.is_alphanumeric(), "_")
             ),
         );
+        global.set_linkage(inkwell::module::Linkage::Private);
         global.set_initializer(&self.backend.context.const_string(name_bytes, false));
         global.set_constant(true);
         global.set_unnamed_addr(true);
