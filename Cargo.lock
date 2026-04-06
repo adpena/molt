@@ -2916,7 +2916,6 @@ dependencies = [
  "egg",
  "inkwell",
  "libc",
- "melior",
  "metal",
  "mlx-rs",
  "objc",
@@ -2928,6 +2927,14 @@ dependencies = [
  "wasm-encoder 0.245.1",
  "wasmparser 0.245.1",
  "wgpu",
+]
+
+[[package]]
+name = "molt-backend-mlir"
+version = "0.1.0"
+dependencies = [
+ "melior",
+ "molt-backend",
 ]
 
 [[package]]

@@ -21,7 +21,6 @@ pub mod lower_from_simple;
 pub mod lower_to_lir;
 pub mod lower_to_simple;
 pub mod lower_to_wasm;
-pub mod mlir_bridge;
 pub mod mlir_compat;
 pub mod ops;
 pub mod parallel;

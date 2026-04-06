@@ -1,0 +1,9 @@
+[package]
+name = "molt-backend-mlir"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+melior = { version = "0.27" }
+molt-backend = { path = "../molt-backend" }
