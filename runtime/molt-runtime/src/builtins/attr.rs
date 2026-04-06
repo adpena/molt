@@ -233,9 +233,9 @@ impl FieldOffsetIC {
 }
 
 thread_local! {
-    static ATTR_NAME_TLS: RefCell<AttrNameCache> = RefCell::new(AttrNameCache::new());
+    static ATTR_NAME_TLS: RefCell<AttrNameCache> = const { RefCell::new(AttrNameCache::new()) };
     static DESCRIPTOR_CACHE_TLS: RefCell<Option<DescriptorCacheEntry>> = const { RefCell::new(None) };
-    static FIELD_OFFSET_IC_TLS: RefCell<FieldOffsetIC> = RefCell::new(FieldOffsetIC::new());
+    static FIELD_OFFSET_IC_TLS: RefCell<FieldOffsetIC> = const { RefCell::new(FieldOffsetIC::new()) };
 }
 
 pub(crate) fn clear_attr_tls_caches(_py: &PyToken<'_>) {
@@ -244,7 +244,21 @@ pub(crate) fn clear_attr_tls_caches(_py: &PyToken<'_>) {
         cell.borrow_mut().clear(_py);
     });
     let _ = DESCRIPTOR_CACHE_TLS.try_with(|cell| {
-        cell.borrow_mut().take();
+        if let Some(entry) = cell.borrow_mut().take() {
+            if entry.class_bits != 0 {
+                dec_ref_bits(_py, entry.class_bits);
+            }
+            if let Some(bits) = entry.data_desc_bits
+                && bits != 0
+            {
+                dec_ref_bits(_py, bits);
+            }
+            if let Some(bits) = entry.class_attr_bits
+                && bits != 0
+            {
+                dec_ref_bits(_py, bits);
+            }
+        }
     });
     let _ = FIELD_OFFSET_IC_TLS.try_with(|cell| {
         cell.borrow_mut().clear();
@@ -284,10 +298,8 @@ pub(crate) fn debug_last_attr_name() -> Option<String> {
     ATTR_NAME_TLS
         .try_with(|cell| {
             let cache = cell.borrow();
-            for slot in cache.slots.iter() {
-                if let Some(entry) = slot {
-                    return Some(String::from_utf8_lossy(&entry.bytes).into_owned());
-                }
+            if let Some(entry) = cache.slots.iter().flatten().next() {
+                return Some(String::from_utf8_lossy(&entry.bytes).into_owned());
             }
             None
         })
@@ -1707,17 +1719,16 @@ pub(crate) unsafe fn object_attr_lookup_raw(
             let mut field_offset_resolved: Option<usize> = None;
             let current_type_version = crate::object::global_type_version();
 
-            if let Some(name_bytes) = attr_name_slice {
-                if let Some(offset) =
+            if let Some(name_bytes) = attr_name_slice
+                && let Some(offset) =
                     field_offset_ic_lookup(class_bits, name_bytes, current_type_version)
                 {
                     profile_hit_unchecked(&FIELD_OFFSET_IC_HIT_COUNT);
                     field_offset_resolved = Some(offset);
                 }
-            }
 
-            if field_offset_resolved.is_none() {
-                if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
+            if field_offset_resolved.is_none()
+                && let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
                     profile_hit_unchecked(&FIELD_OFFSET_IC_MISS_COUNT);
                     field_offset_resolved = Some(offset);
                     // Populate IC for next time.
@@ -1730,7 +1741,6 @@ pub(crate) unsafe fn object_attr_lookup_raw(
                         );
                     }
                 }
-            }
 
             if let Some(offset) = field_offset_resolved {
                 let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);

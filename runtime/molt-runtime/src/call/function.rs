@@ -1,4 +1,6 @@
 use crate::object::ops::string_obj_to_owned;
+use crate::object::layout::function_call_target_ptr;
+use crate::builtins::functions::runtime_callable_target_ptr;
 use crate::{
     CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
     HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, PyToken, TYPE_ID_FUNCTION, TYPE_ID_TUPLE,
@@ -25,6 +27,7 @@ fn wasm_direct_call_table_idx(fn_ptr: u64) -> u64 {
     crate::builtins::functions::reserved_wasm_runtime_callable_ptr(fn_ptr).unwrap_or(fn_ptr)
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[inline]
 fn fixed_arity_call_target_ptr(fn_ptr: u64, _tramp_ptr: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -37,6 +40,28 @@ fn fixed_arity_call_target_ptr(fn_ptr: u64, _tramp_ptr: u64) -> u64 {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+unsafe fn function_call_target_or_legacy_ptr(func_ptr: *mut u8, fn_ptr: u64) -> *const () {
+    let target = unsafe { function_call_target_ptr(func_ptr) };
+    if target.is_null() {
+        fn_ptr as usize as *const ()
+    } else {
+        target
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+unsafe fn function_runtime_call_target_ptr(func_ptr: *mut u8, fn_ptr: u64) -> Option<*const ()> {
+    let target = unsafe { function_call_target_ptr(func_ptr) };
+    if !target.is_null() {
+        return Some(target);
+    }
+    runtime_callable_target_ptr(fn_ptr)
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[inline]
 fn should_force_trampoline_for_fixed_arity_call(
     _tramp_ptr: u64,
@@ -79,12 +104,7 @@ fn trace_call_vec_enabled() -> bool {
     })
 }
 
-unsafe fn trace_function_vec_call(
-    _py: &PyToken<'_>,
-    func_ptr: *mut u8,
-    args: &[u64],
-    lane: &str,
-) {
+unsafe fn trace_function_vec_call(_py: &PyToken<'_>, func_ptr: *mut u8, args: &[u64], lane: &str) {
     unsafe {
         if !trace_call_vec_enabled() {
             return;
@@ -247,7 +267,8 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                 // function pointer from `function_fn_ptr`. Arity == 1, closure present, so the
                 // 2-arg (closure, arg0) signature matches. The compiler guarantees this pointer
                 // was emitted for a 1-arg closure function. UB if fn_ptr is null or mistyped.
-                let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                let func: extern "C" fn(u64, u64) -> i64 =
+                    std::mem::transmute(function_call_target_or_legacy_ptr(func_ptr, fn_ptr));
                 func(closure_bits, arg0_bits) as u64
             }
         } else {
@@ -280,12 +301,18 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
+                let call_target = function_call_target_or_legacy_ptr(func_ptr, fn_ptr);
                 // SAFETY: `fn_ptr` is a valid extern "C" function pointer from `function_fn_ptr`.
                 // Arity == 1, no closure, so the 1-arg signature `fn(u64) -> i64` matches. The
                 // compiler must emit a valid non-null pointer for this function. UB if fn_ptr is
                 // null or points to a function with a different signature.
-                let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-                func(arg0_bits) as u64
+                if let Some(runtime_target) = function_runtime_call_target_ptr(func_ptr, fn_ptr) {
+                    let func: extern "C" fn(u64) -> u64 = std::mem::transmute(runtime_target);
+                    func(arg0_bits)
+                } else {
+                    let func: extern "C" fn(u64) -> i64 = std::mem::transmute(call_target);
+                    func(arg0_bits) as u64
+                }
             }
         };
         frame_stack_pop(_py);
@@ -441,12 +468,18 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
+                let call_target = function_call_target_or_legacy_ptr(func_ptr, fn_ptr);
                 // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
                 // `function_fn_ptr`. Arity == 0, no closure, so the nullary signature
                 // `fn() -> i64` is correct. The compiler must emit a valid non-null pointer.
                 // UB if fn_ptr is null or points to a function expecting arguments.
-                let func: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
-                func() as u64
+                if let Some(runtime_target) = function_runtime_call_target_ptr(func_ptr, fn_ptr) {
+                    let func: extern "C" fn() -> u64 = std::mem::transmute(runtime_target);
+                    func()
+                } else {
+                    let func: extern "C" fn() -> i64 = std::mem::transmute(call_target);
+                    func() as u64
+                }
             }
         };
         frame_stack_pop(_py);
@@ -540,11 +573,18 @@ pub(crate) unsafe fn call_function_obj2(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
+                let call_target = function_call_target_or_legacy_ptr(func_ptr, fn_ptr);
                 // SAFETY: Same invariant as the wasm32 non-closure path — fn_ptr from
                 // `function_fn_ptr` targets a 2-arg extern "C" function. The compiler must
                 // emit a valid non-null pointer. UB if fn_ptr is null or has wrong arity.
-                let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-                func(arg0_bits, arg1_bits) as u64
+                if let Some(runtime_target) = function_runtime_call_target_ptr(func_ptr, fn_ptr) {
+                    let func: extern "C" fn(u64, u64) -> u64 =
+                        std::mem::transmute(runtime_target);
+                    func(arg0_bits, arg1_bits)
+                } else {
+                    let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(call_target);
+                    func(arg0_bits, arg1_bits) as u64
+                }
             }
         };
         frame_stack_pop(_py);
@@ -2065,25 +2105,21 @@ unsafe fn call_function_obj_trampoline(_py: &PyToken<'_>, func_bits: u64, args: 
                         b"__defaults__",
                     ),
                 );
-                if let Some(dbits) = defaults_bits {
-                    if !obj_from_bits(dbits).is_none() {
-                        if let Some(def_ptr) = obj_from_bits(dbits).as_ptr() {
-                            if object_type_id(def_ptr) == TYPE_ID_TUPLE {
-                                let defaults = seq_vec_ref(def_ptr);
-                                let n_defaults = defaults.len();
-                                let missing = a - n;
-                                if missing <= n_defaults {
-                                    let mut padded = Vec::with_capacity(a);
-                                    padded.extend_from_slice(args);
-                                    let start = n_defaults - missing;
-                                    for i in start..n_defaults {
-                                        padded.push(defaults[i]);
-                                    }
-                                    // Recurse with the padded args — arity now matches.
-                                    return call_function_obj_trampoline(_py, func_bits, &padded);
-                                }
-                            }
-                        }
+                if let Some(dbits) = defaults_bits
+                    && !obj_from_bits(dbits).is_none()
+                    && let Some(def_ptr) = obj_from_bits(dbits).as_ptr()
+                    && object_type_id(def_ptr) == TYPE_ID_TUPLE
+                {
+                    let defaults = seq_vec_ref(def_ptr);
+                    let n_defaults = defaults.len();
+                    let missing = a - n;
+                    if missing <= n_defaults {
+                        let mut padded = Vec::with_capacity(a);
+                        padded.extend_from_slice(args);
+                        let start = n_defaults - missing;
+                        padded.extend(defaults.iter().take(n_defaults).skip(start).copied());
+                        // Recurse with the padded args — arity now matches.
+                        return call_function_obj_trampoline(_py, func_bits, &padded);
                     }
                 }
             }
@@ -2183,9 +2219,7 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        fixed_arity_call_target_ptr, should_force_trampoline_for_fixed_arity_call,
-    };
+    use super::{fixed_arity_call_target_ptr, should_force_trampoline_for_fixed_arity_call};
 
     #[test]
     fn fixed_arity_call_target_uses_fn_ptr_without_trampoline() {

@@ -565,15 +565,30 @@ pub(crate) fn free_cold_header(idx: u16) {
 /// For oversized objects (size_class == 0) the exact size is stored in
 /// the cold header's `extended_size`.
 #[inline]
-pub(crate) fn total_size_from_header(header: &MoltHeader, _data_ptr: *mut u8) -> usize {
-    let sc = header.size_class as usize;
+pub(crate) fn total_size_from_header_fields(size_class: u16, cold_idx: u16) -> usize {
+    let sc = size_class as usize;
     if sc != 0 && sc < SIZE_CLASS_TABLE.len() {
         SIZE_CLASS_TABLE[sc]
     } else {
         // Oversized: look up cold header by slab index
-        get_cold_header(header.cold_idx)
+        get_cold_header(cold_idx)
             .map(|c| c.extended_size)
             .unwrap_or(0)
+    }
+}
+
+#[inline]
+pub(crate) fn total_size_from_header(header: &MoltHeader, _data_ptr: *mut u8) -> usize {
+    total_size_from_header_fields(header.size_class, header.cold_idx)
+}
+
+#[inline]
+fn allocated_size_for(total_size: usize) -> usize {
+    let sc = size_class_for(total_size) as usize;
+    if sc != 0 && sc < SIZE_CLASS_TABLE.len() {
+        SIZE_CLASS_TABLE[sc]
+    } else {
+        total_size
     }
 }
 
@@ -681,6 +696,31 @@ pub(crate) fn nursery_resume() {
     NURSERY_SUSPENDED.with(|s| s.set(false));
 }
 
+pub(crate) struct NurserySuspendGuard {
+    previously_suspended: bool,
+}
+
+impl NurserySuspendGuard {
+    #[inline(always)]
+    pub(crate) fn new() -> Self {
+        let previously_suspended = NURSERY_SUSPENDED.with(|s| {
+            let previous = s.get();
+            s.set(true);
+            previous
+        });
+        Self {
+            previously_suspended,
+        }
+    }
+}
+
+impl Drop for NurserySuspendGuard {
+    #[inline(always)]
+    fn drop(&mut self) {
+        NURSERY_SUSPENDED.with(|s| s.set(self.previously_suspended));
+    }
+}
+
 #[inline(always)]
 fn nursery_is_suspended() -> bool {
     NURSERY_SUSPENDED.with(|s| s.get())
@@ -732,6 +772,18 @@ pub(crate) fn dec_ref_bits(_py: &PyToken<'_>, bits: u64) {
     if let Some(ptr) = obj.as_ptr() {
         unsafe { dec_ref_ptr(_py, ptr) };
     }
+}
+
+pub(crate) fn release_shutdown_bits(_py: &PyToken<'_>, bits: u64) {
+    let obj = obj_from_bits(bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return;
+    };
+    unsafe {
+        let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        (*header_ptr).flags &= !(HEADER_FLAG_IMMORTAL | HEADER_FLAG_INTERNED);
+    }
+    dec_ref_bits(_py, bits);
 }
 
 pub(crate) fn init_atomic_bits(
@@ -826,17 +878,18 @@ pub(crate) fn alloc_object_zeroed_with_pool(
     type_id: u32,
 ) -> *mut u8 {
     crate::gil_assert();
+    let alloc_size = allocated_size_for(total_size);
     let pool_eligible = matches!(
         type_id,
         TYPE_ID_OBJECT | TYPE_ID_BOUND_METHOD | TYPE_ID_ITER
     );
     let header_ptr = if pool_eligible {
-        object_pool_take(_py, total_size)
+        object_pool_take(_py, alloc_size)
     } else {
         None
     };
     let header_ptr = header_ptr.unwrap_or_else(|| {
-        let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+        let layout = std::alloc::Layout::from_size_align(alloc_size, 8).unwrap();
         unsafe { std::alloc::alloc_zeroed(layout) }
     });
     if header_ptr.is_null() {
@@ -849,21 +902,21 @@ pub(crate) fn alloc_object_zeroed_with_pool(
         return std::ptr::null_mut();
     }
     // Enforce resource budget before committing the allocation.
-    if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(total_size)) {
+    if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(alloc_size)) {
         // Budget exceeded — return the memory and signal failure.
         if pool_eligible {
             // Came from pool; put it back.
-            let _ = object_pool_put(_py, total_size, header_ptr);
+            let _ = object_pool_put(_py, alloc_size, header_ptr);
         } else {
-            let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+            let layout = std::alloc::Layout::from_size_align(alloc_size, 8).unwrap();
             unsafe { std::alloc::dealloc(header_ptr, layout) };
         }
         return std::ptr::null_mut();
     }
     profile_hit(_py, &ALLOC_COUNT);
-    profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, total_size as u64);
+    profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, alloc_size as u64);
     profile_alloc_type(_py, type_id);
-    profile_alloc_type_bytes(_py, type_id, total_size);
+    profile_alloc_type_bytes(_py, type_id, alloc_size);
     unsafe {
         let header = header_ptr as *mut MoltHeader;
         let sc = size_class_for(total_size);
@@ -887,7 +940,8 @@ pub(crate) fn alloc_object_zeroed_with_pool(
 
 pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id: u32) -> *mut u8 {
     crate::gil_assert();
-    let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+    let alloc_size = allocated_size_for(total_size);
+    let layout = std::alloc::Layout::from_size_align(alloc_size, 8).unwrap();
     unsafe {
         let ptr = std::alloc::alloc_zeroed(layout);
         if ptr.is_null() {
@@ -900,14 +954,14 @@ pub(crate) fn alloc_object_zeroed(_py: &PyToken<'_>, total_size: usize, type_id:
             return std::ptr::null_mut();
         }
         // Enforce resource budget before committing the allocation.
-        if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(total_size)) {
+        if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(alloc_size)) {
             std::alloc::dealloc(ptr, layout);
             return std::ptr::null_mut();
         }
         profile_hit(_py, &ALLOC_COUNT);
-        profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, total_size as u64);
+        profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, alloc_size as u64);
         profile_alloc_type(_py, type_id);
-        profile_alloc_type_bytes(_py, type_id, total_size);
+        profile_alloc_type_bytes(_py, type_id, alloc_size);
         let header = ptr as *mut MoltHeader;
         let sc = size_class_for(total_size);
         (*header).type_id = type_id;
@@ -941,6 +995,7 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
         );
     }
     crate::gil_assert();
+    let alloc_size = allocated_size_for(total_size);
     if debug_alloc_list_builder() && type_id == TYPE_ID_LIST_BUILDER {
         let expected = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
         eprintln!(
@@ -953,7 +1008,7 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
     let pool_eligible = matches!(type_id, TYPE_ID_BOUND_METHOD | TYPE_ID_ITER);
     let mut from_nursery = false;
     let header_ptr = if pool_eligible {
-        object_pool_take(_py, total_size)
+        object_pool_take(_py, alloc_size)
     } else {
         None
     };
@@ -967,11 +1022,14 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
     let nursery_eligible = !matches!(type_id, TYPE_ID_BIGINT);
     let header_ptr = header_ptr
         .or_else(|| {
-            if nursery_eligible && total_size <= NURSERY_ALLOC_MAX && !pool_eligible && !nursery_is_suspended() {
+            if nursery_eligible
+                && alloc_size <= NURSERY_ALLOC_MAX
+                && !pool_eligible
+                && !nursery_is_suspended()
+            {
                 NURSERY_TLS.with(|cell| {
-                    cell.borrow_mut().alloc(total_size, 8).map(|ptr| {
+                    cell.borrow_mut().alloc(alloc_size, 8).inspect(|_ptr| {
                         from_nursery = true;
-                        ptr
                     })
                 })
             } else {
@@ -979,7 +1037,7 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
             }
         })
         .unwrap_or_else(|| {
-            let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+            let layout = std::alloc::Layout::from_size_align(alloc_size, 8).unwrap();
             unsafe { std::alloc::alloc(layout) }
         });
     if header_ptr.is_null() {
@@ -992,31 +1050,31 @@ pub(crate) fn alloc_object(_py: &PyToken<'_>, total_size: usize, type_id: u32) -
         return std::ptr::null_mut();
     }
     // Enforce resource budget before committing the allocation.
-    if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(total_size)) {
+    if let Err(_e) = crate::resource::with_tracker(|t| t.on_allocate(alloc_size)) {
         // Budget exceeded — return the memory to its source.
         if from_nursery {
             // Nursery memory is bump-allocated; we cannot return individual
             // chunks, so we just let it be reclaimed on the next nursery reset.
             // The tracker denied the allocation so the caller sees null.
         } else if pool_eligible {
-            let _ = object_pool_put(_py, total_size, header_ptr);
+            let _ = object_pool_put(_py, alloc_size, header_ptr);
         } else {
-            let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();
+            let layout = std::alloc::Layout::from_size_align(alloc_size, 8).unwrap();
             unsafe { std::alloc::dealloc(header_ptr, layout) };
         }
         return std::ptr::null_mut();
     }
     profile_hit(_py, &ALLOC_COUNT);
-    profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, total_size as u64);
+    profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, alloc_size as u64);
     profile_alloc_type(_py, type_id);
-    profile_alloc_type_bytes(_py, type_id, total_size);
+    profile_alloc_type_bytes(_py, type_id, alloc_size);
     unsafe {
         // Zero the entire allocation so data fields past the header
         // start as null pointers / zero values.  This prevents the
         // deallocation path from misinterpreting stale heap data as
         // valid inner pointers (Vec*, DataclassDesc*, etc.) when an
         // object type allocates more space than it initializes.
-        std::ptr::write_bytes(header_ptr, 0, total_size);
+        std::ptr::write_bytes(header_ptr, 0, alloc_size);
         let header = header_ptr as *mut MoltHeader;
         let sc = size_class_for(total_size);
         (*header).type_id = type_id;
@@ -1497,10 +1555,14 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
         let type_id = (*header_ptr).type_id;
         let header = &mut *header_ptr;
+        let header_type_id = header.type_id;
+        let header_flags = header.flags;
+        let header_size_class = header.size_class;
+        let header_cold_idx = header.cold_idx;
         if type_id == TYPE_ID_NOT_IMPLEMENTED {
             return;
         }
-        if (header.flags & HEADER_FLAG_IMMORTAL) != 0 {
+        if (header_flags & HEADER_FLAG_IMMORTAL) != 0 {
             return;
         }
         // Check-before-decrement: prevent double-free by verifying refcount > 0
@@ -2194,12 +2256,12 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 _ => {}
             }
             release_ptr(ptr);
-            let total_size = total_size_from_header(header, ptr);
+            let total_size = total_size_from_header_fields(header_size_class, header_cold_idx);
             // Notify the resource tracker that this object's memory is freed.
             crate::resource::with_tracker(|t| t.on_free(total_size));
-            free_cold_header(header.cold_idx);
+            free_cold_header(header_cold_idx);
             let should_pool = matches!(
-                header.type_id,
+                header_type_id,
                 TYPE_ID_OBJECT | TYPE_ID_BOUND_METHOD | TYPE_ID_ITER
             ) && object_pool_put(py, total_size, header_ptr as *mut u8);
             if should_pool {
@@ -2211,7 +2273,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             // Nursery-allocated objects live inside the bump region and must
             // NOT be passed to the global allocator.  The nursery reclaims
             // all its memory in one shot via `reset()`.
-            if (header.flags & HEADER_FLAG_NURSERY) != 0 {
+            if (header_flags & HEADER_FLAG_NURSERY) != 0 {
                 return;
             }
             let layout = std::alloc::Layout::from_size_align(total_size, 8).unwrap();

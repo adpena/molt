@@ -268,11 +268,10 @@ fn find_spec(name: &str) -> Option<&'static crate::intrinsics::generated::Intrin
     }
     // Try Python builtin aliases (e.g. `globals` -> `molt_globals_builtin`).
     for &(py_name, intrinsic_name) in PYTHON_BUILTIN_ALIASES {
-        if name == py_name {
-            if let Some(spec) = find_spec_by_name(intrinsic_name) {
+        if name == py_name
+            && let Some(spec) = find_spec_by_name(intrinsic_name) {
                 return Some(spec);
             }
-        }
     }
     None
 }
@@ -388,6 +387,7 @@ fn build_bootstrap_function(
             if !defaults_ptr.is_null() {
                 let defaults_bits = MoltObject::from_ptr(defaults_ptr).bits();
                 crate::function_set_attr_bits(_py, ptr, defaults_name, defaults_bits);
+                dec_ref_bits(_py, defaults_bits);
             }
         }
     }

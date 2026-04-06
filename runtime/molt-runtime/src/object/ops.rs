@@ -44,8 +44,8 @@ use std::collections::HashSet;
 use std::ffi::CStr;
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::CString;
-use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::OnceLock;
+use std::sync::atomic::Ordering as AtomicOrdering;
 
 use super::ops_string::{push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at};
 
@@ -433,9 +433,7 @@ pub(super) fn alloc_range_from_bigints(
 /// Caller must hold the GIL.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_alloc_heap_float(value: f64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        alloc_heap_float(_py, value)
-    })
+    crate::with_gil_entry!(_py, { alloc_heap_float(_py, value) })
 }
 
 /// Internal helper: allocate a heap float, returning NaN-boxed pointer bits.
@@ -492,10 +490,10 @@ pub(crate) fn as_float_extended(obj: MoltObject) -> Option<f64> {
     if let Some(f) = obj.as_float() {
         return Some(f);
     }
-    if let Some(ptr) = obj.as_ptr() {
-        if unsafe { object_type_id(ptr) } == TYPE_ID_FLOAT {
-            return Some(unsafe { heap_float_value(ptr) });
-        }
+    if let Some(ptr) = obj.as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_FLOAT
+    {
+        return Some(unsafe { heap_float_value(ptr) });
     }
     None
 }
@@ -503,7 +501,6 @@ pub(crate) fn as_float_extended(obj: MoltObject) -> Option<f64> {
 // --- NaN-boxed ops ---
 
 #[unsafe(no_mangle)]
-
 pub extern "C" fn molt_profile_dump() {
     crate::with_gil_entry!(_py, {
         if !profile_enabled(_py) {
@@ -1564,7 +1561,7 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
         // goes straight to the interned single-char cache.
         let obj = obj_from_bits(val);
         if let Some(i) = to_i64(obj) {
-            if i < 0 || i > 0x10FFFF {
+            if !(0..=0x10FFFF).contains(&i) {
                 return raise_exception::<_>(_py, "ValueError", "chr() arg not in range(0x110000)");
             }
             let code = i as u32;
@@ -1809,12 +1806,11 @@ pub extern "C" fn molt_setrecursionlimit(limit_bits: u64) -> u64 {
 pub extern "C" fn molt_getargv() -> u64 {
     crate::with_gil_entry!(_py, {
         let mut args_guard = runtime_state(_py).argv.lock().unwrap();
-        if args_guard.is_empty() {
-            if let Some(wasi_args) = collect_wasi_argv_bytes() {
-                if !wasi_args.is_empty() {
-                    *args_guard = wasi_args;
-                }
-            }
+        if args_guard.is_empty()
+            && let Some(wasi_args) = collect_wasi_argv_bytes()
+            && !wasi_args.is_empty()
+        {
+            *args_guard = wasi_args;
         }
         // On WASM, molt_set_argv may not have been called (no C main stub).
         // Fall back to std::env::args() so WASI args are still visible.
@@ -1854,9 +1850,9 @@ pub extern "C" fn molt_getargv() -> u64 {
 use super::ops_sys::{
     DEFAULT_SYS_FLAGS_INT_MAX_STR_DIGITS, alloc_sys_version_info_tuple, current_sys_version_info,
     default_sys_version_info, dict_set_bytes_key, env_flag_bool, env_flag_level,
-    env_non_negative_i64, env_sys_version_info, format_sys_version, sys_abiflags,
-    sys_api_version, sys_cache_tag, sys_flags_hash_randomization, sys_hexversion_from_info,
-    sys_implementation_name, trace_sys_version,
+    env_non_negative_i64, env_sys_version_info, format_sys_version, sys_abiflags, sys_api_version,
+    sys_cache_tag, sys_flags_hash_randomization, sys_hexversion_from_info, sys_implementation_name,
+    trace_sys_version,
 };
 
 #[unsafe(no_mangle)]
@@ -1872,17 +1868,16 @@ pub extern "C" fn molt_sys_set_version_info(
         // Compiler/runtime ABI note:
         // the startup stub may provide these fields either as boxed Molt ints
         // or as raw compiler immediates from typed codegen lanes.
-        let decode_version_int =
-            |bits: u64, err: &str| -> Result<i64, u64> {
-                let obj = MoltObject::from_bits(bits);
-                if obj.is_int() {
-                    return Ok(obj.as_int_unchecked());
-                }
-                if obj.as_ptr().is_none() {
-                    return Ok(bits as i64);
-                }
-                Err(raise_exception::<u64>(_py, "TypeError", err))
-            };
+        let decode_version_int = |bits: u64, err: &str| -> Result<i64, u64> {
+            let obj = MoltObject::from_bits(bits);
+            if obj.is_int() {
+                return Ok(obj.as_int_unchecked());
+            }
+            if obj.as_ptr().is_none() {
+                return Ok(bits as i64);
+            }
+            Err(raise_exception::<u64>(_py, "TypeError", err))
+        };
         let major = match decode_version_int(major_bits, "major must be int") {
             Ok(v) => v,
             Err(err) => return err,
@@ -2484,19 +2479,14 @@ pub extern "C" fn molt_time_time_ns() -> u64 {
 }
 
 // Re-export time helpers from ops_sys (authoritative copy).
-use super::ops_sys::{
-    days_from_civil, parse_time_seconds, parse_time_tuple,
-    time_parts_to_tuple,
-};
-#[cfg(not(target_arch = "wasm32"))]
-use super::ops_sys::{
-    time_parts_from_tm, tm_from_time_parts,
-};
 #[cfg(target_arch = "wasm32")]
 use super::ops_sys::{
-    civil_from_days, day_of_year, is_leap_year, local_offset_west_wasm,
-    time_parts_from_epoch_utc, timezone_west_wasm, tzname_wasm,
+    civil_from_days, day_of_year, is_leap_year, local_offset_west_wasm, time_parts_from_epoch_utc,
+    timezone_west_wasm, tzname_wasm,
 };
+use super::ops_sys::{days_from_civil, parse_time_seconds, parse_time_tuple, time_parts_to_tuple};
+#[cfg(not(target_arch = "wasm32"))]
+use super::ops_sys::{time_parts_from_tm, tm_from_time_parts};
 
 // parse_time_tuple imported from ops_sys above.
 
@@ -2505,23 +2495,19 @@ use super::ops_sys::asctime_from_parts;
 // Re-export timezone/mktime helpers from ops_sys (authoritative copy).
 #[cfg(not(target_arch = "wasm32"))]
 use super::ops_sys::{
-    altzone_native, daylight_native, mktime_native,
-    timezone_native, tzname_native,
+    altzone_native, daylight_native, mktime_native, timezone_native, tzname_native,
 };
 #[cfg(target_arch = "wasm32")]
-use super::ops_sys::{
-    altzone_wasm, daylight_wasm, mktime_wasm, sample_offset_west_wasm,
-};
+use super::ops_sys::{altzone_wasm, daylight_wasm, mktime_wasm, sample_offset_west_wasm};
 
 // Re-export traceback helpers from ops_sys (authoritative copy).
 use super::ops_sys::{
-    traceback_append_exception_chain_lines,
-    traceback_exception_chain_payload_bits, traceback_exception_components_payload,
-    traceback_exception_trace_bits, traceback_exception_type_bits,
-    traceback_format_caret_line_native, traceback_format_exception_only_line, traceback_frames,
-    traceback_infer_column_offsets, traceback_limit_from_bits,
-    traceback_lines_to_list, traceback_payload_from_source, traceback_payload_to_formatted_lines,
-    traceback_payload_to_list, traceback_source_line_native,
+    traceback_append_exception_chain_lines, traceback_exception_chain_payload_bits,
+    traceback_exception_components_payload, traceback_exception_trace_bits,
+    traceback_exception_type_bits, traceback_format_caret_line_native,
+    traceback_format_exception_only_line, traceback_frames, traceback_infer_column_offsets,
+    traceback_limit_from_bits, traceback_lines_to_list, traceback_payload_from_source,
+    traceback_payload_to_formatted_lines, traceback_payload_to_list, traceback_source_line_native,
 };
 
 use super::ops_sys::parse_mktime_tuple;
@@ -2688,26 +2674,6 @@ pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
         }
     })
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_time_timezone() -> u64 {
@@ -2937,87 +2903,7 @@ pub extern "C" fn molt_time_get_clock_info(name_bits: u64) -> u64 {
     })
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-#[cfg(test)]
-mod traceback_format_tests {
-    use super::{traceback_format_caret_line_native, traceback_infer_column_offsets};
-
-    #[test]
-    fn infer_column_offsets_prefers_rhs_for_assignment() {
-        let (col, end_col) = traceback_infer_column_offsets("total = left + right   ");
-        assert_eq!(col, 8);
-        assert!(end_col > col);
-    }
-
-    #[test]
-    fn infer_column_offsets_skips_return_keyword() {
-        let (col, end_col) = traceback_infer_column_offsets("    return value");
-        assert_eq!(col, 11);
-        assert_eq!(end_col, 16);
-    }
-
-    #[test]
-    fn caret_line_preserves_tabs_for_alignment() {
-        let line = "\titem = source";
-        let caret = traceback_format_caret_line_native(line, 1, 5);
-        assert!(caret.starts_with("    \t"));
-        assert!(caret.contains("^^^^"));
-    }
-
-    #[test]
-    fn caret_line_omits_invalid_ranges() {
-        let line = "value = source";
-        assert!(traceback_format_caret_line_native(line, 0, 0).is_empty());
-        assert!(traceback_format_caret_line_native(line, 10, 5).is_empty());
-    }
-}
-
-
-
-
-
-
-
-
-
 #[allow(clippy::too_many_arguments)]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_traceback_payload(source_bits: u64, limit_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -3378,7 +3264,6 @@ pub extern "C" fn molt_raise_recursion_error() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-
 pub(crate) fn parse_codec_arg(
     _py: &PyToken<'_>,
     bits: u64,
@@ -6998,8 +6883,13 @@ pub extern "C" fn molt_dec_ref_n(bits: u64, count: u32) {
 /// Returns 0 on success.  On length mismatch a `ValueError` is raised through
 /// the normal exception-pending mechanism and `MoltObject::none().bits()` is
 /// returned so the caller can short-circuit.
+///
+/// # Safety
+///
+/// `output_ptr` must reference writable storage for at least `expected_count`
+/// `u64` elements.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_unpack_sequence(
+pub unsafe extern "C" fn molt_unpack_sequence(
     seq_bits: u64,
     expected_count: u64,
     output_ptr: *mut u64,
@@ -7028,7 +6918,10 @@ pub extern "C" fn molt_unpack_sequence(
                     return MoltObject::none().bits();
                 }
                 if actual > expected {
-                    let msg = format!("too many values to unpack (expected {}, got {})", expected, actual);
+                    let msg = format!(
+                        "too many values to unpack (expected {}, got {})",
+                        expected, actual
+                    );
                     raise_exception::<u64>(_py, "ValueError", &msg);
                     return MoltObject::none().bits();
                 }
@@ -7075,21 +6968,34 @@ pub extern "C" fn molt_unpack_sequence(
                         // infinite iterators.
                         let mut extra = 0usize;
                         let exhausted = loop {
-                            if extra >= 1024 { break false; }
+                            if extra >= 1024 {
+                                break false;
+                            }
                             let extra_bits = molt_iter_next(iter_bits);
                             let extra_obj = obj_from_bits(extra_bits);
-                            let Some(extra_ptr) = extra_obj.as_ptr() else { break true; };
-                            if object_type_id(extra_ptr) != TYPE_ID_TUPLE { break true; }
+                            let Some(extra_ptr) = extra_obj.as_ptr() else {
+                                break true;
+                            };
+                            if object_type_id(extra_ptr) != TYPE_ID_TUPLE {
+                                break true;
+                            }
                             let extra_elems = seq_vec_ref(extra_ptr);
-                            if extra_elems.len() < 2 { break true; }
+                            if extra_elems.len() < 2 {
+                                break true;
+                            }
                             let done = is_truthy(_py, obj_from_bits(extra_elems[1]));
-                            if done { break true; }
+                            if done {
+                                break true;
+                            }
                             extra += 1;
                         };
                         count += extra;
                         dec_ref_bits(_py, iter_bits);
                         let msg = if exhausted {
-                            format!("too many values to unpack (expected {}, got {})", expected, count)
+                            format!(
+                                "too many values to unpack (expected {}, got {})",
+                                expected, count
+                            )
                         } else {
                             // Iterator didn't terminate — report without count
                             format!("too many values to unpack (expected {})", expected)
@@ -7104,8 +7010,8 @@ pub extern "C" fn molt_unpack_sequence(
                     // raised RuntimeError, not StopIteration), propagate that
                     // exception instead of replacing it with ValueError.
                     if exception_pending(_py) {
-                        for i in 0..count {
-                            dec_ref_bits(_py, out_slice[i]);
+                        for value in out_slice.iter().take(count) {
+                            dec_ref_bits(_py, *value);
                         }
                         return MoltObject::none().bits();
                     }
@@ -7115,8 +7021,8 @@ pub extern "C" fn molt_unpack_sequence(
                     );
                     raise_exception::<u64>(_py, "ValueError", &msg);
                     // Dec-ref any already-extracted values.
-                    for i in 0..count {
-                        dec_ref_bits(_py, out_slice[i]);
+                    for value in out_slice.iter().take(count) {
+                        dec_ref_bits(_py, *value);
                     }
                     return MoltObject::none().bits();
                 }
@@ -7252,21 +7158,26 @@ pub(crate) fn class_break_cycles(_py: &PyToken<'_>, bits: u64) {
         let none_bits = MoltObject::none().bits();
         let bases_bits = class_bases_bits(ptr);
         let mro_bits = class_mro_bits(ptr);
+        let metaclass_bits = object_class_bits(ptr);
         if !obj_from_bits(bases_bits).is_none() {
             dec_ref_bits(_py, bases_bits);
         }
         if !obj_from_bits(mro_bits).is_none() {
             dec_ref_bits(_py, mro_bits);
         }
+        if !obj_from_bits(metaclass_bits).is_none() {
+            dec_ref_bits(_py, metaclass_bits);
+        }
         class_set_bases_bits(ptr, none_bits);
         class_set_mro_bits(ptr, none_bits);
+        object_set_class_bits(_py, ptr, none_bits);
         class_set_annotations_bits(_py, ptr, 0u64);
         class_set_annotate_bits(_py, ptr, 0u64);
         let dict_bits = class_dict_bits(ptr);
         if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
             && object_type_id(dict_ptr) == TYPE_ID_DICT
         {
-            dict_clear_in_place(_py, dict_ptr);
+            dict_clear_in_place_shutdown(_py, dict_ptr);
         }
     }
 }
@@ -8034,9 +7945,19 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
             }
             // Range equality: range(a,b,c) == range(a,b,c) if start,stop,step match.
             if ltype == TYPE_ID_RANGE {
-                return obj_eq(_py, obj_from_bits(range_start_bits(lp)), obj_from_bits(range_start_bits(rp)))
-                    && obj_eq(_py, obj_from_bits(range_stop_bits(lp)), obj_from_bits(range_stop_bits(rp)))
-                    && obj_eq(_py, obj_from_bits(range_step_bits(lp)), obj_from_bits(range_step_bits(rp)));
+                return obj_eq(
+                    _py,
+                    obj_from_bits(range_start_bits(lp)),
+                    obj_from_bits(range_start_bits(rp)),
+                ) && obj_eq(
+                    _py,
+                    obj_from_bits(range_stop_bits(lp)),
+                    obj_from_bits(range_stop_bits(rp)),
+                ) && obj_eq(
+                    _py,
+                    obj_from_bits(range_step_bits(lp)),
+                    obj_from_bits(range_step_bits(rp)),
+                );
             }
         }
         return lp == rp;
@@ -8285,7 +8206,7 @@ pub(super) unsafe fn simd_bytes_eq(a: *const u8, b: *const u8, len: usize) -> bo
 /// Short-string equality for 9-15 bytes: overlapping unaligned 8-byte loads.
 #[inline(always)]
 unsafe fn simd_bytes_eq_short_u64(a: *const u8, b: *const u8, len: usize) -> bool {
-    debug_assert!(len >= 9 && len < 16);
+    debug_assert!((9..16).contains(&len));
     unsafe {
         let head_a = std::ptr::read_unaligned(a as *const u64);
         let head_b = std::ptr::read_unaligned(b as *const u64);
@@ -8303,7 +8224,7 @@ unsafe fn simd_bytes_eq_short_u64(a: *const u8, b: *const u8, len: usize) -> boo
 #[inline(always)]
 unsafe fn simd_bytes_eq_short_neon(a: *const u8, b: *const u8, len: usize) -> bool {
     use std::arch::aarch64::*;
-    debug_assert!(len >= 16 && len < 32);
+    debug_assert!((16..32).contains(&len));
     unsafe {
         // Load from the start
         let va0 = vld1q_u8(a);
@@ -9353,12 +9274,31 @@ pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
     }
 }
 
+pub(crate) unsafe fn dict_clear_in_place_shutdown(_py: &PyToken<'_>, ptr: *mut u8) {
+    unsafe {
+        crate::gil_assert();
+        let order = dict_order(ptr);
+        for pair in order.chunks_exact(2) {
+            crate::object::release_shutdown_bits(_py, pair[0]);
+            crate::object::release_shutdown_bits(_py, pair[1]);
+        }
+        order.clear();
+        let table = dict_table(ptr);
+        table.clear();
+    }
+}
+
 /// Outlined class definition helper.  Replaces the multi-op inline sequence
 /// (`class_new` + `class_set_base` + N x `set_attr_generic_obj` +
 /// `class_apply_set_name` + `__init_subclass__` dispatch +
 /// `class_set_layout_version`) with a single runtime call.
+///
+/// # Safety
+///
+/// `bases_ptr` must reference `nbases` entries when `nbases > 0`, and
+/// `attrs_ptr` must reference `nattrs * 2` entries when `nattrs > 0`.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_guarded_class_def(
+pub unsafe extern "C" fn molt_guarded_class_def(
     name_bits: u64,
     bases_ptr: *const u64,
     nbases: u64,
@@ -9576,17 +9516,17 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
             let data_base = out_ptr.add(std::mem::size_of::<usize>());
             let mut offset = 0;
             for &(bits, _) in &parts {
-                if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-                    if object_type_id(ptr) == TYPE_ID_STRING {
-                        let len = string_len(ptr);
-                        if len > 0 {
-                            std::ptr::copy_nonoverlapping(
-                                string_bytes(ptr),
-                                data_base.add(offset),
-                                len,
-                            );
-                            offset += len;
-                        }
+                if let Some(ptr) = obj_from_bits(bits).as_ptr()
+                    && object_type_id(ptr) == TYPE_ID_STRING
+                {
+                    let len = string_len(ptr);
+                    if len > 0 {
+                        std::ptr::copy_nonoverlapping(
+                            string_bytes(ptr),
+                            data_base.add(offset),
+                            len,
+                        );
+                        offset += len;
                     }
                 }
             }
@@ -10648,7 +10588,9 @@ pub extern "C" fn molt_list_getitem_int_fast(list_bits: u64, index_bits: u64) ->
             let header = val_ptr.sub(std::mem::size_of::<crate::object::MoltHeader>())
                 as *mut crate::object::MoltHeader;
             if ((*header).flags & crate::object::HEADER_FLAG_IMMORTAL) == 0 {
-                (*header).ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                (*header)
+                    .ref_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
         val
@@ -10674,7 +10616,11 @@ pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
             let v = count_obj.as_int_unchecked();
             if v < 0 { 0usize } else { v as usize }
         } else if count_obj.is_bool() {
-            if count_obj.as_bool().unwrap_or(false) { 1 } else { 0 }
+            if count_obj.as_bool().unwrap_or(false) {
+                1
+            } else {
+                0
+            }
         } else {
             return MoltObject::none().bits();
         };
@@ -10685,7 +10631,11 @@ pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
         } else if fill_obj.is_int() {
             fill_obj.as_int_unchecked()
         } else if fill_obj.is_bool() {
-            if fill_obj.as_bool().unwrap_or(false) { 1i64 } else { 0i64 }
+            if fill_obj.as_bool().unwrap_or(false) {
+                1i64
+            } else {
+                0i64
+            }
         } else {
             // Not an int — fall back to regular list
             return MoltObject::none().bits();
@@ -10693,7 +10643,7 @@ pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
 
         let total = std::mem::size_of::<crate::object::MoltHeader>()
             + std::mem::size_of::<*mut crate::object::layout::ListIntStorage>()
-            + std::mem::size_of::<u64>();            // padding
+            + std::mem::size_of::<u64>(); // padding
         let ptr = alloc_object(_py, total, TYPE_ID_LIST_INT);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -10726,7 +10676,9 @@ pub extern "C" fn molt_list_int_getitem(list_bits: u64, index_bits: u64) -> u64 
         };
         let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
         let len = storage.len as i64;
-        if idx < 0 { idx += len; }
+        if idx < 0 {
+            idx += len;
+        }
         if idx < 0 || idx >= len {
             return molt_index(list_bits, index_bits);
         }
@@ -10751,7 +10703,9 @@ pub extern "C" fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i
         let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
         let len = storage.len as i64;
         let mut idx = raw_index;
-        if idx < 0 { idx += len; }
+        if idx < 0 {
+            idx += len;
+        }
         if idx < 0 || idx >= len {
             return 0;
         }
@@ -10781,7 +10735,11 @@ pub extern "C" fn molt_list_int_getitem_unchecked(list_bits: u64, raw_index: i64
 /// Caller must guarantee `0 <= raw_index < len(list)`.
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub extern "C" fn molt_list_int_setitem_unchecked(list_bits: u64, raw_index: i64, raw_value: i64) -> u64 {
+pub extern "C" fn molt_list_int_setitem_unchecked(
+    list_bits: u64,
+    raw_index: i64,
+    raw_value: i64,
+) -> u64 {
     unsafe {
         let ptr = obj_from_bits(list_bits).as_ptr().unwrap_unchecked();
         let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
@@ -10804,7 +10762,9 @@ pub extern "C" fn molt_list_int_setitem_raw(list_bits: u64, raw_index: i64, raw_
         let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
         let len = storage.len as i64;
         let mut idx = raw_index;
-        if idx < 0 { idx += len; }
+        if idx < 0 {
+            idx += len;
+        }
         if idx < 0 || idx >= len {
             return list_bits;
         }
@@ -10829,7 +10789,11 @@ pub extern "C" fn molt_list_int_getitem_nogil(list_bits: u64, index_bits: u64) -
 /// `_nogil` to make the contract explicit for the compiler backend.
 /// No GIL acquisition, no catch_unwind, no signal checks.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_list_int_setitem_nogil(list_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
+pub extern "C" fn molt_list_int_setitem_nogil(
+    list_bits: u64,
+    index_bits: u64,
+    value_bits: u64,
+) -> u64 {
     molt_list_int_setitem(list_bits, index_bits, value_bits)
 }
 
@@ -10852,13 +10816,19 @@ pub extern "C" fn molt_list_int_setitem(list_bits: u64, index_bits: u64, value_b
         let raw_value = if value_obj.is_int() {
             value_obj.as_int_unchecked()
         } else if value_obj.is_bool() {
-            if value_obj.as_bool().unwrap_or(false) { 1i64 } else { 0i64 }
+            if value_obj.as_bool().unwrap_or(false) {
+                1i64
+            } else {
+                0i64
+            }
         } else {
             0i64 // store 0 for non-int values (False → 0)
         };
         let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
         let len = storage.len as i64;
-        if idx < 0 { idx += len; }
+        if idx < 0 {
+            idx += len;
+        }
         if idx < 0 || idx >= len {
             return MoltObject::none().bits();
         }
@@ -10931,7 +10901,9 @@ pub extern "C" fn molt_list_int_getitem_truthy(list_bits: u64, index_bits: u64) 
         };
         let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
         let len = storage.len as i64;
-        if idx < 0 { idx += len; }
+        if idx < 0 {
+            idx += len;
+        }
         if idx < 0 || idx >= len {
             return MoltObject::from_bool(false).bits();
         }
@@ -11106,5 +11078,39 @@ pub extern "C" fn molt_list_getitem_unchecked(list_bits: u64, index: i64) -> u64
             inc_ref_bits(_py, val);
             val
         })
+    }
+}
+
+#[cfg(test)]
+mod traceback_format_tests {
+    use super::{traceback_format_caret_line_native, traceback_infer_column_offsets};
+
+    #[test]
+    fn infer_column_offsets_prefers_rhs_for_assignment() {
+        let (col, end_col) = traceback_infer_column_offsets("total = left + right   ");
+        assert_eq!(col, 8);
+        assert!(end_col > col);
+    }
+
+    #[test]
+    fn infer_column_offsets_skips_return_keyword() {
+        let (col, end_col) = traceback_infer_column_offsets("    return value");
+        assert_eq!(col, 11);
+        assert_eq!(end_col, 16);
+    }
+
+    #[test]
+    fn caret_line_preserves_tabs_for_alignment() {
+        let line = "\titem = source";
+        let caret = traceback_format_caret_line_native(line, 1, 5);
+        assert!(caret.starts_with("    \t"));
+        assert!(caret.contains("^^^^"));
+    }
+
+    #[test]
+    fn caret_line_omits_invalid_ranges() {
+        let line = "value = source";
+        assert!(traceback_format_caret_line_native(line, 0, 0).is_empty());
+        assert!(traceback_format_caret_line_native(line, 10, 5).is_empty());
     }
 }

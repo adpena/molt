@@ -2,7 +2,7 @@ use crate::PyToken;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use super::RuntimeState;
-use crate::{MoltObject, alloc_string, dec_ref_bits, init_atomic_bits};
+use crate::{MoltObject, alloc_string, init_atomic_bits};
 
 pub(crate) struct InternedNames {
     pub(crate) bases_name: AtomicU64,
@@ -823,7 +823,7 @@ pub(crate) fn clear_atomic_bits(_py: &PyToken<'_>, slot: &AtomicU64) {
     crate::gil_assert();
     let bits = slot.swap(0, AtomicOrdering::AcqRel);
     if bits != 0 {
-        dec_ref_bits(_py, bits);
+        crate::object::release_shutdown_bits(_py, bits);
     }
 }
 
