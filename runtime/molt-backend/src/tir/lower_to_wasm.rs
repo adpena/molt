@@ -579,24 +579,22 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             }
         }
         OpCode::Shl => {
-            if tir_op.operands.len() >= 2 {
-                if let Some(result) = op.result_values.first() {
+            if tir_op.operands.len() >= 2
+                && let Some(result) = op.result_values.first() {
                     ctx.emit_get(tir_op.operands[0]);
                     ctx.emit_get(tir_op.operands[1]);
                     ctx.instructions.push(Instruction::I64Shl);
                     ctx.emit_set(result.id);
                 }
-            }
         }
         OpCode::Shr => {
-            if tir_op.operands.len() >= 2 {
-                if let Some(result) = op.result_values.first() {
+            if tir_op.operands.len() >= 2
+                && let Some(result) = op.result_values.first() {
                     ctx.emit_get(tir_op.operands[0]);
                     ctx.emit_get(tir_op.operands[1]);
                     ctx.instructions.push(Instruction::I64ShrS);
                     ctx.emit_set(result.id);
                 }
-            }
         }
         OpCode::Not => {
             if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
@@ -607,8 +605,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             }
         }
         OpCode::And | OpCode::Or => {
-            if tir_op.operands.len() >= 2 {
-                if let Some(result) = op.result_values.first() {
+            if tir_op.operands.len() >= 2
+                && let Some(result) = op.result_values.first() {
                     ctx.emit_get(tir_op.operands[0]);
                     ctx.emit_get(tir_op.operands[1]);
                     ctx.instructions.push(if tir_op.opcode == OpCode::And {
@@ -618,7 +616,6 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                     });
                     ctx.emit_set(result.id);
                 }
-            }
         }
         OpCode::CallBuiltin
             if matches!(

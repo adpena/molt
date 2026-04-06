@@ -148,7 +148,7 @@ mod tests {
         let ops = vec![make_call(1, 0, 0)];
         let result = run_pass(ops);
         assert!(
-            result[0].attrs.get("closure_specialized").is_none(),
+            !result[0].attrs.contains_key("closure_specialized"),
             "expected no closure_specialized attr on call with dynamic args"
         );
     }
@@ -169,6 +169,6 @@ mod tests {
             source_span: None,
         }];
         let result = run_pass(ops);
-        assert!(result[0].attrs.get("closure_specialized").is_none());
+        assert!(!result[0].attrs.contains_key("closure_specialized"));
     }
 }

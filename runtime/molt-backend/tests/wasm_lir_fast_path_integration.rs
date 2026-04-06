@@ -34,11 +34,10 @@ fn function_has_i64_add(wasm: &[u8], export_name: &str) -> bool {
             Payload::ExportSection(section) => {
                 for export in section.into_iter() {
                     let export = export.expect("valid export");
-                    if export.name == export_name {
-                        if let wasmparser::ExternalKind::Func = export.kind {
+                    if export.name == export_name
+                        && let wasmparser::ExternalKind::Func = export.kind {
                             export_func_index = Some(export.index);
                         }
-                    }
                 }
             }
             Payload::FunctionSection(section) => {
@@ -48,10 +47,7 @@ fn function_has_i64_add(wasm: &[u8], export_name: &str) -> bool {
                 let mut reader = body.get_operators_reader().expect("operators reader");
                 let mut has_i64_add = false;
                 while !reader.eof() {
-                    match reader.read().expect("valid operator") {
-                        Operator::I64Add => has_i64_add = true,
-                        _ => {}
-                    }
+                    if reader.read().expect("valid operator") == Operator::I64Add { has_i64_add = true }
                 }
                 code_bodies.push(has_i64_add);
             }

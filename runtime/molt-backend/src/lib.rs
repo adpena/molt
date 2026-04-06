@@ -217,7 +217,7 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
 
 /// Collapse simple alias-only copy ops (`copy`, `copy_var`, `identity_alias`)
 /// by rewriting later uses to the original source name.
-pub fn rewrite_copy_aliases(ops: &mut Vec<OpIR>) {
+pub fn rewrite_copy_aliases(ops: &mut [OpIR]) {
     let mut aliases: BTreeMap<String, String> = BTreeMap::new();
     let resolve_alias = |name: &str, aliases: &BTreeMap<String, String>| -> String {
         let mut current = name;
@@ -1479,11 +1479,10 @@ fn seal_block_once(
     sealed: &mut std::collections::BTreeSet<Block>,
     block: Block,
 ) {
-    if sealed.insert(block) {
-        if builder.func.layout.is_block_inserted(block) {
+    if sealed.insert(block)
+        && builder.func.layout.is_block_inserted(block) {
             builder.seal_block(block);
         }
-    }
 }
 
 #[cfg(feature = "native-backend")]
@@ -2858,14 +2857,13 @@ impl SimpleBackend {
                 );
                 // Check TIR cache: if we have validated optimized ops from a
                 // previous build with the same content hash, reuse them.
-                if let Some(cached_bytes) = tir_cache.get(&content_hash) {
-                    if let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
+                if let Some(cached_bytes) = tir_cache.get(&content_hash)
+                    && let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
                     {
                         func_ir.ops = cached_ops;
                         tir_optimized_names.insert(func_ir.name.clone());
                         continue;
                     }
-                }
                 work_items.push(TirWorkItem {
                     index: i,
                     content_hash,

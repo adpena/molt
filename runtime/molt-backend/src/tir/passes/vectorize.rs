@@ -861,7 +861,7 @@ mod tests {
             .expect("ForIter op must exist");
 
         assert!(
-            for_iter_op.attrs.get("vectorize").is_none(),
+            !for_iter_op.attrs.contains_key("vectorize"),
             "loop with Call must NOT be marked vectorizable"
         );
     }
@@ -963,7 +963,7 @@ mod tests {
             .expect("ForIter op must exist");
 
         assert!(
-            for_iter_op.attrs.get("vectorize").is_none(),
+            !for_iter_op.attrs.contains_key("vectorize"),
             "loop with mixed types must NOT be marked vectorizable"
         );
     }

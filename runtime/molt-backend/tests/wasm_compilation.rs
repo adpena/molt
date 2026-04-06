@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use molt_backend::wasm::WasmBackend;
+use std::f64::consts::PI;
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use wasmparser::{Operator, Parser, Payload, TypeRef, Validator};
 
@@ -218,7 +219,7 @@ fn const_int_compiles() {
 #[test]
 fn const_float_compiles() {
     let mut c = op("const_float");
-    c.f_value = Some(3.14);
+    c.f_value = Some(PI);
     c.out = Some("v0".to_string());
 
     let wasm = compile_single_function(vec![c, op("ret_void")], &[]);

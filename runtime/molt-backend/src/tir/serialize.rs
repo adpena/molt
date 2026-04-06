@@ -88,7 +88,8 @@ pub fn deserialize_ops(bytes: &[u8]) -> Option<Vec<crate::ir::OpIR>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::OpIR;
+use crate::ir::OpIR;
+use std::f64::consts::PI;
 
     fn sample_ops() -> Vec<OpIR> {
         vec![
@@ -164,12 +165,12 @@ mod tests {
     fn test_op_with_float_value() {
         let ops = vec![OpIR {
             kind: "load_float".to_string(),
-            f_value: Some(3.14),
+            f_value: Some(PI),
             ..OpIR::default()
         }];
         let bytes = serialize_ops(&ops);
         let restored = deserialize_ops(&bytes).unwrap();
-        assert_eq!(restored[0].f_value, Some(3.14));
+        assert_eq!(restored[0].f_value, Some(PI));
     }
 
     #[test]

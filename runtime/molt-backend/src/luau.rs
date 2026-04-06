@@ -54,6 +54,12 @@ pub struct LuauBackend {
     needs_local_spill: bool,
 }
 
+impl Default for LuauBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LuauBackend {
     pub fn new() -> Self {
         Self {
@@ -122,35 +128,30 @@ impl LuauBackend {
                     }
                 };
                 // call_internal: s_value is the callee name
-                if op.kind == "call_internal" {
-                    if let Some(ref s_val) = op.s_value {
+                if op.kind == "call_internal"
+                    && let Some(ref s_val) = op.s_value {
                         check_ident(s_val);
                     }
-                }
                 // func_new / func_new_closure / code_new: s_value is the
                 // function name emitted as a bare identifier reference.
                 if matches!(
                     op.kind.as_str(),
                     "func_new" | "func_new_closure" | "code_new"
-                ) {
-                    if let Some(ref s_val) = op.s_value {
+                )
+                    && let Some(ref s_val) = op.s_value {
                         check_ident(s_val);
                     }
-                }
                 // load_local: var field may hold a function reference
-                if op.kind == "load_local" {
-                    if let Some(ref var) = op.var {
+                if op.kind == "load_local"
+                    && let Some(ref var) = op.var {
                         check_ident(var);
                     }
-                }
                 // call_func: args[0] is the callee
-                if op.kind == "call_func" {
-                    if let Some(ref args) = op.args {
-                        if let Some(callee) = args.first() {
+                if op.kind == "call_func"
+                    && let Some(ref args) = op.args
+                        && let Some(callee) = args.first() {
                             check_ident(callee);
                         }
-                    }
-                }
             }
         }
 
@@ -440,9 +441,7 @@ impl LuauBackend {
             self.output.push_str("local molt_repr\n");
         }
         for (name, source) in helpers {
-            let emit = if *name == "molt_str" {
-                needs_str_group
-            } else if *name == "molt_repr" {
+            let emit = if matches!(*name, "molt_str" | "molt_repr") {
                 needs_str_group
             } else if *name == "molt_print" {
                 needs_print
@@ -708,11 +707,10 @@ impl LuauBackend {
         // Pre-declare loop index variables so they persist across iterations.
         let mut loop_idx_vars = Vec::new();
         for op in &ops {
-            if op.kind == "loop_index_start" {
-                if let Some(ref out_name) = op.out {
+            if op.kind == "loop_index_start"
+                && let Some(ref out_name) = op.out {
                     loop_idx_vars.push(sanitize_ident(out_name));
                 }
-            }
         }
         if !loop_idx_vars.is_empty() {
             for var in &loop_idx_vars {
@@ -726,16 +724,14 @@ impl LuauBackend {
         {
             let mut closure_slots: Vec<String> = Vec::new();
             for op in &ops {
-                if op.kind == "closure_store" || op.kind == "closure_load" {
-                    if let Some(ref args) = op.args {
-                        if let Some(slot) = args.first() {
+                if (op.kind == "closure_store" || op.kind == "closure_load")
+                    && let Some(ref args) = op.args
+                        && let Some(slot) = args.first() {
                             let var_name = format!("__closure_{}", sanitize_ident(slot));
                             if !closure_slots.contains(&var_name) {
                                 closure_slots.push(var_name);
                             }
                         }
-                    }
-                }
             }
             for var in &closure_slots {
                 self.emit_line(&format!("local {var}"));
@@ -746,11 +742,10 @@ impl LuauBackend {
         for op in &ops {
             match op.kind.as_str() {
                 "const" | "const_int" => {
-                    if let (Some(out_name), Some(v)) = (&op.out, op.value) {
-                        if v >= 0 {
+                    if let (Some(out_name), Some(v)) = (&op.out, op.value)
+                        && v >= 0 {
                             self.nonneg_consts.insert(out_name.clone());
                         }
-                    }
                 }
                 _ => {}
             }
@@ -818,12 +813,11 @@ impl LuauBackend {
                     _ => {}
                 }
                 // Record first declaration site of each variable.
-                if let Some(ref out_name) = op.out {
-                    if out_name != "none" && !op.kind.starts_with("nop") {
+                if let Some(ref out_name) = op.out
+                    && out_name != "none" && !op.kind.starts_with("nop") {
                         let var = sanitize_ident(out_name);
                         decl_scope.entry(var).or_insert((depth, block_id));
                     }
-                }
                 // Check if any referenced variable was declared at a deeper
                 // depth OR in a different block at the same depth.
                 let refs: Vec<&str> = op
@@ -907,8 +901,8 @@ impl LuauBackend {
                         }
                     }
                     "end_if" => {
-                        if let Some((if_idx, else_idx)) = if_stack.pop() {
-                            if let Some(phis) = phi_assignments.get(&idx) {
+                        if let Some((if_idx, else_idx)) = if_stack.pop()
+                            && let Some(phis) = phi_assignments.get(&idx) {
                                 for (phi_var, args) in phis {
                                     if let Some(else_i) = else_idx {
                                         // True branch value: inject before else.
@@ -956,7 +950,6 @@ impl LuauBackend {
                                     }
                                 }
                             }
-                        }
                     }
                     _ => {}
                 }
@@ -980,8 +973,8 @@ impl LuauBackend {
             }
             // Synthesize else branch for if-without-else + phi (and pattern).
             // This assigns the condition variable when the if body was skipped.
-            if ops[i].kind == "end_if" {
-                if let Some(synth) = phi_synthesize_else.get(&i) {
+            if ops[i].kind == "end_if"
+                && let Some(synth) = phi_synthesize_else.get(&i) {
                     self.pop_indent();
                     self.emit_line("else");
                     self.push_indent();
@@ -989,7 +982,6 @@ impl LuauBackend {
                         self.emit_line(&format!("{var} = {cond_val}"));
                     }
                 }
-            }
 
             if ops[i].kind == "loop_start"
                 && i + 1 < ops.len()
@@ -1033,9 +1025,8 @@ impl LuauBackend {
             for line in func_output.lines() {
                 let trimmed = line.trim_start();
                 let mut replaced = false;
-                if trimmed.starts_with("local ") {
+                if let Some(after_local) = trimmed.strip_prefix("local ") {
                     // Extract the variable name: "local vXXX = ..." or "local vXXX"
-                    let after_local = &trimmed[6..];
                     // Skip "local function ..." lines — those are function defs.
                     if !after_local.starts_with("function ") {
                         let var_end = after_local
@@ -1199,24 +1190,21 @@ impl LuauBackend {
             }
             "store_local" => {
                 let var = self.var_ref(op);
-                if let Some(ref args) = op.args {
-                    if let Some(src) = args.first() {
+                if let Some(ref args) = op.args
+                    && let Some(src) = args.first() {
                         // Propagate tuple tracking: if the source is a known
                         // tuple variable, the destination inherits that status.
-                        if self.tuple_vars.contains(src) {
-                            if let Some(ref var_name) = op.var {
+                        if self.tuple_vars.contains(src)
+                            && let Some(ref var_name) = op.var {
                                 self.tuple_vars.insert(var_name.clone());
                             }
-                        }
                         // Propagate type hints through copies.
-                        if let Some(hint) = self.var_type_hints.get(src).cloned() {
-                            if let Some(ref var_name) = op.var {
+                        if let Some(hint) = self.var_type_hints.get(src).cloned()
+                            && let Some(ref var_name) = op.var {
                                 self.var_type_hints.insert(var_name.clone(), hint);
                             }
-                        }
                         self.emit_line(&format!("{var} = {}", sanitize_ident(src)));
                     }
-                }
             }
             "store" | "store_init" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -1240,22 +1228,19 @@ impl LuauBackend {
             }
             "identity_alias" => {
                 let out = self.out_var(op);
-                if let Some(ref args) = op.args {
-                    if let Some(src) = args.first() {
+                if let Some(ref args) = op.args
+                    && let Some(src) = args.first() {
                         // Propagate tuple and type-hint tracking through aliases.
-                        if self.tuple_vars.contains(src) {
-                            if let Some(ref out_name) = op.out {
+                        if self.tuple_vars.contains(src)
+                            && let Some(ref out_name) = op.out {
                                 self.tuple_vars.insert(out_name.clone());
                             }
-                        }
-                        if let Some(hint) = self.var_type_hints.get(src).cloned() {
-                            if let Some(ref out_name) = op.out {
+                        if let Some(hint) = self.var_type_hints.get(src).cloned()
+                            && let Some(ref out_name) = op.out {
                                 self.var_type_hints.insert(out_name.clone(), hint);
                             }
-                        }
                         self.emit_line(&format!("local {out} = {}", sanitize_ident(src)));
                     }
-                }
             }
 
             // ================================================================
@@ -1271,16 +1256,16 @@ impl LuauBackend {
                     let rhs = sanitize_ident(&args[1]);
                     let is_numeric = op.fast_int == Some(true)
                         || op.fast_float == Some(true)
-                        || op.raw_int == Some(true)
+                        || op.fast_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int") | Some("float"))
                         || self
                             .var_type_hints
                             .get(&args[0])
-                            .map_or(false, |h| h == "int" || h == "float")
+                            .is_some_and(|h| h == "int" || h == "float")
                         || self
                             .var_type_hints
                             .get(&args[1])
-                            .map_or(false, |h| h == "int" || h == "float");
+                            .is_some_and(|h| h == "int" || h == "float");
                     if is_numeric {
                         if let Some(ref n) = op.out {
                             self.var_type_hints.insert(n.clone(), "int".to_string());
@@ -1410,7 +1395,7 @@ impl LuauBackend {
                 if let Some(val) = args.first() {
                     let v = sanitize_ident(val);
                     let is_bool = matches!(op.type_hint.as_deref(), Some("bool"))
-                        || self.var_type_hints.get(val).map_or(false, |t| t == "bool");
+                        || self.var_type_hints.get(val).is_some_and(|t| t == "bool");
                     if is_bool {
                         self.emit_line(&format!("local {out} = not {v}"));
                     } else {
@@ -1666,7 +1651,7 @@ impl LuauBackend {
                     // comparison op (type_hint="bool") or is a literal bool,
                     // use it directly.  Otherwise wrap in molt_bool().
                     let is_bool = op.type_hint.as_deref() == Some("bool")
-                        || self.var_type_hints.get(cond).map_or(false, |t| t == "bool")
+                        || self.var_type_hints.get(cond).is_some_and(|t| t == "bool")
                         || cond_ident == "true"
                         || cond_ident == "false";
                     if is_bool {
@@ -1907,7 +1892,7 @@ impl LuauBackend {
                     let obj_is_list = self
                         .var_type_hints
                         .get(&args[0])
-                        .map_or(false, |t| t == "list");
+                        .is_some_and(|t| t == "list");
                     if obj_is_list {
                         match method_name {
                             "append" => {
@@ -2493,13 +2478,13 @@ impl LuauBackend {
                     ) || self
                         .var_type_hints
                         .get(&args[0])
-                        .map_or(false, |t| t == "dict" || t == "set");
+                        .is_some_and(|t| t == "dict" || t == "set");
                     let is_list = matches!(op.type_hint.as_deref(), Some("list"))
                         || matches!(op.container_type.as_deref(), Some("list"))
                         || self
                             .var_type_hints
                             .get(&args[0])
-                            .map_or(false, |t| t == "list");
+                            .is_some_and(|t| t == "list");
                     if is_dict {
                         // Dict/set: key lookup.
                         self.emit_line(&format!("local {out} = ({container}[{val}] ~= nil)"));
@@ -2538,12 +2523,12 @@ impl LuauBackend {
                             || self
                                 .var_type_hints
                                 .get(&args[0])
-                                .map_or(false, |h| h == "str" || h == "string");
+                                .is_some_and(|h| h == "str" || h == "string");
 
                     // Fast-path: when the key is a known non-negative constant,
                     // skip the negative-index ternary entirely.
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
-                        || (op.fast_int == Some(true) && op.value.map_or(false, |v| v >= 0));
+                        || (op.fast_int == Some(true) && op.value.is_some_and(|v| v >= 0));
 
                     if container_is_str {
                         // Luau does not support string[index]; use string.sub.
@@ -2571,19 +2556,18 @@ impl LuauBackend {
                         let container_is_list = self
                             .var_type_hints
                             .get(&args[0])
-                            .map_or(false, |t| t == "list");
+                            .is_some_and(|t| t == "list");
                         let key_is_int = op.fast_int == Some(true)
-                            || op.raw_int == Some(true)
+                            || op.fast_int == Some(true)
                             || matches!(op.type_hint.as_deref(), Some("int"))
                             || container_is_list;
                         // When the container has type_hint="list" on the op itself,
                         // propagate the hint to the output variable.
-                        if container_is_list || matches!(op.type_hint.as_deref(), Some("list")) {
-                            if let Some(ref out_name) = op.out {
+                        if (container_is_list || matches!(op.type_hint.as_deref(), Some("list")))
+                            && let Some(ref out_name) = op.out {
                                 self.var_type_hints
                                     .insert(out_name.clone(), "list".to_string());
                             }
-                        }
                         if key_known_nonneg {
                             // Known non-negative: skip negative index ternary.
                             self.emit_line(&format!("local {out} = {container}[{key} + 1]"));
@@ -2607,10 +2591,10 @@ impl LuauBackend {
                     let key = sanitize_ident(&args[1]);
                     let value = sanitize_ident(&args[2]);
                     let key_is_int = op.fast_int == Some(true)
-                        || op.raw_int == Some(true)
+                        || op.fast_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int"));
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
-                        || (op.fast_int == Some(true) && op.value.map_or(false, |v| v >= 0));
+                        || (op.fast_int == Some(true) && op.value.is_some_and(|v| v >= 0));
                     if key_known_nonneg {
                         self.emit_line(&format!("{container}[{key} + 1] = {value}"));
                     } else if key_is_int {
@@ -2634,10 +2618,10 @@ impl LuauBackend {
                     let container = sanitize_ident(&args[0]);
                     let key = sanitize_ident(&args[1]);
                     let key_is_int = op.fast_int == Some(true)
-                        || op.raw_int == Some(true)
+                        || op.fast_int == Some(true)
                         || matches!(op.type_hint.as_deref(), Some("int"));
                     let key_known_nonneg = self.nonneg_consts.contains(&args[1])
-                        || (op.fast_int == Some(true) && op.value.map_or(false, |v| v >= 0));
+                        || (op.fast_int == Some(true) && op.value.is_some_and(|v| v >= 0));
                     if key_known_nonneg {
                         self.emit_line(&format!("table.remove({container}, {key} + 1)"));
                     } else if key_is_int {
@@ -2840,7 +2824,7 @@ impl LuauBackend {
                     ) || self
                         .var_type_hints
                         .get(obj.as_str())
-                        .map_or(false, |h| h == "list" || h == "str");
+                        .is_some_and(|h| h == "list" || h == "str");
                     if is_known_lennable {
                         self.emit_line(&format!("local {out} = #{obj_s}"));
                     } else {
@@ -3296,11 +3280,10 @@ impl LuauBackend {
             }
             "exception_clear" => {
                 // Clear the pcall error so subsequent exception_last returns nil.
-                if !self.inside_pcall_body {
-                    if let Some(&n) = self.try_depth_counter.last() {
+                if !self.inside_pcall_body
+                    && let Some(&n) = self.try_depth_counter.last() {
                         self.emit_line(&format!("__err_{n} = nil"));
                     }
-                }
             }
             "exception_new" | "exception_new_from_class" => {
                 let out = self.out_var(op);
@@ -4197,10 +4180,9 @@ pub fn review_luau_perf(source: &str) -> Vec<(usize, &'static str, String)> {
         {
             // Check if previous line has @native.
             if i == 0
-                || !source
+                || source
                     .lines()
-                    .nth(i - 1)
-                    .map_or(false, |prev| prev.trim() == "@native")
+                    .nth(i - 1).is_none_or(|prev| prev.trim() != "@native")
             {
                 // Don't flag runtime helper definitions.
                 if !trimmed.contains("molt_range")
@@ -4312,7 +4294,6 @@ fn sanitize_label(label: &str) -> String {
 ///   → if → break → end_if → get_item(result,0) [value] → body → loop_end
 ///
 /// We detect this pattern and collapse it to for_iter/end_for.
-
 /// Lower `try_start`/`try_end` pairs into `pcall_wrap_begin`/`pcall_wrap_end`.
 ///
 /// Returns rewritten ops plus variables that escape pcall scope.
@@ -4483,16 +4464,14 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
             continue;
         }
         for (idx, op) in result.iter().enumerate() {
-            if idx > start && idx < end {
-                if let Some(ref out_name) = op.out {
-                    if out_name != "none" && !op.kind.starts_with("nop") {
+            if idx > start && idx < end
+                && let Some(ref out_name) = op.out
+                    && out_name != "none" && !op.kind.starts_with("nop") {
                         defined_in_pcall
                             .entry(out_name.clone())
                             .or_default()
                             .push((start, end));
                     }
-                }
-            }
         }
     }
     for (idx, op) in result.iter().enumerate() {
@@ -4681,13 +4660,11 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                             | "const_bool"
                             | "const_float"
                             | "list_new"
-                    ) {
-                        if let Some(ref out) = ops[j].out {
-                            if body_refs.contains(out) {
+                    )
+                        && let Some(ref out) = ops[j].out
+                            && body_refs.contains(out) {
                                 result.push(ops[j].clone());
                             }
-                        }
-                    }
                 }
 
                 // Emit for_iter op.
@@ -4728,7 +4705,7 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                     let refs_iter = ops[j]
                         .args
                         .as_deref()
-                        .map_or(false, |args| args.iter().any(|a| a == &iter_next_out));
+                        .is_some_and(|args| args.iter().any(|a| a == &iter_next_out));
                     if refs_iter
                         || matches!(
                             ops[j].kind.as_str(),
@@ -4786,21 +4763,24 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                 // Now find the actual value extraction: look for set_item or store
                 // ops that write the unpacked value into a usable slot.
                 // These appear right after the break check.
-                for j in body_start..le_idx.min(body_start + 8) {
+                let scan_limit = le_idx.min(body_start + 8);
+                let mut body_cursor = body_start;
+                for j in body_start..scan_limit {
                     let refs_value = ops[j]
                         .args
                         .as_deref()
-                        .map_or(false, |args| args.iter().any(|a| a == &value_var));
+                        .is_some_and(|args| args.iter().any(|a| a == &value_var));
                     if refs_value && matches!(ops[j].kind.as_str(), "set_item" | "store_local") {
                         // This stores the loop variable into a slot — part of boilerplate.
-                        body_start = j + 1;
+                        body_cursor = j + 1;
                     } else if !refs_value && ops[j].kind == "const_int" {
                         // Index constant for the set_item — skip.
-                        body_start = j + 1;
+                        body_cursor = j + 1;
                     } else {
                         break;
                     }
                 }
+                body_start = body_cursor;
 
                 // Skip any ops between iter and loop body that are boilerplate
                 // (nil checks, TypeError, etc.) — they're between i and ls_idx.
@@ -4849,8 +4829,8 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
     let mut return_labels: BTreeMap<i64, (String, String)> = BTreeMap::new(); // label_id → (slot_var, index_var)
 
     for i in 0..ops.len() {
-        if ops[i].kind == "label" {
-            if let Some(label_id) = ops[i].value {
+        if ops[i].kind == "label"
+            && let Some(label_id) = ops[i].value {
                 // Scan forward past exception boilerplate for index → ret.
                 // The exit label may contain an exception re-raise block:
                 //   exception_stack_set_depth, exception_stack_exit,
@@ -4884,7 +4864,7 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                     // block (no var, no args, followed by a nearby end_if).
                     if k == "ret"
                         && ops[j].var.is_none()
-                        && ops[j].args.as_ref().map_or(true, |a| a.is_empty())
+                        && ops[j].args.as_ref().is_none_or(|a| a.is_empty())
                     {
                         let has_end_if =
                             (j + 1..ops.len()).take(5).any(|m| ops[m].kind == "end_if");
@@ -4893,9 +4873,9 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                             continue;
                         }
                     }
-                    if k == "index" {
-                        if let (Some(out), Some(args)) = (&ops[j].out, &ops[j].args) {
-                            if args.len() >= 2 {
+                    if k == "index"
+                        && let (Some(out), Some(args)) = (&ops[j].out, &ops[j].args)
+                            && args.len() >= 2 {
                                 let slot = &args[0];
                                 // Look for ret following this index
                                 let mut m = j + 1;
@@ -4914,19 +4894,18 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                                     }
                                     if mk == "ret" {
                                         // Match ret with explicit var reference.
-                                        if let Some(ref ret_var) = ops[m].var {
-                                            if ret_var == out {
+                                        if let Some(ref ret_var) = ops[m].var
+                                            && ret_var == out {
                                                 return_labels.insert(
                                                     label_id,
                                                     (slot.clone(), args[1].clone()),
                                                 );
                                             }
-                                        }
                                         // Also match bare ret (no var/args) that
                                         // follows index — the index already read
                                         // the return value into scope.
                                         if ops[m].var.is_none()
-                                            && ops[m].args.as_ref().map_or(true, |a| a.is_empty())
+                                            && ops[m].args.as_ref().is_none_or(|a| a.is_empty())
                                         {
                                             return_labels
                                                 .insert(label_id, (slot.clone(), args[1].clone()));
@@ -4935,12 +4914,9 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                                     break;
                                 }
                             }
-                        }
-                    }
                     break;
                 }
             }
-        }
     }
 
     if return_labels.is_empty() {
@@ -4952,9 +4928,9 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
     let mut result = Vec::with_capacity(ops.len());
     let mut i = 0;
     'outer: while i < ops.len() {
-        if ops[i].kind == "store_index" {
-            if let Some(ref args) = ops[i].args {
-                if args.len() >= 3 {
+        if ops[i].kind == "store_index"
+            && let Some(ref args) = ops[i].args
+                && args.len() >= 3 {
                     let slot = &args[0];
                     let idx = &args[1];
                     let value = &args[2];
@@ -4981,11 +4957,10 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                             j += 1;
                             continue;
                         }
-                        if k == "jump" || k == "label" {
-                            if let Some(target_label) = ops[j].value {
-                                if let Some((ret_slot, ret_idx)) = return_labels.get(&target_label)
-                                {
-                                    if slot == ret_slot && idx == ret_idx {
+                        if (k == "jump" || k == "label")
+                            && let Some(target_label) = ops[j].value
+                                && let Some((ret_slot, ret_idx)) = return_labels.get(&target_label)
+                                    && slot == ret_slot && idx == ret_idx {
                                         // Match! Replace store_index + boilerplate with ret.
                                         result.push(OpIR {
                                             kind: "ret".to_string(),
@@ -5002,8 +4977,9 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                                             stack_eligible: None,
                                             fast_float: None,
                                             type_hint: None,
-                                            raw_int: None,
                                             ic_index: None,
+                                            col_offset: None,
+                                            end_col_offset: None,
                                         });
                                         if k == "jump" {
                                             i = j + 1;
@@ -5013,20 +4989,15 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                                         }
                                         continue 'outer;
                                     }
-                                }
-                            }
-                        }
                         break;
                     }
                 }
-            }
-        }
         // Phase 3: Handle direct store_index → [boilerplate] → index → ret
         // without any jump/label. This pattern appears when a function has
         // exactly one code path (no early returns).
-        if ops[i].kind == "store_index" {
-            if let Some(ref args) = ops[i].args {
-                if args.len() >= 3 {
+        if ops[i].kind == "store_index"
+            && let Some(ref args) = ops[i].args
+                && args.len() >= 3 {
                     let slot = &args[0];
                     let idx = &args[1];
                     let value = &args[2];
@@ -5059,7 +5030,7 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                         // Skip bare ret inside exception re-raise blocks.
                         if k == "ret"
                             && ops[j].var.is_none()
-                            && ops[j].args.as_ref().map_or(true, |a| a.is_empty())
+                            && ops[j].args.as_ref().is_none_or(|a| a.is_empty())
                         {
                             let has_end_if =
                                 (j + 1..ops.len()).take(5).any(|m| ops[m].kind == "end_if");
@@ -5068,9 +5039,9 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                                 continue;
                             }
                         }
-                        if k == "index" {
-                            if let Some(ref idx_args) = ops[j].args {
-                                if idx_args.len() >= 2
+                        if k == "index"
+                            && let Some(ref idx_args) = ops[j].args
+                                && idx_args.len() >= 2
                                     && &idx_args[0] == slot
                                     && &idx_args[1] == idx
                                 {
@@ -5078,13 +5049,11 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                                     j += 1;
                                     continue;
                                 }
-                            }
-                        }
                         // Found a bare ret after the index — replace the
                         // whole sequence with ret(value).
                         if k == "ret" && found_index_out.is_some() {
                             let bare = ops[j].var.is_none()
-                                && ops[j].args.as_ref().map_or(true, |a| a.is_empty());
+                                && ops[j].args.as_ref().is_none_or(|a| a.is_empty());
                             let refs_index = ops[j].var.as_ref() == found_index_out.as_ref();
                             if bare || refs_index {
                                 result.push(OpIR {
@@ -5102,8 +5071,9 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                                     stack_eligible: None,
                                     fast_float: None,
                                     type_hint: None,
-                                    raw_int: None,
                                     ic_index: None,
+                                    col_offset: None,
+                                    end_col_offset: None,
                                 });
                                 i = j + 1;
                                 continue 'outer;
@@ -5112,8 +5082,6 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                         break;
                     }
                 }
-            }
-        }
 
         result.push(ops[i].clone());
         i += 1;
@@ -5156,11 +5124,10 @@ fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
         if is_close {
             depth -= 1;
             // Closing a block may bring us back to a reachable state.
-            if let Some(d) = dead_at_depth {
-                if d > depth {
+            if let Some(d) = dead_at_depth
+                && d > depth {
                     dead_at_depth = None;
                 }
-            }
             if dead_at_depth.is_none() {
                 result.push(op.clone());
             }
@@ -5258,8 +5225,8 @@ fn inline_single_use_constants(source: &mut String) {
         let trimmed = line.trim();
 
         // Match "local vNNN = <literal>"
-        if let Some(rest) = trimmed.strip_prefix("local v") {
-            if let Some(eq_pos) = rest.find(" = ") {
+        if let Some(rest) = trimmed.strip_prefix("local v")
+            && let Some(eq_pos) = rest.find(" = ") {
                 let var_suffix = &rest[..eq_pos];
                 if var_suffix.chars().all(|c| c.is_ascii_digit()) {
                     let var_name = format!("v{var_suffix}");
@@ -5272,7 +5239,6 @@ fn inline_single_use_constants(source: &mut String) {
                     }
                 }
             }
-        }
 
         // Count all vNNN references in this line.
         let bytes = line.as_bytes();
@@ -5445,17 +5411,15 @@ fn eliminate_nil_missing_wrappers(source: &mut String) {
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("local v") {
-            if let Some(suffix) = rest.strip_suffix(" = nil -- [missing]") {
-                if suffix.chars().all(|c| c.is_ascii_digit()) {
+        if let Some(rest) = trimmed.strip_prefix("local v")
+            && let Some(suffix) = rest.strip_suffix(" = nil -- [missing]")
+                && suffix.chars().all(|c| c.is_ascii_digit()) {
                     let var = format!("v{suffix}");
                     if var_use_count.get(&var).copied().unwrap_or(0) == 2 {
                         remove_lines.insert(i);
                         nil_vars.insert(var);
                     }
                 }
-            }
-        }
     }
 
     if nil_vars.is_empty() {
@@ -5568,17 +5532,15 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
     let mut candidates: BTreeMap<String, usize> = BTreeMap::new();
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("local v") {
-            if rest.ends_with(" = {}") {
-                if let Some(eq_pos) = rest.find(" = {}") {
+        if let Some(rest) = trimmed.strip_prefix("local v")
+            && rest.ends_with(" = {}")
+                && let Some(eq_pos) = rest.find(" = {}") {
                     let suffix = &rest[..eq_pos];
                     if suffix.chars().all(|c| c.is_ascii_digit()) {
                         let var = format!("v{suffix}");
                         candidates.insert(var, i);
                     }
                 }
-            }
-        }
     }
 
     if candidates.is_empty() {
@@ -5591,7 +5553,7 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
     // If it's read in any other context, it's live — skip.
     let mut dead_dicts: BTreeSet<String> = BTreeSet::new();
 
-    for (var, _decl_line) in &candidates {
+    for var in candidates.keys() {
         let var_bytes = var.as_bytes();
         let mut is_dead = true;
 
@@ -5617,7 +5579,7 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
                         let is_type_check = pos >= 5 && &trimmed[pos - 5..pos] == "type(";
                         let on_guarded_line = trimmed.starts_with("if type(")
                             && trimmed.contains(&format!("{var}[\""));
-                        if !is_decl && !is_store && !(is_type_check && on_guarded_line) {
+                        if !(is_decl || is_store || (is_type_check && on_guarded_line)) {
                             is_dead = false;
                             break;
                         }
@@ -5737,8 +5699,8 @@ fn simplify_comparison_break(source: &mut String) {
         let next_trimmed = lines[i + 1].trim();
 
         // Match: `local vN = vA < vB`
-        if let Some(rest) = trimmed.strip_prefix("local v") {
-            if let Some(eq_pos) = rest.find(" = ") {
+        if let Some(rest) = trimmed.strip_prefix("local v")
+            && let Some(eq_pos) = rest.find(" = ") {
                 let var_suffix = &rest[..eq_pos];
                 if !var_suffix.chars().all(|c| c.is_ascii_digit()) {
                     continue;
@@ -5796,7 +5758,6 @@ fn simplify_comparison_break(source: &mut String) {
                 replacements.insert(i, format!("{indent}if {lhs} {op} {rhs_val} then break end"));
                 remove.insert(i + 1);
             }
-        }
     }
 
     if remove.is_empty() && replacements.is_empty() {
@@ -5848,22 +5809,20 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
             }
         }
         // `vN = ...` (assignment, not `local`)
-        if trimmed.starts_with('v') {
-            if let Some(eq_pos) = trimmed.find(" = ") {
+        if trimmed.starts_with('v')
+            && let Some(eq_pos) = trimmed.find(" = ") {
                 let lhs = &trimmed[..eq_pos];
                 if lhs.starts_with('v') && lhs[1..].chars().all(|c| c.is_ascii_digit()) {
                     defined_vars.insert(lhs.to_string());
                 }
             }
-        }
     }
     // Function parameters are also defined.
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.ends_with(')')
             && (trimmed.contains("= function(") || trimmed.contains("function "))
-        {
-            if let Some(paren_start) = trimmed.rfind('(') {
+            && let Some(paren_start) = trimmed.rfind('(') {
                 let params = &trimmed[paren_start + 1..trimmed.len() - 1];
                 for param in params.split(", ") {
                     let p = param.trim();
@@ -5872,10 +5831,8 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
                     }
                 }
             }
-        }
         // For-loop iteration variables: `for _, vN in ...` or `for vN = ...`
-        if trimmed.starts_with("for ") {
-            let rest = &trimmed[4..];
+        if let Some(rest) = trimmed.strip_prefix("for ") {
             // Split on " in " or " = " to get the variable list
             let var_part = if let Some(in_pos) = rest.find(" in ") {
                 &rest[..in_pos]
@@ -5898,8 +5855,8 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         // Match: `vN = vM` (bare assignment, not `local`)
-        if !trimmed.starts_with("local ") && trimmed.starts_with('v') {
-            if let Some(eq_pos) = trimmed.find(" = ") {
+        if !trimmed.starts_with("local ") && trimmed.starts_with('v')
+            && let Some(eq_pos) = trimmed.find(" = ") {
                 let lhs = &trimmed[..eq_pos];
                 let rhs = trimmed[eq_pos + 3..].trim();
                 // Both sides must be simple variable names (vN pattern).
@@ -5912,7 +5869,6 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
                     remove.insert(i);
                 }
             }
-        }
     }
 
     if remove.is_empty() {
@@ -5962,8 +5918,8 @@ fn propagate_single_use_copies_once(source: &mut String) -> usize {
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
 
-        if let Some(rest) = trimmed.strip_prefix("local v") {
-            if let Some(eq_pos) = rest.find(" = ") {
+        if let Some(rest) = trimmed.strip_prefix("local v")
+            && let Some(eq_pos) = rest.find(" = ") {
                 let var_suffix = &rest[..eq_pos];
                 if var_suffix.chars().all(|c| c.is_ascii_digit()) {
                     let var_name = format!("v{var_suffix}");
@@ -5973,7 +5929,6 @@ fn propagate_single_use_copies_once(source: &mut String) -> usize {
                     }
                 }
             }
-        }
 
         // Count all vNNN references in this line.
         let bytes = line.as_bytes();
@@ -6330,8 +6285,8 @@ fn eliminate_common_subexpressions(source: &mut String) {
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("local v") {
-            if let Some(eq_pos) = rest.find(" = ") {
+        if let Some(rest) = trimmed.strip_prefix("local v")
+            && let Some(eq_pos) = rest.find(" = ") {
                 let suffix = &rest[..eq_pos];
                 if suffix.chars().all(|c| c.is_ascii_digit()) {
                     let var = format!("v{suffix}");
@@ -6343,14 +6298,13 @@ fn eliminate_common_subexpressions(source: &mut String) {
                     }
                 }
             }
-        }
     }
 
     // Phase 2: for expressions with 2+ occurrences, replace later ones.
     let mut replacements: BTreeMap<usize, String> = BTreeMap::new();
     let mut count: usize = 0;
 
-    for (_key, occurrences) in &expr_map {
+    for occurrences in expr_map.values() {
         if occurrences.len() < 2 {
             continue;
         }
@@ -6514,23 +6468,21 @@ fn hoist_loop_invariants(source: &mut String) {
         for j in (loop_start + 1)..loop_end {
             let t = lines[j].trim();
             // Bare assignment: `vN = ...`
-            if t.starts_with('v') {
-                if let Some(eq) = t.find(" = ") {
+            if t.starts_with('v')
+                && let Some(eq) = t.find(" = ") {
                     let lhs = &t[..eq];
                     if lhs.starts_with('v') && lhs[1..].chars().all(|c| c.is_ascii_digit()) {
                         modified_in_loop.insert(lhs.to_string());
                     }
                 }
-            }
             // `local vN = ...` also defines vN inside the loop.
-            if let Some(rest) = t.strip_prefix("local v") {
-                if let Some(eq) = rest.find(" = ") {
+            if let Some(rest) = t.strip_prefix("local v")
+                && let Some(eq) = rest.find(" = ") {
                     let suffix = &rest[..eq];
                     if suffix.chars().all(|c| c.is_ascii_digit()) {
                         modified_in_loop.insert(format!("v{suffix}"));
                     }
                 }
-            }
             // `for` iteration variables.
             if t.starts_with("for ") {
                 if let Some(in_pos) = t.find(" in ") {
@@ -6559,8 +6511,8 @@ fn hoist_loop_invariants(source: &mut String) {
                 continue;
             }
 
-            if let Some(rest) = t.strip_prefix("local v") {
-                if let Some(eq) = rest.find(" = ") {
+            if let Some(rest) = t.strip_prefix("local v")
+                && let Some(eq) = rest.find(" = ") {
                     let suffix = &rest[..eq];
                     if !suffix.chars().all(|c| c.is_ascii_digit()) {
                         continue;
@@ -6614,7 +6566,6 @@ fn hoist_loop_invariants(source: &mut String) {
                     hoisted_lines.insert(j);
                     count += 1;
                 }
-            }
         }
 
         i += 1;
@@ -6677,8 +6628,8 @@ fn sink_single_use_locals_once(source: &mut String) -> usize {
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
 
-        if let Some(rest) = trimmed.strip_prefix("local v") {
-            if let Some(eq_pos) = rest.find(" = ") {
+        if let Some(rest) = trimmed.strip_prefix("local v")
+            && let Some(eq_pos) = rest.find(" = ") {
                 let var_suffix = &rest[..eq_pos];
                 if var_suffix.chars().all(|c| c.is_ascii_digit()) {
                     let var_name = format!("v{var_suffix}");
@@ -6693,7 +6644,6 @@ fn sink_single_use_locals_once(source: &mut String) -> usize {
                     }
                 }
             }
-        }
 
         let bytes = line.as_bytes();
         let mut pos = 0;
@@ -6796,9 +6746,9 @@ fn sink_single_use_locals_once(source: &mut String) -> usize {
 /// 2. `@native` annotation on transpiled functions for Luau VM JIT
 /// 3. Eliminate redundant type-checked add when operands are provably numeric
 /// 4. Inline remaining `molt_pow`/`molt_floor_div` helper calls (from binop path)
-/// Simplify `local vN = <int>` + `if type(vN) == "number" then vN + 1 else vN`
-/// into a direct integer index. Eliminates the runtime type check when the
-/// index is a known integer literal.
+///    Simplify `local vN = <int>` + `if type(vN) == "number" then vN + 1 else vN`
+///    into a direct integer index. Eliminates the runtime type check when the
+///    index is a known integer literal.
 fn simplify_numeric_type_guards(source: &mut String) {
     use std::collections::BTreeMap;
 
@@ -6810,8 +6760,8 @@ fn simplify_numeric_type_guards(source: &mut String) {
     let mut int_consts: BTreeMap<String, (usize, i64)> = BTreeMap::new(); // var -> (line, value)
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("local v") {
-            if let Some(eq_pos) = rest.find(" = ") {
+        if let Some(rest) = trimmed.strip_prefix("local v")
+            && let Some(eq_pos) = rest.find(" = ") {
                 let suffix = &rest[..eq_pos];
                 if suffix.chars().all(|c| c.is_ascii_digit()) {
                     let rhs = rest[eq_pos + 3..].trim();
@@ -6822,7 +6772,6 @@ fn simplify_numeric_type_guards(source: &mut String) {
                     }
                 }
             }
-        }
     }
 
     // Phase 2: For each int const, check if the next line contains the
@@ -6921,77 +6870,83 @@ fn optimize_luau_perf(source: &mut String) {
         let is_func_def = trimmed.starts_with("local function molt_");
 
         // Pass 1: Inline molt_pow(a, b) → a ^ b
-        while !is_func_def {
-            let Some(start) = optimized.find("molt_pow(") else {
-                break;
-            };
-            if let Some(close) = find_matching_paren(&optimized, start + 8) {
-                let inner = &optimized[start + 9..close];
-                if let Some(comma) = inner.find(", ") {
-                    let a = inner[..comma].trim();
-                    let b = inner[comma + 2..].trim();
-                    let replacement = format!("{a} ^ {b}");
-                    optimized = format!(
-                        "{}{}{}",
-                        &optimized[..start],
-                        replacement,
-                        &optimized[close + 1..]
-                    );
-                    perf_count += 1;
-                    continue;
+        if !is_func_def {
+            loop {
+                let Some(start) = optimized.find("molt_pow(") else {
+                    break;
+                };
+                if let Some(close) = find_matching_paren(&optimized, start + 8) {
+                    let inner = &optimized[start + 9..close];
+                    if let Some(comma) = inner.find(", ") {
+                        let a = inner[..comma].trim();
+                        let b = inner[comma + 2..].trim();
+                        let replacement = format!("{a} ^ {b}");
+                        optimized = format!(
+                            "{}{}{}",
+                            &optimized[..start],
+                            replacement,
+                            &optimized[close + 1..]
+                        );
+                        perf_count += 1;
+                        continue;
+                    }
                 }
+                break;
             }
-            break;
         }
 
         // Pass 2: Inline molt_floor_div(a, b) → a // b (LOP_IDIV opcode)
-        while !is_func_def {
-            let Some(start) = optimized.find("molt_floor_div(") else {
-                break;
-            };
-            if let Some(close) = find_matching_paren(&optimized, start + 14) {
-                let inner = &optimized[start + 15..close];
-                if let Some(comma) = inner.find(", ") {
-                    let a = inner[..comma].trim();
-                    let b = inner[comma + 2..].trim();
-                    let replacement = format!("{a} // {b}");
-                    optimized = format!(
-                        "{}{}{}",
-                        &optimized[..start],
-                        replacement,
-                        &optimized[close + 1..]
-                    );
-                    perf_count += 1;
-                    continue;
+        if !is_func_def {
+            loop {
+                let Some(start) = optimized.find("molt_floor_div(") else {
+                    break;
+                };
+                if let Some(close) = find_matching_paren(&optimized, start + 14) {
+                    let inner = &optimized[start + 15..close];
+                    if let Some(comma) = inner.find(", ") {
+                        let a = inner[..comma].trim();
+                        let b = inner[comma + 2..].trim();
+                        let replacement = format!("{a} // {b}");
+                        optimized = format!(
+                            "{}{}{}",
+                            &optimized[..start],
+                            replacement,
+                            &optimized[close + 1..]
+                        );
+                        perf_count += 1;
+                        continue;
+                    }
                 }
+                break;
             }
-            break;
         }
 
         // Pass 3: Inline molt_mod(a, b) → a % b
         // Python's floor-mod matches Luau's % for positive divisors, which covers
         // the vast majority of real-world uses (array indexing, hash functions, etc.).
-        while !is_func_def {
-            let Some(start) = optimized.find("molt_mod(") else {
-                break;
-            };
-            if let Some(close) = find_matching_paren(&optimized, start + 8) {
-                let inner = &optimized[start + 9..close];
-                if let Some(comma) = inner.find(", ") {
-                    let a = inner[..comma].trim();
-                    let b = inner[comma + 2..].trim();
-                    let replacement = format!("{a} % {b}");
-                    optimized = format!(
-                        "{}{}{}",
-                        &optimized[..start],
-                        replacement,
-                        &optimized[close + 1..]
-                    );
-                    perf_count += 1;
-                    continue;
+        if !is_func_def {
+            loop {
+                let Some(start) = optimized.find("molt_mod(") else {
+                    break;
+                };
+                if let Some(close) = find_matching_paren(&optimized, start + 8) {
+                    let inner = &optimized[start + 9..close];
+                    if let Some(comma) = inner.find(", ") {
+                        let a = inner[..comma].trim();
+                        let b = inner[comma + 2..].trim();
+                        let replacement = format!("{a} % {b}");
+                        optimized = format!(
+                            "{}{}{}",
+                            &optimized[..start],
+                            replacement,
+                            &optimized[close + 1..]
+                        );
+                        perf_count += 1;
+                        continue;
+                    }
                 }
+                break;
             }
-            break;
         }
 
         // Pass 4: Track numeric variables and optimize type-checked add.
@@ -7051,8 +7006,7 @@ fn optimize_luau_perf(source: &mut String) {
                 if rhs.starts_with("if type(")
                     && rhs.contains("then tostring(")
                     && rhs.contains("else ")
-                {
-                    if let Some(else_pos) = rhs.rfind("else ") {
+                    && let Some(else_pos) = rhs.rfind("else ") {
                         let numeric_expr = &rhs[else_pos + 5..];
                         if let Some(plus) = numeric_expr.find(" + ") {
                             let lhs_var = numeric_expr[..plus].trim();
@@ -7070,7 +7024,6 @@ fn optimize_luau_perf(source: &mut String) {
                             }
                         }
                     }
-                }
             }
         }
 
@@ -7240,9 +7193,9 @@ fn strip_exception_cleanup_blocks(source: &mut String) {
                     let tj = lines[j].trim().to_string();
                     if tj.starts_with("error(") {
                         has_error = true;
-                    } else if tj.starts_with("goto ") {
+                    } else if let Some(target) = tj.strip_prefix("goto ") {
                         has_goto = true;
-                        goto_label = tj[5..].to_string();
+                        goto_label = target.to_string();
                     } else if tj == "end" {
                         if has_error && has_goto {
                             // Found the pattern. Remove from i to j inclusive.
@@ -7460,11 +7413,7 @@ fn rehoist_escaped_locals(source: &mut String) {
                     && !lines[li].starts_with(&format!("{body_indent}\t"))
             })
             .count();
-        let hoist_budget = if existing_locals >= 180 {
-            0usize
-        } else {
-            180 - existing_locals
-        };
+        let hoist_budget = 180_usize.saturating_sub(existing_locals);
         let mut hoisted_count = 0usize;
 
         for (var, (decl_depth, decl_block, decl_line)) in &var_decl_scope {
@@ -7486,15 +7435,14 @@ fn rehoist_escaped_locals(source: &mut String) {
                     // Convert the original `local vN = expr` to `vN = expr`
                     let orig_line = lines[*decl_line];
                     let orig_trimmed = orig_line.trim();
-                    if let Some(rest) = orig_trimmed.strip_prefix(&format!("local {var}")) {
-                        if rest.starts_with(" = ") {
+                    if let Some(rest) = orig_trimmed.strip_prefix(&format!("local {var}"))
+                        && rest.starts_with(" = ") {
                             let line_indent = &orig_line[..orig_line.len() - orig_trimmed.len()];
                             let new_line = format!("{line_indent}{var}{rest}");
                             removals.insert(*decl_line); // Will be replaced
                             insertions.entry(*decl_line).or_default().push(new_line);
                             total += 1;
                         }
-                    }
                 }
             }
         }
@@ -7544,8 +7492,8 @@ fn strip_dead_gotos_and_labels(source: &mut String) {
         if t.starts_with("::") && t.ends_with("::") && t.len() > 4 {
             existing_labels.insert(t[2..t.len() - 2].to_string());
         }
-        if t.starts_with("goto ") {
-            goto_targets.insert(t[5..].to_string());
+        if let Some(target) = t.strip_prefix("goto ") {
+            goto_targets.insert(target.to_string());
         }
         // Inline gotos: `if ... then goto label_N end`
         if let Some(pos) = t.find("then goto ") {
@@ -7561,9 +7509,8 @@ fn strip_dead_gotos_and_labels(source: &mut String) {
     // Remove gotos whose target label doesn't exist.
     for (i, line) in lines.iter().enumerate() {
         let t = line.trim();
-        if t.starts_with("goto ") {
-            let target = &t[5..];
-            if !existing_labels.contains(target) {
+        if let Some(target) = t.strip_prefix("goto ")
+            && !existing_labels.contains(target) {
                 remove.insert(i);
                 // Also remove surrounding if/end block if the goto was the only statement.
                 if i > 0 && i + 1 < lines.len() {
@@ -7586,15 +7533,13 @@ fn strip_dead_gotos_and_labels(source: &mut String) {
                     }
                 }
             }
-        }
     }
 
     // Remove goto-to-immediately-next-label (dead jump pattern).
     // Pattern: `goto label_N` followed by `::label_N::` on the next non-empty line.
     for i in 0..lines.len().saturating_sub(1) {
         let t = lines[i].trim();
-        if t.starts_with("goto ") {
-            let target = &t[5..];
+        if let Some(target) = t.strip_prefix("goto ") {
             // Find next non-empty line
             let mut j = i + 1;
             while j < lines.len() && lines[j].trim().is_empty() {
@@ -7616,8 +7561,8 @@ fn strip_dead_gotos_and_labels(source: &mut String) {
             continue;
         }
         let t = line.trim();
-        if t.starts_with("goto ") {
-            live_goto_targets.insert(t[5..].to_string());
+        if let Some(target) = t.strip_prefix("goto ") {
+            live_goto_targets.insert(target.to_string());
         }
         if let Some(pos) = t.find("then goto ") {
             let after = &t[pos + 10..];
@@ -7772,7 +7717,7 @@ fn eliminate_goto_labels(source: &mut String) {
     }
 
     // Phase 3: Remove ALL label lines (all positions for all label names).
-    for (_, positions) in &label_positions {
+    for positions in label_positions.values() {
         for &line_idx in positions {
             remove.insert(line_idx);
         }
@@ -7835,7 +7780,7 @@ fn eliminate_goto_labels(source: &mut String) {
 
             let has_code = (wrap_start..wrap_end).any(|i| {
                 let t = lines[i].trim();
-                !t.is_empty() && !(t.starts_with("::") && t.ends_with("::"))
+            !(t.is_empty() || (t.starts_with("::") && t.ends_with("::")))
             });
 
             if has_code {
@@ -8211,7 +8156,7 @@ fn freeze_constant_tables(source: &mut String) {
                     let after_paren = &ot[pos + mfn.len()..];
                     // First arg should be vN
                     if after_paren.starts_with(&var)
-                        && after_paren[var.len()..].starts_with(|c: char| c == ')' || c == ',')
+                        && after_paren[var.len()..].starts_with([')', ','])
                     {
                         mutated = true;
                         break;
@@ -8408,11 +8353,7 @@ fn fold_range_indices(source: &mut String) {
         let bound_part = &bound_and_rest[..bound_and_rest.len() - 3]; // strip " do"
 
         // Strip optional ", 1" step suffix
-        let bound_expr = if bound_part.ends_with(", 1") {
-            &bound_part[..bound_part.len() - 3]
-        } else {
-            bound_part
-        };
+        let bound_expr = bound_part.strip_suffix(", 1").unwrap_or(bound_part);
 
         // Must end with " - 1"
         if !bound_expr.ends_with(" - 1") {
@@ -8583,6 +8524,7 @@ mod tests {
                 params: vec![],
                 param_types: None,
                 source_file: None,
+                is_extern: false,
                 ops: vec![
                     OpIR {
                         kind: "const".to_string(),
@@ -8599,8 +8541,9 @@ mod tests {
                         stack_eligible: None,
                         fast_float: None,
                         type_hint: None,
-                        raw_int: None,
                         ic_index: None,
+                        col_offset: None,
+                        end_col_offset: None,
                     },
                     OpIR {
                         kind: "print".to_string(),
@@ -8617,8 +8560,9 @@ mod tests {
                         stack_eligible: None,
                         fast_float: None,
                         type_hint: None,
-                        raw_int: None,
                         ic_index: None,
+                        col_offset: None,
+                        end_col_offset: None,
                     },
                 ],
             }],
@@ -8639,11 +8583,12 @@ mod tests {
                 params: vec!["p0".to_string()],
                 param_types: None,
                 source_file: None,
+                is_extern: false,
                 ops: vec![
                     OpIR {
                         kind: "const_float".to_string(),
                         value: None,
-                        f_value: Some(3.14),
+                        f_value: Some(std::f64::consts::PI),
                         s_value: None,
                         bytes: None,
                         var: None,
@@ -8655,8 +8600,9 @@ mod tests {
                         stack_eligible: None,
                         fast_float: None,
                         type_hint: None,
-                        raw_int: None,
                         ic_index: None,
+                        col_offset: None,
+                        end_col_offset: None,
                     },
                     OpIR {
                         kind: "const_str".to_string(),
@@ -8673,8 +8619,9 @@ mod tests {
                         stack_eligible: None,
                         fast_float: None,
                         type_hint: None,
-                        raw_int: None,
                         ic_index: None,
+                        col_offset: None,
+                        end_col_offset: None,
                     },
                     OpIR {
                         kind: "add".to_string(),
@@ -8691,8 +8638,9 @@ mod tests {
                         stack_eligible: None,
                         fast_float: None,
                         type_hint: None,
-                        raw_int: None,
                         ic_index: None,
+                        col_offset: None,
+                        end_col_offset: None,
                     },
                     OpIR {
                         kind: "lt".to_string(),
@@ -8709,8 +8657,9 @@ mod tests {
                         stack_eligible: None,
                         fast_float: None,
                         type_hint: None,
-                        raw_int: None,
                         ic_index: None,
+                        col_offset: None,
+                        end_col_offset: None,
                     },
                     OpIR {
                         kind: "ret".to_string(),
@@ -8727,8 +8676,9 @@ mod tests {
                         stack_eligible: None,
                         fast_float: None,
                         type_hint: None,
-                        raw_int: None,
                         ic_index: None,
+                        col_offset: None,
+                        end_col_offset: None,
                     },
                 ],
             }],
@@ -8759,6 +8709,7 @@ mod tests {
                 params: vec![],
                 param_types: None,
                 source_file: None,
+                is_extern: false,
                 ops: vec![
                     OpIR {
                         kind: "label".to_string(),
@@ -8775,8 +8726,9 @@ mod tests {
                         stack_eligible: None,
                         fast_float: None,
                         type_hint: None,
-                        raw_int: None,
                         ic_index: None,
+                        col_offset: None,
+                        end_col_offset: None,
                     },
                     OpIR {
                         kind: "jump".to_string(),
@@ -8793,8 +8745,9 @@ mod tests {
                         stack_eligible: None,
                         fast_float: None,
                         type_hint: None,
-                        raw_int: None,
                         ic_index: None,
+                        col_offset: None,
+                        end_col_offset: None,
                     },
                     OpIR {
                         kind: "label".to_string(),
@@ -8811,8 +8764,9 @@ mod tests {
                         stack_eligible: None,
                         fast_float: None,
                         type_hint: None,
-                        raw_int: None,
                         ic_index: None,
+                        col_offset: None,
+                        end_col_offset: None,
                     },
                     OpIR {
                         kind: "ret_void".to_string(),
@@ -8829,8 +8783,9 @@ mod tests {
                         stack_eligible: None,
                         fast_float: None,
                         type_hint: None,
-                        raw_int: None,
                         ic_index: None,
+                        col_offset: None,
+                        end_col_offset: None,
                     },
                 ],
             }],
@@ -8941,6 +8896,7 @@ mod tests {
                 params: vec![],
                 param_types: None,
                 source_file: None,
+                is_extern: false,
                 ops: vec![
                     OpIR {
                         kind: "label".to_string(),
@@ -8980,6 +8936,7 @@ mod tests {
                 params: vec!["xs".to_string(), "v".to_string()],
                 param_types: Some(vec!["list[int]".to_string(), "int".to_string()]),
                 source_file: None,
+                is_extern: false,
                 ops: vec![
                     OpIR {
                         kind: "call_method".to_string(),
@@ -9084,6 +9041,7 @@ mod tests {
                 params: vec![],
                 param_types: None,
                 source_file: None,
+                is_extern: false,
                 ops: vec![
                     OpIR {
                         kind: "try_start".into(),
@@ -9169,6 +9127,7 @@ mod tests {
                 params: vec![],
                 param_types: None,
                 source_file: None,
+                is_extern: false,
                 ops: vec![
                     // First definition of v0 — should get `local v0 = 1`
                     OpIR {

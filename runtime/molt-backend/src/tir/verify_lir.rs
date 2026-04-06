@@ -720,28 +720,25 @@ fn verify_terminators(
                         "return value",
                     );
                     let expected_repr = LirRepr::for_type(expected_ty);
-                    match values.get(value_id) {
-                        Some(def) => {
-                            if expected_repr != LirRepr::DynBox && def.value.ty != *expected_ty {
-                                errors.push(LirVerifyError::block(
-                                    *bid,
-                                    format!(
-                                        "return value {} type mismatch at slot {}: expected {:?}, found {:?}",
-                                        def.value.id, idx, expected_ty, def.value.ty
-                                    ),
-                                ));
-                            }
-                            if def.value.repr != expected_repr {
-                                errors.push(LirVerifyError::block(
-                                    *bid,
-                                    format!(
-                                        "return value {} representation mismatch at slot {}: expected {:?}, found {:?}",
-                                        def.value.id, idx, expected_repr, def.value.repr
-                                    ),
-                                ));
-                            }
+                    if let Some(def) = values.get(value_id) {
+                        if expected_repr != LirRepr::DynBox && def.value.ty != *expected_ty {
+                            errors.push(LirVerifyError::block(
+                                *bid,
+                                format!(
+                                    "return value {} type mismatch at slot {}: expected {:?}, found {:?}",
+                                    def.value.id, idx, expected_ty, def.value.ty
+                                ),
+                            ));
                         }
-                        None => {}
+                        if def.value.repr != expected_repr {
+                            errors.push(LirVerifyError::block(
+                                *bid,
+                                format!(
+                                    "return value {} representation mismatch at slot {}: expected {:?}, found {:?}",
+                                    def.value.id, idx, expected_repr, def.value.repr
+                                ),
+                            ));
+                        }
                     }
                 }
             }
@@ -822,28 +819,25 @@ fn verify_branch_args(
             errors,
             "branch argument",
         );
-        match values.get(arg_id) {
-            Some(actual) => {
-                if expected.repr != LirRepr::DynBox && actual.value.ty != expected.ty {
-                    errors.push(LirVerifyError::block(
-                        source,
-                        format!(
-                            "branch type mismatch for target ^{} arg {}: expected {:?}, found {:?}",
-                            target, idx, expected.ty, actual.value.ty
-                        ),
-                    ));
-                }
-                if actual.value.repr != expected.repr {
-                    errors.push(LirVerifyError::block(
-                        source,
-                        format!(
-                            "branch representation mismatch for target ^{} arg {}: expected {:?}, found {:?}",
-                            target, idx, expected.repr, actual.value.repr
-                        ),
-                    ));
-                }
+        if let Some(actual) = values.get(arg_id) {
+            if expected.repr != LirRepr::DynBox && actual.value.ty != expected.ty {
+                errors.push(LirVerifyError::block(
+                    source,
+                    format!(
+                        "branch type mismatch for target ^{} arg {}: expected {:?}, found {:?}",
+                        target, idx, expected.ty, actual.value.ty
+                    ),
+                ));
             }
-            None => {}
+            if actual.value.repr != expected.repr {
+                errors.push(LirVerifyError::block(
+                    source,
+                    format!(
+                        "branch representation mismatch for target ^{} arg {}: expected {:?}, found {:?}",
+                        target, idx, expected.repr, actual.value.repr
+                    ),
+                ));
+            }
         }
     }
 }
