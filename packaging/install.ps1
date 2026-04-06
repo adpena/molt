@@ -50,5 +50,12 @@ if (-not $NoPath) {
   }
 }
 
+$moltExe = Join-Path $binPath "molt.exe"
+if (-not (Test-Path $moltExe)) {
+  Write-Error "Installed bundle is missing executable: $moltExe"
+  exit 1
+}
+
 Write-Output "Molt installed to $Prefix"
-Write-Output "Run: molt doctor"
+& $moltExe setup --strict
+Write-Output "Run: molt setup"

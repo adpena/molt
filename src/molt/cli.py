@@ -84,9 +84,7 @@ STDLIB_NESTED_IMPORT_SCAN_MODULES = {
 # platforms that Molt does not support (e.g. Emscripten/Pyodide).  The import
 # scanner still discovers them but the graph walker skips any candidate whose
 # dotted name starts with one of these prefixes.
-PLATFORM_EXCLUDED_SUBMODULES = (
-    "urllib3.contrib.emscripten",
-)
+PLATFORM_EXCLUDED_SUBMODULES = ("urllib3.contrib.emscripten",)
 ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
 ENTRY_OVERRIDE_SPAWN = "multiprocessing.spawn"
 IMPORTER_MODULE_NAME = "_molt_importer"
@@ -311,6 +309,7 @@ def _coerce_process_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
+
 
 _PYTHON_WARNING_RE = re.compile(
     r"^.+:\d+: (?:Syntax|Deprecation|Runtime|User|Future|Pending\s*Deprecation)Warning: "
@@ -538,7 +537,9 @@ def _run_wrapper_build(
     # unchanged files from ~20s to <1s (matching `go run` behaviour).
     if file_path and "--no-cache" not in build_args and "--rebuild" not in build_args:
         _xdg = os.environ.get("XDG_CACHE_HOME")
-        _cache_root = Path(_xdg) / "molt" if _xdg else Path.home() / "Library" / "Caches" / "molt"
+        _cache_root = (
+            Path(_xdg) / "molt" if _xdg else Path.home() / "Library" / "Caches" / "molt"
+        )
         if _cache_root is not None:
             stem = Path(file_path).stem
             cached_bin = _cache_root / "home" / "bin" / f"{stem}_molt"
@@ -667,12 +668,12 @@ def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
             "    return base",
             "",
             "def _runtime_import_support(module_name: str):",
-            '    mod = _sys.modules.get(module_name)',
+            "    mod = _sys.modules.get(module_name)",
             "    if mod is None:",
             "        mod = _MODULE_IMPORT(module_name)",
             "    if mod is not None:",
             "        return mod",
-            '    raise RuntimeError(f\"runtime support module unavailable: {module_name}\")',
+            '    raise RuntimeError(f"runtime support module unavailable: {module_name}")',
             "",
             "def _molt_import(name, globals=None, locals=None, fromlist=(), level=0):",
             "    if not name:",
@@ -873,6 +874,27 @@ class _MaintenanceStep(NamedTuple):
     category: Literal["toolchain", "lock", "manifest"]
 
 
+class _ValidationStep(NamedTuple):
+    name: str
+    cmd: list[str]
+    cwd: Path
+    category: Literal["command", "correctness", "conformance", "benchmark"]
+    backends: tuple[str, ...]
+    profiles: tuple[str, ...]
+    suite: Literal["full", "smoke"]
+
+
+@dataclass(frozen=True)
+class _ToolchainReport:
+    checks: list[dict[str, Any]]
+    warnings: list[str]
+    errors: list[str]
+    environment: dict[str, str]
+    actions: list[dict[str, str]]
+    backends: dict[str, bool]
+    profiles: dict[str, bool]
+
+
 @dataclass(frozen=True)
 class _ScopedLoweringInputs:
     known_modules_by_module: dict[str, tuple[str, ...]]
@@ -896,13 +918,8 @@ class _ScopedLoweringInputView:
         if not self.known_modules_payload and self.known_modules:
             object.__setattr__(self, "known_modules_payload", list(self.known_modules))
         if not self.known_modules_set and self.known_modules:
-            object.__setattr__(
-                self, "known_modules_set", frozenset(self.known_modules)
-            )
-        if (
-            not self.pgo_hot_function_names_payload
-            and self.pgo_hot_function_names
-        ):
+            object.__setattr__(self, "known_modules_set", frozenset(self.known_modules))
+        if not self.pgo_hot_function_names_payload and self.pgo_hot_function_names:
             object.__setattr__(
                 self,
                 "pgo_hot_function_names_payload",
@@ -3199,7 +3216,7 @@ def _resolve_build_entry(
         return None, _fail(
             "No entry point found. Provide a Python file path or use --module to specify a package entry point.",
             json_output,
-            command=command
+            command=command,
         )
     try:
         entry_source = _read_module_source(source_path)
@@ -3371,7 +3388,9 @@ def _prepare_build_config(
     runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name("release")
     if runtime_profile_err:
         # Fallback: use whatever profile was requested
-        runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(profile)
+        runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(
+            profile
+        )
     if runtime_profile_err:
         return None, _fail(runtime_profile_err, json_output, command="build")
     backend_cargo_profile, backend_profile_err = _resolve_backend_cargo_profile_name(
@@ -3399,8 +3418,11 @@ def _prepare_build_config(
     manifest_env_vars: dict[str, str] = {}
     if capability_manifest is not None:
         from molt.capability_manifest import load_manifest
+
         try:
-            manifest = load_manifest(capability_manifest, require_signed=require_signed_manifest)
+            manifest = load_manifest(
+                capability_manifest, require_signed=require_signed_manifest
+            )
             manifest_env_vars = manifest.to_env_vars()
             # Merge manifest capabilities with --capabilities flag
             if capabilities_list is None:
@@ -3464,7 +3486,9 @@ def _prepare_build_preamble(
     if diagnostics_path_spec:
         diagnostics_enabled = True
     elif diagnostics_enabled:
-        diagnostics_path_spec = os.environ.get("MOLT_BUILD_DIAGNOSTICS_FILE", "").strip()
+        diagnostics_path_spec = os.environ.get(
+            "MOLT_BUILD_DIAGNOSTICS_FILE", ""
+        ).strip()
     resolved_diagnostics_verbosity = _resolve_build_diagnostics_verbosity(
         diagnostics_verbosity or os.environ.get("MOLT_BUILD_DIAGNOSTICS_VERBOSITY")
     )
@@ -3779,8 +3803,7 @@ def _resolve_wrapper_build_entry(
     build_cfg = _resolve_build_config(config)
     respect_pythonpath = _build_args_respect_pythonpath(list(build_args))
     if not any(
-        arg in {"--respect-pythonpath", "--no-respect-pythonpath"}
-        for arg in build_args
+        arg in {"--respect-pythonpath", "--no-respect-pythonpath"} for arg in build_args
     ):
         respect_pythonpath = _coerce_bool(
             build_cfg.get("respect_pythonpath") or build_cfg.get("respect-pythonpath"),
@@ -4652,7 +4675,9 @@ def _read_module_source(path: Path) -> str:
         _cookie_re = tokenize.cookie_re
         _is_bytes_re = isinstance(_cookie_re.pattern, bytes)
         has_encoding_cookie = any(
-            _cookie_re.match(line if _is_bytes_re else line.decode("latin-1", errors="ignore"))
+            _cookie_re.match(
+                line if _is_bytes_re else line.decode("latin-1", errors="ignore")
+            )
             for line in (first_line, second_line)
             if line
         )
@@ -4983,9 +5008,7 @@ def _apply_dead_module_elimination(
     """Filter *module_order* and *module_layers* to only reachable modules."""
     reachable = _compute_reachable_modules(entry_module, module_deps, module_names)
     filtered_order = [m for m in module_order if m in reachable]
-    filtered_layers = [
-        [m for m in layer if m in reachable] for layer in module_layers
-    ]
+    filtered_layers = [[m for m in layer if m in reachable] for layer in module_layers]
     filtered_layers = [layer for layer in filtered_layers if layer]
     eliminated_count = len(module_order) - len(filtered_order)
     return filtered_order, filtered_layers, eliminated_count
@@ -5203,7 +5226,9 @@ def _scoped_lowering_input_view(
         scoped_lowering_inputs is not None
         and module_name in scoped_lowering_inputs.known_modules_by_module
     ):
-        scoped_known_modules = scoped_lowering_inputs.known_modules_by_module[module_name]
+        scoped_known_modules = scoped_lowering_inputs.known_modules_by_module[
+            module_name
+        ]
     else:
         known_modules_scope_source: Collection[str]
         if known_modules_sorted is None:
@@ -7529,23 +7554,27 @@ _STDLIB_DOMAIN_PREFIX_MAP: tuple[tuple[str, str], ...] = (
     ("tarfile.", "stdlib_archive"),
 )
 
-_SET_IMPLYING_MODULES = frozenset({
-    "email",
-    "urllib",
-    "ast",
-    "tokenize",
-    "json",
-    "typing",
-    "collections.abc",
-})
+_SET_IMPLYING_MODULES = frozenset(
+    {
+        "email",
+        "urllib",
+        "ast",
+        "tokenize",
+        "json",
+        "typing",
+        "collections.abc",
+    }
+)
 
-_MEMORYVIEW_IMPLYING_MODULES = frozenset({
-    "struct",
-    "array",
-    "io",
-    "_io",
-    "mmap",
-})
+_MEMORYVIEW_IMPLYING_MODULES = frozenset(
+    {
+        "struct",
+        "array",
+        "io",
+        "_io",
+        "mmap",
+    }
+)
 
 # All builtin features that can be individually toggled.
 _ALL_BUILTIN_FEATURES: tuple[str, ...] = (
@@ -7760,9 +7789,9 @@ def _lock_check_cache_path_cached(
         if not target_dir.is_absolute():
             target_dir = project_root / target_dir
     elif session_id is not None:
-        safe_id = "".join(
-            c if c.isalnum() or c in "-_" else "_" for c in session_id
-        )[:32]
+        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[
+            :32
+        ]
         target_dir = project_root / f"target-{safe_id}"
     else:
         target_dir = project_root / "target"
@@ -8552,7 +8581,9 @@ def _parse_io_mode_flag(value: str) -> dict[str, str]:
     Valid values: real, virtual, callback
     """
     if value not in ("real", "virtual", "callback"):
-        raise ValueError(f"Invalid IO mode: {value!r}. Must be one of: real, virtual, callback")
+        raise ValueError(
+            f"Invalid IO mode: {value!r}. Must be one of: real, virtual, callback"
+        )
     env: dict[str, str] = {}
     if value != "real":
         env["MOLT_IO_MODE"] = value
@@ -9007,8 +9038,6 @@ def _backend_bin_path_cached(
     return target_root / profile_dir / f"molt-backend{exe_suffix}"
 
 
-
-
 def _codesign_binary(binary_path: Path) -> None:
     """Ad-hoc codesign a binary on macOS.
 
@@ -9021,12 +9050,11 @@ def _codesign_binary(binary_path: Path) -> None:
     try:
         subprocess.run(
             ["codesign", "-f", "-s", "-", str(binary_path)],
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass  # codesign not available or failed — proceed optimistically
-
-
 
 
 def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int]:
@@ -9406,7 +9434,9 @@ export default {
 };
 """
     return (
-        worker_js.replace("__MOLT_SHARED_MEMORY_PAGES__", str(shared_memory_initial_pages))
+        worker_js.replace(
+            "__MOLT_SHARED_MEMORY_PAGES__", str(shared_memory_initial_pages)
+        )
         .replace("__MOLT_SHARED_TABLE_INITIAL__", str(shared_table_initial))
         .replace(
             "__MOLT_SHARED_TABLE_BASE__",
@@ -9795,7 +9825,9 @@ def _build_slot():
     import fcntl
 
     _BUILD_SLOT_DIR.mkdir(exist_ok=True)
-    max_slots = int(os.environ.get("MOLT_MAX_CONCURRENT_BUILDS", _MAX_CONCURRENT_BUILDS))
+    max_slots = int(
+        os.environ.get("MOLT_MAX_CONCURRENT_BUILDS", _MAX_CONCURRENT_BUILDS)
+    )
 
     for slot_idx in range(max_slots):
         slot_path = _BUILD_SLOT_DIR / f"slot-{slot_idx}.lock"
@@ -10056,7 +10088,8 @@ def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
         # Check per-session target dir first, then CARGO_TARGET_DIR, then default
         _session_tgt = _session_target_dir(candidate)
         target_root = Path(
-            str(_session_tgt) if _session_tgt is not None
+            str(_session_tgt)
+            if _session_tgt is not None
             else os.environ.get("CARGO_TARGET_DIR", str(candidate / "target"))
         )
         for profile_dir in ("release", "release-fast", "debug"):
@@ -10209,7 +10242,9 @@ def _materialize_cached_backend_artifact(
             tier=tier,
             stat=output_stat,
         )
-        if synced and (not is_wasm_output or _is_reusable_wasm_artifact(output_artifact)):
+        if synced and (
+            not is_wasm_output or _is_reusable_wasm_artifact(output_artifact)
+        ):
             return True
     sync_tier = tier
     sync_source_key = source_key
@@ -10289,7 +10324,9 @@ def _try_cached_backend_candidates(
             candidate,
             output_artifact,
             tier=tier,
-            source_key=cache_key if tier == "module" else (function_cache_key or cache_key or ""),
+            source_key=cache_key
+            if tier == "module"
+            else (function_cache_key or cache_key or ""),
             cache_path=cache_path,
             module_cache_key=cache_key,
             warnings=warnings,
@@ -10714,6 +10751,7 @@ def _start_backend_daemon(
                 # step if the content hash is unchanged, but a clean
                 # build of the specific crate guarantees freshness.
                 import shutil
+
                 if not json_output:
                     print(
                         "Source changed; rebuilding backend...",
@@ -10736,8 +10774,12 @@ def _start_backend_daemon(
                     #   - Binary deletion mid-test (SIGSEGV/ENOENT)
                     #   - Env var isolation failures (daemon restarts)
                     _rebuild_cmd = [
-                        _cargo, "build", "-p", "molt-backend",
-                        "-p", "molt-runtime",
+                        _cargo,
+                        "build",
+                        "-p",
+                        "molt-backend",
+                        "-p",
+                        "molt-runtime",
                         *_profile_flag,
                     ]
                     _rebuild_cmd.extend(["--features", "native-backend"])
@@ -10777,6 +10819,7 @@ def _start_backend_daemon(
                 # produce linker errors (duplicate symbols) or silent
                 # correctness regressions.
                 import shutil
+
                 for cache_dir in [
                     project_root / ".molt_cache",
                     Path.home() / "Library" / "Caches" / "molt" / "home" / "bin",
@@ -10798,18 +10841,27 @@ def _start_backend_daemon(
                             else:
                                 _entry.unlink(missing_ok=True)
                         if not json_output:
-                            print(f"  Cleared stale cache: {cache_dir}", file=sys.stderr)
+                            print(
+                                f"  Cleared stale cache: {cache_dir}", file=sys.stderr
+                            )
                 _cache_root = _default_molt_cache()
                 if _cache_root.is_dir():
                     for _cached_file in _cache_root.iterdir():
                         if _cached_file.name.startswith("stdlib_shared_"):
                             continue
                         if _cached_file.is_file() and _cached_file.suffix in {
-                            ".o", ".wasm", ".fingerprint", ".count", ".key",
+                            ".o",
+                            ".wasm",
+                            ".fingerprint",
+                            ".count",
+                            ".key",
                         }:
                             _cached_file.unlink(missing_ok=True)
                     if not json_output:
-                        print(f"  Cleared cached artifacts in: {_cache_root}", file=sys.stderr)
+                        print(
+                            f"  Cleared cached artifacts in: {_cache_root}",
+                            file=sys.stderr,
+                        )
                 existing_pid = None
             else:
                 if socket_path.exists():
@@ -12390,7 +12442,9 @@ def _frontend_layer_static_metrics(
     stdlib_like_by_module: Mapping[str, bool],
 ) -> _FrontendLayerStaticMetrics:
     return _FrontendLayerStaticMetrics(
-        predicted_cost_total=sum(frontend_module_costs.get(name, 0.0) for name in module_names),
+        predicted_cost_total=sum(
+            frontend_module_costs.get(name, 0.0) for name in module_names
+        ),
         stdlib_candidates=sum(
             1 for name in module_names if stdlib_like_by_module.get(name, False)
         ),
@@ -12490,7 +12544,9 @@ def _summarize_frontend_parallel_worker_timings(
     worker_timings: Sequence[Mapping[str, Any]],
 ) -> None:
     summary = _summarize_worker_timing_items(worker_timings)
-    frontend_parallel_details["worker_summary"] = _worker_timing_summary_payload(summary)
+    frontend_parallel_details["worker_summary"] = _worker_timing_summary_payload(
+        summary
+    )
 
 
 def _append_frontend_serial_disabled_layer_detail(
@@ -12533,18 +12589,24 @@ def _resolve_tree_for_serial_frontend_module(
     lowering_context: _SerialFrontendLoweringContext,
 ) -> ast.AST:
     if module_name in lowering_context.syntax_error_modules:
-        return _syntax_error_stub_ast(lowering_context.syntax_error_modules[module_name])
+        return _syntax_error_stub_ast(
+            lowering_context.syntax_error_modules[module_name]
+        )
     tree = lowering_context.module_trees.get(module_name)
     if tree is not None:
         return tree
     source = lowering_context.module_sources.get(module_name)
     if source is None:
         try:
-            source = lowering_context.module_resolution_cache.read_module_source(module_path)
+            source = lowering_context.module_resolution_cache.read_module_source(
+                module_path
+            )
         except (SyntaxError, UnicodeDecodeError) as exc:
             raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
         except OSError as exc:
-            raise _ModuleLowerError(f"Failed to read module {module_path}: {exc}") from exc
+            raise _ModuleLowerError(
+                f"Failed to read module {module_path}: {exc}"
+            ) from exc
     logical_source_path = lowering_context.generated_module_source_paths.get(
         module_name, str(module_path)
     )
@@ -12733,7 +12795,9 @@ def _run_serial_frontend_lower_with_context(
     *,
     lowering_context: _SerialFrontendLoweringContext,
     lowering_hooks: _SerialFrontendLoweringHooks,
-) -> tuple[dict[str, Any] | None, _FrontendModuleResultTimings | None, dict[str, Any] | None]:
+) -> tuple[
+    dict[str, Any] | None, _FrontendModuleResultTimings | None, dict[str, Any] | None
+]:
     try:
         result, visit_s, lower_s, total_s = _lower_module_serial_with_context(
             module_name,
@@ -12750,8 +12814,10 @@ def _run_serial_frontend_lower_with_context(
             timed_out=exc.timed_out,
             detail=str(exc),
         )
-        return None, None, lowering_hooks.fail(
-            str(exc), lowering_hooks.json_output, command="build"
+        return (
+            None,
+            None,
+            lowering_hooks.fail(str(exc), lowering_hooks.json_output, command="build"),
         )
     result_timings = _FrontendModuleResultTimings(
         visit_s=visit_s,
@@ -12804,8 +12870,7 @@ def _remap_module_code_ops_with_state(
                 symbol = local_id_to_symbol.get(local_id)
                 if symbol is None:
                     raise ValueError(
-                        "Missing code symbol for id "
-                        f"{local_id} in module {module_name}"
+                        f"Missing code symbol for id {local_id} in module {module_name}"
                     )
                 op["value"] = _register_global_code_id_with_state(
                     integration_state, symbol
@@ -12815,8 +12880,7 @@ def _remap_module_code_ops_with_state(
                 symbol = local_id_to_symbol.get(local_id)
                 if symbol is None:
                     raise ValueError(
-                        "Missing code symbol for id "
-                        f"{local_id} in module {module_name}"
+                        f"Missing code symbol for id {local_id} in module {module_name}"
                     )
                 op["value"] = _register_global_code_id_with_state(
                     integration_state, symbol
@@ -12875,9 +12939,7 @@ def _integrate_module_frontend_result_with_state(
     local_code_ids = dict(func_code_ids)
     if "molt_main" in local_code_ids:
         local_code_ids[init_symbol] = local_code_ids.pop("molt_main")
-    local_id_to_symbol = {
-        code_id: symbol for symbol, code_id in local_code_ids.items()
-    }
+    local_id_to_symbol = {code_id: symbol for symbol, code_id in local_code_ids.items()}
     try:
         _remap_module_code_ops_with_state(
             integration_state,
@@ -12993,9 +13055,7 @@ def _lower_entry_module_as_main(
     local_code_ids = dict(main_gen.func_code_ids)
     if "molt_main" in local_code_ids:
         local_code_ids[main_init] = local_code_ids.pop("molt_main")
-    local_id_to_symbol = {
-        code_id: symbol for symbol, code_id in local_code_ids.items()
-    }
+    local_id_to_symbol = {code_id: symbol for symbol, code_id in local_code_ids.items()}
     try:
         _remap_module_code_ops_with_state(
             integration_state,
@@ -13429,11 +13489,15 @@ def _build_isolate_import_ops(
 
     name_var = "p0"
     module_var = import_var()
-    import_ops.append({"kind": "module_cache_get", "args": [name_var], "out": module_var})
+    import_ops.append(
+        {"kind": "module_cache_get", "args": [name_var], "out": module_var}
+    )
     none_var = import_var()
     import_ops.append({"kind": "const_none", "out": none_var})
     is_none_var = import_var()
-    import_ops.append({"kind": "is", "args": [module_var, none_var], "out": is_none_var})
+    import_ops.append(
+        {"kind": "is", "args": [module_var, none_var], "out": is_none_var}
+    )
     import_ops.append({"kind": "if", "args": [is_none_var]})
     if module_order:
         for idx, module_name in enumerate(module_order):
@@ -13443,7 +13507,11 @@ def _build_isolate_import_ops(
             )
             match_var = import_var()
             import_ops.append(
-                {"kind": "string_eq", "args": [name_var, match_name_var], "out": match_var}
+                {
+                    "kind": "string_eq",
+                    "args": [name_var, match_name_var],
+                    "out": match_var,
+                }
             )
             import_ops.append({"kind": "if", "args": [match_var]})
             # Emit lazy code-slot setup for this module (if available).
@@ -13472,7 +13540,9 @@ def _build_isolate_import_ops(
         import_ops.extend({"kind": "end_if"} for _ in module_order)
     import_ops.append({"kind": "end_if"})
     loaded_var = import_var()
-    import_ops.append({"kind": "module_cache_get", "args": [name_var], "out": loaded_var})
+    import_ops.append(
+        {"kind": "module_cache_get", "args": [name_var], "out": loaded_var}
+    )
     import_ops.append({"kind": "ret", "args": [loaded_var]})
     return import_ops
 
@@ -13522,9 +13592,15 @@ def _normalize_ir_labels(ir: Mapping[str, Any]) -> dict[str, Any]:
     # Keys in an op whose integer value is a label/state ID.
     _LABEL_KEYS = frozenset({"value"})
     # Op kinds that define or reference labels.
-    _LABEL_OPS = frozenset({
-        "label", "jump", "br_if", "check_exception", "for_iter_next",
-    })
+    _LABEL_OPS = frozenset(
+        {
+            "label",
+            "jump",
+            "br_if",
+            "check_exception",
+            "for_iter_next",
+        }
+    )
 
     new_functions = []
     for func in functions:
@@ -13633,20 +13709,22 @@ def _prepare_backend_ir(
         _trampoline_code_id = _register_global_code_id_with_state(
             integration_state, _entry_real_init
         )
-        integration_state.functions.append({
-            "name": _main_init,
-            "params": [],
-            "ops": [
-                {
-                    "kind": "call",
-                    "s_value": _entry_real_init,
-                    "args": [],
-                    "out": "v0",
-                    "value": _trampoline_code_id,
-                },
-                {"kind": "ret_void"},
-            ],
-        })
+        integration_state.functions.append(
+            {
+                "name": _main_init,
+                "params": [],
+                "ops": [
+                    {
+                        "kind": "call",
+                        "s_value": _entry_real_init,
+                        "args": [],
+                        "out": "v0",
+                        "value": _trampoline_code_id,
+                    },
+                    {"kind": "ret_void"},
+                ],
+            }
+        )
 
     functions = integration_state.functions
     global_code_ids = integration_state.global_code_ids
@@ -13930,7 +14008,8 @@ def _invalidate_stale_stdlib_cache(
     # falling back to CARGO_TARGET_DIR, then the default target/.
     _session_tgt_stdlib = _session_target_dir(_root)
     target_root = Path(
-        str(_session_tgt_stdlib) if _session_tgt_stdlib is not None
+        str(_session_tgt_stdlib)
+        if _session_tgt_stdlib is not None
         else os.environ.get("CARGO_TARGET_DIR", str(_root / "target"))
     )
 
@@ -14366,7 +14445,7 @@ def _collect_cargo_native_link_deps(runtime_lib: Path) -> tuple[list[str], list[
             continue
         for line in text.splitlines():
             if line.startswith("cargo:rustc-link-search="):
-                raw = line[len("cargo:rustc-link-search="):]
+                raw = line[len("cargo:rustc-link-search=") :]
                 # Strip optional kind prefix (e.g. "native=")
                 if "=" in raw:
                     raw = raw.split("=", 1)[1]
@@ -14374,7 +14453,7 @@ def _collect_cargo_native_link_deps(runtime_lib: Path) -> tuple[list[str], list[
                     search_paths.append(f"-L{raw}")
                     seen_libs.add(raw)
             elif line.startswith("cargo:rustc-link-lib="):
-                raw = line[len("cargo:rustc-link-lib="):]
+                raw = line[len("cargo:rustc-link-lib=") :]
                 # Skip static= linkages (those are baked into the .a already)
                 if raw.startswith("static=") or raw.startswith("static:"):
                     continue
@@ -14411,9 +14490,19 @@ def _build_native_link_command(
     # are included, resolving circular references between molt-runtime and
     # molt-runtime-serial (e.g. serial bridge FFI symbols).
     if sys.platform == "darwin":
-        _link_inputs.extend(["-Wl,-force_load," + str(runtime_lib), "-o", str(output_binary)])
+        _link_inputs.extend(
+            ["-Wl,-force_load," + str(runtime_lib), "-o", str(output_binary)]
+        )
     else:
-        _link_inputs.extend(["-Wl,--whole-archive", str(runtime_lib), "-Wl,--no-whole-archive", "-o", str(output_binary)])
+        _link_inputs.extend(
+            [
+                "-Wl,--whole-archive",
+                str(runtime_lib),
+                "-Wl,--no-whole-archive",
+                "-o",
+                str(output_binary),
+            ]
+        )
     link_cmd.extend(_link_inputs)
     # Suppress non-actionable linker warnings (e.g. Xcode's hardcoded
     # -L/usr/local/lib, SDK version mismatches) unless the user opts in
@@ -14504,7 +14593,9 @@ def _run_native_partial_link_command(
         sysroot_path=sysroot_path,
         profile="dev",
     )
-    link_cmd.extend(["-r", *[str(path) for path in input_objects], "-o", str(output_path)])
+    link_cmd.extend(
+        ["-r", *[str(path) for path in input_objects], "-o", str(output_path)]
+    )
     return _run_native_link_command(
         link_cmd=link_cmd,
         json_output=json_output,
@@ -14526,12 +14617,18 @@ def _prepare_native_object_artifact(
     if stdlib_obj_path is None or not stdlib_obj_path.exists():
         return output_artifact, None, None
     if not _shared_stdlib_cache_matches_key(stdlib_obj_path, stdlib_object_cache_key):
-        return None, None, _fail(
-            "Shared stdlib cache key mismatch before native object link",
-            json_output,
-            command="build",
+        return (
+            None,
+            None,
+            _fail(
+                "Shared stdlib cache key mismatch before native object link",
+                json_output,
+                command="build",
+            ),
         )
-    merged_output = artifacts_root / f"{output_artifact.stem}_linked{output_artifact.suffix}"
+    merged_output = (
+        artifacts_root / f"{output_artifact.stem}_linked{output_artifact.suffix}"
+    )
     try:
         link_process = _run_native_partial_link_command(
             input_objects=[output_artifact, stdlib_obj_path],
@@ -14542,10 +14639,14 @@ def _prepare_native_object_artifact(
             sysroot_path=sysroot_path,
         )
     except subprocess.TimeoutExpired:
-        return None, None, _fail(
-            "Native object partial link timed out",
-            json_output,
-            command="build",
+        return (
+            None,
+            None,
+            _fail(
+                "Native object partial link timed out",
+                json_output,
+                command="build",
+            ),
         )
     except RuntimeError as exc:
         return None, None, _fail(str(exc), json_output, command="build")
@@ -14934,7 +15035,9 @@ def _build_build_diagnostics_payload(
     }
     payload: dict[str, Any] = {
         "enabled": True,
-        "total_sec": round(time.perf_counter() - diagnostics_context.diagnostics_start, 6),
+        "total_sec": round(
+            time.perf_counter() - diagnostics_context.diagnostics_start, 6
+        ),
         "phase_sec": _phase_duration_map(diagnostics_context.phase_starts),
         "module_count": len(diagnostics_context.module_graph),
         "module_reason_summary": _build_reason_summary(
@@ -15015,7 +15118,11 @@ def _record_frontend_timing_item(
     if detail:
         item["detail"] = detail
     frontend_module_timings.append(item)
-    if config.raw and (timed_out or total_s >= config.threshold) and not config.json_output:
+    if (
+        config.raw
+        and (timed_out or total_s >= config.threshold)
+        and not config.json_output
+    ):
         suffix = f" timeout={detail}" if timed_out and detail else ""
         print(
             "frontend module timing: "
@@ -15065,7 +15172,11 @@ def _resolve_build_output_layout(
         wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
         if wasm_linked_env not in {"0", "false", "no", "off"}:
             linked = True
-    target_triple = None if target in {"native", "wasm", "wasm-freestanding", "rust", "luau"} else target
+    target_triple = (
+        None
+        if target in {"native", "wasm", "wasm-freestanding", "rust", "luau"}
+        else target
+    )
     is_transpile = is_rust_transpile or is_luau_transpile
     emit_mode = "bin" if is_transpile else (emit or ("wasm" if is_wasm else "bin"))
     if not is_transpile and emit_mode not in {"bin", "obj", "wasm"}:
@@ -15107,7 +15218,9 @@ def _resolve_build_output_layout(
             stem = output_wasm.stem
             if stem.endswith("_linked"):
                 stem = stem[: -len("_linked")]
-            linked_output_path = output_wasm.with_name(f"{stem}_linked{output_wasm.suffix}")
+            linked_output_path = output_wasm.with_name(
+                f"{stem}_linked{output_wasm.suffix}"
+            )
             if linked_output is not None:
                 linked_output_path = _resolve_output_path(
                     linked_output,
@@ -15573,7 +15686,9 @@ def _prepare_frontend_analysis(
             ) = _load_module_analysis(
                 module_path,
                 module_name=module_name,
-                is_package=module_graph_metadata.module_is_package_by_module[module_name],
+                is_package=module_graph_metadata.module_is_package_by_module[
+                    module_name
+                ],
                 include_nested=True,
                 source=None,
                 logical_source_path=module_graph_metadata.logical_source_path_by_module[
@@ -15766,9 +15881,7 @@ def _prepare_frontend_lowering_config(
             try:
                 module_chunk_max_ops = max(0, int(env_native_chunk_ops))
             except ValueError:
-                warnings.append(
-                    "Invalid MOLT_MODULE_CHUNK_OPS; using default of 3000."
-                )
+                warnings.append("Invalid MOLT_MODULE_CHUNK_OPS; using default of 3000.")
     module_chunking = module_chunk_max_ops > 0
     if target_triple:
         _ensure_rustup_target(target_triple, warnings)
@@ -16014,14 +16127,18 @@ def _prepare_backend_setup(
         entry_module=entry_module,
     )
     runtime_lib = runtime_state.runtime_lib
-    if runtime_lib is not None and not cache_setup.cache_hit and not _ensure_runtime_lib_ready(
-        runtime_state,
-        target_triple=target_triple,
-        json_output=json_output,
-        runtime_cargo_profile=runtime_cargo_profile,
-        molt_root=molt_root,
-        cargo_timeout=cargo_timeout,
-        stdlib_profile=stdlib_profile,
+    if (
+        runtime_lib is not None
+        and not cache_setup.cache_hit
+        and not _ensure_runtime_lib_ready(
+            runtime_state,
+            target_triple=target_triple,
+            json_output=json_output,
+            runtime_cargo_profile=runtime_cargo_profile,
+            molt_root=molt_root,
+            cargo_timeout=cargo_timeout,
+            stdlib_profile=stdlib_profile,
+        )
     ):
         return None, _fail("Runtime build failed", json_output, command="build")
     return _PreparedBackendSetup(
@@ -16332,7 +16449,9 @@ def _execute_backend_compile(
             raw_data_base = backend_env.get("MOLT_WASM_DATA_BASE")
             raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
             try:
-                wasm_data_base = int(raw_data_base) if raw_data_base is not None else None
+                wasm_data_base = (
+                    int(raw_data_base) if raw_data_base is not None else None
+                )
             except ValueError:
                 wasm_data_base = None
             try:
@@ -16526,7 +16645,10 @@ def _execute_backend_compile(
             # Progress indicator for long builds (Issue 2.2 / 7.1).
             if not json_output:
                 import sys as _sys
-                _entry_name = entry_module.rsplit(".", 1)[-1] if entry_module else "program"
+
+                _entry_name = (
+                    entry_module.rsplit(".", 1)[-1] if entry_module else "program"
+                )
                 print(
                     f"Compiling {_entry_name}...",
                     end="",
@@ -16598,9 +16720,7 @@ def _execute_backend_compile(
                         print(backend_stdout, end="")
                 # Build a more informative error message
                 _fail_detail_parts = ["Backend compilation failed"]
-                _fail_detail_parts.append(
-                    f" (exit code {backend_process.returncode})"
-                )
+                _fail_detail_parts.append(f" (exit code {backend_process.returncode})")
                 if not backend_stderr and not backend_stdout:
                     _fail_detail_parts.append(
                         ".\nNo output from the backend. "
@@ -16636,6 +16756,7 @@ def _execute_backend_compile(
             backend_output_written = True
             if not json_output:
                 import sys as _sys
+
                 print(" done", file=_sys.stderr)
         if backend_output_written and not (
             daemon_ready and backend_compiled and backend_output_exists
@@ -16800,43 +16921,45 @@ def _prepare_backend_compile(
                     wasm_table_base = None
             if diagnostics_enabled and "backend_dispatch" not in phase_starts:
                 phase_starts["backend_dispatch"] = time.perf_counter()
-            backend_execution_result, backend_execution_error = _execute_backend_compile(
-                cache=cache_enabled,
-                cache_path=cache_path,
-                function_cache_path=function_cache_path,
-                artifacts_root=artifacts_root,
-                is_rust_transpile=is_rust_transpile,
-                is_luau_transpile=is_luau_transpile,
-                is_wasm=is_wasm,
-                diagnostics_enabled=diagnostics_enabled,
-                phase_starts=phase_starts,
-                daemon_ready=prepared_backend_dispatch.daemon_ready,
-                daemon_socket=prepared_backend_dispatch.daemon_socket,
-                project_root=project_root,
-                output_artifact=output_artifact,
-                cache_key=cache_key,
-                function_cache_key=function_cache_key,
-                cache_setup=cache_setup,
-                target_triple=target_triple,
-                backend_daemon_config_digest=(
-                    prepared_backend_dispatch.backend_daemon_config_digest
-                ),
-                entry_module=entry_module,
-                ir=ir,
-                json_output=json_output,
-                warnings=warnings,
-                verbose=verbose,
-                backend_bin=prepared_backend_dispatch.backend_bin,
-                backend_env=prepared_backend_dispatch.backend_env,
-                backend_timeout=backend_timeout,
-                molt_root=molt_root,
-                backend_cargo_profile=backend_cargo_profile,
-                _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
-                _get_backend_ir_fmt=_get_backend_ir_fmt,
-                cache_hit=cache_hit,
-                backend_daemon_cached=backend_daemon_cached,
-                backend_daemon_cache_tier=backend_daemon_cache_tier,
-                backend_daemon_health=backend_daemon_health,
+            backend_execution_result, backend_execution_error = (
+                _execute_backend_compile(
+                    cache=cache_enabled,
+                    cache_path=cache_path,
+                    function_cache_path=function_cache_path,
+                    artifacts_root=artifacts_root,
+                    is_rust_transpile=is_rust_transpile,
+                    is_luau_transpile=is_luau_transpile,
+                    is_wasm=is_wasm,
+                    diagnostics_enabled=diagnostics_enabled,
+                    phase_starts=phase_starts,
+                    daemon_ready=prepared_backend_dispatch.daemon_ready,
+                    daemon_socket=prepared_backend_dispatch.daemon_socket,
+                    project_root=project_root,
+                    output_artifact=output_artifact,
+                    cache_key=cache_key,
+                    function_cache_key=function_cache_key,
+                    cache_setup=cache_setup,
+                    target_triple=target_triple,
+                    backend_daemon_config_digest=(
+                        prepared_backend_dispatch.backend_daemon_config_digest
+                    ),
+                    entry_module=entry_module,
+                    ir=ir,
+                    json_output=json_output,
+                    warnings=warnings,
+                    verbose=verbose,
+                    backend_bin=prepared_backend_dispatch.backend_bin,
+                    backend_env=prepared_backend_dispatch.backend_env,
+                    backend_timeout=backend_timeout,
+                    molt_root=molt_root,
+                    backend_cargo_profile=backend_cargo_profile,
+                    _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
+                    _get_backend_ir_fmt=_get_backend_ir_fmt,
+                    cache_hit=cache_hit,
+                    backend_daemon_cached=backend_daemon_cached,
+                    backend_daemon_cache_tier=backend_daemon_cache_tier,
+                    backend_daemon_health=backend_daemon_health,
+                )
             )
             if backend_execution_error is not None:
                 return None, backend_execution_error
@@ -16898,11 +17021,15 @@ def _generate_snapshot_header(
         {"path": "/dev", "mount_type": "dev"},
     ]
 
-    caps = list(capabilities_list) if capabilities_list else [
-        "fs.bundle.read",
-        "fs.tmp.read",
-        "fs.tmp.write",
-    ]
+    caps = (
+        list(capabilities_list)
+        if capabilities_list
+        else [
+            "fs.bundle.read",
+            "fs.tmp.read",
+            "fs.tmp.write",
+        ]
+    )
 
     header = {
         "snapshot_version": 1,
@@ -17129,9 +17256,7 @@ def _run_backend_pipeline(
     cache_hit_tier = prepared_backend_compile.cache_hit_tier
     backend_daemon_cached = prepared_backend_compile.backend_daemon_cached
     backend_daemon_cache_tier = prepared_backend_compile.backend_daemon_cache_tier
-    backend_daemon_config_digest = (
-        prepared_backend_compile.backend_daemon_config_digest
-    )
+    backend_daemon_config_digest = prepared_backend_compile.backend_daemon_config_digest
     wasm_table_base = prepared_backend_compile.wasm_table_base
 
     if (
@@ -17435,10 +17560,13 @@ def _prepare_non_native_build_result(
             ]
             if _split_runtime:
                 split_dir = output_wasm.parent
-                link_cmd.extend([
-                    "--split-runtime",
-                    "--split-output-dir", str(split_dir),
-                ])
+                link_cmd.extend(
+                    [
+                        "--split-runtime",
+                        "--split-output-dir",
+                        str(split_dir),
+                    ]
+                )
             if is_wasm_freestanding:
                 link_cmd.append("--freestanding")
             if wasm_opt_enabled:
@@ -17471,13 +17599,21 @@ def _prepare_non_native_build_result(
         cwasm_path: Path | None = None
         if precompile:
             precompile_target = (
-                resolved_linked_output if resolved_linked_output is not None else output_wasm
+                resolved_linked_output
+                if resolved_linked_output is not None
+                else output_wasm
             )
             cwasm_path = precompile_target.with_suffix(".cwasm")
             wasmtime_bin = shutil.which("wasmtime")
             if wasmtime_bin:
                 precompile_proc = subprocess.run(
-                    [wasmtime_bin, "compile", str(precompile_target), "-o", str(cwasm_path)],
+                    [
+                        wasmtime_bin,
+                        "compile",
+                        str(precompile_target),
+                        "-o",
+                        str(cwasm_path),
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=60,
@@ -17582,25 +17718,25 @@ def _prepare_non_native_build_result(
             # live-verification tooling contract.
             wrangler_jsonc = split_dir / "wrangler.jsonc"
             wrangler_jsonc.write_text(
-                '{\n'
+                "{\n"
                 '  "name": "molt-app",\n'
                 '  "main": "worker.js",\n'
                 f'  "compatibility_date": "{dt.date.today().isoformat()}",\n'
                 '  "no_bundle": true,\n'
                 '  "find_additional_modules": true,\n'
                 '  "rules": [\n'
-                '    {\n'
+                "    {\n"
                 '      "type": "ESModule",\n'
                 '      "globs": ["**/*.js"],\n'
                 '      "fallthrough": false\n'
-                '    },\n'
-                '    {\n'
+                "    },\n"
+                "    {\n"
                 '      "type": "CompiledWasm",\n'
                 '      "globs": ["**/*.wasm"],\n'
                 '      "fallthrough": false\n'
-                '    }\n'
-                '  ]\n'
-                '}\n'
+                "    }\n"
+                "  ]\n"
+                "}\n"
             )
             legacy_wrangler_toml = split_dir / "wrangler.toml"
             if legacy_wrangler_toml.exists():
@@ -17644,11 +17780,7 @@ def _prepare_non_native_build_result(
                     if resolved_linked_output is not None
                     else {}
                 ),
-                **(
-                    {"cwasm_output": str(cwasm_path)}
-                    if cwasm_path is not None
-                    else {}
-                ),
+                **({"cwasm_output": str(cwasm_path)} if cwasm_path is not None else {}),
             },
             artifacts=artifacts,
         ), None
@@ -17746,7 +17878,11 @@ def _prepare_native_link(
             stub_path,
             output_obj,
             resolved_runtime_lib,
-            *([stdlib_obj_path] if stdlib_obj_path is not None and stdlib_obj_path.exists() else []),
+            *(
+                [stdlib_obj_path]
+                if stdlib_obj_path is not None and stdlib_obj_path.exists()
+                else []
+            ),
         ],
         link_cmd=link_cmd,
         stored_fingerprint=stored_link_fingerprint,
@@ -17810,7 +17946,11 @@ def _prepare_native_link(
                     f"Linker fallback: -fuse-ld={linker_hint} failed; retried default linker."
                 )
                 link_process = retry_process
-        if link_process.returncode == 0 and sys.platform == "darwin" and not target_triple:
+        if (
+            link_process.returncode == 0
+            and sys.platform == "darwin"
+            and not target_triple
+        ):
             try:
                 link_process = _validate_darwin_link_output(
                     link_process=link_process,
@@ -17824,7 +17964,11 @@ def _prepare_native_link(
                 )
             except subprocess.TimeoutExpired:
                 return None, _fail("Linker timed out", json_output, command="build")
-        if link_process.returncode == 0 and sys.platform == "darwin" and not target_triple:
+        if (
+            link_process.returncode == 0
+            and sys.platform == "darwin"
+            and not target_triple
+        ):
             try:
                 link_process = _validate_darwin_link_output(
                     link_process=link_process,
@@ -18074,9 +18218,7 @@ def _prepare_frontend_stage_state(
     backend_daemon_health = prepared_build_preamble.backend_daemon_health
     backend_daemon_cached = prepared_build_preamble.backend_daemon_cached
     backend_daemon_cache_tier = prepared_build_preamble.backend_daemon_cache_tier
-    backend_daemon_config_digest = (
-        prepared_build_preamble.backend_daemon_config_digest
-    )
+    backend_daemon_config_digest = prepared_build_preamble.backend_daemon_config_digest
     diagnostics_path_spec = prepared_build_preamble.diagnostics_path_spec
     warnings = prepared_build_preamble.warnings
     pgo_hot_function_names = prepared_build_config.pgo_hot_function_names
@@ -18130,36 +18272,38 @@ def _prepare_frontend_stage_state(
         diagnostics_path_spec=diagnostics_path_spec,
         artifacts_root=artifacts_root,
     )
-    prepared_build_outputs, prepared_build_outputs_error = _prepare_build_module_outputs(
-        module_graph=prepared_module_graph.module_graph,
-        module_reasons=module_reasons,
-        roots=prepared_module_graph.roots,
-        stdlib_root=stdlib_root,
-        stdlib_allowlist=prepared_module_graph.stdlib_allowlist,
-        explicit_imports=prepared_module_graph.explicit_imports,
-        resolver_cache=prepared_module_graph.module_resolution_cache,
-        artifacts_root=artifacts_root,
-        stub_parents=prepared_module_graph.stub_parents,
-        entry_module=entry_module,
-        needs_generated_importer=prepared_module_graph.needs_generated_importer,
-        needs_runtime_import_support=(
-            prepared_module_graph.needs_runtime_import_support
-        ),
-        diagnostics_enabled=diagnostics_enabled,
-        target=target,
-        trusted=trusted,
-        split_runtime=split_runtime,
-        require_linked=require_linked,
-        linked=linked,
-        linked_output=linked_output,
-        emit=emit,
-        output=output,
-        emit_ir=emit_ir,
-        bin_root=bin_root,
-        output_root=output_root,
-        output_base=output_base,
-        out_dir_path=out_dir_path,
-        project_root=project_root,
+    prepared_build_outputs, prepared_build_outputs_error = (
+        _prepare_build_module_outputs(
+            module_graph=prepared_module_graph.module_graph,
+            module_reasons=module_reasons,
+            roots=prepared_module_graph.roots,
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=prepared_module_graph.stdlib_allowlist,
+            explicit_imports=prepared_module_graph.explicit_imports,
+            resolver_cache=prepared_module_graph.module_resolution_cache,
+            artifacts_root=artifacts_root,
+            stub_parents=prepared_module_graph.stub_parents,
+            entry_module=entry_module,
+            needs_generated_importer=prepared_module_graph.needs_generated_importer,
+            needs_runtime_import_support=(
+                prepared_module_graph.needs_runtime_import_support
+            ),
+            diagnostics_enabled=diagnostics_enabled,
+            target=target,
+            trusted=trusted,
+            split_runtime=split_runtime,
+            require_linked=require_linked,
+            linked=linked,
+            linked_output=linked_output,
+            emit=emit,
+            output=output,
+            emit_ir=emit_ir,
+            bin_root=bin_root,
+            output_root=output_root,
+            output_base=output_base,
+            out_dir_path=out_dir_path,
+            project_root=project_root,
+        )
     )
     if prepared_build_outputs_error is not None:
         return None, _fail(prepared_build_outputs_error, json_output, command="build")
@@ -18703,7 +18847,9 @@ def _ensure_runtime_wasm_artifact(
         runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
     )
     ready = (
-        runtime_state.runtime_reloc_wasm_ready if reloc else runtime_state.runtime_wasm_ready
+        runtime_state.runtime_reloc_wasm_ready
+        if reloc
+        else runtime_state.runtime_wasm_ready
     )
     if runtime_path is None or ready:
         return True
@@ -18777,12 +18923,8 @@ def _run_frontend_pipeline(
     *,
     prepared_frontend_run_ticket: _PreparedFrontendRunTicket,
 ) -> dict[str, Any] | None:
-    frontend_parallel_config = (
-        prepared_frontend_run_ticket.frontend_parallel_config
-    )
-    frontend_parallel_layers = (
-        prepared_frontend_run_ticket.frontend_parallel_layers
-    )
+    frontend_parallel_config = prepared_frontend_run_ticket.frontend_parallel_config
+    frontend_parallel_layers = prepared_frontend_run_ticket.frontend_parallel_layers
     frontend_layer_execution_context = (
         prepared_frontend_run_ticket.frontend_layer_execution_context
     )
@@ -18972,8 +19114,7 @@ def _fallback_frontend_parallel_layer_to_serial(
 ) -> _FrontendParallelLayerState:
     frontend_parallel_details["reason"] = "worker_error_fallback_serial"
     warnings.append(
-        "Frontend parallel lowering fallback to serial for layer: "
-        f"{failure_detail}"
+        f"Frontend parallel lowering fallback to serial for layer: {failure_detail}"
     )
     fallback_state = _fresh_frontend_parallel_layer_state()
     fallback_state.fallback_reason = failure_detail
@@ -19202,7 +19343,11 @@ def _run_frontend_serial_layer_modules(
     module_graph: Mapping[str, Path],
     run_serial_frontend_lower: Callable[
         [str, Path],
-        tuple[dict[str, Any] | None, _FrontendModuleResultTimings | None, dict[str, Any] | None],
+        tuple[
+            dict[str, Any] | None,
+            _FrontendModuleResultTimings | None,
+            dict[str, Any] | None,
+        ],
     ],
     record_frontend_parallel_worker_timing: Callable[..., dict[str, Any]],
     integrate_module_frontend_result: Callable[..., str | None],
@@ -20068,6 +20213,7 @@ def _ensure_backend_binary(
     features_tag = "_".join(sorted(backend_features)) if backend_features else "default"
     lock_name = f"backend.{cargo_profile}.{features_tag}"
     with _build_lock(project_root, lock_name):
+
         def _materialize_rebuilt_backend_binary() -> bool:
             cargo_output = backend_bin.parent / backend_bin.name.split(".")[0]
             exe_suffix = ".exe" if os.name == "nt" else ""
@@ -20136,9 +20282,9 @@ def _ensure_backend_binary(
             if _probe_ok:
                 return True
         canonical_target_root = _canonical_target_root(project_root)
-        canonical_backend_bin = canonical_target_root / _cargo_profile_dir(
-            cargo_profile
-        ) / backend_bin.name
+        canonical_backend_bin = (
+            canonical_target_root / _cargo_profile_dir(cargo_profile) / backend_bin.name
+        )
         canonical_fingerprint_path = _artifact_state_path_for_build_state_root(
             _canonical_build_state_root(project_root),
             canonical_backend_bin,
@@ -20192,6 +20338,7 @@ def _ensure_backend_binary(
         # structure (home/build/*) and other infrastructure that later build
         # steps depend on.  Only remove the specific artifact caches.
         import shutil
+
         for cache_dir in [
             project_root / ".molt_cache",
             Path.home() / "Library" / "Caches" / "molt" / "home" / "bin",
@@ -20212,7 +20359,11 @@ def _ensure_backend_binary(
                 if _cached_file.name.startswith("stdlib_shared_"):
                     continue
                 if _cached_file.is_file() and _cached_file.suffix in {
-                    ".o", ".wasm", ".fingerprint", ".count", ".key",
+                    ".o",
+                    ".wasm",
+                    ".fingerprint",
+                    ".count",
+                    ".key",
                 }:
                     try:
                         _cached_file.unlink()
@@ -20395,13 +20546,17 @@ def _ensure_runtime_lib(
             return True
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = _runtime_cargo_features(target_triple)
-    builtin_features = _builtin_features_from_import_graph(resolved_modules, stdlib_profile)
+    builtin_features = _builtin_features_from_import_graph(
+        resolved_modules, stdlib_profile
+    )
     # When stdlib_profile is micro, include the marker in the fingerprint
     # so full and micro builds are kept distinct in the cache.
     fingerprint_features: tuple[str, ...] = runtime_features
     if stdlib_profile == "micro":
         fingerprint_features = tuple(
-            list(runtime_features) + sorted(builtin_features) + ["stdlib_micro", "no-default-features"]
+            list(runtime_features)
+            + sorted(builtin_features)
+            + ["stdlib_micro", "no-default-features"]
         )
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
@@ -20437,14 +20592,15 @@ def _ensure_runtime_lib(
         profile_dir = _cargo_profile_dir(cargo_profile)
         if target_triple:
             canonical_runtime_lib = (
-                canonical_target_root
-                / target_triple
-                / profile_dir
-                / runtime_lib.name
+                canonical_target_root / target_triple / profile_dir / runtime_lib.name
             )
         else:
-            canonical_runtime_lib = canonical_target_root / profile_dir / runtime_lib.name
-        target_label = (target_triple or "native").replace(os.sep, "_").replace(":", "_")
+            canonical_runtime_lib = (
+                canonical_target_root / profile_dir / runtime_lib.name
+            )
+        target_label = (
+            (target_triple or "native").replace(os.sep, "_").replace(":", "_")
+        )
         canonical_fingerprint_path = _artifact_state_path_for_build_state_root(
             _canonical_build_state_root(project_root),
             canonical_runtime_lib,
@@ -20475,7 +20631,9 @@ def _ensure_runtime_lib(
             cmd.append("--no-default-features")
             # Re-enable only the micro marker, builtin features from import
             # graph analysis, and any explicit runtime features.
-            micro_features = list(runtime_features) + builtin_features + ["stdlib_micro"]
+            micro_features = (
+                list(runtime_features) + builtin_features + ["stdlib_micro"]
+            )
             cmd.extend(["--features", ",".join(micro_features)])
         else:
             # For WASM targets, exclude stdlib_ast (rustpython-parser, ~2MB) and
@@ -20485,10 +20643,16 @@ def _ensure_runtime_lib(
             if is_wasm:
                 cmd.append("--no-default-features")
                 wasm_features = list(runtime_features) + [
-                    "stdlib_crypto", "stdlib_compression", "stdlib_serialization",
-                    "stdlib_archive", "stdlib_fs_extra",
-                    "builtin_set", "builtin_complex", "builtin_memoryview",
-                    "builtin_contextvars", "builtin_fcntl",
+                    "stdlib_crypto",
+                    "stdlib_compression",
+                    "stdlib_serialization",
+                    "stdlib_archive",
+                    "stdlib_fs_extra",
+                    "builtin_set",
+                    "builtin_complex",
+                    "builtin_memoryview",
+                    "builtin_contextvars",
+                    "builtin_fcntl",
                 ]
                 cmd.extend(["--features", ",".join(wasm_features)])
             elif runtime_features:
@@ -20577,7 +20741,9 @@ def _resolve_built_runtime_wasm_artifact(target_root: Path, profile_dir: str) ->
     primary = _wasm_runtime_artifact_path(target_root, profile_dir)
     if primary.exists():
         return primary
-    deps_primary = _wasm_runtime_deps_dir(target_root, profile_dir) / "molt_runtime.wasm"
+    deps_primary = (
+        _wasm_runtime_deps_dir(target_root, profile_dir) / "molt_runtime.wasm"
+    )
     if deps_primary.exists():
         return deps_primary
     deps_dir = _wasm_runtime_deps_dir(target_root, profile_dir)
@@ -20617,7 +20783,9 @@ def _run_runtime_wasm_cargo_build(
         stale_artifacts = [staticlib]
     else:
         primary = _wasm_runtime_artifact_path(target_root, profile_dir)
-        deps_primary = _wasm_runtime_deps_dir(target_root, profile_dir) / "molt_runtime.wasm"
+        deps_primary = (
+            _wasm_runtime_deps_dir(target_root, profile_dir) / "molt_runtime.wasm"
+        )
         stale_artifacts = [primary, deps_primary]
         stale_artifacts.extend(
             _wasm_runtime_deps_dir(target_root, profile_dir).glob("molt_runtime-*.wasm")
@@ -20754,11 +20922,7 @@ def _ensure_runtime_wasm(
             "-C link-arg=--import-memory -C link-arg=--import-table"
             " -C link-arg=--growable-table"
         )
-        flags = (
-            shared_flags
-            if use_legacy_wasm_flags
-            else shared_flags + set_exports
-        )
+        flags = shared_flags if use_legacy_wasm_flags else shared_flags + set_exports
     rustflags = env.get("RUSTFLAGS", "").strip()
     if flags:
         rustflags = f"{rustflags} {flags}".strip()
@@ -20870,10 +21034,16 @@ def _ensure_runtime_wasm(
             # These are not useful on WASM and inflate the binary past 3MB.
             cmd.append("--no-default-features")
             wasm_features = list(cargo_runtime_features) + [
-                "stdlib_crypto", "stdlib_compression", "stdlib_serialization",
-                "stdlib_archive", "stdlib_fs_extra",
-                "builtin_set", "builtin_complex", "builtin_memoryview",
-                "builtin_contextvars", "builtin_fcntl",
+                "stdlib_crypto",
+                "stdlib_compression",
+                "stdlib_serialization",
+                "stdlib_archive",
+                "stdlib_fs_extra",
+                "builtin_set",
+                "builtin_complex",
+                "builtin_memoryview",
+                "builtin_contextvars",
+                "builtin_fcntl",
             ]
             cmd.extend(["--features", ",".join(wasm_features)])
         if not reloc:
@@ -22645,6 +22815,7 @@ def _detect_macos_deployment_target(arch: str | None = None) -> str | None:
         pass
     # Fallback to OS version if xcrun unavailable
     import platform as _platform
+
     ver = _platform.mac_ver()[0]
     if ver:
         parts = ver.split(".")
@@ -22851,7 +23022,9 @@ def _run_script_cross(
 ) -> int:
     """Build with a cross target (wasm or luau) and run with the appropriate runtime."""
     if file_path and module:
-        return _fail("Use a file path or --module, not both.", json_output, command="run")
+        return _fail(
+            "Use a file path or --module, not both.", json_output, command="run"
+        )
     if not file_path and not module:
         return _fail("Missing entry file or module.", json_output, command="run")
 
@@ -22896,8 +23069,11 @@ def _run_script_cross(
 
     if capability_manifest is not None:
         from molt.capability_manifest import load_manifest
+
         try:
-            manifest_obj = load_manifest(capability_manifest, require_signed=require_signed_manifest)
+            manifest_obj = load_manifest(
+                capability_manifest, require_signed=require_signed_manifest
+            )
             env.update(manifest_obj.to_env_vars())
         except Exception as e:
             return _fail(
@@ -22970,7 +23146,9 @@ def _run_script_cross(
             )
         run_cmd = [wasmtime, "run", str(run_artifact), "--", *script_args]
     elif target == "luau":
-        luau_artifact = build_contract.artifacts.get("luau", build_contract.consumer_output)
+        luau_artifact = build_contract.artifacts.get(
+            "luau", build_contract.consumer_output
+        )
         if not luau_artifact.exists():
             return _fail(
                 f"Luau artifact not found: {luau_artifact}\n"
@@ -23006,6 +23184,7 @@ def _run_script_cross(
         )
     return run_res.returncode
 
+
 def _deploy(
     platform: str,
     file_path: str | None,
@@ -23022,7 +23201,9 @@ def _deploy(
 ) -> int:
     """Build and deploy to the specified platform."""
     if file_path and module:
-        return _fail("Use a file path or --module, not both.", json_output, command="deploy")
+        return _fail(
+            "Use a file path or --module, not both.", json_output, command="deploy"
+        )
     if not file_path and not module:
         return _fail("Missing entry file or module.", json_output, command="deploy")
 
@@ -23056,7 +23237,10 @@ def _deploy(
     if platform == "cloudflare":
         if not any(a.startswith("--target") for a in build_cmd_args):
             build_cmd_args.extend(["--target", "wasm"])
-        if not any(a.startswith("--profile") or a.startswith("--platform") for a in build_cmd_args):
+        if not any(
+            a.startswith("--profile") or a.startswith("--platform")
+            for a in build_cmd_args
+        ):
             build_cmd_args.extend(["--profile", "cloudflare"])
         if not any(a == "--split-runtime" for a in build_cmd_args):
             build_cmd_args.append("--split-runtime")
@@ -23137,7 +23321,9 @@ def _deploy(
         if not json_output:
             print("Deploying with wrangler...", file=sys.stderr)
             if verbose:
-                print(f"Deploy command: {shlex.join(deploy_cmd_parts)}", file=sys.stderr)
+                print(
+                    f"Deploy command: {shlex.join(deploy_cmd_parts)}", file=sys.stderr
+                )
         return _run_command(
             deploy_cmd_parts,
             env=env,
@@ -23162,7 +23348,9 @@ def _deploy(
                 json_output,
                 command="deploy",
             )
-        luau_artifact = build_contract.artifacts.get("luau", build_contract.consumer_output)
+        luau_artifact = build_contract.artifacts.get(
+            "luau", build_contract.consumer_output
+        )
         if not luau_artifact.exists():
             return _fail(
                 f"Luau artifact not found at {luau_artifact}. "
@@ -23243,8 +23431,11 @@ def run_script(
 
     if capability_manifest is not None:
         from molt.capability_manifest import load_manifest
+
         try:
-            manifest_obj = load_manifest(capability_manifest, require_signed=require_signed_manifest)
+            manifest_obj = load_manifest(
+                capability_manifest, require_signed=require_signed_manifest
+            )
             env.update(manifest_obj.to_env_vars())
         except Exception as e:
             return _fail(
@@ -23983,7 +24174,9 @@ def _required_llvm_backend_major(root: Path) -> int | None:
         text = manifest.read_text(encoding="utf-8")
     except OSError:
         return None
-    match = re.search(r'inkwell\s*=\s*\{[^}]*features\s*=\s*\[[^\]]*"llvm(\d+)-\d+"', text, re.DOTALL)
+    match = re.search(
+        r'inkwell\s*=\s*\{[^}]*features\s*=\s*\[[^\]]*"llvm(\d+)-\d+"', text, re.DOTALL
+    )
     if match is None:
         return None
     try:
@@ -24040,6 +24233,452 @@ def _llvm_backend_advice(major: int) -> list[str]:
         f"Install llvm-{major} and lld-{major} via your package manager",
         "Set LLVM_SYS_<ver>_PREFIX if llvm-sys cannot find the install",
     ]
+
+
+def _python_setup_advice(system: str) -> list[str]:
+    if system == "Darwin":
+        return ["brew install python@3.12", "Ensure python3 is on PATH"]
+    if system == "Windows":
+        return ["winget install Python.Python.3.12", "Reopen your terminal"]
+    return ["Install Python 3.12+ via your package manager"]
+
+
+def _uv_setup_advice(system: str) -> list[str]:
+    if system == "Darwin":
+        return ["brew install uv"]
+    if system == "Windows":
+        return ["winget install Astral.Uv", "or: scoop install uv"]
+    return ["curl -LsSf https://astral.sh/uv/install.sh | sh"]
+
+
+def _rustup_setup_advice(system: str) -> list[str]:
+    if system == "Windows":
+        return ["winget install Rustlang.Rustup", "Reopen your terminal"]
+    return ["curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"]
+
+
+def _cargo_setup_advice(system: str) -> list[str]:
+    return _rustup_setup_advice(system) + ["source $HOME/.cargo/env (Unix)"]
+
+
+def _clang_setup_advice(system: str) -> list[str]:
+    if system == "Darwin":
+        return ["xcode-select --install"]
+    if system == "Windows":
+        return ["winget install LLVM.LLVM", "set CC=clang"]
+    return ["sudo apt-get update", "sudo apt-get install -y clang lld"]
+
+
+def _resolved_env_dir_from_root(root: Path, var: str) -> Path | None:
+    raw = os.environ.get(var, "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = (root / path).absolute()
+    return path
+
+
+def _is_path_within(path: Path, container: Path) -> bool:
+    try:
+        path.resolve().relative_to(container.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _canonical_env_defaults(root: Path) -> dict[str, str]:
+    tmp_root = root / "tmp"
+    target_root = root / "target"
+    return {
+        "MOLT_EXT_ROOT": str(root),
+        "CARGO_TARGET_DIR": str(target_root),
+        "MOLT_DIFF_CARGO_TARGET_DIR": str(target_root),
+        "MOLT_CACHE": str(root / ".molt_cache"),
+        "MOLT_DIFF_ROOT": str(tmp_root / "diff"),
+        "MOLT_DIFF_TMPDIR": str(tmp_root),
+        "UV_CACHE_DIR": str(root / ".uv-cache"),
+        "TMPDIR": str(tmp_root),
+    }
+
+
+def _collect_setup_actions(checks: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    actions: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for check in checks:
+        name = str(check.get("name", "unknown"))
+        level = str(check.get("level", "error"))
+        for advice in check.get("advice", []):
+            action = str(advice)
+            key = (name, action)
+            if key in seen:
+                continue
+            seen.add(key)
+            actions.append({"check": name, "level": level, "command": action})
+    return actions
+
+
+def _build_toolchain_report(root: Path) -> _ToolchainReport:
+    checks: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    errors: list[str] = []
+    system = platform.system()
+
+    def record(
+        name: str,
+        ok: bool,
+        detail: str,
+        *,
+        level: Literal["warning", "error"] = "error",
+        advice: list[str] | None = None,
+    ) -> None:
+        entry: dict[str, Any] = {"name": name, "ok": ok, "detail": detail}
+        if not ok:
+            entry["level"] = level
+            if advice:
+                entry["advice"] = advice
+            message = f"{name}: {detail}"
+            if advice:
+                message = f"{message}. See advice."
+            if level == "error":
+                errors.append(message)
+            else:
+                warnings.append(message)
+        checks.append(entry)
+
+    python_ok = sys.version_info >= (3, 12)
+    record(
+        "python",
+        python_ok,
+        f"{sys.version.split()[0]} (requires >=3.12)",
+        level="error",
+        advice=_python_setup_advice(system) if not python_ok else None,
+    )
+
+    uv_path = shutil.which("uv")
+    record(
+        "uv",
+        bool(uv_path),
+        uv_path or "not found",
+        level="warning",
+        advice=_uv_setup_advice(system) if not uv_path else None,
+    )
+
+    cargo_path = shutil.which("cargo")
+    record(
+        "cargo",
+        bool(cargo_path),
+        cargo_path or "not found",
+        level="error",
+        advice=_cargo_setup_advice(system) if not cargo_path else None,
+    )
+
+    rustup_path = shutil.which("rustup")
+    record(
+        "rustup",
+        bool(rustup_path),
+        rustup_path or "not found",
+        level="warning",
+        advice=_rustup_setup_advice(system) if not rustup_path else None,
+    )
+
+    cargo_upgrade_path = shutil.which("cargo-upgrade")
+    record(
+        "cargo-upgrade",
+        bool(cargo_upgrade_path),
+        cargo_upgrade_path or "not found",
+        level="warning",
+        advice=["cargo install cargo-edit --locked", "Use `molt update --all`"]
+        if not cargo_upgrade_path
+        else None,
+    )
+
+    cc = os.environ.get("CC", "clang")
+    cc_path = shutil.which(cc) or shutil.which("clang")
+    record(
+        "clang",
+        bool(cc_path),
+        cc_path or "not found",
+        level="error",
+        advice=_clang_setup_advice(system) if not cc_path else None,
+    )
+
+    llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
+    if llvm_major is None:
+        record(
+            "llvm-backend-toolchain",
+            True,
+            "no explicit LLVM backend version pin detected",
+        )
+    else:
+        record(
+            "llvm-backend-toolchain",
+            llvm_toolchain is not None,
+            (
+                f"LLVM {llvm_major} via {llvm_toolchain}"
+                if llvm_toolchain is not None
+                else f"LLVM {llvm_major} toolchain not found"
+            ),
+            level="warning",
+            advice=_llvm_backend_advice(llvm_major) if llvm_toolchain is None else None,
+        )
+
+    zig_path = shutil.which("zig")
+    record(
+        "zig",
+        bool(zig_path),
+        zig_path or "not found",
+        level="warning",
+        advice=["Install zig if you need wasm linking"] if not zig_path else None,
+    )
+
+    rustc_wrapper = os.environ.get("RUSTC_WRAPPER", "").strip()
+    sccache_mode = os.environ.get("MOLT_USE_SCCACHE", "auto").strip().lower() or "auto"
+    sccache_path = shutil.which("sccache")
+    if rustc_wrapper:
+        wrapper_name = Path(rustc_wrapper).name
+        sccache_ok = wrapper_name == "sccache"
+        sccache_detail = f"RUSTC_WRAPPER={rustc_wrapper}"
+        sccache_advice = (
+            [
+                "Use RUSTC_WRAPPER=sccache for compile throughput",
+                "or unset RUSTC_WRAPPER and set MOLT_USE_SCCACHE=auto",
+            ]
+            if not sccache_ok
+            else None
+        )
+    elif sccache_mode in {"0", "false", "no", "off"}:
+        sccache_ok = False
+        sccache_detail = "disabled via MOLT_USE_SCCACHE"
+        sccache_advice = ["Set MOLT_USE_SCCACHE=auto or 1 for faster rebuilds"]
+    elif sccache_path is None:
+        sccache_ok = False
+        sccache_detail = "not found on PATH"
+        sccache_advice = [
+            "Install sccache and keep MOLT_USE_SCCACHE=auto (or set to 1)"
+        ]
+    else:
+        sccache_ok = True
+        sccache_detail = f"{sccache_path} (mode={sccache_mode})"
+        sccache_advice = None
+    record(
+        "sccache",
+        sccache_ok,
+        sccache_detail,
+        level="warning",
+        advice=sccache_advice,
+    )
+
+    if os.name == "posix":
+        daemon_enabled = _backend_daemon_enabled()
+        daemon_raw = os.environ.get("MOLT_BACKEND_DAEMON", "1").strip() or "1"
+        record(
+            "backend-daemon",
+            daemon_enabled,
+            f"MOLT_BACKEND_DAEMON={daemon_raw}",
+            level="warning",
+            advice=["Set MOLT_BACKEND_DAEMON=1 for faster native compile loops"]
+            if not daemon_enabled
+            else None,
+        )
+    else:
+        record("backend-daemon", True, "unsupported on non-posix hosts")
+
+    cargo_target_dir = _resolved_env_dir_from_root(root, "CARGO_TARGET_DIR")
+    if cargo_target_dir is None:
+        record(
+            "cargo-target-dir",
+            False,
+            f"defaulting to {root / 'target'}",
+            level="warning",
+            advice=[
+                "export CARGO_TARGET_DIR=<external>/cargo-target",
+                "export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR",
+            ],
+        )
+    else:
+        record("cargo-target-dir", True, str(cargo_target_dir))
+
+    molt_cache_dir = _resolved_env_dir_from_root(root, "MOLT_CACHE")
+    if molt_cache_dir is None:
+        record(
+            "molt-cache-dir",
+            False,
+            f"defaulting to {_default_molt_cache()}",
+            level="warning",
+            advice=["export MOLT_CACHE=<external>/molt_cache"],
+        )
+    else:
+        record("molt-cache-dir", True, str(molt_cache_dir))
+
+    diff_target_dir = _resolved_env_dir_from_root(root, "MOLT_DIFF_CARGO_TARGET_DIR")
+    if diff_target_dir is None:
+        record(
+            "molt-diff-target-dir",
+            False,
+            "not set",
+            level="warning",
+            advice=["export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR"],
+        )
+    elif cargo_target_dir is not None and diff_target_dir != cargo_target_dir:
+        record(
+            "molt-diff-target-dir",
+            False,
+            f"{diff_target_dir} (CARGO_TARGET_DIR={cargo_target_dir})",
+            level="warning",
+            advice=["Set MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR"],
+        )
+    else:
+        record("molt-diff-target-dir", True, str(diff_target_dir))
+
+    configured_ext_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    ext_root = (
+        Path(configured_ext_root).expanduser().resolve()
+        if configured_ext_root
+        else None
+    )
+    if ext_root is not None and ext_root.is_dir():
+        routed_paths: list[Path] = []
+        if cargo_target_dir is not None:
+            routed_paths.append(cargo_target_dir)
+        if molt_cache_dir is not None:
+            routed_paths.append(molt_cache_dir)
+        ext_ok = bool(routed_paths) and all(
+            _is_path_within(path, ext_root) for path in routed_paths
+        )
+        detail = (
+            "CARGO_TARGET_DIR and MOLT_CACHE routed to configured artifact root"
+            if ext_ok
+            else "Set CARGO_TARGET_DIR and MOLT_CACHE under the configured artifact root"
+        )
+        record(
+            "artifact-root-routing",
+            ext_ok,
+            detail,
+            level="warning",
+            advice=[
+                "export MOLT_EXT_ROOT=<artifact-root>",
+                "export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target",
+                "export MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache",
+            ]
+            if not ext_ok
+            else None,
+        )
+    else:
+        record(
+            "artifact-root",
+            True,
+            "Using repo-local canonical artifact roots",
+            advice=[
+                "Set MOLT_EXT_ROOT=<external-root> if you want shared external artifacts",
+                "or keep repo-local target/tmp/log/cache roots for local development",
+            ],
+        )
+
+    pyproject = root / "pyproject.toml"
+    lock_path = root / "uv.lock"
+    if pyproject.exists():
+        record(
+            "uv.lock",
+            lock_path.exists(),
+            str(lock_path),
+            level="warning",
+            advice=["uv sync", "or: uv lock"] if not lock_path.exists() else None,
+        )
+        if lock_path.exists():
+            try:
+                if lock_path.stat().st_mtime < pyproject.stat().st_mtime:
+                    record(
+                        "uv.lock_fresh",
+                        False,
+                        "uv.lock older than pyproject.toml",
+                        level="warning",
+                        advice=["uv lock", "or: uv sync"],
+                    )
+            except OSError:
+                record(
+                    "uv.lock_fresh",
+                    False,
+                    "unable to stat uv.lock",
+                    level="warning",
+                    advice=["Ensure uv.lock exists and is readable"],
+                )
+
+    runtime_lib = _runtime_lib_path(root, "release", None)
+    runtime_exists = runtime_lib.exists()
+    if runtime_exists:
+        runtime_detail = str(runtime_lib)
+        try:
+            lib_mtime = runtime_lib.stat().st_mtime
+            runtime_cargo = root / "runtime" / "molt-runtime" / "Cargo.toml"
+            if runtime_cargo.exists() and runtime_cargo.stat().st_mtime > lib_mtime:
+                runtime_detail += " (stale — runtime Cargo.toml is newer)"
+                runtime_exists = False
+        except OSError:
+            pass
+    else:
+        runtime_detail = f"not found: {runtime_lib}"
+    record(
+        "molt-runtime",
+        runtime_exists,
+        runtime_detail,
+        level="warning",
+        advice=[
+            "Run: cargo build --release -p molt-runtime",
+            "Or: molt run will auto-build it on first use",
+        ]
+        if not runtime_exists
+        else None,
+    )
+
+    wasm_target_ok = False
+    if rustup_path:
+        try:
+            result = subprocess.run(
+                ["rustup", "target", "list", "--installed"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            record("rustup-targets", False, f"failed to query: {exc}")
+        else:
+            targets = result.stdout.split()
+            wasm_target_ok = any(
+                target in targets
+                for target in ("wasm32-wasip1", "wasm32-unknown-unknown")
+            )
+            record(
+                "wasm-target",
+                wasm_target_ok,
+                "wasm32-wasip1 or wasm32-unknown-unknown",
+                level="warning",
+                advice=["rustup target add wasm32-wasip1"]
+                if not wasm_target_ok
+                else None,
+            )
+
+    environment = _canonical_env_defaults(root)
+    backends = {
+        "native": bool(cargo_path and cc_path),
+        "llvm": bool(cargo_path and cc_path and llvm_toolchain),
+        "wasm": bool(cargo_path and wasm_target_ok),
+        "linked-wasm": bool(cargo_path and wasm_target_ok and zig_path),
+    }
+    profiles = {
+        "dev": bool(cargo_path),
+        "release": bool(cargo_path),
+    }
+    actions = _collect_setup_actions(checks)
+    return _ToolchainReport(
+        checks=checks,
+        warnings=warnings,
+        errors=errors,
+        environment=environment,
+        actions=actions,
+        backends=backends,
+        profiles=profiles,
+    )
 
 
 def _planned_update_steps(
@@ -24281,9 +24920,58 @@ def update_repo(
         print(f"Updated toolchains/dependencies for {root}")
         for result in results:
             print(
-                f"- [{result['category']}] {result['name']} "
-                f"(rc={result['returncode']})"
+                f"- [{result['category']}] {result['name']} (rc={result['returncode']})"
             )
+    return 0
+
+
+def setup(
+    json_output: bool = False,
+    verbose: bool = False,
+    strict: bool = False,
+) -> int:
+    del verbose
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "setup")
+    if root_error is not None:
+        return root_error
+    report = _build_toolchain_report(root)
+    status = "ok" if not report.errors else "error"
+    data = {
+        "checks": report.checks,
+        "environment": report.environment,
+        "actions": report.actions,
+        "backends": report.backends,
+        "profiles": report.profiles,
+    }
+    if json_output:
+        payload = _json_payload(
+            "setup",
+            status,
+            data=data,
+            warnings=report.warnings,
+            errors=report.errors,
+        )
+        _emit_json(payload, json_output=True)
+    else:
+        print(f"Molt setup plan for {root}:")
+        print("Backends:")
+        for name, ready in sorted(report.backends.items()):
+            print(f"- {name}: {'ready' if ready else 'missing requirements'}")
+        print("Profiles:")
+        for name, ready in sorted(report.profiles.items()):
+            print(f"- {name}: {'ready' if ready else 'missing requirements'}")
+        print("Environment:")
+        for key, value in report.environment.items():
+            print(f"export {key}={shlex.quote(value)}")
+        if report.actions:
+            print("Actions:")
+            for action in report.actions:
+                print(f"- [{action['check']}] {action['command']}")
+        else:
+            print("No setup actions required.")
+    if strict and report.errors:
+        return 1
     return 0
 
 
@@ -24292,411 +24980,31 @@ def doctor(
     verbose: bool = False,
     strict: bool = False,
 ) -> int:
+    del verbose
     root = _find_molt_root(Path.cwd())
     root_error = _require_molt_root(root, json_output, "doctor")
     if root_error is not None:
         return root_error
-    checks: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    errors: list[str] = []
-    system = platform.system()
-
-    def record(
-        name: str,
-        ok: bool,
-        detail: str,
-        *,
-        level: Literal["warning", "error"] = "error",
-        advice: list[str] | None = None,
-    ) -> None:
-        entry: dict[str, Any] = {"name": name, "ok": ok, "detail": detail}
-        if not ok:
-            entry["level"] = level
-            if advice:
-                entry["advice"] = advice
-            message = f"{name}: {detail}"
-            if advice:
-                message = f"{message}. See advice."
-            if level == "error":
-                errors.append(message)
-            else:
-                warnings.append(message)
-        checks.append(entry)
-
-    def _python_advice() -> list[str]:
-        if system == "Darwin":
-            return ["brew install python@3.12", "Ensure python3 is on PATH"]
-        if system == "Windows":
-            return ["winget install Python.Python.3.12", "Reopen your terminal"]
-        return ["Install Python 3.12+ via your package manager"]
-
-    def _uv_advice() -> list[str]:
-        if system == "Darwin":
-            return ["brew install uv"]
-        if system == "Windows":
-            return ["winget install Astral.Uv", "or: scoop install uv"]
-        return ["curl -LsSf https://astral.sh/uv/install.sh | sh"]
-
-    def _rustup_advice() -> list[str]:
-        if system == "Windows":
-            return ["winget install Rustlang.Rustup", "Reopen your terminal"]
-        return ["curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"]
-
-    def _cargo_advice() -> list[str]:
-        return _rustup_advice() + ["source $HOME/.cargo/env (Unix)"]
-
-    def _clang_advice() -> list[str]:
-        if system == "Darwin":
-            return ["xcode-select --install"]
-        if system == "Windows":
-            return ["winget install LLVM.LLVM", "set CC=clang"]
-        return ["sudo apt-get update", "sudo apt-get install -y clang lld"]
-
-    def _resolved_env_dir(var: str) -> Path | None:
-        raw = os.environ.get(var, "").strip()
-        if not raw:
-            return None
-        path = Path(raw).expanduser()
-        if not path.is_absolute():
-            path = (root / path).absolute()
-        return path
-
-    def _is_within(path: Path, container: Path) -> bool:
-        try:
-            path.resolve().relative_to(container.resolve())
-        except ValueError:
-            return False
-        return True
-
-    python_ok = sys.version_info >= (3, 12)
-    record(
-        "python",
-        python_ok,
-        f"{sys.version.split()[0]} (requires >=3.12)",
-        level="error",
-        advice=_python_advice() if not python_ok else None,
-    )
-
-    uv_path = shutil.which("uv")
-    record(
-        "uv",
-        bool(uv_path),
-        uv_path or "not found",
-        level="warning",
-        advice=_uv_advice() if not uv_path else None,
-    )
-
-    cargo_path = shutil.which("cargo")
-    record(
-        "cargo",
-        bool(cargo_path),
-        cargo_path or "not found",
-        level="error",
-        advice=_cargo_advice() if not cargo_path else None,
-    )
-
-    rustup_path = shutil.which("rustup")
-    record(
-        "rustup",
-        bool(rustup_path),
-        rustup_path or "not found",
-        level="warning",
-        advice=_rustup_advice() if not rustup_path else None,
-    )
-
-    cargo_upgrade_path = shutil.which("cargo-upgrade")
-    record(
-        "cargo-upgrade",
-        bool(cargo_upgrade_path),
-        cargo_upgrade_path or "not found",
-        level="warning",
-        advice=["cargo install cargo-edit --locked", "Use `molt update --all`"]
-        if not cargo_upgrade_path
-        else None,
-    )
-
-    cc = os.environ.get("CC", "clang")
-    cc_path = shutil.which(cc) or shutil.which("clang")
-    record(
-        "clang",
-        bool(cc_path),
-        cc_path or "not found",
-        level="error",
-        advice=_clang_advice() if not cc_path else None,
-    )
-
-    llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
-    if llvm_major is None:
-        record(
-            "llvm-backend-toolchain",
-            True,
-            "no explicit LLVM backend version pin detected",
-        )
-    else:
-        record(
-            "llvm-backend-toolchain",
-            llvm_toolchain is not None,
-            (
-                f"LLVM {llvm_major} via {llvm_toolchain}"
-                if llvm_toolchain is not None
-                else f"LLVM {llvm_major} toolchain not found"
-            ),
-            level="warning",
-            advice=_llvm_backend_advice(llvm_major)
-            if llvm_toolchain is None
-            else None,
-        )
-
-    zig_path = shutil.which("zig")
-    record(
-        "zig",
-        bool(zig_path),
-        zig_path or "not found",
-        level="warning",
-        advice=["Install zig if you need wasm linking"] if not zig_path else None,
-    )
-
-    rustc_wrapper = os.environ.get("RUSTC_WRAPPER", "").strip()
-    sccache_mode = os.environ.get("MOLT_USE_SCCACHE", "auto").strip().lower() or "auto"
-    sccache_path = shutil.which("sccache")
-    if rustc_wrapper:
-        wrapper_name = Path(rustc_wrapper).name
-        sccache_ok = wrapper_name == "sccache"
-        sccache_detail = f"RUSTC_WRAPPER={rustc_wrapper}"
-        sccache_advice = (
-            [
-                "Use RUSTC_WRAPPER=sccache for compile throughput",
-                "or unset RUSTC_WRAPPER and set MOLT_USE_SCCACHE=auto",
-            ]
-            if not sccache_ok
-            else None
-        )
-    elif sccache_mode in {"0", "false", "no", "off"}:
-        sccache_ok = False
-        sccache_detail = "disabled via MOLT_USE_SCCACHE"
-        sccache_advice = ["Set MOLT_USE_SCCACHE=auto or 1 for faster rebuilds"]
-    elif sccache_path is None:
-        sccache_ok = False
-        sccache_detail = "not found on PATH"
-        sccache_advice = [
-            "Install sccache and keep MOLT_USE_SCCACHE=auto (or set to 1)"
-        ]
-    else:
-        sccache_ok = True
-        sccache_detail = f"{sccache_path} (mode={sccache_mode})"
-        sccache_advice = None
-    record(
-        "sccache",
-        sccache_ok,
-        sccache_detail,
-        level="warning",
-        advice=sccache_advice,
-    )
-
-    if os.name == "posix":
-        daemon_enabled = _backend_daemon_enabled()
-        daemon_raw = os.environ.get("MOLT_BACKEND_DAEMON", "1").strip() or "1"
-        record(
-            "backend-daemon",
-            daemon_enabled,
-            f"MOLT_BACKEND_DAEMON={daemon_raw}",
-            level="warning",
-            advice=["Set MOLT_BACKEND_DAEMON=1 for faster native compile loops"]
-            if not daemon_enabled
-            else None,
-        )
-    else:
-        record("backend-daemon", True, "unsupported on non-posix hosts")
-
-    cargo_target_dir = _resolved_env_dir("CARGO_TARGET_DIR")
-    if cargo_target_dir is None:
-        record(
-            "cargo-target-dir",
-            False,
-            f"defaulting to {root / 'target'}",
-            level="warning",
-            advice=[
-                "export CARGO_TARGET_DIR=<external>/cargo-target",
-                "export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR",
-            ],
-        )
-    else:
-        record("cargo-target-dir", True, str(cargo_target_dir))
-
-    molt_cache_dir = _resolved_env_dir("MOLT_CACHE")
-    if molt_cache_dir is None:
-        record(
-            "molt-cache-dir",
-            False,
-            f"defaulting to {_default_molt_cache()}",
-            level="warning",
-            advice=["export MOLT_CACHE=<external>/molt_cache"],
-        )
-    else:
-        record("molt-cache-dir", True, str(molt_cache_dir))
-
-    diff_target_dir = _resolved_env_dir("MOLT_DIFF_CARGO_TARGET_DIR")
-    if diff_target_dir is None:
-        record(
-            "molt-diff-target-dir",
-            False,
-            "not set",
-            level="warning",
-            advice=["export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR"],
-        )
-    elif cargo_target_dir is not None and diff_target_dir != cargo_target_dir:
-        record(
-            "molt-diff-target-dir",
-            False,
-            f"{diff_target_dir} (CARGO_TARGET_DIR={cargo_target_dir})",
-            level="warning",
-            advice=["Set MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR"],
-        )
-    else:
-        record("molt-diff-target-dir", True, str(diff_target_dir))
-
-    configured_ext_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    ext_root = (
-        Path(configured_ext_root).expanduser().resolve()
-        if configured_ext_root
-        else None
-    )
-    if ext_root is not None and ext_root.is_dir():
-        routed_paths: list[Path] = []
-        if cargo_target_dir is not None:
-            routed_paths.append(cargo_target_dir)
-        if molt_cache_dir is not None:
-            routed_paths.append(molt_cache_dir)
-        ext_ok = bool(routed_paths) and all(
-            _is_within(path, ext_root) for path in routed_paths
-        )
-        detail = (
-            "CARGO_TARGET_DIR and MOLT_CACHE routed to configured artifact root"
-            if ext_ok
-            else "Set CARGO_TARGET_DIR and MOLT_CACHE under the configured artifact root"
-        )
-        record(
-            "artifact-root-routing",
-            ext_ok,
-            detail,
-            level="warning",
-            advice=[
-                "export MOLT_EXT_ROOT=<artifact-root>",
-                "export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target",
-                "export MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache",
-            ]
-            if not ext_ok
-            else None,
-        )
-    else:
-        record(
-            "artifact-root",
-            True,
-            "Using repo-local canonical artifact roots",
-            advice=[
-                "Set MOLT_EXT_ROOT=<external-root> if you want shared external artifacts",
-                "or keep repo-local target/tmp/log/cache roots for local development",
-            ],
-        )
-
-    pyproject = root / "pyproject.toml"
-    lock_path = root / "uv.lock"
-    if pyproject.exists():
-        record(
-            "uv.lock",
-            lock_path.exists(),
-            str(lock_path),
-            level="warning",
-            advice=["uv sync", "or: uv lock"] if not lock_path.exists() else None,
-        )
-        if lock_path.exists():
-            try:
-                if lock_path.stat().st_mtime < pyproject.stat().st_mtime:
-                    record(
-                        "uv.lock_fresh",
-                        False,
-                        "uv.lock older than pyproject.toml",
-                        level="warning",
-                        advice=["uv lock", "or: uv sync"],
-                    )
-            except OSError:
-                record(
-                    "uv.lock_fresh",
-                    False,
-                    "unable to stat uv.lock",
-                    level="warning",
-                    advice=["Ensure uv.lock exists and is readable"],
-                )
-
-    runtime_lib = _runtime_lib_path(root, "release", None)
-    runtime_exists = runtime_lib.exists()
-    if runtime_exists:
-        runtime_detail = str(runtime_lib)
-        # Check if the runtime is stale relative to Cargo.toml or runtime sources.
-        try:
-            lib_mtime = runtime_lib.stat().st_mtime
-            runtime_cargo = root / "runtime" / "molt-runtime" / "Cargo.toml"
-            if runtime_cargo.exists() and runtime_cargo.stat().st_mtime > lib_mtime:
-                runtime_detail += " (stale — runtime Cargo.toml is newer)"
-                runtime_exists = False
-        except OSError:
-            pass
-    else:
-        runtime_detail = f"not found: {runtime_lib}"
-    record(
-        "molt-runtime",
-        runtime_exists,
-        runtime_detail,
-        level="warning",
-        advice=[
-            "Run: cargo build --release -p molt-runtime",
-            "Or: molt run will auto-build it on first use",
-        ]
-        if not runtime_exists
-        else None,
-    )
-
-    if rustup_path:
-        try:
-            result = subprocess.run(
-                ["rustup", "target", "list", "--installed"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except OSError as exc:
-            record("rustup-targets", False, f"failed to query: {exc}")
-        else:
-            targets = result.stdout.split()
-            wasm_ok = any(
-                target in targets
-                for target in ("wasm32-wasip1", "wasm32-unknown-unknown")
-            )
-            record(
-                "wasm-target",
-                wasm_ok,
-                "wasm32-wasip1 or wasm32-unknown-unknown",
-                level="warning",
-                advice=["rustup target add wasm32-wasip1"] if not wasm_ok else None,
-            )
-
-    failures = [
-        check
-        for check in checks
-        if not check["ok"] and check.get("level", "error") == "error"
-    ]
-    status = "ok" if not failures else "error"
+    report = _build_toolchain_report(root)
+    status = "ok" if not report.errors else "error"
+    data = {
+        "checks": report.checks,
+        "environment": report.environment,
+        "actions": report.actions,
+        "backends": report.backends,
+        "profiles": report.profiles,
+    }
     if json_output:
         payload = _json_payload(
             "doctor",
             status,
-            data={"checks": checks},
-            warnings=warnings,
-            errors=errors,
+            data=data,
+            warnings=report.warnings,
+            errors=report.errors,
         )
         _emit_json(payload, json_output=True)
     else:
-        for check in checks:
+        for check in report.checks:
             if check["ok"]:
                 print(f"OK: {check['name']} ({check['detail']})")
                 continue
@@ -24704,8 +25012,429 @@ def doctor(
             print(f"{level}: {check['name']} ({check['detail']})")
             for hint in check.get("advice", []):
                 print(f"  -> {hint}")
-    if strict and any(not check["ok"] for check in checks):
+        if report.actions:
+            print("Suggested actions:")
+            for action in report.actions:
+                print(f"- [{action['check']}] {action['command']}")
+    if strict and any(not check["ok"] for check in report.checks):
         return 1
+    return 0
+
+
+def _planned_validate_steps(
+    root: Path,
+    *,
+    suite: Literal["full", "smoke", "commands", "conformance", "bench"],
+    backend: Literal["all", "native", "llvm", "wasm"],
+    profile: Literal["all", "dev", "release"],
+) -> list[_ValidationStep]:
+    python = sys.executable
+    bench_profile = "release" if profile == "all" else profile
+    steps: list[_ValidationStep] = [
+        _ValidationStep(
+            "cli-run-json",
+            [
+                python,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/cli/test_cli_smoke.py",
+                "-k",
+                "test_cli_run_json",
+            ],
+            root,
+            "command",
+            ("native",),
+            ("dev",),
+            "smoke",
+        ),
+        _ValidationStep(
+            "cli-build-json",
+            [
+                python,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/cli/test_cli_smoke.py",
+                "-k",
+                "test_cli_build_json_binary_executes_for_native_profiles",
+            ],
+            root,
+            "command",
+            ("native",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "cli-compare-json",
+            [
+                python,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/cli/test_cli_smoke.py",
+                "-k",
+                "test_cli_compare_json",
+            ],
+            root,
+            "command",
+            ("native",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "cli-unsupported-dynamic",
+            [
+                python,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/cli/test_cli_smoke.py",
+                "-k",
+                "test_cli_run_exec_eval_raise_runtime_error",
+            ],
+            root,
+            "command",
+            ("native",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "native-parity",
+            [
+                python,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/test_native_lir_loop_join_semantics.py",
+                "-k",
+                "not llvm",
+            ],
+            root,
+            "correctness",
+            ("native",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "llvm-parity",
+            [
+                python,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/test_native_lir_loop_join_semantics.py",
+                "-k",
+                "llvm_simple_exception_catch or llvm_exception_loop",
+            ],
+            root,
+            "correctness",
+            ("llvm",),
+            ("release",),
+            "smoke",
+        ),
+        _ValidationStep(
+            "wasm-parity",
+            [
+                python,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/test_wasm_control_flow.py",
+                "tests/test_wasm_class_smoke.py",
+                "-k",
+                "preserves_type_name or wasm_module_try_exception_loop_parity",
+            ],
+            root,
+            "correctness",
+            ("wasm",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "native-rust-regressions",
+            [
+                "cargo",
+                "test",
+                "-p",
+                "molt-backend",
+                "--features",
+                "native-backend",
+                "--test",
+                "entry_block_param_shadow",
+                "--test",
+                "lir_loop_and_join_regressions",
+                "--test",
+                "native_extern_linkage",
+                "--test",
+                "ir_contract_validation",
+                "--",
+                "--nocapture",
+            ],
+            root,
+            "correctness",
+            ("native",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "wasm-rust-regressions",
+            [
+                "cargo",
+                "test",
+                "-p",
+                "molt-backend",
+                "--features",
+                "wasm-backend",
+                "--test",
+                "lir_wasm_repr_regressions",
+                "--test",
+                "wasm_lir_fast_path_integration",
+                "--",
+                "--nocapture",
+            ],
+            root,
+            "correctness",
+            ("wasm",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "conformance-smoke",
+            [
+                python,
+                "tests/harness/run_molt_conformance.py",
+                "--suite",
+                "smoke",
+                "--json-out",
+                str(root / "logs" / "validate-conformance-smoke.json"),
+            ],
+            root,
+            "conformance",
+            ("native",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "conformance-full",
+            [
+                python,
+                "tests/harness/run_molt_conformance.py",
+                "--suite",
+                "full",
+                "--json-out",
+                str(root / "logs" / "validate-conformance-full.json"),
+            ],
+            root,
+            "conformance",
+            ("native",),
+            ("dev", "release"),
+            "full",
+        ),
+        _ValidationStep(
+            "bench-smoke",
+            [
+                python,
+                "tools/bench.py",
+                "--smoke",
+                "--molt-profile",
+                bench_profile,
+                "--json-out",
+                str(root / "bench" / "results" / "validate-bench-smoke.json"),
+            ],
+            root,
+            "benchmark",
+            ("native",),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "bench-full",
+            [
+                python,
+                "tools/bench.py",
+                "--molt-profile",
+                bench_profile,
+                "--json-out",
+                str(root / "bench" / "results" / "validate-bench-full.json"),
+            ],
+            root,
+            "benchmark",
+            ("native",),
+            ("dev", "release"),
+            "full",
+        ),
+    ]
+
+    selected: list[_ValidationStep] = []
+    for step in steps:
+        if suite == "commands" and step.category != "command":
+            continue
+        if suite == "conformance" and step.category != "conformance":
+            continue
+        if suite == "bench" and step.category != "benchmark":
+            continue
+        if suite == "smoke" and step.suite != "smoke":
+            continue
+        if (
+            suite == "full"
+            and step.suite == "smoke"
+            and step.category
+            in {
+                "conformance",
+                "benchmark",
+            }
+        ):
+            continue
+        if backend != "all" and backend not in step.backends:
+            continue
+        if profile != "all" and profile not in step.profiles:
+            continue
+        selected.append(step)
+    return selected
+
+
+def validate(
+    *,
+    suite: Literal["full", "smoke", "commands", "conformance", "bench"] = "full",
+    backend: Literal["all", "native", "llvm", "wasm"] = "all",
+    profile: Literal["all", "dev", "release"] = "all",
+    json_output: bool = False,
+    verbose: bool = False,
+    check_only: bool = False,
+) -> int:
+    root = _find_molt_root(Path.cwd())
+    root_error = _require_molt_root(root, json_output, "validate")
+    if root_error is not None:
+        return root_error
+    steps = _planned_validate_steps(
+        root,
+        suite=suite,
+        backend=backend,
+        profile=profile,
+    )
+    if not steps:
+        return _fail(
+            "No validation steps matched the requested filters.",
+            json_output,
+            command="validate",
+        )
+    step_rows = [
+        {
+            "name": step.name,
+            "category": step.category,
+            "cwd": str(step.cwd),
+            "cmd": step.cmd,
+            "backends": list(step.backends),
+            "profiles": list(step.profiles),
+            "suite": step.suite,
+        }
+        for step in steps
+    ]
+    if check_only:
+        payload = _json_payload(
+            "validate",
+            "ok",
+            data={
+                "check_only": True,
+                "suite": suite,
+                "backend": backend,
+                "profile": profile,
+                "steps": step_rows,
+            },
+        )
+        if json_output:
+            _emit_json(payload, json_output=True)
+        else:
+            print("Validation plan:")
+            for row in step_rows:
+                print(f"- [{row['category']}] {row['name']}: {shlex.join(row['cmd'])}")
+        return 0
+
+    env = _base_env(root, molt_root=root)
+    for key, value in _canonical_env_defaults(root).items():
+        env.setdefault(key, value)
+    env.setdefault("MOLT_SESSION_ID", "validate")
+    results: list[dict[str, Any]] = []
+    for step in steps:
+        if verbose and not json_output:
+            print(
+                f"[molt validate] {step.name}: {shlex.join(step.cmd)}",
+                file=sys.stderr,
+            )
+        start = time.perf_counter()
+        proc = subprocess.run(
+            step.cmd,
+            cwd=step.cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        duration_s = round(time.perf_counter() - start, 6)
+        entry: dict[str, Any] = {
+            "name": step.name,
+            "category": step.category,
+            "cwd": str(step.cwd),
+            "cmd": step.cmd,
+            "returncode": proc.returncode,
+            "duration_s": duration_s,
+        }
+        if proc.stdout:
+            entry["stdout"] = proc.stdout
+        if proc.stderr:
+            entry["stderr"] = proc.stderr
+        results.append(entry)
+        if verbose and not json_output:
+            print(
+                f"[molt validate] {step.name} finished "
+                f"(rc={proc.returncode}, {duration_s:.2f}s)",
+                file=sys.stderr,
+            )
+        if proc.returncode != 0:
+            payload = _json_payload(
+                "validate",
+                "error",
+                data={
+                    "check_only": False,
+                    "suite": suite,
+                    "backend": backend,
+                    "profile": profile,
+                    "steps": step_rows,
+                    "results": results,
+                },
+                errors=[f"{step.name} failed with exit code {proc.returncode}"],
+            )
+            if json_output:
+                _emit_json(payload, json_output=True)
+            else:
+                print(
+                    f"molt validate failed at {step.name}: {shlex.join(step.cmd)}",
+                    file=sys.stderr,
+                )
+                if proc.stderr:
+                    print(proc.stderr, file=sys.stderr, end="")
+            return proc.returncode or 1
+
+    payload = _json_payload(
+        "validate",
+        "ok",
+        data={
+            "check_only": False,
+            "suite": suite,
+            "backend": backend,
+            "profile": profile,
+            "steps": step_rows,
+            "results": results,
+        },
+    )
+    if json_output:
+        _emit_json(payload, json_output=True)
+    else:
+        print("Validation succeeded:")
+        for result in results:
+            print(
+                f"- [{result['category']}] {result['name']} (rc={result['returncode']})"
+            )
     return 0
 
 
@@ -26916,7 +27645,9 @@ def _ensure_molt_venv(
             "https://astral.sh/uv/install.sh | sh"
         )
     cmd = [
-        uv, "venv", str(venv),
+        uv,
+        "venv",
+        str(venv),
         "--python",
         f"{sys.version_info.major}.{sys.version_info.minor}",
     ]
@@ -27081,8 +27812,11 @@ def install_add(
 
     # Use `uv pip install` into the molt venv.
     pip_cmd = [
-        uv, "pip", "install",
-        "--python", str(venv / "bin" / "python"),
+        uv,
+        "pip",
+        "install",
+        "--python",
+        str(venv / "bin" / "python"),
         *packages,
     ]
     if verbose and not json_output:
@@ -28129,11 +28863,23 @@ def _ensure_cli_hash_seed() -> None:
     os.execvpe(sys.executable, [sys.executable, *sys.argv], env)
 
 
-_BUILD_ESSENTIAL_FLAGS = frozenset({
-    "file", "module", "target", "release", "output", "out_dir",
-    "verbose", "json", "rebuild", "profile", "platform", "help",
-    "backend",
-})
+_BUILD_ESSENTIAL_FLAGS = frozenset(
+    {
+        "file",
+        "module",
+        "target",
+        "release",
+        "output",
+        "out_dir",
+        "verbose",
+        "json",
+        "rebuild",
+        "profile",
+        "platform",
+        "help",
+        "backend",
+    }
+)
 
 
 class _BuildHelpFormatter(argparse.RawDescriptionHelpFormatter):
@@ -28151,7 +28897,11 @@ class _BuildHelpFormatter(argparse.RawDescriptionHelpFormatter):
         return super()._format_action(action)
 
     def _format_usage(self, usage, actions, groups, prefix):
-        filtered = [a for a in actions if not a.option_strings or a.dest in _BUILD_ESSENTIAL_FLAGS]
+        filtered = [
+            a
+            for a in actions
+            if not a.option_strings or a.dest in _BUILD_ESSENTIAL_FLAGS
+        ]
         return super()._format_usage(usage, filtered, groups, prefix)
 
 
@@ -28165,8 +28915,13 @@ class _MoltHelpFormatter(argparse.RawDescriptionHelpFormatter):
             _package = ["package", "publish", "deps", "vendor", "install"]
             _toolchain = ["clean", "doctor", "update", "config", "completion"]
             _dev = [
-                "compare", "diff", "parity-run", "profile",
-                "lint", "extension", "verify",
+                "compare",
+                "diff",
+                "parity-run",
+                "profile",
+                "lint",
+                "extension",
+                "verify",
             ]
 
             groups = [
@@ -28210,6 +28965,7 @@ class _MoltHelpFormatter(argparse.RawDescriptionHelpFormatter):
 def main() -> int:
     _ensure_cli_hash_seed()
     from molt import __version__
+
     parser = argparse.ArgumentParser(
         prog="molt",
         usage="molt [-h] [--version] <command> [options]",
@@ -29100,6 +29856,26 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
+    setup_parser = subparsers.add_parser(
+        "setup",
+        help="Prepare the host toolchain and canonical Molt environment",
+        description=(
+            "Report and remediate the toolchains, environment variables, and\n"
+            "backend readiness required for Molt development and release work."
+        ),
+    )
+    setup_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return non-zero exit on missing required setup items.",
+    )
+    setup_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    setup_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
     doctor_parser = subparsers.add_parser(
         "doctor",
         help="Check toolchain setup",
@@ -29161,6 +29937,44 @@ def main() -> int:
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
     update_parser.add_argument(
+        "--verbose", action="store_true", help="Emit verbose diagnostics."
+    )
+
+    validate_parser = subparsers.add_parser(
+        "validate",
+        help="Run the canonical end-to-end local validation matrix",
+        description=(
+            "Run the release-readiness matrix across CLI smoke, backend parity,\n"
+            "conformance, and benchmark lanes."
+        ),
+    )
+    validate_parser.add_argument(
+        "--suite",
+        choices=["full", "smoke", "commands", "conformance", "bench"],
+        default="full",
+        help="Validation scope (default: full).",
+    )
+    validate_parser.add_argument(
+        "--backend",
+        choices=["all", "native", "llvm", "wasm"],
+        default="all",
+        help="Restrict validation to one backend family.",
+    )
+    validate_parser.add_argument(
+        "--profile",
+        choices=["all", "dev", "release"],
+        default="all",
+        help="Restrict validation to one build profile where applicable.",
+    )
+    validate_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Print the validation plan without executing it.",
+    )
+    validate_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    validate_parser.add_argument(
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
@@ -29246,9 +30060,7 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
-    publish_parser = subparsers.add_parser(
-        "publish", help="Publish to registry"
-    )
+    publish_parser = subparsers.add_parser("publish", help="Publish to registry")
     publish_parser.add_argument("package", help="Path to the .moltpkg file.")
     publish_parser.add_argument(
         "--registry",
@@ -29403,9 +30215,7 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
-    deps_parser = subparsers.add_parser(
-        "deps", help="Show dependency info"
-    )
+    deps_parser = subparsers.add_parser("deps", help="Show dependency info")
     deps_parser.add_argument(
         "--include-dev", action="store_true", help="Include dev dependencies"
     )
@@ -29556,9 +30366,7 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
-    config_parser = subparsers.add_parser(
-        "config", help="Show/set configuration"
-    )
+    config_parser = subparsers.add_parser("config", help="Show/set configuration")
     config_parser.add_argument(
         "--file",
         help="Resolve project root from a source file path.",
@@ -29834,11 +30642,7 @@ def main() -> int:
         capabilities = (
             args.capabilities or build_cfg.get("capabilities") or cfg_capabilities
         )
-        cfg_lib_paths = (
-            build_cfg.get("lib_paths")
-            or build_cfg.get("lib-paths")
-            or []
-        )
+        cfg_lib_paths = build_cfg.get("lib_paths") or build_cfg.get("lib-paths") or []
         if isinstance(cfg_lib_paths, str):
             cfg_lib_paths = [cfg_lib_paths]
         lib_paths: list[str] = list(args.lib_path) + list(cfg_lib_paths)
@@ -30253,6 +31057,8 @@ def main() -> int:
         )
     if args.command == "lint":
         return lint(args.json, args.verbose)
+    if args.command == "setup":
+        return setup(args.json, args.verbose, args.strict)
     if args.command == "doctor":
         return doctor(args.json, args.verbose, args.strict)
     if args.command == "update":
@@ -30264,6 +31070,18 @@ def main() -> int:
             include_toolchains=args.toolchains,
             include_locks=args.locks,
             include_manifests=include_manifests,
+        )
+    if args.command == "validate":
+        return validate(
+            suite=cast(
+                Literal["full", "smoke", "commands", "conformance", "bench"],
+                args.suite,
+            ),
+            backend=cast(Literal["all", "native", "llvm", "wasm"], args.backend),
+            profile=cast(Literal["all", "dev", "release"], args.profile),
+            json_output=args.json,
+            verbose=args.verbose,
+            check_only=args.check,
         )
     if args.command == "package":
         deterministic = args.deterministic
@@ -30753,8 +31571,13 @@ def _is_private_ip(host: str) -> bool:
         bare = ipaddress.ip_address(host)
         if isinstance(bare, ipaddress.IPv6Address) and bare.ipv4_mapped is not None:
             bare = bare.ipv4_mapped
-        return (bare.is_private or bare.is_loopback or bare.is_link_local
-                or bare.is_reserved or str(bare) == "169.254.169.254")
+        return (
+            bare.is_private
+            or bare.is_loopback
+            or bare.is_link_local
+            or bare.is_reserved
+            or str(bare) == "169.254.169.254"
+        )
     except ValueError:
         pass  # not a bare IP — fall through to DNS resolution
     # Resolve DNS and check all resulting IPs
@@ -30799,9 +31622,7 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     ) -> urllib.request.Request | None:
         parsed = urllib.parse.urlparse(newurl)
         if parsed.scheme != "https":
-            raise ValueError(
-                f"redirect to non-HTTPS URL blocked: {newurl}"
-            )
+            raise ValueError(f"redirect to non-HTTPS URL blocked: {newurl}")
         redir_host = parsed.hostname or ""
         if _is_private_ip(redir_host):
             raise ValueError(
@@ -30820,9 +31641,15 @@ def _download_artifact(url: str, expected_hash: str) -> bytes:
     if _is_private_ip(host):
         raise ValueError(f"URL resolves to private/metadata address: {host}")
     if ":" not in expected_hash:
-        raise ValueError(f"hash must be in 'algorithm:hex' format, got {expected_hash!r}")
+        raise ValueError(
+            f"hash must be in 'algorithm:hex' format, got {expected_hash!r}"
+        )
     algo, expected = expected_hash.split(":", 1)
-    if algo != "sha256" or len(expected) != 64 or not all(c in "0123456789abcdef" for c in expected):
+    if (
+        algo != "sha256"
+        or len(expected) != 64
+        or not all(c in "0123456789abcdef" for c in expected)
+    ):
         raise ValueError(f"unsupported or malformed hash: {expected_hash!r}")
     cache_path = _vendor_cache_path(url, expected_hash)
     if cache_path is not None:

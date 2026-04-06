@@ -44,12 +44,16 @@ It is current-state only. For forward-looking priorities, use
 
 ## Validation Summary
 
-- Local lint and policy gates live behind `tools/dev.py lint`.
-- Python test coverage lives behind `tools/dev.py test`.
+- Canonical local DX now routes through:
+  - `molt setup`
+  - `molt doctor`
+  - `molt validate`
 - Backend completion now requires an explicit end-to-end CLI/profile/target
   matrix, not only backend-internal unit and lowering proof:
   - native `build` / `run` / `compare` on `dev` and `release`
+  - LLVM release parity on the covered slice
   - linked-WASM CLI build plus Node execution
+  - conformance and benchmark entrypoints on the same CLI validation surface
   - honest failure surfaces for intentionally unsupported dynamic execution
 - Compatibility evidence is tracked in the differential suites, generated
   compatibility docs, and proof workflows linked below.
