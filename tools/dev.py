@@ -178,14 +178,26 @@ def main() -> None:
             python=TEST_PYTHONS[0],
             tty=use_tty,
         )
+    elif cmd[0] == "setup":
+        run_uv(
+            ["python3", "-m", "molt.cli", "setup", *cmd[1:]],
+            python=TEST_PYTHONS[0],
+            tty=use_tty,
+        )
     elif cmd[0] == "update":
         run_uv(
             ["python3", "-m", "molt.cli", "update", *cmd[1:]],
             python=TEST_PYTHONS[0],
             tty=use_tty,
         )
+    elif cmd[0] == "validate":
+        run_uv(
+            ["python3", "-m", "molt.cli", "validate", *cmd[1:]],
+            python=TEST_PYTHONS[0],
+            tty=use_tty,
+        )
     else:
-        print("Usage: tools/dev.py [lint|test|doctor|update]")
+        print("Usage: tools/dev.py [lint|test|setup|doctor|update|validate]")
 
 
 if __name__ == "__main__":

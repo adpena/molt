@@ -42,14 +42,21 @@ For the canonical vision and scope, read [spec/areas/core/0000-vision.md](spec/a
 
 ## Toolchain And Dependency Maintenance
 
-Use the CLI as the single source of truth for setup diagnostics and repo refreshes:
+Use the CLI as the single source of truth for setup, diagnostics, validation,
+and repo refreshes:
 
 ```bash
+molt setup
 molt doctor
+molt validate --check --suite smoke
 molt update --check
 ```
 
+- `molt setup` is the canonical bootstrap/readiness command. It reports exact
+  toolchain actions plus the canonical Molt env layout.
 - `molt doctor` reports missing tools and version-pinned backend prerequisites such as the LLVM lane required by `runtime/molt-backend/Cargo.toml`.
+- `molt validate --check --suite smoke` prints the canonical local validation
+  matrix without executing it.
 - `molt update --check` prints the exact commands Molt will run, without mutating the checkout or the machine.
 
 For a normal repo refresh:
@@ -85,16 +92,15 @@ Treat `--all` as a coordinated change: rebuild the touched crates and rerun the 
 Use these as the canonical local gates:
 
 ```bash
-python3 tools/dev.py lint
-python3 tools/dev.py test
-PYTHONPATH=src python3 tests/harness/run_molt_conformance.py --suite smoke
-PYTHONPATH=src python3 tests/harness/run_molt_conformance.py --suite full
+molt validate --suite smoke
+molt validate
 ```
 
 Interpretation:
-- `tools/dev.py lint` and `tools/dev.py test` are the full local presubmit baseline.
-- `--suite smoke` is the fast Molt conformance subset for routine iteration.
-- `--suite full` is the heavier local correctness lane that matches hosted nightly intent.
+- `molt validate --suite smoke` is the fast local presubmit matrix.
+- `molt validate` is the heavier full local correctness + benchmark lane.
+- `tools/dev.py` remains available as a thin convenience delegate; it is not
+  the behavioral authority.
 
 ## Fast Build Playbook
 

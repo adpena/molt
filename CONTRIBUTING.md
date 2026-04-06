@@ -25,6 +25,11 @@ Molt expects production-grade changes, not opportunistic patches.
 ## Required Verification
 
 - Run the smallest command set that proves the touched paths still work.
+- Prefer the canonical CLI DX surface for repo-wide proof:
+  - `molt setup`
+  - `molt doctor`
+  - `molt validate --suite smoke`
+  - `molt validate`
 - For repo-structure changes, verify:
   - moved paths are updated everywhere relevant
   - canonical docs link to live files

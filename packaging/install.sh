@@ -138,5 +138,12 @@ if [ "$UPDATE_PATH" -eq 1 ]; then
   fi
 fi
 
+molt_bin="$bin_path/molt"
+if [ ! -x "$molt_bin" ]; then
+  echo "Installed bundle is missing executable: $molt_bin" >&2
+  exit 1
+fi
+
 echo "Molt installed to $MOLT_HOME"
-echo "Run: molt doctor"
+"$molt_bin" setup --strict
+echo "Run: molt setup"

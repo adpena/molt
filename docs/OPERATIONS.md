@@ -639,9 +639,11 @@ This section standardizes parallel agent work on Molt.
 
 ### Quality gates
 - Run extensive linting and tests before PRs or merges.
-- Prefer `uv run --python 3.12 python3 tools/dev.py lint` +
-  `uv run --python 3.12 python3 tools/dev.py test`, plus relevant `cargo`
-  check/test.
+- Prefer `molt setup`, `molt doctor`, and `molt validate` as the canonical
+  operator surface. `tools/dev.py` is now a convenience delegate only.
+- Use `molt validate --suite smoke` for fast local proof and `molt validate`
+  for the heavier full matrix, plus any targeted `cargo` checks required by the
+  touched lane.
 - Do not merge if tests are failing unless explicitly approved.
 
 ### Merge discipline
