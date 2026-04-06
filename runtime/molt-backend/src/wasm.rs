@@ -1259,11 +1259,10 @@ impl WasmBackend {
                 index: self.data_segments.len().saturating_sub(1) as u32,
             };
         }
-        if cacheable {
-            if let Some(existing) = self.data_segment_cache.get(bytes) {
+        if cacheable
+            && let Some(existing) = self.data_segment_cache.get(bytes) {
                 return *existing;
             }
-        }
         let offset = self.data_offset;
         let byte_len: u32 = bytes
             .len()
@@ -1392,7 +1391,7 @@ impl WasmBackend {
 
                 // Only 2 or 3 element unpacks are worth multi-value.
                 // Mark callees with non-destructuring call sites as ineligible.
-                if unpack_count < 2 || unpack_count > 3 {
+                if !(2..=3).contains(&unpack_count) {
                     candidate_arity.insert(callee.clone(), None);
                     continue;
                 }
@@ -1437,13 +1436,11 @@ impl WasmBackend {
                 for op in &func_ir.ops {
                     match op.kind.as_str() {
                         "tuple_new" => {
-                            if let Some(args) = &op.args {
-                                if args.len() == *expected_arity {
-                                    if let Some(out) = &op.out {
+                            if let Some(args) = &op.args
+                                && args.len() == *expected_arity
+                                    && let Some(out) = &op.out {
                                         tuple_new_vars.insert(out.clone());
                                     }
-                                }
-                            }
                         }
                         "ret" => {
                             has_any_ret = true;
@@ -1506,12 +1503,11 @@ impl WasmBackend {
                 }
 
                 // builtin_func ops reference imports by s_value (with molt_ prefix).
-                if kind == "builtin_func" {
-                    if let Some(name) = op.s_value.as_ref() {
+                if kind == "builtin_func"
+                    && let Some(name) = op.s_value.as_ref() {
                         let import_name = name.strip_prefix("molt_").unwrap_or(name.as_str());
                         required.insert(import_name.to_string());
                     }
-                }
 
                 // Prefix-based discovery for stdlib groups.
                 // If the op kind starts with a known stdlib prefix, include it.
@@ -1627,8 +1623,8 @@ impl WasmBackend {
                 );
 
                 // Cache hit: restore previously optimized ops and skip the pipeline.
-                if let Some(cached_bytes) = tir_cache.get(&content_hash) {
-                    if let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
+                if let Some(cached_bytes) = tir_cache.get(&content_hash)
+                    && let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
                     {
                         func_ir.ops = cached_ops;
                         let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
@@ -1640,7 +1636,6 @@ impl WasmBackend {
                         }
                         continue;
                     }
-                }
 
                 let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
                 crate::tir::type_refine::refine_types(&mut tir_func);
@@ -2195,12 +2190,11 @@ impl WasmBackend {
                 return;
             }
             // In auto mode, skip imports not in the required set.
-            if let Some(ref required) = auto_required {
-                if !required.contains(name) {
+            if let Some(ref required) = auto_required
+                && !required.contains(name) {
                     ids.insert(name.to_string(), u32::MAX);
                     return;
                 }
-            }
             self.imports
                 .import("molt_runtime", name, EntityType::Function(ty));
             ids.insert(name.to_string(), import_idx);
@@ -2389,8 +2383,8 @@ impl WasmBackend {
             for (name, ret_count) in &multi_return_candidates {
                 if let Some(&param_count) = func_param_counts.get(name.as_str()) {
                     let key = (param_count, *ret_count);
-                    if !multi_return_type_map.contains_key(&key) {
-                        multi_return_type_map.insert(key, next_type_idx);
+                    if let std::collections::btree_map::Entry::Vacant(e) = multi_return_type_map.entry(key) {
+                        e.insert(next_type_idx);
                         needed.push(key);
                         next_type_idx += 1;
                     }
@@ -4539,14 +4533,12 @@ impl WasmBackend {
             }
             // Local coalescing: if this variable maps to a representative
             // that already has a local, reuse that local index.
-            if let Some(repr) = coalesced_map.get(name) {
-                if repr != name {
-                    if let Some(&repr_idx) = locals.get(repr) {
+            if let Some(repr) = coalesced_map.get(name)
+                && repr != name
+                    && let Some(&repr_idx) = locals.get(repr) {
                         locals.insert(name.to_string(), repr_idx);
                         return repr_idx;
                     }
-                }
-            }
             let idx = local_count;
             locals.insert(name.to_string(), idx);
             local_types.push(ValType::I64);
@@ -4571,11 +4563,10 @@ impl WasmBackend {
                     }
                 }
             }
-            if let Some(out) = &op.out {
-                if out != "none" {
+            if let Some(out) = &op.out
+                && out != "none" {
                     defined_vars.insert(out.clone());
                 }
-            }
         }
         for op in &func_ir.ops {
             if op.fast_int.unwrap_or(false) {
@@ -4622,7 +4613,7 @@ impl WasmBackend {
                 "alloc_task" => {
                     let tk = op.task_kind.as_deref().unwrap_or("future");
                     let has_prefix = tk == "generator";
-                    let has_args = op.args.as_ref().map_or(false, |a| !a.is_empty());
+                    let has_args = op.args.as_ref().is_some_and(|a| !a.is_empty());
                     if has_prefix || has_args {
                         needs_alloc_resolve = true;
                     }
@@ -4637,12 +4628,11 @@ impl WasmBackend {
         // for import vs __main__).  Without this, the WASM local defaults to
         // 0 which is not a valid boxed value and causes runtime crashes.
         for undef in used_vars.difference(&defined_vars) {
-            if let Some(&local_idx) = locals.get(undef.as_str()) {
-                if local_idx != dead_sink_idx && !const_seed_seen.contains(undef) {
+            if let Some(&local_idx) = locals.get(undef.as_str())
+                && local_idx != dead_sink_idx && !const_seed_seen.contains(undef) {
                     const_seed_seen.insert(undef.clone());
                     const_seed_locals_all.push((local_idx, box_none()));
                 }
-            }
         }
 
         if needs_field_fast {
@@ -4662,15 +4652,14 @@ impl WasmBackend {
             }
         }
 
-        if needs_alloc_resolve {
-            if let std::collections::btree_map::Entry::Vacant(entry) =
+        if needs_alloc_resolve
+            && let std::collections::btree_map::Entry::Vacant(entry) =
                 locals.entry("__wasm_alloc_resolve".to_string())
             {
                 entry.insert(local_count);
                 local_types.push(ValType::I32);
                 local_count += 1;
             }
-        }
 
         for name in ["__molt_tmp0", "__molt_tmp1", "__molt_tmp2", "__molt_tmp3"] {
             if let std::collections::btree_map::Entry::Vacant(entry) =
@@ -4821,23 +4810,20 @@ impl WasmBackend {
         if let Some(ret_count) = is_multi_return_callee {
             for i in 0..ret_count {
                 let name = format!("__multi_ret_{i}");
-                if !locals.contains_key(&name) {
-                    locals.insert(name, local_count);
+                if let std::collections::btree_map::Entry::Vacant(e) = locals.entry(name) {
+                    e.insert(local_count);
                     local_types.push(ValType::I64);
                     multi_ret_locals.push(local_count);
                     local_count += 1;
                 }
             }
             for op in &func_ir.ops {
-                if op.kind == "tuple_new" {
-                    if let Some(args) = &op.args {
-                        if args.len() == ret_count {
-                            if let Some(out) = &op.out {
+                if op.kind == "tuple_new"
+                    && let Some(args) = &op.args
+                        && args.len() == ret_count
+                            && let Some(out) = &op.out {
                                 multi_ret_tuple_vars.insert(out.clone());
                             }
-                        }
-                    }
-                }
             }
         }
 
@@ -5016,11 +5002,10 @@ impl WasmBackend {
             let last_use_local: BTreeMap<String, usize> = {
                 let mut lu = BTreeMap::new();
                 for (i, op) in ops.iter().enumerate() {
-                    if let Some(var) = &op.var {
-                        if var != "none" {
+                    if let Some(var) = &op.var
+                        && var != "none" {
                             lu.insert(var.clone(), i);
                         }
-                    }
                     if let Some(args) = &op.args {
                         for name in args {
                             if name != "none" {
@@ -11236,7 +11221,7 @@ impl WasmBackend {
                         // Resolve the task handle pointer once and cache in a
                         // local, mirroring the trampoline codepath pattern
                         // (WASM_OPTIMIZATION_PLAN Section 3.3).
-                        let has_args = op.args.as_ref().map_or(false, |a| !a.is_empty());
+                        let has_args = op.args.as_ref().is_some_and(|a| !a.is_empty());
                         if payload_base > 0 || has_args {
                             let resolve_local = locals["__wasm_alloc_resolve"];
                             func.instruction(&Instruction::LocalGet(res));
@@ -11851,7 +11836,7 @@ impl WasmBackend {
                         // Multi-value return (Section 3.1): push individual
                         // __multi_ret_N locals instead of the tuple handle.
                         if is_multi_return_callee.is_some()
-                            && ret_var.map_or(false, |v| multi_ret_tuple_vars.contains(v))
+                            && ret_var.is_some_and(|v| multi_ret_tuple_vars.contains(v))
                             && !multi_ret_locals.is_empty()
                         {
                             for &local_idx in &multi_ret_locals {
@@ -12174,11 +12159,10 @@ impl WasmBackend {
                     // All other ops: invalidate only the output local (if any),
                     // since only that local's value changed.
                     _ => {
-                        if let Some(ref out) = op.out {
-                            if let Some(&out_idx) = locals.get(out.as_str()) {
+                        if let Some(ref out) = op.out
+                            && let Some(&out_idx) = locals.get(out.as_str()) {
                                 known_raw_ints.remove(&out_idx);
                             }
-                        }
                     }
                 }
             }
@@ -13790,8 +13774,8 @@ fn strip_unused_imports(bytes: Vec<u8>, unused_names: &BTreeSet<String>) -> Vec<
                                 TypeRef::Table(t) => EntityType::Table(wasm_encoder::TableType {
                                     element_type: convert_ref_type(t.element_type),
                                     table64: t.table64,
-                                    minimum: t.initial.into(),
-                                    maximum: t.maximum.map(Into::into),
+                                    minimum: t.initial,
+                                    maximum: t.maximum,
                                     shared: t.shared,
                                 }),
                                 TypeRef::Memory(m) => EntityType::Memory(MemoryType {
@@ -13865,7 +13849,7 @@ fn strip_unused_imports(bytes: Vec<u8>, unused_names: &BTreeSet<String>) -> Vec<
                                 let indices: Vec<u32> = funcs
                                     .into_iter()
                                     .flatten()
-                                    .map(|idx| remap_func_index(idx))
+                                    .map(&remap_func_index)
                                     .collect();
                                 match element.kind {
                                     wasmparser::ElementKind::Active {
@@ -13873,11 +13857,10 @@ fn strip_unused_imports(bytes: Vec<u8>, unused_names: &BTreeSet<String>) -> Vec<
                                         offset_expr,
                                     } => {
                                         let mut ops = offset_expr.get_operators_reader();
-                                        let offset_val = if let Ok(op) = ops.read() {
-                                            match op {
-                                                Operator::I32Const { value } => value,
-                                                _ => 0,
-                                            }
+                                        let offset_val = if let Ok(Operator::I32Const { value }) =
+                                            ops.read()
+                                        {
+                                            value
                                         } else {
                                             0
                                         };
@@ -13885,7 +13868,7 @@ fn strip_unused_imports(bytes: Vec<u8>, unused_names: &BTreeSet<String>) -> Vec<
                                         let table = table_index.filter(|&t| t != 0);
                                         section.segment(ElementSegment {
                                             mode: ElementMode::Active {
-                                                table: table,
+                                                table,
                                                 offset: &c,
                                             },
                                             elements: Elements::Functions(Cow::Owned(indices)),
@@ -14105,7 +14088,7 @@ fn remap_function_body(body: &[u8], remap: &dyn Fn(u32) -> u32) -> Vec<u8> {
                 // Copy operands for known opcodes to avoid misparse.
                 match opcode {
                     // Control flow with block types
-                    0x02 | 0x03 | 0x04 => {
+                    0x02..=0x04 => {
                         // block/loop/if: blocktype (signed LEB128)
                         copy_sleb128(body, &mut pos, &mut out);
                     }
@@ -14133,7 +14116,7 @@ fn remap_function_body(body: &[u8], remap: &dyn Fn(u32) -> u32) -> Vec<u8> {
                         copy_uleb128(body, &mut pos, &mut out); // table_index
                     }
                     // Variable access: local.get/set/tee (0x20-0x22)
-                    0x20 | 0x21 | 0x22 => {
+                    0x20..=0x22 => {
                         copy_uleb128(body, &mut pos, &mut out);
                     }
                     // Global access: global.get/set (0x23-0x24)
@@ -14206,7 +14189,7 @@ fn remap_function_body(body: &[u8], remap: &dyn Fn(u32) -> u32) -> Vec<u8> {
                                 copy_uleb128(body, &mut pos, &mut out);
                             }
                             // table.grow/size/fill: table_idx
-                            15 | 16 | 17 => {
+                            15..=17 => {
                                 copy_uleb128(body, &mut pos, &mut out);
                             }
                             // i32.trunc_sat_f32_s (0), etc. (0-7): no operands

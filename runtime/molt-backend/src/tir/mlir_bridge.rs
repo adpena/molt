@@ -5,7 +5,7 @@
 #[cfg(feature = "mlir")]
 use melior::{
     Context as MlirContext,
-    ir::{Location, Module as MlirModule},
+    ir::{Location, Module as MlirModule, operation::OperationLike},
 };
 
 /// Create an MLIR context with the standard dialects registered.
@@ -13,7 +13,7 @@ use melior::{
 pub fn create_mlir_context() -> MlirContext {
     let ctx = MlirContext::new();
     // Register standard dialects
-    ctx.append_dialect_registry(&melior::dialect::DialectRegistry::new(&ctx));
+    ctx.append_dialect_registry(&melior::dialect::DialectRegistry::new());
     ctx.load_all_available_dialects();
     ctx
 }
@@ -21,10 +21,10 @@ pub fn create_mlir_context() -> MlirContext {
 /// Convert a TIR function to an MLIR module.
 /// This is the bridge that enables MLIR optimization passes on TIR.
 #[cfg(feature = "mlir")]
-pub fn tir_to_mlir(
+pub fn tir_to_mlir<'c>(
     func: &super::function::TirFunction,
-    ctx: &MlirContext,
-) -> Result<MlirModule, String> {
+    ctx: &'c MlirContext,
+) -> Result<MlirModule<'c>, String> {
     // Parse the MLIR text representation we already generate
     let mlir_text = super::mlir_compat::to_mlir_text(func);
     let _location = Location::unknown(ctx);
@@ -68,7 +68,7 @@ mod tests {
     #[test]
     fn test_mlir_bridge_module_exists() {
         // Verify the module is reachable and the stub types are usable
-        let ctx = super::create_mlir_context();
+        let _ctx = super::create_mlir_context();
         #[cfg(not(feature = "mlir"))]
         {
             let _: &super::MlirContextStub = &ctx;

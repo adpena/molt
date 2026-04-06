@@ -44,6 +44,12 @@ pub struct RustBackend {
     current_is_main: bool,
 }
 
+impl Default for RustBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RustBackend {
     pub fn new() -> Self {
         Self {
@@ -1039,21 +1045,20 @@ impl RustBackend {
             .iter()
             .filter(|op| op.kind == "loop_index_start")
             .filter_map(|op| op.out.as_deref())
-            .map(|s| rust_ident(s))
+            .map(rust_ident)
             .collect();
 
         // Collect closure slot vars
         let closure_slots: Vec<String> = {
             let mut seen = Vec::new();
             for op in &ops {
-                if op.kind == "closure_store" || op.kind == "closure_load" {
-                    if let Some(slot) = op.args.as_ref().and_then(|a| a.first()) {
+                if (op.kind == "closure_store" || op.kind == "closure_load")
+                    && let Some(slot) = op.args.as_ref().and_then(|a| a.first()) {
                         let v = format!("__closure_{}", rust_ident(slot));
                         if !seen.contains(&v) {
                             seen.push(v);
                         }
                     }
-                }
             }
             seen
         };
@@ -1136,13 +1141,12 @@ impl RustBackend {
                 }
                 "store_index" | "set_item" | "store_subscript" => {
                     // store_index(frame, slot, val) → need molt_get_item to recover
-                    if let Some(args) = ops[i].args.as_deref() {
-                        if args.len() >= 2 {
+                    if let Some(args) = ops[i].args.as_deref()
+                        && args.len() >= 2 {
                             let frame = rust_ident(&args[0]);
                             let slot = rust_ident(&args[1]);
                             last_jump_return = Some(format!("molt_get_item(&{frame}, &{slot})"));
                         }
-                    }
                 }
                 _ => {}
             }
@@ -1233,8 +1237,8 @@ impl RustBackend {
                 let trimmed = line.trim_start();
                 let mut replaced = false;
                 // Match pattern: "let mut VAR: MoltValue = ..." where VAR is hoisted
-                if trimmed.starts_with("let mut ") {
-                    let after = &trimmed[8..]; // skip "let mut "
+                if let Some(after) = trimmed.strip_prefix("let mut ") {
+                    // skip "let mut "
                     let var_end = after
                         .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
                         .unwrap_or(after.len());
@@ -1245,10 +1249,10 @@ impl RustBackend {
                         if rest.starts_with(": MoltValue =") || rest.starts_with("=") {
                             let indent_str = &line[..line.len() - trimmed.len()];
                             // Strip "let mut " and ": MoltValue" type annotation if present
-                            let assign_part = if rest.starts_with(": MoltValue =") {
-                                format!("{} ={}", var_name, &rest[13..])
+                            let assign_part = if let Some(stripped) = rest.strip_prefix(": MoltValue =") {
+                                format!("{var_name} ={stripped}")
                             } else {
-                                format!("{} {}", var_name, rest)
+                                format!("{var_name} {rest}")
                             };
                             patched.push_str(indent_str);
                             patched.push_str(&assign_part);
@@ -1416,13 +1420,12 @@ impl RustBackend {
                 }
             }
             "closure_store" => {
-                if let Some(args) = &op.args {
-                    if args.len() >= 2 {
+                if let Some(args) = &op.args
+                    && args.len() >= 2 {
                         let slot = format!("__closure_{}", rust_ident(&args[0]));
                         let src = rust_ident(&args[1]);
                         self.emit_line(&format!("{slot} = {src}.clone();"));
                     }
-                }
             }
             "phi" => {
                 // Phi nodes are handled by the hoisting logic above; skip here.
@@ -1794,7 +1797,7 @@ impl RustBackend {
                     .unwrap_or_else(|| "MoltValue::Int(1)".to_string());
                 // Emit as a while loop to keep MoltValue
                 self.emit_line(&format!("{{ let mut __range_i = molt_int(&{start}); let __range_stop = molt_int(&{stop}); let __range_step = molt_int(&{step});"));
-                self.emit_line(&format!("while (__range_step > 0 && __range_i < __range_stop) || (__range_step < 0 && __range_i > __range_stop) {{"));
+                self.emit_line("while (__range_step > 0 && __range_i < __range_stop) || (__range_step < 0 && __range_i > __range_stop) {");
                 self.indent += 1;
                 self.emit_line(&format!(
                     "let mut {iter_var}: MoltValue = MoltValue::Int(__range_i);"
@@ -2661,7 +2664,7 @@ impl RustBackend {
                 // through the Rust call stack.  Instead of silently returning
                 // None (which hides real errors), we panic with context so the
                 // failure is immediately visible during testing.
-                let msg = if op.args.as_ref().map_or(true, |a| a.is_empty()) {
+                let msg = if op.args.as_ref().is_none_or(|a| a.is_empty()) {
                     "\"Python raise with no argument\"".to_string()
                 } else {
                     format!(
@@ -2833,11 +2836,10 @@ fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
         }
         if is_close {
             depth -= 1;
-            if let Some(d) = dead_at_depth {
-                if d > depth {
+            if let Some(d) = dead_at_depth
+                && d > depth {
                     dead_at_depth = None;
                 }
-            }
             if dead_at_depth.is_none() {
                 result.push(op.clone());
             }
@@ -2936,8 +2938,8 @@ fn build_phi_injection_maps(
                 }
             }
             "end_if" => {
-                if let Some((_if_idx, else_idx)) = if_stack.pop() {
-                    if let Some(phis) = phi_assignments.get(&idx) {
+                if let Some((_if_idx, else_idx)) = if_stack.pop()
+                    && let Some(phis) = phi_assignments.get(&idx) {
                         for (phi_var, args) in phis {
                             if let Some(else_i) = else_idx {
                                 let true_val = args
@@ -2968,7 +2970,6 @@ fn build_phi_injection_maps(
                             }
                         }
                     }
-                }
             }
             _ => {}
         }
@@ -2987,12 +2988,11 @@ fn collect_scope_escapes(ops: &[OpIR], func: &FunctionIR, hoisted_vars: &mut BTr
             "end_if" | "loop_end" | "while_end" | "end_for" => depth -= 1,
             _ => {}
         }
-        if let Some(ref out_name) = op.out {
-            if out_name != "none" && !op.kind.starts_with("nop") {
+        if let Some(ref out_name) = op.out
+            && out_name != "none" && !op.kind.starts_with("nop") {
                 let var = rust_ident(out_name);
                 decl_depth.entry(var).or_insert(depth);
             }
-        }
         let mut refs: Vec<String> = op
             .args
             .as_deref()
@@ -3007,11 +3007,10 @@ fn collect_scope_escapes(ops: &[OpIR], func: &FunctionIR, hoisted_vars: &mut BTr
             if param_set.contains(&r) {
                 continue;
             }
-            if let Some(&dd) = decl_depth.get(&r) {
-                if dd > depth {
+            if let Some(&dd) = decl_depth.get(&r)
+                && dd > depth {
                     hoisted_vars.insert(r);
                 }
-            }
         }
     }
 }
@@ -3135,6 +3134,7 @@ mod tests {
                     }],
                     param_types: None,
                     source_file: None,
+                    is_extern: false,
                 },
                 FunctionIR {
                     name: "molt_main".to_string(),
@@ -3145,6 +3145,7 @@ mod tests {
                     }],
                     param_types: None,
                     source_file: None,
+                    is_extern: false,
                 },
             ],
             profile: None,
@@ -3169,6 +3170,7 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
+                is_extern: false,
             }],
             profile: None,
         };
@@ -3206,6 +3208,7 @@ mod tests {
                     ],
                     param_types: None,
                     source_file: None,
+                    is_extern: false,
                 },
                 FunctionIR {
                     name: "molt_main".to_string(),
@@ -3216,6 +3219,7 @@ mod tests {
                     }],
                     param_types: None,
                     source_file: None,
+                    is_extern: false,
                 },
             ],
             profile: None,
@@ -3254,6 +3258,7 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
+                is_extern: false,
             }],
             profile: None,
         };

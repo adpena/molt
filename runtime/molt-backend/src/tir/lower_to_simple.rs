@@ -120,11 +120,10 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         let mut map = HashMap::new();
         for (&bid_u32, &original_id) in &func.label_id_map {
             let block_id = BlockId(bid_u32);
-            if let Some(&new_id) = label_id_for_block.get(&block_id) {
-                if original_id != new_id {
+            if let Some(&new_id) = label_id_for_block.get(&block_id)
+                && original_id != new_id {
                     map.insert(original_id, new_id);
                 }
-            }
         }
         map
     };
@@ -213,13 +212,11 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 return true;
             }
             // One hop further (guard → join block → raise)
-            if let Terminator::Branch { target, .. } = &blk.terminator {
-                if let Some(next) = func.blocks.get(target) {
-                    if next.ops.iter().any(|op| op.opcode == OpCode::Raise) {
+            if let Terminator::Branch { target, .. } = &blk.terminator
+                && let Some(next) = func.blocks.get(target)
+                    && next.ops.iter().any(|op| op.opcode == OpCode::Raise) {
                         return true;
                     }
-                }
-            }
             false
         };
 
@@ -554,8 +551,8 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         // If this block is a LoopHeader with a detected region, emit the
         // entire structured loop (header + body + back-edge) and skip to
         // the next RPO block.
-        if loop_role == super::blocks::LoopRole::LoopHeader {
-            if loop_regions.contains_key(bid) {
+        if loop_role == super::blocks::LoopRole::LoopHeader
+            && loop_regions.contains_key(bid) {
                 emit_structured_loop_region(
                     *bid,
                     func,
@@ -570,7 +567,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 );
                 continue;
             }
-        }
 
         let block = match func.blocks.get(bid) {
             Some(b) => b,
@@ -684,13 +680,11 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     if matches!(
                         opir.kind.as_str(),
                         "check_exception" | "try_start" | "try_end"
-                    ) {
-                        if let Some(orig_id) = opir.value {
-                            if let Some(&new_id) = original_to_new_label.get(&orig_id) {
+                    )
+                        && let Some(orig_id) = opir.value
+                            && let Some(&new_id) = original_to_new_label.get(&orig_id) {
                                 opir.value = Some(new_id);
                             }
-                        }
-                    }
                     out.push(opir);
                 }
             }
@@ -712,13 +706,11 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     if matches!(
                         opir.kind.as_str(),
                         "check_exception" | "try_start" | "try_end"
-                    ) {
-                        if let Some(orig_id) = opir.value {
-                            if let Some(&new_id) = original_to_new_label.get(&orig_id) {
+                    )
+                        && let Some(orig_id) = opir.value
+                            && let Some(&new_id) = original_to_new_label.get(&orig_id) {
                                 opir.value = Some(new_id);
                             }
-                        }
-                    }
                     out.push(opir);
                 }
             }
@@ -1388,7 +1380,7 @@ fn emit_structured_loop_region(
     types: &HashMap<ValueId, TirType>,
     original_to_new_label: &HashMap<i64, i64>,
     out: &mut Vec<OpIR>,
-    loop_consumed: &mut HashSet<BlockId>,
+    _loop_consumed: &mut HashSet<BlockId>,
 ) {
     let region = loop_regions.get(&header).expect("loop region missing");
     let block = func.blocks.get(&header).expect("loop header block missing");
@@ -1423,8 +1415,8 @@ fn emit_structured_loop_region(
     });
 
     // 3. Header block argument loads (phi values from entry/back-edge).
-    if header != func.entry_block {
-        if let Some(param_vars) = block_param_vars.get(&header) {
+    if header != func.entry_block
+        && let Some(param_vars) = block_param_vars.get(&header) {
             for (i, var_name) in param_vars.iter().enumerate() {
                 if i < block.args.len() {
                     out.push(OpIR {
@@ -1436,7 +1428,6 @@ fn emit_structured_loop_region(
                 }
             }
         }
-    }
 
     // 4. Emit all header-region blocks' ops sequentially in CFG order.
     //    The header region = [header, chain blocks (guards + non-guards), cond_block].
@@ -1511,8 +1502,8 @@ fn emit_structured_loop_region(
                         // If target != next_bid (e.g., Branch → guard, but
                         // next is a non-guard), also load for next_bid.
                         if *target != next_bid {
-                            if let Some(next_block) = func.blocks.get(&next_bid) {
-                                if let Some(param_vars) = block_param_vars.get(&next_bid) {
+                            if let Some(next_block) = func.blocks.get(&next_bid)
+                                && let Some(param_vars) = block_param_vars.get(&next_bid) {
                                     for (i, var_name) in param_vars.iter().enumerate() {
                                         if i < next_block.args.len() {
                                             out.push(OpIR {
@@ -1524,9 +1515,8 @@ fn emit_structured_loop_region(
                                         }
                                     }
                                 }
-                            }
-                        } else if let Some(next_block) = func.blocks.get(&next_bid) {
-                            if let Some(param_vars) = block_param_vars.get(&next_bid) {
+                        } else if let Some(next_block) = func.blocks.get(&next_bid)
+                            && let Some(param_vars) = block_param_vars.get(&next_bid) {
                                 for (i, var_name) in param_vars.iter().enumerate() {
                                     if i < next_block.args.len() {
                                         out.push(OpIR {
@@ -1538,7 +1528,6 @@ fn emit_structured_loop_region(
                                     }
                                 }
                             }
-                        }
                     }
                     Terminator::CondBranch {
                         cond: guard_cond,
@@ -1573,8 +1562,8 @@ fn emit_structured_loop_region(
                                 out,
                             );
                             // Load args for next block in emission sequence.
-                            if let Some(next_block) = func.blocks.get(&next_bid) {
-                                if let Some(param_vars) = block_param_vars.get(&next_bid) {
+                            if let Some(next_block) = func.blocks.get(&next_bid)
+                                && let Some(param_vars) = block_param_vars.get(&next_bid) {
                                     for (i, var_name) in param_vars.iter().enumerate() {
                                         if i < next_block.args.len() {
                                             out.push(OpIR {
@@ -1586,7 +1575,6 @@ fn emit_structured_loop_region(
                                         }
                                     }
                                 }
-                            }
                         } else {
                             // else = raise, then = continue.
                             // br_if cond → continue (skip raise on true).
@@ -1623,8 +1611,8 @@ fn emit_structured_loop_region(
                                 block_param_vars,
                                 out,
                             );
-                            if let Some(next_block) = func.blocks.get(&next_bid) {
-                                if let Some(param_vars) = block_param_vars.get(&next_bid) {
+                            if let Some(next_block) = func.blocks.get(&next_bid)
+                                && let Some(param_vars) = block_param_vars.get(&next_bid) {
                                     for (i, var_name) in param_vars.iter().enumerate() {
                                         if i < next_block.args.len() {
                                             out.push(OpIR {
@@ -1636,7 +1624,6 @@ fn emit_structured_loop_region(
                                         }
                                     }
                                 }
-                            }
                         }
                     }
                     _ => {
@@ -1706,7 +1693,7 @@ fn emit_structured_loop_region(
                 types,
                 original_to_new_label,
                 out,
-                loop_consumed,
+                _loop_consumed,
             );
             if let Some(inner_region) = loop_regions.get(body_bid) {
                 // Consume ALL blocks owned by the inner loop: body,
@@ -1972,13 +1959,11 @@ fn emit_block_ops_inner(
             if matches!(
                 opir.kind.as_str(),
                 "check_exception" | "try_start" | "try_end"
-            ) {
-                if let Some(orig_id) = opir.value {
-                    if let Some(&new_id) = original_to_new_label.get(&orig_id) {
+            )
+                && let Some(orig_id) = opir.value
+                    && let Some(&new_id) = original_to_new_label.get(&orig_id) {
                         opir.value = Some(new_id);
                     }
-                }
-            }
             out.push(opir);
         }
     }
@@ -2301,16 +2286,14 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
     }
 
     // Restore col_offset/end_col_offset for traceback caret annotations.
-    if opir.col_offset.is_none() {
-        if let Some(AttrValue::Int(col)) = tir_op.attrs.get("_col_offset") {
+    if opir.col_offset.is_none()
+        && let Some(AttrValue::Int(col)) = tir_op.attrs.get("_col_offset") {
             opir.col_offset = Some(*col);
         }
-    }
-    if opir.end_col_offset.is_none() {
-        if let Some(AttrValue::Int(ecol)) = tir_op.attrs.get("_end_col_offset") {
+    if opir.end_col_offset.is_none()
+        && let Some(AttrValue::Int(ecol)) = tir_op.attrs.get("_end_col_offset") {
             opir.end_col_offset = Some(*ecol);
         }
-    }
 }
 
 // ---------------------------------------------------------------------------

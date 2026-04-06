@@ -247,7 +247,7 @@ mod tests {
             .find(|o| o.opcode == OpCode::Index)
             .unwrap();
         assert!(
-            index_op.attrs.get("bce_safe").is_none(),
+            !index_op.attrs.contains_key("bce_safe"),
             "bce_safe must be absent for negative index"
         );
     }
@@ -281,7 +281,7 @@ mod tests {
             .iter()
             .find(|o| o.opcode == OpCode::Index)
             .unwrap();
-        assert!(index_op.attrs.get("bce_safe").is_none());
+        assert!(!index_op.attrs.contains_key("bce_safe"));
     }
 
     // ------------------------------------------------------------------
@@ -347,8 +347,8 @@ mod tests {
             Some(&AttrValue::Bool(true))
         );
         // Second Index (neg_idx = -2) → not safe
-        assert!(index_ops[1].attrs.get("bce_safe").is_none());
+        assert!(!index_ops[1].attrs.contains_key("bce_safe"));
         // Third Index (param) → not safe
-        assert!(index_ops[2].attrs.get("bce_safe").is_none());
+        assert!(!index_ops[2].attrs.contains_key("bce_safe"));
     }
 }

@@ -589,8 +589,10 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
         let output_bytes: Arc<[u8]> = if job.is_wasm {
             #[cfg(feature = "wasm-backend")]
             {
-                let mut options = WasmCompileOptions::default();
-                options.reloc_enabled = job.wasm_link;
+                let mut options = WasmCompileOptions {
+                    reloc_enabled: job.wasm_link,
+                    ..WasmCompileOptions::default()
+                };
                 if let Some(data_base) = job.wasm_data_base {
                     options.data_base = data_base;
                 }
@@ -1354,8 +1356,7 @@ fn main() -> io::Result<()> {
             {
                 if let Some(ir_path) = ir_file_path {
                     let file = std::fs::File::open(ir_path).map_err(|e| {
-                        io::Error::new(
-                            io::ErrorKind::Other,
+                        io::Error::other(
                             format!("failed to open IR file '{}': {}", ir_path, e),
                         )
                     })?;

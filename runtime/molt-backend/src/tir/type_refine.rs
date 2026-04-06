@@ -409,6 +409,7 @@ fn collect_branch_edges(block: &TirBlock) -> Vec<(BlockId, Vec<ValueId>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::PI;
     use crate::tir::blocks::{BlockId, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -487,7 +488,7 @@ mod tests {
                 OpCode::ConstFloat,
                 vec![],
                 vec![ValueId(1)],
-                float_attr(3.14),
+                float_attr(PI),
             ),
             make_op(
                 OpCode::ConstStr,
@@ -735,7 +736,7 @@ mod tests {
                     OpCode::ConstFloat,
                     vec![],
                     vec![ValueId(2)],
-                    float_attr(3.14),
+                    float_attr(PI),
                 )],
                 terminator: Terminator::Branch {
                     target: join_id,

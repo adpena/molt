@@ -26,11 +26,8 @@ fn extract_type_signatures(wasm: &[u8]) -> Vec<(usize, usize)> {
             for rec_group in reader.into_iter() {
                 let rec_group = rec_group.expect("valid rec group");
                 for sub_type in rec_group.into_types() {
-                    match &sub_type.composite_type.inner {
-                        CompositeInnerType::Func(func_type) => {
-                            sigs.push((func_type.params().len(), func_type.results().len()));
-                        }
-                        _ => {}
+                    if let CompositeInnerType::Func(func_type) = &sub_type.composite_type.inner {
+                        sigs.push((func_type.params().len(), func_type.results().len()));
                     }
                 }
             }

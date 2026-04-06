@@ -500,22 +500,18 @@ fn preanalyze_function_ir(
             let mut label_pos: std::collections::HashMap<i64, usize> =
                 std::collections::HashMap::new();
             for (idx, op) in func_ir.ops.iter().enumerate() {
-                if matches!(op.kind.as_str(), "label" | "state_label") {
-                    if let Some(id) = op.value {
+                if matches!(op.kind.as_str(), "label" | "state_label")
+                    && let Some(id) = op.value {
                         label_pos.insert(id, idx);
                     }
-                }
             }
             for (idx, op) in func_ir.ops.iter().enumerate() {
-                if matches!(op.kind.as_str(), "jump" | "br_if") {
-                    if let Some(target_id) = op.value {
-                        if let Some(&target_pos) = label_pos.get(&target_id) {
-                            if target_pos < idx {
+                if matches!(op.kind.as_str(), "jump" | "br_if")
+                    && let Some(target_id) = op.value
+                        && let Some(&target_pos) = label_pos.get(&target_id)
+                            && target_pos < idx {
                                 ranges.push((target_pos, idx));
                             }
-                        }
-                    }
-                }
             }
             ranges
         };
@@ -549,22 +545,20 @@ fn preanalyze_function_ir(
                             }
                         }
                     }
-                    if let Some(var) = &op.var {
-                        if var != "none" {
+                    if let Some(var) = &op.var
+                        && var != "none" {
                             let entry = last_use.entry(var.clone()).or_insert(end);
                             if *entry < end {
                                 *entry = end;
                             }
                         }
-                    }
-                    if let Some(out) = &op.out {
-                        if out != "none" {
+                    if let Some(out) = &op.out
+                        && out != "none" {
                             let entry = last_use.entry(out.clone()).or_insert(end);
                             if *entry < end {
                                 *entry = end;
                             }
                         }
-                    }
                 }
             }
         } // end !_skip
@@ -806,10 +800,10 @@ fn cleanup_roots_for_names(
 }
 
 #[cfg(feature = "native-backend")]
-fn protect_cleanup_names<'a>(
+fn protect_cleanup_names(
     carry: &mut Vec<String>,
     cleanup: Vec<String>,
-    protected: &BTreeSet<&'a str>,
+    protected: &BTreeSet<&str>,
 ) -> Vec<String> {
     if protected.is_empty() {
         return cleanup;
@@ -961,10 +955,10 @@ impl SimpleBackend {
                 .iter()
                 .filter(|op| op.kind == "check_exception")
                 .count();
-            if std::env::var("MOLT_DEBUG_CHECK_EXC").is_ok() {
-                if ce_count > 0
+            if std::env::var("MOLT_DEBUG_CHECK_EXC").is_ok()
+                && (ce_count > 0
                     || func_ir.name.contains("molt_main")
-                    || func_ir.name.contains("test_try")
+                    || func_ir.name.contains("test_try"))
                 {
                     eprintln!(
                         "[COMPILE] func={} ops={} check_exception_count={}",
@@ -973,7 +967,6 @@ impl SimpleBackend {
                         ce_count
                     );
                 }
-            }
         }
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
@@ -1281,17 +1274,13 @@ impl SimpleBackend {
                 }
             }
             for op in &func_ir.ops {
-                if op.kind == "store_var" {
-                    if let Some(ref name) = op.var.as_ref().or(op.out.as_ref()) {
-                        if let Some(ref args) = op.args {
-                            if let Some(src) = args.first() {
-                                if int_valued_outputs.contains(src) {
+                if op.kind == "store_var"
+                    && let Some(ref name) = op.var.as_ref().or(op.out.as_ref())
+                        && let Some(ref args) = op.args
+                            && let Some(src) = args.first()
+                                && int_valued_outputs.contains(src) {
                                     int_store_targets.insert(name.to_string());
                                 }
-                            }
-                        }
-                    }
-                }
             }
             let zero = builder.ins().iconst(types::I64, 0);
             // Pre-declare shadow Variables ONLY for store_var targets (loop variables).
@@ -1325,7 +1314,7 @@ impl SimpleBackend {
                         let candidate = op
                             .var
                             .as_ref()
-                            .or_else(|| op.out.as_ref())
+                            .or(op.out.as_ref())
                             .or_else(|| op.args.as_ref().and_then(|args| args.first()));
                         if let Some(name) = candidate
                             && is_join_slot_name(name)
@@ -1578,12 +1567,11 @@ impl SimpleBackend {
                         }
                     }
                     "jump" | "br_if" | "loop_continue" => {
-                        if let Some(id) = op.value {
-                            if defined_labels.contains(&id) {
+                        if let Some(id) = op.value
+                            && defined_labels.contains(&id) {
                                 found = true;
                                 break;
                             }
-                        }
                     }
                     _ => {}
                 }
@@ -1751,11 +1739,10 @@ impl SimpleBackend {
                     .bytes
                     .as_deref()
                     .unwrap_or_else(|| op.s_value.as_deref().unwrap_or("").as_bytes());
-                if let Some(ref out) = op.out {
-                    if let Some(&slot) = const_str_hoisted_slots.get(bytes) {
+                if let Some(ref out) = op.out
+                    && let Some(&slot) = const_str_hoisted_slots.get(bytes) {
                         hoisted_str_slot.insert(out.clone(), slot);
                     }
-                }
             }
         }
 
@@ -1902,11 +1889,11 @@ impl SimpleBackend {
             // Only emit for module chunks and only when the op carries col info.
             if is_module_chunk
                 && !is_block_filled
-                && op.col_offset.is_some()
-                && op.end_col_offset.is_some()
+                && let (Some(col_offset), Some(end_col_offset)) =
+                    (op.col_offset, op.end_col_offset)
             {
-                let col_val = builder.ins().iconst(types::I64, op.col_offset.unwrap());
-                let end_col_val = builder.ins().iconst(types::I64, op.end_col_offset.unwrap());
+                let col_val = builder.ins().iconst(types::I64, col_offset);
+                let end_col_val = builder.ins().iconst(types::I64, end_col_offset);
                 let frame_line_col_fn = import_func_ref(
                     &mut self.module,
                     &mut self.import_ids,
@@ -2348,13 +2335,13 @@ impl SimpleBackend {
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
 
-                        if lhs_raw.is_some() && rhs_raw.is_some() {
+                        if let (Some(lhs_raw), Some(rhs_raw)) = (lhs_raw, rhs_raw) {
                             // Both-shadow chain: zero-overhead iadd + overflow guard.
                             // Propagate raw shadow through merge via a second phi:
                             // fast path passes `sum` (correct unboxed i64), slow path
                             // passes 0.  Downstream bounds checks on list_int inline
                             // paths catch the 0 sentinel safely.
-                            let sum = builder.ins().iadd(lhs_raw.unwrap(), rhs_raw.unwrap());
+                            let sum = builder.ins().iadd(lhs_raw, rhs_raw);
                             let fits_inline = int_value_fits_inline(&mut builder, sum);
                             let fast_block = builder.create_block();
                             let slow_block = builder.create_block();
@@ -9398,11 +9385,11 @@ impl SimpleBackend {
                             &args[1],
                         )
                     };
-                    let res = if lr.is_some() && rr.is_some() {
+                    let res = if let (Some(lr), Some(rr)) = (lr, rr) {
                         let cmp =
                             builder
                                 .ins()
-                                .icmp(IntCC::SignedLessThan, lr.unwrap(), rr.unwrap());
+                                .icmp(IntCC::SignedLessThan, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if lr.is_some() || rr.is_some() {
                         // One-operand: unbox only the non-raw side
@@ -9507,11 +9494,11 @@ impl SimpleBackend {
                             &args[1],
                         )
                     };
-                    let res = if lr.is_some() && rr.is_some() {
+                    let res = if let (Some(lr), Some(rr)) = (lr, rr) {
                         let cmp = builder.ins().icmp(
                             IntCC::SignedLessThanOrEqual,
-                            lr.unwrap(),
-                            rr.unwrap(),
+                            lr,
+                            rr,
                         );
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if lr.is_some() || rr.is_some() {
@@ -18511,23 +18498,19 @@ impl SimpleBackend {
                             let mut lbl_pos: std::collections::HashMap<i64, usize> =
                                 std::collections::HashMap::new();
                             for (i, o) in func_ir.ops.iter().enumerate() {
-                                if matches!(o.kind.as_str(), "label" | "state_label") {
-                                    if let Some(id) = o.value {
+                                if matches!(o.kind.as_str(), "label" | "state_label")
+                                    && let Some(id) = o.value {
                                         lbl_pos.insert(id, i);
                                     }
-                                }
                             }
                             for (i, o) in func_ir.ops.iter().enumerate() {
-                                if matches!(o.kind.as_str(), "jump" | "br_if") {
-                                    if let Some(tid) = o.value {
-                                        if let Some(&tp) = lbl_pos.get(&tid) {
-                                            if tp < i && op_idx >= tp && op_idx <= i {
+                                if matches!(o.kind.as_str(), "jump" | "br_if")
+                                    && let Some(tid) = o.value
+                                        && let Some(&tp) = lbl_pos.get(&tid)
+                                            && tp < i && op_idx >= tp && op_idx <= i {
                                                 found = true;
                                                 break;
                                             }
-                                        }
-                                    }
-                                }
                             }
                             found
                         };

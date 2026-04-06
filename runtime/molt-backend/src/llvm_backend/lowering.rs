@@ -234,12 +234,11 @@ pub fn lower_tir_to_llvm_with_pgo<'ctx>(
         // First pass: dead TIR blocks.
         let rpo_set: std::collections::HashSet<BlockId> = rpo.iter().copied().collect();
         for (block_id, llvm_bb) in &lowering.block_map {
-            if !rpo_set.contains(block_id) {
-                if llvm_bb.get_terminator().is_none() {
+            if !rpo_set.contains(block_id)
+                && llvm_bb.get_terminator().is_none() {
                     backend.builder.position_at_end(*llvm_bb);
                     backend.builder.build_unreachable().unwrap();
                 }
-            }
         }
         // Second pass: ALL LLVM blocks (including synthetic).  Any block
         // without a terminator gets an `unreachable` instruction.
@@ -291,7 +290,8 @@ pub fn declare_tir_function<'ctx>(
     // Call op that referenced this function before it was defined).
     // If not, create a new function.  This avoids LLVM appending `.1` to
     // the name when a declaration already exists.
-    let llvm_fn = if let Some(existing) = backend.module.get_function(&func.name) {
+
+    if let Some(existing) = backend.module.get_function(&func.name) {
         // Verify it's just a declaration (no basic blocks yet).
         if existing.count_basic_blocks() == 0 {
             existing
@@ -301,8 +301,7 @@ pub fn declare_tir_function<'ctx>(
         }
     } else {
         backend.module.add_function(&func.name, fn_ty, None)
-    };
-    llvm_fn
+    }
 }
 
 #[cfg(feature = "llvm")]
@@ -312,7 +311,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     fn record_llvm_edge(&mut self, from_bb: BasicBlock<'ctx>, to_bb: BasicBlock<'ctx>) {
         self.llvm_pred_map
             .entry(to_bb)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(from_bb);
     }
 
@@ -1024,11 +1023,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if let Some(kind) = op.attrs.get("_original_kind").and_then(|v| match v {
                     AttrValue::Str(s) => Some(s.as_str()),
                     _ => None,
-                }) {
-                    if self.lower_preserved_simpleir_op(op, kind) {
+                })
+                    && self.lower_preserved_simpleir_op(op, kind) {
                         return;
                     }
-                }
                 if op.results.is_empty() {
                     // No results — nothing to bind; skip.
                 } else if op.operands.is_empty() {
@@ -1563,7 +1561,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
                 let none_val: BasicValueEnum<'ctx> = i64_ty.const_int(none_bits, false).into();
 
-                let start = if op.operands.len() > 0 {
+                let start = if !op.operands.is_empty() {
                     let v = self.resolve(op.operands[0]);
                     self.ensure_i64(v).into()
                 } else {
@@ -2334,11 +2332,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_float_add(lhs.into_float_value(), rhs.into_float_value(), "fadd")
                     .unwrap();
-                if fast_math {
-                    if let Some(instr) = v.as_instruction() {
+                if fast_math
+                    && let Some(instr) = v.as_instruction() {
                         instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
                     }
-                }
                 (v.into(), TirType::F64)
             }
             (TirType::F64, TirType::F64, "sub") => {
@@ -2347,11 +2344,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_float_sub(lhs.into_float_value(), rhs.into_float_value(), "fsub")
                     .unwrap();
-                if fast_math {
-                    if let Some(instr) = v.as_instruction() {
+                if fast_math
+                    && let Some(instr) = v.as_instruction() {
                         instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
                     }
-                }
                 (v.into(), TirType::F64)
             }
             (TirType::F64, TirType::F64, "mul") => {
@@ -2360,11 +2356,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_float_mul(lhs.into_float_value(), rhs.into_float_value(), "fmul")
                     .unwrap();
-                if fast_math {
-                    if let Some(instr) = v.as_instruction() {
+                if fast_math
+                    && let Some(instr) = v.as_instruction() {
                         instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
                     }
-                }
                 (v.into(), TirType::F64)
             }
             (TirType::F64, TirType::F64, "div") => {
@@ -2373,11 +2368,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_float_div(lhs.into_float_value(), rhs.into_float_value(), "fdiv")
                     .unwrap();
-                if fast_math {
-                    if let Some(instr) = v.as_instruction() {
+                if fast_math
+                    && let Some(instr) = v.as_instruction() {
                         instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
                     }
-                }
                 (v.into(), TirType::F64)
             }
             (TirType::F64, TirType::F64, "mod") => {
@@ -2386,11 +2380,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_float_rem(lhs.into_float_value(), rhs.into_float_value(), "fmod")
                     .unwrap();
-                if fast_math {
-                    if let Some(instr) = v.as_instruction() {
+                if fast_math
+                    && let Some(instr) = v.as_instruction() {
                         instr.set_fast_math_flags(LLVM_FAST_MATH_ALL);
                     }
-                }
                 (v.into(), TirType::F64)
             }
 
@@ -2842,12 +2835,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 let extended_basic: inkwell::values::BasicValueEnum = extended.into();
                 let masked_basic: inkwell::values::BasicValueEnum = masked.into();
-                let val = self
+
+                self
                     .backend
                     .builder
                     .build_select(is_neg, extended_basic, masked_basic, "unbox_i64")
-                    .unwrap();
-                val
+                    .unwrap()
             }
             TirType::F64 => {
                 // Bitcast i64 back to f64.
@@ -3115,7 +3108,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let phi_info: Vec<_> = self
             .pending_phis
             .iter()
-            .map(|(bid, idx, phi)| (*bid, *idx, phi.as_basic_value().get_type(), phi.clone()))
+            .map(|(bid, idx, phi)| (*bid, *idx, phi.as_basic_value().get_type(), *phi))
             .collect();
 
         // Snapshot mid-block branches to avoid borrow conflicts.
@@ -3132,8 +3125,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // 1. Wire up predecessors from TIR terminators.
             for (pred_id, pred_block) in &self.func.blocks {
                 let branch_args = self.get_branch_args_to(&pred_block.terminator, *block_id);
-                if let Some(args) = branch_args {
-                    if *arg_index < args.len() {
+                if let Some(args) = branch_args
+                    && *arg_index < args.len() {
                         let val_id = args[*arg_index];
                         if let Some(val) = self.values.get(&val_id) {
                             let pred_bb = self
@@ -3148,11 +3141,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                                 .unwrap_or(TirType::DynBox);
                             let coerced =
                                 self.coerce_to_tir_type(*val, &source_tir_ty, &phi_tir_ty, pred_bb);
-                            let coerced = self.coerce_to_type(coerced, phi_ty.clone(), pred_bb);
+                            let coerced = self.coerce_to_type(coerced, *phi_ty, pred_bb);
                             phi.add_incoming(&[(&coerced, pred_bb)]);
                         }
                     }
-                }
             }
 
             // 2. Wire up mid-block branches (CheckException -> handler block).
@@ -3162,7 +3154,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if *target_bid == *block_id {
                     // The handler block's phi expects a value from this predecessor.
                     // We don't have specific args for mid-block branches, so use undef.
-                    let undef = self.get_undef_for_type(phi_ty.clone());
+                    let undef = self.get_undef_for_type(*phi_ty);
                     phi.add_incoming(&[(&undef, *src_bb)]);
                 }
             }
@@ -3184,10 +3176,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .unwrap_or(TirType::DynBox);
                     let coerced =
                         self.coerce_to_tir_type(param, &source_tir_ty, &phi_tir_ty, trampoline_bb);
-                    let coerced = self.coerce_to_type(coerced, phi_ty.clone(), trampoline_bb);
+                    let coerced = self.coerce_to_type(coerced, *phi_ty, trampoline_bb);
                     phi.add_incoming(&[(&coerced, trampoline_bb)]);
                 } else {
-                    let undef = self.get_undef_for_type(phi_ty.clone());
+                    let undef = self.get_undef_for_type(*phi_ty);
                     phi.add_incoming(&[(&undef, trampoline_bb)]);
                 }
             }

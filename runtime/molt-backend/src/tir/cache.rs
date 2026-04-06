@@ -338,7 +338,7 @@ mod tests {
 
         assert_eq!(cache.len(), 3);
 
-        cache.invalidate(&[dep_hash.clone()]);
+        cache.invalidate(std::slice::from_ref(&dep_hash));
 
         assert!(cache.get(&dep_hash).is_some(), "dep entry should remain");
         assert!(

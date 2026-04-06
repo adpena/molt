@@ -1,9 +1,6 @@
 //! Apple MLX backend for machine learning workloads on Apple Silicon.
 //! MLX provides unified memory access between CPU and GPU on Apple chips.
 
-#[cfg(all(target_os = "macos", feature = "mlx"))]
-use mlx_rs as mlx;
-
 #[cfg(not(all(target_os = "macos", feature = "mlx")))]
 use super::gpu_runtime::{CompiledKernel, GpuBufferHandle, GpuDevice, GpuError};
 #[cfg(all(target_os = "macos", feature = "mlx"))]
@@ -55,6 +52,7 @@ impl MlxDevice {
     }
 }
 
+#[cfg(not(all(target_os = "macos", feature = "mlx")))]
 const MLX_STUB_MSG: &str = "MLX requires macOS with Apple Silicon and the 'mlx' feature";
 
 impl GpuDevice for MlxDevice {
