@@ -122,6 +122,7 @@ pub(crate) unsafe fn dict_update_apply(
                     return MoltObject::none().bits();
                 }
                 let iter = molt_iter(iter_bits);
+                dec_ref_bits(_py, iter_bits);
                 if obj_from_bits(iter).is_none() {
                     return MoltObject::none().bits();
                 }
@@ -129,49 +130,65 @@ pub(crate) unsafe fn dict_update_apply(
                 loop {
                     let pair_bits = molt_iter_next(iter);
                     if exception_pending(_py) {
+                        dec_ref_bits(_py, iter);
                         return MoltObject::none().bits();
                     }
                     let pair_obj = obj_from_bits(pair_bits);
                     let Some(pair_ptr) = pair_obj.as_ptr() else {
+                        dec_ref_bits(_py, iter);
                         return MoltObject::none().bits();
                     };
                     if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                        dec_ref_bits(_py, pair_bits);
+                        dec_ref_bits(_py, iter);
                         return MoltObject::none().bits();
                     }
-                    let elems = seq_vec_ref(pair_ptr);
-                    if elems.len() < 2 {
-                        return MoltObject::none().bits();
-                    }
-                    let done_bits = elems[1];
+                    let (item_bits, done_bits) = {
+                        let elems = seq_vec_ref(pair_ptr);
+                        if elems.len() < 2 {
+                            dec_ref_bits(_py, pair_bits);
+                            dec_ref_bits(_py, iter);
+                            return MoltObject::none().bits();
+                        }
+                        (elems[0], elems[1])
+                    };
                     if is_truthy(_py, obj_from_bits(done_bits)) {
+                        dec_ref_bits(_py, pair_bits);
                         break;
                     }
-                    let item_bits = elems[0];
                     match dict_pair_from_item(_py, item_bits) {
                         Ok((key, val)) => {
                             set_fn(_py, target_bits, key, val);
                             if exception_pending(_py) {
+                                dec_ref_bits(_py, pair_bits);
+                                dec_ref_bits(_py, iter);
                                 return MoltObject::none().bits();
                             }
                         }
                         Err(DictSeqError::NotIterable) => {
-                            let msg = format!(
-                                "object is not iterable"
-                            );
+                            dec_ref_bits(_py, pair_bits);
+                            dec_ref_bits(_py, iter);
+                            let msg = "object is not iterable".to_string();
                             return raise_exception::<_>(_py, "TypeError", &msg);
                         }
                         Err(DictSeqError::BadLen(len)) => {
+                            dec_ref_bits(_py, pair_bits);
+                            dec_ref_bits(_py, iter);
                             let msg = format!(
                                 "dictionary update sequence element #{elem_index} has length {len}; 2 is required"
                             );
                             return raise_exception::<_>(_py, "ValueError", &msg);
                         }
                         Err(DictSeqError::Exception) => {
+                            dec_ref_bits(_py, pair_bits);
+                            dec_ref_bits(_py, iter);
                             return MoltObject::none().bits();
                         }
                     }
+                    dec_ref_bits(_py, pair_bits);
                     elem_index += 1;
                 }
+                dec_ref_bits(_py, iter);
                 return MoltObject::none().bits();
             }
             if let Some(keys_bits) = attr_name_bits_from_bytes(_py, b"keys") {
@@ -179,7 +196,9 @@ pub(crate) unsafe fn dict_update_apply(
                 dec_ref_bits(_py, keys_bits);
                 if let Some(keys_method_bits) = keys_method_bits {
                     let keys_iterable = call_callable0(_py, keys_method_bits);
+                    dec_ref_bits(_py, keys_method_bits);
                     let keys_iter = molt_iter(keys_iterable);
+                    dec_ref_bits(_py, keys_iterable);
                     if obj_from_bits(keys_iter).is_none() {
                         return raise_exception::<_>(
                             _py,
@@ -197,6 +216,7 @@ pub(crate) unsafe fn dict_update_apply(
                     let getitem_method_bits = attr_lookup_ptr(_py, ptr, getitem_bits);
                     dec_ref_bits(_py, getitem_bits);
                     let Some(getitem_method_bits) = getitem_method_bits else {
+                        dec_ref_bits(_py, keys_iter);
                         return raise_exception::<_>(
                             _py,
                             "TypeError",
@@ -205,31 +225,55 @@ pub(crate) unsafe fn dict_update_apply(
                     };
                     loop {
                         let pair_bits = molt_iter_next(keys_iter);
+                        if exception_pending(_py) {
+                            dec_ref_bits(_py, getitem_method_bits);
+                            dec_ref_bits(_py, keys_iter);
+                            return MoltObject::none().bits();
+                        }
                         let pair_obj = obj_from_bits(pair_bits);
                         let Some(pair_ptr) = pair_obj.as_ptr() else {
+                            dec_ref_bits(_py, getitem_method_bits);
+                            dec_ref_bits(_py, keys_iter);
                             return MoltObject::none().bits();
                         };
                         if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                            dec_ref_bits(_py, pair_bits);
+                            dec_ref_bits(_py, getitem_method_bits);
+                            dec_ref_bits(_py, keys_iter);
                             return MoltObject::none().bits();
                         }
-                        let elems = seq_vec_ref(pair_ptr);
-                        if elems.len() < 2 {
-                            return MoltObject::none().bits();
-                        }
-                        let done_bits = elems[1];
+                        let (key_bits, done_bits) = {
+                            let elems = seq_vec_ref(pair_ptr);
+                            if elems.len() < 2 {
+                                dec_ref_bits(_py, pair_bits);
+                                dec_ref_bits(_py, getitem_method_bits);
+                                dec_ref_bits(_py, keys_iter);
+                                return MoltObject::none().bits();
+                            }
+                            (elems[0], elems[1])
+                        };
                         if is_truthy(_py, obj_from_bits(done_bits)) {
+                            dec_ref_bits(_py, pair_bits);
                             break;
                         }
-                        let key_bits = elems[0];
                         let val_bits = call_callable1(_py, getitem_method_bits, key_bits);
                         if exception_pending(_py) {
+                            dec_ref_bits(_py, pair_bits);
+                            dec_ref_bits(_py, getitem_method_bits);
+                            dec_ref_bits(_py, keys_iter);
                             return MoltObject::none().bits();
                         }
                         set_fn(_py, target_bits, key_bits, val_bits);
                         if exception_pending(_py) {
+                            dec_ref_bits(_py, pair_bits);
+                            dec_ref_bits(_py, getitem_method_bits);
+                            dec_ref_bits(_py, keys_iter);
                             return MoltObject::none().bits();
                         }
+                        dec_ref_bits(_py, pair_bits);
                     }
+                    dec_ref_bits(_py, getitem_method_bits);
+                    dec_ref_bits(_py, keys_iter);
                     return MoltObject::none().bits();
                 }
                 if exception_pending(_py) {
@@ -248,49 +292,65 @@ pub(crate) unsafe fn dict_update_apply(
         loop {
             let pair_bits = molt_iter_next(iter);
             if exception_pending(_py) {
+                dec_ref_bits(_py, iter);
                 return MoltObject::none().bits();
             }
             let pair_obj = obj_from_bits(pair_bits);
             let Some(pair_ptr) = pair_obj.as_ptr() else {
+                dec_ref_bits(_py, iter);
                 return MoltObject::none().bits();
             };
             if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                dec_ref_bits(_py, pair_bits);
+                dec_ref_bits(_py, iter);
                 return MoltObject::none().bits();
             }
-            let elems = seq_vec_ref(pair_ptr);
-            if elems.len() < 2 {
-                return MoltObject::none().bits();
-            }
-            let done_bits = elems[1];
+            let (item_bits, done_bits) = {
+                let elems = seq_vec_ref(pair_ptr);
+                if elems.len() < 2 {
+                    dec_ref_bits(_py, pair_bits);
+                    dec_ref_bits(_py, iter);
+                    return MoltObject::none().bits();
+                }
+                (elems[0], elems[1])
+            };
             if is_truthy(_py, obj_from_bits(done_bits)) {
+                dec_ref_bits(_py, pair_bits);
                 break;
             }
-            let item_bits = elems[0];
             match dict_pair_from_item(_py, item_bits) {
                 Ok((key, val)) => {
                     set_fn(_py, target_bits, key, val);
                     if exception_pending(_py) {
+                        dec_ref_bits(_py, pair_bits);
+                        dec_ref_bits(_py, iter);
                         return MoltObject::none().bits();
                     }
                 }
                 Err(DictSeqError::NotIterable) => {
-                    let msg = format!(
-                        "object is not iterable"
-                    );
+                    dec_ref_bits(_py, pair_bits);
+                    dec_ref_bits(_py, iter);
+                    let msg = "object is not iterable".to_string();
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
                 Err(DictSeqError::BadLen(len)) => {
+                    dec_ref_bits(_py, pair_bits);
+                    dec_ref_bits(_py, iter);
                     let msg = format!(
                         "dictionary update sequence element #{elem_index} has length {len}; 2 is required"
                     );
                     return raise_exception::<_>(_py, "ValueError", &msg);
                 }
                 Err(DictSeqError::Exception) => {
+                    dec_ref_bits(_py, pair_bits);
+                    dec_ref_bits(_py, iter);
                     return MoltObject::none().bits();
                 }
             }
+            dec_ref_bits(_py, pair_bits);
             elem_index += 1;
         }
+        dec_ref_bits(_py, iter);
         MoltObject::none().bits()
     }
 }

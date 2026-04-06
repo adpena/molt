@@ -38,11 +38,6 @@ pub struct ListIntStorage {
     pub cap: usize,
 }
 
-/// Byte offset of `data` within `ListIntStorage`.  Used by the Cranelift codegen.
-pub const LIST_INT_OFFSET_DATA: i32 = 0;
-/// Byte offset of `len` within `ListIntStorage`.  Used by the Cranelift codegen.
-pub const LIST_INT_OFFSET_LEN: i32 = 8;
-
 impl ListIntStorage {
     /// Convert a `Vec<i64>` into a heap-allocated `ListIntStorage`.
     /// The Vec's buffer is taken over; the Vec itself is NOT dropped.
@@ -63,32 +58,6 @@ impl ListIntStorage {
     /// the `ListIntStorage`'s `data` pointer is invalid.
     pub unsafe fn into_vec(self) -> Vec<i64> {
         unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) }
-    }
-
-    /// Temporarily borrow the data as a slice.
-    #[inline]
-    pub unsafe fn as_slice(&self) -> &[i64] {
-        unsafe { std::slice::from_raw_parts(self.data, self.len) }
-    }
-
-    /// Temporarily borrow the data as a mutable slice.
-    #[inline]
-    pub unsafe fn as_mut_slice(&mut self) -> &mut [i64] {
-        unsafe { std::slice::from_raw_parts_mut(self.data, self.len) }
-    }
-
-    /// Push a value, potentially reallocating.
-    ///
-    /// # Safety
-    /// The `ListIntStorage` must have been created via `from_vec`.
-    pub unsafe fn push(&mut self, value: i64) {
-        // Reconstruct a temporary Vec, push, then sync fields back.
-        let mut vec = unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) };
-        vec.push(value);
-        self.data = vec.as_mut_ptr();
-        self.len = vec.len();
-        self.cap = vec.capacity();
-        std::mem::forget(vec);
     }
 }
 
@@ -126,25 +95,6 @@ impl ListIntSliceRef {
     #[inline]
     pub fn iter(&self) -> std::slice::Iter<'_, i64> {
         unsafe { std::slice::from_raw_parts(self.data, self.len).iter() }
-    }
-
-    #[inline]
-    pub fn as_slice(&self) -> &[i64] {
-        unsafe { std::slice::from_raw_parts(self.data, self.len) }
-    }
-
-    #[inline]
-    pub fn get(&self, index: usize) -> Option<&i64> {
-        if index < self.len {
-            unsafe { Some(&*self.data.add(index)) }
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
     }
 }
 
@@ -409,6 +359,10 @@ pub(crate) unsafe fn function_annotate_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(7 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
+pub(crate) unsafe fn function_call_target_ptr(ptr: *mut u8) -> *const () {
+    unsafe { *(ptr.add(8 * std::mem::size_of::<u64>()) as *const *const ()) }
+}
+
 pub(crate) unsafe fn function_set_annotate_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
     unsafe {
         crate::gil_assert();
@@ -421,6 +375,12 @@ pub(crate) unsafe fn function_set_annotate_bits(_py: &PyToken<'_>, ptr: *mut u8,
         if bits != 0 {
             inc_ref_bits(_py, bits);
         }
+    }
+}
+
+pub(crate) unsafe fn function_set_call_target_ptr(ptr: *mut u8, target: *const ()) {
+    unsafe {
+        *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut *const ()) = target;
     }
 }
 

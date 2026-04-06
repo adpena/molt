@@ -1,7 +1,8 @@
 use crate::PyToken;
 use crate::builtins::attr::clear_attr_tls_caches;
-use crate::builtins::attributes::clear_attr_site_name_cache;
+use crate::builtins::attributes::{clear_attr_site_name_cache, clear_property_docs};
 use crate::builtins::strings::clear_const_str_cache;
+use crate::object::builders::clear_builder_singletons;
 use crate::call::bind::clear_call_bind_ic_cache;
 use crate::object::utf8_cache::{
     UTF8_CACHE_MAX_ENTRIES, UTF8_COUNT_CACHE_SHARDS, Utf8CacheStore, Utf8CountCacheStore,
@@ -14,9 +15,10 @@ use crate::{
     NEXT_CANCEL_TOKEN_ID, OBJECT_POOL_BUCKETS, OBJECT_POOL_TLS, PARSE_ARENA, RECURSION_DEPTH,
     RECURSION_LIMIT, TASK_RAISE_ACTIVE, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE,
     alloc_string, builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_state,
-    clear_exception_type_cache, dec_ref_bits, default_cancel_tokens, dict_get_in_place,
-    exception_pending, inc_ref_bits, intern_static_name, module_dict_bits, molt_file_flush,
-    molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry, runtime_state,
+    clear_exception_type_cache, dec_ref_bits, default_cancel_tokens, dict_clear_in_place_shutdown,
+    dict_get_in_place, exception_pending, inc_ref_bits, intern_static_name, module_dict_bits,
+    molt_file_flush, molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry,
+    runtime_state,
 };
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -144,6 +146,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_call_bind_ic_cache();
     trace_shutdown("clear_attr_site_name_cache");
     clear_attr_site_name_cache(_py);
+    trace_shutdown("clear_property_docs");
+    clear_property_docs(_py);
     trace_shutdown("clear_special_cache");
     clear_special_cache(_py, state);
     trace_shutdown("clear_utf8_caches");
@@ -158,6 +162,8 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_asyncgen_hooks(_py, state);
     trace_shutdown("clear_asyncgen_locals");
     clear_asyncgen_locals(_py, state);
+    trace_shutdown("clear_thread_local_state");
+    clear_thread_local_state(_py);
     trace_shutdown("clear_fn_ptr_code_map");
     clear_fn_ptr_code_map(_py, state);
     // Keep builtin classes alive until after cache + TLS teardown: releasing
@@ -169,8 +175,6 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
         trace_shutdown("reset_ptr_registry");
         reset_ptr_registry();
     }
-    trace_shutdown("clear_thread_local_state");
-    clear_thread_local_state(_py);
     trace_shutdown("done");
 }
 
@@ -300,6 +304,7 @@ fn clear_thread_local_state(_py: &PyToken<'_>) {
     let _ = PARSE_ARENA.try_with(|arena| arena.borrow_mut().clear());
     clear_attr_tls_caches(_py);
     clear_const_str_cache(_py);
+    clear_builder_singletons(_py);
     clear_utf8_count_tls();
     let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
 }
@@ -448,8 +453,25 @@ fn clear_module_cache(_py: &PyToken<'_>, state: &RuntimeState) {
         let old = std::mem::take(&mut *guard);
         old.into_values().collect::<Vec<_>>()
     };
+    for bits in &modules {
+        let Some(module_ptr) = obj_from_bits(*bits).as_ptr() else {
+            continue;
+        };
+        unsafe {
+            if object_type_id(module_ptr) != TYPE_ID_MODULE {
+                continue;
+            }
+            let dict_bits = module_dict_bits(module_ptr);
+            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+                continue;
+            };
+            if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                dict_clear_in_place_shutdown(_py, dict_ptr);
+            }
+        }
+    }
     for bits in modules {
-        dec_ref_bits(_py, bits);
+        crate::object::release_shutdown_bits(_py, bits);
     }
 }
 

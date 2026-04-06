@@ -206,62 +206,6 @@ pub(crate) unsafe fn alloc_instance_for_class_no_pool(
     }
 }
 
-unsafe fn alloc_dataclass_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<u64> {
-    unsafe {
-        let field_names_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")?;
-        let field_names_bits = class_attr_lookup_raw_mro(_py, class_ptr, field_names_name);
-        dec_ref_bits(_py, field_names_name);
-        let field_names_bits = field_names_bits?;
-        let Some(field_names_ptr) = obj_from_bits(field_names_bits).as_ptr() else {
-            return Some(raise_exception::<_>(
-                _py,
-                "TypeError",
-                "dataclass field names must be a list/tuple of str",
-            ));
-        };
-        let field_count = match object_type_id(field_names_ptr) {
-            TYPE_ID_TUPLE => tuple_len(field_names_ptr),
-            TYPE_ID_LIST => list_len(field_names_ptr),
-            _ => {
-                return Some(raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "dataclass field names must be a list/tuple of str",
-                ));
-            }
-        };
-        let missing = missing_bits(_py);
-        let mut values = Vec::with_capacity(field_count);
-        values.resize(field_count, missing);
-        let values_ptr = alloc_tuple(_py, &values);
-        if values_ptr.is_null() {
-            return Some(MoltObject::none().bits());
-        }
-        let values_bits = MoltObject::from_ptr(values_ptr).bits();
-        let flags_bits =
-            if let Some(flags_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__") {
-                let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
-                    .unwrap_or_else(|| MoltObject::from_int(0).bits());
-                dec_ref_bits(_py, flags_name);
-                bits
-            } else {
-                MoltObject::from_int(0).bits()
-            };
-        let name_bits = class_name_bits(class_ptr);
-        let inst_bits = molt_dataclass_new(name_bits, field_names_bits, values_bits, flags_bits);
-        dec_ref_bits(_py, values_bits);
-        if exception_pending(_py) {
-            return Some(MoltObject::none().bits());
-        }
-        let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let _ = molt_dataclass_set_class(inst_bits, class_bits);
-        if exception_pending(_py) {
-            return Some(MoltObject::none().bits());
-        }
-        Some(inst_bits)
-    }
-}
-
 pub(crate) unsafe fn call_class_init_with_args(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,

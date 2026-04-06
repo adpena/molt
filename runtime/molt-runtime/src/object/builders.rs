@@ -718,14 +718,14 @@ pub(crate) fn alloc_tuple_with_capacity_owned(
 }
 
 /// Cached empty tuple singleton. Allocated once, immortal (never freed).
-/// Uses AtomicU64 instead of OnceLock to avoid recursive init panics on WASM.
-static EMPTY_TUPLE_PTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static EMPTY_TUPLE_PTR: std::sync::atomic::AtomicPtr<u8> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
 pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     // Fast path: return the immortal empty tuple singleton.
     if elems.is_empty() {
         let cached = EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Relaxed);
-        let bits = if cached != 0 {
+        let ptr = if !cached.is_null() {
             cached
         } else {
             let ptr = alloc_tuple_with_capacity(_py, &[], 0);
@@ -739,15 +739,15 @@ pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
                 }
                 // CAS: if another thread beat us, use theirs (single-threaded on WASM, but safe)
                 let _ = EMPTY_TUPLE_PTR.compare_exchange(
-                    0,
-                    ptr as u64,
+                    std::ptr::null_mut(),
+                    ptr,
                     std::sync::atomic::Ordering::Relaxed,
                     std::sync::atomic::Ordering::Relaxed,
                 );
             }
             EMPTY_TUPLE_PTR.load(std::sync::atomic::Ordering::Relaxed)
         };
-        return bits as *mut u8;
+        return ptr;
     }
     let cap = if elems.len() <= MAX_SMALL_LIST {
         MAX_SMALL_LIST
@@ -832,7 +832,7 @@ pub(crate) fn alloc_union_type(_py: &PyToken<'_>, args_bits: u64) -> *mut u8 {
 // Context manager alloc moved to runtime/molt-runtime/src/builtins/context.rs.
 
 pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 8 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 9 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_FUNCTION);
     if ptr.is_null() {
         return ptr;
@@ -847,6 +847,7 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
         *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         let none_bits = MoltObject::none().bits();
         *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = none_bits;
+        *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut *const ()) = std::ptr::null();
         inc_ref_bits(_py, none_bits);
     }
     ptr
@@ -925,7 +926,6 @@ pub(crate) fn alloc_module_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
         *(ptr as *mut u64) = name_bits;
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = dict_bits;
         inc_ref_bits(_py, name_bits);
-        inc_ref_bits(_py, dict_bits);
         // Mark module objects as immortal.  The native backend's Cranelift
         // code generation emits dec_ref_obj calls for every SSA value whose
         // last-use point is reached (Perceus-style reference counting).
@@ -1057,15 +1057,15 @@ pub(crate) fn alloc_bytes_like_with_len(_py: &PyToken<'_>, len: usize, type_id: 
     ptr
 }
 
-/// Cached empty string singleton. Uses AtomicU64 to avoid recursive init panics on WASM.
-static EMPTY_STRING_PTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Cached empty string singleton.
+static EMPTY_STRING_PTR: std::sync::atomic::AtomicPtr<u8> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
 /// Interned single-character ASCII strings (0x00..0x7F).  Lazily populated on first access.
-/// Each entry is an `AtomicU64` storing the raw object pointer (0 = not yet initialised).
+/// Each entry stores the raw object pointer (`null` = not yet initialised).
 /// Using atomics avoids a mutex on the hot lookup path.
-static ASCII_CHARS: [std::sync::atomic::AtomicU64; 128] = {
-    // `AtomicU64::new(0)` is const, but array repeat syntax requires a const expression.
-    [const { std::sync::atomic::AtomicU64::new(0) }; 128]
+static ASCII_CHARS: [std::sync::atomic::AtomicPtr<u8>; 128] = {
+    [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; 128]
 };
 
 /// Lazily initialise every slot in `ASCII_CHARS` that is still zero.  Called once (guarded
@@ -1073,7 +1073,7 @@ static ASCII_CHARS: [std::sync::atomic::AtomicU64; 128] = {
 fn init_ascii_chars(_py: &PyToken<'_>) {
     for byte in 0u8..128 {
         let slot = &ASCII_CHARS[byte as usize];
-        if slot.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        if !slot.load(std::sync::atomic::Ordering::Relaxed).is_null() {
             continue;
         }
         let _nursery_guard = crate::object::NurserySuspendGuard::new();
@@ -1094,16 +1094,13 @@ fn init_ascii_chars(_py: &PyToken<'_>) {
         // If another thread raced us, the first writer wins; second allocation leaks
         // harmlessly (both are immortal).
         let _ = slot.compare_exchange(
-            0,
-            ptr as u64,
+            std::ptr::null_mut(),
+            ptr,
             std::sync::atomic::Ordering::Release,
             std::sync::atomic::Ordering::Relaxed,
         );
     }
 }
-
-/// Guard that ensures `init_ascii_chars` runs exactly once.
-static ASCII_CHARS_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 /// Try to return an interned single-ASCII-character string.
 /// Returns the raw object pointer if the input is exactly one ASCII byte, else `None`.
@@ -1116,10 +1113,24 @@ fn try_intern_ascii_char(_py: &PyToken<'_>, bytes: &[u8]) -> Option<*mut u8> {
     if byte > 127 {
         return None;
     }
-    ASCII_CHARS_INIT.get_or_init(|| init_ascii_chars(_py));
+    if ASCII_CHARS[byte as usize]
+        .load(std::sync::atomic::Ordering::Acquire)
+        .is_null()
+    {
+        init_ascii_chars(_py);
+    }
     let raw = ASCII_CHARS[byte as usize].load(std::sync::atomic::Ordering::Acquire);
-    if raw != 0 { Some(raw as *mut u8) } else { None }
+    if raw.is_null() { None } else { Some(raw) }
 }
+
+#[derive(Clone, Copy)]
+struct InternedPtr(*mut u8);
+
+// SAFETY: these pointers only refer to immortal interned string objects, so
+// sharing the pointer value across threads does not transfer mutable aliasing
+// rights or ownership. The underlying objects are never freed.
+unsafe impl Send for InternedPtr {}
+unsafe impl Sync for InternedPtr {}
 
 /// Molt-level string intern pool: maps identifier-like ASCII strings to their immortal
 /// Molt object pointer (stored as `usize` to be `Send`).
@@ -1129,9 +1140,9 @@ fn try_intern_ascii_char(_py: &PyToken<'_>, bytes: &[u8]) -> Option<*mut u8> {
 /// GC never frees them, and repeated allocations of the same identifier return the same
 /// heap object (pointer equality).
 fn molt_string_intern_pool()
--> &'static std::sync::Mutex<std::collections::HashMap<Box<[u8]>, usize>> {
+-> &'static std::sync::Mutex<std::collections::HashMap<Box<[u8]>, InternedPtr>> {
     static POOL: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<Box<[u8]>, usize>>,
+        std::sync::Mutex<std::collections::HashMap<Box<[u8]>, InternedPtr>>,
     > = std::sync::OnceLock::new();
     POOL.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
@@ -1139,7 +1150,7 @@ fn molt_string_intern_pool()
 pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     if bytes.is_empty() {
         let cached = EMPTY_STRING_PTR.load(std::sync::atomic::Ordering::Relaxed);
-        let bits = if cached != 0 {
+        let ptr = if !cached.is_null() {
             cached
         } else {
             let _nursery_guard = crate::object::NurserySuspendGuard::new();
@@ -1153,15 +1164,15 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
                         .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
                 }
                 let _ = EMPTY_STRING_PTR.compare_exchange(
-                    0,
-                    ptr as u64,
+                    std::ptr::null_mut(),
+                    ptr,
                     std::sync::atomic::Ordering::Relaxed,
                     std::sync::atomic::Ordering::Relaxed,
                 );
             }
             EMPTY_STRING_PTR.load(std::sync::atomic::Ordering::Relaxed)
         };
-        return bits as *mut u8;
+        return ptr;
     }
 
     // Fast path: single ASCII character strings (space, digits, punctuation, etc.)
@@ -1189,7 +1200,7 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
             && let Some(&raw) = pool.get(bytes)
         {
             // Cache hit: return the existing immortal object directly.
-            return raw as *mut u8;
+            return raw.0;
         }
         // Pool miss: allocate a new string object, mark it immortal+interned, and
         // insert it into the pool so future allocations reuse this object.
@@ -1213,10 +1224,10 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
         // leaks harmlessly (both are immortal, pool holds the canonical one).
         if let Ok(mut pool) = molt_string_intern_pool().lock() {
             pool.entry(bytes.to_vec().into_boxed_slice())
-                .or_insert(ptr as usize);
+                .or_insert(InternedPtr(ptr));
             // Re-read: if another thread won the race, prefer their pointer.
             if let Some(&canonical) = pool.get(bytes) {
-                return canonical as *mut u8;
+                return canonical.0;
             }
         }
         return ptr;
@@ -1245,13 +1256,14 @@ pub(crate) fn alloc_bytes_like(_py: &PyToken<'_>, bytes: &[u8], type_id: u32) ->
     ptr
 }
 
-/// Cached empty bytes singleton. Uses AtomicU64 to avoid recursive init panics on WASM.
-static EMPTY_BYTES_PTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Cached empty bytes singleton.
+static EMPTY_BYTES_PTR: std::sync::atomic::AtomicPtr<u8> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
 pub(crate) fn alloc_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     if bytes.is_empty() {
         let cached = EMPTY_BYTES_PTR.load(std::sync::atomic::Ordering::Relaxed);
-        let bits = if cached != 0 {
+        let ptr = if !cached.is_null() {
             cached
         } else {
             let ptr = alloc_bytes_like(_py, &[], TYPE_ID_BYTES);
@@ -1264,17 +1276,60 @@ pub(crate) fn alloc_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
                         .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
                 }
                 let _ = EMPTY_BYTES_PTR.compare_exchange(
-                    0,
-                    ptr as u64,
+                    std::ptr::null_mut(),
+                    ptr,
                     std::sync::atomic::Ordering::Relaxed,
                     std::sync::atomic::Ordering::Relaxed,
                 );
             }
             EMPTY_BYTES_PTR.load(std::sync::atomic::Ordering::Relaxed)
         };
-        return bits as *mut u8;
+        return ptr;
     }
     alloc_bytes_like(_py, bytes, TYPE_ID_BYTES)
+}
+
+pub(crate) fn clear_builder_singletons(_py: &PyToken<'_>) {
+    crate::gil_assert();
+
+    let empty_tuple = EMPTY_TUPLE_PTR.swap(
+        std::ptr::null_mut(),
+        std::sync::atomic::Ordering::AcqRel,
+    );
+    if !empty_tuple.is_null() {
+        crate::object::release_shutdown_bits(_py, MoltObject::from_ptr(empty_tuple).bits());
+    }
+
+    let empty_string = EMPTY_STRING_PTR.swap(
+        std::ptr::null_mut(),
+        std::sync::atomic::Ordering::AcqRel,
+    );
+    if !empty_string.is_null() {
+        crate::object::release_shutdown_bits(_py, MoltObject::from_ptr(empty_string).bits());
+    }
+
+    let empty_bytes = EMPTY_BYTES_PTR.swap(
+        std::ptr::null_mut(),
+        std::sync::atomic::Ordering::AcqRel,
+    );
+    if !empty_bytes.is_null() {
+        crate::object::release_shutdown_bits(_py, MoltObject::from_ptr(empty_bytes).bits());
+    }
+
+    for slot in &ASCII_CHARS {
+        let ptr = slot.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
+        if !ptr.is_null() {
+            crate::object::release_shutdown_bits(_py, MoltObject::from_ptr(ptr).bits());
+        }
+    }
+
+    if let Ok(mut pool) = molt_string_intern_pool().lock() {
+        let old = std::mem::take(&mut *pool);
+        drop(pool);
+        for (_key, ptr) in old {
+            crate::object::release_shutdown_bits(_py, MoltObject::from_ptr(ptr.0).bits());
+        }
+    }
 }
 
 pub(crate) fn alloc_bytearray(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
