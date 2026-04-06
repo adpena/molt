@@ -133,6 +133,7 @@ pub extern "C" fn molt_type_new(
     kwargs_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        let _nursery_guard = crate::object::NurserySuspendGuard::new();
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "type.__new__ expects type");
@@ -5760,13 +5761,11 @@ pub extern "C" fn molt_dataclasses_is_initvar(obj_bits: u64) -> u64 {
         if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__name__") {
             let name_val = molt_getattr_builtin(cls_bits, name_bits, missing);
             dec_ref_bits(_py, name_bits);
-            if !exception_pending(_py) && name_val != missing {
-                if let Some(name_str) = string_obj_to_owned(obj_from_bits(name_val)) {
-                    if name_str == "InitVar" {
+            if !exception_pending(_py) && name_val != missing
+                && let Some(name_str) = string_obj_to_owned(obj_from_bits(name_val))
+                    && name_str == "InitVar" {
                         return MoltObject::from_bool(true).bits();
                     }
-                }
-            }
             if exception_pending(_py) {
                 clear_exception(_py);
             }
@@ -5801,13 +5800,11 @@ pub extern "C" fn molt_dataclasses_is_kw_only_sentinel(obj_bits: u64) -> u64 {
         if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__name__") {
             let name_val = molt_getattr_builtin(cls_bits, name_bits, missing);
             dec_ref_bits(_py, name_bits);
-            if !exception_pending(_py) && name_val != missing {
-                if let Some(name_str) = string_obj_to_owned(obj_from_bits(name_val)) {
-                    if name_str == "KW_ONLY" || name_str == "_KW_ONLY_TYPE" {
+            if !exception_pending(_py) && name_val != missing
+                && let Some(name_str) = string_obj_to_owned(obj_from_bits(name_val))
+                    && (name_str == "KW_ONLY" || name_str == "_KW_ONLY_TYPE") {
                         return MoltObject::from_bool(true).bits();
                     }
-                }
-            }
             if exception_pending(_py) {
                 clear_exception(_py);
             }

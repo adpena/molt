@@ -15,26 +15,26 @@ macro_rules! fn_addr {
     };
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(miri)))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[cfg(test)]
 pub(crate) static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-// Unit-test builds link the runtime crate directly without compiler-emitted
-// isolate entrypoints. Provide test-only fallbacks so lib-test linking remains
-// reliable while production binaries keep using generated symbols.
-#[cfg(test)]
+// Direct-link test and fuzz builds do not have compiler-emitted isolate
+// entrypoints. Provide fallback symbols for those harnesses only while
+// production binaries keep using generated symbols.
+#[cfg(any(test, fuzzing))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_isolate_bootstrap() -> u64 {
     molt_obj_model::MoltObject::none().bits()
 }
 
-#[cfg(test)]
+#[cfg(any(test, fuzzing))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
-    // Unit-test fallback only. Production binaries must provide the
+    // Test/fuzz fallback only. Production binaries must provide the
     // app-owned symbol emitted by the compiler or by the embedding host.
     molt_obj_model::MoltObject::none().bits()
 }
@@ -203,6 +203,7 @@ pub mod ffi_bridge {
 
 #[allow(unused_imports)]
 pub(crate) use crate::async_rt::*;
+pub use crate::builtins::strings::molt_string_from_bytes;
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{
     molt_barrier_abort, molt_barrier_broken, molt_barrier_drop, molt_barrier_n_waiting,
