@@ -424,7 +424,6 @@ def test_planned_update_steps_bootstrap_cargo_edit_when_missing(
     assert "cargo-upgrade-fuzz" in names
 
 
-@pytest.mark.xfail(reason="requires rebuilt libmolt_runtime.a (linker compat)")
 def test_cli_run_json(tmp_path: Path) -> None:
     script = tmp_path / "hello.py"
     script.write_text("print('ok')\n")
@@ -433,6 +432,58 @@ def test_cli_run_json(tmp_path: Path) -> None:
     payload = json.loads(res.stdout)
     assert payload["data"]["returncode"] == 0
     assert "ok" in payload["data"].get("stdout", "")
+
+
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_cli_build_json_binary_executes_for_native_profiles(
+    tmp_path: Path, profile: str
+) -> None:
+    script = tmp_path / "hello.py"
+    script.write_text("print('ok')\n")
+
+    build = _run_cli(
+        [
+            "build",
+            "--json",
+            "--build-profile",
+            profile,
+            str(script),
+            "--out-dir",
+            str(tmp_path),
+        ]
+    )
+    assert build.returncode == 0, build.stderr
+    payload = json.loads(build.stdout)
+    output = Path(payload["data"]["output"])
+    assert output.exists()
+
+    run = subprocess.run(
+        [str(output)],
+        cwd=ROOT,
+        env=_base_env(),
+        capture_output=True,
+        text=True,
+        timeout=_cli_timeout(),
+    )
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == "ok"
+
+
+def test_cli_compare_json(tmp_path: Path) -> None:
+    script = tmp_path / "hello.py"
+    script.write_text("print('ok')\n")
+
+    res = _run_cli(["compare", "--json", str(script)])
+    assert res.returncode == 0, res.stderr
+    payload = json.loads(res.stdout)
+    assert payload["command"] == "compare"
+    assert payload["data"]["returncodes"] == {"cpython": 0, "molt": 0, "build": 0}
+    assert payload["data"]["match"] == {
+        "stdout": True,
+        "stderr": True,
+        "exitcode": True,
+    }
+    assert payload["data"]["molt_stdout"] == "ok\n"
 
 
 def test_cli_parity_run_json(tmp_path: Path) -> None:
@@ -457,21 +508,17 @@ def test_cli_parity_run_timing_json(tmp_path: Path) -> None:
     assert payload["data"]["timing"]["cpython_run_s"] >= 0
 
 
-@pytest.mark.xfail(reason="requires rebuilt libmolt_runtime.a (linker compat)")
 @pytest.mark.parametrize(
     ("symbol", "invocation"),
     [("exec", "exec('value = 1')"), ("eval", "eval('1 + 1')")],
 )
-def test_cli_run_unresolved_exec_eval_raise_runtime_error(
+def test_cli_run_exec_eval_raise_runtime_error(
     tmp_path: Path, symbol: str, invocation: str
 ) -> None:
-    script = tmp_path / f"{symbol}_unresolved.py"
+    script = tmp_path / f"{symbol}_direct.py"
     script.write_text(
         "\n".join(
             [
-                "import builtins",
-                f"if hasattr(builtins, {symbol!r}):",
-                f"    delattr(builtins, {symbol!r})",
                 invocation,
                 "",
             ]
