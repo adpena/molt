@@ -46,6 +46,11 @@ It is current-state only. For forward-looking priorities, use
 
 - Local lint and policy gates live behind `tools/dev.py lint`.
 - Python test coverage lives behind `tools/dev.py test`.
+- Backend completion now requires an explicit end-to-end CLI/profile/target
+  matrix, not only backend-internal unit and lowering proof:
+  - native `build` / `run` / `compare` on `dev` and `release`
+  - linked-WASM CLI build plus Node execution
+  - honest failure surfaces for intentionally unsupported dynamic execution
 - Compatibility evidence is tracked in the differential suites, generated
   compatibility docs, and proof workflows linked below.
 
