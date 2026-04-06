@@ -185,11 +185,7 @@ impl BuiltinClasses {
 }
 
 impl Drop for BuiltinClasses {
-    fn drop(&mut self) {
-        crate::with_gil_entry!(_py, {
-            self.dec_ref_all(_py);
-        });
-    }
+    fn drop(&mut self) {}
 }
 
 fn make_builtin_class(_py: &PyToken<'_>, name: &str) -> u64 {
@@ -821,9 +817,7 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
 }
 
 pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
-    let ptr = state
-        .builtin_classes
-        .swap(std::ptr::null_mut(), AtomicOrdering::AcqRel);
+    let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
     if ptr.is_null() {
         return;
     }
@@ -837,6 +831,8 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
             builtins.ellipsis_type,
             builtins.base_exception,
             builtins.exception,
+            builtins.base_exception_group,
+            builtins.exception_group,
             builtins.int,
             builtins.float,
             builtins.complex,
@@ -855,6 +851,10 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
             builtins.range,
             builtins.slice,
             builtins.memoryview,
+            builtins.io_base,
+            builtins.raw_io_base,
+            builtins.buffered_io_base,
+            builtins.text_io_base,
             builtins.file,
             builtins.file_io,
             builtins.buffered_reader,
@@ -904,10 +904,14 @@ pub(crate) fn builtin_classes_shutdown(py: &PyToken<'_>, state: &RuntimeState) {
         ] {
             class_break_cycles(py, bits);
         }
+        builtins.dec_ref_all(py);
     }
     unsafe {
         drop(Box::from_raw(ptr));
     }
+    state
+        .builtin_classes
+        .store(std::ptr::null_mut(), AtomicOrdering::Release);
 }
 
 pub(crate) fn is_builtin_class_bits(_py: &PyToken<'_>, bits: u64) -> bool {

@@ -8,7 +8,7 @@ use crate::{
     CALL_BIND_IC_MISS_COUNT, CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT, GEN_CONTROL_SIZE,
     INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject, PtrDropGuard, PyToken,
     TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE, TYPE_ID_DATACLASS, TYPE_ID_DICT,
-    TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST,
+    TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS,
     TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
     alloc_dict_with_pairs, alloc_exception_from_class_bits, alloc_instance_for_class,
     alloc_instance_for_default_object_new, alloc_object, alloc_string, alloc_tuple,
@@ -25,7 +25,7 @@ use crate::{
     function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
     function_trampoline_ptr, generic_alias_origin_bits, has_capability, inc_ref_bits,
     init_atomic_bits, intern_static_name, is_builtin_class_bits, is_trusted, is_truthy,
-    isinstance_bits, issubclass_bits, list_len, lookup_call_attr, maybe_ptr_from_bits,
+    isinstance_bits, issubclass_bits, lookup_call_attr, maybe_ptr_from_bits,
     missing_bits, molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
     molt_bytearray_find_slice, molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop,
     molt_bytearray_rfind_slice, molt_bytearray_rindex_slice, molt_bytearray_rsplit_max,
@@ -33,16 +33,16 @@ use crate::{
     molt_bytes_count_slice, molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice,
     molt_bytes_hex, molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice,
     molt_bytes_rindex_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
-    molt_bytes_startswith_slice, molt_class_set_base, molt_dataclass_new, molt_dataclass_set_class,
+    molt_bytes_startswith_slice, molt_class_set_base,
     molt_dict_from_obj, molt_dict_new, molt_file_reconfigure, molt_frozenset_copy_method,
     molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
     molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
-    molt_frozenset_union_multi, molt_generator_new,
-    molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_is_callable, molt_iter,
-    molt_iter_next, molt_list_append, molt_list_index_range, molt_list_pop, molt_list_sort,
-    molt_memoryview_cast, molt_memoryview_hex, molt_object_init, molt_object_init_subclass,
-    molt_object_new_bound, molt_open_builtin, molt_set_clear, molt_set_copy_method,
-    molt_set_difference_multi, molt_set_difference_update_multi, molt_set_intersection_multi,
+    molt_frozenset_union_multi, molt_generator_new, molt_int_from_bytes, molt_int_new,
+    molt_int_to_bytes, molt_is_callable, molt_iter, molt_iter_next, molt_list_append,
+    molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast,
+    molt_memoryview_hex, molt_object_init, molt_object_init_subclass, molt_object_new_bound,
+    molt_open_builtin, molt_set_clear, molt_set_copy_method, molt_set_difference_multi,
+    molt_set_difference_update_multi, molt_set_intersection_multi,
     molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
     molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
     molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
@@ -52,7 +52,7 @@ use crate::{
     molt_string_startswith_slice, molt_super_new, molt_tuple_index_range, molt_type_call,
     molt_type_init, molt_type_new, obj_from_bits, object_class_bits, object_set_class_bits,
     object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception, raise_not_callable,
-    raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned, tuple_len, type_name,
+    raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned, type_name,
     type_of_bits,
 };
 use std::collections::{HashMap, HashSet};
@@ -156,62 +156,6 @@ unsafe fn is_default_type_call(_py: &PyToken<'_>, call_bits: u64) -> bool {
             ),
             _ => false,
         }
-    }
-}
-
-unsafe fn alloc_dataclass_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<u64> {
-    unsafe {
-        let field_names_name = attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_names__")?;
-        let field_names_bits = class_attr_lookup_raw_mro(_py, class_ptr, field_names_name);
-        dec_ref_bits(_py, field_names_name);
-        let field_names_bits = field_names_bits?;
-        let Some(field_names_ptr) = obj_from_bits(field_names_bits).as_ptr() else {
-            return Some(raise_exception::<_>(
-                _py,
-                "TypeError",
-                "dataclass field names must be a list/tuple of str",
-            ));
-        };
-        let field_count = match object_type_id(field_names_ptr) {
-            TYPE_ID_TUPLE => tuple_len(field_names_ptr),
-            TYPE_ID_LIST => list_len(field_names_ptr),
-            _ => {
-                return Some(raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "dataclass field names must be a list/tuple of str",
-                ));
-            }
-        };
-        let missing = missing_bits(_py);
-        let mut values = Vec::with_capacity(field_count);
-        values.resize(field_count, missing);
-        let values_ptr = alloc_tuple(_py, &values);
-        if values_ptr.is_null() {
-            return Some(MoltObject::none().bits());
-        }
-        let values_bits = MoltObject::from_ptr(values_ptr).bits();
-        let flags_bits =
-            if let Some(flags_name) = attr_name_bits_from_bytes(_py, b"__molt_dataclass_flags__") {
-                let bits = class_attr_lookup_raw_mro(_py, class_ptr, flags_name)
-                    .unwrap_or_else(|| MoltObject::from_int(0).bits());
-                dec_ref_bits(_py, flags_name);
-                bits
-            } else {
-                MoltObject::from_int(0).bits()
-            };
-        let name_bits = class_name_bits(class_ptr);
-        let inst_bits = molt_dataclass_new(name_bits, field_names_bits, values_bits, flags_bits);
-        dec_ref_bits(_py, values_bits);
-        if exception_pending(_py) {
-            return Some(MoltObject::none().bits());
-        }
-        let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let _ = molt_dataclass_set_class(inst_bits, class_bits);
-        if exception_pending(_py) {
-            return Some(MoltObject::none().bits());
-        }
-        Some(inst_bits)
     }
 }
 
@@ -2560,23 +2504,19 @@ unsafe fn bind_builtin_call(
                 b"__defaults__",
             ),
         );
-        if let Some(dbits) = defaults_bits {
-            if !obj_from_bits(dbits).is_none() {
-                if let Some(def_ptr) = obj_from_bits(dbits).as_ptr() {
-                    if object_type_id(def_ptr) == TYPE_ID_TUPLE {
-                        let defaults = seq_vec_ref(def_ptr);
-                        let n_defaults = defaults.len();
-                        if missing <= n_defaults {
-                            // The defaults tuple covers the last n_defaults
-                            // parameters.  We need the last `missing` entries.
-                            let start = n_defaults - missing;
-                            for i in start..n_defaults {
-                                out.push(defaults[i]);
-                            }
-                            return Some(out);
-                        }
-                    }
-                }
+        if let Some(dbits) = defaults_bits
+            && !obj_from_bits(dbits).is_none()
+            && let Some(def_ptr) = obj_from_bits(dbits).as_ptr()
+            && object_type_id(def_ptr) == TYPE_ID_TUPLE
+        {
+            let defaults = seq_vec_ref(def_ptr);
+            let n_defaults = defaults.len();
+            if missing <= n_defaults {
+                // The defaults tuple covers the last n_defaults
+                // parameters.  We need the last `missing` entries.
+                let start = n_defaults - missing;
+                out.extend(defaults.iter().take(n_defaults).skip(start).copied());
+                return Some(out);
             }
         }
 
@@ -3029,43 +2969,41 @@ unsafe fn bind_builtin_class_string_io(_py: &PyToken<'_>, args: &CallArgs) -> Op
 ///   (args_tuple, sep, end, file, flush)
 /// The first param is a tuple of the `*args` vararg.
 unsafe fn bind_builtin_print(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {
-    unsafe {
-        // Build the *args tuple from positional arguments.
-        let args_ptr = crate::object::builders::alloc_tuple(_py, &args.pos);
-        let args_tuple = MoltObject::from_ptr(args_ptr).bits();
-        // Keyword-only defaults.
-        let default_sep = crate::object::builders::alloc_string(_py, b" ");
-        let default_end = crate::object::builders::alloc_string(_py, b"\n");
-        let sep_default = MoltObject::from_ptr(default_sep).bits();
-        let end_default = MoltObject::from_ptr(default_end).bits();
-        let file_default = MoltObject::none().bits();
-        let flush_default = MoltObject::from_bool(false).bits();
-        let mut sep = sep_default;
-        let mut end = end_default;
-        let mut file = file_default;
-        let mut flush = flush_default;
-        // Match keywords.
-        for (name_bits, val_bits) in args
-            .kw_names
-            .iter()
-            .copied()
-            .zip(args.kw_values.iter().copied())
-        {
-            let name_obj = obj_from_bits(name_bits);
-            let name_str = string_obj_to_owned(name_obj).unwrap_or_default();
-            match name_str.as_str() {
-                "sep" => sep = val_bits,
-                "end" => end = val_bits,
-                "file" => file = val_bits,
-                "flush" => flush = val_bits,
-                _ => {
-                    let msg = format!("'{}' is an invalid keyword argument for print", name_str);
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+    // Build the *args tuple from positional arguments.
+    let args_ptr = crate::object::builders::alloc_tuple(_py, &args.pos);
+    let args_tuple = MoltObject::from_ptr(args_ptr).bits();
+    // Keyword-only defaults.
+    let default_sep = crate::object::builders::alloc_string(_py, b" ");
+    let default_end = crate::object::builders::alloc_string(_py, b"\n");
+    let sep_default = MoltObject::from_ptr(default_sep).bits();
+    let end_default = MoltObject::from_ptr(default_end).bits();
+    let file_default = MoltObject::none().bits();
+    let flush_default = MoltObject::from_bool(false).bits();
+    let mut sep = sep_default;
+    let mut end = end_default;
+    let mut file = file_default;
+    let mut flush = flush_default;
+    // Match keywords.
+    for (name_bits, val_bits) in args
+        .kw_names
+        .iter()
+        .copied()
+        .zip(args.kw_values.iter().copied())
+    {
+        let name_obj = obj_from_bits(name_bits);
+        let name_str = string_obj_to_owned(name_obj).unwrap_or_default();
+        match name_str.as_str() {
+            "sep" => sep = val_bits,
+            "end" => end = val_bits,
+            "file" => file = val_bits,
+            "flush" => flush = val_bits,
+            _ => {
+                let msg = format!("'{}' is an invalid keyword argument for print", name_str);
+                return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }
-        Some(vec![args_tuple, sep, end, file, flush])
     }
+    Some(vec![args_tuple, sep, end, file, flush])
 }
 
 unsafe fn bind_builtin_open(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64>> {

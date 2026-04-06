@@ -11,7 +11,7 @@
 
 macro_rules! fn_addr {
     ($func:path) => {
-        $func as *const () as usize as u64
+        $crate::builtins::functions::runtime_fn_addr(stringify!($func), $func as *const ())
     };
 }
 

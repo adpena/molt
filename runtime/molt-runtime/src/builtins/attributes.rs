@@ -58,6 +58,17 @@ fn property_docs() -> &'static Mutex<HashMap<PtrSlot, u64>> {
     PROPERTY_DOCS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub(crate) fn clear_property_docs(_py: &PyToken<'_>) {
+    let mut guard = property_docs().lock().unwrap();
+    let old = std::mem::take(&mut *guard);
+    drop(guard);
+    for (_ptr, bits) in old {
+        if bits != 0 {
+            dec_ref_bits(_py, bits);
+        }
+    }
+}
+
 fn attr_site_name_cache() -> &'static Mutex<HashMap<u64, u64>> {
     ATTR_SITE_NAME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -81,6 +92,9 @@ pub(crate) fn clear_attr_site_name_cache(_py: &PyToken<'_>) {
         }
         if entry.result_bits != 0 {
             dec_ref_bits(_py, entry.result_bits);
+        }
+        if entry.class_bits != 0 {
+            dec_ref_bits(_py, entry.class_bits);
         }
     }
 }
@@ -2695,8 +2709,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         && let Some(offsets_bits) = dict_get_in_place(_py, cls_dict_ptr, fields_key)
                         && let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr()
                         && object_type_id(offsets_ptr) == TYPE_ID_DICT
-                    {
-                        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                        && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                             && object_type_id(dict_ptr) == TYPE_ID_DICT
                         {
                             use crate::builtins::containers::dict_order;
@@ -2723,7 +2736,6 @@ pub(crate) unsafe fn attr_lookup_ptr(
                                 i += 2;
                             }
                         }
-                    }
                 }
                 if dict_bits != 0 {
                     inc_ref_bits(_py, dict_bits);
@@ -4123,13 +4135,11 @@ pub(crate) unsafe fn del_attr_ptr(
                 let _ = object_field_set_ptr_raw(_py, obj_ptr, offset, missing);
                 // Also remove from instance dict (dual storage).
                 let dict_bits = instance_dict_bits(obj_ptr);
-                if dict_bits != 0 {
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                        if object_type_id(dict_ptr) == TYPE_ID_DICT {
+                if dict_bits != 0
+                    && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                        && object_type_id(dict_ptr) == TYPE_ID_DICT {
                             dict_del_in_place(_py, dict_ptr, attr_bits);
                         }
-                    }
-                }
                 return MoltObject::none().bits() as i64;
             }
             let dict_bits = instance_dict_bits(obj_ptr);
@@ -4538,13 +4548,11 @@ pub(crate) unsafe fn object_delattr_raw(
             // Also remove from instance dict (dual storage: __init__
             // stores in both field slot and instance dict for correctness).
             let dict_bits = instance_dict_bits(obj_ptr);
-            if dict_bits != 0 {
-                if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
-                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
+            if dict_bits != 0
+                && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                    && object_type_id(dict_ptr) == TYPE_ID_DICT {
                         dict_del_in_place(_py, dict_ptr, attr_bits);
                     }
-                }
-            }
             return MoltObject::none().bits() as i64;
         }
         let dict_bits = instance_dict_bits(obj_ptr);
@@ -4798,18 +4806,16 @@ pub unsafe extern "C" fn molt_get_attr_object(
                 }
                 return molt_get_attr_generic(ptr, attr_name_ptr, attr_name_len_bits);
             }
-            if obj.is_int() || obj.is_bool() {
-                if let Some(func_bits) = int_method_bits(_py, attr_name) {
+            if (obj.is_int() || obj.is_bool())
+                && let Some(func_bits) = int_method_bits(_py, attr_name) {
                     let bound_bits = molt_bound_method_new(func_bits, obj_bits);
                     return bound_bits as i64;
                 }
-            }
-            if obj.is_float() {
-                if let Some(func_bits) = float_method_bits(_py, attr_name) {
+            if obj.is_float()
+                && let Some(func_bits) = float_method_bits(_py, attr_name) {
                     let bound_bits = molt_bound_method_new(func_bits, obj_bits);
                     return bound_bits as i64;
                 }
-            }
             // Inline int/float/bool: fall back to class-based resolution
             // so that inherited methods (e.g. object.__init__) are found.
             // Check the specific type first, then fall through to `object`.
@@ -4874,8 +4880,8 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                     let cache = attr_ic_result_cache()
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
-                    if let Some(entry) = cache.get(&site_id) {
-                        if entry.type_version == current_version
+                    if let Some(entry) = cache.get(&site_id)
+                        && entry.type_version == current_version
                             && entry.obj_type_id == type_id
                             && entry.class_bits == class_bits
                             && entry.result_bits != 0
@@ -4897,7 +4903,6 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                                 }
                             }
                         }
-                    }
                     drop(cache);
                 }
             }
@@ -4926,10 +4931,10 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                     } else {
                         object_class_bits(obj_ptr)
                     };
-                    if class_bits != 0 {
-                        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
-                            if object_type_id(class_ptr) == TYPE_ID_TYPE {
-                                if let Some(mro_bits) =
+                    if class_bits != 0
+                        && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                            && object_type_id(class_ptr) == TYPE_ID_TYPE
+                                && let Some(mro_bits) =
                                     class_attr_lookup_raw_mro(_py, class_ptr, name_bits)
                                 {
                                     // SAFETY: Only cache results where descriptor binding
@@ -4970,9 +4975,6 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                                         }
                                     }
                                 }
-                            }
-                        }
-                    }
                 }
             }
 
@@ -5159,16 +5161,14 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                 ) as u64;
             }
             let obj = obj_from_bits(obj_bits);
-            if obj.is_int() || obj.is_bool() {
-                if let Some(func_bits) = int_method_bits(_py, &attr_name) {
+            if (obj.is_int() || obj.is_bool())
+                && let Some(func_bits) = int_method_bits(_py, &attr_name) {
                     return molt_bound_method_new(func_bits, obj_bits);
                 }
-            }
-            if obj.is_float() {
-                if let Some(func_bits) = float_method_bits(_py, &attr_name) {
+            if obj.is_float()
+                && let Some(func_bits) = float_method_bits(_py, &attr_name) {
                     return molt_bound_method_new(func_bits, obj_bits);
                 }
-            }
             // Inline int/float/bool: fall back to class-based resolution
             // so that inherited methods (e.g. object.__init__) are found.
             {

@@ -739,19 +739,20 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
         unsafe {
             let old_bases = class_bases_bits(class_ptr);
             let old_mro = class_mro_bits(class_ptr);
-            let mut updated = false;
+            let mut bases_updated = false;
+            let mut mro_updated = false;
             if old_bases != bases_bits {
                 dec_ref_bits(_py, old_bases);
                 if !bases_owned {
                     inc_ref_bits(_py, bases_bits);
                 }
                 class_set_bases_bits(class_ptr, bases_bits);
-                updated = true;
+                bases_updated = true;
             }
             if old_mro != mro_bits {
                 dec_ref_bits(_py, old_mro);
                 class_set_mro_bits(class_ptr, mro_bits);
-                updated = true;
+                mro_updated = true;
             }
             let dict_bits = class_dict_bits(class_ptr);
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
@@ -764,7 +765,13 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                 dict_set_in_place(_py, dict_ptr, bases_name, bases_bits);
                 dict_set_in_place(_py, dict_ptr, mro_name, mro_bits);
             }
-            if updated {
+            if bases_owned && !bases_updated {
+                dec_ref_bits(_py, bases_bits);
+            }
+            if !mro_updated {
+                dec_ref_bits(_py, mro_bits);
+            }
+            if bases_updated || mro_updated {
                 class_bump_layout_version(class_ptr);
             }
         }

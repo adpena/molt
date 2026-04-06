@@ -542,6 +542,8 @@ fn attr_object_ic_keeps_class_attrs_distinct_per_site() {
         dec_ref_bits(_py, class_b_bits);
         dec_ref_bits(_py, class_a_bits);
     });
+    let _ = molt_runtime_shutdown();
+    crate::state::runtime_state::molt_runtime_reset_for_testing();
 }
 
 #[test]

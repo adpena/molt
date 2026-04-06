@@ -21,6 +21,14 @@ fn email_quopri_alloc_str(_py: &crate::PyToken<'_>, value: &str) -> u64 {
     }
 }
 use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::builtins::exceptions::{
+    molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init,
+};
+use crate::builtins::types::{
+    molt_object_new_bound, molt_type_init, molt_type_new,
+};
+use crate::object::layout::function_set_call_target_ptr;
+use crate::object::ops_builtins::{molt_object_init, molt_object_init_subclass, molt_type_call};
 use molt_obj_model::MoltObject;
 #[cfg(feature = "stdlib_ast")]
 use rustpython_parser::{Mode as ParseMode, ParseErrorType, ast as pyast, parse as parse_python};
@@ -36,33 +44,97 @@ use super::types::cell_class;
 use crate::builtins::numbers::index_i64_with_overflow;
 use crate::builtins::platform::env_state_get;
 use crate::{
-    TYPE_ID_BOUND_METHOD, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_LIST,
-    TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_bytes,
-    alloc_code_obj, alloc_dict_with_pairs, alloc_function_obj, alloc_list_with_capacity,
-    alloc_string, alloc_tuple, attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes, call_callable1, call_callable2, dec_ref_bits, dict_get_in_place,
-    ensure_function_code_bits, exception_pending, function_dict_bits, function_set_closure_bits,
-    function_set_trampoline_ptr, inc_ref_bits, is_truthy, missing_bits, module_dict_bits,
-    molt_getattr_builtin, molt_getitem_method, molt_iter, molt_iter_next, molt_trace_enter_slot,
-    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, raise_exception,
-    seq_vec_ref, string_obj_to_owned, to_i64, type_name,
+    TYPE_ID_BOUND_METHOD, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_LIST, TYPE_ID_MODULE,
+    TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_bytes, alloc_code_obj,
+    alloc_dict_with_pairs, alloc_function_obj, alloc_list_with_capacity, alloc_string, alloc_tuple,
+    attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes, call_callable1,
+    call_callable2, dec_ref_bits, dict_get_in_place, ensure_function_code_bits, exception_pending,
+    function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr, inc_ref_bits,
+    is_truthy, missing_bits, module_dict_bits, molt_getattr_builtin, molt_getitem_method,
+    molt_iter, molt_iter_next, molt_trace_enter_slot, obj_from_bits, object_class_bits,
+    object_set_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
+    to_i64, type_name,
 };
 use memchr::{memchr, memmem};
 
 #[cfg(target_arch = "wasm32")]
-use super::exceptions::{molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init};
-#[cfg(target_arch = "wasm32")]
-use crate::builtins::types::{
-    molt_object_new_bound, molt_type_init, molt_type_new, molt_types_capsule_new,
-    molt_types_cell_new, molt_types_coroutine, molt_types_dynamic_class_attr_init,
-    molt_types_get_original_bases, molt_types_mappingproxy_init, molt_types_mappingproxy_new,
-    molt_types_method_init, molt_types_method_new, molt_types_new_class, molt_types_prepare_class,
-    molt_types_resolve_bases, molt_types_simplenamespace_init,
-};
-#[cfg(target_arch = "wasm32")]
-use crate::object::ops_builtins::{molt_object_init, molt_object_init_subclass, molt_type_call};
-
-#[cfg(target_arch = "wasm32")]
 const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 33;
+const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFF_FF00_0000_0000;
+
+fn runtime_callable_name_suffix(symbol_path: &str) -> &str {
+    symbol_path.rsplit("::").next().unwrap_or(symbol_path)
+}
+
+pub(crate) fn runtime_fn_addr(symbol_path: &str, raw_ptr: *const ()) -> u64 {
+    runtime_callable_key_from_symbol_name(runtime_callable_name_suffix(symbol_path))
+        .unwrap_or(raw_ptr as usize as u64)
+}
+
+fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
+    if symbol_name == "molt_type_call" {
+        return Some(RUNTIME_CALLABLE_KEY_BASE);
+    }
+    if symbol_name == "molt_type_new" {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 1);
+    }
+    if symbol_name == "molt_type_init" {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 2);
+    }
+    if symbol_name == "molt_object_new_bound" {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 3);
+    }
+    if symbol_name == "molt_object_init" {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 4);
+    }
+    if symbol_name == "molt_object_init_subclass" {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 5);
+    }
+    if symbol_name == "molt_exception_new_bound" {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 6);
+    }
+    if symbol_name == "molt_exception_init" {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 7);
+    }
+    if symbol_name == "molt_exceptiongroup_init" {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 8);
+    }
+    None
+}
+
+pub(crate) fn canonicalize_runtime_callable_key(fn_ptr: u64) -> u64 {
+    runtime_callable_key_from_raw(fn_ptr).unwrap_or(fn_ptr)
+}
+
+fn runtime_callable_key_from_raw(fn_ptr: u64) -> Option<u64> {
+    if fn_ptr == (molt_type_call as *const () as usize as u64) {
+        return Some(RUNTIME_CALLABLE_KEY_BASE);
+    }
+    if fn_ptr == (molt_type_new as *const () as usize as u64) {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 1);
+    }
+    if fn_ptr == (molt_type_init as *const () as usize as u64) {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 2);
+    }
+    if fn_ptr == (molt_object_new_bound as *const () as usize as u64) {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 3);
+    }
+    if fn_ptr == (molt_object_init as *const () as usize as u64) {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 4);
+    }
+    if fn_ptr == (molt_object_init_subclass as *const () as usize as u64) {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 5);
+    }
+    if fn_ptr == (molt_exception_new_bound as *const () as usize as u64) {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 6);
+    }
+    if fn_ptr == (molt_exception_init as *const () as usize as u64) {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 7);
+    }
+    if fn_ptr == (molt_exceptiongroup_init as *const () as usize as u64) {
+        return Some(RUNTIME_CALLABLE_KEY_BASE + 8);
+    }
+    None
+}
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn reserved_wasm_runtime_callable_info(
@@ -157,28 +229,63 @@ pub(crate) fn runtime_callable_represents_symbol(
     false
 }
 
+pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
+    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE {
+        return Some(molt_type_call as *const ());
+    }
+    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 1 {
+        return Some(molt_type_new as *const ());
+    }
+    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 2 {
+        return Some(molt_type_init as *const ());
+    }
+    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 3 {
+        return Some(molt_object_new_bound as *const ());
+    }
+    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 4 {
+        return Some(molt_object_init as *const ());
+    }
+    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 5 {
+        return Some(molt_object_init_subclass as *const ());
+    }
+    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 6 {
+        return Some(molt_exception_new_bound as *const ());
+    }
+    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 7 {
+        return Some(molt_exception_init as *const ());
+    }
+    if fn_ptr == RUNTIME_CALLABLE_KEY_BASE + 8 {
+        return Some(molt_exceptiongroup_init as *const ());
+    }
+    None
+}
+
 pub(crate) fn alloc_runtime_function_obj(
     _py: &crate::PyToken<'_>,
     fn_ptr: u64,
     arity: u64,
 ) -> *mut u8 {
-    let ptr = alloc_function_obj(_py, fn_ptr, arity);
+    let fn_key = canonicalize_runtime_callable_key(fn_ptr);
+    let ptr = alloc_function_obj(_py, fn_key, arity);
     if ptr.is_null() {
         return ptr;
     }
+    unsafe {
+        if let Some(call_target) = runtime_callable_target_ptr(fn_key) {
+            function_set_call_target_ptr(ptr, call_target);
+        }
+    }
     #[cfg(target_arch = "wasm32")]
     unsafe {
-        if let Some(tramp_ptr) = reserved_wasm_runtime_trampoline_ptr(fn_ptr) {
+        if let Some(tramp_ptr) = reserved_wasm_runtime_trampoline_ptr(fn_key) {
             function_set_trampoline_ptr(ptr, tramp_ptr);
         }
     }
     ptr
 }
 
-
 // Regex engine extracted to functions_re.rs.
 use super::functions_re::*;
-
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_re_char_in_range(
@@ -606,10 +713,8 @@ fn shlex_quote_impl(input: &str) -> String {
     format!("'{escaped}'")
 }
 
-
 // Fnmatch implementation extracted to functions_fnmatch.rs.
 use super::functions_fnmatch::*;
-
 
 pub(super) fn iter_next_pair(_py: &crate::PyToken<'_>, iter_bits: u64) -> Result<(u64, bool), u64> {
     let pair_bits = molt_iter_next(iter_bits);
@@ -963,7 +1068,6 @@ pub(super) fn alloc_qs_dict(
 
 // Textwrap implementation extracted to functions_textwrap.rs.
 use super::functions_textwrap::*;
-
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_textwrap_dedent(text_bits: u64) -> u64 {
@@ -1504,7 +1608,6 @@ pub extern "C" fn molt_this_payload() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-
 fn opcode_num_popped_312(opcode: i64, oparg: i64) -> Option<i64> {
     match opcode {
         0 => Some(0),                 // CACHE
@@ -4315,18 +4418,22 @@ pub extern "C" fn molt_codeop_compile_command(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let fn_key = canonicalize_runtime_callable_key(fn_ptr);
         let trace = matches!(
             std::env::var("MOLT_TRACE_FUNC_NEW").ok().as_deref(),
             Some("1")
         );
         if trace {
-            eprintln!("molt func new: fn_ptr={fn_ptr} tramp_ptr={trampoline_ptr} arity={arity}");
+            eprintln!("molt func new: fn_ptr={fn_ptr} fn_key={fn_key} tramp_ptr={trampoline_ptr} arity={arity}");
         }
-        let ptr = alloc_function_obj(_py, fn_ptr, arity);
+        let ptr = alloc_function_obj(_py, fn_key, arity);
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {
             unsafe {
+                if let Some(call_target) = runtime_callable_target_ptr(fn_key) {
+                    function_set_call_target_ptr(ptr, call_target);
+                }
                 function_set_trampoline_ptr(ptr, trampoline_ptr);
             }
             MoltObject::from_ptr(ptr).bits()
@@ -4337,6 +4444,7 @@ pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) ->
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_func_new_builtin(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let fn_key = canonicalize_runtime_callable_key(fn_ptr);
         let trace = matches!(
             std::env::var("MOLT_TRACE_BUILTIN_FUNC").ok().as_deref(),
             Some("1")
@@ -4353,11 +4461,14 @@ pub extern "C" fn molt_func_new_builtin(fn_ptr: u64, trampoline_ptr: u64, arity:
             );
             return raise_exception::<_>(_py, "RuntimeError", &msg);
         }
-        let ptr = alloc_function_obj(_py, fn_ptr, arity);
+        let ptr = alloc_function_obj(_py, fn_key, arity);
         if ptr.is_null() {
             return raise_exception::<_>(_py, "RuntimeError", "builtin func alloc failed");
         }
         unsafe {
+            if let Some(call_target) = runtime_callable_target_ptr(fn_key) {
+                function_set_call_target_ptr(ptr, call_target);
+            }
             function_set_trampoline_ptr(ptr, trampoline_ptr);
             let builtin_bits = builtin_classes(_py).builtin_function_or_method;
             object_set_class_bits(_py, ptr, builtin_bits);
@@ -4382,6 +4493,7 @@ pub extern "C" fn molt_func_new_closure(
     closure_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        let fn_key = canonicalize_runtime_callable_key(fn_ptr);
         let trace = matches!(
             std::env::var("MOLT_TRACE_FUNC_NEW").ok().as_deref(),
             Some("1")
@@ -4391,7 +4503,7 @@ pub extern "C" fn molt_func_new_closure(
                 "molt func new closure: fn_ptr={fn_ptr} tramp_ptr={trampoline_ptr} arity={arity} closure_bits={closure_bits}"
             );
         }
-        let ptr = alloc_function_obj(_py, fn_ptr, arity);
+        let ptr = alloc_function_obj(_py, fn_key, arity);
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -4430,6 +4542,9 @@ pub extern "C" fn molt_func_new_closure(
         }
         unsafe {
             function_set_closure_bits(_py, ptr, closure_bits);
+            if let Some(call_target) = runtime_callable_target_ptr(fn_key) {
+                function_set_call_target_ptr(ptr, call_target);
+            }
             function_set_trampoline_ptr(ptr, trampoline_ptr);
         }
         MoltObject::from_ptr(ptr).bits()
@@ -4768,31 +4883,6 @@ pub unsafe extern "C" fn molt_closure_store(self_ptr: *mut u8, offset: u64, bits
             *slot = bits;
             MoltObject::none().bits()
         })
-    }
-}
-
-#[cfg(test)]
-mod tokenize_encoding_tests {
-    use super::{find_encoding_cookie, skip_encoding_ws};
-
-    #[test]
-    fn skip_encoding_ws_trims_python_prefix_whitespace() {
-        assert_eq!(skip_encoding_ws(b" \t\x0ccoding"), b"coding");
-    }
-
-    #[test]
-    fn find_encoding_cookie_handles_standard_cookie() {
-        assert_eq!(find_encoding_cookie(b"# coding: utf-8"), Some("utf-8"));
-        assert_eq!(
-            find_encoding_cookie(b"# -*- coding: latin-1 -*-"),
-            Some("latin-1")
-        );
-    }
-
-    #[test]
-    fn find_encoding_cookie_rejects_non_cookie_lines() {
-        assert_eq!(find_encoding_cookie(b"print('hi')"), None);
-        assert_eq!(find_encoding_cookie(b"# comment only"), None);
     }
 }
 
@@ -5244,4 +5334,29 @@ pub extern "C" fn molt_symtable_runtime_ready() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_import_smoke_runtime_ready() -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[cfg(test)]
+mod tokenize_encoding_tests {
+    use super::{find_encoding_cookie, skip_encoding_ws};
+
+    #[test]
+    fn skip_encoding_ws_trims_python_prefix_whitespace() {
+        assert_eq!(skip_encoding_ws(b" \t\x0ccoding"), b"coding");
+    }
+
+    #[test]
+    fn find_encoding_cookie_handles_standard_cookie() {
+        assert_eq!(find_encoding_cookie(b"# coding: utf-8"), Some("utf-8"));
+        assert_eq!(
+            find_encoding_cookie(b"# -*- coding: latin-1 -*-"),
+            Some("latin-1")
+        );
+    }
+
+    #[test]
+    fn find_encoding_cookie_rejects_non_cookie_lines() {
+        assert_eq!(find_encoding_cookie(b"print('hi')"), None);
+        assert_eq!(find_encoding_cookie(b"# comment only"), None);
+    }
 }
