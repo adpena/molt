@@ -312,10 +312,7 @@ def _coerce_process_text(value: str | bytes | None) -> str:
         return value.decode("utf-8", errors="replace")
     return value
 
-
-import re as _re
-
-_PYTHON_WARNING_RE = _re.compile(
+_PYTHON_WARNING_RE = re.compile(
     r"^.+:\d+: (?:Syntax|Deprecation|Runtime|User|Future|Pending\s*Deprecation)Warning: "
 )
 
@@ -10268,15 +10265,18 @@ def _try_cached_backend_candidates(
     except OSError:
         output_stat = None
     for tier, candidate in cache_candidates:
-        if stdlib_object_path is not None and not _shared_stdlib_cache_matches_key(
-            stdlib_object_path, stdlib_object_cache_key
-        ):
-            if stdlib_object_path.exists():
-                warnings.append(
-                    f"Ignoring shared stdlib cache with mismatched key: {stdlib_object_path}"
-                )
-                _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
-            continue
+        if stdlib_object_path is not None:
+            if not _shared_stdlib_cache_matches_key(
+                stdlib_object_path, stdlib_object_cache_key
+            ):
+                if stdlib_object_path.exists():
+                    warnings.append(
+                        f"Ignoring shared stdlib cache with mismatched key: {stdlib_object_path}"
+                    )
+                    _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
+                # Native output.o cache hits are invalid without the matching
+                # stdlib_shared object they were compiled against.
+                continue
         if not candidate.exists():
             continue
         if not _is_valid_cached_backend_artifact(candidate, is_wasm=is_wasm):
@@ -13103,11 +13103,15 @@ def _build_version_info_ops(
     major, minor, micro, version_release, version_serial = _MOLT_TARGET_VERSION
     _, version_str, _ = _python_version_display()
     return [
-        {"kind": "const", "value": major, "out": "v3"},
-        {"kind": "const", "value": minor, "out": "v4"},
-        {"kind": "const", "value": micro, "out": "v5"},
+        {"kind": "const", "value": major, "out": "v3_raw"},
+        {"kind": "box", "args": ["v3_raw"], "out": "v3"},
+        {"kind": "const", "value": minor, "out": "v4_raw"},
+        {"kind": "box", "args": ["v4_raw"], "out": "v4"},
+        {"kind": "const", "value": micro, "out": "v5_raw"},
+        {"kind": "box", "args": ["v5_raw"], "out": "v5"},
         {"kind": "const_str", "s_value": version_release, "out": "v6"},
-        {"kind": "const", "value": version_serial, "out": "v7"},
+        {"kind": "const", "value": version_serial, "out": "v7_raw"},
+        {"kind": "box", "args": ["v7_raw"], "out": "v7"},
         {"kind": "const_str", "s_value": version_str, "out": "v8"},
         {
             "kind": "call",
@@ -14801,34 +14805,7 @@ def _emit_native_link_result(
             )
             _emit_json(payload, json_output)
         else:
-            link_stderr = _subprocess_output_text(link_process.stderr) or ""
             print("Linking failed", file=sys.stderr)
-            # If linking failed due to undefined symbols AND a shared stdlib
-            # cache exists, delete it and auto-retry once.  The cache may be
-            # incomplete (built with fewer imports than the current program
-            # needs) or corrupted by a concurrent build.
-            if "undefined symbol" in link_stderr and not getattr(
-                _build_native_link_program, "_retried", False
-            ):
-                if stdlib_obj_path is not None and stdlib_obj_path.exists():
-                    _remove_shared_stdlib_cache_artifacts(stdlib_obj_path)
-                    print(
-                        "  Deleted incomplete stdlib cache — auto-retrying link...",
-                        file=sys.stderr,
-                    )
-                # Mark as retried to prevent infinite loops.
-                _build_native_link_program._retried = True  # type: ignore[attr-defined]
-                link_process = subprocess.run(
-                    link_cmd,
-                    capture_output=True,
-                    timeout=link_timeout,
-                )
-                _build_native_link_program._retried = False  # type: ignore[attr-defined]
-                if link_process.returncode == 0:
-                    print("  Link retry succeeded.", file=sys.stderr)
-                else:
-                    _retry_stderr = _subprocess_output_text(link_process.stderr) or ""
-                    print(f"  Link retry also failed:\n{_retry_stderr[:500]}", file=sys.stderr)
     _emit_build_diagnostics_if_present(
         diagnostics_payload=diagnostics_payload,
         diagnostics_path=diagnostics_path,
@@ -18540,7 +18517,7 @@ def _prepare_backend_cache_setup(
                 _nocache_cache_root.mkdir(parents=True, exist_ok=True)
             except OSError:
                 pass
-            _nocache_stub_path = _nocache_cache_root / f"__nocache__.o"
+            _nocache_stub_path = _nocache_cache_root / "__nocache__.o"
             _nocache_stdlib_path = _stdlib_object_cache_path(
                 _nocache_stub_path, _nocache_stdlib_key
             )

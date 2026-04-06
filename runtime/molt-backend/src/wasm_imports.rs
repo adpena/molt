@@ -106,9 +106,9 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("handle_resolve", 13),
     ("invoke_ffi_ic", 7),
     // ── INTERNAL: Fast-path method dispatch ──
-    ("fast_dict_get", 5),   // (method, key, default) -> i64
+    ("fast_dict_get", 5),    // (method, key, default) -> i64
     ("fast_list_append", 3), // (method, elem) -> i64
-    ("fast_str_join", 3),   // (method, iterable) -> i64
+    ("fast_str_join", 3),    // (method, iterable) -> i64
     // ── INTERNAL: Guards and inline caches ──
     ("guard_layout_ptr", 17),
     ("guard_type", 3),
@@ -1297,10 +1297,7 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
             "json_parse_scalar_obj",
         ],
     ),
-    (
-        "list_int_new",
-        &["list_int_new"],
-    ),
+    ("list_int_new", &["list_int_new"]),
     (
         "list_new",
         &[

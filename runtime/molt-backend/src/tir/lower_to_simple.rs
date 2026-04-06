@@ -141,7 +141,8 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         .flat_map(|block| block.ops.iter())
         .filter_map(|op| match op.opcode {
             OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd => {
-                attr_int(&op.attrs, "value").and_then(|label_id| original_label_to_block.get(&label_id).copied())
+                attr_int(&op.attrs, "value")
+                    .and_then(|label_id| original_label_to_block.get(&label_id).copied())
             }
             _ => None,
         })
@@ -230,7 +231,9 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             let mut cur = *start;
             for _ in 0..3 {
                 raise_blocks.push(cur);
-                let Some(blk) = func.blocks.get(&cur) else { break };
+                let Some(blk) = func.blocks.get(&cur) else {
+                    break;
+                };
                 if let Terminator::Branch { target, .. } = &blk.terminator {
                     cur = *target;
                 } else {
@@ -241,7 +244,9 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         };
 
         loop {
-            let Some(blk) = func.blocks.get(&cond_bid) else { break };
+            let Some(blk) = func.blocks.get(&cond_bid) else {
+                break;
+            };
             match &blk.terminator {
                 Terminator::CondBranch {
                     then_block,
@@ -259,10 +264,18 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                         guard_chain.push(cond_bid);
                     }
                     // Collect raise-path blocks for consumption.
-                    let raise_bid = if then_raises { *then_block } else { *else_block };
+                    let raise_bid = if then_raises {
+                        *then_block
+                    } else {
+                        *else_block
+                    };
                     guard_raise_blocks.extend(collect_raise_path_blocks(&raise_bid));
                     // Follow the non-raising path.
-                    let next = if then_raises { *else_block } else { *then_block };
+                    let next = if then_raises {
+                        *else_block
+                    } else {
+                        *then_block
+                    };
                     if !chain_visited.insert(next) {
                         break; // Cycle — this IS the loop control
                     }
@@ -299,12 +312,18 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             .copied()
             .unwrap_or(LoopBreakKind::BreakIfFalse);
         let (body_entry, exit_block, body_args, exit_args) = match break_kind {
-            LoopBreakKind::BreakIfFalse => {
-                (*then_block, *else_block, then_args.clone(), else_args.clone())
-            }
-            LoopBreakKind::BreakIfTrue => {
-                (*else_block, *then_block, else_args.clone(), then_args.clone())
-            }
+            LoopBreakKind::BreakIfFalse => (
+                *then_block,
+                *else_block,
+                then_args.clone(),
+                else_args.clone(),
+            ),
+            LoopBreakKind::BreakIfTrue => (
+                *else_block,
+                *then_block,
+                else_args.clone(),
+                then_args.clone(),
+            ),
         };
         // Collect body blocks via DFS from body_entry, stopping at the
         // header (back-edge), header chain blocks, guard chain blocks,
@@ -397,47 +416,94 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     }
 
     for bid in &rpo {
-        let role = func.loop_roles.get(bid).cloned()
+        let role = func
+            .loop_roles
+            .get(bid)
+            .cloned()
             .unwrap_or(super::blocks::LoopRole::None);
-        if role != super::blocks::LoopRole::None { continue; }
-        let Some(block) = func.blocks.get(bid) else { continue };
-        let Terminator::CondBranch { then_block, else_block, .. } = &block.terminator else { continue };
+        if role != super::blocks::LoopRole::None {
+            continue;
+        }
+        let Some(block) = func.blocks.get(bid) else {
+            continue;
+        };
+        let Terminator::CondBranch {
+            then_block,
+            else_block,
+            ..
+        } = &block.terminator
+        else {
+            continue;
+        };
         let (then_bid, else_bid) = (*then_block, *else_block);
-        if then_bid == else_bid { continue; }
+        if then_bid == else_bid {
+            continue;
+        }
         // Successor blocks that are loop headers must not be inlined.
-        let then_role = func.loop_roles.get(&then_bid).cloned()
+        let then_role = func
+            .loop_roles
+            .get(&then_bid)
+            .cloned()
             .unwrap_or(super::blocks::LoopRole::None);
-        let else_role = func.loop_roles.get(&else_bid).cloned()
+        let else_role = func
+            .loop_roles
+            .get(&else_bid)
+            .cloned()
             .unwrap_or(super::blocks::LoopRole::None);
-        if then_role != super::blocks::LoopRole::None
-            || else_role != super::blocks::LoopRole::None
+        if then_role != super::blocks::LoopRole::None || else_role != super::blocks::LoopRole::None
         {
             continue;
         }
-        if exception_handler_blocks.contains(&then_bid) || exception_handler_blocks.contains(&else_bid) {
+        if exception_handler_blocks.contains(&then_bid)
+            || exception_handler_blocks.contains(&else_bid)
+        {
             continue;
         }
-        let Some(then_blk) = func.blocks.get(&then_bid) else { continue };
-        let Some(else_blk) = func.blocks.get(&else_bid) else { continue };
-        if if_inlined_blocks.contains(&then_bid) || if_inlined_blocks.contains(&else_bid) { continue; }
+        let Some(then_blk) = func.blocks.get(&then_bid) else {
+            continue;
+        };
+        let Some(else_blk) = func.blocks.get(&else_bid) else {
+            continue;
+        };
+        if if_inlined_blocks.contains(&then_bid) || if_inlined_blocks.contains(&else_bid) {
+            continue;
+        }
         // No check_exception in successors — those need labels for implicit edges.
-        if then_blk.ops.iter().any(|op| op.opcode == OpCode::CheckException) { continue; }
-        if else_blk.ops.iter().any(|op| op.opcode == OpCode::CheckException) { continue; }
+        if then_blk
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::CheckException)
+        {
+            continue;
+        }
+        if else_blk
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::CheckException)
+        {
+            continue;
+        }
         // Simple terminators only.
         let then_target = match &then_blk.terminator {
             Terminator::Branch { target, .. } => Some(*target),
             Terminator::Return { .. } | Terminator::Unreachable => None,
-            _ => { continue; }
+            _ => {
+                continue;
+            }
         };
         let else_target = match &else_blk.terminator {
             Terminator::Branch { target, .. } => Some(*target),
             Terminator::Return { .. } | Terminator::Unreachable => None,
-            _ => { continue; }
+            _ => {
+                continue;
+            }
         };
         let join_bid = match (then_target, else_target) {
             (Some(t), Some(e)) if t == e => Some(t),
             (None, None) => None,
-            _ => { continue; }
+            _ => {
+                continue;
+            }
         };
         if join_bid.is_some_and(|join| exception_handler_blocks.contains(&join)) {
             continue;
@@ -451,7 +517,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 continue;
             }
         }
-        if_patterns.insert(*bid, IfPattern { then_bid, else_bid, join_bid });
+        if_patterns.insert(
+            *bid,
+            IfPattern {
+                then_bid,
+                else_bid,
+                join_bid,
+            },
+        );
         if_inlined_blocks.insert(then_bid);
         if_inlined_blocks.insert(else_bid);
     }
@@ -551,9 +624,17 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 unreachable!();
             };
 
-            let then_blk = func.blocks.get(&pattern.then_bid).expect("then block missing");
-            let else_blk = func.blocks.get(&pattern.else_bid).expect("else block missing");
-            let original_has_ret = func.attrs.get("_original_has_ret")
+            let then_blk = func
+                .blocks
+                .get(&pattern.then_bid)
+                .expect("then block missing");
+            let else_blk = func
+                .blocks
+                .get(&pattern.else_bid)
+                .expect("else block missing");
+            let original_has_ret = func
+                .attrs
+                .get("_original_has_ret")
                 .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
                 .unwrap_or(false);
 
@@ -574,9 +655,13 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                         let join_arg_name = join_blk
                             .and_then(|b| b.args.get(i))
                             .map(|a| value_var(a.id))?;
-                        let then_val = then_branch_args.get(i).map(|v| value_var(*v))
+                        let then_val = then_branch_args
+                            .get(i)
+                            .map(|v| value_var(*v))
                             .unwrap_or_else(|| join_arg_name.clone());
-                        let else_val = else_branch_args.get(i).map(|v| value_var(*v))
+                        let else_val = else_branch_args
+                            .get(i)
+                            .map(|v| value_var(*v))
                             .unwrap_or_else(|| join_arg_name.clone());
                         Some((join_arg_name, then_val, else_val))
                     })
@@ -596,7 +681,10 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             for op in &then_blk.ops {
                 if let Some(mut opir) = lower_op(op) {
                     annotate_type_flags(&mut opir, op, types);
-                    if matches!(opir.kind.as_str(), "check_exception" | "try_start" | "try_end") {
+                    if matches!(
+                        opir.kind.as_str(),
+                        "check_exception" | "try_start" | "try_end"
+                    ) {
                         if let Some(orig_id) = opir.value {
                             if let Some(&new_id) = original_to_new_label.get(&orig_id) {
                                 opir.value = Some(new_id);
@@ -612,13 +700,19 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             }
 
             // Emit: else
-            out.push(OpIR { kind: "else".to_string(), ..OpIR::default() });
+            out.push(OpIR {
+                kind: "else".to_string(),
+                ..OpIR::default()
+            });
 
             // Emit else-block ops inline.
             for op in &else_blk.ops {
                 if let Some(mut opir) = lower_op(op) {
                     annotate_type_flags(&mut opir, op, types);
-                    if matches!(opir.kind.as_str(), "check_exception" | "try_start" | "try_end") {
+                    if matches!(
+                        opir.kind.as_str(),
+                        "check_exception" | "try_start" | "try_end"
+                    ) {
                         if let Some(orig_id) = opir.value {
                             if let Some(&new_id) = original_to_new_label.get(&orig_id) {
                                 opir.value = Some(new_id);
@@ -634,7 +728,10 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             }
 
             // Emit: end_if
-            out.push(OpIR { kind: "end_if".to_string(), ..OpIR::default() });
+            out.push(OpIR {
+                kind: "end_if".to_string(),
+                ..OpIR::default()
+            });
 
             // Emit phi ops immediately after end_if for the join block's args.
             for (join_arg_name, then_val, else_val) in &phi_ops {
@@ -648,7 +745,9 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         } else {
             // Non-loop, non-if-pattern block: emit ops and terminator normally.
             emit_block_ops(block, &mut out);
-            let original_has_ret = func.attrs.get("_original_has_ret")
+            let original_has_ret = func
+                .attrs
+                .get("_original_has_ret")
                 .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
                 .unwrap_or(false);
             emit_terminator(
@@ -766,8 +865,7 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
                 is_filled = false;
             }
             // loop_start, loop_break_if_false/true do not fill.
-            "loop_start" | "loop_break_if_false" | "loop_break_if_true"
-            | "loop_index_start" => {
+            "loop_start" | "loop_break_if_false" | "loop_break_if_true" | "loop_index_start" => {
                 // These are control-flow markers that don't terminate blocks.
             }
             "br_if" => {
@@ -1356,7 +1454,9 @@ fn emit_structured_loop_region(
             let mut walk_visited: HashSet<BlockId> = HashSet::new();
             walk_visited.insert(header);
             loop {
-                let Some(blk) = func.blocks.get(&cur) else { break };
+                let Some(blk) = func.blocks.get(&cur) else {
+                    break;
+                };
                 let next = match &blk.terminator {
                     Terminator::Branch { target, .. } => *target,
                     Terminator::CondBranch {
@@ -1449,8 +1549,7 @@ fn emit_structured_loop_region(
                     } if guard_set.contains(region_bid) => {
                         // Guard CondBranch: emit br_if to raise path,
                         // fallthrough to non-raise continuation.
-                        let then_is_raise =
-                            region.guard_raise_blocks.contains(guard_then);
+                        let then_is_raise = region.guard_raise_blocks.contains(guard_then);
 
                         if then_is_raise {
                             // then = raise, else = continue.
@@ -1465,10 +1564,7 @@ fn emit_structured_loop_region(
                             });
                             // Defer the raise-path block emission to
                             // just before loop_end (dead-end blocks).
-                            deferred_raise_paths.push((
-                                *guard_then,
-                                guard_then_args.clone(),
-                            ));
+                            deferred_raise_paths.push((*guard_then, guard_then_args.clone()));
                             // Store args for the non-raise continuation.
                             emit_block_arg_stores(
                                 *guard_else,
@@ -1484,9 +1580,7 @@ fn emit_structured_loop_region(
                                             out.push(OpIR {
                                                 kind: "load_var".to_string(),
                                                 var: Some(var_name.clone()),
-                                                out: Some(value_var(
-                                                    next_block.args[i].id,
-                                                )),
+                                                out: Some(value_var(next_block.args[i].id)),
                                                 ..OpIR::default()
                                             });
                                         }
@@ -1536,9 +1630,7 @@ fn emit_structured_loop_region(
                                             out.push(OpIR {
                                                 kind: "load_var".to_string(),
                                                 var: Some(var_name.clone()),
-                                                out: Some(value_var(
-                                                    next_block.args[i].id,
-                                                )),
+                                                out: Some(value_var(next_block.args[i].id)),
                                                 ..OpIR::default()
                                             });
                                         }
@@ -1603,9 +1695,7 @@ fn emit_structured_loop_region(
         // Nested LoopHeader: recursively emit its structured loop.
         // The recursive call handles label, loop_start, ops, break,
         // body, continue, loop_end — so we just call it and skip.
-        if body_role == super::blocks::LoopRole::LoopHeader
-            && loop_regions.contains_key(body_bid)
-        {
+        if body_role == super::blocks::LoopRole::LoopHeader && loop_regions.contains_key(body_bid) {
             emit_structured_loop_region(
                 *body_bid,
                 func,
@@ -1632,7 +1722,9 @@ fn emit_structured_loop_region(
                 let mut visited = std::collections::HashSet::new();
                 visited.insert(cur);
                 loop {
-                    let Some(blk) = func.blocks.get(&cur) else { break };
+                    let Some(blk) = func.blocks.get(&cur) else {
+                        break;
+                    };
                     match &blk.terminator {
                         Terminator::Branch { target, .. } => {
                             if !visited.insert(*target) || *target == inner_region.cond_block {
@@ -1642,13 +1734,27 @@ fn emit_structured_loop_region(
                             inner_consumed.insert(*target);
                             cur = *target;
                         }
-                        Terminator::CondBranch { then_block, else_block, .. } => {
+                        Terminator::CondBranch {
+                            then_block,
+                            else_block,
+                            ..
+                        } => {
                             // Guard: follow non-raise path, consume both
-                            let then_raises = func.blocks.get(then_block)
+                            let then_raises = func
+                                .blocks
+                                .get(then_block)
                                 .map(|b| b.ops.iter().any(|op| op.opcode == OpCode::Raise))
                                 .unwrap_or(false);
-                            let raise_bid = if then_raises { *then_block } else { *else_block };
-                            let cont_bid = if then_raises { *else_block } else { *then_block };
+                            let raise_bid = if then_raises {
+                                *then_block
+                            } else {
+                                *else_block
+                            };
+                            let cont_bid = if then_raises {
+                                *else_block
+                            } else {
+                                *then_block
+                            };
                             inner_consumed.insert(raise_bid);
                             // Follow raise path successors
                             if let Some(rblk) = func.blocks.get(&raise_bid) {
@@ -1784,7 +1890,9 @@ fn emit_guard_raise_path(
     let mut cur = start_bid;
     let mut visited: HashSet<BlockId> = HashSet::new();
     while visited.insert(cur) {
-        let Some(blk) = func.blocks.get(&cur) else { break };
+        let Some(blk) = func.blocks.get(&cur) else {
+            break;
+        };
 
         // Emit label.
         out.push(OpIR {
@@ -1957,7 +2065,9 @@ fn emit_terminator(
         }
 
         Terminator::Branch { target, args } => {
-            let last_op_is_check_exception = block.ops.last()
+            let last_op_is_check_exception = block
+                .ops
+                .last()
                 .map(|op| op.opcode == OpCode::CheckException)
                 .unwrap_or(false);
             emit_block_arg_stores(*target, args, block_param_vars, out);
@@ -2002,10 +2112,7 @@ fn emit_terminator(
             if needs_trampoline {
                 // Allocate a fresh label for the then-path trampoline.
                 let trampoline_label = {
-                    let max_label = out.iter()
-                        .filter_map(|op| op.value)
-                        .max()
-                        .unwrap_or(0);
+                    let max_label = out.iter().filter_map(|op| op.value).max().unwrap_or(0);
                     max_label + 1000
                 };
                 out.push(OpIR {
@@ -2086,7 +2193,6 @@ fn emit_terminator(
     }
 }
 
-
 /// Emit `store_var` ops to pass values to the target block's argument variables.
 fn emit_block_arg_stores(
     target: BlockId,
@@ -2159,7 +2265,6 @@ fn reverse_postorder(func: &TirFunction) -> Vec<BlockId> {
 
     postorder
 }
-
 
 fn successors_of(block: &TirBlock) -> Vec<BlockId> {
     match &block.terminator {
@@ -2357,7 +2462,11 @@ mod tests {
             "ret must use the synthesized None value"
         );
         assert_eq!(
-            ret_op.args.as_ref().and_then(|args| args.first()).map(String::as_str),
+            ret_op
+                .args
+                .as_ref()
+                .and_then(|args| args.first())
+                .map(String::as_str),
             Some(none_name),
             "ret args must also reference the synthesized None value"
         );
@@ -2403,7 +2512,7 @@ mod tests {
                 },
             ],
             param_types: None,
-           source_file: None,
+            source_file: None,
             is_extern: false,
         };
 
@@ -2519,8 +2628,11 @@ mod tests {
 
     #[test]
     fn structured_if_skips_join_with_external_predecessor() {
-        let mut func =
-            TirFunction::new("branch_with_shared_join".into(), vec![TirType::Bool, TirType::Bool], TirType::None);
+        let mut func = TirFunction::new(
+            "branch_with_shared_join".into(),
+            vec![TirType::Bool, TirType::Bool],
+            TirType::None,
+        );
 
         let inner_if = func.fresh_block();
         let external_pred = func.fresh_block();
@@ -2604,7 +2716,8 @@ mod tests {
             "shared join labels must remain valid after lower_to_simple: {ops:?}"
         );
         assert!(
-            !ops.iter().any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
+            !ops.iter()
+                .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
             "shared-join lowering must stay label-based instead of inlining to structured if/else: {ops:?}"
         );
         assert!(
@@ -2671,7 +2784,8 @@ mod tests {
             "mixed return/fallthrough shape must keep valid labels after lower_to_simple: {ops:?}"
         );
         assert!(
-            !ops.iter().any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
+            !ops.iter()
+                .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
             "mixed return/fallthrough shape must stay label-based until region analysis proves it safe: {ops:?}"
         );
     }
@@ -2937,7 +3051,7 @@ mod tests {
                 ..OpIR::default()
             }],
             param_types: None,
-           source_file: None,
+            source_file: None,
             is_extern: false,
         };
 
@@ -2969,7 +3083,7 @@ mod tests {
                 ..OpIR::default()
             }],
             param_types: None,
-           source_file: None,
+            source_file: None,
             is_extern: false,
         };
 
@@ -3065,7 +3179,7 @@ mod tests {
                 },
             ],
             param_types: None,
-           source_file: None,
+            source_file: None,
             is_extern: false,
         };
 
@@ -3170,7 +3284,9 @@ mod tests {
             "exception handler labels must survive lowering: {ops:?}"
         );
         assert!(
-            ops.iter().any(|op| matches!(op.kind.as_str(), "label" | "state_label") && op.value == Some(100)),
+            ops.iter()
+                .any(|op| matches!(op.kind.as_str(), "label" | "state_label")
+                    && op.value == Some(100)),
             "handler target label 100 must remain materialized: {ops:?}"
         );
     }

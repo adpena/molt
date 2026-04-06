@@ -144,11 +144,13 @@ impl<'a> LirLowerCtx<'a> {
     }
 
     fn emit_get(&mut self, vid: ValueId) {
-        self.instructions.push(Instruction::LocalGet(self.get_local(vid)));
+        self.instructions
+            .push(Instruction::LocalGet(self.get_local(vid)));
     }
 
     fn emit_set(&mut self, vid: ValueId) {
-        self.instructions.push(Instruction::LocalSet(self.get_local(vid)));
+        self.instructions
+            .push(Instruction::LocalSet(self.get_local(vid)));
     }
 
     fn repr_of(&self, vid: ValueId) -> LirRepr {
@@ -212,7 +214,13 @@ pub fn lower_lir_to_wasm(func: &LirFunction) -> WasmFunctionOutput {
     let param_types: Vec<ValType> = func
         .blocks
         .get(&func.entry_block)
-        .map(|entry| entry.args.iter().map(|arg| lir_repr_to_val(arg.repr)).collect())
+        .map(|entry| {
+            entry
+                .args
+                .iter()
+                .map(|arg| lir_repr_to_val(arg.repr))
+                .collect()
+        })
         .unwrap_or_default();
     let result_types: Vec<ValType> = func
         .return_types
@@ -315,7 +323,11 @@ pub fn lower_tir_to_wasm_boxed_i64_abi(func: &TirFunction) -> Option<WasmFunctio
 
 #[cfg(feature = "wasm-backend")]
 pub fn lower_lir_to_wasm_boxed_i64_abi(func: &LirFunction) -> Option<WasmFunctionOutput> {
-    if func.param_types.iter().any(|ty| *ty != super::types::TirType::I64) {
+    if func
+        .param_types
+        .iter()
+        .any(|ty| *ty != super::types::TirType::I64)
+    {
         return None;
     }
     if func.return_types.len() != 1 || func.return_types[0] != super::types::TirType::I64 {
@@ -407,7 +419,11 @@ pub fn lower_lir_to_wasm_boxed_i64_abi(func: &LirFunction) -> Option<WasmFunctio
         for (i, &bid) in rpo.iter().enumerate() {
             if let Some(block) = func.blocks.get(&bid) {
                 emit_lir_block_ops(&mut ctx, block);
-                emit_lir_terminator_multiblock_boxed_i64_abi(&mut ctx, &block.terminator, num_blocks);
+                emit_lir_terminator_multiblock_boxed_i64_abi(
+                    &mut ctx,
+                    &block.terminator,
+                    num_blocks,
+                );
             }
             if i < num_blocks - 1 {
                 ctx.instructions.push(Instruction::End);
@@ -499,7 +515,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 _ => 0.0,
             };
             if let Some(result) = op.result_values.first() {
-                ctx.instructions.push(Instruction::F64Const(Ieee64::from(val)));
+                ctx.instructions
+                    .push(Instruction::F64Const(Ieee64::from(val)));
                 ctx.emit_set(result.id);
             }
         }
@@ -603,14 +620,20 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 }
             }
         }
-        OpCode::CallBuiltin if matches!(tir_op.attrs.get("lir.truthy_cond"), Some(AttrValue::Bool(true))) => {
+        OpCode::CallBuiltin
+            if matches!(
+                tir_op.attrs.get("lir.truthy_cond"),
+                Some(AttrValue::Bool(true))
+            ) =>
+        {
             if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
             {
                 match ctx.repr_of(src) {
                     LirRepr::Bool1 => ctx.emit_get(src),
                     LirRepr::F64 => {
                         ctx.emit_get(src);
-                        ctx.instructions.push(Instruction::F64Const(Ieee64::from(0.0)));
+                        ctx.instructions
+                            .push(Instruction::F64Const(Ieee64::from(0.0)));
                         ctx.instructions.push(Instruction::F64Ne);
                     }
                     _ => {
@@ -621,17 +644,50 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 ctx.emit_set(result.id);
             }
         }
-        OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
-        | OpCode::BuildList | OpCode::BuildDict | OpCode::BuildTuple | OpCode::BuildSet
-        | OpCode::BuildSlice | OpCode::LoadAttr | OpCode::StoreAttr | OpCode::DelAttr
-        | OpCode::Index | OpCode::StoreIndex | OpCode::DelIndex | OpCode::Alloc
-        | OpCode::StackAlloc | OpCode::Free | OpCode::GetIter | OpCode::IterNext
-        | OpCode::IterNextUnboxed | OpCode::ForIter | OpCode::Import | OpCode::ImportFrom
-        | OpCode::Pow | OpCode::Is | OpCode::IsNot | OpCode::In | OpCode::NotIn
-        | OpCode::Raise | OpCode::CheckException | OpCode::Yield | OpCode::YieldFrom
-        | OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield
-        | OpCode::Deopt | OpCode::TryStart | OpCode::TryEnd | OpCode::StateBlockStart
-        | OpCode::StateBlockEnd | OpCode::WarnStderr | OpCode::IncRef | OpCode::DecRef => {
+        OpCode::Call
+        | OpCode::CallMethod
+        | OpCode::CallBuiltin
+        | OpCode::BuildList
+        | OpCode::BuildDict
+        | OpCode::BuildTuple
+        | OpCode::BuildSet
+        | OpCode::BuildSlice
+        | OpCode::LoadAttr
+        | OpCode::StoreAttr
+        | OpCode::DelAttr
+        | OpCode::Index
+        | OpCode::StoreIndex
+        | OpCode::DelIndex
+        | OpCode::Alloc
+        | OpCode::StackAlloc
+        | OpCode::Free
+        | OpCode::GetIter
+        | OpCode::IterNext
+        | OpCode::IterNextUnboxed
+        | OpCode::ForIter
+        | OpCode::Import
+        | OpCode::ImportFrom
+        | OpCode::Pow
+        | OpCode::Is
+        | OpCode::IsNot
+        | OpCode::In
+        | OpCode::NotIn
+        | OpCode::Raise
+        | OpCode::CheckException
+        | OpCode::Yield
+        | OpCode::YieldFrom
+        | OpCode::ScfIf
+        | OpCode::ScfFor
+        | OpCode::ScfWhile
+        | OpCode::ScfYield
+        | OpCode::Deopt
+        | OpCode::TryStart
+        | OpCode::TryEnd
+        | OpCode::StateBlockStart
+        | OpCode::StateBlockEnd
+        | OpCode::WarnStderr
+        | OpCode::IncRef
+        | OpCode::DecRef => {
             for &operand in &tir_op.operands {
                 ctx.emit_get(operand);
             }
@@ -811,7 +867,8 @@ fn emit_box_inline_i64(ctx: &mut LirLowerCtx, src: ValueId) {
 
 #[cfg(feature = "wasm-backend")]
 fn emit_box_none(ctx: &mut LirLowerCtx) {
-    ctx.instructions.push(Instruction::I64Const(QNAN | TAG_NONE));
+    ctx.instructions
+        .push(Instruction::I64Const(QNAN | TAG_NONE));
 }
 
 #[cfg(feature = "wasm-backend")]
@@ -822,7 +879,9 @@ fn emit_return_boxed_i64(ctx: &mut LirLowerCtx, value: ValueId) {
         LirRepr::Bool1 => {
             ctx.emit_get(value);
             ctx.instructions.push(Instruction::I64ExtendI32U);
-            ctx.instructions.push(Instruction::I64Const(QNAN | 0x0002_0000_0000_0000u64 as i64));
+            ctx.instructions.push(Instruction::I64Const(
+                QNAN | 0x0002_0000_0000_0000u64 as i64,
+            ));
             ctx.instructions.push(Instruction::I64Or);
         }
         LirRepr::F64 => {
@@ -895,7 +954,8 @@ fn emit_lir_terminator_multiblock(ctx: &mut LirLowerCtx, term: &LirTerminator, n
                 }
                 LirRepr::F64 => {
                     ctx.emit_get(*cond);
-                    ctx.instructions.push(Instruction::F64Const(Ieee64::from(0.0)));
+                    ctx.instructions
+                        .push(Instruction::F64Const(Ieee64::from(0.0)));
                     ctx.instructions.push(Instruction::F64Ne);
                 }
                 LirRepr::DynBox => {

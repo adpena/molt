@@ -27,9 +27,9 @@ use cranelift_native::builder_with_options as native_isa_builder_with_options;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::BTreeMap;
 #[cfg(feature = "native-backend")]
-use std::collections::HashSet;
-#[cfg(feature = "native-backend")]
 use std::collections::BTreeSet;
+#[cfg(feature = "native-backend")]
+use std::collections::HashSet;
 use std::fmt::Write as _;
 #[cfg(feature = "native-backend")]
 use std::sync::OnceLock;
@@ -52,8 +52,8 @@ use crate::native_backend::TrampolineKey;
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, elide_dead_struct_allocs,
     elide_safe_exception_checks, eliminate_dead_functions, escape_analysis, fold_constants,
-    fold_constants_cross_block, hoist_loop_invariants, inline_functions,
-    rc_coalescing, rewrite_stateful_loops, split_megafunctions,
+    fold_constants_cross_block, hoist_loop_invariants, inline_functions, rc_coalescing,
+    rewrite_stateful_loops, split_megafunctions,
 };
 
 #[cfg(feature = "luau-backend")]
@@ -720,6 +720,45 @@ fn switch_to_block_tracking(
 }
 
 #[cfg(feature = "native-backend")]
+fn rebind_named_vars_in_block(builder: &mut FunctionBuilder, vars: &BTreeMap<String, Variable>) {
+    for var in vars.values() {
+        let val = builder.use_var(*var);
+        builder.def_var(*var, val);
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn rebind_shadow_vars_in_block(
+    builder: &mut FunctionBuilder,
+    shadow_vars: &BTreeMap<String, Variable>,
+    shadow_names: &BTreeSet<String>,
+) {
+    for name in shadow_names {
+        if let Some(var) = shadow_vars.get(name) {
+            let val = builder.use_var(*var);
+            builder.def_var(*var, val);
+        }
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn switch_to_block_with_rebind(
+    builder: &mut FunctionBuilder,
+    block: Block,
+    is_block_filled: &mut bool,
+    has_exception_labels: bool,
+    vars: &BTreeMap<String, Variable>,
+    shadow_vars: &BTreeMap<String, Variable>,
+    shadow_names: &BTreeSet<String>,
+) {
+    switch_to_block_tracking(builder, block, is_block_filled);
+    if has_exception_labels && !*is_block_filled && !builder.block_params(block).is_empty() {
+        rebind_named_vars_in_block(builder, vars);
+        rebind_shadow_vars_in_block(builder, shadow_vars, shadow_names);
+    }
+}
+
+#[cfg(feature = "native-backend")]
 fn resolve_cleanup_value(
     builder: &mut FunctionBuilder,
     vars: &BTreeMap<String, Variable>,
@@ -1163,10 +1202,16 @@ fn emit_list_int_bounds_check(
     let shifted = builder.ins().ishl_imm(masked, 16);
     let obj_ptr = builder.ins().sshr_imm(shifted, 16);
     // Step 2: load *mut Vec<i64> from offset 0 of the object payload
-    let vec_ptr = builder.ins().load(types::I64, MemFlags::trusted(), obj_ptr, 0);
+    let vec_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), obj_ptr, 0);
     // Step 3: load data pointer from Vec (offset 0) and length (offset 8)
-    let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), vec_ptr, 0);
-    let len = builder.ins().load(types::I64, MemFlags::trusted(), vec_ptr, 8);
+    let data_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), vec_ptr, 0);
+    let len = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), vec_ptr, 8);
     // Step 4: unsigned compare index < length
     let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, index_raw, len);
     (data_ptr, in_bounds)
@@ -1184,7 +1229,9 @@ fn emit_list_int_load(
 ) -> Value {
     let offset = builder.ins().imul_imm(index_raw, 8);
     let elem_addr = builder.ins().iadd(data_ptr, offset);
-    let raw_val = builder.ins().load(types::I64, MemFlags::trusted(), elem_addr, 0);
+    let raw_val = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), elem_addr, 0);
     box_int_value(builder, raw_val, nbc)
 }
 
@@ -1200,7 +1247,9 @@ fn emit_list_int_store(
 ) {
     let offset = builder.ins().imul_imm(index_raw, 8);
     let elem_addr = builder.ins().iadd(data_ptr, offset);
-    builder.ins().store(MemFlags::trusted(), value_raw, elem_addr, 0);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), value_raw, elem_addr, 0);
 }
 
 #[allow(dead_code)]
@@ -1269,9 +1318,7 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, nbc: &NanB
     let tag_bits = builder.ins().band(val, tag_check_mask);
     let ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
     let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
-    builder
-        .ins()
-        .brif(is_ptr, inc_block, &[], merge_block, &[]);
+    builder.ins().brif(is_ptr, inc_block, &[], merge_block, &[]);
 
     // 2. Inc block: extract pointer, check immortal branchlessly, atomic inc
     builder.switch_to_block(inc_block);
@@ -1290,9 +1337,7 @@ fn emit_inline_inc_ref_obj(builder: &mut FunctionBuilder, val: Value, nbc: &NanB
         .iconst(types::I32, HEADER_FLAG_IMMORTAL as i64);
     let immortal_bits = builder.ins().band(flags, immortal_mask);
     let zero_i32 = builder.ins().iconst(types::I32, 0);
-    let is_mortal = builder
-        .ins()
-        .icmp(IntCC::Equal, immortal_bits, zero_i32);
+    let is_mortal = builder.ins().icmp(IntCC::Equal, immortal_bits, zero_i32);
     let one_i32 = builder.ins().iconst(types::I32, 1);
     // Branchless: delta = select(is_mortal, 1, 0)
     let delta = builder.ins().select(is_mortal, one_i32, zero_i32);
@@ -2443,13 +2488,10 @@ impl SimpleBackend {
                     // Wrap retry in catch_unwind: Cranelift can panic
                     // even at opt_level=none (e.g. blockorder or
                     // alias_analysis on functions with orphaned blocks).
-                    let retry_result = std::panic::catch_unwind(
-                        std::panic::AssertUnwindSafe(|| {
-                            Self::retry_define_at_opt_none(
-                                &mut self.module, func_id, *func, &name,
-                            )
-                        }),
-                    );
+                    let retry_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            Self::retry_define_at_opt_none(&mut self.module, func_id, *func, &name)
+                        }));
                     match retry_result {
                         Ok(Ok(())) => {
                             self.defined_func_names.insert(name.clone());
@@ -2463,10 +2505,7 @@ impl SimpleBackend {
                                 .get_function_decl(func_id)
                                 .signature
                                 .clone();
-                            eprintln!(
-                                "  -> emitting trap stub for {} (Cranelift error)",
-                                name
-                            );
+                            eprintln!("  -> emitting trap stub for {} (Cranelift error)", name);
                             match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
                                 Ok(()) => {
                                     self.defined_func_names.insert(name);
@@ -2487,10 +2526,7 @@ impl SimpleBackend {
                                 .get_function_decl(func_id)
                                 .signature
                                 .clone();
-                            eprintln!(
-                                "  -> emitting trap stub for {} (Cranelift panic)",
-                                name
-                            );
+                            eprintln!("  -> emitting trap stub for {} (Cranelift panic)", name);
                             match Self::emit_trap_stub(&mut self.module, func_id, &sig, &name) {
                                 Ok(()) => {
                                     self.defined_func_names.insert(name);
@@ -2775,27 +2811,40 @@ impl SimpleBackend {
 
                 // Dump raw ops to file for debugging TIR roundtrip issues.
                 if let Some(ref pattern) = dump_func_pattern
-                    && func_ir.name.contains(pattern.as_str()) {
-                        let sanitized: String = func_ir.name.chars()
-                            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
-                            .collect();
-                        let mut dump = String::new();
-                        dump.push_str(&format!("// func: {} ({} ops)\n", func_ir.name, func_ir.ops.len()));
-                        dump.push_str(&format!("// params: {:?}\n", func_ir.params));
-                        dump.push_str(&format!("// param_types: {:?}\n", func_ir.param_types));
-                        for (idx, op) in func_ir.ops.iter().enumerate() {
-                            dump.push_str(&format!("{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?}\n",
+                    && func_ir.name.contains(pattern.as_str())
+                {
+                    let sanitized: String = func_ir
+                        .name
+                        .chars()
+                        .map(|c| {
+                            if c.is_alphanumeric() || c == '_' {
+                                c
+                            } else {
+                                '_'
+                            }
+                        })
+                        .collect();
+                    let mut dump = String::new();
+                    dump.push_str(&format!(
+                        "// func: {} ({} ops)\n",
+                        func_ir.name,
+                        func_ir.ops.len()
+                    ));
+                    dump.push_str(&format!("// params: {:?}\n", func_ir.params));
+                    dump.push_str(&format!("// param_types: {:?}\n", func_ir.param_types));
+                    for (idx, op) in func_ir.ops.iter().enumerate() {
+                        dump.push_str(&format!("{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?}\n",
                                 idx, op.kind,
                                 op.out.as_deref().unwrap_or(""),
                                 op.var.as_deref().unwrap_or(""),
                                 op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
                                 op.value, op.s_value, op.fast_int, op.fast_float));
-                        }
-                        let _ = crate::debug_artifacts::write_debug_artifact(
-                            format!("ir/{sanitized}.txt"),
-                            dump,
-                        );
                     }
+                    let _ = crate::debug_artifacts::write_debug_artifact(
+                        format!("ir/{sanitized}.txt"),
+                        dump,
+                    );
+                }
 
                 // Loop markers (loop_start, loop_end) are now preserved through
                 // the TIR roundtrip via LoopRole metadata on TirFunction, so
@@ -2810,7 +2859,8 @@ impl SimpleBackend {
                 // Check TIR cache: if we have validated optimized ops from a
                 // previous build with the same content hash, reuse them.
                 if let Some(cached_bytes) = tir_cache.get(&content_hash) {
-                    if let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes) {
+                    if let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
+                    {
                         func_ir.ops = cached_ops;
                         tir_optimized_names.insert(func_ir.name.clone());
                         continue;
@@ -2869,59 +2919,64 @@ impl SimpleBackend {
                     .stack_size(64 * 1024 * 1024)
                     .build()
                     .expect("Failed to build TIR thread pool");
-                let results: Vec<(usize, String, Vec<OpIR>)> = tir_pool.install(|| inputs
-                    .into_par_iter()
-                    .map(|input| {
-                        let idx = input.index;
-                        let content_hash = input.content_hash;
-                        // Build a temporary FunctionIR for the TIR pipeline.
-                        let mut tmp_func = FunctionIR {
-                            name: input.name,
-                            params: input.params,
-                            ops: input.ops,
-                            param_types: input.param_types,
-                            source_file: None,
-                            is_extern: false,
-                        };
-                        if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
-                            eprintln!("[TIR-TRACE] {}", tmp_func.name);
-                        }
-                        // The TIR roundtrip linearizes structured control flow
-                        // into jump/label blocks. Rewrite phi merges only for
-                        // functions that actually enter that roundtrip so the
-                        // state-machine backend does not see residual phi ops.
-                        if tmp_func.ops.iter().any(|op| op.kind == "phi") {
-                            rewrite_phi_to_store_load(&mut tmp_func.ops);
-                        }
-                        let func_name = tmp_func.name.clone();
-                        let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
-                        crate::tir::type_refine::refine_types(&mut tir_func);
-                        let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
-                        crate::tir::type_refine::refine_types(&mut tir_func);
-                        let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
-                            std::collections::HashMap::new()
-                        } else {
-                            crate::tir::type_refine::extract_type_map(&tir_func)
-                        };
-                        let lir_func = crate::tir::lower_to_lir::lower_function_to_lir(&tir_func);
-                        if let Err(errors) = crate::tir::verify_lir::verify_lir_function(&lir_func)
-                        {
-                            panic!(
-                                "[LIR] verification failed for '{}': {:?}",
-                                func_name, errors
+                let results: Vec<(usize, String, Vec<OpIR>)> = tir_pool.install(|| {
+                    inputs
+                        .into_par_iter()
+                        .map(|input| {
+                            let idx = input.index;
+                            let content_hash = input.content_hash;
+                            // Build a temporary FunctionIR for the TIR pipeline.
+                            let mut tmp_func = FunctionIR {
+                                name: input.name,
+                                params: input.params,
+                                ops: input.ops,
+                                param_types: input.param_types,
+                                source_file: None,
+                                is_extern: false,
+                            };
+                            if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
+                                eprintln!("[TIR-TRACE] {}", tmp_func.name);
+                            }
+                            // The TIR roundtrip linearizes structured control flow
+                            // into jump/label blocks. Rewrite phi merges only for
+                            // functions that actually enter that roundtrip so the
+                            // state-machine backend does not see residual phi ops.
+                            if tmp_func.ops.iter().any(|op| op.kind == "phi") {
+                                rewrite_phi_to_store_load(&mut tmp_func.ops);
+                            }
+                            let func_name = tmp_func.name.clone();
+                            let mut tir_func =
+                                crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
+                            crate::tir::type_refine::refine_types(&mut tir_func);
+                            let _stats = crate::tir::passes::run_pipeline(&mut tir_func);
+                            crate::tir::type_refine::refine_types(&mut tir_func);
+                            let type_map = if std::env::var("MOLT_TIR_NO_TYPES").is_ok() {
+                                std::collections::HashMap::new()
+                            } else {
+                                crate::tir::type_refine::extract_type_map(&tir_func)
+                            };
+                            let lir_func =
+                                crate::tir::lower_to_lir::lower_function_to_lir(&tir_func);
+                            if let Err(errors) =
+                                crate::tir::verify_lir::verify_lir_function(&lir_func)
+                            {
+                                panic!(
+                                    "[LIR] verification failed for '{}': {:?}",
+                                    func_name, errors
+                                );
+                            }
+                            let ops = crate::tir::lower_to_simple::lower_to_simple_ir(
+                                &tir_func, &type_map,
                             );
-                        }
-                        let ops =
-                            crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func, &type_map);
-                        assert!(
-                            crate::tir::lower_to_simple::validate_labels(&ops),
-                            "TIR roundtrip emitted invalid labels for '{}'",
-                            func_name
-                        );
-                        (idx, content_hash, ops)
-                    })
-                    .collect()
-                );
+                            assert!(
+                                crate::tir::lower_to_simple::validate_labels(&ops),
+                                "TIR roundtrip emitted invalid labels for '{}'",
+                                func_name
+                            );
+                            (idx, content_hash, ops)
+                        })
+                        .collect()
+                });
 
                 // Phase 3 (sequential): apply validated TIR ops and cache them.
                 for (idx, content_hash, ops) in &results {
@@ -3007,18 +3062,23 @@ impl SimpleBackend {
             );
             let codegen_start = std::time::Instant::now();
 
-            for func_ir in &ir.functions {
-                let tir_func = lower_to_tir(func_ir);
+            let tir_funcs: Vec<_> = ir.functions.iter().map(lower_to_tir).collect();
+
+            for tir_func in &tir_funcs {
+                crate::llvm_backend::lowering::declare_tir_function(tir_func, &llvm);
+            }
+
+            for tir_func in &tir_funcs {
                 if env_setting("TIR_DUMP").as_deref() == Some("1")
                     || env_setting("MOLT_TIR_DUMP").as_deref() == Some("1")
                 {
                     eprintln!(
                         "[LLVM] TIR for '{}':\n{}",
                         tir_func.name,
-                        crate::tir::printer::print_function(&tir_func)
+                        crate::tir::printer::print_function(tir_func)
                     );
                 }
-                crate::llvm_backend::lowering::lower_tir_to_llvm(&tir_func, &llvm);
+                crate::llvm_backend::lowering::lower_tir_to_llvm(tir_func, &llvm);
             }
 
             // Dump LLVM IR under the repo-local debug artifact root when
@@ -3060,10 +3120,9 @@ impl SimpleBackend {
                 );
             }
 
-            let tmp_obj = crate::debug_artifacts::prepare_debug_artifact_path(
-                "llvm/molt_llvm_output.o",
-            )
-            .expect("failed to prepare LLVM object path");
+            let tmp_obj =
+                crate::debug_artifacts::prepare_debug_artifact_path("llvm/molt_llvm_output.o")
+                    .expect("failed to prepare LLVM object path");
             llvm.emit_object(&tmp_obj, MoltOptLevel::Aggressive)
                 .expect("LLVM object emission failed");
             let bytes = std::fs::read(&tmp_obj).expect("failed to read LLVM object file");
@@ -3693,8 +3752,8 @@ mod tests {
         FunctionIR, OpIR, SimpleBackend, SimpleIR, TrampolineKind, analyze_native_backend_ir,
         compute_function_has_ret,
     };
-    use crate::rewrite_phi_to_store_load;
     use crate::passes::ReturnAliasSummary;
+    use crate::rewrite_phi_to_store_load;
     use cranelift_codegen::ir::types;
     use std::sync::{Mutex, OnceLock};
 
@@ -3733,8 +3792,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-}],
+                is_extern: false,
+            }],
             profile: None,
         };
         let bytes = SimpleBackend::new().compile(ir);
@@ -3855,8 +3914,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-}],
+                is_extern: false,
+            }],
             profile: None,
         };
 
@@ -3906,8 +3965,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-}],
+                is_extern: false,
+            }],
             profile: None,
         };
 
@@ -3934,8 +3993,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-},
+                is_extern: false,
+            },
             FunctionIR {
                 name: "helper_poll".to_string(),
                 params: vec!["state".to_string()],
@@ -3946,8 +4005,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-},
+                is_extern: false,
+            },
         ];
 
         let context = SimpleBackend::build_module_context(&functions);
@@ -3975,8 +4034,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-},
+                is_extern: false,
+            },
             FunctionIR {
                 name: "void_helper".to_string(),
                 params: vec![],
@@ -3986,8 +4045,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-},
+                is_extern: false,
+            },
         ];
 
         let context = SimpleBackend::build_module_context(&functions);
@@ -4031,8 +4090,8 @@ mod tests {
                     }],
                     param_types: None,
                     source_file: None,
-                is_extern: false,
-},
+                    is_extern: false,
+                },
                 FunctionIR {
                     name: chunk1,
                     params: vec![],
@@ -4051,8 +4110,8 @@ mod tests {
                     ],
                     param_types: None,
                     source_file: None,
-                is_extern: false,
-},
+                    is_extern: false,
+                },
                 FunctionIR {
                     name: stub.clone(),
                     params: vec![],
@@ -4077,15 +4136,18 @@ mod tests {
                     ],
                     param_types: None,
                     source_file: None,
-                is_extern: false,
-},
+                    is_extern: false,
+                },
             ],
             &stub,
         );
         let local_callees: Vec<String> = clif
             .lines()
             .map(str::trim)
-            .filter_map(|line| line.split_once(" = colocated").map(|(name, _)| name.to_string()))
+            .filter_map(|line| {
+                line.split_once(" = colocated")
+                    .map(|(name, _)| name.to_string())
+            })
             .collect();
         assert_eq!(
             local_callees.len(),
@@ -4093,7 +4155,9 @@ mod tests {
             "stub CLIF should reference exactly two local chunk callees:\n{clif}",
         );
         assert!(
-            local_callees.iter().any(|callee| clif.contains(&format!("call {callee}("))),
+            local_callees
+                .iter()
+                .any(|callee| clif.contains(&format!("call {callee}("))),
             "split stub must retain the direct call to the first void-returning chunk:\n{clif}",
         );
         assert!(
@@ -4116,8 +4180,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-},
+                is_extern: false,
+            },
             FunctionIR {
                 name: "demo____molt_globals_builtin__".to_string(),
                 params: vec![],
@@ -4139,12 +4203,45 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-},
+                is_extern: false,
+            },
         ]);
 
         assert_eq!(result.get("demo__molt_module_chunk_1"), Some(&false));
         assert_eq!(result.get("demo____molt_globals_builtin__"), Some(&true));
+    }
+
+    #[test]
+    fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets() {
+        let result = compute_function_has_ret(&[
+            FunctionIR {
+                name: "user_func".to_string(),
+                params: vec![],
+                ops: vec![OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+            FunctionIR {
+                name: "demo__molt_module_chunk_1".to_string(),
+                params: vec![],
+                ops: vec![OpIR {
+                    kind: "func_new".to_string(),
+                    s_value: Some("user_func".to_string()),
+                    value: Some(0),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+        ]);
+
+        assert_eq!(result.get("user_func"), Some(&false));
+        assert_eq!(result.get("demo__molt_module_chunk_1"), Some(&false));
     }
 
     #[test]
@@ -4170,8 +4267,8 @@ mod tests {
                 }],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-}],
+                is_extern: false,
+            }],
             profile: None,
         };
 
@@ -4224,8 +4321,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-}],
+                is_extern: false,
+            }],
             profile: None,
         };
 
@@ -4378,8 +4475,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-}],
+                is_extern: false,
+            }],
             profile: None,
         };
 
@@ -4521,11 +4618,14 @@ mod tests {
             ],
             param_types: None,
             source_file: None,
-        is_extern: false,
-};
+            is_extern: false,
+        };
 
         let roundtripped = roundtrip_function_through_tir(&func);
-        let clif = compile_function_to_clif_text(vec![roundtripped], "hello_regress____molt_globals_builtin__");
+        let clif = compile_function_to_clif_text(
+            vec![roundtripped],
+            "hello_regress____molt_globals_builtin__",
+        );
 
         assert!(
             clif.contains("return"),
@@ -4647,8 +4747,8 @@ mod tests {
             ],
             param_types: None,
             source_file: None,
-        is_extern: false,
-};
+            is_extern: false,
+        };
 
         let roundtripped = roundtrip_function_through_tir(&func);
         let clif = compile_function_to_clif_text(vec![roundtripped], "nested_loops");
@@ -4672,8 +4772,8 @@ mod tests {
                     }],
                     param_types: None,
                     source_file: None,
-                is_extern: false,
-},
+                    is_extern: false,
+                },
                 FunctionIR {
                     name: "molt_main".to_string(),
                     params: vec![],
@@ -4692,8 +4792,8 @@ mod tests {
                     ],
                     param_types: None,
                     source_file: None,
-                is_extern: false,
-},
+                    is_extern: false,
+                },
             ],
             profile: None,
         };
@@ -4716,8 +4816,8 @@ mod tests {
                     }],
                     param_types: None,
                     source_file: None,
-                is_extern: false,
-},
+                    is_extern: false,
+                },
                 FunctionIR {
                     name: "molt_main".to_string(),
                     params: vec![],
@@ -4744,8 +4844,8 @@ mod tests {
                     ],
                     param_types: None,
                     source_file: None,
-                is_extern: false,
-},
+                    is_extern: false,
+                },
             ],
             profile: None,
         };
@@ -4850,8 +4950,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-}],
+                is_extern: false,
+            }],
             "molt_main",
         );
 
@@ -4926,7 +5026,10 @@ mod tests {
             ops.iter().any(|op| {
                 op.kind == "store_var"
                     && op.var.as_deref() == Some("_phi_merged")
-                    && op.args.as_ref().is_some_and(|args| args.len() == 1 && args[0] == "then_val")
+                    && op
+                        .args
+                        .as_ref()
+                        .is_some_and(|args| args.len() == 1 && args[0] == "then_val")
             }),
             "then branch should store merged value"
         );
@@ -4934,7 +5037,10 @@ mod tests {
             ops.iter().any(|op| {
                 op.kind == "store_var"
                     && op.var.as_deref() == Some("_phi_merged")
-                    && op.args.as_ref().is_some_and(|args| args.len() == 1 && args[0] == "else_val")
+                    && op
+                        .args
+                        .as_ref()
+                        .is_some_and(|args| args.len() == 1 && args[0] == "else_val")
             }),
             "else branch should store merged value"
         );
@@ -4995,8 +5101,8 @@ mod tests {
                 ],
                 param_types: None,
                 source_file: None,
-            is_extern: false,
-}],
+                is_extern: false,
+            }],
             "molt_main",
         );
 

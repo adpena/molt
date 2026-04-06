@@ -88,11 +88,7 @@ fn collect_loop_body(func: &TirFunction, header: BlockId) -> Vec<BlockId> {
             continue;
         }
 
-        let role = func
-            .loop_roles
-            .get(&bid)
-            .cloned()
-            .unwrap_or(LoopRole::None);
+        let role = func.loop_roles.get(&bid).cloned().unwrap_or(LoopRole::None);
         if role == LoopRole::LoopHeader {
             break;
         }

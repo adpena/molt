@@ -1869,10 +1869,36 @@ pub extern "C" fn molt_sys_set_version_info(
     version_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let major = index_i64_from_obj(_py, major_bits, "major must be int");
-        let minor = index_i64_from_obj(_py, minor_bits, "minor must be int");
-        let micro = index_i64_from_obj(_py, micro_bits, "micro must be int");
-        let serial = index_i64_from_obj(_py, serial_bits, "serial must be int");
+        // Compiler/runtime ABI note:
+        // the startup stub may provide these fields either as boxed Molt ints
+        // or as raw compiler immediates from typed codegen lanes.
+        let decode_version_int =
+            |bits: u64, err: &str| -> Result<i64, u64> {
+                let obj = MoltObject::from_bits(bits);
+                if obj.is_int() {
+                    return Ok(obj.as_int_unchecked());
+                }
+                if obj.as_ptr().is_none() {
+                    return Ok(bits as i64);
+                }
+                Err(raise_exception::<u64>(_py, "TypeError", err))
+            };
+        let major = match decode_version_int(major_bits, "major must be int") {
+            Ok(v) => v,
+            Err(err) => return err,
+        };
+        let minor = match decode_version_int(minor_bits, "minor must be int") {
+            Ok(v) => v,
+            Err(err) => return err,
+        };
+        let micro = match decode_version_int(micro_bits, "micro must be int") {
+            Ok(v) => v,
+            Err(err) => return err,
+        };
+        let serial = match decode_version_int(serial_bits, "serial must be int") {
+            Ok(v) => v,
+            Err(err) => return err,
+        };
         if major < 0 || minor < 0 || micro < 0 || serial < 0 {
             return raise_exception::<_>(
                 _py,
