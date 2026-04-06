@@ -803,7 +803,7 @@ mod tests {
 
     #[test]
     fn clear_worker_thread_state_keeps_gil_for_tls_cleanup() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         crate::with_gil_entry!(_py, {
             clear_worker_thread_state(_py);
         });

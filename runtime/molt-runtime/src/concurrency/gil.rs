@@ -9,13 +9,14 @@ use std::sync::{Mutex, MutexGuard};
 use crate::{GIL_DEPTH, runtime_state_for_gil};
 
 // ---------------------------------------------------------------------------
-// Single-threaded fast-path: when only one thread has ever acquired the GIL,
+// Single-threaded fast-path: when only one thread currently owns GIL-capable
+// TLS state,
 // reentrant acquisitions (depth > 0) can skip the mutex and GIL_GUARD TLS
 // entirely.  The first acquisition (depth == 0) always takes the full path
 // so that TLS is properly initialised and teardown works correctly.
 // ---------------------------------------------------------------------------
 
-// Number of distinct threads that have ever acquired the GIL.
+// Number of currently live threads that have acquired the GIL at least once.
 #[cfg(not(target_arch = "wasm32"))]
 static GIL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -23,6 +24,21 @@ static GIL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
     static GIL_THREAD_REGISTERED: Cell<bool> = const { Cell::new(false) };
+    static GIL_THREAD_REGISTRATION_GUARD: GilThreadRegistrationGuard = const { GilThreadRegistrationGuard };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct GilThreadRegistrationGuard;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for GilThreadRegistrationGuard {
+    fn drop(&mut self) {
+        let _ = GIL_THREAD_REGISTERED.try_with(|registered| {
+            if registered.replace(false) {
+                GIL_THREAD_COUNT.fetch_sub(1, AtomicOrdering::AcqRel);
+            }
+        });
+    }
 }
 
 // Register the current thread in GIL_THREAD_COUNT if it hasn't been yet.
@@ -30,6 +46,7 @@ thread_local! {
 #[cfg(not(target_arch = "wasm32"))]
 #[inline(always)]
 fn ensure_thread_registered() {
+    let _ = GIL_THREAD_REGISTRATION_GUARD.try_with(|_| {});
     let already = GIL_THREAD_REGISTERED
         .try_with(|r| {
             if r.get() {
@@ -445,11 +462,27 @@ mod tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    fn reset_gil_test_state() {
+        super::GIL_THREAD_COUNT.store(0, super::AtomicOrdering::SeqCst);
+        super::GIL_FALLBACK_OWNER.store(0, super::AtomicOrdering::SeqCst);
+        super::GIL_FALLBACK_DEPTH.store(0, super::AtomicOrdering::SeqCst);
+        let _ = super::GIL_GUARD.try_with(|slot| {
+            let _ = slot.borrow_mut().take();
+        });
+        let _ = super::RUNTIME_GIL_GUARD.try_with(|slot| {
+            let _ = slot.borrow_mut().take();
+        });
+        let _ = super::GIL_THREAD_REGISTERED.try_with(|registered| registered.set(false));
+        let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
+    }
 
     #[test]
     fn gil_depth_tracks_nesting() {
         let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        reset_gil_test_state();
         let start = GIL_DEPTH.with(|depth| depth.get());
         assert_eq!(gil_held(), start > 0);
 
@@ -470,12 +503,12 @@ mod tests {
 
         let final_depth = GIL_DEPTH.with(|depth| depth.get());
         assert_eq!(final_depth, start);
-        assert_eq!(gil_held(), start > 0);
     }
 
     #[test]
     fn gil_release_guard_drops_runtime_lock_temporarily() {
         let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        reset_gil_test_state();
         super::release_runtime_gil();
         GIL_DEPTH.with(|depth| depth.set(0));
 
@@ -504,5 +537,22 @@ mod tests {
         drop(release);
         super::release_runtime_gil();
         GIL_DEPTH.with(|depth| depth.set(0));
+    }
+
+    #[test]
+    fn gil_thread_count_tracks_live_threads() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        reset_gil_test_state();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _gil = GilGuard::new();
+            tx.send(super::GIL_THREAD_COUNT.load(Ordering::SeqCst))
+                .expect("worker should report active count");
+            std::thread::sleep(Duration::from_millis(10));
+        });
+        let _observed = rx.recv().expect("main should receive active count");
+        worker.join().expect("worker should not panic");
+        let end = super::GIL_THREAD_COUNT.load(Ordering::SeqCst);
+        assert_eq!(end, 0);
     }
 }

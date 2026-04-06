@@ -14,12 +14,14 @@ pub extern "C" fn molt_isolate_import(_: u64) -> u64 {
 
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;
+    fn molt_exception_clear() -> u64;
 }
 static INIT: Once = Once::new();
 fn init() {
     INIT.call_once(|| unsafe {
         molt_runtime_init();
     });
+    let _ = unsafe { molt_exception_clear() };
 }
 
 fn int(v: i64) -> u64 {
