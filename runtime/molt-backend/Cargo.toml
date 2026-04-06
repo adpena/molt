@@ -23,7 +23,6 @@ inkwell = { version = "0.8", features = ["llvm21-1"], optional = true }
 wgpu = { version = "29", optional = true }
 pollster = { version = "0.4", optional = true }
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["driver", "dynamic-loading", "cuda-12080"] }
-melior = { version = "0.27", optional = true }
 mlx-rs = { version = "0.25", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -53,7 +52,6 @@ rust-backend = []
 gpu-metal = ["dep:metal", "dep:objc"]
 gpu-webgpu = ["dep:wgpu", "dep:pollster"]
 gpu-cuda = ["dep:cudarc"]
-mlir = ["dep:melior"]
 mlx = ["dep:mlx-rs"]
 wasm-backend = ["dep:wasm-encoder", "dep:wasmparser"]
 
