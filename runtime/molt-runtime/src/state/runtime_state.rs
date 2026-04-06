@@ -547,12 +547,10 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
         return 0;
     }
     let state = unsafe { &*ptr };
-    {
-        let gil = GilGuard::new();
-        let py = gil.token();
-        runtime_teardown(&py, state);
-        release_runtime_gil();
-    }
+    let gil = GilGuard::new();
+    let py = gil.token();
+    runtime_teardown(&py, state);
+    release_runtime_gil();
     // Clear the TLS cache BEFORE nulling the global pointer and freeing the
     // state.  Without this, `TLS_RUNTIME_STATE` holds a dangling pointer to
     // the about-to-be-freed `RuntimeState`.  During process exit, Rust's TLS
@@ -569,6 +567,7 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
     unsafe {
         drop(Box::from_raw(ptr));
     }
+    drop(gil);
     1
 }
 

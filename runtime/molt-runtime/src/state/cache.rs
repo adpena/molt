@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use super::RuntimeState;
 use crate::{MoltObject, alloc_string, init_atomic_bits};
+use crate::object::{HEADER_FLAG_INTERNED, header_from_obj_ptr, obj_from_bits};
 
 pub(crate) struct InternedNames {
     pub(crate) bases_name: AtomicU64,
@@ -823,6 +824,12 @@ pub(crate) fn clear_atomic_bits(_py: &PyToken<'_>, slot: &AtomicU64) {
     crate::gil_assert();
     let bits = slot.swap(0, AtomicOrdering::AcqRel);
     if bits != 0 {
+        if let Some(ptr) = obj_from_bits(bits).as_ptr() {
+            let flags = unsafe { (*header_from_obj_ptr(ptr)).flags };
+            if (flags & HEADER_FLAG_INTERNED) != 0 {
+                return;
+            }
+        }
         crate::object::release_shutdown_bits(_py, bits);
     }
 }
