@@ -177,7 +177,7 @@ pub extern "C" fn molt_bz2_compressor_drop(handle_bits: u64) -> u64 {
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
-        release_ptr(ptr);
+        unsafe { release_ptr(ptr) };
         let _ = unsafe { Box::from_raw(ptr as *mut Bz2CompressorHandle) };
         MoltObject::none().bits()
     })
@@ -292,7 +292,7 @@ pub extern "C" fn molt_bz2_decompressor_drop(handle_bits: u64) -> u64 {
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
-        release_ptr(ptr);
+        unsafe { release_ptr(ptr) };
         let _ = unsafe { Box::from_raw(ptr as *mut Bz2DecompressorHandle) };
         MoltObject::none().bits()
     })
@@ -493,7 +493,7 @@ pub extern "C" fn molt_bz2_file_drop(handle_bits: u64) -> u64 {
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
-        release_ptr(ptr);
+        unsafe { release_ptr(ptr) };
         let _ = unsafe { Box::from_raw(ptr as *mut Bz2FileHandle) };
         MoltObject::none().bits()
     })

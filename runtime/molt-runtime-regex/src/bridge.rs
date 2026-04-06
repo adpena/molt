@@ -98,6 +98,10 @@ unsafe extern "C" {
     fn __molt_regex_is_truthy(bits: u64) -> i32;
 }
 
+/// # Safety
+///
+/// `ptr` must be a valid Molt runtime object pointer for the duration of this
+/// call.
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { __molt_regex_object_type_id(ptr) }
 }
@@ -107,8 +111,9 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_regex_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
@@ -166,6 +171,10 @@ unsafe extern "C" {
     ) -> i32;
 }
 
+/// # Safety
+///
+/// `dict_ptr` must refer to a live Molt dictionary object for the duration of
+/// this call.
 pub unsafe fn dict_get_in_place(
     _py: &CoreGilToken,
     dict_ptr: *mut u8,
@@ -176,6 +185,10 @@ pub unsafe fn dict_get_in_place(
     if ok != 0 { Some(out) } else { None }
 }
 
+/// # Safety
+///
+/// `dict_ptr` must refer to a live Molt dictionary object for the duration of
+/// this call.
 pub unsafe fn dict_set_in_place(
     _py: &CoreGilToken,
     dict_ptr: *mut u8,
@@ -185,20 +198,28 @@ pub unsafe fn dict_set_in_place(
     unsafe { __molt_regex_dict_set_in_place(dict_ptr, key_bits, val_bits) != 0 }
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
 pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
     unsafe { &*__molt_regex_seq_vec_ptr(ptr) }
 }
 
 /// Returns a cloned copy of the dict's insertion order as a Vec of [k0, v0, k1, v1, ...].
-pub fn dict_order_clone(_py: &CoreGilToken, ptr: *mut u8) -> Vec<u64> {
+/// # Safety
+///
+/// `ptr` must refer to a live Molt dictionary object for the duration of this
+/// call.
+pub unsafe fn dict_order_clone(_py: &CoreGilToken, ptr: *mut u8) -> Vec<u64> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_regex_dict_order_clone(ptr, &mut out_ptr, &mut out_len) };
     if ok == 0 || out_len == 0 {
         return Vec::new();
     }
-    let boxed =
-        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u64, out_len)) };
+    let boxed = unsafe {
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u64, out_len))
+    };
     boxed.into_vec()
 }
 

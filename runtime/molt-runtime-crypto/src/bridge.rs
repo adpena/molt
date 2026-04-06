@@ -88,10 +88,18 @@ unsafe extern "C" {
     fn __molt_crypto_is_truthy(bits: u64) -> i32;
 }
 
+/// # Safety
+///
+/// `ptr` must be a valid Molt runtime object pointer for the lifetime of this
+/// call.
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { __molt_crypto_object_type_id(ptr) }
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt object that the runtime recognizes as a
+/// bytes-like object when this function returns `Some`.
 pub unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
@@ -104,6 +112,10 @@ pub unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     }
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt object that the runtime recognizes as a raw
+/// bytes-like object when this function returns `Some`.
 pub unsafe fn bytes_like_slice_raw(ptr: *mut u8) -> Option<&'static [u8]> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
@@ -123,8 +135,9 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let ok = unsafe { __molt_crypto_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
         // The bridge allocates via Box, we must reconstruct and own it.
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
@@ -137,8 +150,9 @@ pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_crypto_type_name(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         Cow::Owned(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         Cow::Borrowed("<unknown>")
@@ -159,7 +173,11 @@ unsafe extern "C" {
     fn __molt_crypto_inc_ref_bits(bits: u64);
 }
 
-pub fn release_ptr(ptr: *mut u8) {
+/// # Safety
+///
+/// `ptr` must have been allocated by the paired runtime bridge and must not be
+/// used again after release.
+pub unsafe fn release_ptr(ptr: *mut u8) {
     unsafe { __molt_crypto_release_ptr(ptr) }
 }
 
@@ -245,8 +263,9 @@ pub fn index_bigint_from_obj(
     if out_len == 0 {
         return Some(BigInt::from(0));
     }
-    let bytes =
-        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+    let bytes = unsafe {
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+    };
     Some(BigInt::from_bytes_be(sign, &bytes))
 }
 
@@ -262,20 +281,33 @@ unsafe extern "C" {
     fn __molt_crypto_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt dictionary object.
 pub unsafe fn dict_len(ptr: *mut u8) -> usize {
     unsafe { __molt_crypto_dict_len(ptr) }
 }
 
+/// # Safety
+///
+/// `dict_ptr` must refer to a live Molt dictionary object for the duration of
+/// this call.
 pub unsafe fn dict_get_in_place(_py: &PyToken, dict_ptr: *mut u8, key_bits: u64) -> Option<u64> {
     let mut out: u64 = 0;
     let ok = unsafe { __molt_crypto_dict_get_in_place(dict_ptr, key_bits, &mut out) };
     if ok != 0 { Some(out) } else { None }
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt list object.
 pub unsafe fn list_len(ptr: *mut u8) -> usize {
     unsafe { __molt_crypto_list_len(ptr) }
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
 pub unsafe fn seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
     unsafe { __molt_crypto_seq_vec_ptr(ptr) }
 }
@@ -288,7 +320,14 @@ unsafe extern "C" {
     fn __molt_crypto_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -> i32;
 }
 
-pub fn fill_os_random(buf: &mut [u8]) -> Result<(), ()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FillOsRandomError;
+
+pub fn fill_os_random(buf: &mut [u8]) -> Result<(), FillOsRandomError> {
     let ok = unsafe { __molt_crypto_fill_os_random(buf.as_mut_ptr(), buf.len()) };
-    if ok != 0 { Ok(()) } else { Err(()) }
+    if ok != 0 {
+        Ok(())
+    } else {
+        Err(FillOsRandomError)
+    }
 }

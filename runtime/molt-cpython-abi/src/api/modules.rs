@@ -56,17 +56,17 @@ pub unsafe extern "C" fn PyModule_AddObject(
         return -1;
     }
     let tp = unsafe { (*module).ob_type };
-    if !tp.is_null() {
-        if let Some(setattro) = unsafe { (*tp).tp_setattro } {
-            let rc = unsafe { setattro(module, attr_name_ptr, value) };
-            unsafe { crate::api::refcount::Py_DECREF(attr_name_ptr) };
-            if rc < 0 {
-                return rc;
-            }
-            // Py_DECREF(value) on success per CPython convention.
-            unsafe { crate::api::refcount::Py_DECREF(value) };
-            return 0;
+    if !tp.is_null()
+        && let Some(setattro) = unsafe { (*tp).tp_setattro }
+    {
+        let rc = unsafe { setattro(module, attr_name_ptr, value) };
+        unsafe { crate::api::refcount::Py_DECREF(attr_name_ptr) };
+        if rc < 0 {
+            return rc;
         }
+        // Py_DECREF(value) on success per CPython convention.
+        unsafe { crate::api::refcount::Py_DECREF(value) };
+        return 0;
     }
     unsafe { crate::api::refcount::Py_DECREF(attr_name_ptr) };
     // No setattro available — steals the reference but cannot store it.

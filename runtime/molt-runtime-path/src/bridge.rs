@@ -136,6 +136,10 @@ unsafe extern "C" {
     ) -> i32;
 }
 
+/// # Safety
+///
+/// `ptr` must be a valid Molt runtime object pointer for the lifetime of this
+/// call.
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { __molt_path_object_type_id(ptr) }
 }
@@ -145,8 +149,9 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_path_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
@@ -157,6 +162,10 @@ pub fn is_truthy(_py: &CoreGilToken, obj: MoltObject) -> bool {
     unsafe { __molt_path_is_truthy(obj.bits()) != 0 }
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt object that the runtime recognizes as a
+/// bytes-like object when this function returns `Some`.
 pub unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
@@ -215,6 +224,9 @@ unsafe extern "C" {
     fn __molt_path_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
 pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
     unsafe { &*__molt_path_seq_vec_ptr(ptr) }
 }
@@ -277,15 +289,16 @@ pub fn path_from_bits(_py: &CoreGilToken, bits: u64) -> Result<std::path::PathBu
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_path_path_from_bits(bits, &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         let s = String::from_utf8_lossy(&boxed).into_owned();
         Ok(std::path::PathBuf::from(s))
     } else {
         // Error message is in the returned buffer
         if !out_ptr.is_null() && out_len > 0 {
             let boxed = unsafe {
-                Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len))
+                Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
             };
             Err(String::from_utf8_lossy(&boxed).into_owned())
         } else {
@@ -299,8 +312,9 @@ pub fn type_name(_py: &CoreGilToken, obj: MoltObject) -> String {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_path_type_name(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() && out_len > 0 {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
         "<unknown>".to_string()

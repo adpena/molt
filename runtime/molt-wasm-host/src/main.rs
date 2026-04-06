@@ -356,9 +356,7 @@ fn indexed_untrack(
     {
         positions.insert(moved, pos);
     }
-    if index.is_empty() {
-        *cursor = 0;
-    } else if *cursor >= index.len() {
+    if index.is_empty() || *cursor >= index.len() {
         *cursor = 0;
     }
 }
@@ -4204,14 +4202,11 @@ fn define_process_host(linker: &mut Linker<HostState>, store: &mut Store<HostSta
                 let mut exit_code = None;
                 if let Some(entry) = state.process_manager.processes.get_mut(&handle) {
                     if entry.exit_code.is_none() {
-                        match entry.child.try_wait() {
-                            Ok(Some(status)) => {
-                                let code = exit_code_from_status(status);
-                                entry.exit_code = Some(code);
-                                exit_code = Some(code);
-                                stop_polling = true;
-                            }
-                            Ok(None) | Err(_) => {}
+                        if let Ok(Some(status)) = entry.child.try_wait() {
+                            let code = exit_code_from_status(status);
+                            entry.exit_code = Some(code);
+                            exit_code = Some(code);
+                            stop_polling = true;
                         }
                     } else {
                         stop_polling = true;

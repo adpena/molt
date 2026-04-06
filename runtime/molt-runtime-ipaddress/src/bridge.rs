@@ -91,8 +91,9 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_ipaddr_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
@@ -112,7 +113,11 @@ pub fn dec_ref_bits(_py: &CoreGilToken, bits: u64) {
     unsafe { __molt_ipaddr_dec_ref_bits(bits) }
 }
 
-pub fn release_ptr(ptr: *mut u8) {
+/// # Safety
+///
+/// `ptr` must have been allocated by the paired runtime bridge and must not be
+/// used again after release.
+pub unsafe fn release_ptr(ptr: *mut u8) {
     unsafe { __molt_ipaddr_release_ptr(ptr) }
 }
 

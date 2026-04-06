@@ -249,7 +249,7 @@ fn test_int_ob_type_is_pylong_type() {
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     assert!(!py.is_null());
     let tp = unsafe { (*py).ob_type };
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PyLong_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PyLong_Type));
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
 }
 
@@ -259,6 +259,6 @@ fn test_float_ob_type_is_pyfloat_type() {
     let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(1.5) };
     assert!(!py.is_null());
     let tp = unsafe { (*py).ob_type };
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PyFloat_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PyFloat_Type));
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
 }

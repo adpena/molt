@@ -5,8 +5,9 @@
 
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+use std::{f64::consts::PI, ptr};
+
 use molt_lang_obj_model::MoltObject;
-use std::ptr;
 
 fn init() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
@@ -32,7 +33,7 @@ fn test_bridge_int_roundtrip() {
 #[test]
 fn test_bridge_float_roundtrip() {
     init();
-    let bits = MoltObject::from_float(3.14).bits();
+    let bits = MoltObject::from_float(PI).bits();
     let py = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
     assert!(!py.is_null());
 
@@ -51,7 +52,7 @@ fn test_bridge_none_returns_singleton() {
     init();
     let bits = MoltObject::none().bits();
     let py = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
-    assert!(std::ptr::eq(py, unsafe { &raw mut Py_None }));
+    assert!(std::ptr::eq(py, &raw mut Py_None));
 }
 
 #[test]
@@ -59,7 +60,7 @@ fn test_bridge_true_returns_singleton() {
     init();
     let bits = MoltObject::from_bool(true).bits();
     let py = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
-    assert!(std::ptr::eq(py, unsafe { &raw mut Py_True }));
+    assert!(std::ptr::eq(py, &raw mut Py_True));
 }
 
 #[test]
@@ -67,7 +68,7 @@ fn test_bridge_false_returns_singleton() {
     init();
     let bits = MoltObject::from_bool(false).bits();
     let py = unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) };
-    assert!(std::ptr::eq(py, unsafe { &raw mut Py_False }));
+    assert!(std::ptr::eq(py, &raw mut Py_False));
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +78,7 @@ fn test_bridge_false_returns_singleton() {
 #[test]
 fn test_pyobj_to_handle_none() {
     init();
-    let none_ptr = unsafe { &raw mut Py_None };
+    let none_ptr = &raw mut Py_None;
     let handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(none_ptr);
     assert_eq!(handle, Some(MoltObject::none().bits()));
 }
@@ -85,7 +86,7 @@ fn test_pyobj_to_handle_none() {
 #[test]
 fn test_pyobj_to_handle_true() {
     init();
-    let true_ptr = unsafe { &raw mut Py_True };
+    let true_ptr = &raw mut Py_True;
     let handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(true_ptr);
     assert_eq!(handle, Some(MoltObject::from_bool(true).bits()));
 }
@@ -93,7 +94,7 @@ fn test_pyobj_to_handle_true() {
 #[test]
 fn test_pyobj_to_handle_false() {
     init();
-    let false_ptr = unsafe { &raw mut Py_False };
+    let false_ptr = &raw mut Py_False;
     let handle = GLOBAL_BRIDGE.lock().pyobj_to_handle(false_ptr);
     assert_eq!(handle, Some(MoltObject::from_bool(false).bits()));
 }
@@ -150,70 +151,70 @@ fn test_release_pyobj_removes_mapping() {
 fn test_tag_to_type_int() {
     init();
     let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Int) };
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PyLong_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PyLong_Type));
 }
 
 #[test]
 fn test_tag_to_type_float() {
     init();
     let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Float) };
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PyFloat_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PyFloat_Type));
 }
 
 #[test]
 fn test_tag_to_type_str() {
     init();
     let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Str) };
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PyUnicode_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PyUnicode_Type));
 }
 
 #[test]
 fn test_tag_to_type_list() {
     init();
     let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::List) };
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PyList_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PyList_Type));
 }
 
 #[test]
 fn test_tag_to_type_tuple() {
     init();
     let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Tuple) };
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PyTuple_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PyTuple_Type));
 }
 
 #[test]
 fn test_tag_to_type_dict() {
     init();
     let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Dict) };
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PyDict_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PyDict_Type));
 }
 
 #[test]
 fn test_tag_to_type_bool() {
     init();
     let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Bool) };
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PyBool_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PyBool_Type));
 }
 
 #[test]
 fn test_tag_to_type_bytes() {
     init();
     let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Bytes) };
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PyBytes_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PyBytes_Type));
 }
 
 #[test]
 fn test_tag_to_type_set() {
     init();
     let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Set) };
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PySet_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PySet_Type));
 }
 
 #[test]
 fn test_tag_to_type_module() {
     init();
     let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Module) };
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PyModule_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PyModule_Type));
 }
 
 #[test]
@@ -221,7 +222,7 @@ fn test_tag_to_type_other_falls_back() {
     init();
     let tp = unsafe { molt_cpython_abi::bridge::tag_to_type(MoltTypeTag::Other) };
     // Falls back to PyUnicode_Type
-    assert!(std::ptr::eq(tp, unsafe { &raw mut PyUnicode_Type }));
+    assert!(std::ptr::eq(tp, &raw mut PyUnicode_Type));
 }
 
 // ---------------------------------------------------------------------------

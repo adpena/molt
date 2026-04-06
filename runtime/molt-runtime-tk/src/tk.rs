@@ -257,9 +257,7 @@ fn configured_tcl_runtime_lib_dir() -> Option<PathBuf> {
     static CONFIGURED: OnceLock<Option<PathBuf>> = OnceLock::new();
     CONFIGURED
         .get_or_init(|| {
-            let Some(root) = bundled_tcl_runtime_lib_dir() else {
-                return None;
-            };
+            let root = bundled_tcl_runtime_lib_dir()?;
             if let Some(tcl_library) = runtime_version_dir(&root, "tcl") {
                 // Process-global env mutation is serialized behind OnceLock init.
                 unsafe {
@@ -280,10 +278,10 @@ fn configured_tcl_runtime_lib_dir() -> Option<PathBuf> {
 #[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
 fn tcl_library_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Ok(path) = std::env::var("MOLT_TCL_LIB") {
-        if !path.trim().is_empty() {
-            candidates.push(PathBuf::from(path));
-        }
+    if let Ok(path) = std::env::var("MOLT_TCL_LIB")
+        && !path.trim().is_empty()
+    {
+        candidates.push(PathBuf::from(path));
     }
     if let Some(root) = configured_tcl_runtime_lib_dir() {
         if cfg!(target_os = "macos") {
@@ -413,30 +411,51 @@ fn load_tcl_api() -> Result<&'static TclApi, String> {
                     leaked.get::<*const ()>(symbol).ok().map(|sym| *sym)
                 };
                 let api = TclApi {
-                    find_executable: std::mem::transmute(load(b"Tcl_FindExecutable\0")?),
-                    create_interp: std::mem::transmute(load(b"Tcl_CreateInterp\0")?),
-                    delete_interp: std::mem::transmute(load(b"Tcl_DeleteInterp\0")?),
-                    init: std::mem::transmute(load(b"Tcl_Init\0")?),
-                    eval_ex: std::mem::transmute(load(b"Tcl_EvalEx\0")?),
-                    eval_objv: std::mem::transmute(load(b"Tcl_EvalObjv\0")?),
-                    get_string_result: std::mem::transmute(load(b"Tcl_GetStringResult\0")?),
-                    new_string_obj: std::mem::transmute(load(b"Tcl_NewStringObj\0")?),
-                    new_list_obj: std::mem::transmute(load(b"Tcl_NewListObj\0")?),
-                    list_obj_append_element: std::mem::transmute(load(
-                        b"Tcl_ListObjAppendElement\0",
-                    )?),
+                    find_executable: std::mem::transmute::<*const (), TclFindExecutableFn>(
+                        load(b"Tcl_FindExecutable\0")?,
+                    ),
+                    create_interp: std::mem::transmute::<*const (), TclCreateInterpFn>(
+                        load(b"Tcl_CreateInterp\0")?,
+                    ),
+                    delete_interp: std::mem::transmute::<*const (), TclDeleteInterpFn>(
+                        load(b"Tcl_DeleteInterp\0")?,
+                    ),
+                    init: std::mem::transmute::<*const (), TclInitFn>(load(b"Tcl_Init\0")?),
+                    eval_ex: std::mem::transmute::<*const (), TclEvalExFn>(
+                        load(b"Tcl_EvalEx\0")?,
+                    ),
+                    eval_objv: std::mem::transmute::<*const (), TclEvalObjvFn>(
+                        load(b"Tcl_EvalObjv\0")?,
+                    ),
+                    get_string_result: std::mem::transmute::<*const (), TclGetStringResultFn>(
+                        load(b"Tcl_GetStringResult\0")?,
+                    ),
+                    new_string_obj: std::mem::transmute::<*const (), TclNewStringObjFn>(
+                        load(b"Tcl_NewStringObj\0")?,
+                    ),
+                    new_list_obj: std::mem::transmute::<*const (), TclNewListObjFn>(
+                        load(b"Tcl_NewListObj\0")?,
+                    ),
+                    list_obj_append_element:
+                        std::mem::transmute::<*const (), TclListObjAppendElementFn>(
+                            load(b"Tcl_ListObjAppendElement\0")?,
+                        ),
                     incr_ref_count: load_optional(b"Tcl_IncrRefCount\0")
-                        .map(|sym| std::mem::transmute(sym)),
+                        .map(|sym| std::mem::transmute::<*const (), TclIncrRefCountFn>(sym)),
                     decr_ref_count: load_optional(b"Tcl_DecrRefCount\0")
-                        .map(|sym| std::mem::transmute(sym)),
+                        .map(|sym| std::mem::transmute::<*const (), TclDecrRefCountFn>(sym)),
                     db_incr_ref_count: load_optional(b"Tcl_DbIncrRefCount\0")
-                        .map(|sym| std::mem::transmute(sym)),
+                        .map(|sym| std::mem::transmute::<*const (), TclDbIncrRefCountFn>(sym)),
                     db_decr_ref_count: load_optional(b"Tcl_DbDecrRefCount\0")
-                        .map(|sym| std::mem::transmute(sym)),
-                    do_one_event: std::mem::transmute(load(b"Tcl_DoOneEvent\0")?),
-                    split_list: std::mem::transmute(load(b"Tcl_SplitList\0")?),
-                    merge: std::mem::transmute(load(b"Tcl_Merge\0")?),
-                    free: std::mem::transmute(load(b"Tcl_Free\0")?),
+                        .map(|sym| std::mem::transmute::<*const (), TclDbDecrRefCountFn>(sym)),
+                    do_one_event: std::mem::transmute::<*const (), TclDoOneEventFn>(
+                        load(b"Tcl_DoOneEvent\0")?,
+                    ),
+                    split_list: std::mem::transmute::<*const (), TclSplitListFn>(
+                        load(b"Tcl_SplitList\0")?,
+                    ),
+                    merge: std::mem::transmute::<*const (), TclMergeFn>(load(b"Tcl_Merge\0")?),
+                    free: std::mem::transmute::<*const (), TclFreeFn>(load(b"Tcl_Free\0")?),
                 };
                 return Ok(api);
             }
@@ -484,34 +503,6 @@ impl TclObj {
         }
     }
 
-    fn to_string(&self) -> String {
-        match &self.kind {
-            TclObjKind::Scalar(text) => text.clone(),
-            TclObjKind::List(items) => items
-                .iter()
-                .map(|item| {
-                    let s = item.to_string();
-                    // Brace elements that contain spaces, braces, or special Tcl chars
-                    if s.contains(' ')
-                        || s.contains('{')
-                        || s.contains('}')
-                        || s.contains('"')
-                        || s.contains('\\')
-                        || s.contains('[')
-                        || s.contains(']')
-                        || s.contains('$')
-                        || s.is_empty()
-                    {
-                        format!("{{{}}}", s)
-                    } else {
-                        s
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
-        }
-    }
-
     fn get_elements(&self) -> Result<std::vec::IntoIter<TclObj>, String> {
         match &self.kind {
             TclObjKind::List(items) => Ok(items.clone().into_iter()),
@@ -528,6 +519,39 @@ impl TclObj {
                     .map(|part| TclObj::scalar_from_interp(part, interp_addr))
                     .collect::<Vec<_>>()
                     .into_iter())
+            }
+        }
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "tk"))]
+impl std::fmt::Display for TclObj {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.kind {
+            TclObjKind::Scalar(text) => f.write_str(text),
+            TclObjKind::List(items) => {
+                let rendered = items
+                    .iter()
+                    .map(|item| {
+                        let s = item.to_string();
+                        if s.contains(' ')
+                            || s.contains('{')
+                            || s.contains('}')
+                            || s.contains('"')
+                            || s.contains('\\')
+                            || s.contains('[')
+                            || s.contains(']')
+                            || s.contains('$')
+                            || s.is_empty()
+                        {
+                            format!("{{{}}}", s)
+                        } else {
+                            s
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                f.write_str(&rendered)
             }
         }
     }
@@ -3124,7 +3148,7 @@ fn tcl_obj_from_bits(py: &PyToken, bits: u64) -> TclObj {
             .iter()
             .map(|&elem_bits| tcl_obj_from_bits(py, elem_bits))
             .collect();
-        return TclObj::new_list(tcl_elements.into_iter());
+        return TclObj::new_list(tcl_elements);
     }
     // Use str() instead of repr() for widget objects and other types.
     // Widget.__str__ returns the Tcl widget path (e.g., ".!frame24"),
@@ -3134,11 +3158,11 @@ fn tcl_obj_from_bits(py: &PyToken, bits: u64) -> TclObj {
         clear_exception(py);
     }
     let str_bits = rt_str(bits);
-    if !obj_from_bits(str_bits).is_none() {
-        if let Some(s) = string_obj_to_owned(obj_from_bits(str_bits)) {
-            dec_ref_bits(py, str_bits);
-            return TclObj::from(s);
-        }
+    if !obj_from_bits(str_bits).is_none()
+        && let Some(s) = string_obj_to_owned(obj_from_bits(str_bits))
+    {
+        dec_ref_bits(py, str_bits);
+        return TclObj::from(s);
     }
     dec_ref_bits(py, str_bits);
     TclObj::from(format_obj_str(py, obj))
@@ -3350,8 +3374,8 @@ fn run_tcl_command(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64> 
 
     // Trace Tcl commands for debugging layout issues
     if std::env::var("MOLT_TRACE_TCL").is_ok() {
-        let script = TclObj::new_list(command.clone().into_iter());
-        eprintln!("[tcl] {}", script.to_string());
+        let script = TclObj::new_list(command.clone());
+        eprintln!("[tcl] {}", script);
     }
 
     // Phase 2: Extract interpreter context, then drop registry lock.
@@ -14127,7 +14151,7 @@ fn tk_call_dispatch(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64>
         if command == "loadtk" {
             return native_loadtk_command(py, handle, args);
         }
-        return run_tcl_command(py, handle, args);
+        run_tcl_command(py, handle, args)
     }
 
     #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]

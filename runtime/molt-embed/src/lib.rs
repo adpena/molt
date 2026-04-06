@@ -32,9 +32,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Compilation target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompileTarget {
     /// Native binary via Cranelift.
+    #[default]
     Native,
     /// WebAssembly module.
     Wasm,
@@ -42,25 +43,14 @@ pub enum CompileTarget {
     WasmLinked,
 }
 
-impl Default for CompileTarget {
-    fn default() -> Self {
-        Self::Native
-    }
-}
-
 /// Compilation optimization profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Profile {
     /// Fast compilation, no optimizations.
     Dev,
     /// Full optimization pipeline.
+    #[default]
     Release,
-}
-
-impl Default for Profile {
-    fn default() -> Self {
-        Self::Release
-    }
 }
 
 /// Resource limits to embed in the compiled module.
@@ -224,8 +214,6 @@ impl From<std::io::Error> for CompileError {
 /// println!("Compiled {} bytes", result.artifact.len());
 /// ```
 pub struct MoltCompiler {
-    /// Path to the Molt home directory (~/.molt).
-    molt_home: PathBuf,
     /// Path to the Molt CLI (for subprocess compilation).
     molt_cli: Option<PathBuf>,
 }
@@ -237,17 +225,10 @@ impl MoltCompiler {
     /// 1. `MOLT_HOME` environment variable
     /// 2. `~/.molt` default directory
     pub fn new() -> Result<Self, CompileError> {
-        let molt_home = std::env::var("MOLT_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| dirs_home().join(".molt"));
-
         // Try to find the molt CLI
         let molt_cli = which_molt();
 
-        Ok(Self {
-            molt_home,
-            molt_cli,
-        })
+        Ok(Self { molt_cli })
     }
 
     /// Compile Python source code to the specified target.
@@ -347,15 +328,8 @@ impl MoltCompiler {
             }
         };
 
-        std::fs::read(&artifact_path).map_err(|e| CompileError::IoError(e))
+        std::fs::read(&artifact_path).map_err(CompileError::IoError)
     }
-}
-
-/// Find the user's home directory.
-fn dirs_home() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp"))
 }
 
 /// Try to find the `molt` CLI in PATH or MOLT_HOME.

@@ -24,7 +24,7 @@ fn coerce_real_f64(_py: &PyToken, val_bits: u64) -> Option<f64> {
         return Some(i as f64);
     }
     if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
-        let big = bigint_ref(ptr);
+        let big = unsafe { bigint_ref(ptr) };
         if let Some(val) = big.to_f64() {
             return Some(val);
         }
@@ -37,7 +37,9 @@ fn coerce_real_f64(_py: &PyToken, val_bits: u64) -> Option<f64> {
     if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
         {
             let float_name_bits = intern_static_name(_py, b"__float__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
+            if let Some(call_bits) =
+                unsafe { attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) }
+            {
                 let res_bits = call_callable0(_py, call_bits);
                 dec_ref_bits(_py, call_bits);
                 if exception_pending(_py) {
@@ -59,7 +61,9 @@ fn coerce_real_f64(_py: &PyToken, val_bits: u64) -> Option<f64> {
                 return None;
             }
             let index_name_bits = intern_static_name(_py, b"__index__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
+            if let Some(call_bits) =
+                unsafe { attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) }
+            {
                 let res_bits = call_callable0(_py, call_bits);
                 dec_ref_bits(_py, call_bits);
                 if exception_pending(_py) {
@@ -73,7 +77,7 @@ fn coerce_real_f64(_py: &PyToken, val_bits: u64) -> Option<f64> {
                     return Some(i as f64);
                 }
                 if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
-                    let big = bigint_ref(big_ptr);
+                    let big = unsafe { bigint_ref(big_ptr) };
                     dec_ref_bits(_py, res_bits);
                     if let Some(val) = big.to_f64() {
                         return Some(val);

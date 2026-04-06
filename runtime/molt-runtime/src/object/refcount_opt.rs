@@ -29,6 +29,7 @@ pub(crate) fn slice_contains_heap_refs(values: &[u64]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::PI;
 
     #[test]
     fn primitive_int_is_not_heap_ref() {
@@ -38,7 +39,7 @@ mod tests {
 
     #[test]
     fn primitive_float_is_not_heap_ref() {
-        let obj = MoltObject::from_float(3.14);
+        let obj = MoltObject::from_float(PI);
         assert!(!is_heap_ref(obj.bits()));
     }
 

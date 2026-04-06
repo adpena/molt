@@ -359,19 +359,20 @@ unsafe fn sys_populate_stdio(_py: &PyToken<'_>, sys_ptr: *mut u8) -> Result<(), 
 }
 
 #[unsafe(no_mangle)]
-
 fn simple_edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let (m, n) = (a.len(), b.len());
-    if m.abs_diff(n) > 2 { return 3; }
+    if m.abs_diff(n) > 2 {
+        return 3;
+    }
     let mut prev: Vec<usize> = (0..=n).collect();
     let mut curr = vec![0usize; n + 1];
     for i in 1..=m {
         curr[0] = i;
         for j in 1..=n {
-            let cost = if a[i-1] == b[j-1] { 0 } else { 1 };
-            curr[j] = (prev[j]+1).min(curr[j-1]+1).min(prev[j-1]+cost);
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -1120,13 +1121,12 @@ fn vfs_is_file(path: &std::path::Path) -> bool {
     let path_str = path.to_string_lossy();
     if let Some(state) = crate::runtime_state_for_gil()
         && let Some(vfs) = state.get_vfs()
+        && let Some((_prefix, backend, rel)) = vfs.resolve(&path_str)
     {
-        if let Some((_prefix, backend, rel)) = vfs.resolve(&path_str) {
-            return match backend.stat(&rel) {
-                Ok(st) => !st.is_dir,
-                Err(_) => false,
-            };
-        }
+        return match backend.stat(&rel) {
+            Ok(st) => !st.is_dir,
+            Err(_) => false,
+        };
     }
     path.is_file()
 }
@@ -1137,13 +1137,12 @@ fn vfs_read_to_string(path: &std::path::Path) -> Option<String> {
     let path_str = path.to_string_lossy();
     if let Some(state) = crate::runtime_state_for_gil()
         && let Some(vfs) = state.get_vfs()
+        && let Some((_prefix, backend, rel)) = vfs.resolve(&path_str)
     {
-        if let Some((_prefix, backend, rel)) = vfs.resolve(&path_str) {
-            return match backend.open_read(&rel) {
-                Ok(bytes) => String::from_utf8(bytes).ok(),
-                Err(_) => None,
-            };
-        }
+        return match backend.open_read(&rel) {
+            Ok(bytes) => String::from_utf8(bytes).ok(),
+            Err(_) => None,
+        };
     }
     std::fs::read_to_string(path).ok()
 }
@@ -1152,22 +1151,19 @@ fn vfs_read_to_string(path: &std::path::Path) -> Option<String> {
 fn vfs_read(path: &str) -> std::io::Result<Vec<u8>> {
     if let Some(state) = crate::runtime_state_for_gil()
         && let Some(vfs) = state.get_vfs()
+        && let Some((_prefix, backend, rel)) = vfs.resolve(path)
     {
-        if let Some((_prefix, backend, rel)) = vfs.resolve(path) {
-            return backend.open_read(&rel).map_err(|e| {
-                let kind = match e {
-                    crate::vfs::VfsError::NotFound => std::io::ErrorKind::NotFound,
-                    crate::vfs::VfsError::PermissionDenied
-                    | crate::vfs::VfsError::ReadOnly
-                    | crate::vfs::VfsError::CapabilityDenied(_) => {
-                        std::io::ErrorKind::PermissionDenied
-                    }
-                    crate::vfs::VfsError::IsDirectory => std::io::ErrorKind::IsADirectory,
-                    _ => std::io::ErrorKind::Other,
-                };
-                std::io::Error::new(kind, e.to_string())
-            });
-        }
+        return backend.open_read(&rel).map_err(|e| {
+            let kind = match e {
+                crate::vfs::VfsError::NotFound => std::io::ErrorKind::NotFound,
+                crate::vfs::VfsError::PermissionDenied
+                | crate::vfs::VfsError::ReadOnly
+                | crate::vfs::VfsError::CapabilityDenied(_) => std::io::ErrorKind::PermissionDenied,
+                crate::vfs::VfsError::IsDirectory => std::io::ErrorKind::IsADirectory,
+                _ => std::io::ErrorKind::Other,
+            };
+            std::io::Error::new(kind, e.to_string())
+        });
     }
     std::fs::read(path)
 }
@@ -4124,7 +4120,10 @@ pub extern "C" fn molt_debug_trace(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 {
     if std::env::var("MOLT_TRACE_GET_ATTR").is_ok() {
-        eprintln!("module_get_attr: mod=0x{:x} attr=0x{:x}", module_bits, attr_bits);
+        eprintln!(
+            "module_get_attr: mod=0x{:x} attr=0x{:x}",
+            module_bits, attr_bits
+        );
     }
     crate::with_gil_entry!(_py, {
         let debug_attr = std::env::var("MOLT_DEBUG_MODULE_GET_ATTR").as_deref() == Ok("1");
@@ -4293,7 +4292,8 @@ Use static modules or pre-generated code paths instead."
             }
             // CPython 3.12+: suggest similar names in NameError.
             let dict_bits = module_dict_bits(module_ptr);
-            let suggestion: Option<String> = if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            let suggestion: Option<String> = if let Some(dict_ptr) =
+                obj_from_bits(dict_bits).as_ptr()
                 && object_type_id(dict_ptr) == TYPE_ID_DICT
             {
                 let order = crate::builtins::containers::dict_order(dict_ptr);
@@ -4316,7 +4316,9 @@ Use static modules or pre-generated code paths instead."
                     i += 2;
                 }
                 best.map(|(n, _)| n)
-            } else { None };
+            } else {
+                None
+            };
             // Also search builtins dict for suggestions (CPython does this).
             let suggestion = suggestion.or_else(|| {
                 let cache = crate::builtins::exceptions::internals::module_cache(_py);
@@ -4326,7 +4328,9 @@ Use static modules or pre-generated code paths instead."
                 let builtins_ptr = obj_from_bits(builtins_bits).as_ptr()?;
                 let bdict_bits = module_dict_bits(builtins_ptr);
                 let bdict_ptr = obj_from_bits(bdict_bits).as_ptr()?;
-                if object_type_id(bdict_ptr) != TYPE_ID_DICT { return None; }
+                if object_type_id(bdict_ptr) != TYPE_ID_DICT {
+                    return None;
+                }
                 let order = crate::builtins::containers::dict_order(bdict_ptr);
                 let mut best: Option<(String, usize)> = None;
                 let mut i = 0;

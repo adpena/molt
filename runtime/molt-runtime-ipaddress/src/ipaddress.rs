@@ -641,7 +641,7 @@ pub extern "C" fn molt_ipaddress_drop(handle_bits: u64) -> u64 {
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
-        release_ptr(ptr);
+        unsafe { release_ptr(ptr) };
         // SAFETY: caller must pass the correct handle type.
         // Since IPv4, IPv6, and network handles are independent heap allocs,
         // dropping via Box<u8> is safe to free the memory; actual destructors
@@ -666,7 +666,7 @@ pub extern "C" fn molt_ipaddress_v6_drop(handle_bits: u64) -> u64 {
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
-        release_ptr(ptr);
+        unsafe { release_ptr(ptr) };
         // SAFETY: pointer from Box::into_raw for Ipv6Handle.
         unsafe {
             drop(Box::from_raw(ptr as *mut Ipv6Handle));
@@ -682,7 +682,7 @@ pub extern "C" fn molt_ipaddress_v4_network_drop(handle_bits: u64) -> u64 {
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
-        release_ptr(ptr);
+        unsafe { release_ptr(ptr) };
         // SAFETY: pointer from Box::into_raw for Ipv4NetworkHandle.
         unsafe {
             drop(Box::from_raw(ptr as *mut Ipv4NetworkHandle));

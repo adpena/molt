@@ -429,7 +429,10 @@ pub(crate) fn current_sys_version_info(state: &RuntimeState) -> (PythonVersionIn
     }
 }
 
-pub(crate) fn alloc_sys_version_info_tuple(_py: &PyToken<'_>, info: &PythonVersionInfo) -> Option<u64> {
+pub(crate) fn alloc_sys_version_info_tuple(
+    _py: &PyToken<'_>,
+    info: &PythonVersionInfo,
+) -> Option<u64> {
     let release_ptr = alloc_string(_py, info.releaselevel.as_bytes());
     if release_ptr.is_null() {
         return None;
@@ -453,7 +456,12 @@ pub(crate) fn alloc_sys_version_info_tuple(_py: &PyToken<'_>, info: &PythonVersi
     Some(MoltObject::from_ptr(tuple_ptr).bits())
 }
 
-pub(crate) fn dict_set_bytes_key(_py: &PyToken<'_>, dict_ptr: *mut u8, key: &[u8], value_bits: u64) -> bool {
+pub(crate) fn dict_set_bytes_key(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    key: &[u8],
+    value_bits: u64,
+) -> bool {
     let key_ptr = alloc_string(_py, key);
     if key_ptr.is_null() {
         return false;
@@ -1575,7 +1583,10 @@ pub(crate) fn mktime_wasm(parts: TimeParts) -> Result<f64, String> {
     Ok(utc_secs as f64)
 }
 
-pub(crate) fn traceback_limit_from_bits(_py: &PyToken<'_>, limit_bits: u64) -> Result<Option<usize>, u64> {
+pub(crate) fn traceback_limit_from_bits(
+    _py: &PyToken<'_>,
+    limit_bits: u64,
+) -> Result<Option<usize>, u64> {
     let obj = obj_from_bits(limit_bits);
     if obj.is_none() {
         return Ok(None);
@@ -1699,7 +1710,11 @@ pub(crate) fn traceback_frames(
     out
 }
 
-pub(crate) fn traceback_source_line_native(_py: &PyToken<'_>, filename: &str, lineno: i64) -> String {
+pub(crate) fn traceback_source_line_native(
+    _py: &PyToken<'_>,
+    filename: &str,
+    lineno: i64,
+) -> String {
     if lineno <= 0 {
         return String::new();
     }
@@ -1821,7 +1836,11 @@ pub(crate) fn traceback_infer_column_offsets(line: &str) -> (i64, i64) {
     }
 }
 
-pub(crate) fn traceback_format_caret_line_native(line: &str, mut colno: i64, mut end_colno: i64) -> String {
+pub(crate) fn traceback_format_caret_line_native(
+    line: &str,
+    mut colno: i64,
+    mut end_colno: i64,
+) -> String {
     if line.is_empty() || colno < 0 {
         return String::new();
     }
@@ -1898,7 +1917,12 @@ fn find_caret_anchor(region: &[char]) -> Option<(usize, usize)> {
     // Binary operators: find a run of operator chars in the interior,
     // indicating `operand OP operand`.  Whitespace around the operator
     // is expected (e.g. `1 / 0` has spaces around `/`).
-    let op_char = |c: char| matches!(c, '+' | '-' | '*' | '/' | '%' | '|' | '&' | '^' | '~' | '<' | '>' | '=' | '!' | '@');
+    let op_char = |c: char| {
+        matches!(
+            c,
+            '+' | '-' | '*' | '/' | '%' | '|' | '&' | '^' | '~' | '<' | '>' | '=' | '!' | '@'
+        )
+    };
     let mut i = 0;
     // Skip leading non-operator chars (left operand + whitespace).
     while i < region.len() && !op_char(region[i]) {
@@ -2598,7 +2622,10 @@ pub(crate) fn traceback_payload_from_source(
     Vec::new()
 }
 
-pub(crate) fn traceback_payload_to_list(_py: &PyToken<'_>, payload: &[TracebackPayloadFrame]) -> u64 {
+pub(crate) fn traceback_payload_to_list(
+    _py: &PyToken<'_>,
+    payload: &[TracebackPayloadFrame],
+) -> u64 {
     let mut tuples: Vec<u64> = Vec::new();
     for frame in payload {
         let filename_ptr = alloc_string(_py, frame.filename.as_bytes());
@@ -3095,8 +3122,3 @@ pub extern "C" fn molt_runtime_init_type_gate() {
 }
 
 static TYPE_GATE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Check whether the type gate is enabled (for use by runtime type checks).
-pub fn is_type_gate_enabled() -> bool {
-    TYPE_GATE_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
-}

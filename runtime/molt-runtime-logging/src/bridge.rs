@@ -91,8 +91,9 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_logging_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
@@ -141,6 +142,11 @@ pub fn intern_static_name(_py: &CoreGilToken, name: &[u8]) -> u64 {
 }
 
 /// Look up an attribute on a pointer-backed object, returning Some(bits) or None.
+///
+/// # Safety
+///
+/// `ptr` must refer to a live pointer-backed Molt object for the duration of
+/// this call.
 pub unsafe fn attr_lookup_ptr_allow_missing(
     _py: &CoreGilToken,
     ptr: *mut u8,

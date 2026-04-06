@@ -319,7 +319,7 @@ mod tests {
             },
             pending_call: PendingExternalCall {
                 function_name: "fetch_data".into(),
-                args: vec![0x7ff8_0001_0000_002A],
+                args: vec![0x7ff8_0001_0000_002a],
                 call_id: 12345,
             },
             resource_state: ResourceSnapshot {

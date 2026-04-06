@@ -112,6 +112,12 @@ impl PyToken {
     }
 }
 
+impl Default for PyToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// RAII guard that releases the GIL on creation and re-acquires on drop.
 ///
 /// In the real runtime, this delegates to `molt-runtime`'s
@@ -126,6 +132,12 @@ impl GilReleaseGuard {
     pub fn new() -> Self {
         let token = unsafe { ffi::molt_gil_release_guard() };
         Self { token }
+    }
+}
+
+impl Default for GilReleaseGuard {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -246,6 +258,12 @@ impl CoreGilGuard {
     #[inline]
     pub fn token(&self) -> CoreGilToken {
         PyToken::new()
+    }
+}
+
+impl Default for CoreGilGuard {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

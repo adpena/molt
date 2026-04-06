@@ -129,6 +129,10 @@ pub fn alloc_bytes(_py: &PyToken, data: &[u8]) -> *mut u8 {
 
 /// Get a slice view of a bytes-like object.
 #[inline]
+/// # Safety
+///
+/// `ptr` must refer to a live bytes-like Molt object for the duration of this
+/// call.
 pub unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     let mut len: usize = 0;
     let data = unsafe { molt_bridge_bytes_like_slice(ptr, &mut len) };
@@ -167,7 +171,11 @@ pub fn type_name(_py: &PyToken, obj: MoltObject) -> String {
 
 /// Release a pointer from the provenance registry.
 #[inline]
-pub fn release_ptr(ptr: *mut u8) {
+/// # Safety
+///
+/// `ptr` must have been allocated by the paired runtime bridge and must not be
+/// used again after release.
+pub unsafe fn release_ptr(ptr: *mut u8) {
     unsafe { molt_bridge_release_ptr(ptr) }
 }
 
@@ -191,18 +199,28 @@ pub fn alloc_tuple(_py: &PyToken, items: &[u64]) -> *mut u8 {
 
 /// Get the type ID of an object from its pointer.
 #[inline]
-pub fn object_type_id(ptr: *mut u8) -> u32 {
+/// # Safety
+///
+/// `ptr` must be a valid Molt runtime object pointer for the duration of this
+/// call.
+pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { molt_bridge_object_type_id(ptr) }
 }
 
 /// Get raw bytes data pointer.
 #[inline]
-pub fn bytes_data(ptr: *mut u8) -> *const u8 {
+/// # Safety
+///
+/// `ptr` must refer to a live Molt bytes-like object.
+pub unsafe fn bytes_data(ptr: *mut u8) -> *const u8 {
     unsafe { molt_bridge_bytes_data(ptr) }
 }
 
 /// Get bytes length.
 #[inline]
-pub fn bytes_len(ptr: *mut u8) -> usize {
+/// # Safety
+///
+/// `ptr` must refer to a live Molt bytes-like object.
+pub unsafe fn bytes_len(ptr: *mut u8) -> usize {
     unsafe { molt_bridge_bytes_len(ptr) }
 }
