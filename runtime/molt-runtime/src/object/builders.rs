@@ -732,7 +732,8 @@ pub(crate) fn alloc_tuple(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
             if !ptr.is_null() {
                 unsafe {
                     let header = header_from_obj_ptr(ptr);
-                    (*header).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+                    (*header).flags |=
+                        crate::object::HEADER_FLAG_IMMORTAL | crate::object::HEADER_FLAG_INTERNED;
                     (*header)
                         .ref_count
                         .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
@@ -911,6 +912,7 @@ pub(crate) fn alloc_bound_method_obj(_py: &PyToken<'_>, func_bits: u64, self_bit
 }
 
 pub(crate) fn alloc_module_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
+    let _nursery_guard = crate::object::NurserySuspendGuard::new();
     let dict_ptr = alloc_dict_with_pairs(_py, &[]);
     if dict_ptr.is_null() {
         return std::ptr::null_mut();
@@ -944,6 +946,7 @@ pub(crate) fn alloc_module_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
 }
 
 pub(crate) fn alloc_class_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
+    let _nursery_guard = crate::object::NurserySuspendGuard::new();
     let dict_ptr = alloc_dict_with_pairs(_py, &[]);
     if dict_ptr.is_null() {
         return std::ptr::null_mut();
@@ -1291,43 +1294,42 @@ pub(crate) fn alloc_bytes(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
 
 pub(crate) fn clear_builder_singletons(_py: &PyToken<'_>) {
     crate::gil_assert();
+    let mut released = std::collections::HashSet::new();
+
+    let mut release_once = |ptr: *mut u8| {
+        if !ptr.is_null() && released.insert(ptr as usize) {
+            crate::object::release_shutdown_owned_bits(_py, MoltObject::from_ptr(ptr).bits());
+        }
+    };
 
     let empty_tuple = EMPTY_TUPLE_PTR.swap(
         std::ptr::null_mut(),
         std::sync::atomic::Ordering::AcqRel,
     );
-    if !empty_tuple.is_null() {
-        crate::object::release_shutdown_bits(_py, MoltObject::from_ptr(empty_tuple).bits());
-    }
+    release_once(empty_tuple);
 
     let empty_string = EMPTY_STRING_PTR.swap(
         std::ptr::null_mut(),
         std::sync::atomic::Ordering::AcqRel,
     );
-    if !empty_string.is_null() {
-        crate::object::release_shutdown_bits(_py, MoltObject::from_ptr(empty_string).bits());
-    }
+    release_once(empty_string);
 
     let empty_bytes = EMPTY_BYTES_PTR.swap(
         std::ptr::null_mut(),
         std::sync::atomic::Ordering::AcqRel,
     );
-    if !empty_bytes.is_null() {
-        crate::object::release_shutdown_bits(_py, MoltObject::from_ptr(empty_bytes).bits());
-    }
+    release_once(empty_bytes);
 
     for slot in &ASCII_CHARS {
         let ptr = slot.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
-        if !ptr.is_null() {
-            crate::object::release_shutdown_bits(_py, MoltObject::from_ptr(ptr).bits());
-        }
+        release_once(ptr);
     }
 
     if let Ok(mut pool) = molt_string_intern_pool().lock() {
         let old = std::mem::take(&mut *pool);
         drop(pool);
         for (_key, ptr) in old {
-            crate::object::release_shutdown_bits(_py, MoltObject::from_ptr(ptr.0).bits());
+            release_once(ptr.0);
         }
     }
 }

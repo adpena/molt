@@ -635,6 +635,7 @@ fn compute_mro(class_bits: u64, bases: &[u64]) -> Option<Vec<u64>> {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let _nursery_guard = crate::object::NurserySuspendGuard::new();
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -645,7 +646,7 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
             }
         }
         let mut bases_vec = Vec::new();
-        let mut bases_owned = false;
+        let bases_owned;
         let bases_bits = if obj_from_bits(base_bits).is_none() || base_bits == 0 {
             let tuple_ptr = alloc_tuple(_py, &[]);
             if tuple_ptr.is_null() {
@@ -677,7 +678,12 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                         for item in seq_vec_ref(base_ptr).iter() {
                             bases_vec.push(*item);
                         }
-                        base_bits
+                        let tuple_ptr = alloc_tuple(_py, &bases_vec);
+                        if tuple_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        bases_owned = true;
+                        MoltObject::from_ptr(tuple_ptr).bits()
                     }
                     _ => {
                         return raise_exception::<_>(

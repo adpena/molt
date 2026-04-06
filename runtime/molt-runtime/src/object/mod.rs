@@ -774,6 +774,21 @@ pub(crate) fn dec_ref_bits(_py: &PyToken<'_>, bits: u64) {
     }
 }
 
+pub(crate) fn release_shutdown_owned_bits(_py: &PyToken<'_>, bits: u64) {
+    let obj = obj_from_bits(bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return;
+    };
+    unsafe {
+        let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        if (*header_ptr).ref_count.load(AtomicOrdering::Acquire) == u32::MAX {
+            (*header_ptr).ref_count.store(1, AtomicOrdering::Release);
+        }
+        (*header_ptr).flags &= !(HEADER_FLAG_IMMORTAL | HEADER_FLAG_INTERNED);
+    }
+    dec_ref_bits(_py, bits);
+}
+
 pub(crate) fn release_shutdown_bits(_py: &PyToken<'_>, bits: u64) {
     let obj = obj_from_bits(bits);
     let Some(ptr) = obj.as_ptr() else {
@@ -781,9 +796,11 @@ pub(crate) fn release_shutdown_bits(_py: &PyToken<'_>, bits: u64) {
     };
     unsafe {
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-        (*header_ptr).flags &= !(HEADER_FLAG_IMMORTAL | HEADER_FLAG_INTERNED);
+        if ((*header_ptr).flags & HEADER_FLAG_INTERNED) != 0 {
+            return;
+        }
     }
-    dec_ref_bits(_py, bits);
+    release_shutdown_owned_bits(_py, bits);
 }
 
 pub(crate) fn init_atomic_bits(
@@ -795,6 +812,7 @@ pub(crate) fn init_atomic_bits(
     if existing != 0 {
         return existing;
     }
+    let _nursery_guard = NurserySuspendGuard::new();
     let new_bits = init();
     if new_bits == 0 {
         return 0;
@@ -1491,7 +1509,8 @@ unsafe fn maybe_run_object_finalizer(
     if (header.flags & HEADER_FLAG_FINALIZER_RAN) != 0 {
         return false;
     }
-    let class_bits = unsafe { object_class_bits_from_state(object_state(ptr)) };
+    let class_state = get_cold_header(header.cold_idx).map(|cold| cold.state).unwrap_or(0);
+    let class_bits = unsafe { object_class_bits_from_state(class_state) };
     if class_bits == 0 || obj_from_bits(class_bits).is_none() {
         return false;
     }
