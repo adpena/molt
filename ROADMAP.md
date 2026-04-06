@@ -21,7 +21,8 @@ This file is forward-looking only.
 3. Drive native and WASM toward the same supported contract.
 4. Make the CLI/profile/target/backend validation matrix a first-class release
    gate instead of relying on backend-internal proof alone.
-5. Simplify tooling and developer workflow around build, daemon, and validation.
+5. Finish consolidating setup, doctor, validate, and thin-wrapper behavior into
+   one coherent CLI-first DX surface.
 6. Make performance reporting and compatibility reporting generator-owned
    instead of manually synchronized across multiple docs.
 
@@ -36,6 +37,8 @@ This file is forward-looking only.
   degrading into transport-only hints.
 - Close the highest-value native and WASM parity blockers.
 - Keep the canonical local validation matrix green across:
+  - `molt validate --suite smoke`
+  - `molt validate`
   - native `build` / `run` / `compare` on `dev` and `release`
   - linked-WASM build plus Node execution
   - honest unsupported-semantics failures (`exec` / `eval`)
