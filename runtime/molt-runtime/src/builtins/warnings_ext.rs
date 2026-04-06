@@ -235,11 +235,10 @@ pub(crate) fn emit_deprecation_warning(_py: &crate::PyToken<'_>, message: &str) 
         message.hash(&mut hasher);
         hasher.finish()
     };
-    if let Ok(mut seen) = SEEN.lock() {
-        if !seen.insert(hash) {
+    if let Ok(mut seen) = SEEN.lock()
+        && !seen.insert(hash) {
             return; // Already emitted
         }
-    }
     eprintln!("DeprecationWarning: {message}");
 }
 

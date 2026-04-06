@@ -1596,8 +1596,8 @@ fn open_impl(
             // If the path resolves through a VFS mount, serve the read
             // from the in-memory backend rather than the real filesystem.
             let path_str = path.to_string_lossy();
-            if let Some(vfs) = runtime_state(_py).get_vfs() {
-                if let Some((mount_prefix, backend, rel_path)) = vfs.resolve(&path_str) {
+            if let Some(vfs) = runtime_state(_py).get_vfs()
+                && let Some((mount_prefix, backend, rel_path)) = vfs.resolve(&path_str) {
                     let is_write = mode_info.writable;
                     // Capability check
                     let cap_result = crate::vfs::caps::check_mount_capability(
@@ -1792,7 +1792,6 @@ fn open_impl(
                         MoltObject::from_ptr(ptr).bits()
                     };
                 }
-            }
             // ── End VFS dispatch ────────────────────────────────────────
             file = match mode_info.options.open(&path) {
                 Ok(file) => Some(file),
@@ -6636,43 +6635,37 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
         // the final bytearray content and flush it to the VFS backend.
         unsafe {
             if let Some(handle_ptr) = file_handle_ptr(ptr).as_ref() {
-                let handle = &*handle_ptr;
+                let handle = handle_ptr;
                 if let Some((vfs_backend, vfs_path)) = vfs_writeback_take(&handle.state) {
                     // Read the bytearray content that the runtime wrote into.
                     let mem = handle.mem_bits;
-                    if mem != 0 {
-                        if let Some(mem_ptr) = obj_from_bits(mem).as_ptr() {
-                            if object_type_id(mem_ptr) == TYPE_ID_BYTEARRAY {
+                    if mem != 0
+                        && let Some(mem_ptr) = obj_from_bits(mem).as_ptr()
+                            && object_type_id(mem_ptr) == TYPE_ID_BYTEARRAY {
                                 let vec_ptr = bytearray_vec_ptr(mem_ptr);
                                 if !vec_ptr.is_null() {
                                     let data = &*vec_ptr;
                                     let _ = vfs_backend.open_write(&vfs_path, data);
                                 }
                             }
-                        }
-                    }
                     // For text-mode handles, the buffer layer holds the
                     // bytearray, not the outer handle. Walk through the
                     // buffer handle's mem_bits instead.
-                    if mem == 0 && handle.buffer_bits != 0 {
-                        if let Some(buf_ptr) = obj_from_bits(handle.buffer_bits).as_ptr() {
-                            if object_type_id(buf_ptr) == TYPE_ID_FILE_HANDLE {
+                    if mem == 0 && handle.buffer_bits != 0
+                        && let Some(buf_ptr) = obj_from_bits(handle.buffer_bits).as_ptr()
+                            && object_type_id(buf_ptr) == TYPE_ID_FILE_HANDLE {
                                 let buf_handle = &*file_handle_ptr(buf_ptr);
                                 let buf_mem = buf_handle.mem_bits;
-                                if buf_mem != 0 {
-                                    if let Some(mem_ptr) = obj_from_bits(buf_mem).as_ptr() {
-                                        if object_type_id(mem_ptr) == TYPE_ID_BYTEARRAY {
+                                if buf_mem != 0
+                                    && let Some(mem_ptr) = obj_from_bits(buf_mem).as_ptr()
+                                        && object_type_id(mem_ptr) == TYPE_ID_BYTEARRAY {
                                             let vec_ptr = bytearray_vec_ptr(mem_ptr);
                                             if !vec_ptr.is_null() {
                                                 let data = &*vec_ptr;
                                                 let _ = vfs_backend.open_write(&vfs_path, data);
                                             }
                                         }
-                                    }
-                                }
                             }
-                        }
-                    }
                 }
             }
         }

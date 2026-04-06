@@ -215,8 +215,8 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                         && (header.flags & crate::object::HEADER_FLAG_IMMORTAL) == 0
                     {
                         let rhs_obj = obj_from_bits(b);
-                        if let Some(r_ptr) = rhs_obj.as_ptr() {
-                            if object_type_id(r_ptr) == TYPE_ID_STRING {
+                        if let Some(r_ptr) = rhs_obj.as_ptr()
+                            && object_type_id(r_ptr) == TYPE_ID_STRING {
                                 let l_len = string_len(ptr);
                                 let r_len = string_len(r_ptr);
                                 if let Some(content_len) = l_len.checked_add(r_len) {
@@ -257,7 +257,6 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                                     }
                                 } // if let Some(content_len) — overflow falls through
                             }
-                        }
                     }
                     // Fall through to regular add (concat)
                 }

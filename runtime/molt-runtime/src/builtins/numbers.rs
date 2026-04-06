@@ -8,8 +8,7 @@ use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 
 use crate::{
-    INLINE_INT_MAX_I128, INLINE_INT_MIN_I128, MoltHeader, TYPE_ID_BIGINT, TYPE_ID_COMPLEX,
-    TYPE_ID_FLOAT, TYPE_ID_OBJECT, alloc_object, attr_lookup_ptr_allow_missing, call_callable0,
+    INLINE_INT_MAX_I128, INLINE_INT_MIN_I128, MoltHeader, TYPE_ID_BIGINT, TYPE_ID_COMPLEX, TYPE_ID_OBJECT, alloc_object, attr_lookup_ptr_allow_missing, call_callable0,
     class_mro_vec, class_name_for_error, dec_ref_bits, exception_pending, intern_static_name,
     maybe_ptr_from_bits, obj_from_bits, object_class_bits, object_type_id, raise_exception,
     runtime_state, runtime_state_for_gil, type_of_bits,
@@ -69,11 +68,10 @@ pub(crate) fn to_i64(obj: MoltObject) -> Option<i64> {
     // Float that represents an exact integer (e.g., 1.0 from codegen).
     // Handles both inline floats and heap-allocated NaN floats
     // (NaN never passes the fract/abs checks, so this is a no-op for NaN).
-    if let Some(f) = as_float_extended(obj) {
-        if f.fract() == 0.0 && f.abs() < (1i64 << 53) as f64 {
+    if let Some(f) = as_float_extended(obj)
+        && f.fract() == 0.0 && f.abs() < (1i64 << 53) as f64 {
             return Some(f as i64);
         }
-    }
     if let Some(bits) = int_subclass_value_bits_raw(obj.bits()) {
         let val_obj = obj_from_bits(bits);
         if let Some(i) = val_obj.as_int() {
@@ -266,12 +264,11 @@ pub(crate) fn bigint_bits(_py: &PyToken<'_>, value: BigInt) -> u64 {
 pub(crate) fn int_bits_from_i128(_py: &PyToken<'_>, val: i128) -> u64 {
     if let Some(i) = inline_int_from_i128(val) {
         // Debug trace: log when a value near the boundary is inlined
-        if val.abs() > (1_i128 << 44) {
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/bigint_trace.log") {
+        if val.abs() > (1_i128 << 44)
+            && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/bigint_trace.log") {
                 use std::io::Write;
                 let _ = writeln!(f, "INT_BITS_I128_INLINE val={} inlined_as={}", val, i);
             }
-        }
         MoltObject::from_int(i).bits()
     } else {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/bigint_trace.log") {
