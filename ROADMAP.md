@@ -19,8 +19,10 @@ This file is forward-looking only.
    backend contract so native, WASM, and future LLVM lowering optimize from the
    same typed facts.
 3. Drive native and WASM toward the same supported contract.
-4. Simplify tooling and developer workflow around build, daemon, and validation.
-5. Make performance reporting and compatibility reporting generator-owned
+4. Make the CLI/profile/target/backend validation matrix a first-class release
+   gate instead of relying on backend-internal proof alone.
+5. Simplify tooling and developer workflow around build, daemon, and validation.
+6. Make performance reporting and compatibility reporting generator-owned
    instead of manually synchronized across multiple docs.
 
 ## Milestone Sequence
@@ -33,6 +35,10 @@ This file is forward-looking only.
 - Make typed SSA / explicit representation facts survive lowering without
   degrading into transport-only hints.
 - Close the highest-value native and WASM parity blockers.
+- Keep the canonical local validation matrix green across:
+  - native `build` / `run` / `compare` on `dev` and `release`
+  - linked-WASM build plus Node execution
+  - honest unsupported-semantics failures (`exec` / `eval`)
 
 ### Medium Term
 

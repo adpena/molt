@@ -10307,11 +10307,17 @@ def _backend_daemon_skip_output_sync_flags(
     *,
     cache_key: str | None,
     function_cache_key: str | None,
+    stdlib_object_path: Path | None = None,
+    stdlib_object_cache_key: str | None = None,
     state_path: Path | None = None,
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
 ) -> tuple[bool, bool]:
     is_wasm_output = output_artifact.suffix == ".wasm"
+    if stdlib_object_path is not None and not _shared_stdlib_cache_matches_key(
+        stdlib_object_path, stdlib_object_cache_key
+    ):
+        return False, False
     if state_path is None:
         state_path = _artifact_sync_state_path(project_root, output_artifact)
         state = _read_artifact_sync_state(state_path)
@@ -16356,6 +16362,8 @@ def _execute_backend_compile(
                     if cache and function_cache_key != cache_key
                     else None
                 ),
+                stdlib_object_path=cache_setup.stdlib_object_path,
+                stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 state_path=output_sync_state_path,
                 state=output_sync_state,
                 output_stat=output_artifact_stat,
