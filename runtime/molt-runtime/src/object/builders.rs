@@ -437,7 +437,6 @@ pub unsafe extern "C" fn molt_tuple_builder_finish(builder_bits: u64) -> u64 {
 /// Caller must ensure `builder_bits` is valid. Elements in the builder's Vec
 /// are assumed to already have their own reference (the compiler emitted
 /// inc_ref before each append). No additional inc_ref is performed.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_tuple_builder_finish_owned(builder_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry!(_py, {
@@ -1066,8 +1065,7 @@ static EMPTY_STRING_PTR: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 /// Using atomics avoids a mutex on the hot lookup path.
 static ASCII_CHARS: [std::sync::atomic::AtomicU64; 128] = {
     // `AtomicU64::new(0)` is const, but array repeat syntax requires a const expression.
-    const ZERO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    [ZERO; 128]
+    [const { std::sync::atomic::AtomicU64::new(0) }; 128]
 };
 
 /// Lazily initialise every slot in `ASCII_CHARS` that is still zero.  Called once (guarded
@@ -1078,6 +1076,7 @@ fn init_ascii_chars(_py: &PyToken<'_>) {
         if slot.load(std::sync::atomic::Ordering::Relaxed) != 0 {
             continue;
         }
+        let _nursery_guard = crate::object::NurserySuspendGuard::new();
         let ptr = alloc_bytes_like_with_len(_py, 1, TYPE_ID_STRING);
         if ptr.is_null() {
             continue;
@@ -1143,6 +1142,7 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
         let bits = if cached != 0 {
             cached
         } else {
+            let _nursery_guard = crate::object::NurserySuspendGuard::new();
             let ptr = alloc_bytes_like_with_len(_py, 0, TYPE_ID_STRING);
             if !ptr.is_null() {
                 unsafe {
@@ -1185,14 +1185,15 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
         );
     if is_ident {
         // Check the Molt-level pool first (no allocation on hit).
-        if let Ok(pool) = molt_string_intern_pool().lock() {
-            if let Some(&raw) = pool.get(bytes) {
-                // Cache hit: return the existing immortal object directly.
-                return raw as *mut u8;
-            }
+        if let Ok(pool) = molt_string_intern_pool().lock()
+            && let Some(&raw) = pool.get(bytes)
+        {
+            // Cache hit: return the existing immortal object directly.
+            return raw as *mut u8;
         }
         // Pool miss: allocate a new string object, mark it immortal+interned, and
         // insert it into the pool so future allocations reuse this object.
+        let _nursery_guard = crate::object::NurserySuspendGuard::new();
         let ptr = alloc_bytes_like_with_len(_py, bytes.len(), TYPE_ID_STRING);
         if ptr.is_null() {
             return ptr;

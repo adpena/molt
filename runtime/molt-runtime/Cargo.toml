@@ -9,7 +9,7 @@ build = "build.rs"
 crate-type = ["staticlib", "rlib"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(feature, values("audit", "refcount_verify"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(fuzzing)', 'cfg(feature, values("audit", "refcount_verify"))'] }
 
 [features]
 default = ["stdlib_full", "wasi_host"]
@@ -117,7 +117,7 @@ cext_loader = ["dep:molt-cpython-abi"]
 # from getrandom Cargo features: getrandom 0.4 selects custom backends via
 # cfg(getrandom_backend = "..."), not via a Cargo feature named "custom".
 wasm_freestanding = []
-vfs_bundle_tar = []
+vfs_bundle_tar = ["dep:tar"]
 wasi_host = ["stdlib_fs_extra"]
 
 # Structured audit logging: enables audit event emission in capability checks.
@@ -186,6 +186,7 @@ subtle = { version = "2.6", optional = true }
 bzip2 = { version = "0.6", optional = true }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"], optional = true }
 zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
+tar = { version = "0.4", optional = true }
 
 # Serialization (partial — serde_json is used by VFS, keep required)
 rmpv = { version = "1.3", optional = true }
