@@ -7,16 +7,17 @@
 //! heap-resident container and promotes the nursery object to the heap.
 
 const NURSERY_SIZE: usize = 64 * 1024; // 64KB
+const NURSERY_WORDS: usize = NURSERY_SIZE / std::mem::size_of::<u64>();
 
 pub struct Nursery {
-    data: Vec<u8>, // backing storage (heap-allocated, reusable)
+    data: Vec<u64>, // 8-byte-aligned backing storage (heap-allocated, reusable)
     cursor: usize, // next allocation offset
 }
 
 impl Nursery {
     pub fn new() -> Self {
         Self {
-            data: vec![0u8; NURSERY_SIZE],
+            data: vec![0u64; NURSERY_WORDS],
             cursor: 0,
         }
     }
@@ -51,7 +52,7 @@ impl Nursery {
         let aligned = (self.cursor + align - 1) & !(align - 1);
         let new_cursor = aligned + size;
         if new_cursor <= NURSERY_SIZE {
-            let ptr = unsafe { self.data.as_mut_ptr().add(aligned) };
+            let ptr = unsafe { (self.data.as_mut_ptr() as *mut u8).add(aligned) };
             self.cursor = new_cursor;
             Some(ptr)
         } else {
@@ -164,6 +165,12 @@ mod tests {
         let p = n.alloc(8, 8).unwrap();
         // Returned pointer must be 8-byte aligned
         assert_eq!(p as usize % 8, 0);
+    }
+
+    #[test]
+    fn nursery_base_is_8_byte_aligned() {
+        let n = Nursery::new();
+        assert_eq!(n.data.as_ptr() as usize % 8, 0);
     }
 
     #[test]

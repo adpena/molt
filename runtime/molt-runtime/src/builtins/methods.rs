@@ -41,6 +41,7 @@ pub(crate) fn builtin_func_bits(
     arity: u64,
 ) -> u64 {
     init_atomic_bits(_py, slot, || {
+        let _nursery_guard = crate::object::NurserySuspendGuard::new();
         let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -75,6 +76,7 @@ pub(crate) fn builtin_func_bits_with_defaults_tuple(
     defaults: &[u64],
 ) -> u64 {
     init_atomic_bits(_py, slot, || {
+        let _nursery_guard = crate::object::NurserySuspendGuard::new();
         let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -113,6 +115,7 @@ pub(crate) fn builtin_classmethod_bits(
     arity: u64,
 ) -> u64 {
     init_atomic_bits(_py, slot, || {
+        let _nursery_guard = crate::object::NurserySuspendGuard::new();
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
         if func_ptr.is_null() {
             return MoltObject::none().bits();

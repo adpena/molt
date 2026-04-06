@@ -6,10 +6,13 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_DIR = ROOT / "runtime/molt-runtime"
+ROOT_FUZZ_DIR = ROOT / "fuzz"
+RUNTIME_FUZZ_DIR = RUNTIME_DIR / "fuzz"
 
 SANITIZERS = {
     "asan": "address",
@@ -54,6 +57,20 @@ def _require_tool(name: str) -> None:
         raise SystemExit(f"{name} not found in PATH")
 
 
+def _fuzz_workspace_for_target(target: str) -> Path:
+    runtime_manifest = RUNTIME_FUZZ_DIR / "Cargo.toml"
+    if runtime_manifest.exists():
+        text = runtime_manifest.read_text(encoding="utf-8")
+        if f'name = "{target}"' in text:
+            return RUNTIME_FUZZ_DIR
+    root_manifest = ROOT_FUZZ_DIR / "Cargo.toml"
+    if root_manifest.exists():
+        text = root_manifest.read_text(encoding="utf-8")
+        if f'name = "{target}"' in text:
+            return ROOT_FUZZ_DIR
+    raise SystemExit(f"unknown fuzz target: {target}")
+
+
 def run_sanitizer(kind: str, log_dir: Path | None) -> None:
     sanitizer = SANITIZERS[kind]
     env = os.environ.copy()
@@ -79,6 +96,7 @@ def run_miri(log_dir: Path | None) -> None:
     miriflags = env.get("MIRIFLAGS", "")
     if "-Zmiri-disable-isolation" not in miriflags:
         env["MIRIFLAGS"] = f"{miriflags} -Zmiri-disable-isolation".strip()
+    env["TMPDIR"] = "/tmp" if os.name == "posix" else tempfile.gettempdir()
     log_path = log_dir / "runtime_miri.log" if log_dir else None
     _run(
         ["cargo", "+nightly", "miri", "test", "-p", "molt-runtime"],
@@ -92,7 +110,7 @@ def run_fuzz(target: str, runs: int, log_dir: Path | None) -> None:
     if runs > 0:
         cmd.extend(["--", f"-runs={runs}"])
     log_path = log_dir / f"runtime_fuzz_{target}.log" if log_dir else None
-    _run(cmd, cwd=RUNTIME_DIR, log_path=log_path)
+    _run(cmd, cwd=_fuzz_workspace_for_target(target), log_path=log_path)
 
 
 def run_clippy(log_dir: Path | None) -> None:
