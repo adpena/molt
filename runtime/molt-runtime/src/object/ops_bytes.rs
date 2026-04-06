@@ -618,10 +618,21 @@ macro_rules! bytes_slice_method_wrapper {
         ) -> u64 {
             let has_start = obj_from_bits(start_bits).is_none() as u64 ^ 1;
             let has_end = obj_from_bits(end_bits).is_none() as u64 ^ 1;
-            let start = if has_start != 0 { start_bits } else { MoltObject::from_int(0).bits() };
-            let end = if has_end != 0 { end_bits } else { MoltObject::from_int(0).bits() };
+            let start = if has_start != 0 {
+                start_bits
+            } else {
+                MoltObject::from_int(0).bits()
+            };
+            let end = if has_end != 0 {
+                end_bits
+            } else {
+                MoltObject::from_int(0).bits()
+            };
             $delegate(
-                hay_bits, needle_bits, start, end,
+                hay_bits,
+                needle_bits,
+                start,
+                end,
                 MoltObject::from_int(has_start as i64).bits(),
                 MoltObject::from_int(has_end as i64).bits(),
             )
@@ -2834,7 +2845,6 @@ pub(super) fn bytes_ascii_space(b: u8) -> bool {
 /// SIMD-accelerated check: are ALL bytes ASCII whitespace?
 /// Uses NEON/SSE2 to test 16 bytes at a time against the 6 ASCII
 /// whitespace characters (' ', '\t', '\n', '\r', 0x0b, 0x0c).
-
 #[inline]
 fn alloc_bytes_like_for_type(_py: &PyToken<'_>, type_id: u32, bytes: &[u8]) -> *mut u8 {
     if type_id == TYPE_ID_BYTEARRAY {

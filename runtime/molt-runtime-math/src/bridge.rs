@@ -104,6 +104,10 @@ unsafe extern "C" {
     fn __molt_math_float_result_bits(val: f64) -> u64;
 }
 
+/// # Safety
+///
+/// `ptr` must be a valid Molt runtime object pointer for the duration of this
+/// call.
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { __molt_math_object_type_id(ptr) }
 }
@@ -113,8 +117,9 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_math_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
@@ -126,8 +131,9 @@ pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_math_type_name(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         Cow::Owned(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         Cow::Borrowed("<unknown>")
@@ -138,6 +144,10 @@ pub fn is_truthy(_py: &PyToken, obj: MoltObject) -> bool {
     unsafe { __molt_math_is_truthy(obj.bits()) != 0 }
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live bytes-like Molt object for the duration of this
+/// call.
 pub unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
@@ -150,6 +160,10 @@ pub unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     }
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt string object for the duration of this
+/// call.
 pub unsafe fn string_bytes(ptr: *mut u8) -> &'static [u8] {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
@@ -159,7 +173,11 @@ pub unsafe fn string_bytes(ptr: *mut u8) -> &'static [u8] {
     }
 }
 
-pub fn string_len(ptr: *mut u8) -> usize {
+/// # Safety
+///
+/// `ptr` must refer to a live Molt string object for the duration of this
+/// call.
+pub unsafe fn string_len(ptr: *mut u8) -> usize {
     unsafe { __molt_math_string_len(ptr) }
 }
 
@@ -187,7 +205,11 @@ unsafe extern "C" {
     fn __molt_math_inc_ref_bits(bits: u64);
 }
 
-pub fn release_ptr(ptr: *mut u8) {
+/// # Safety
+///
+/// `ptr` must have been allocated by the paired runtime bridge and must not be
+/// used again after release.
+pub unsafe fn release_ptr(ptr: *mut u8) {
     unsafe { __molt_math_release_ptr(ptr) }
 }
 
@@ -270,8 +292,9 @@ pub fn to_bigint(obj: MoltObject) -> Option<num_bigint::BigInt> {
     if out_len == 0 {
         return Some(BigInt::from(0));
     }
-    let bytes =
-        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+    let bytes = unsafe {
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+    };
     Some(BigInt::from_bytes_be(sign, &bytes))
 }
 
@@ -296,7 +319,11 @@ pub fn bigint_ptr_from_bits(bits: u64) -> Option<*mut u8> {
 }
 
 /// Read the BigInt stored at a raw pointer. The bridge serializes it.
-pub fn bigint_ref(ptr: *mut u8) -> num_bigint::BigInt {
+/// # Safety
+///
+/// `ptr` must refer to a live Molt BigInt object for the duration of this
+/// call.
+pub unsafe fn bigint_ref(ptr: *mut u8) -> num_bigint::BigInt {
     use num_bigint::{BigInt, Sign};
     let mut out_sign: i32 = 0;
     let mut out_ptr: *const u8 = std::ptr::null();
@@ -310,8 +337,9 @@ pub fn bigint_ref(ptr: *mut u8) -> num_bigint::BigInt {
         0 => Sign::NoSign,
         _ => Sign::Plus,
     };
-    let bytes =
-        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+    let bytes = unsafe {
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+    };
     BigInt::from_bytes_be(sign, &bytes)
 }
 
@@ -331,8 +359,9 @@ pub fn bigint_from_f64_trunc(val: f64) -> num_bigint::BigInt {
         0 => Sign::NoSign,
         _ => Sign::Plus,
     };
-    let bytes =
-        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+    let bytes = unsafe {
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+    };
     BigInt::from_bytes_be(sign, &bytes)
 }
 
@@ -392,8 +421,9 @@ pub fn index_bigint_from_obj(
     if out_len == 0 {
         return Some(BigInt::from(0));
     }
-    let bytes =
-        unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+    let bytes = unsafe {
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+    };
     Some(BigInt::from_bytes_be(sign, &bytes))
 }
 
@@ -426,7 +456,15 @@ pub fn call_callable2(_py: &PyToken, call_bits: u64, arg0: u64, arg1: u64) -> u6
     unsafe { __molt_math_call_callable2(call_bits, arg0, arg1) }
 }
 
-pub fn attr_lookup_ptr_allow_missing(_py: &PyToken, ptr: *mut u8, name_bits: u64) -> Option<u64> {
+/// # Safety
+///
+/// `ptr` must refer to a live pointer-backed Molt object for the duration of
+/// this call.
+pub unsafe fn attr_lookup_ptr_allow_missing(
+    _py: &PyToken,
+    ptr: *mut u8,
+    name_bits: u64,
+) -> Option<u64> {
     let result = unsafe { __molt_math_attr_lookup_ptr_allow_missing(ptr, name_bits) };
     if result == 0 { None } else { Some(result) }
 }
@@ -440,8 +478,9 @@ pub fn class_name_for_error(type_bits: u64) -> String {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_math_class_name_for_error(type_bits, &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
         "<unknown>".to_string()
@@ -466,8 +505,9 @@ pub fn format_obj(_py: &PyToken, obj: MoltObject) -> String {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_math_format_obj(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
         "<?>".to_string()
@@ -479,8 +519,9 @@ pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> String {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_math_format_obj_str(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
         "<?>".to_string()
@@ -499,12 +540,20 @@ unsafe extern "C" {
     fn __molt_math_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
 }
 
+/// # Safety
+///
+/// `dict_ptr` must refer to a live Molt dictionary object for the duration of
+/// this call.
 pub unsafe fn dict_get_in_place(_py: &PyToken, dict_ptr: *mut u8, key_bits: u64) -> Option<u64> {
     let mut out: u64 = 0;
     let ok = unsafe { __molt_math_dict_get_in_place(dict_ptr, key_bits, &mut out) };
     if ok != 0 { Some(out) } else { None }
 }
 
+/// # Safety
+///
+/// `dict_ptr` must refer to a live Molt dictionary object for the duration of
+/// this call.
 pub unsafe fn dict_set_in_place(
     _py: &PyToken,
     dict_ptr: *mut u8,
@@ -514,10 +563,16 @@ pub unsafe fn dict_set_in_place(
     unsafe { __molt_math_dict_set_in_place(dict_ptr, key_bits, val_bits) != 0 }
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt list object for the duration of this call.
 pub unsafe fn list_len(ptr: *mut u8) -> usize {
     unsafe { __molt_math_list_len(ptr) }
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
 pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
     unsafe { &*__molt_math_seq_vec_ptr(ptr) }
 }
@@ -564,15 +619,25 @@ unsafe extern "C" {
     fn __molt_math_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -> i32;
 }
 
-pub fn fill_os_random(buf: &mut [u8]) -> Result<(), ()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FillOsRandomError;
+
+pub fn fill_os_random(buf: &mut [u8]) -> Result<(), FillOsRandomError> {
     let ok = unsafe { __molt_math_fill_os_random(buf.as_mut_ptr(), buf.len()) };
-    if ok != 0 { Ok(()) } else { Err(()) }
+    if ok != 0 {
+        Ok(())
+    } else {
+        Err(FillOsRandomError)
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Mutable container access (for shuffle)
 // ---------------------------------------------------------------------------
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
 pub unsafe fn seq_vec(ptr: *mut u8) -> &'static mut Vec<u64> {
     unsafe { &mut *__molt_math_seq_vec_ptr(ptr) }
 }

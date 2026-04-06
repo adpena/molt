@@ -125,10 +125,10 @@ pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
     }
     // Try tp_hash first.
     let tp = unsafe { (*op).ob_type };
-    if !tp.is_null() {
-        if let Some(hash_fn) = unsafe { (*tp).tp_hash } {
-            return unsafe { hash_fn(op) };
-        }
+    if !tp.is_null()
+        && let Some(hash_fn) = unsafe { (*tp).tp_hash }
+    {
+        return unsafe { hash_fn(op) };
     }
     op as isize // pointer-based hash as last resort
 }
@@ -213,14 +213,14 @@ pub unsafe extern "C" fn PyObject_RichCompare(
     // Try tp_richcompare on v's type first, then w's type (reflected).
     if !v.is_null() {
         let tp = unsafe { (*v).ob_type };
-        if !tp.is_null() {
-            if let Some(richcmp) = unsafe { (*tp).tp_richcompare } {
-                let result = unsafe { richcmp(v, w, op) };
-                if !result.is_null()
-                    && !std::ptr::eq(result, &raw mut crate::abi_types::Py_NotImplementedSentinel)
-                {
-                    return result;
-                }
+        if !tp.is_null()
+            && let Some(richcmp) = unsafe { (*tp).tp_richcompare }
+        {
+            let result = unsafe { richcmp(v, w, op) };
+            if !result.is_null()
+                && !std::ptr::eq(result, &raw mut crate::abi_types::Py_NotImplementedSentinel)
+            {
+                return result;
             }
         }
     }
@@ -252,9 +252,9 @@ pub unsafe extern "C" fn PyObject_RichCompareBool(
     // Truthy check: Py_True → 1, Py_False → 0, Py_None → 0
     if std::ptr::eq(result, &raw mut crate::abi_types::Py_True) {
         1
-    } else if std::ptr::eq(result, &raw mut crate::abi_types::Py_False) {
-        0
-    } else if std::ptr::eq(result, &raw mut crate::abi_types::Py_None) {
+    } else if std::ptr::eq(result, &raw mut crate::abi_types::Py_False)
+        || std::ptr::eq(result, &raw mut crate::abi_types::Py_None)
+    {
         0
     } else {
         // Non-null, non-sentinel result — treat as truthy.

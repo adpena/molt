@@ -91,14 +91,19 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_zoneinfo_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
     }
 }
 
+/// # Safety
+///
+/// `ptr` must be a valid Molt runtime object pointer for the duration of this
+/// call.
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { __molt_zoneinfo_object_type_id(ptr) }
 }
@@ -112,6 +117,9 @@ unsafe extern "C" {
     fn __molt_zoneinfo_seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64>;
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
 pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
     unsafe { &*__molt_zoneinfo_seq_vec_ptr(ptr) }
 }

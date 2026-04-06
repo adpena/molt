@@ -3,10 +3,7 @@
 
 #![allow(non_snake_case)]
 
-use molt_cpython_abi::abi_types::{
-    Py_False, Py_None, Py_NotImplementedSentinel, Py_True, PyObject, PyTypeObject,
-};
-use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+use molt_cpython_abi::abi_types::Py_NotImplementedSentinel;
 use std::ptr;
 
 fn init() {
@@ -178,11 +175,8 @@ fn test_callable_check_on_int_returns_zero() {
 // ---------------------------------------------------------------------------
 
 const PY_LT: i32 = 0;
-const PY_LE: i32 = 1;
 const PY_EQ: i32 = 2;
 const PY_NE: i32 = 3;
-const PY_GT: i32 = 4;
-const PY_GE: i32 = 5;
 
 #[test]
 fn test_richcompare_same_object_eq() {
@@ -216,9 +210,7 @@ fn test_richcompare_returns_not_implemented_for_lt() {
     let b = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
     let result = unsafe { molt_cpython_abi::api::typeobj::PyObject_RichCompare(a, b, PY_LT) };
     // Without tp_richcompare, returns NotImplemented sentinel
-    assert!(std::ptr::eq(result, unsafe {
-        &raw mut Py_NotImplementedSentinel
-    }));
+    assert!(std::ptr::eq(result, &raw mut Py_NotImplementedSentinel));
     unsafe {
         molt_cpython_abi::api::refcount::Py_DECREF(a);
         molt_cpython_abi::api::refcount::Py_DECREF(b);
@@ -237,9 +229,7 @@ fn test_richcompare_null_is_safe() {
         )
     };
     // Returns NotImplemented sentinel
-    assert!(std::ptr::eq(result, unsafe {
-        &raw mut Py_NotImplementedSentinel
-    }));
+    assert!(std::ptr::eq(result, &raw mut Py_NotImplementedSentinel));
 }
 
 #[test]

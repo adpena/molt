@@ -93,7 +93,7 @@ fn test_pylong_from_unsigned_long() {
 #[test]
 fn test_pyfloat_from_double_returns_non_null() {
     init();
-    let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(3.14) };
+    let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(PI) };
     assert!(!py.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
 }
@@ -101,9 +101,9 @@ fn test_pyfloat_from_double_returns_non_null() {
 #[test]
 fn test_pyfloat_roundtrip() {
     init();
-    let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(2.718) };
+    let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(E) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyFloat_AsDouble(py) };
-    assert!((val - 2.718).abs() < 1e-10);
+    assert!((val - E).abs() < 1e-10);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
 }
 
@@ -283,3 +283,4 @@ fn test_pylong_aslong_on_false_returns_zero() {
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(py_false) };
     assert_eq!(val, 0);
 }
+use std::f64::consts::{E, PI};

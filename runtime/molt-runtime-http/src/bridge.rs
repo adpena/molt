@@ -46,7 +46,11 @@ pub fn molt_exception_last() -> u64 {
     unsafe { __molt_http_molt_exception_last() }
 }
 
-pub fn exception_kind_bits(ptr: *mut u8) -> u64 {
+/// # Safety
+///
+/// `ptr` must refer to a live Molt exception object for the duration of this
+/// call.
+pub unsafe fn exception_kind_bits(ptr: *mut u8) -> u64 {
     unsafe { __molt_http_exception_kind_bits(ptr) }
 }
 
@@ -133,6 +137,10 @@ unsafe extern "C" {
     fn __molt_http_maybe_ptr_from_bits(bits: u64) -> *mut u8;
 }
 
+/// # Safety
+///
+/// `ptr` must be a valid Molt runtime object pointer for the duration of this
+/// call.
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { __molt_http_object_type_id(ptr) }
 }
@@ -142,8 +150,9 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_http_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
@@ -209,10 +218,17 @@ unsafe extern "C" {
     fn __molt_http_molt_dict_new(initial_capacity: usize) -> u64;
 }
 
+/// # Safety
+///
+/// `ptr` must refer to a live Molt sequence object backed by `Vec<u64>`.
 pub unsafe fn seq_vec_ref(ptr: *mut u8) -> &'static Vec<u64> {
     unsafe { &*__molt_http_seq_vec_ptr(ptr) }
 }
 
+/// # Safety
+///
+/// `dict_ptr` must refer to a live Molt dictionary object for the duration of
+/// this call.
 pub unsafe fn dict_get_in_place(
     _py: &CoreGilToken,
     dict_ptr: *mut u8,
@@ -315,8 +331,9 @@ pub fn format_obj_str(_py: &CoreGilToken, obj: MoltObject) -> String {
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_http_format_obj_str(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
         String::new()
@@ -408,8 +425,9 @@ pub fn env_state_get(key: &str) -> Option<String> {
     let ok =
         unsafe { __molt_http_env_state_get(key.as_ptr(), key.len(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed =
-            unsafe { Box::from_raw(std::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len)) };
+        let boxed = unsafe {
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
         None
@@ -472,6 +490,12 @@ impl GilReleaseGuard {
         Self {
             handle: unsafe { __molt_http_gil_release_new() },
         }
+    }
+}
+
+impl Default for GilReleaseGuard {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

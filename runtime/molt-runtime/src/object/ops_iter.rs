@@ -611,8 +611,8 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                 // matching CPython's types.GenericAlias.__iter__ semantics.
                 if type_id == TYPE_ID_GENERIC_ALIAS {
                     let args_bits = generic_alias_args_bits(ptr);
-                    if let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() {
-                        if object_type_id(args_ptr) == TYPE_ID_TUPLE {
+                    if let Some(args_ptr) = obj_from_bits(args_bits).as_ptr()
+                        && object_type_id(args_ptr) == TYPE_ID_TUPLE {
                             let total = std::mem::size_of::<MoltHeader>()
                                 + std::mem::size_of::<u64>()
                                 + std::mem::size_of::<usize>()
@@ -627,7 +627,6 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                             iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
                             return MoltObject::from_ptr(iter_ptr).bits();
                         }
-                    }
                 }
                 if type_id == TYPE_ID_LIST
                     || type_id == TYPE_ID_LIST_INT
@@ -1664,8 +1663,12 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
 ///
 /// Fast-paths list, tuple, and i64-range iterators with zero allocation.
 /// Everything else falls back to `molt_iter_next` + destructure.
+///
+/// # Safety
+///
+/// `value_out` must point to writable storage for one `u64`.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) -> u64 {
+pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let done_true = MoltObject::from_bool(true).bits();
         let done_false = MoltObject::from_bool(false).bits();
@@ -1736,8 +1739,8 @@ pub extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) ->
                     }
 
                     // ── RANGE i64 fast path (zero alloc) ─────────
-                    if target_type == TYPE_ID_RANGE {
-                        if let Some((start_i64, stop_i64, step_i64)) =
+                    if target_type == TYPE_ID_RANGE
+                        && let Some((start_i64, stop_i64, step_i64)) =
                             range_components_i64(target_ptr)
                         {
                             if idx == ITER_EXHAUSTED {
@@ -1758,7 +1761,6 @@ pub extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) ->
                             return done_true;
                         }
                         // BigInt range — fall through to slow path.
-                    }
                 }
             }
 

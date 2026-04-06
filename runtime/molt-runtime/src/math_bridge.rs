@@ -180,7 +180,9 @@ pub extern "C" fn __molt_math_as_float_extended(bits: u64, out: *mut f64) -> i32
     let obj = obj_from_bits(bits);
     match as_float_extended(obj) {
         Some(f) => {
-            unsafe { *out = f; }
+            unsafe {
+                *out = f;
+            }
             1
         }
         None => 0,
@@ -191,9 +193,7 @@ pub extern "C" fn __molt_math_as_float_extended(bits: u64, out: *mut f64) -> i32
 /// inline; NaN values are heap-allocated.
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_float_result_bits(val: f64) -> u64 {
-    crate::with_gil_entry!(_py, {
-        crate::object::ops::float_result_bits(_py, val)
-    })
+    crate::with_gil_entry!(_py, { crate::object::ops::float_result_bits(_py, val) })
 }
 
 // ---------------------------------------------------------------------------
@@ -462,10 +462,9 @@ pub extern "C" fn __molt_math_call_callable2(call_bits: u64, arg0: u64, arg1: u6
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        match unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) } {
-            Some(bits) => bits,
-            None => 0,
-        }
+        let bits: u64 =
+            unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) }.unwrap_or_default();
+        bits
     })
 }
 

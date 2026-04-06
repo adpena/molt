@@ -142,14 +142,13 @@ fn extension_candidate_paths(name: &str) -> Vec<std::path::PathBuf> {
             "import site; print('\\n'.join(site.getsitepackages()))",
         ])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                let dir = PathBuf::from(line.trim());
-                for suffix in cpython_so_suffixes(name) {
-                    out.push(dir.join(name).join(&suffix));
-                    out.push(dir.join(&suffix));
-                }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let dir = PathBuf::from(line.trim());
+            for suffix in cpython_so_suffixes(name) {
+                out.push(dir.join(name).join(&suffix));
+                out.push(dir.join(&suffix));
             }
         }
     }

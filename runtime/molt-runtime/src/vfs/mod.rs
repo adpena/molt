@@ -222,15 +222,15 @@ fn read_dir_recursive(base: &str) -> Vec<(String, Vec<u8>)> {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path.to_string_lossy().into_owned());
-            } else if path.is_file() {
-                if let Ok(data) = std::fs::read(&path) {
-                    let rel = path
-                        .strip_prefix(base_path)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .into_owned();
-                    result.push((rel, data));
-                }
+            } else if path.is_file()
+                && let Ok(data) = std::fs::read(&path)
+            {
+                let rel = path
+                    .strip_prefix(base_path)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                result.push((rel, data));
             }
         }
     }
@@ -249,15 +249,22 @@ fn read_dir_recursive(base: &str) -> Vec<(String, Vec<u8>)> {
 // ---------------------------------------------------------------------------
 use std::sync::Mutex;
 
+type InjectedBundleEntries = Vec<(String, Vec<u8>)>;
+
 /// Global slot for bundle data injected by the host before `_start`.
 /// On Cloudflare Workers, worker.js writes the tar/entry data here
 /// via `molt_vfs_inject_bundle` before calling the WASM entry point.
-static INJECTED_BUNDLE: Mutex<Option<Vec<(String, Vec<u8>)>>> = Mutex::new(None);
+static INJECTED_BUNDLE: Mutex<Option<InjectedBundleEntries>> = Mutex::new(None);
 
 /// Host calls this to inject bundle entries before `_start`.
 /// Each entry is (path, content). Called from JS or the WASM host.
+///
+/// # Safety
+///
+/// `path_ptr` must reference `path_len` bytes. When `data_len > 0`,
+/// `data_ptr` must reference `data_len` bytes.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_vfs_inject_entry(
+pub unsafe extern "C" fn molt_vfs_inject_entry(
     path_ptr: *const u8,
     path_len: usize,
     data_ptr: *const u8,
@@ -297,18 +304,18 @@ pub extern "C" fn molt_vfs_inject_finish() -> i32 {
 pub(crate) fn load_vfs() -> Option<VfsState> {
     // Check for injected bundle first (WASM path)
     let injected = INJECTED_BUNDLE.lock().unwrap().take();
-    if let Some(entries) = injected {
-        if !entries.is_empty() {
-            let mut mt = MountTable::new();
-            mt.add_mount("/bundle", Arc::new(bundle::BundleFs::from_entries(entries)));
-            let quota_mb = std::env::var("MOLT_VFS_TMP_QUOTA_MB")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(64);
-            mt.add_mount("/tmp", Arc::new(tmp::TmpFs::new(quota_mb)));
-            mt.add_mount("/dev", Arc::new(dev::DevFs::new()));
-            return Some(VfsState::from_table(mt));
-        }
+    if let Some(entries) = injected
+        && !entries.is_empty()
+    {
+        let mut mt = MountTable::new();
+        mt.add_mount("/bundle", Arc::new(bundle::BundleFs::from_entries(entries)));
+        let quota_mb = std::env::var("MOLT_VFS_TMP_QUOTA_MB")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(64);
+        mt.add_mount("/tmp", Arc::new(tmp::TmpFs::new(quota_mb)));
+        mt.add_mount("/dev", Arc::new(dev::DevFs::new()));
+        return Some(VfsState::from_table(mt));
     }
 
     // Native path: load from MOLT_VFS_BUNDLE env var
@@ -323,10 +330,10 @@ pub(crate) fn load_vfs() -> Option<VfsState> {
     } else if bundle_path.ends_with(".tar") {
         #[cfg(feature = "vfs_bundle_tar")]
         {
-            if let Ok(tar_bytes) = std::fs::read(&bundle_path) {
-                if let Ok(b) = bundle::BundleFs::from_tar(&tar_bytes) {
-                    mt.add_mount("/bundle", Arc::new(b));
-                }
+            if let Ok(tar_bytes) = std::fs::read(&bundle_path)
+                && let Ok(b) = bundle::BundleFs::from_tar(&tar_bytes)
+            {
+                mt.add_mount("/bundle", Arc::new(b));
             }
         }
     }

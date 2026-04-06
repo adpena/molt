@@ -11,6 +11,9 @@ license = "Apache-2.0"
 criterion = "0.8"
 proptest = "1"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [[bench]]
 name = "ptr_registry"
 harness = false

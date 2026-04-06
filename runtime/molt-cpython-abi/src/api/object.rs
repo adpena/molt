@@ -23,10 +23,10 @@ pub unsafe extern "C" fn PyObject_GetAttr(
         return ptr::null_mut();
     }
     let tp = unsafe { (*o).ob_type };
-    if !tp.is_null() {
-        if let Some(getattro) = unsafe { (*tp).tp_getattro } {
-            return unsafe { getattro(o, attr_name) };
-        }
+    if !tp.is_null()
+        && let Some(getattro) = unsafe { (*tp).tp_getattro }
+    {
+        return unsafe { getattro(o, attr_name) };
     }
     ptr::null_mut()
 }
@@ -68,10 +68,10 @@ pub unsafe extern "C" fn PyObject_SetAttr(
         return -1;
     }
     let tp = unsafe { (*o).ob_type };
-    if !tp.is_null() {
-        if let Some(setattro) = unsafe { (*tp).tp_setattro } {
-            return unsafe { setattro(o, attr_name, v) };
-        }
+    if !tp.is_null()
+        && let Some(setattro) = unsafe { (*tp).tp_setattro }
+    {
+        return unsafe { setattro(o, attr_name, v) };
     }
     -1
 }
@@ -423,10 +423,10 @@ pub unsafe extern "C" fn PyObject_GetIter(o: *mut PyObject) -> *mut PyObject {
         return ptr::null_mut();
     }
     let tp = unsafe { (*o).ob_type };
-    if !tp.is_null() {
-        if let Some(iter_fn) = unsafe { (*tp).tp_iter } {
-            return unsafe { iter_fn(o) };
-        }
+    if !tp.is_null()
+        && let Some(iter_fn) = unsafe { (*tp).tp_iter }
+    {
+        return unsafe { iter_fn(o) };
     }
     // For sequences, return the object itself as a pseudo-iterator.
     // Real iteration would require a proper iterator wrapper.
@@ -439,10 +439,10 @@ pub unsafe extern "C" fn PyIter_Next(iter: *mut PyObject) -> *mut PyObject {
         return ptr::null_mut();
     }
     let tp = unsafe { (*iter).ob_type };
-    if !tp.is_null() {
-        if let Some(iternext) = unsafe { (*tp).tp_iternext } {
-            return unsafe { iternext(iter) };
-        }
+    if !tp.is_null()
+        && let Some(iternext) = unsafe { (*tp).tp_iternext }
+    {
+        return unsafe { iternext(iter) };
     }
     ptr::null_mut()
 }
@@ -468,10 +468,10 @@ pub unsafe extern "C" fn PyObject_Call(
         return ptr::null_mut();
     }
     let tp = unsafe { (*callable).ob_type };
-    if !tp.is_null() {
-        if let Some(call) = unsafe { (*tp).tp_call } {
-            return unsafe { call(callable, args, kwargs) };
-        }
+    if !tp.is_null()
+        && let Some(call) = unsafe { (*tp).tp_call }
+    {
+        return unsafe { call(callable, args, kwargs) };
     }
     ptr::null_mut()
 }

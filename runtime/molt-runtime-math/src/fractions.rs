@@ -651,7 +651,7 @@ pub extern "C" fn molt_fraction_drop(a_bits: u64) -> u64 {
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
-        release_ptr(ptr);
+        unsafe { release_ptr(ptr) };
         // SAFETY: pointer is owned by this runtime.
         unsafe {
             drop(Box::from_raw(ptr as *mut FractionHandle));

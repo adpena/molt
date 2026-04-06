@@ -523,7 +523,7 @@ pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> 
         } else if let Some(ptr) = other_obj.as_ptr() {
             let type_id = unsafe { object_type_id(ptr) };
             if type_id == TYPE_ID_DICT {
-                let pairs = dict_order_clone(_py, ptr);
+                let pairs = unsafe { dict_order_clone(_py, ptr) };
                 // pairs is flattened [k0, v0, k1, v1, ...]
                 let kv_pairs: Vec<(u64, u64)> =
                     pairs.chunks_exact(2).map(|c| (c[0], c[1])).collect();
@@ -818,7 +818,7 @@ pub extern "C" fn molt_chainmap_len(handle_bits: u64) -> u64 {
             if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
                 continue;
             }
-            let order = dict_order_clone(_py, dict_ptr);
+            let order = unsafe { dict_order_clone(_py, dict_ptr) };
             let mut i = 0;
             while i + 1 < order.len() {
                 seen.insert(order[i]);
@@ -852,7 +852,7 @@ pub extern "C" fn molt_chainmap_keys(handle_bits: u64) -> u64 {
             if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
                 continue;
             }
-            let order = dict_order_clone(_py, dict_ptr);
+            let order = unsafe { dict_order_clone(_py, dict_ptr) };
             let mut i = 0;
             while i + 1 < order.len() {
                 let k = order[i];
