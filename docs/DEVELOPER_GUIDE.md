@@ -109,6 +109,7 @@ ad hoc standalone scripts.
 
 Wired today:
 
+- `molt debug repro`
 - `molt debug ir`
 - `molt debug verify`
 - `molt debug diff`
@@ -119,7 +120,6 @@ Wired today:
 Under active build-out:
 
 - `molt debug trace`
-- `molt debug repro`
 
 Rules:
 

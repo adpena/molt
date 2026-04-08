@@ -123,15 +123,51 @@ def normalize_failure_oracle(oracle: str | dict[str, Any]) -> dict[str, Any]:
     raise ValueError(f"unsupported oracle kind: {kind}")
 
 
+def _source_payload_from_manifest(payload: dict[str, Any], manifest_path: Path) -> tuple[Path, str]:
+    data = payload.get("data", {})
+    if not isinstance(data, dict):
+        raise ValueError(f"{manifest_path} is missing a debug data payload")
+
+    source_path_raw = data.get("source_path")
+    source_text_raw = data.get("source_text")
+    if isinstance(source_path_raw, str) and isinstance(source_text_raw, str):
+        return Path(source_path_raw), source_text_raw
+
+    input_payload = data.get("input", {})
+    if isinstance(input_payload, dict):
+        nested_source_path = input_payload.get("source_path")
+        nested_source_text = input_payload.get("source_text")
+        if isinstance(nested_source_path, str) and isinstance(nested_source_text, str):
+            return Path(nested_source_path), nested_source_text
+        if isinstance(nested_source_path, str):
+            source_path = Path(nested_source_path)
+        else:
+            source_path = None
+    else:
+        source_path = None
+
+    artifacts = data.get("artifacts", {})
+    if isinstance(artifacts, dict):
+        reduced_source = artifacts.get("reduced_source")
+        if isinstance(reduced_source, str):
+            reduced_path = Path(reduced_source)
+            if reduced_path.is_file():
+                return (
+                    source_path or reduced_path,
+                    reduced_path.read_text(encoding="utf-8"),
+                )
+
+    raise ValueError(f"{manifest_path} does not retain source_path/source_text for replay")
+
+
 def load_reduction_input(path: Path) -> ReductionInput:
     if path.suffix == ".json":
         payload = json.loads(path.read_text(encoding="utf-8"))
-        data = payload.get("data", {})
-        source_path = Path(data["source_path"])
+        source_path, source_text = _source_payload_from_manifest(payload, path)
         return ReductionInput(
             input_kind="manifest",
             source_path=source_path,
-            source_text=str(data["source_text"]),
+            source_text=source_text,
             manifest_path=path,
             original_manifest=payload,
         )
@@ -152,9 +188,6 @@ def _manifest_value_at_path(manifest: dict[str, Any], path: str) -> Any:
 
 
 def oracle_matches(oracle: dict[str, Any], evaluation: dict[str, Any]) -> bool:
-    if "matched" in evaluation:
-        return bool(evaluation["matched"])
-
     kind = oracle["kind"]
     match = oracle["match"]
     if kind == "process_exit":
@@ -214,6 +247,8 @@ def _reduce_lines(
 ) -> tuple[list[str], dict[str, Any]]:
     current_lines = list(lines)
     current_eval = evaluator("".join(current_lines))
+    if current_eval.get("timed_out"):
+        raise ValueError("initial evaluation timed out")
     if not oracle_matches(oracle, current_eval):
         raise ValueError("initial source does not satisfy the oracle")
 
@@ -277,6 +312,8 @@ def build_reduction_payload(
     original_lines = len(result.original_source.split("\n")) if result.original_source else 0
     reduced_lines = len(result.reduced_source.split("\n")) if result.reduced_source else 0
     return {
+        "source_path": str(result.reduction_input.source_path),
+        "source_text": result.reduced_source,
         "input": {
             "kind": result.reduction_input.input_kind,
             "source_path": str(result.reduction_input.source_path),
