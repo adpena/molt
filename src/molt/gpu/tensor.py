@@ -15,7 +15,6 @@ Usage:
 
 import math
 import struct
-import time
 from . import Buffer, alloc, to_device, from_device
 
 
@@ -625,7 +624,10 @@ def randn(*shape, seed=None) -> Tensor:
     size = _product(shape)
 
     # Simple LCG PRNG (no external deps)
-    seed = seed if seed is not None else int(time.time() * 1000) % (2**31)
+    if seed is None:
+        import time as _time
+
+        seed = int(_time.time() * 1000) % (2**31)
     state = seed
     TWO_PI = 2.0 * math.pi
 
@@ -654,7 +656,10 @@ def rand(*shape, seed=None) -> Tensor:
         shape = tuple(shape[0])
     size = _product(shape)
 
-    seed = seed if seed is not None else int(time.time() * 1000) % (2**31)
+    if seed is None:
+        import time as _time
+
+        seed = int(_time.time() * 1000) % (2**31)
     state = seed
     result = []
     for _ in range(size):

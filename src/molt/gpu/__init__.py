@@ -19,15 +19,16 @@ Usage:
     result = gpu.from_device(c_gpu)
 """
 
-from typing import TypeVar, Generic, List, Optional
+from __future__ import annotations
+
 import struct
 import array
 
-T = TypeVar('T')
-
-
-class Buffer(Generic[T]):
+class Buffer:
     """GPU buffer handle. Created via gpu.to_device() or gpu.alloc()."""
+
+    def __class_getitem__(cls, _item):
+        return cls
 
     def __init__(self, data: bytes, element_type: type, size: int):
         self._data = data

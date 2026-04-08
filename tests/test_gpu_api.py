@@ -18,6 +18,13 @@ def test_core_imports():
     assert callable(alloc)
 
 
+def test_buffer_generic_subscription_is_runtime_stable():
+    from molt.gpu import Buffer
+
+    assert Buffer[float] is Buffer
+    assert Buffer[int] is Buffer
+
+
 def test_buffer_roundtrip_float():
     from molt.gpu import to_device, from_device
     data = [1.0, 2.0, 3.0, 4.0]
@@ -297,7 +304,11 @@ def test_submodule_hub():
 
 
 def test_submodule_interop():
-    from molt.gpu.interop import load_safetensors, load_numpy
+    from molt.gpu.interop import load_safetensors
+
+
+def test_submodule_numpy_io():
+    from molt.gpu.numpy_io import load_numpy, load_npz
 
 
 def test_submodule_fusion():
