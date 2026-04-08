@@ -470,6 +470,10 @@ Required initial assertions:
 - trap on wrong arg container type
 - trap on stale exception state entering success-only edges
 
+These switches are low-level assertion knobs owned by the shared debug core and
+surfaced through the canonical debug commands. They do not define a second
+public interface beside `molt debug`.
+
 These must integrate with `molt debug verify` and `molt debug trace` rather
 than living as isolated ad hoc runtime checks.
 
@@ -498,6 +502,10 @@ The first required high-value trace set is:
 - exception flow traces
 - per-function compile traces
 - per-pass timing traces
+
+These env vars are low-level runtime/backend switches surfaced by the canonical
+`molt debug trace` flow. They do not define a separate public authority beside
+the CLI.
 
 ### 10.2 Required semantics
 
