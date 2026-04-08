@@ -46,6 +46,12 @@ def _to_abs(path_str: str, *, cwd: Path) -> Path:
     return cwd / path
 
 
+def _write_source(tmp_path: Path) -> Path:
+    source_path = tmp_path / "sample_debug_cli_input.py"
+    source_path.write_text("print('debug-cli')\n", encoding="utf-8")
+    return source_path
+
+
 def test_debug_help_lists_canonical_subcommands(tmp_path: Path) -> None:
     res = _run_cli(["debug", "--help"], cwd=tmp_path)
     assert res.returncode == 0, res.stderr
@@ -64,7 +70,8 @@ def test_debug_ir_and_verify_help_exist(tmp_path: Path) -> None:
 
 
 def test_debug_command_writes_manifest_under_tmp_debug_by_default(tmp_path: Path) -> None:
-    res = _run_cli(["debug", "ir", "--format", "json"], cwd=tmp_path)
+    source_path = _write_source(tmp_path)
+    res = _run_cli(["debug", "ir", str(source_path), "--format", "json"], cwd=tmp_path)
     assert res.returncode == 0, res.stderr
     payload = json.loads(res.stdout)
 

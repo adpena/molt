@@ -67,6 +67,8 @@ from molt.debug import (
     render_debug_text_summary,
     write_debug_manifest,
 )
+from molt.debug.ir import capture_ir_snapshots, render_ir_json, render_ir_text
+from molt.debug.verify import build_verify_result_payload, run_default_verify_checks
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import (
     TypeFacts,
@@ -28995,6 +28997,109 @@ def _add_debug_shared_selector_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _emit_debug_payload(
+    *,
+    payload: dict[str, Any],
+    format_name: str,
+    retained_output: Path | None,
+    rendered_text: str | None = None,
+) -> int:
+    write_debug_manifest(Path(payload["manifest_path"]), payload)
+    if format_name == "json":
+        summary = render_debug_json_summary(payload)
+    else:
+        summary = rendered_text if rendered_text is not None else render_debug_text_summary(payload)
+    if retained_output is not None:
+        retained_output.parent.mkdir(parents=True, exist_ok=True)
+        retained_output.write_text(summary, encoding="utf-8")
+    print(summary, end="")
+    return 0
+
+
+def _handle_debug_ir(
+    args: argparse.Namespace,
+    *,
+    subcommand: DebugSubcommand,
+    paths: Any,
+    selectors: dict[str, Any],
+) -> int:
+    source_path = Path(args.source)
+    if not source_path.is_file():
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message=f"{source_path} is not a file",
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+
+    source = source_path.read_text(encoding="utf-8")
+    result = capture_ir_snapshots(
+        source,
+        source_path=source_path,
+        stage=args.stage,
+        function_name=args.function,
+        module_name=args.module,
+        pass_name=args.pass_name,
+    )
+    payload = normalize_debug_payload(
+        subcommand=subcommand,
+        status=DebugStatus.OK,
+        run_id=paths.run_id,
+        artifact_root=paths.artifact_root,
+        manifest_path=paths.manifest_path,
+        selectors=selectors,
+        retained_output=paths.retained_output,
+        data=result,
+    )
+    rendered_text = None
+    if args.format != "json":
+        rendered_text = render_ir_text(result)
+    return _emit_debug_payload(
+        payload=payload,
+        format_name=args.format,
+        retained_output=paths.retained_output,
+        rendered_text=rendered_text,
+    )
+
+
+def _handle_debug_verify(
+    args: argparse.Namespace,
+    *,
+    subcommand: DebugSubcommand,
+    paths: Any,
+    selectors: dict[str, Any],
+) -> int:
+    checks, errors = run_default_verify_checks()
+    result_payload = build_verify_result_payload(checks)
+    payload = normalize_debug_payload(
+        subcommand=subcommand,
+        status=DebugStatus.OK if not errors else DebugStatus.ERROR,
+        run_id=paths.run_id,
+        artifact_root=paths.artifact_root,
+        manifest_path=paths.manifest_path,
+        selectors=selectors,
+        retained_output=paths.retained_output,
+        failure_class=DebugFailureClass.INTERNAL_ERROR if errors else None,
+        message=None if not errors else "verification checks reported errors",
+        data=result_payload,
+    )
+    return _emit_debug_payload(
+        payload=payload,
+        format_name=args.format,
+        retained_output=paths.retained_output,
+    )
+
+
 def _handle_debug_command(args: argparse.Namespace) -> int:
     subcommand = DebugSubcommand(args.debug_subcommand)
     paths = allocate_debug_paths(
@@ -29010,9 +29115,14 @@ def _handle_debug_command(args: argparse.Namespace) -> int:
             "pass": args.pass_name,
             "backend": args.backend,
             "profile": args.profile,
+            "stage": getattr(args, "stage", None),
         }.items()
         if value is not None
     }
+    if subcommand == DebugSubcommand.IR:
+        return _handle_debug_ir(args, subcommand=subcommand, paths=paths, selectors=selectors)
+    if subcommand == DebugSubcommand.VERIFY:
+        return _handle_debug_verify(args, subcommand=subcommand, paths=paths, selectors=selectors)
     payload = normalize_debug_payload(
         subcommand=subcommand,
         status=DebugStatus.UNSUPPORTED,
@@ -29024,16 +29134,11 @@ def _handle_debug_command(args: argparse.Namespace) -> int:
         message=f"molt debug {subcommand.value} is not yet wired",
         retained_output=paths.retained_output,
     )
-    write_debug_manifest(paths.manifest_path, payload)
-    if args.format == "json":
-        summary = render_debug_json_summary(payload)
-    else:
-        summary = render_debug_text_summary(payload)
-    if paths.retained_output is not None:
-        paths.retained_output.parent.mkdir(parents=True, exist_ok=True)
-        paths.retained_output.write_text(summary, encoding="utf-8")
-    print(summary, end="")
-    return 0
+    return _emit_debug_payload(
+        payload=payload,
+        format_name=args.format,
+        retained_output=paths.retained_output,
+    )
 
 
 def main() -> int:
@@ -29529,6 +29634,14 @@ def main() -> int:
             help=f"Run canonical `{debug_subcommand.value}` debug flow.",
         )
         _add_debug_shared_selector_args(subparser)
+        if debug_subcommand == DebugSubcommand.IR:
+            subparser.add_argument("source", help="Python source file to compile.")
+            subparser.add_argument(
+                "--stage",
+                choices=["pre-midend", "post-midend", "all"],
+                default="all",
+                help="Which compilation stage(s) to dump.",
+            )
 
     check_parser = subparsers.add_parser(
         "check",
