@@ -29249,6 +29249,11 @@ def _handle_debug_command(args: argparse.Namespace) -> int:
         return _handle_debug_diff(args, subcommand=subcommand, paths=paths, selectors=selectors)
     if subcommand == DebugSubcommand.PERF:
         return _handle_debug_perf(args, subcommand=subcommand, paths=paths, selectors=selectors)
+    pending_data: dict[str, Any] | None = None
+    if hasattr(args, "source"):
+        pending_data = {"source": str(Path(args.source))}
+    elif hasattr(args, "input_path"):
+        pending_data = {"input_path": str(Path(args.input_path))}
     payload = normalize_debug_payload(
         subcommand=subcommand,
         status=DebugStatus.UNSUPPORTED,
@@ -29259,6 +29264,7 @@ def _handle_debug_command(args: argparse.Namespace) -> int:
         failure_class=DebugFailureClass.NOT_YET_WIRED,
         message=f"molt debug {subcommand.value} is not yet wired",
         retained_output=paths.retained_output,
+        data=pending_data,
     )
     return _emit_debug_payload(
         payload=payload,
@@ -29767,6 +29773,16 @@ def main() -> int:
                 choices=["pre-midend", "post-midend", "all"],
                 default="all",
                 help="Which compilation stage(s) to dump.",
+            )
+        if debug_subcommand in {DebugSubcommand.REPRO, DebugSubcommand.TRACE}:
+            subparser.add_argument("source", help="Python source file to trace.")
+        if debug_subcommand in {
+            DebugSubcommand.REDUCE,
+            DebugSubcommand.BISECT,
+        }:
+            subparser.add_argument(
+                "input_path",
+                help="Source or prior manifest path to inspect.",
             )
         if debug_subcommand == DebugSubcommand.DIFF:
             subparser.add_argument(
