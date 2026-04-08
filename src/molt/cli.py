@@ -9564,7 +9564,7 @@ def _resolve_cargo_profile_name_cached(
     default_profile = "dev-fast" if build_profile == "dev" else "release-fast"
     profile_name = normalized_raw or default_profile
     if not _CARGO_PROFILE_NAME_RE.match(profile_name):
-        return build_profile, f"Invalid {env_var} value: {raw}"
+        return default_profile, f"Invalid {env_var} value: {raw}"
     return profile_name, None
 
 
@@ -9600,13 +9600,14 @@ def _resolve_backend_cargo_profile_name_cached(
     )
     normalized_backend = backend_raw.strip()
     normalized_generic = generic_raw.strip()
+    default_profile = "dev-fast" if build_profile == "dev" else "release-fast"
     profile_name = normalized_backend or normalized_generic
     if not profile_name:
-        profile_name = "dev" if build_profile == "dev" else "release-fast"
+        profile_name = default_profile
     if not _CARGO_PROFILE_NAME_RE.match(profile_name):
         if normalized_backend:
-            return build_profile, f"Invalid {backend_env_var} value: {backend_raw}"
-        return build_profile, f"Invalid {generic_env_var} value: {generic_raw}"
+            return default_profile, f"Invalid {backend_env_var} value: {backend_raw}"
+        return default_profile, f"Invalid {generic_env_var} value: {generic_raw}"
     return profile_name, None
 
 
