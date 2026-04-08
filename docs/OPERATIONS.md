@@ -40,9 +40,10 @@ machine-readable summaries.
 
 Currently wired commands:
 
+- `molt debug repro <source.py> [--compare]`
 - `molt debug ir <source.py> --stage pre-midend|post-midend|all`
 - `molt debug verify`
-- `molt debug reduce <source.py|manifest.json> --oracle-json <oracle> [--eval-command <cmd>]`
+- `molt debug reduce <source.py|manifest.json> --oracle-json <oracle> [--eval-command <cmd>] [--eval-timeout <sec>]`
 - `molt debug bisect <source.py|manifest.json> --passes <a,b,c> --oracle-json <oracle> --eval-command <cmd>`
 - `molt debug diff <summary.json> [--failure-queue <failures.txt>]`
 - `molt debug perf <profile.json|profile.log>...`
@@ -65,10 +66,10 @@ Version and platform rules:
 
 Current status note:
 
-- `molt debug trace` and `molt debug repro` are still
-  under active build-out;
+- `molt debug trace` is still under active build-out;
 - `molt debug reduce` and `molt debug bisect` now accept canonical oracles plus
-  evaluator commands and retain manifest-backed reduction/bisection evidence;
+  evaluator commands, explicit evaluator timeouts, and manifest-backed
+  reduction/bisection evidence;
 - contested runtime work, especially around call-bind ownership, must not be
   forced through while partner changes are active.
 
