@@ -3,26 +3,28 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import importlib.util
 import json
 import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from molt.debug.bisect import (  # noqa: E402
+    ProbeSupervisorAttemptConfig,
+    build_probe_supervisor_attempts,
+    render_probe_supervisor_markdown,
+    should_retry_probe_statuses,
+)
+from molt.debug.verify import REQUIRED_DIFF_PROBES  # noqa: E402
+
 DIFF_SCRIPT = ROOT / "tests" / "molt_diff.py"
 IR_GATE_SCRIPT = ROOT / "tools" / "check_molt_ir_ops.py"
-
-
-@dataclass(frozen=True)
-class AttemptConfig:
-    attempt: int
-    jobs: int
-    timeout_sec: int
 
 
 def _now_utc() -> str:
@@ -36,24 +38,37 @@ def _default_run_root_base() -> Path:
     return ROOT / "target" / "ir_probe_supervisor"
 
 
-def _load_required_probes() -> tuple[str, ...]:
-    module_name = "check_molt_ir_ops_for_ir_probe_supervisor"
-    spec = importlib.util.spec_from_file_location(
-        module_name, ROOT / "tools" / "check_molt_ir_ops.py"
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("could not load tools/check_molt_ir_ops.py")
-    module = importlib.util.module_from_spec(spec)
-    # dataclasses resolves type metadata via sys.modules[cls.__module__]
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    probes = getattr(module, "REQUIRED_DIFF_PROBES", None)
-    if not isinstance(probes, tuple):
-        raise RuntimeError("REQUIRED_DIFF_PROBES missing from check_molt_ir_ops.py")
-    return probes
-
-
 def _active_diff_runs() -> list[tuple[int, str]]:
+    if os.name == "nt":
+        proc = subprocess.run(
+            ["tasklist", "/fo", "csv", "/v"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        active: list[tuple[int, str]] = []
+        for raw in proc.stdout.splitlines():
+            line = raw.strip().strip('"')
+            if not line or "python" not in line.lower():
+                continue
+            parts = [part.strip('"') for part in raw.split('","')]
+            if len(parts) < 2:
+                continue
+            image_name = parts[0]
+            pid_raw = parts[1]
+            window_title = parts[-1] if parts else ""
+            command_text = f"{image_name} {window_title}".strip()
+            if "tests/molt_diff.py" not in command_text:
+                continue
+            try:
+                pid = int(pid_raw)
+            except ValueError:
+                continue
+            if pid == os.getpid():
+                continue
+            active.append((pid, command_text))
+        return active
+
     proc = subprocess.run(
         ["ps", "-axo", "pid=,command="],
         check=True,
@@ -141,11 +156,6 @@ def _status_by_probe(entries: list[dict], run_id: str) -> dict[str, str]:
     return {path: status for path, (_, status) in latest.items()}
 
 
-def _should_retry(statuses: dict[str, str]) -> bool:
-    retry_states = {"build_timeout", "run_timeout", "build_failed"}
-    return any(status in retry_states for status in statuses.values())
-
-
 def _run_command(
     cmd: list[str], *, env: dict[str, str], cwd: Path, timeout_sec: int
 ) -> tuple[int, str, str, bool]:
@@ -162,45 +172,6 @@ def _run_command(
         return proc.returncode, proc.stdout, proc.stderr, False
     except subprocess.TimeoutExpired as exc:
         return 124, exc.stdout or "", exc.stderr or "", True
-
-
-def _render_markdown(
-    *,
-    started_at: str,
-    finished_at: str,
-    required_probes: tuple[str, ...],
-    attempts: list[dict],
-    final_ok: bool,
-    final_message: str,
-) -> str:
-    lines = [
-        "# IR Probe Supervisor Checkpoint",
-        "",
-        f"- Started: `{started_at}`",
-        f"- Finished: `{finished_at}`",
-        f"- Required probes: `{len(required_probes)}`",
-        f"- Final status: `{'ok' if final_ok else 'failed'}`",
-        f"- Note: {final_message}",
-        "",
-        "## Attempts",
-        "",
-        "| Attempt | Jobs | Timeout | Diff RC | Gate RC | Timed Out | Run ID |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
-    ]
-    for item in attempts:
-        lines.append(
-            "| {attempt} | {jobs} | {timeout}s | {diff_rc} | {gate_rc} | {timed_out} | {run_id} |".format(
-                attempt=item.get("attempt"),
-                jobs=item.get("jobs"),
-                timeout=item.get("timeout_sec"),
-                diff_rc=item.get("diff_rc"),
-                gate_rc=item.get("gate_rc"),
-                timed_out="yes" if item.get("timed_out") else "no",
-                run_id=item.get("run_id") or "",
-            )
-        )
-    lines.append("")
-    return "\n".join(lines)
 
 
 def main() -> int:
@@ -294,23 +265,18 @@ def main() -> int:
     args = parser.parse_args()
 
     started_at = _now_utc()
-    required_probes = _load_required_probes()
+    required_probes = REQUIRED_DIFF_PROBES
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_root = args.run_root_base / timestamp
     run_root.mkdir(parents=True, exist_ok=True)
     report_json = args.report_json or (run_root / "checkpoint.json")
     report_md = args.report_md or (run_root / "checkpoint.md")
 
-    attempts_cfg = [
-        AttemptConfig(
-            attempt=1, jobs=max(1, args.jobs), timeout_sec=max(1, args.run_timeout)
-        ),
-        AttemptConfig(
-            attempt=2,
-            jobs=max(1, args.retry_jobs),
-            timeout_sec=max(1, args.run_timeout),
-        ),
-    ]
+    attempts_cfg = build_probe_supervisor_attempts(
+        jobs=args.jobs,
+        retry_jobs=args.retry_jobs,
+        run_timeout=args.run_timeout,
+    )
 
     if args.dry_run:
         for attempt_cfg in attempts_cfg:
@@ -354,7 +320,7 @@ def main() -> int:
             )
             report_md.parent.mkdir(parents=True, exist_ok=True)
             report_md.write_text(
-                _render_markdown(
+                render_probe_supervisor_markdown(
                     started_at=started_at,
                     finished_at=payload["finished_at"],
                     required_probes=required_probes,
@@ -379,7 +345,7 @@ def main() -> int:
             previous = attempt_results[-1]
             if previous.get("diff_rc") == 0 and previous.get("gate_rc") == 0:
                 break
-            if not _should_retry(previous.get("statuses", {})):
+            if not should_retry_probe_statuses(previous.get("statuses", {})):
                 break
 
         attempt_root = run_root / f"attempt_{attempt_cfg.attempt}"
@@ -488,7 +454,7 @@ def main() -> int:
     )
     report_md.parent.mkdir(parents=True, exist_ok=True)
     report_md.write_text(
-        _render_markdown(
+        render_probe_supervisor_markdown(
             started_at=payload["started_at"],
             finished_at=payload["finished_at"],
             required_probes=required_probes,
