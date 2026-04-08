@@ -170,6 +170,30 @@ fn shadow_pair_available(
 }
 
 #[cfg(feature = "native-backend")]
+fn switch_to_block_with_rebind(
+    builder: &mut FunctionBuilder,
+    block: Block,
+    is_block_filled: &mut bool,
+    has_exception_labels: bool,
+    vars: &BTreeMap<String, Variable>,
+    shadow_vars: &BTreeMap<String, Variable>,
+    shadow_names: &BTreeSet<String>,
+) {
+    let _ = (has_exception_labels, vars, shadow_vars, shadow_names);
+    crate::switch_to_block_tracking(builder, block, is_block_filled);
+    // Do not proactively rebind named/shadow variables here.
+    //
+    // `var_get()` already performs `use_var()` lazily at the actual point of
+    // use. Eagerly re-binding the entire function-wide variable set at block
+    // entry manufactures synthetic live-ins and extra block params for values
+    // that are not semantically merged in the target block. Cranelift then
+    // spends compile time deleting that SSA noise again.
+    //
+    // If a value is genuinely live across this boundary, the first downstream
+    // `use_var()` will create exactly the needed SSA edge.
+}
+
+#[cfg(feature = "native-backend")]
 struct FunctionPreanalysis {
     has_ret: bool,
     stateful: bool,
@@ -19135,8 +19159,14 @@ impl SimpleBackend {
 
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
-    use super::{alias_root_name, cleanup_roots_for_names, preanalyze_function_ir};
+    use super::{
+        alias_root_name, cleanup_roots_for_names, preanalyze_function_ir,
+        switch_to_block_with_rebind,
+    };
     use crate::{FunctionIR, OpIR};
+    use cranelift_codegen::ir::{types, AbiParam, Function, InstBuilder, Signature, UserFuncName};
+    use cranelift_codegen::isa::CallConv;
+    use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
@@ -19361,5 +19391,111 @@ mod tests {
         assert_eq!(arg_cleanup_roots, BTreeSet::from(["src".to_string()]));
         assert!(arg_cleanup_roots.contains(alias_root_name(&analysis.alias_roots, "_bb4_arg0")));
         assert!(arg_cleanup_roots.contains(alias_root_name(&analysis.alias_roots, "joined")));
+    }
+
+    #[test]
+    fn switch_to_block_with_rebind_does_not_inflate_merge_params_for_invariant_vars() {
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut func = Function::with_name_signature(UserFuncName::default(), sig);
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut func, &mut builder_ctx);
+
+        let stable_var = builder.declare_var(types::I64);
+        let phi_var = builder.declare_var(types::I64);
+
+        let vars = BTreeMap::from([
+            ("stable".to_string(), stable_var),
+            ("phi_out".to_string(), phi_var),
+        ]);
+        let shadow_vars = BTreeMap::new();
+        let shadow_names = BTreeSet::new();
+
+        let entry = builder.create_block();
+        let then_block = builder.create_block();
+        let else_block = builder.create_block();
+        let merge_block = builder.create_block();
+        builder.append_block_param(merge_block, types::I64);
+
+        builder.switch_to_block(entry);
+        let stable = builder.ins().iconst(types::I64, 7);
+        let cond = builder.ins().iconst(types::I8, 1);
+        let then_val = builder.ins().iconst(types::I64, 11);
+        let else_val = builder.ins().iconst(types::I64, 13);
+        builder.def_var(stable_var, stable);
+        builder.ins().brif(cond, then_block, &[], else_block, &[]);
+        builder.seal_block(entry);
+
+        builder.switch_to_block(then_block);
+        builder.def_var(phi_var, then_val);
+        crate::jump_block(&mut builder, merge_block, &[then_val]);
+        builder.seal_block(then_block);
+
+        builder.switch_to_block(else_block);
+        builder.def_var(phi_var, else_val);
+        crate::jump_block(&mut builder, merge_block, &[else_val]);
+        builder.seal_block(else_block);
+
+        let mut is_block_filled = false;
+        switch_to_block_with_rebind(
+            &mut builder,
+            merge_block,
+            &mut is_block_filled,
+            false,
+            &vars,
+            &shadow_vars,
+            &shadow_names,
+        );
+
+        assert_eq!(
+            builder.block_params(merge_block).len(),
+            1,
+            "merge block should only carry the explicit phi payload param",
+        );
+    }
+
+    #[test]
+    fn switch_to_block_with_rebind_does_not_create_exception_fallthrough_phis_for_invariants() {
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut func = Function::with_name_signature(UserFuncName::default(), sig);
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut func, &mut builder_ctx);
+
+        let stable_var = builder.declare_var(types::I64);
+        let vars = BTreeMap::from([("stable".to_string(), stable_var)]);
+        let shadow_vars = BTreeMap::new();
+        let shadow_names = BTreeSet::new();
+
+        let entry = builder.create_block();
+        let validate_block = builder.create_block();
+        let fallthrough = builder.create_block();
+
+        builder.switch_to_block(entry);
+        let stable = builder.ins().iconst(types::I64, 7);
+        let cond = builder.ins().iconst(types::I8, 1);
+        builder.def_var(stable_var, stable);
+        builder.ins().brif(cond, validate_block, &[], fallthrough, &[]);
+        builder.seal_block(entry);
+
+        builder.switch_to_block(validate_block);
+        builder.ins().jump(fallthrough, &[]);
+        builder.seal_block(validate_block);
+
+        let mut is_block_filled = false;
+        switch_to_block_with_rebind(
+            &mut builder,
+            fallthrough,
+            &mut is_block_filled,
+            true,
+            &vars,
+            &shadow_vars,
+            &shadow_names,
+        );
+
+        assert!(
+            builder.block_params(fallthrough).is_empty(),
+            "exception fallthrough should not synthesize params for invariant vars",
+        );
     }
 }
