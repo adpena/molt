@@ -1343,12 +1343,81 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_
     }
 }
 
-unsafe fn call_bind_ic_entry_for_call(call_bits: u64) -> Option<CallBindIcEntry> {
+unsafe fn call_bind_ic_entry_for_call(
+    _py: &PyToken<'_>,
+    call_bits: u64,
+) -> Option<CallBindIcEntry> {
     unsafe {
         let call_obj = obj_from_bits(call_bits);
         let call_ptr = call_obj.as_ptr()?;
+        unsafe fn function_requires_full_binding(_py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
+            let attr = |name_bytes: &'static [u8]| {
+                function_attr_bits(
+                    _py,
+                    func_ptr,
+                    intern_static_name(
+                        _py,
+                        match name_bytes {
+                            b"__molt_bind_kind__" => &runtime_state(_py).interned.molt_bind_kind,
+                            b"__molt_vararg__" => &runtime_state(_py).interned.molt_vararg,
+                            b"__molt_varkw__" => &runtime_state(_py).interned.molt_varkw,
+                            b"__molt_kwonly_names__" => {
+                                &runtime_state(_py).interned.molt_kwonly_names
+                            }
+                            b"__defaults__" => &runtime_state(_py).interned.defaults_name,
+                            b"__kwdefaults__" => &runtime_state(_py).interned.kwdefaults_name,
+                            _ => unreachable!("unknown binding metadata attr"),
+                        },
+                        name_bytes,
+                    ),
+                )
+                .unwrap_or_else(|| MoltObject::none().bits())
+            };
+
+            for name in [b"__molt_bind_kind__".as_slice(), b"__molt_vararg__", b"__molt_varkw__"] {
+                if !obj_from_bits(attr(name)).is_none() {
+                    return true;
+                }
+            }
+
+            let kwonly_bits = attr(b"__molt_kwonly_names__");
+            if !obj_from_bits(kwonly_bits).is_none() {
+                let Some(ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
+                    return true;
+                };
+                if object_type_id(ptr) != TYPE_ID_TUPLE || !seq_vec_ref(ptr).is_empty() {
+                    return true;
+                }
+            }
+
+            let defaults_bits = attr(b"__defaults__");
+            if !obj_from_bits(defaults_bits).is_none() {
+                let Some(ptr) = obj_from_bits(defaults_bits).as_ptr() else {
+                    return true;
+                };
+                if object_type_id(ptr) != TYPE_ID_TUPLE || !seq_vec_ref(ptr).is_empty() {
+                    return true;
+                }
+            }
+
+            let kwdefaults_bits = attr(b"__kwdefaults__");
+            if !obj_from_bits(kwdefaults_bits).is_none() {
+                let Some(ptr) = obj_from_bits(kwdefaults_bits).as_ptr() else {
+                    return true;
+                };
+                if object_type_id(ptr) != TYPE_ID_DICT || !dict_order(ptr).is_empty() {
+                    return true;
+                }
+            }
+
+            false
+        }
+
         match object_type_id(call_ptr) {
             TYPE_ID_FUNCTION => {
+                if function_requires_full_binding(_py, call_ptr) {
+                    return None;
+                }
                 let arity = function_arity(call_ptr);
                 if arity <= 4 {
                     Some(CallBindIcEntry {
@@ -1473,7 +1542,7 @@ unsafe fn call_bind_ic_dispatch(
         profile_hit_unchecked(&CALL_BIND_IC_MISS_COUNT);
         builder_guard.release();
         let res = molt_call_bind(call_bits, builder_bits);
-        if let Some(entry) = call_bind_ic_entry_for_call(call_bits) {
+        if let Some(entry) = call_bind_ic_entry_for_call(_py, call_bits) {
             ic_tls_insert(site_id, entry);
             // Also update global cache for cross-thread visibility
             call_bind_ic_cache().lock().unwrap().insert(site_id, entry);
