@@ -4,10 +4,6 @@ from __future__ import annotations
 
 __version__ = "0.1.0-alpha"
 
-from typing import Any
-
-from molt import intrinsics as _intrinsics
-
 _CONCURRENCY_EXPORTS = {
     "Channel",
     "CancellationToken",
@@ -36,7 +32,7 @@ _NET_EXPORTS = {
 __all__: list[str] = []
 
 
-def __getattr__(name: str) -> Any:
+def __getattr__(name: str):
     if name in _CONCURRENCY_EXPORTS:
         raise AttributeError(
             f"moltlib.concurrency.{name} — use 'from moltlib.concurrency import {name}'"

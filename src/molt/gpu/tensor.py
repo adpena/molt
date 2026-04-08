@@ -13,6 +13,8 @@ Usage:
     print(c.to_list())  # [[19, 22], [43, 50]]
 """
 
+from __future__ import annotations
+
 import math
 import struct
 from . import Buffer, alloc, to_device, from_device

@@ -13,16 +13,33 @@ NATIVE_BUILD_TIMEOUT_SECS = 600
 
 
 def _build_and_run(tmp_path: Path, source: str, name: str) -> subprocess.CompletedProcess[str]:
+    return _build_and_run_with_env(
+        tmp_path,
+        source,
+        name,
+        session_id=NATIVE_BOOTSTRAP_SESSION_ID,
+        cache_dir=ROOT / ".molt_cache",
+    )
+
+
+def _build_and_run_with_env(
+    tmp_path: Path,
+    source: str,
+    name: str,
+    *,
+    session_id: str,
+    cache_dir: Path,
+) -> subprocess.CompletedProcess[str]:
     src_path = tmp_path / f"{name}.py"
     out_path = tmp_path / name
     src_path.write_text(source)
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(SRC_DIR)
-    env["MOLT_SESSION_ID"] = NATIVE_BOOTSTRAP_SESSION_ID
+    env["MOLT_SESSION_ID"] = session_id
     env["CARGO_TARGET_DIR"] = str(ROOT / "target")
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
-    env["MOLT_CACHE"] = str(ROOT / ".molt_cache")
+    env["MOLT_CACHE"] = str(cache_dir)
     env["MOLT_DIFF_ROOT"] = str(ROOT / "tmp" / "diff")
     env["MOLT_DIFF_TMPDIR"] = str(ROOT / "tmp")
     env["UV_CACHE_DIR"] = str(ROOT / ".uv-cache")
@@ -158,6 +175,21 @@ def test_native_import_builtins_descriptor_types_are_bootstrapped(tmp_path: Path
         "property",
         "property",
     ]
+
+
+def test_native_repo_package_imports_include_molt_parent_package(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "from molt.gpu.tensor import Tensor\n"
+            "print('ok')\n"
+        ),
+        "import_molt_gpu_tensor",
+        session_id="pytest-native-bootstrap-package-import",
+        cache_dir=ROOT / ".molt_cache-package-import",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "ok"
 
 
 def test_native_safe_intrinsic_helper_with_tuple_subclass(tmp_path: Path) -> None:
