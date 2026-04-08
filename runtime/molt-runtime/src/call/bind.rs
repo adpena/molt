@@ -64,6 +64,85 @@ pub(crate) struct CallArgs {
     kw_seen: HashSet<String>,
 }
 
+fn trace_callargs_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_CALLARGS").as_deref() == Ok("1"))
+}
+
+fn trace_call_bind_ic_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_CALL_BIND_IC").as_deref() == Ok("1"))
+}
+
+fn trace_function_bind_meta_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("MOLT_TRACE_FUNCTION_BIND_META").as_deref() == Ok("1")
+    })
+}
+
+fn callargs_builder_registry() -> &'static Mutex<HashSet<usize>> {
+    static REGISTRY: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn callargs_storage_registry() -> &'static Mutex<HashSet<usize>> {
+    static REGISTRY: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub(crate) fn note_callargs_alloc(builder_ptr: *mut u8, args_ptr: *mut CallArgs) {
+    if !builder_ptr.is_null() {
+        callargs_builder_registry()
+            .lock()
+            .unwrap()
+            .insert(builder_ptr as usize);
+    }
+    if args_ptr.is_null() {
+        return;
+    }
+    callargs_storage_registry()
+        .lock()
+        .unwrap()
+        .insert(args_ptr as usize);
+}
+
+pub(crate) fn note_callargs_free(builder_ptr: *mut u8, args_ptr: *mut CallArgs) {
+    if !builder_ptr.is_null() {
+        callargs_builder_registry()
+            .lock()
+            .unwrap()
+            .remove(&(builder_ptr as usize));
+    }
+    if args_ptr.is_null() {
+        return;
+    }
+    callargs_storage_registry()
+        .lock()
+        .unwrap()
+        .remove(&(args_ptr as usize));
+}
+
+fn callargs_builder_is_live(builder_ptr: *mut u8) -> bool {
+    if builder_ptr.is_null() {
+        return false;
+    }
+    callargs_builder_registry()
+        .lock()
+        .unwrap()
+        .contains(&(builder_ptr as usize))
+}
+
+fn callargs_storage_is_live(args_ptr: *mut CallArgs) -> bool {
+    if args_ptr.is_null() {
+        return false;
+    }
+    callargs_storage_registry()
+        .lock()
+        .unwrap()
+        .contains(&(args_ptr as usize))
+}
+
 #[derive(Clone, Copy)]
 struct CallBindIcEntry {
     fn_ptr: u64,
@@ -1108,7 +1187,18 @@ pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u6
             ALLOC_BYTES_CALLARGS
                 .fetch_add(callargs_bytes as u64, std::sync::atomic::Ordering::Relaxed);
             let args_ptr = Box::into_raw(args);
+            note_callargs_alloc(ptr, args_ptr);
             *(ptr as *mut *mut CallArgs) = args_ptr;
+            if trace_callargs_enabled() {
+                eprintln!(
+                    "[molt callargs] new builder_bits=0x{:x} builder_ptr=0x{:x} args_ptr=0x{:x} pos_cap={} kw_cap={}",
+                    bits_from_ptr(ptr),
+                    ptr as usize,
+                    args_ptr as usize,
+                    pos_capacity,
+                    kw_capacity,
+                );
+            }
         }
         bits_from_ptr(ptr)
     })
@@ -1125,15 +1215,60 @@ pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> 
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
             }
+            if !callargs_builder_is_live(builder_ptr) {
+                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
+            }
+            if trace_callargs_enabled() {
+                eprintln!(
+                    "[molt callargs] push_pos_builder builder_bits=0x{:x} builder_ptr=0x{:x} type_id={}",
+                    builder_bits,
+                    builder_ptr as usize,
+                    object_type_id(builder_ptr),
+                );
+            }
+            if object_type_id(builder_ptr) != TYPE_ID_CALLARGS {
+                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
+            }
             let args_ptr = callargs_ptr(builder_ptr);
             if args_ptr.is_null() {
                 return MoltObject::none().bits();
             }
+            if !callargs_storage_is_live(args_ptr) {
+                return raise_exception::<_>(_py, "TypeError", "invalid callargs storage");
+            }
+            if trace_callargs_enabled() {
+                eprintln!(
+                    "[molt callargs] push_pos_raw builder_bits=0x{:x} builder_ptr=0x{:x} args_ptr=0x{:x} val_type={} val_bits=0x{:x}",
+                    builder_bits,
+                    builder_ptr as usize,
+                    args_ptr as usize,
+                    type_name(_py, obj_from_bits(val)),
+                    val,
+                );
+            }
             let args = &mut *args_ptr;
+            if trace_callargs_enabled() {
+                eprintln!(
+                    "[molt callargs] push_pos builder_bits=0x{:x} builder_ptr=0x{:x} args_ptr=0x{:x} len_before={} val_type={} val_bits=0x{:x}",
+                    builder_bits,
+                    builder_ptr as usize,
+                    args_ptr as usize,
+                    args.pos.len(),
+                    type_name(_py, obj_from_bits(val)),
+                    val,
+                );
+            }
             // CallArgs must keep arguments alive even if the caller drops its temporaries before
             // `molt_call_bind` executes.
             inc_ref_bits(_py, val);
             args.pos.push(val);
+            if trace_callargs_enabled() {
+                eprintln!(
+                    "[molt callargs] push_pos_done builder_bits=0x{:x} len_after={}",
+                    builder_bits,
+                    args.pos.len(),
+                );
+            }
             MoltObject::none().bits()
         })
     }
@@ -1189,6 +1324,12 @@ pub unsafe extern "C" fn molt_callargs_push_kw(
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
             }
+            if !callargs_builder_is_live(builder_ptr) {
+                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
+            }
+            if object_type_id(builder_ptr) != TYPE_ID_CALLARGS {
+                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
+            }
             callargs_push_kw(_py, builder_ptr, name_bits, val_bits)
         })
     }
@@ -1203,6 +1344,37 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
+            }
+            if !callargs_builder_is_live(builder_ptr) {
+                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
+            }
+            if trace_callargs_enabled() {
+                eprintln!(
+                    "[molt callargs] expand_star_builder builder_bits=0x{:x} builder_ptr=0x{:x} type_id={}",
+                    builder_bits,
+                    builder_ptr as usize,
+                    object_type_id(builder_ptr),
+                );
+            }
+            if object_type_id(builder_ptr) != TYPE_ID_CALLARGS {
+                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
+            }
+            if trace_callargs_enabled() {
+                let args_ptr = callargs_ptr(builder_ptr);
+                let len = if args_ptr.is_null() { 0 } else { (&*args_ptr).pos.len() };
+                eprintln!(
+                    "[molt callargs] expand_star builder_bits=0x{:x} builder_ptr=0x{:x} args_ptr=0x{:x} len_before={} iterable_type={} iterable_bits=0x{:x}",
+                    builder_bits,
+                    builder_ptr as usize,
+                    args_ptr as usize,
+                    len,
+                    type_name(_py, obj_from_bits(iterable_bits)),
+                    iterable_bits,
+                );
+            }
+            let args_ptr = callargs_ptr(builder_ptr);
+            if !callargs_storage_is_live(args_ptr) {
+                return raise_exception::<_>(_py, "TypeError", "invalid callargs storage");
             }
             let iter_bits = molt_iter(iterable_bits);
             if obj_from_bits(iter_bits).is_none() {
@@ -1226,6 +1398,14 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
                     break;
                 }
                 let val_bits = elems[0];
+                if trace_callargs_enabled() {
+                    eprintln!(
+                        "[molt callargs] expand_star_item builder_bits=0x{:x} val_type={} val_bits=0x{:x}",
+                        builder_bits,
+                        type_name(_py, obj_from_bits(val_bits)),
+                        val_bits,
+                    );
+                }
                 let res = molt_callargs_push_pos(builder_bits, val_bits);
                 if obj_from_bits(res).is_none() && exception_pending(_py) {
                     return res;
@@ -1246,7 +1426,17 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
             }
+            if !callargs_builder_is_live(builder_ptr) {
+                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
+            }
+            if object_type_id(builder_ptr) != TYPE_ID_CALLARGS {
+                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
+            }
             let mapping_obj = obj_from_bits(mapping_bits);
+            let args_ptr = callargs_ptr(builder_ptr);
+            if !callargs_storage_is_live(args_ptr) {
+                return raise_exception::<_>(_py, "TypeError", "invalid callargs storage");
+            }
             let Some(mapping_ptr) = mapping_obj.as_ptr() else {
                 return raise_exception::<_>(
                     _py,
@@ -1416,16 +1606,55 @@ unsafe fn call_bind_ic_entry_for_call(
         match object_type_id(call_ptr) {
             TYPE_ID_FUNCTION => {
                 if function_requires_full_binding(_py, call_ptr) {
+                    if trace_call_bind_ic_enabled() {
+                        let name_bits = function_name_bits(_py, call_ptr);
+                        let name = if name_bits == 0 {
+                            "<unnamed>".to_string()
+                        } else {
+                            string_obj_to_owned(obj_from_bits(name_bits))
+                                .unwrap_or_else(|| "<unnamed>".to_string())
+                        };
+                        eprintln!(
+                            "[molt call_bind_ic] bypass direct func name={} reason=full_binding_required",
+                            name
+                        );
+                    }
                     return None;
                 }
                 let arity = function_arity(call_ptr);
                 if arity <= 4 {
+                    if trace_call_bind_ic_enabled() {
+                        let name_bits = function_name_bits(_py, call_ptr);
+                        let name = if name_bits == 0 {
+                            "<unnamed>".to_string()
+                        } else {
+                            string_obj_to_owned(obj_from_bits(name_bits))
+                                .unwrap_or_else(|| "<unnamed>".to_string())
+                        };
+                        eprintln!(
+                            "[molt call_bind_ic] install direct func name={} arity={}",
+                            name, arity
+                        );
+                    }
                     Some(CallBindIcEntry {
                         fn_ptr: function_fn_ptr(call_ptr) as u64,
                         arity: arity as u8,
                         kind: CALL_BIND_IC_KIND_DIRECT_FUNC,
                     })
                 } else {
+                    if trace_call_bind_ic_enabled() {
+                        let name_bits = function_name_bits(_py, call_ptr);
+                        let name = if name_bits == 0 {
+                            "<unnamed>".to_string()
+                        } else {
+                            string_obj_to_owned(obj_from_bits(name_bits))
+                                .unwrap_or_else(|| "<unnamed>".to_string())
+                        };
+                        eprintln!(
+                            "[molt call_bind_ic] bypass direct func name={} reason=arity_gt_4 arity={}",
+                            name, arity
+                        );
+                    }
                     None
                 }
             }
@@ -1932,6 +2161,27 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     return raise_exception::<_>(_py, "TypeError", "call expects function object");
                 }
                 kwdefaults_ptr = Some(ptr);
+            }
+
+            if trace_function_bind_meta_enabled() {
+                let func_name_bits = function_name_bits(_py, func_ptr);
+                let func_name = if func_name_bits == 0 || obj_from_bits(func_name_bits).is_none() {
+                    "<unnamed>".to_string()
+                } else {
+                    string_obj_to_owned(obj_from_bits(func_name_bits))
+                        .unwrap_or_else(|| "<unnamed>".to_string())
+                };
+                eprintln!(
+                    "[molt bind_meta] name={} total_pos={} posonly={} kwonly={} has_vararg={} has_varkw={} defaults={} kwdefaults={}",
+                    func_name,
+                    arg_names.len(),
+                    posonly,
+                    kwonly_names.len(),
+                    has_vararg,
+                    has_varkw,
+                    defaults.len(),
+                    kwdefaults_ptr.map(|ptr| dict_order(ptr).len()).unwrap_or(0),
+                );
             }
 
             let total_pos = arg_names.len();

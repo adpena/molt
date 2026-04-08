@@ -57,6 +57,16 @@ from typing import (
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
 from molt.compat import CompatibilityError
+from molt.debug import (
+    DebugFailureClass,
+    DebugStatus,
+    DebugSubcommand,
+    allocate_debug_paths,
+    normalize_debug_payload,
+    render_debug_json_summary,
+    render_debug_text_summary,
+    write_debug_manifest,
+)
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import (
     TypeFacts,
@@ -28967,6 +28977,65 @@ class _MoltHelpFormatter(argparse.RawDescriptionHelpFormatter):
         return super()._format_action(action)
 
 
+def _add_debug_shared_selector_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--function", help="Function selector for focused debug runs.")
+    parser.add_argument("--module", help="Module selector for focused debug runs.")
+    parser.add_argument("--pass", dest="pass_name", help="Compiler pass selector.")
+    parser.add_argument("--backend", help="Backend selector for debug runs.")
+    parser.add_argument("--profile", help="Build/debug profile selector.")
+    parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Summary format emitted to stdout and retained outputs.",
+    )
+    parser.add_argument(
+        "--out",
+        help="Retain the debug summary under logs/debug/ using the requested name.",
+    )
+
+
+def _handle_debug_command(args: argparse.Namespace) -> int:
+    subcommand = DebugSubcommand(args.debug_subcommand)
+    paths = allocate_debug_paths(
+        subcommand,
+        out=args.out,
+        output_extension=args.format,
+    )
+    selectors = {
+        key: value
+        for key, value in {
+            "function": args.function,
+            "module": args.module,
+            "pass": args.pass_name,
+            "backend": args.backend,
+            "profile": args.profile,
+        }.items()
+        if value is not None
+    }
+    payload = normalize_debug_payload(
+        subcommand=subcommand,
+        status=DebugStatus.UNSUPPORTED,
+        run_id=paths.run_id,
+        artifact_root=paths.artifact_root,
+        manifest_path=paths.manifest_path,
+        selectors=selectors,
+        failure_class=DebugFailureClass.NOT_YET_WIRED,
+        message=f"molt debug {subcommand.value} is not yet wired",
+        retained_output=paths.retained_output,
+    )
+    write_debug_manifest(paths.manifest_path, payload)
+    if args.format == "json":
+        summary = render_debug_json_summary(payload)
+    else:
+        summary = render_debug_text_summary(payload)
+    if paths.retained_output is not None:
+        paths.retained_output.parent.mkdir(parents=True, exist_ok=True)
+        paths.retained_output.write_text(summary, encoding="utf-8")
+    print(summary, end="")
+    return 0
+
+
 def main() -> int:
     _ensure_cli_hash_seed()
     from molt import __version__
@@ -29444,6 +29513,22 @@ def main() -> int:
     internal_batch_parser.add_argument(
         "--verbose", action="store_true", help=argparse.SUPPRESS
     )
+
+    debug_parser = subparsers.add_parser(
+        "debug",
+        help="Inspect and retain canonical compiler debug artifacts.",
+    )
+    debug_subparsers = debug_parser.add_subparsers(
+        dest="debug_subcommand",
+        title="debug commands",
+        required=True,
+    )
+    for debug_subcommand in DebugSubcommand:
+        subparser = debug_subparsers.add_parser(
+            debug_subcommand.value,
+            help=f"Run canonical `{debug_subcommand.value}` debug flow.",
+        )
+        _add_debug_shared_selector_args(subparser)
 
     check_parser = subparsers.add_parser(
         "check",
@@ -30530,6 +30615,9 @@ def main() -> int:
             json_output=args.json,
             verbose=args.verbose,
         )
+
+    if args.command == "debug":
+        return _handle_debug_command(args)
 
     if args.command == "build":
         target = args.target or build_cfg.get("target") or "native"
