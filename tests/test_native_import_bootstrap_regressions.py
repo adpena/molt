@@ -192,6 +192,24 @@ def test_native_repo_package_imports_include_molt_parent_package(tmp_path: Path)
     assert run.stdout.strip() == "ok"
 
 
+def test_native_struct_pack_starargs_inside_function_remains_bound_as_tuple(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import struct\n"
+            "def f(data):\n"
+            "    return struct.pack(f'{len(data)}d', *data)\n"
+            "print(len(f([1.0])))\n"
+            "print(len(f([2.0])))\n"
+        ),
+        "struct_pack_starargs_twice",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["8", "8"]
+
+
 def test_native_safe_intrinsic_helper_with_tuple_subclass(tmp_path: Path) -> None:
     run = _build_and_run(
         tmp_path,
