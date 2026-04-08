@@ -14096,13 +14096,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
         dynamic_namespace: MoltValue | None = None
         classcell_val: MoltValue | None = None
-        dynamic_bases_list: MoltValue | None = None
         dynamic_bases_tuple: MoltValue | None = None
         dynamic_meta: MoltValue | None = None
+        dynamic_prepared_kwds: MoltValue | None = None
         dynamic_kw_pairs: list[tuple[str, MoltValue]] = []
         dynamic_kw_splats: list[MoltValue] = []
         if dynamic_build:
-            meta_expr = None
             for kw in node.keywords:
                 if kw.arg is None:
                     splat_val = self.visit(kw.value)
@@ -14110,387 +14109,145 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         raise NotImplementedError("Unsupported class **kwargs value")
                     dynamic_kw_splats.append(splat_val)
                     continue
-                if kw.arg == "metaclass":
-                    if meta_expr is not None:
-                        raise NotImplementedError("Duplicate metaclass keyword")
-                    meta_expr = kw.value
-                else:
-                    kw_val = self.visit(kw.value)
-                    if kw_val is None:
-                        raise NotImplementedError("Unsupported class keyword value")
-                    dynamic_kw_pairs.append((kw.arg, kw_val))
+                kw_val = self.visit(kw.value)
+                if kw_val is None:
+                    raise NotImplementedError("Unsupported class keyword value")
+                dynamic_kw_pairs.append((kw.arg, kw_val))
 
             if has_explicit_bases:
                 bases_tuple = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="TUPLE_NEW", args=base_vals, result=bases_tuple))
-                bases_list = MoltValue(self.next_var(), type_hint="list")
-                self.emit(MoltOp(kind="LIST_NEW", args=[], result=bases_list))
-                none_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                mro_entries_name = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(
-                        kind="CONST_STR",
-                        args=["__mro_entries__"],
-                        result=mro_entries_name,
-                    )
-                )
-                for base_val in base_vals:
-                    prepare_attr = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(
-                            kind="GETATTR_NAME_DEFAULT",
-                            args=[base_val, mro_entries_name, none_val],
-                            result=prepare_attr,
-                        )
-                    )
-                    is_missing = MoltValue(self.next_var(), type_hint="bool")
-                    self.emit(
-                        MoltOp(
-                            kind="IS", args=[prepare_attr, none_val], result=is_missing
-                        )
-                    )
-                    self.emit(
-                        MoltOp(kind="IF", args=[is_missing], result=MoltValue("none"))
-                    )
-                    self.emit(
-                        MoltOp(
-                            kind="LIST_APPEND",
-                            args=[bases_list, base_val],
-                            result=MoltValue("none"),
-                        )
-                    )
-                    self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                    callargs = MoltValue(self.next_var(), type_hint="callargs")
-                    self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-                    self.emit(
-                        MoltOp(
-                            kind="CALLARGS_PUSH_POS",
-                            args=[callargs, bases_tuple],
-                            result=MoltValue("none"),
-                        )
-                    )
-                    entries = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[prepare_attr, callargs],
-                            result=entries,
-                        )
-                    )
-                    self.emit(
-                        MoltOp(
-                            kind="LIST_EXTEND",
-                            args=[bases_list, entries],
-                            result=MoltValue("none"),
-                        )
-                    )
-                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                expanded_tuple = MoltValue(self.next_var(), type_hint="tuple")
-                self.emit(
-                    MoltOp(
-                        kind="TUPLE_FROM_LIST", args=[bases_list], result=expanded_tuple
-                    )
-                )
-                dynamic_bases_list = bases_list
-                dynamic_bases_tuple = expanded_tuple
+                dynamic_bases_tuple = bases_tuple
             else:
-                bases_list = MoltValue(self.next_var(), type_hint="list")
-                self.emit(MoltOp(kind="LIST_NEW", args=[], result=bases_list))
                 empty_tuple = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="TUPLE_NEW", args=[], result=empty_tuple))
-                dynamic_bases_list = bases_list
                 dynamic_bases_tuple = empty_tuple
 
-            explicit_meta = None
-            if meta_expr is not None:
-                meta_val = self.visit(meta_expr)
-                if meta_val is None:
-                    raise NotImplementedError("Unsupported metaclass expression")
-                explicit_meta = meta_val
-
-            if dynamic_bases_list is None or dynamic_bases_tuple is None:
+            if dynamic_bases_tuple is None:
                 raise NotImplementedError("Unsupported class bases")
-
-            meta_cell = MoltValue(self.next_var(), type_hint="list")
-            zero_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero_val))
-            if explicit_meta is not None:
-                self.emit(
-                    MoltOp(kind="LIST_NEW", args=[explicit_meta], result=meta_cell)
-                )
-                iter_obj = self._emit_iter_new(dynamic_bases_list)
-                one_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[1], result=one_val))
-                self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-                pair = self._emit_iter_next_checked(iter_obj)
-                done = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="INDEX", args=[pair, one_val], result=done))
-                self.emit(
-                    MoltOp(
-                        kind="LOOP_BREAK_IF_TRUE",
-                        args=[done],
-                        result=MoltValue("none"),
-                    )
-                )
-                base_val = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="INDEX", args=[pair, zero_val], result=base_val))
-                current_meta = MoltValue(self.next_var(), type_hint="type")
-                self.emit(
-                    MoltOp(
-                        kind="INDEX", args=[meta_cell, zero_val], result=current_meta
-                    )
-                )
-                base_meta = MoltValue(self.next_var(), type_hint="type")
-                self.emit(MoltOp(kind="TYPE_OF", args=[base_val], result=base_meta))
-                same_meta = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(kind="IS", args=[current_meta, base_meta], result=same_meta)
-                )
-                self.emit(MoltOp(kind="IF", args=[same_meta], result=MoltValue("none")))
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                is_sub = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(
-                        kind="ISSUBCLASS", args=[current_meta, base_meta], result=is_sub
-                    )
-                )
-                self.emit(MoltOp(kind="IF", args=[is_sub], result=MoltValue("none")))
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                is_super = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(
-                        kind="ISSUBCLASS",
-                        args=[base_meta, current_meta],
-                        result=is_super,
-                    )
-                )
-                self.emit(MoltOp(kind="IF", args=[is_super], result=MoltValue("none")))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[meta_cell, zero_val, base_meta],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                exc_val = self._emit_exception_new(
-                    "TypeError",
-                    "metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases",
-                )
-                self.emit(
-                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                self.emit(
-                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
-                )
-                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-            else:
-                none_meta = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_meta))
-                self.emit(MoltOp(kind="LIST_NEW", args=[none_meta], result=meta_cell))
-                iter_obj = self._emit_iter_new(dynamic_bases_list)
-                one_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[1], result=one_val))
-                pair = self._emit_iter_next_checked(iter_obj)
-                done = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="INDEX", args=[pair, one_val], result=done))
-                self.emit(MoltOp(kind="IF", args=[done], result=MoltValue("none")))
-                tag_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(
-                    MoltOp(
-                        kind="CONST", args=[BUILTIN_TYPE_TAGS["type"]], result=tag_val
-                    )
-                )
-                meta_val = MoltValue(self.next_var(), type_hint="type")
-                self.emit(MoltOp(kind="BUILTIN_TYPE", args=[tag_val], result=meta_val))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[meta_cell, zero_val, meta_val],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                first_base = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(kind="INDEX", args=[pair, zero_val], result=first_base)
-                )
-                meta_val = MoltValue(self.next_var(), type_hint="type")
-                self.emit(MoltOp(kind="TYPE_OF", args=[first_base], result=meta_val))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[meta_cell, zero_val, meta_val],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-                pair = self._emit_iter_next_checked(iter_obj)
-                done = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="INDEX", args=[pair, one_val], result=done))
-                self.emit(
-                    MoltOp(
-                        kind="LOOP_BREAK_IF_TRUE",
-                        args=[done],
-                        result=MoltValue("none"),
-                    )
-                )
-                base_val = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="INDEX", args=[pair, zero_val], result=base_val))
-                current_meta = MoltValue(self.next_var(), type_hint="type")
-                self.emit(
-                    MoltOp(
-                        kind="INDEX", args=[meta_cell, zero_val], result=current_meta
-                    )
-                )
-                base_meta = MoltValue(self.next_var(), type_hint="type")
-                self.emit(MoltOp(kind="TYPE_OF", args=[base_val], result=base_meta))
-                same_meta = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(kind="IS", args=[current_meta, base_meta], result=same_meta)
-                )
-                self.emit(MoltOp(kind="IF", args=[same_meta], result=MoltValue("none")))
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                is_sub = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(
-                        kind="ISSUBCLASS", args=[current_meta, base_meta], result=is_sub
-                    )
-                )
-                self.emit(MoltOp(kind="IF", args=[is_sub], result=MoltValue("none")))
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                is_super = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(
-                        kind="ISSUBCLASS",
-                        args=[base_meta, current_meta],
-                        result=is_super,
-                    )
-                )
-                self.emit(MoltOp(kind="IF", args=[is_super], result=MoltValue("none")))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[meta_cell, zero_val, base_meta],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                exc_val = self._emit_exception_new(
-                    "TypeError",
-                    "metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases",
-                )
-                self.emit(
-                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                self.emit(
-                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
-                )
-                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-
-            dynamic_meta = MoltValue(self.next_var(), type_hint="type")
+            types_bootstrap_func = self._emit_intrinsic_function("molt_types_bootstrap")
+            types_bootstrap = self._emit_call_bound_or_func(types_bootstrap_func, [])
+            resolve_key = MoltValue(self.next_var(), type_hint="str")
             self.emit(
-                MoltOp(kind="INDEX", args=[meta_cell, zero_val], result=dynamic_meta)
+                MoltOp(kind="CONST_STR", args=["resolve_bases"], result=resolve_key)
             )
-
-            if dynamic_meta is None or dynamic_bases_tuple is None:
-                raise NotImplementedError("Unsupported class metaclass setup")
-            none_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            prepare_name = MoltValue(self.next_var(), type_hint="str")
-            self.emit(
-                MoltOp(kind="CONST_STR", args=["__prepare__"], result=prepare_name)
-            )
-            prepare_attr = MoltValue(self.next_var(), type_hint="Any")
+            resolve_bases_func = MoltValue(self.next_var(), type_hint="function")
             self.emit(
                 MoltOp(
-                    kind="GETATTR_NAME_DEFAULT",
-                    args=[dynamic_meta, prepare_name, none_val],
-                    result=prepare_attr,
+                    kind="INDEX",
+                    args=[types_bootstrap, resolve_key],
+                    result=resolve_bases_func,
                 )
             )
-            is_missing = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(kind="IS", args=[prepare_attr, none_val], result=is_missing)
-            )
-            namespace_cell = MoltValue(self.next_var(), type_hint="list")
-            self.emit(MoltOp(kind="LIST_NEW", args=[none_val], result=namespace_cell))
-            zero_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero_val))
-            self.emit(MoltOp(kind="IF", args=[is_missing], result=MoltValue("none")))
-            namespace_val = MoltValue(self.next_var(), type_hint="dict")
-            self.emit(MoltOp(kind="DICT_NEW", args=[], result=namespace_val))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[namespace_cell, zero_val, namespace_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            callargs = MoltValue(self.next_var(), type_hint="callargs")
-            self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
+            resolve_args = MoltValue(self.next_var(), type_hint="callargs")
+            self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=resolve_args))
             self.emit(
                 MoltOp(
                     kind="CALLARGS_PUSH_POS",
-                    args=[callargs, name_val],
+                    args=[resolve_args, dynamic_bases_tuple],
                     result=MoltValue("none"),
                 )
             )
-            self.emit(
-                MoltOp(
-                    kind="CALLARGS_PUSH_POS",
-                    args=[callargs, dynamic_bases_tuple],
-                    result=MoltValue("none"),
-                )
-            )
-            for kw_name, kw_val in dynamic_kw_pairs:
-                key_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[kw_name], result=key_val))
-                self.emit(
-                    MoltOp(
-                        kind="CALLARGS_PUSH_KW",
-                        args=[callargs, key_val, kw_val],
-                        result=MoltValue("none"),
-                    )
-                )
-            for splat_val in dynamic_kw_splats:
-                self.emit(
-                    MoltOp(
-                        kind="CALLARGS_EXPAND_KWSTAR",
-                        args=[callargs, splat_val],
-                        result=MoltValue(self.next_var(), type_hint="None"),
-                    )
-                )
-            namespace_val = MoltValue(self.next_var(), type_hint="Any")
+            dynamic_bases_tuple = MoltValue(self.next_var(), type_hint="tuple")
             self.emit(
                 MoltOp(
                     kind="CALL_BIND",
-                    args=[prepare_attr, callargs],
-                    result=namespace_val,
+                    args=[resolve_bases_func, resolve_args],
+                    result=dynamic_bases_tuple,
                 )
             )
+
+            none_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+            kwds_val = none_val
+            if dynamic_kw_pairs or dynamic_kw_splats:
+                kwds_dict = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(MoltOp(kind="DICT_NEW", args=[], result=kwds_dict))
+                for kw_name, kw_val in dynamic_kw_pairs:
+                    key_val = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(MoltOp(kind="CONST_STR", args=[kw_name], result=key_val))
+                    self.emit(
+                        MoltOp(
+                            kind="STORE_INDEX",
+                            args=[kwds_dict, key_val, kw_val],
+                            result=MoltValue("none"),
+                        )
+                    )
+                for splat_val in dynamic_kw_splats:
+                    self.emit(
+                        MoltOp(
+                            kind="DICT_UPDATE_KWSTAR",
+                            args=[kwds_dict, splat_val],
+                            result=MoltValue("none"),
+                        )
+                    )
+                kwds_val = kwds_dict
+
+            prepare_key = MoltValue(self.next_var(), type_hint="str")
+            self.emit(
+                MoltOp(kind="CONST_STR", args=["prepare_class"], result=prepare_key)
+            )
+            prepare_class_func = MoltValue(self.next_var(), type_hint="function")
             self.emit(
                 MoltOp(
-                    kind="STORE_INDEX",
-                    args=[namespace_cell, zero_val, namespace_val],
+                    kind="INDEX",
+                    args=[types_bootstrap, prepare_key],
+                    result=prepare_class_func,
+                )
+            )
+            prepare_args = MoltValue(self.next_var(), type_hint="callargs")
+            self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=prepare_args))
+            self.emit(
+                MoltOp(
+                    kind="CALLARGS_PUSH_POS",
+                    args=[prepare_args, name_val],
                     result=MoltValue("none"),
                 )
             )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-            namespace_val = MoltValue(self.next_var(), type_hint="Any")
             self.emit(
                 MoltOp(
-                    kind="INDEX", args=[namespace_cell, zero_val], result=namespace_val
+                    kind="CALLARGS_PUSH_POS",
+                    args=[prepare_args, dynamic_bases_tuple],
+                    result=MoltValue("none"),
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="CALLARGS_PUSH_POS",
+                    args=[prepare_args, kwds_val],
+                    result=MoltValue("none"),
+                )
+            )
+            prepared_tuple = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(
+                MoltOp(
+                    kind="CALL_BIND",
+                    args=[prepare_class_func, prepare_args],
+                    result=prepared_tuple,
+                )
+            )
+
+            zero_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[0], result=zero_val))
+            one_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[1], result=one_val))
+            two_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[2], result=two_val))
+
+            dynamic_meta = MoltValue(self.next_var(), type_hint="type")
+            self.emit(
+                MoltOp(kind="INDEX", args=[prepared_tuple, zero_val], result=dynamic_meta)
+            )
+            namespace_val = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(
+                MoltOp(kind="INDEX", args=[prepared_tuple, one_val], result=namespace_val)
+            )
+            dynamic_prepared_kwds = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="INDEX",
+                    args=[prepared_tuple, two_val],
+                    result=dynamic_prepared_kwds,
                 )
             )
 
@@ -15002,24 +14759,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
-            for kw_name, kw_val in dynamic_kw_pairs:
-                key_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[kw_name], result=key_val))
+            if dynamic_prepared_kwds is not None:
+                none_val = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+                kwds_is_none = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(
                     MoltOp(
-                        kind="CALLARGS_PUSH_KW",
-                        args=[callargs, key_val, kw_val],
-                        result=MoltValue("none"),
+                        kind="IS",
+                        args=[dynamic_prepared_kwds, none_val],
+                        result=kwds_is_none,
                     )
                 )
-            for splat_val in dynamic_kw_splats:
+                self.emit(
+                    MoltOp(kind="IF", args=[kwds_is_none], result=MoltValue("none"))
+                )
+                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
                 self.emit(
                     MoltOp(
                         kind="CALLARGS_EXPAND_KWSTAR",
-                        args=[callargs, splat_val],
+                        args=[callargs, dynamic_prepared_kwds],
                         result=MoltValue(self.next_var(), type_hint="None"),
                     )
                 )
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             class_val = MoltValue(self.next_var(), type_hint="type")
             self.emit(
                 MoltOp(
