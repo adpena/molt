@@ -5650,22 +5650,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # that actually uses it.
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
+        uses_runtime_import = module_name in self.known_modules or (
+            self._should_attempt_runtime_module_import(module_name)
+        )
+        if uses_runtime_import:
+            imported_val = MoltValue(self.next_var(), type_hint="module")
+            self.emit(MoltOp(kind="MODULE_IMPORT", args=[name_val], result=imported_val))
+            return imported_val
         module_val = MoltValue(self.next_var(), type_hint="module")
         self.emit(MoltOp(kind="MODULE_CACHE_GET", args=[name_val], result=module_val))
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
         is_none = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="IS", args=[module_val, none_val], result=is_none))
-        uses_runtime_import = module_name in self.known_modules or (
-            self._should_attempt_runtime_module_import(module_name)
-        )
         self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
-        if uses_runtime_import:
-            imported_val = MoltValue(self.next_var(), type_hint="module")
-            self.emit(
-                MoltOp(kind="MODULE_IMPORT", args=[name_val], result=imported_val)
-            )
-        elif self.known_modules:
+        if self.known_modules:
             exc_val = self._emit_exception_new(
                 "ImportError", f"No module named '{module_name}'"
             )
@@ -5674,8 +5673,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         loaded_val = MoltValue(self.next_var(), type_hint="module")
         self.emit(MoltOp(kind="MODULE_CACHE_GET", args=[name_val], result=loaded_val))
-        if not uses_runtime_import:
-            self._emit_import_guard(loaded_val, module_name)
+        self._emit_import_guard(loaded_val, module_name)
         return loaded_val
 
     def _lookup_func_defaults(
@@ -6326,6 +6324,28 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         return func_val
 
+    def _emit_runtime_function_with_none_defaults(
+        self, runtime_name: str, arity: int, *, default_count: int
+    ) -> MoltValue:
+        func_val = self._emit_runtime_function(runtime_name, arity)
+        if default_count <= 0:
+            return func_val
+        default_vals: list[MoltValue] = []
+        for _ in range(default_count):
+            none_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+            default_vals.append(none_val)
+        defaults_tuple = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(MoltOp(kind="TUPLE_NEW", args=default_vals, result=defaults_tuple))
+        self.emit(
+            MoltOp(
+                kind="SETATTR_GENERIC_OBJ",
+                args=[func_val, "__defaults__", defaults_tuple],
+                result=MoltValue("none"),
+            )
+        )
+        return func_val
+
     @staticmethod
     def _is_intrinsics_module_name(module_name: str | None) -> bool:
         if module_name is None:
@@ -6353,11 +6373,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if runtime_name is None:
             return None
         if len(node.args) == 2:
-            namespace_arg = node.args[1]
-            if not (
-                isinstance(namespace_arg, ast.Constant) and namespace_arg.value is None
-            ):
-                return None
+            # The second arg is the namespace. We accept any value —
+            # including variables like `_NS` — and simply ignore it for
+            # the BUILTIN_FUNC lowering. The runtime intrinsic resolver
+            # does not use the namespace; it was only relevant for the
+            # CPython runtime's module-level intrinsic registry which
+            # we don't have. Restricting to `None` caused builtins.py
+            # calls like `_require_intrinsic("name", _NS)` to not lower.
+            pass
         if any(kw.arg not in {"name", "namespace"} for kw in node.keywords):
             return None
         namespace_kw = next((kw for kw in node.keywords if kw.arg == "namespace"), None)
@@ -27944,15 +27967,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 # statically to BUILTIN_FUNC opcodes by
                 # `_try_lower_intrinsic_lookup_call`.  When the imported name is
                 # captured as a value (for example `_ri=_require_intrinsic` in a
-                # default argument), bind it to the runtime resolver callable so
-                # helper code continues to work under stdlib shared compilation.
+                # default argument), bind it to the canonical runtime
+                # require_intrinsic callable so aliasing preserves the public
+                # two-argument API contract (`name`, optional `namespace`).
                 if alias.name in {
                     "require_intrinsic",
                     "_require_intrinsic",
                     "load_intrinsic",
                     "_load_intrinsic",
                 }:
-                    bound_val = self._emit_runtime_function("molt_intrinsic_resolve", 1)
+                    bound_val = self._emit_runtime_function_with_none_defaults(
+                        "molt_require_intrinsic_runtime",
+                        2,
+                        default_count=1,
+                    )
                 else:
                     bound_val = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=bound_val))

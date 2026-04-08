@@ -124,7 +124,7 @@ def test_chunked_stdlib_intrinsics_import_binding_survives_reset() -> None:
     )
 
 
-def test_chunked_stdlib_intrinsics_value_binding_uses_runtime_resolver() -> None:
+def test_chunked_stdlib_intrinsics_value_binding_uses_runtime_require_intrinsic() -> None:
     source_path = Path(__file__).resolve().parents[1] / "src" / "molt" / "stdlib" / "sys.py"
     source = (
         "from _intrinsics import require_intrinsic as _require_intrinsic\n"
@@ -141,7 +141,7 @@ def test_chunked_stdlib_intrinsics_value_binding_uses_runtime_resolver() -> None
     gen.visit(ast.parse(source))
     assert gen.global_imported_names["_require_intrinsic"] == "_intrinsics"
     assert any(
-        op.kind == "BUILTIN_FUNC" and op.args[0] == "molt_intrinsic_resolve"
+        op.kind == "BUILTIN_FUNC" and op.args[0] == "molt_require_intrinsic_runtime"
         for func in gen.funcs_map.values()
         for op in func["ops"]
     )

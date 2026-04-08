@@ -92,6 +92,33 @@ def test_native_import_json_is_clean(tmp_path: Path) -> None:
     assert run.stdout.strip() == "ok"
 
 
+def test_native_import_builtins_descriptor_types_are_bootstrapped(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import builtins\n"
+            "def _probe(self=None):\n"
+            "    return self\n"
+            "print(builtins.classmethod.__name__)\n"
+            "print(type(builtins.classmethod(_probe)).__name__)\n"
+            "print(builtins.staticmethod.__name__)\n"
+            "print(type(builtins.staticmethod(_probe)).__name__)\n"
+            "print(builtins.property.__name__)\n"
+            "print(type(builtins.property()).__name__)\n"
+        ),
+        "import_builtins_descriptors",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "classmethod",
+        "classmethod",
+        "staticmethod",
+        "staticmethod",
+        "property",
+        "property",
+    ]
+
+
 def test_native_safe_intrinsic_helper_with_tuple_subclass(tmp_path: Path) -> None:
     run = _build_and_run(
         tmp_path,
@@ -142,4 +169,25 @@ def test_native_safe_intrinsic_helper_with_tuple_subclass(tmp_path: Path) -> Non
         "(3, 12, 0, 'final', 0)",
         "51118320",
         "(3, 12, 0, 'final', 0)",
+    ]
+
+
+def test_native_intrinsic_alias_preserves_namespace_compatible_signature(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from _intrinsics import require_intrinsic as _ri\n"
+            "_NS = globals()\n"
+            "fn = _ri('molt_bootstrap_descriptor_types', _NS)\n"
+            "print(type(fn).__name__)\n"
+            "print(type(fn()).__name__)\n"
+        ),
+        "intrinsic_alias_signature",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "builtin_function_or_method",
+        "tuple",
     ]

@@ -35,9 +35,9 @@ _NS = _module_namespace(__name__)
 if False:  # TYPE_CHECKING
     from typing import Any  # noqa: F401
 
-_MOLT_CLASSMETHOD_NEW = _require_intrinsic("molt_classmethod_new", _NS)
-_MOLT_STATICMETHOD_NEW = _require_intrinsic("molt_staticmethod_new", _NS)
-_MOLT_PROPERTY_NEW = _require_intrinsic("molt_property_new", _NS)
+_MOLT_BOOTSTRAP_DESCRIPTOR_TYPES = _require_intrinsic(
+    "molt_bootstrap_descriptor_types", _NS
+)
 _MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import", _NS)
 _MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", _NS)
 
@@ -53,21 +53,12 @@ except Exception:  # noqa: BLE001
     pass  # Non-fatal: cosmetic for inspect.signature parity
 
 
-def _molt_descriptor_types():
-    def _probe():
-        return None
-
-    classmethod_type = type(_MOLT_CLASSMETHOD_NEW(_probe))
-    staticmethod_type = type(_MOLT_STATICMETHOD_NEW(_probe))
-    property_type = type(_MOLT_PROPERTY_NEW(None, None, None))
-    return classmethod_type, staticmethod_type, property_type
-
-
-classmethod, staticmethod, property = _molt_descriptor_types()
-if classmethod is object or staticmethod is object or property is object:
+try:
+    classmethod, staticmethod, property = _MOLT_BOOTSTRAP_DESCRIPTOR_TYPES()
+except Exception as _exc:  # noqa: BLE001
     raise RuntimeError(
-        "descriptor intrinsics unresolved: expected classmethod/staticmethod/property types"
-    )
+        "descriptor bootstrap unresolved: expected (classmethod, staticmethod, property)"
+    ) from _exc
 
 
 def _resolve_import_name(name: str, globals_obj, level: int) -> str:

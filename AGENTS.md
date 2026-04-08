@@ -80,6 +80,12 @@
 - Standardize intrinsic naming and registration through `runtime/molt-runtime/src/intrinsics/manifest.pyi`, and regenerate `src/molt/_intrinsics.pyi` plus `runtime/molt-runtime/src/intrinsics/generated.rs` via `tools/gen_intrinsics.py`.
 - Prefer standardization, performance, and correctness: push hot paths and semantics into Rust, keep Python shims minimal and deterministic, and avoid CPython/host-stdlib dependencies.
 
+## Hard Gate: Bootstrap Authority (Non-Negotiable)
+- Runtime-known module bootstrap has one authority: `MODULE_IMPORT` plus the runtime import path. Do not split ownership between frontend cache/init special cases and runtime import semantics.
+- Bootstrap-critical builtin type objects (`classmethod`, `staticmethod`, `property`, and similar descriptors) must come from explicit runtime bootstrap primitives/intrinsics. Do not probe-construct Python objects in stdlib bootstrap code to discover their types.
+- When touching `src/molt/stdlib/builtins.py`, `src/molt/stdlib/sys.py`, `src/molt/stdlib/importlib/**`, `src/molt/stdlib/_intrinsics.py`, or frontend import lowering, add/maintain native end-to-end regressions for the exact bootstrap shape.
+- If a bootstrap fix depends on control-flow quirks in a rapidly changing frontend/backend file, stop and factor the contract into a first-class primitive instead.
+
 ## Hard Gate: Rust-Only Stdlib Turn Blocker (Non-Negotiable)
 - If a change adds or modifies stdlib behavior in `src/molt/stdlib/**`, the behavior must be implemented in Rust intrinsics first; Python code may only wire arguments, errors, and capability checks.
 - Do not add Python-side fallback logic, compatibility emulation, or host-stdlib implementation paths to make tests pass.
