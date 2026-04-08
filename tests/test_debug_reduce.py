@@ -9,6 +9,7 @@ from molt.debug.bisect import (
     bisect_first_bad_pass,
 )
 from molt.debug.reduce import (
+    build_candidate_manifest,
     build_reduction_payload,
     load_reduction_input,
     normalize_failure_oracle,
@@ -85,6 +86,7 @@ def test_normalize_failure_oracle_canonicalizes_required_categories() -> None:
             "predicates": [
                 {"path": "data.status", "op": "equals", "value": "bad"},
                 {"path": "artifacts.reduced_source", "op": "exists"},
+                {"path": "candidate.source_text", "op": "contains", "value": "KEEP"},
             ],
         }
     )
@@ -93,6 +95,7 @@ def test_normalize_failure_oracle_canonicalizes_required_categories() -> None:
         "match": {
             "predicates": [
                 {"op": "exists", "path": "artifacts.reduced_source"},
+                {"op": "contains", "path": "candidate.source_text", "value": "KEEP"},
                 {"op": "equals", "path": "data.status", "value": "bad"},
             ]
         },
@@ -193,6 +196,19 @@ def test_reduce_source_and_payload_are_promotion_ready(tmp_path: Path) -> None:
     }
     assert isinstance(payload["failure_signature"], str)
     assert len(payload["failure_signature"]) == 64
+
+
+def test_build_candidate_manifest_records_source_identity(tmp_path: Path) -> None:
+    source_path = tmp_path / "candidate.py"
+    source_text = "print('KEEP_MARK')\n"
+
+    manifest = build_candidate_manifest(source_text, source_path)
+
+    assert manifest["candidate"]["source_path"] == str(source_path)
+    assert manifest["candidate"]["source_text"] == source_text
+    assert manifest["candidate"]["source_lines"] == 1
+    assert isinstance(manifest["candidate"]["source_sha256"], str)
+    assert len(manifest["candidate"]["source_sha256"]) == 64
 
 
 def test_bisect_first_bad_pass_returns_canonical_result_shape() -> None:
