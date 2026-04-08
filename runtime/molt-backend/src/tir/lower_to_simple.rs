@@ -553,18 +553,19 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         // the next RPO block.
         if loop_role == super::blocks::LoopRole::LoopHeader
             && loop_regions.contains_key(bid) {
-                emit_structured_loop_region(
-                    *bid,
-                    func,
-                    &loop_regions,
-                    &rpo,
-                    &block_param_vars,
-                    &block_label_id,
-                    types,
-                    &original_to_new_label,
-                    &mut out,
-                    &mut loop_consumed,
-                );
+	                emit_structured_loop_region(
+	                    *bid,
+	                    func,
+	                    &loop_regions,
+	                    &rpo,
+	                    &block_param_vars,
+	                    &block_label_id,
+	                    &if_inlined_blocks,
+	                    types,
+	                    &original_to_new_label,
+	                    &mut out,
+	                    &mut loop_consumed,
+	                );
                 continue;
             }
 
@@ -746,6 +747,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 block,
                 &block_param_vars,
                 &block_label_id,
+                &if_inlined_blocks,
                 &func.loop_roles,
                 &mut out,
                 original_has_ret,
@@ -1377,6 +1379,7 @@ fn emit_structured_loop_region(
     rpo: &[BlockId],
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
+    if_inlined_blocks: &HashSet<BlockId>,
     types: &HashMap<ValueId, TirType>,
     original_to_new_label: &HashMap<i64, i64>,
     out: &mut Vec<OpIR>,
@@ -1394,6 +1397,7 @@ fn emit_structured_loop_region(
     // where the raise successor is targeted by br_if (not fallthrough).
     // These are emitted as labeled blocks before loop_end.
     let mut deferred_raise_paths: Vec<(BlockId, Vec<ValueId>)> = Vec::new();
+    let mut loop_inline_blocks: HashSet<BlockId> = if_inlined_blocks.clone();
 
     // 1. Emit label for forward jumps to the header (entry path).
     //    The native backend's pre-analysis registers label IDs from `label`
@@ -1480,6 +1484,9 @@ fn emit_structured_loop_region(
         // Add the cond block if it's not the header itself.
         if region.cond_block != header {
             header_region.push(region.cond_block);
+        }
+        for bid in header_region.iter().copied().filter(|bid| *bid != header) {
+            loop_inline_blocks.insert(bid);
         }
 
         let guard_set: HashSet<BlockId> = region.guard_chain.iter().copied().collect();
@@ -1595,6 +1602,7 @@ fn emit_structured_loop_region(
                                 func,
                                 block_param_vars,
                                 block_label_id,
+                                if_inlined_blocks,
                                 types,
                                 original_to_new_label,
                                 out,
@@ -1690,6 +1698,7 @@ fn emit_structured_loop_region(
                 rpo,
                 block_param_vars,
                 block_label_id,
+                if_inlined_blocks,
                 types,
                 original_to_new_label,
                 out,
@@ -1771,6 +1780,8 @@ fn emit_structured_loop_region(
                 value: Some(block_label_id(body_bid)),
                 ..OpIR::default()
             });
+        } else {
+            loop_inline_blocks.insert(*body_bid);
         }
         is_first_body = false;
 
@@ -1816,6 +1827,7 @@ fn emit_structured_loop_region(
                     body_block,
                     block_param_vars,
                     block_label_id,
+                    &loop_inline_blocks,
                     &func.loop_roles,
                     out,
                     original_has_ret,
@@ -1837,6 +1849,7 @@ fn emit_structured_loop_region(
             func,
             block_param_vars,
             block_label_id,
+            &loop_inline_blocks,
             types,
             original_to_new_label,
             out,
@@ -1861,6 +1874,7 @@ fn emit_guard_raise_path(
     func: &TirFunction,
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
+    if_inlined_blocks: &HashSet<BlockId>,
     types: &HashMap<ValueId, TirType>,
     original_to_new_label: &HashMap<i64, i64>,
     out: &mut Vec<OpIR>,
@@ -1914,6 +1928,7 @@ fn emit_guard_raise_path(
                 blk,
                 block_param_vars,
                 block_label_id,
+                if_inlined_blocks,
                 &func.loop_roles,
                 out,
                 original_has_ret,
@@ -1933,6 +1948,7 @@ fn emit_guard_raise_path(
                     blk,
                     block_param_vars,
                     block_label_id,
+                    if_inlined_blocks,
                     &func.loop_roles,
                     out,
                     original_has_ret,
@@ -2009,6 +2025,7 @@ fn emit_terminator(
     block: &TirBlock,
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
+    if_inlined_blocks: &HashSet<BlockId>,
     loop_roles: &HashMap<BlockId, super::blocks::LoopRole>,
     out: &mut Vec<OpIR>,
     original_has_ret: bool,
@@ -2050,6 +2067,11 @@ fn emit_terminator(
         }
 
         Terminator::Branch { target, args } => {
+            let last_op_is_check_exception = block
+                .ops
+                .last()
+                .map(|op| op.opcode == OpCode::CheckException)
+                .unwrap_or(false);
             emit_block_arg_stores(*target, args, block_param_vars, out);
 
             // If target is a LoopHeader, this is a back-edge → loop_continue.
@@ -2064,6 +2086,11 @@ fn emit_terminator(
                     kind: "loop_continue".to_string(),
                     ..OpIR::default()
                 });
+            } else if last_op_is_check_exception && if_inlined_blocks.contains(target) {
+                // The target block is emitted inline without its own label, so
+                // the normal edge is a real fallthrough. Emitting a jump here
+                // would reference an unlabeled block and break TIR roundtrip
+                // validation for larger structured regions.
             } else {
                 // A preceding `check_exception` only guards the exceptional
                 // edge; it does not replace the block's normal branch target.
