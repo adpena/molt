@@ -1316,6 +1316,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.source_path = source_path
         self.module_is_package = False
         self.module_is_namespace = module_is_namespace
+        self._emitted_syntax_warnings: set[tuple[str, int, str]] = set()
+        self._deferred_runtime_warnings: list[str] = []
         if source_path:
             normalized_path = source_path.replace("\\", "/")
             if normalized_path.endswith("/__init__.py") or normalized_path.endswith(
@@ -2139,8 +2141,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="BRIDGE_UNAVAILABLE", args=[msg_val], result=res))
         return res
 
-    _emitted_syntax_warnings: set[tuple[str, int, str]] = set()
-    _deferred_runtime_warnings: list[str] = []
+    _emitted_syntax_warnings: set[tuple[str, int, str]]
+    _deferred_runtime_warnings: list[str]
 
     def _emit_deprecation_warning(self, node: ast.AST, message: str) -> None:
         """Emit a DeprecationWarning to stderr, matching CPython's format."""
@@ -2168,73 +2170,107 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _prescan_compile_warnings(self, module_node: ast.Module) -> None:
         """Pre-scan AST for patterns that need compile-time warnings."""
         source = self.source_path or "<string>"
-        for node in ast.walk(module_node):
+        cached_source_lines: list[str] | None | Literal[False] = False
+
+        def source_line_for(lineno: int) -> str | None:
+            nonlocal cached_source_lines
+            if cached_source_lines is False:
+                if source == "<string>":
+                    cached_source_lines = None
+                else:
+                    try:
+                        with open(source) as f:
+                            cached_source_lines = [line.rstrip("\n") for line in f]
+                    except (OSError, UnicodeDecodeError):
+                        cached_source_lines = None
+            if not cached_source_lines or lineno <= 0 or lineno > len(cached_source_lines):
+                return None
+            return cached_source_lines[lineno - 1].strip()
+
+        def record_warning(lineno: int, category: str, message: str) -> None:
+            key = (source, lineno, message)
+            if key in self._emitted_syntax_warnings:
+                return
+            self._emitted_syntax_warnings.add(key)
+            self._deferred_runtime_warnings.append(
+                f"{source}:{lineno}: {category}: {message}"
+            )
+            src_line = source_line_for(lineno)
+            if src_line:
+                self._deferred_runtime_warnings.append(f"  {src_line}")
+
+        scope_barriers = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        invert_bool_msg = (
+            "Bitwise inversion '~' on bool is deprecated and will be "
+            "removed in Python 3.16. This returns the bitwise inversion "
+            "of the underlying int object and is usually not what you "
+            "expect from negating a bool. Use the 'not' operator for "
+            "boolean negation or ~int(x) if you really want the bitwise "
+            "inversion of the underlying int."
+        )
+
+        stack: list[tuple[ast.AST, bool, bool]] = [(module_node, False, False)]
+        while stack:
+            node, in_finally, finally_checks_blocked = stack.pop()
+
             if (
                 isinstance(node, ast.UnaryOp)
                 and isinstance(node.op, ast.Invert)
                 and isinstance(node.operand, ast.Constant)
                 and isinstance(node.operand.value, bool)
             ):
-                lineno = getattr(node, "lineno", 0)
-                key = (source, lineno, "~bool")
-                if key in self._emitted_syntax_warnings:
-                    continue
-                self._emitted_syntax_warnings.add(key)
-                msg = (
-                    "Bitwise inversion '~' on bool is deprecated and will be "
-                    "removed in Python 3.16. This returns the bitwise inversion "
-                    "of the underlying int object and is usually not what you "
-                    "expect from negating a bool. Use the 'not' operator for "
-                    "boolean negation or ~int(x) if you really want the bitwise "
-                    "inversion of the underlying int."
+                record_warning(
+                    getattr(node, "lineno", 0),
+                    "DeprecationWarning",
+                    invert_bool_msg,
                 )
-                self._deferred_runtime_warnings.append(
-                    f"{source}:{lineno}: DeprecationWarning: {msg}"
-                )
-                try:
-                    with open(source) as f:
-                        for i, line in enumerate(f, 1):
-                            if i == lineno:
-                                self._deferred_runtime_warnings.append(
-                                    f"  {line.strip()}"
-                                )
-                                break
-                except (OSError, UnicodeDecodeError):
-                    pass
 
-            # SyntaxWarning for return/break/continue in finally blocks
-            for node in ast.walk(module_node):
-                if not isinstance(node, ast.Try) or not node.finalbody:
-                    continue
-                for stmt in ast.walk(ast.Module(body=node.finalbody, type_ignores=[])):
-                    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                        continue  # Don't recurse into nested scopes
-                    warn_msg = None
-                    if isinstance(stmt, ast.Return):
-                        warn_msg = "'return' in a 'finally' block"
-                    elif isinstance(stmt, ast.Break):
-                        warn_msg = "'break' in a 'finally' block"
-                    elif isinstance(stmt, ast.Continue):
-                        warn_msg = "'continue' in a 'finally' block"
-                    if warn_msg is not None:
-                        lineno = getattr(stmt, "lineno", 0)
-                        key = (source, lineno, warn_msg)
-                        if key in self._emitted_syntax_warnings:
-                            continue
-                        self._emitted_syntax_warnings.add(key)
-                        self._deferred_runtime_warnings.append(
-                            f"{source}:{lineno}: SyntaxWarning: {warn_msg}"
+            if in_finally and not finally_checks_blocked:
+                warn_msg = None
+                if isinstance(node, ast.Return):
+                    warn_msg = "'return' in a 'finally' block"
+                elif isinstance(node, ast.Break):
+                    warn_msg = "'break' in a 'finally' block"
+                elif isinstance(node, ast.Continue):
+                    warn_msg = "'continue' in a 'finally' block"
+                if warn_msg is not None:
+                    record_warning(
+                        getattr(node, "lineno", 0),
+                        "SyntaxWarning",
+                        warn_msg,
+                    )
+
+            child_finally_checks_blocked = (
+                finally_checks_blocked or isinstance(node, scope_barriers)
+            )
+            child_entries: list[tuple[ast.AST, bool, bool]] = []
+            if isinstance(node, ast.Try):
+                for field_name, value in ast.iter_fields(node):
+                    if isinstance(value, list):
+                        children = [item for item in value if isinstance(item, ast.AST)]
+                    elif isinstance(value, ast.AST):
+                        children = [value]
+                    else:
+                        continue
+                    child_in_finally = in_finally or field_name == "finalbody"
+                    for child in children:
+                        child_entries.append(
+                            (
+                                child,
+                                child_in_finally,
+                                child_finally_checks_blocked,
+                            )
                         )
-                        try:
-                            with open(source) as f:
-                                for i, line in enumerate(f, 1):
-                                    if i == lineno:
-                                        self._deferred_runtime_warnings.append(
-                                            f"  {line.strip()}"
-                                        )
-                                        break
-                        except (OSError, UnicodeDecodeError):
-                            pass
+            else:
+                for child in ast.iter_child_nodes(node):
+                    child_entries.append(
+                        (
+                            child,
+                            in_finally,
+                            child_finally_checks_blocked,
+                        )
+                    )
+            stack.extend(reversed(child_entries))
 
     def _emit_deferred_warnings(self) -> None:
         """Emit deferred runtime warnings as WARN_STDERR ops.
