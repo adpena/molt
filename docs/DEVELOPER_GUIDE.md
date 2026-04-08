@@ -102,6 +102,36 @@ Interpretation:
 - `tools/dev.py` remains available as a thin convenience delegate; it is not
   the behavioral authority.
 
+## Canonical Debug Surface
+
+Molt debugging now centers on the `molt debug` command family rather than on
+ad hoc standalone scripts.
+
+Wired today:
+
+- `molt debug ir`
+- `molt debug verify`
+- `molt debug diff`
+- `molt debug perf`
+
+Under active build-out:
+
+- `molt debug trace`
+- `molt debug reduce`
+- `molt debug bisect`
+
+Rules:
+
+- `molt` is the public authority; legacy tools may remain only as additive
+  wrappers during migration.
+- Debug artifacts belong under canonical roots: `tmp/debug/` by default and
+  `logs/debug/` for retained outputs.
+- Every debug-facing feature must preserve explicit platform/version dimensions
+  instead of inheriting host-specific behavior silently.
+- Cross-platform support is the default requirement: when a host-specific
+  capability is unavailable, return an explicit unsupported/error result rather
+  than drifting.
+
 ## Fast Build Playbook
 
 Use this workflow for high-velocity multi-agent iteration:
@@ -201,6 +231,7 @@ We recommend reading them in this order:
 
 - **`src/`**: Python frontend, CLI, stdlib shims, and compiler-side orchestration.
     - `molt/`: The CLI entry point, standard library shims, import/build plumbing, and frontend modules.
+    - `molt/debug/`: Canonical debug/diff/perf/verify/reducer helper modules.
     - `molt/frontend/`: Python-side IR construction, analysis, and compiler orchestration.
 - **`runtime/`**: The runtime support system.
     - `molt-runtime/`: Core runtime (scheduler, intrinsics).
@@ -210,6 +241,8 @@ We recommend reading them in this order:
     - `molt-worker/`: The execution harness for compiled binaries/workers.
 - **`crates/`**: Rust helper crates that support tree shaking, lazy loading, and related compile-time packaging concerns.
 - **`tools/`**: Development tooling and shared utility scripts (`dev.py`, `bench.py`, `tools/scripts/`).
+  - legacy debug wrappers remain additive-only while the canonical `molt debug`
+    surface absorbs their behavior.
 - **`bench/`**: Benchmark harnesses, friend suites, benchmark-specific helper scripts, and benchmark result artifacts.
 - **`demo/`**: Demo applications and vertical-slice integration examples.
 - **`ops/`**: Operational support material and automation inputs.

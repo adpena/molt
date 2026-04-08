@@ -13537,21 +13537,16 @@ impl SimpleBackend {
                     // omitted: the IR may reference the variable in unreachable
                     // branches (different if/else arms), inflating last_use.
                     let callargs_name = &args_names[1];
-                    if let Some(block) = builder.current_block() {
-                        if block == entry_block && loop_depth == 0 {
-                            tracked_obj_vars.retain(|n| n != callargs_name);
-                            tracked_vars.retain(|n| n != callargs_name);
-                            tracked_obj_vars_set.remove(callargs_name);
-                            tracked_vars_set.remove(callargs_name);
-                            entry_vars.remove(callargs_name);
-                        } else {
-                            if let Some(names) = block_tracked_obj.get_mut(&block) {
-                                names.retain(|n| n != callargs_name);
-                            }
-                            if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                                names.retain(|n| n != callargs_name);
-                            }
-                        }
+                    tracked_obj_vars.retain(|n| n != callargs_name);
+                    tracked_vars.retain(|n| n != callargs_name);
+                    tracked_obj_vars_set.remove(callargs_name);
+                    tracked_vars_set.remove(callargs_name);
+                    entry_vars.remove(callargs_name);
+                    for names in block_tracked_obj.values_mut() {
+                        names.retain(|n| n != callargs_name);
+                    }
+                    for names in block_tracked_ptr.values_mut() {
+                        names.retain(|n| n != callargs_name);
                     }
                 }
                 "call_method" => {

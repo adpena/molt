@@ -81,9 +81,14 @@ fn trace_function_bind_meta_enabled() -> bool {
     })
 }
 
-fn callargs_builder_registry() -> &'static Mutex<HashSet<usize>> {
-    static REGISTRY: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+fn disable_call_bind_ic_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_DISABLE_CALL_BIND_IC").as_deref() == Ok("1"))
+}
+
+fn callargs_builder_map() -> &'static Mutex<HashMap<usize, usize>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn callargs_storage_registry() -> &'static Mutex<HashSet<usize>> {
@@ -93,10 +98,10 @@ fn callargs_storage_registry() -> &'static Mutex<HashSet<usize>> {
 
 pub(crate) fn note_callargs_alloc(builder_ptr: *mut u8, args_ptr: *mut CallArgs) {
     if !builder_ptr.is_null() {
-        callargs_builder_registry()
+        callargs_builder_map()
             .lock()
             .unwrap()
-            .insert(builder_ptr as usize);
+            .insert(builder_ptr as usize, args_ptr as usize);
     }
     if args_ptr.is_null() {
         return;
@@ -109,10 +114,7 @@ pub(crate) fn note_callargs_alloc(builder_ptr: *mut u8, args_ptr: *mut CallArgs)
 
 pub(crate) fn note_callargs_free(builder_ptr: *mut u8, args_ptr: *mut CallArgs) {
     if !builder_ptr.is_null() {
-        callargs_builder_registry()
-            .lock()
-            .unwrap()
-            .remove(&(builder_ptr as usize));
+        callargs_builder_map().lock().unwrap().remove(&(builder_ptr as usize));
     }
     if args_ptr.is_null() {
         return;
@@ -127,10 +129,10 @@ fn callargs_builder_is_live(builder_ptr: *mut u8) -> bool {
     if builder_ptr.is_null() {
         return false;
     }
-    callargs_builder_registry()
+    callargs_builder_map()
         .lock()
         .unwrap()
-        .contains(&(builder_ptr as usize))
+        .contains_key(&(builder_ptr as usize))
 }
 
 fn callargs_storage_is_live(args_ptr: *mut CallArgs) -> bool {
@@ -251,11 +253,10 @@ unsafe fn call_type_with_builder(
         let args_ptr = if builder_ptr.is_null() {
             None
         } else {
-            let ptr = callargs_ptr(builder_ptr);
-            if ptr.is_null() {
-                return MoltObject::none().bits();
+            match require_callargs_ptr(_py, builder_ptr) {
+                Ok(ptr) => Some(ptr),
+                Err(err) => return err,
             }
-            Some(ptr)
         };
         if let Some(ptr) = args_ptr {
             let pos_args = (*ptr).pos.as_slice();
@@ -1025,7 +1026,47 @@ unsafe fn build_class_from_args(
 }
 
 pub(crate) unsafe fn callargs_ptr(ptr: *mut u8) -> *mut CallArgs {
-    unsafe { *(ptr as *mut *mut CallArgs) }
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    callargs_builder_map()
+        .lock()
+        .unwrap()
+        .get(&(ptr as usize))
+        .copied()
+        .map_or(std::ptr::null_mut(), |raw| raw as *mut CallArgs)
+}
+
+unsafe fn require_callargs_ptr(
+    _py: &PyToken<'_>,
+    builder_ptr: *mut u8,
+) -> Result<*mut CallArgs, u64> {
+    unsafe {
+        if builder_ptr.is_null() {
+            return Ok(std::ptr::null_mut());
+        }
+        if !callargs_builder_is_live(builder_ptr) {
+            if trace_callargs_enabled() {
+                eprintln!(
+                    "[molt callargs] invalid_builder builder_ptr=0x{:x}",
+                    builder_ptr as usize,
+                );
+            }
+            return Err(raise_exception::<_>(_py, "TypeError", "invalid callargs builder"));
+        }
+        let args_ptr = callargs_ptr(builder_ptr);
+        if args_ptr.is_null() || !callargs_storage_is_live(args_ptr) {
+            if trace_callargs_enabled() {
+                eprintln!(
+                    "[molt callargs] invalid_storage builder_ptr=0x{:x} args_ptr=0x{:x}",
+                    builder_ptr as usize,
+                    args_ptr as usize,
+                );
+            }
+            return Err(raise_exception::<_>(_py, "TypeError", "invalid callargs storage"));
+        }
+        Ok(args_ptr)
+    }
 }
 
 pub(crate) unsafe fn callargs_dec_ref_all(_py: &PyToken<'_>, args_ptr: *mut CallArgs) {
@@ -1220,22 +1261,15 @@ pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> 
             }
             if trace_callargs_enabled() {
                 eprintln!(
-                    "[molt callargs] push_pos_builder builder_bits=0x{:x} builder_ptr=0x{:x} type_id={}",
+                    "[molt callargs] push_pos_builder builder_bits=0x{:x} builder_ptr=0x{:x} live=true",
                     builder_bits,
                     builder_ptr as usize,
-                    object_type_id(builder_ptr),
                 );
             }
-            if object_type_id(builder_ptr) != TYPE_ID_CALLARGS {
-                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
-            }
-            let args_ptr = callargs_ptr(builder_ptr);
-            if args_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            if !callargs_storage_is_live(args_ptr) {
-                return raise_exception::<_>(_py, "TypeError", "invalid callargs storage");
-            }
+            let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
+                Ok(ptr) => ptr,
+                Err(err) => return err,
+            };
             if trace_callargs_enabled() {
                 eprintln!(
                     "[molt callargs] push_pos_raw builder_bits=0x{:x} builder_ptr=0x{:x} args_ptr=0x{:x} val_type={} val_bits=0x{:x}",
@@ -1288,10 +1322,10 @@ unsafe fn callargs_push_kw(
         if object_type_id(name_ptr) != TYPE_ID_STRING {
             return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
         }
-        let args_ptr = callargs_ptr(builder_ptr);
-        if args_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
+        let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
+            Ok(ptr) => ptr,
+            Err(err) => return err,
+        };
         let args = &mut *args_ptr;
         let name = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
         if args.kw_seen.contains(&name) {
@@ -1327,9 +1361,6 @@ pub unsafe extern "C" fn molt_callargs_push_kw(
             if !callargs_builder_is_live(builder_ptr) {
                 return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
             }
-            if object_type_id(builder_ptr) != TYPE_ID_CALLARGS {
-                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
-            }
             callargs_push_kw(_py, builder_ptr, name_bits, val_bits)
         })
     }
@@ -1350,17 +1381,16 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
             }
             if trace_callargs_enabled() {
                 eprintln!(
-                    "[molt callargs] expand_star_builder builder_bits=0x{:x} builder_ptr=0x{:x} type_id={}",
+                    "[molt callargs] expand_star_builder builder_bits=0x{:x} builder_ptr=0x{:x} live=true",
                     builder_bits,
                     builder_ptr as usize,
-                    object_type_id(builder_ptr),
                 );
             }
-            if object_type_id(builder_ptr) != TYPE_ID_CALLARGS {
-                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
-            }
+            let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
+                Ok(ptr) => ptr,
+                Err(err) => return err,
+            };
             if trace_callargs_enabled() {
-                let args_ptr = callargs_ptr(builder_ptr);
                 let len = if args_ptr.is_null() { 0 } else { (&*args_ptr).pos.len() };
                 eprintln!(
                     "[molt callargs] expand_star builder_bits=0x{:x} builder_ptr=0x{:x} args_ptr=0x{:x} len_before={} iterable_type={} iterable_bits=0x{:x}",
@@ -1371,10 +1401,6 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
                     type_name(_py, obj_from_bits(iterable_bits)),
                     iterable_bits,
                 );
-            }
-            let args_ptr = callargs_ptr(builder_ptr);
-            if !callargs_storage_is_live(args_ptr) {
-                return raise_exception::<_>(_py, "TypeError", "invalid callargs storage");
             }
             let iter_bits = molt_iter(iterable_bits);
             if obj_from_bits(iter_bits).is_none() {
@@ -1429,14 +1455,11 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_
             if !callargs_builder_is_live(builder_ptr) {
                 return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
             }
-            if object_type_id(builder_ptr) != TYPE_ID_CALLARGS {
-                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
-            }
             let mapping_obj = obj_from_bits(mapping_bits);
-            let args_ptr = callargs_ptr(builder_ptr);
-            if !callargs_storage_is_live(args_ptr) {
-                return raise_exception::<_>(_py, "TypeError", "invalid callargs storage");
-            }
+            let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
+                Ok(ptr) => ptr,
+                Err(err) => return err,
+            };
             let Some(mapping_ptr) = mapping_obj.as_ptr() else {
                 return raise_exception::<_>(
                     _py,
@@ -1684,10 +1707,9 @@ unsafe fn try_call_bind_ic_fast(
     _py: &PyToken<'_>,
     entry: CallBindIcEntry,
     call_bits: u64,
-    builder_ptr: *mut u8,
+    args_ptr: *mut CallArgs,
 ) -> Option<u64> {
     unsafe {
-        let args_ptr = callargs_ptr(builder_ptr);
         if args_ptr.is_null() {
             return None;
         }
@@ -1757,13 +1779,41 @@ unsafe fn call_bind_ic_dispatch(
         let builder_ptr = ptr_from_bits(builder_bits);
         let mut builder_guard = PtrDropGuard::new(builder_ptr);
 
+        if disable_call_bind_ic_enabled() {
+            if trace_call_bind_ic_enabled() {
+                eprintln!(
+                    "[molt call_bind_ic] bypass site={} reason=disabled_via_env",
+                    site_id
+                );
+            }
+            builder_guard.release();
+            return molt_call_bind(call_bits, builder_bits);
+        }
+
         if !builder_ptr.is_null() {
+            let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
+                Ok(ptr) => ptr,
+                Err(err) => return err,
+            };
             // Thread-local IC lookup — zero synchronization overhead on hits.
             if let Some(entry) = ic_tls_lookup(site_id)
-                && let Some(res) = try_call_bind_ic_fast(_py, entry, call_bits, builder_ptr)
+                && let Some(res) = try_call_bind_ic_fast(_py, entry, call_bits, args_ptr)
             {
+                if trace_call_bind_ic_enabled() {
+                    let kind = match entry.kind {
+                        CALL_BIND_IC_KIND_DIRECT_FUNC => "direct_func",
+                        CALL_BIND_IC_KIND_LIST_APPEND => "list_append",
+                        _ => "unknown",
+                    };
+                    eprintln!(
+                        "[molt call_bind_ic] hit site={} kind={} arity={} fn_ptr=0x{:x}",
+                        site_id,
+                        kind,
+                        entry.arity,
+                        entry.fn_ptr,
+                    );
+                }
                 profile_hit_unchecked(&CALL_BIND_IC_HIT_COUNT);
-                let args_ptr = callargs_ptr(builder_ptr);
                 return protect_callargs_aliased_return(_py, res, args_ptr);
             }
         }
@@ -1994,10 +2044,10 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            let args_ptr = callargs_ptr(builder_ptr);
-            if args_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
+            let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
+                Ok(ptr) => ptr,
+                Err(err) => return err,
+            };
             let args = &mut *args_ptr;
             if let Some(self_bits) = self_bits {
                 // The CallArgs builder owns its slots (see `molt_callargs_push_pos`), so inserting

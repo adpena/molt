@@ -17,6 +17,11 @@ Molt targets **Python 3.12+** semantics only.
 - Spec index: [spec/README.md](spec/README.md)
 - Compatibility architecture: [spec/areas/compat/README.md](spec/areas/compat/README.md)
 
+## Debugging
+
+- Canonical debug operations and artifact roots: [OPERATIONS.md](OPERATIONS.md)
+- Architecture and ownership map for the debug surface: [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)
+
 ## Product And Proof
 
 - Compatibility corpus manifest: [COMPATIBILITY_CORPUS_MANIFEST.md](COMPATIBILITY_CORPUS_MANIFEST.md)
