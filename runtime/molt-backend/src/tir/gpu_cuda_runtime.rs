@@ -54,6 +54,8 @@ impl CudaDevice {
 
 #[cfg(test)]
 mod tests {
+    use super::CudaDevice;
+
     /// Without the feature, `CudaDevice::new()` must return an error — never
     /// panic. With the feature enabled the test is skipped (it would require
     /// an actual GPU in the test environment).
