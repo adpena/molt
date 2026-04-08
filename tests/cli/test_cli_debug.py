@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -107,6 +108,10 @@ def _write_perf_inputs(tmp_path: Path) -> tuple[Path, Path]:
     return profile_json_path, profile_log_path
 
 
+def _build_eval_command(python_code: str) -> str:
+    return shlex.join([_python_executable(), "-c", python_code])
+
+
 def test_debug_help_lists_canonical_subcommands(tmp_path: Path) -> None:
     res = _run_cli(["debug", "--help"], cwd=tmp_path)
     assert res.returncode == 0, res.stderr
@@ -137,7 +142,7 @@ def test_debug_unwired_flows_accept_input_paths_and_emit_structured_payloads(
 ) -> None:
     source_path = _write_source(tmp_path)
 
-    for subcommand in ("repro", "trace", "reduce", "bisect"):
+    for subcommand in ("repro", "trace"):
         res = _run_cli(
             ["debug", subcommand, str(source_path), "--format", "json"],
             cwd=tmp_path,
@@ -277,3 +282,128 @@ def test_debug_perf_consumes_profile_logs_and_retains_summary(tmp_path: Path) ->
     assert retained_output.is_file()
     retained_payload = json.loads(retained_output.read_text(encoding="utf-8"))
     assert retained_payload["data"] == payload["data"]
+
+
+def test_debug_reduce_reduces_source_with_manifest_oracle(tmp_path: Path) -> None:
+    source_path = tmp_path / "failing_case.py"
+    source_path.write_text(
+        "print('noise-1')\nprint('KEEP_MARK')\nprint('noise-2')\n",
+        encoding="utf-8",
+    )
+    eval_command = _build_eval_command(
+        "import json, os, pathlib; "
+        "text = pathlib.Path(os.environ['MOLT_DEBUG_EVAL_INPUT']).read_text(); "
+        "print(json.dumps({'manifest': {'candidate': {'source_text': text}}}))"
+    )
+
+    res = _run_cli(
+        [
+            "debug",
+            "reduce",
+            str(source_path),
+            "--oracle-json",
+            json.dumps(
+                {
+                    "kind": "manifest",
+                    "predicates": [
+                        {
+                            "path": "candidate.source_text",
+                            "op": "contains",
+                            "value": "KEEP_MARK",
+                        }
+                    ],
+                }
+            ),
+            "--eval-command",
+            eval_command,
+            "--format",
+            "json",
+        ],
+        cwd=tmp_path,
+    )
+
+    assert res.returncode == 0, res.stderr
+    payload = json.loads(res.stdout)
+    assert payload["subcommand"] == "reduce"
+    assert payload["status"] == "ok"
+    assert payload["failure_class"] is None
+    assert payload["data"]["reduction"]["reduced_lines"] == 1
+    reduced_source = _to_abs(payload["data"]["artifacts"]["reduced_source"], cwd=tmp_path)
+    assert reduced_source.is_file()
+    assert reduced_source.read_text(encoding="utf-8").strip() == "print('KEEP_MARK')"
+
+
+def test_debug_bisect_locates_first_bad_pass(tmp_path: Path) -> None:
+    source_path = _write_source(tmp_path)
+    eval_command = _build_eval_command(
+        "import json, os; "
+        "print(json.dumps({'trace_events': [{'event': 'pass', 'signature': os.environ['MOLT_DEBUG_EVAL_PASSES_CSV']}]}))"
+    )
+
+    res = _run_cli(
+        [
+            "debug",
+            "bisect",
+            str(source_path),
+            "--passes",
+            "parse,typecheck,lower_inline_cache,codegen",
+            "--oracle-json",
+            json.dumps(
+                {
+                    "kind": "trace",
+                    "event": "pass",
+                    "signature": "lower_inline_cache",
+                }
+            ),
+            "--eval-command",
+            eval_command,
+            "--format",
+            "json",
+        ],
+        cwd=tmp_path,
+    )
+
+    assert res.returncode == 0, res.stderr
+    payload = json.loads(res.stdout)
+    assert payload["subcommand"] == "bisect"
+    assert payload["status"] == "ok"
+    assert payload["failure_class"] is None
+    assert payload["data"]["bisect"]["mode"] == "first_bad_pass"
+    assert payload["data"]["bisect"]["first_bad_pass"] == "lower_inline_cache"
+
+
+def test_debug_bisect_finds_minimal_bad_config_toggle(tmp_path: Path) -> None:
+    source_path = _write_source(tmp_path)
+    eval_command = _build_eval_command(
+        "import json, os; "
+        "candidate = json.loads(os.environ['MOLT_DEBUG_EVAL_CANDIDATE_JSON']); "
+        "matched = candidate['ic'] is False; "
+        "print(json.dumps({'diff': {'mismatch_class': 'stderr_mismatch' if matched else 'match', 'field': 'stderr'}}))"
+    )
+
+    res = _run_cli(
+        [
+            "debug",
+            "bisect",
+            str(source_path),
+            "--baseline-json",
+            json.dumps({"backend": "native", "profile": "dev", "ic": True}),
+            "--failing-json",
+            json.dumps({"backend": "wasm", "profile": "release", "ic": False}),
+            "--oracle-json",
+            json.dumps({"kind": "diff", "mismatch_class": "stderr_mismatch"}),
+            "--eval-command",
+            eval_command,
+            "--format",
+            "json",
+        ],
+        cwd=tmp_path,
+    )
+
+    assert res.returncode == 0, res.stderr
+    payload = json.loads(res.stdout)
+    assert payload["subcommand"] == "bisect"
+    assert payload["status"] == "ok"
+    assert payload["failure_class"] is None
+    assert payload["data"]["bisect"]["mode"] == "config_toggle_bisect"
+    assert payload["data"]["bisect"]["minimal_bad_dimensions"] == ["ic"]

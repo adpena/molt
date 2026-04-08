@@ -113,12 +113,13 @@ Wired today:
 - `molt debug verify`
 - `molt debug diff`
 - `molt debug perf`
+- `molt debug reduce`
+- `molt debug bisect`
 
 Under active build-out:
 
 - `molt debug trace`
-- `molt debug reduce`
-- `molt debug bisect`
+- `molt debug repro`
 
 Rules:
 

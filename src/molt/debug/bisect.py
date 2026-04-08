@@ -6,6 +6,8 @@ import itertools
 import json
 from typing import Any, Callable, Mapping, Sequence
 
+from .reduce import oracle_matches
+
 
 @dataclass(frozen=True)
 class ProbeSupervisorAttemptConfig:
@@ -92,7 +94,7 @@ def bisect_first_bad_pass(
     for index in range(len(passes)):
         prefix = tuple(passes[: index + 1])
         evaluation = evaluator(prefix)
-        matched = bool(evaluation.get("matched"))
+        matched = oracle_matches(oracle, evaluation)
         decisions.append({"candidate": list(prefix), "matched": matched})
         if matched:
             first_bad_index = index
@@ -140,7 +142,7 @@ def bisect_backend_profile_ic(
             for key in subset:
                 candidate[key] = failing[key]
             evaluation = evaluator(candidate)
-            matched = bool(evaluation.get("matched"))
+            matched = oracle_matches(oracle, evaluation)
             decisions.append(
                 {
                     "dimensions": list(subset),
