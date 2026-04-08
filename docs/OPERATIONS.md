@@ -33,6 +33,41 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
 - **Shared target pinning (macOS)**: explicitly set both `CARGO_TARGET_DIR` and `MOLT_DIFF_CARGO_TARGET_DIR` to the same shared path for diff runs so workers do not drift onto ad-hoc/default targets and duplicate rebuilds.
 - **Interrupted-run cleanup**: before a new long sweep, clear stale harness workers from prior crashes (`ps -axo pid,command | rg "tests/molt_diff.py"` then `kill -TERM <pid>`/`kill -KILL <pid>` as needed). Keep one supervising diff run per shared target.
 
+## Debug Commands
+
+Use the canonical `molt debug` surface for retained debug artifacts and
+machine-readable summaries.
+
+Currently wired commands:
+
+- `molt debug ir <source.py> --stage pre-midend|post-midend|all`
+- `molt debug verify`
+- `molt debug diff <summary.json> [--failure-queue <failures.txt>]`
+- `molt debug perf <profile.json|profile.log>...`
+
+Current contract:
+
+- manifests are written under `tmp/debug/` by default;
+- retained outputs use `logs/debug/` when `--out` is provided;
+- `--format json` emits a stable summary payload suitable for automation;
+- unsupported or invalid requests must fail via explicit structured payloads,
+  not silent no-ops.
+
+Version and platform rules:
+
+- treat Python version as an explicit dimension (`py312`/`py313`/`py314`) when
+  behavior differs;
+- treat host/process features as capability-gated, not assumed;
+- do not silently inherit POSIX-only behavior for process control, timeouts, or
+  profiling support.
+
+Current status note:
+
+- `molt debug trace`, `molt debug reduce`, and `molt debug bisect` are still
+  under active build-out;
+- contested runtime work, especially around call-bind ownership, must not be
+  forced through while partner changes are active.
+
 ## Linear Workspace Hygiene
 - Refresh the repo-backed local Linear artifacts from current TODO contracts with `python3 tools/linear_hygiene.py refresh-local-artifacts --repo-root .` to inspect drift.
 - Apply the refreshed local seed/manifests/index with `python3 tools/linear_hygiene.py refresh-local-artifacts --repo-root . --apply`.
