@@ -13,6 +13,7 @@ from molt.debug.reduce import (
     build_reduction_payload,
     load_reduction_input,
     normalize_failure_oracle,
+    oracle_matches,
     reduce_source_text,
 )
 
@@ -123,6 +124,22 @@ def test_load_reduction_input_accepts_source_or_manifest(tmp_path: Path) -> None
         ),
         encoding="utf-8",
     )
+    replay_path = tmp_path / "reduced.py"
+    replay_path.write_text("print('replayed')\n", encoding="utf-8")
+    replay_manifest_path = tmp_path / "replay_manifest.json"
+    replay_manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "subcommand": "reduce",
+                "data": {
+                    "input": {"kind": "source", "source_path": str(source_path)},
+                    "artifacts": {"reduced_source": str(replay_path)},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     source_input = load_reduction_input(source_path)
     assert source_input.input_kind == "source"
@@ -135,6 +152,11 @@ def test_load_reduction_input_accepts_source_or_manifest(tmp_path: Path) -> None
     assert manifest_input.source_text == "print('manifest')\n"
     assert manifest_input.manifest_path == manifest_path
     assert manifest_input.original_manifest is not None
+
+    replay_input = load_reduction_input(replay_manifest_path)
+    assert replay_input.input_kind == "manifest"
+    assert replay_input.source_path == source_path
+    assert replay_input.source_text == "print('replayed')\n"
 
 
 def test_reduce_source_and_payload_are_promotion_ready(tmp_path: Path) -> None:
@@ -179,6 +201,8 @@ def test_reduce_source_and_payload_are_promotion_ready(tmp_path: Path) -> None:
     payload = build_reduction_payload(result)
 
     assert result.reduced_source.strip() == "print('KEEP_MARK')"
+    assert payload["source_path"] == str(source_path)
+    assert payload["source_text"] == result.reduced_source
     assert payload["input"]["kind"] == "source"
     assert payload["oracle"] == oracle
     assert payload["reduction"] == {
@@ -211,18 +235,29 @@ def test_build_candidate_manifest_records_source_identity(tmp_path: Path) -> Non
     assert len(manifest["candidate"]["source_sha256"]) == 64
 
 
+def test_oracle_matches_ignores_noncanonical_matched_shortcut() -> None:
+    oracle = normalize_failure_oracle({"kind": "diff", "mismatch_class": "stderr_mismatch"})
+    evaluation = {
+        "matched": True,
+        "diff": {
+            "mismatch_class": "match",
+            "field": "stderr",
+        },
+    }
+
+    assert oracle_matches(oracle, evaluation) is False
+
+
 def test_bisect_first_bad_pass_returns_canonical_result_shape() -> None:
     passes = ["parse", "typecheck", "lower_inline_cache", "codegen"]
     oracle = normalize_failure_oracle({"kind": "trace", "signature": "lower_inline_cache"})
 
     def evaluator(prefix: tuple[str, ...]) -> dict[str, object]:
-        matched = "lower_inline_cache" in prefix
         return {
-            "matched": matched,
             "trace_events": [
                 {
                     "event": "pass",
-                    "signature": "lower_inline_cache" if matched else "clean",
+                    "signature": ",".join(prefix),
                 }
             ],
         }
@@ -247,11 +282,9 @@ def test_bisect_backend_profile_ic_returns_minimal_bad_toggle_shape() -> None:
     oracle = normalize_failure_oracle({"kind": "diff", "mismatch_class": "stderr_mismatch"})
 
     def evaluator(config: dict[str, object]) -> dict[str, object]:
-        matched = config["ic"] is False
         return {
-            "matched": matched,
             "diff": {
-                "mismatch_class": "stderr_mismatch" if matched else "match",
+                "mismatch_class": "stderr_mismatch" if config["ic"] is False else "match",
                 "field": "stderr",
             },
         }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shlex
@@ -7,6 +8,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import molt.cli as molt_cli
+from molt.debug import DebugSubcommand, allocate_debug_paths
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,6 +20,15 @@ def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
+    env.setdefault("MOLT_SESSION_ID", "tests-cli-debug")
+    env.setdefault("MOLT_EXT_ROOT", str(ROOT))
+    env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
+    env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
+    env.setdefault("MOLT_CACHE", str(ROOT / ".molt_cache"))
+    env.setdefault("MOLT_DIFF_ROOT", str(ROOT / "tmp" / "diff"))
+    env.setdefault("MOLT_DIFF_TMPDIR", str(ROOT / "tmp"))
+    env.setdefault("UV_CACHE_DIR", str(ROOT / ".uv-cache"))
+    env.setdefault("TMPDIR", str(ROOT / "tmp"))
     return env
 
 
@@ -142,7 +155,7 @@ def test_debug_unwired_flows_accept_input_paths_and_emit_structured_payloads(
 ) -> None:
     source_path = _write_source(tmp_path)
 
-    for subcommand in ("repro", "trace"):
+    for subcommand in ("trace",):
         res = _run_cli(
             ["debug", subcommand, str(source_path), "--format", "json"],
             cwd=tmp_path,
@@ -332,6 +345,95 @@ def test_debug_reduce_reduces_source_with_manifest_oracle(tmp_path: Path) -> Non
     assert reduced_source.is_file()
     assert reduced_source.read_text(encoding="utf-8").strip() == "print('KEEP_MARK')"
 
+    replay = _run_cli(
+        [
+            "debug",
+            "reduce",
+            str(_to_abs(payload["manifest_path"], cwd=tmp_path)),
+            "--oracle-json",
+            json.dumps(
+                {
+                    "kind": "manifest",
+                    "predicates": [
+                        {
+                            "path": "candidate.source_text",
+                            "op": "contains",
+                            "value": "KEEP_MARK",
+                        }
+                    ],
+                }
+            ),
+            "--eval-command",
+            eval_command,
+            "--format",
+            "json",
+        ],
+        cwd=tmp_path,
+    )
+    assert replay.returncode == 0, replay.stderr
+    replay_payload = json.loads(replay.stdout)
+    assert replay_payload["status"] == "ok"
+    assert replay_payload["data"]["reduction"]["reduced_lines"] == 1
+
+
+def test_debug_repro_runs_one_file_and_records_execution(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    source_path = tmp_path / "sample_repro.py"
+    source_path.write_text("print('repro-ok')\n", encoding="utf-8")
+
+    def fake_capture_json_cli_result(*args, **kwargs):
+        return 0, {
+            "command": "run",
+            "status": "ok",
+            "data": {
+                "returncode": 0,
+                "stdout": "repro-ok\n",
+                "timing": {"build_s": 0.1, "run_s": 0.01, "total_s": 0.11},
+            },
+        }
+
+    monkeypatch.setattr(
+        molt_cli,
+        "_capture_json_cli_result",
+        fake_capture_json_cli_result,
+    )
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(
+        source=str(source_path),
+        format="json",
+        compare=False,
+        python=None,
+        rebuild=False,
+        backend=None,
+        profile="dev",
+        out=None,
+    )
+    paths = allocate_debug_paths(
+        DebugSubcommand.REPRO,
+        output_extension="json",
+        run_id="repro-test-run",
+    )
+
+    rc = molt_cli._handle_debug_repro(
+        args,
+        subcommand=DebugSubcommand.REPRO,
+        paths=paths,
+        selectors={},
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["subcommand"] == "repro"
+    assert payload["status"] == "ok"
+    assert payload["failure_class"] is None
+    assert payload["data"]["mode"] == "run"
+    assert payload["data"]["source_path"] == str(source_path)
+    assert payload["data"]["execution"]["status"] == "ok"
+    assert payload["data"]["execution"]["data"]["returncode"] == 0
+
 
 def test_debug_bisect_locates_first_bad_pass(tmp_path: Path) -> None:
     source_path = _write_source(tmp_path)
@@ -371,6 +473,33 @@ def test_debug_bisect_locates_first_bad_pass(tmp_path: Path) -> None:
     assert payload["data"]["bisect"]["mode"] == "first_bad_pass"
     assert payload["data"]["bisect"]["first_bad_pass"] == "lower_inline_cache"
 
+    replay = _run_cli(
+        [
+            "debug",
+            "bisect",
+            str(_to_abs(payload["manifest_path"], cwd=tmp_path)),
+            "--passes",
+            "parse,typecheck,lower_inline_cache,codegen",
+            "--oracle-json",
+            json.dumps(
+                {
+                    "kind": "trace",
+                    "event": "pass",
+                    "signature": "lower_inline_cache",
+                }
+            ),
+            "--eval-command",
+            eval_command,
+            "--format",
+            "json",
+        ],
+        cwd=tmp_path,
+    )
+    assert replay.returncode == 0, replay.stderr
+    replay_payload = json.loads(replay.stdout)
+    assert replay_payload["status"] == "ok"
+    assert replay_payload["data"]["bisect"]["first_bad_pass"] == "lower_inline_cache"
+
 
 def test_debug_bisect_finds_minimal_bad_config_toggle(tmp_path: Path) -> None:
     source_path = _write_source(tmp_path)
@@ -407,3 +536,43 @@ def test_debug_bisect_finds_minimal_bad_config_toggle(tmp_path: Path) -> None:
     assert payload["failure_class"] is None
     assert payload["data"]["bisect"]["mode"] == "config_toggle_bisect"
     assert payload["data"]["bisect"]["minimal_bad_dimensions"] == ["ic"]
+
+
+def test_debug_reduce_reports_initial_eval_timeout(tmp_path: Path) -> None:
+    source_path = _write_source(tmp_path)
+    eval_command = _build_eval_command("import time; time.sleep(2)")
+
+    res = _run_cli(
+        [
+            "debug",
+            "reduce",
+            str(source_path),
+            "--oracle-json",
+            json.dumps(
+                {
+                    "kind": "manifest",
+                    "predicates": [
+                        {
+                            "path": "candidate.source_text",
+                            "op": "contains",
+                            "value": "debug-cli",
+                        }
+                    ],
+                }
+            ),
+            "--eval-command",
+            eval_command,
+            "--eval-timeout",
+            "1",
+            "--format",
+            "json",
+        ],
+        cwd=tmp_path,
+    )
+
+    assert res.returncode == 0, res.stderr
+    payload = json.loads(res.stdout)
+    assert payload["subcommand"] == "reduce"
+    assert payload["status"] == "error"
+    assert payload["failure_class"] == "invalid_request"
+    assert payload["message"] == "initial evaluation timed out"

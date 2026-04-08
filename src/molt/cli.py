@@ -29068,12 +29068,75 @@ def _merge_debug_manifest(
     return merged
 
 
+def _debug_eval_base_env(cwd: Path) -> dict[str, str]:
+    base_env: dict[str, str] = {}
+    passthrough_names = {
+        "ALL_PROXY",
+        "COMSPEC",
+        "HOME",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "NO_PROXY",
+        "PATH",
+        "PATHEXT",
+        "PYTHONPATH",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TERM",
+        "TMP",
+        "TMPDIR",
+        "USERPROFILE",
+        "VIRTUAL_ENV",
+        "WINDIR",
+    }
+    for name in passthrough_names:
+        value = os.environ.get(name)
+        if value:
+            base_env[name] = value
+
+    ext_root = os.environ.get("MOLT_EXT_ROOT", str(cwd))
+    cargo_target_dir = os.environ.get("CARGO_TARGET_DIR", str(Path(ext_root) / "target"))
+    base_env.update(
+        {
+            "MOLT_EXT_ROOT": ext_root,
+            "CARGO_TARGET_DIR": cargo_target_dir,
+            "MOLT_DIFF_CARGO_TARGET_DIR": os.environ.get(
+                "MOLT_DIFF_CARGO_TARGET_DIR",
+                cargo_target_dir,
+            ),
+            "MOLT_CACHE": os.environ.get("MOLT_CACHE", str(Path(ext_root) / ".molt_cache")),
+            "MOLT_DIFF_ROOT": os.environ.get(
+                "MOLT_DIFF_ROOT",
+                str(Path(ext_root) / "tmp" / "diff"),
+            ),
+            "MOLT_DIFF_TMPDIR": os.environ.get(
+                "MOLT_DIFF_TMPDIR",
+                str(Path(ext_root) / "tmp"),
+            ),
+            "UV_CACHE_DIR": os.environ.get(
+                "UV_CACHE_DIR",
+                str(Path(ext_root) / ".uv-cache"),
+            ),
+            "TMPDIR": os.environ.get("TMPDIR", str(Path(ext_root) / "tmp")),
+            "MOLT_SESSION_ID": os.environ.get("MOLT_SESSION_ID", "debug-eval"),
+            "PYTHONHASHSEED": os.environ.get("PYTHONHASHSEED", "0"),
+        }
+    )
+    return base_env
+
+
 def _run_debug_eval_command(
     command: str | None,
     *,
     cwd: Path,
     env_updates: Mapping[str, str],
     default_manifest: dict[str, Any],
+    timeout_sec: int,
 ) -> dict[str, Any]:
     evaluation: dict[str, Any] = {
         "manifest": copy.deepcopy(default_manifest),
@@ -29081,16 +29144,32 @@ def _run_debug_eval_command(
     if not command:
         return evaluation
 
-    env = os.environ.copy()
+    env = _debug_eval_base_env(cwd)
     env.update(env_updates)
-    proc = subprocess.run(
-        shlex.split(command),
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            shlex.split(command, posix=os.name != "nt"),
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(1, timeout_sec),
+        )
+    except subprocess.TimeoutExpired as exc:
+        evaluation.update(
+            {
+                "classification": "nonzero_exit",
+                "stdout": _coerce_process_text(exc.stdout),
+                "stderr": (
+                    _coerce_process_text(exc.stderr)
+                    + f"\nevaluator timed out after {max(1, timeout_sec)}s"
+                ).strip(),
+                "returncode": 124,
+                "timed_out": True,
+            }
+        )
+        return evaluation
     stdout = proc.stdout or ""
     stderr = proc.stderr or ""
     evaluation.update(
@@ -29099,6 +29178,7 @@ def _run_debug_eval_command(
             "stdout": stdout,
             "stderr": stderr,
             "returncode": proc.returncode,
+            "timed_out": False,
         }
     )
     parsed_stdout: dict[str, Any] | None = None
@@ -29120,6 +29200,24 @@ def _run_debug_eval_command(
                 continue
             evaluation[key] = value
     return evaluation
+
+
+def _capture_json_cli_result(
+    runner: Callable[..., int],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> tuple[int, dict[str, Any] | None]:
+    stdout_buffer = io.StringIO()
+    with redirect_stdout(stdout_buffer):
+        returncode = runner(*args, json_output=True, **kwargs)
+    stdout_text = stdout_buffer.getvalue().strip()
+    if not stdout_text:
+        return returncode, None
+    payload = json.loads(stdout_text)
+    if not isinstance(payload, dict):
+        return returncode, None
+    return returncode, payload
 
 
 def _handle_debug_ir(
@@ -29317,6 +29415,115 @@ def _handle_debug_perf(
     )
 
 
+def _handle_debug_repro(
+    args: argparse.Namespace,
+    *,
+    subcommand: DebugSubcommand,
+    paths: Any,
+    selectors: dict[str, Any],
+) -> int:
+    source_path = Path(args.source)
+    if not source_path.is_file():
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message=f"{source_path} is not a file",
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+
+    source_text = source_path.read_text(encoding="utf-8")
+    build_args: list[str] = []
+    if args.backend:
+        build_args.extend(["--backend", args.backend])
+    if getattr(args, "rebuild", False):
+        build_args.append("--no-cache")
+    profile = args.profile or "dev"
+    if args.compare:
+        inner_rc, inner_payload = _capture_json_cli_result(
+            compare,
+            str(source_path),
+            None,
+            args.python,
+            [],
+            verbose=False,
+            trusted=False,
+            capabilities=None,
+            build_args=build_args,
+            rebuild=getattr(args, "rebuild", False),
+            build_profile=cast(BuildProfile | None, profile),
+        )
+        mode = "compare"
+    else:
+        inner_rc, inner_payload = _capture_json_cli_result(
+            run_script,
+            str(source_path),
+            None,
+            [],
+            verbose=False,
+            timing=True,
+            trusted=False,
+            capabilities=None,
+            build_args=build_args,
+            build_profile=cast(BuildProfile | None, profile),
+        )
+        mode = "run"
+    if inner_payload is None:
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INTERNAL_ERROR,
+            message="debug repro did not produce a JSON payload",
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+
+    inner_status = inner_payload.get("status")
+    payload = normalize_debug_payload(
+        subcommand=subcommand,
+        status=DebugStatus.OK if inner_status == "ok" else DebugStatus.ERROR,
+        run_id=paths.run_id,
+        artifact_root=paths.artifact_root,
+        manifest_path=paths.manifest_path,
+        selectors=selectors,
+        retained_output=paths.retained_output,
+        failure_class=None if inner_status == "ok" else DebugFailureClass.INTERNAL_ERROR,
+        message=None if inner_status == "ok" else f"debug repro {mode} failed",
+        data={
+            "mode": mode,
+            "source_path": str(source_path),
+            "source_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+            "profile": profile,
+            "backend": args.backend,
+            "build_args": build_args,
+            "execution": inner_payload,
+            "returncode": inner_rc,
+        },
+    )
+    return _emit_debug_payload(
+        payload=payload,
+        format_name=args.format,
+        retained_output=paths.retained_output,
+    )
+
+
 def _handle_debug_reduce(
     args: argparse.Namespace,
     *,
@@ -29398,6 +29605,7 @@ def _handle_debug_reduce(
             cwd=Path.cwd(),
             env_updates=env_updates,
             default_manifest=default_manifest,
+            timeout_sec=args.eval_timeout,
         )
 
     try:
@@ -29559,6 +29767,7 @@ def _handle_debug_bisect(
                 cwd=Path.cwd(),
                 env_updates=env_updates,
                 default_manifest=default_manifest,
+                timeout_sec=args.eval_timeout,
             )
 
         bisect_payload = bisect_first_bad_pass(
@@ -29623,6 +29832,7 @@ def _handle_debug_bisect(
                 cwd=Path.cwd(),
                 env_updates=env_updates,
                 default_manifest=default_manifest,
+                timeout_sec=args.eval_timeout,
             )
 
         bisect_payload = bisect_backend_profile_ic(
@@ -29641,6 +29851,8 @@ def _handle_debug_bisect(
         selectors=selectors,
         retained_output=paths.retained_output,
         data={
+            "source_path": str(reduction_input.source_path),
+            "source_text": reduction_input.source_text,
             "input": default_input_payload,
             "oracle": oracle,
             "bisect": bisect_payload,
@@ -29674,6 +29886,8 @@ def _handle_debug_command(args: argparse.Namespace) -> int:
     }
     if subcommand == DebugSubcommand.IR:
         return _handle_debug_ir(args, subcommand=subcommand, paths=paths, selectors=selectors)
+    if subcommand == DebugSubcommand.REPRO:
+        return _handle_debug_repro(args, subcommand=subcommand, paths=paths, selectors=selectors)
     if subcommand == DebugSubcommand.VERIFY:
         return _handle_debug_verify(args, subcommand=subcommand, paths=paths, selectors=selectors)
     if subcommand == DebugSubcommand.DIFF:
@@ -30211,6 +30425,21 @@ def main() -> int:
             )
         if debug_subcommand in {DebugSubcommand.REPRO, DebugSubcommand.TRACE}:
             subparser.add_argument("source", help="Python source file to trace.")
+        if debug_subcommand == DebugSubcommand.REPRO:
+            subparser.add_argument(
+                "--compare",
+                action="store_true",
+                help="Compare the repro against CPython instead of only running Molt.",
+            )
+            subparser.add_argument(
+                "--python",
+                help="Python executable used for compare mode.",
+            )
+            subparser.add_argument(
+                "--rebuild",
+                action="store_true",
+                help="Force a no-cache rebuild before executing the repro.",
+            )
         if debug_subcommand in {
             DebugSubcommand.REDUCE,
             DebugSubcommand.BISECT,
@@ -30233,6 +30462,12 @@ def main() -> int:
                     "Command executed for each candidate. It receives context via "
                     "MOLT_DEBUG_EVAL_* environment variables and may emit JSON on stdout."
                 ),
+            )
+            subparser.add_argument(
+                "--eval-timeout",
+                type=int,
+                default=30,
+                help="Per-candidate evaluator timeout in seconds.",
             )
         if debug_subcommand == DebugSubcommand.BISECT:
             subparser.add_argument(
