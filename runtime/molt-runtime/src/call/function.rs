@@ -61,6 +61,20 @@ unsafe fn function_runtime_call_target_ptr(func_ptr: *mut u8, fn_ptr: u64) -> Op
     runtime_callable_target_ptr(fn_ptr)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+macro_rules! call_native_fixed_arity {
+    ($func_ptr:expr, $fn_ptr:expr, $runtime_ty:ty, $compiled_ty:ty, ($($arg:expr),* $(,)?)) => {{
+        if let Some(runtime_target) = function_runtime_call_target_ptr($func_ptr, $fn_ptr) {
+            let func: $runtime_ty = std::mem::transmute(runtime_target);
+            func($($arg),*) as u64
+        } else {
+            let call_target = function_call_target_or_legacy_ptr($func_ptr, $fn_ptr);
+            let func: $compiled_ty = std::mem::transmute(call_target);
+            func($($arg),*) as u64
+        }
+    }};
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[inline]
 fn should_force_trampoline_for_fixed_arity_call(
@@ -263,13 +277,13 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // SAFETY: Same invariant as the wasm32 path above — fn_ptr is a valid extern "C"
-                // function pointer from `function_fn_ptr`. Arity == 1, closure present, so the
-                // 2-arg (closure, arg0) signature matches. The compiler guarantees this pointer
-                // was emitted for a 1-arg closure function. UB if fn_ptr is null or mistyped.
-                let func: extern "C" fn(u64, u64) -> i64 =
-                    std::mem::transmute(function_call_target_or_legacy_ptr(func_ptr, fn_ptr));
-                func(closure_bits, arg0_bits) as u64
+                call_native_fixed_arity!(
+                    func_ptr,
+                    fn_ptr,
+                    extern "C" fn(u64, u64) -> u64,
+                    extern "C" fn(u64, u64) -> i64,
+                    (closure_bits, arg0_bits)
+                )
             }
         } else {
             #[cfg(target_arch = "wasm32")]
@@ -301,7 +315,6 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let call_target = function_call_target_or_legacy_ptr(func_ptr, fn_ptr);
                 // SAFETY: `fn_ptr` is a valid extern "C" function pointer from `function_fn_ptr`.
                 // Arity == 1, no closure, so the 1-arg signature `fn(u64) -> i64` matches. The
                 // compiler must emit a valid non-null pointer for this function. UB if fn_ptr is
@@ -310,6 +323,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                     let func: extern "C" fn(u64) -> u64 = std::mem::transmute(runtime_target);
                     func(arg0_bits)
                 } else {
+                    let call_target = function_call_target_or_legacy_ptr(func_ptr, fn_ptr);
                     let func: extern "C" fn(u64) -> i64 = std::mem::transmute(call_target);
                     func(arg0_bits) as u64
                 }
@@ -444,12 +458,13 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // SAFETY: Same invariant as the wasm32 closure path — fn_ptr from
-                // `function_fn_ptr` is a valid extern "C" pointer for a 0-arg function with
-                // closure. The 1-arg signature passes the closure env. The compiler must emit
-                // a non-null pointer with matching ABI. UB if fn_ptr is null or mistyped.
-                let func: extern "C" fn(u64) -> i64 = std::mem::transmute(fn_ptr as usize);
-                func(closure_bits) as u64
+                call_native_fixed_arity!(
+                    func_ptr,
+                    fn_ptr,
+                    extern "C" fn(u64) -> u64,
+                    extern "C" fn(u64) -> i64,
+                    (closure_bits)
+                )
             }
         } else {
             #[cfg(target_arch = "wasm32")]
@@ -468,7 +483,6 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let call_target = function_call_target_or_legacy_ptr(func_ptr, fn_ptr);
                 // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
                 // `function_fn_ptr`. Arity == 0, no closure, so the nullary signature
                 // `fn() -> i64` is correct. The compiler must emit a valid non-null pointer.
@@ -477,6 +491,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
                     let func: extern "C" fn() -> u64 = std::mem::transmute(runtime_target);
                     func()
                 } else {
+                    let call_target = function_call_target_or_legacy_ptr(func_ptr, fn_ptr);
                     let func: extern "C" fn() -> i64 = std::mem::transmute(call_target);
                     func() as u64
                 }
@@ -545,13 +560,13 @@ pub(crate) unsafe fn call_function_obj2(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // SAFETY: Same invariant as the wasm32 closure path — fn_ptr from
-                // `function_fn_ptr` is a valid extern "C" pointer for a 2-arg function with
-                // closure. The 3-arg signature passes (closure, arg0, arg1). The compiler must
-                // emit a non-null pointer with matching ABI. UB if fn_ptr is null or mistyped.
-                let func: extern "C" fn(u64, u64, u64) -> i64 =
-                    std::mem::transmute(fn_ptr as usize);
-                func(closure_bits, arg0_bits, arg1_bits) as u64
+                call_native_fixed_arity!(
+                    func_ptr,
+                    fn_ptr,
+                    extern "C" fn(u64, u64, u64) -> u64,
+                    extern "C" fn(u64, u64, u64) -> i64,
+                    (closure_bits, arg0_bits, arg1_bits)
+                )
             }
         } else {
             #[cfg(target_arch = "wasm32")]
@@ -573,7 +588,6 @@ pub(crate) unsafe fn call_function_obj2(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let call_target = function_call_target_or_legacy_ptr(func_ptr, fn_ptr);
                 // SAFETY: Same invariant as the wasm32 non-closure path — fn_ptr from
                 // `function_fn_ptr` targets a 2-arg extern "C" function. The compiler must
                 // emit a valid non-null pointer. UB if fn_ptr is null or has wrong arity.
@@ -582,6 +596,7 @@ pub(crate) unsafe fn call_function_obj2(
                         std::mem::transmute(runtime_target);
                     func(arg0_bits, arg1_bits)
                 } else {
+                    let call_target = function_call_target_or_legacy_ptr(func_ptr, fn_ptr);
                     let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(call_target);
                     func(arg0_bits, arg1_bits) as u64
                 }
@@ -651,11 +666,13 @@ pub(crate) unsafe fn call_function_obj3(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                // Arity verified above; signature matches. Compiler guarantees ABI match.
-                let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
-                    std::mem::transmute(fn_ptr as usize);
-                func(closure_bits, arg0_bits, arg1_bits, arg2_bits) as u64
+                call_native_fixed_arity!(
+                    func_ptr,
+                    fn_ptr,
+                    extern "C" fn(u64, u64, u64, u64) -> i64,
+                    extern "C" fn(u64, u64, u64, u64) -> i64,
+                    (closure_bits, arg0_bits, arg1_bits, arg2_bits)
+                )
             }
         } else {
             #[cfg(target_arch = "wasm32")]
@@ -677,11 +694,13 @@ pub(crate) unsafe fn call_function_obj3(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                // Arity verified above; signature matches. Compiler guarantees ABI match.
-                let func: extern "C" fn(u64, u64, u64) -> i64 =
-                    std::mem::transmute(fn_ptr as usize);
-                func(arg0_bits, arg1_bits, arg2_bits) as u64
+                call_native_fixed_arity!(
+                    func_ptr,
+                    fn_ptr,
+                    extern "C" fn(u64, u64, u64) -> i64,
+                    extern "C" fn(u64, u64, u64) -> i64,
+                    (arg0_bits, arg1_bits, arg2_bits)
+                )
             }
         };
         frame_stack_pop(_py);
@@ -750,11 +769,13 @@ pub(crate) unsafe fn call_function_obj4(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                // Arity verified above; signature matches. Compiler guarantees ABI match.
-                let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
-                    std::mem::transmute(fn_ptr as usize);
-                func(closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+                call_native_fixed_arity!(
+                    func_ptr,
+                    fn_ptr,
+                    extern "C" fn(u64, u64, u64, u64, u64) -> i64,
+                    extern "C" fn(u64, u64, u64, u64, u64) -> i64,
+                    (closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits)
+                )
             }
         } else {
             #[cfg(target_arch = "wasm32")]
@@ -777,11 +798,13 @@ pub(crate) unsafe fn call_function_obj4(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                // Arity verified above; signature matches. Compiler guarantees ABI match.
-                let func: extern "C" fn(u64, u64, u64, u64) -> i64 =
-                    std::mem::transmute(fn_ptr as usize);
-                func(arg0_bits, arg1_bits, arg2_bits, arg3_bits) as u64
+                call_native_fixed_arity!(
+                    func_ptr,
+                    fn_ptr,
+                    extern "C" fn(u64, u64, u64, u64) -> i64,
+                    extern "C" fn(u64, u64, u64, u64) -> i64,
+                    (arg0_bits, arg1_bits, arg2_bits, arg3_bits)
+                )
             }
         };
         frame_stack_pop(_py);
@@ -859,18 +882,13 @@ unsafe fn call_function_obj5(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                // Arity verified above; signature matches. Compiler guarantees ABI match.
-                let func: extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64 =
-                    std::mem::transmute(fn_ptr as usize);
-                func(
-                    closure_bits,
-                    arg0_bits,
-                    arg1_bits,
-                    arg2_bits,
-                    arg3_bits,
-                    arg4_bits,
-                ) as u64
+                call_native_fixed_arity!(
+                    func_ptr,
+                    fn_ptr,
+                    extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64,
+                    extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64,
+                    (closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits)
+                )
             }
         } else {
             #[cfg(target_arch = "wasm32")]
@@ -894,11 +912,13 @@ unsafe fn call_function_obj5(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // SAFETY: `fn_ptr` from `function_fn_ptr` targets a valid extern "C" function.
-                // Arity verified above; signature matches. Compiler guarantees ABI match.
-                let func: extern "C" fn(u64, u64, u64, u64, u64) -> i64 =
-                    std::mem::transmute(fn_ptr as usize);
-                func(arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits) as u64
+                call_native_fixed_arity!(
+                    func_ptr,
+                    fn_ptr,
+                    extern "C" fn(u64, u64, u64, u64, u64) -> i64,
+                    extern "C" fn(u64, u64, u64, u64, u64) -> i64,
+                    (arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits)
+                )
             }
         };
         frame_stack_pop(_py);
