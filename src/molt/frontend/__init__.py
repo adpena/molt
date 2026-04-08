@@ -7966,12 +7966,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
 
         self._invalidate_loop_guard(name)
-        if (
-            self.current_func_name == "molt_main"
-            and name in self.del_targets
-            and name not in self.boxed_locals
-        ):
-            self._box_local(name)
         if self.current_func_name != "molt_main" and name in self.global_decls:
             self._emit_module_attr_set_runtime(name, value)
             return
@@ -22266,8 +22260,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def _emit_delete_name(self, name: str, *, allow_missing: bool = False) -> None:
         if self.current_func_name == "molt_main":
-            if name in self.del_targets and name not in self.boxed_locals:
-                self._box_local(name)
             if name in self.boxed_locals:
                 cell = self.boxed_locals[name]
                 idx = MoltValue(self.next_var(), type_hint="int")
@@ -22294,6 +22286,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="DEC_REF", args=[old_val], result=MoltValue("none")))
                 self.unbound_check_names.add(name)
                 return
+            # Module scope already has a canonical mutable store: the module
+            # object. Do not synthesize boxed list cells just because a name is
+            # later deleted; those cells add an extra mutable indirection layer
+            # that diverges from module-backed semantics and can miscompile in
+            # large chunked stdlib modules.
             local_val = self.locals.pop(name, None)
             self.globals.pop(name, None)
             if allow_missing:

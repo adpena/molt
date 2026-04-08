@@ -2050,33 +2050,31 @@ fn emit_terminator(
         }
 
         Terminator::Branch { target, args } => {
-            let last_op_is_check_exception = block
-                .ops
-                .last()
-                .map(|op| op.opcode == OpCode::CheckException)
-                .unwrap_or(false);
             emit_block_arg_stores(*target, args, block_param_vars, out);
 
             // If target is a LoopHeader, this is a back-edge → loop_continue.
-            if !last_op_is_check_exception {
-                let target_role = loop_roles
-                    .get(target)
-                    .cloned()
-                    .unwrap_or(super::blocks::LoopRole::None);
-                if loop_role == super::blocks::LoopRole::LoopEnd
-                    && target_role == super::blocks::LoopRole::LoopHeader
-                {
-                    out.push(OpIR {
-                        kind: "loop_continue".to_string(),
-                        ..OpIR::default()
-                    });
-                } else {
-                    out.push(OpIR {
-                        kind: "jump".to_string(),
-                        value: Some(block_label_id(target)),
-                        ..OpIR::default()
-                    });
-                }
+            let target_role = loop_roles
+                .get(target)
+                .cloned()
+                .unwrap_or(super::blocks::LoopRole::None);
+            if loop_role == super::blocks::LoopRole::LoopEnd
+                && target_role == super::blocks::LoopRole::LoopHeader
+            {
+                out.push(OpIR {
+                    kind: "loop_continue".to_string(),
+                    ..OpIR::default()
+                });
+            } else {
+                // A preceding `check_exception` only guards the exceptional
+                // edge; it does not replace the block's normal branch target.
+                // Dropping this jump lets the false/continue path fall through
+                // into whatever label is laid out next, which is exactly how a
+                // false-guarded raise can execute after the merge path.
+                out.push(OpIR {
+                    kind: "jump".to_string(),
+                    value: Some(block_label_id(target)),
+                    ..OpIR::default()
+                });
             }
         }
 
