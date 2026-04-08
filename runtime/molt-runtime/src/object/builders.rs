@@ -305,6 +305,16 @@ impl Drop for PtrDropGuard {
     fn drop(&mut self) {
         if self.active && !self.ptr.is_null() {
             unsafe {
+                if std::env::var("MOLT_TRACE_CALLARGS").as_deref() == Ok("1")
+                    && object_type_id(self.ptr) == TYPE_ID_CALLARGS
+                {
+                    let args_ptr = crate::call::bind::callargs_ptr(self.ptr);
+                    eprintln!(
+                        "[molt callargs] guard_drop builder_ptr=0x{:x} args_ptr=0x{:x}",
+                        self.ptr as usize,
+                        args_ptr as usize,
+                    );
+                }
                 molt_dec_ref(self.ptr);
             }
         }

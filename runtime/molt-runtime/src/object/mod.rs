@@ -843,6 +843,9 @@ fn object_pool_index(total_size: usize) -> Option<usize> {
 
 fn object_pool_take(_py: &PyToken<'_>, total_size: usize) -> Option<*mut u8> {
     crate::gil_assert();
+    if cfg!(miri) {
+        return None;
+    }
     let idx = object_pool_index(total_size)?;
     let from_tls = OBJECT_POOL_TLS.with(|pool| {
         let mut pool = pool.borrow_mut();
@@ -860,6 +863,9 @@ fn object_pool_take(_py: &PyToken<'_>, total_size: usize) -> Option<*mut u8> {
 
 fn object_pool_put(_py: &PyToken<'_>, total_size: usize, header_ptr: *mut u8) -> bool {
     crate::gil_assert();
+    if cfg!(miri) {
+        return false;
+    }
     if header_ptr.is_null() {
         return false;
     }
@@ -900,7 +906,7 @@ pub(crate) fn alloc_object_zeroed_with_pool(
     let pool_eligible = matches!(
         type_id,
         TYPE_ID_OBJECT | TYPE_ID_BOUND_METHOD | TYPE_ID_ITER
-    );
+    ) && !cfg!(miri);
     let header_ptr = if pool_eligible {
         object_pool_take(_py, alloc_size)
     } else {
@@ -1501,15 +1507,16 @@ pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) 
 unsafe fn maybe_run_object_finalizer(
     py: &PyToken<'_>,
     ptr: *mut u8,
-    header: &mut MoltHeader,
 ) -> bool {
-    if header.type_id != TYPE_ID_OBJECT {
+    let header_ptr = unsafe { header_from_obj_ptr(ptr) };
+    if unsafe { (*header_ptr).type_id } != TYPE_ID_OBJECT {
         return false;
     }
-    if (header.flags & HEADER_FLAG_FINALIZER_RAN) != 0 {
+    if (unsafe { (*header_ptr).flags } & HEADER_FLAG_FINALIZER_RAN) != 0 {
         return false;
     }
-    let class_state = get_cold_header(header.cold_idx).map(|cold| cold.state).unwrap_or(0);
+    let cold_idx = unsafe { (*header_ptr).cold_idx };
+    let class_state = get_cold_header(cold_idx).map(|cold| cold.state).unwrap_or(0);
     let class_bits = unsafe { object_class_bits_from_state(class_state) };
     if class_bits == 0 || obj_from_bits(class_bits).is_none() {
         return false;
@@ -1517,10 +1524,14 @@ unsafe fn maybe_run_object_finalizer(
     let Some(del_name_bits) = crate::attr_name_bits_from_bytes(py, b"__del__") else {
         return false;
     };
-    header.flags |= HEADER_FLAG_FINALIZER_RAN;
-    // Keep `self` alive while we resolve and call __del__ so resurrection is possible.
-    header.ref_count.store(1, AtomicOrdering::Release);
+    unsafe {
+        (*header_ptr).flags |= HEADER_FLAG_FINALIZER_RAN;
+    }
     let self_bits = MoltObject::from_ptr(ptr).bits();
+    // Revive the zero-count object through the standard refcount path while we
+    // resolve/call __del__, so resurrection is possible without raw-header
+    // aliasing against later attribute lookup.
+    inc_ref_bits(py, self_bits);
     let prior_exc_bits = crate::builtins::exceptions::exception_last_bits_noinc(py)
         .filter(|bits| !obj_from_bits(*bits).is_none());
     if let Some(bits) = prior_exc_bits {
@@ -1554,7 +1565,7 @@ unsafe fn maybe_run_object_finalizer(
     } else if crate::exception_pending(py) {
         crate::clear_exception(py);
     }
-    let prev = header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+    let prev = unsafe { (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel) };
     if prev > 1 {
         // Object was resurrected by __del__; abort deallocation now.
         return true;
@@ -1573,11 +1584,9 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         }
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
         let type_id = (*header_ptr).type_id;
-        let header = &mut *header_ptr;
-        let header_type_id = header.type_id;
-        let header_flags = header.flags;
-        let header_size_class = header.size_class;
-        let header_cold_idx = header.cold_idx;
+        let header_flags = (*header_ptr).flags;
+        let header_size_class = (*header_ptr).size_class;
+        let header_cold_idx = (*header_ptr).cold_idx;
         if type_id == TYPE_ID_NOT_IMPLEMENTED {
             return;
         }
@@ -1589,11 +1598,11 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
         // time, so this load → check → fetch_sub sequence is safe.
         // The codegen's drain_cleanup_tracked can emit duplicate dec_ref calls
         // from different tracking lists; this guard makes dec_ref idempotent.
-        let current = header.ref_count.load(AtomicOrdering::Acquire);
+        let current = (*header_ptr).ref_count.load(AtomicOrdering::Acquire);
         if current == 0 {
             return; // Already freed — no-op
         }
-        let prev = header.ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
+        let prev = (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel);
         if type_id == TYPE_ID_OBJECT && std::env::var("MOLT_DEBUG_OBJECT_RC").is_ok() {
             if prev == 1 {
                 eprintln!("[OBJECT DEC→0 FREE] ptr=0x{:x}", ptr as usize);
@@ -1611,7 +1620,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 eprintln!("  BIGINT FREED at ptr=0x{:x}", ptr as usize);
             }
         }
-        if debug_file_rc() && header.type_id == TYPE_ID_FILE_HANDLE {
+        if debug_file_rc() && type_id == TYPE_ID_FILE_HANDLE {
             eprintln!(
                 "molt file rc dec ptr=0x{:x} count={}",
                 ptr as usize,
@@ -1619,8 +1628,8 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             );
         }
         if debug_rc_object()
-            && header.type_id == TYPE_ID_OBJECT
-            && (header.flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
+            && type_id == TYPE_ID_OBJECT
+            && (header_flags & HEADER_FLAG_SKIP_CLASS_DECREF) != 0
         {
             eprintln!(
                 "molt rc dec ptr=0x{:x} count={}",
@@ -1629,22 +1638,22 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             );
         }
         if prev == 1 {
-            if header.type_id == TYPE_ID_EXCEPTION
+            if type_id == TYPE_ID_EXCEPTION
                 && crate::builtins::exceptions::exception_is_rooted(py, ptr)
             {
                 // Pending exception roots (last-exception slots / active exception stacks)
                 // must keep the object alive even if transient lowering bugs over-decref.
-                header.ref_count.store(1, AtomicOrdering::Release);
+                (*header_ptr).ref_count.store(1, AtomicOrdering::Release);
                 return;
             }
             MoltRefCount::acquire_fence();
             if debug_dec_ref_zero() {
                 eprintln!(
                     "molt dec_ref_zero ptr=0x{:x} type_id={}",
-                    ptr as usize, header.type_id
+                    ptr as usize, type_id
                 );
             }
-            if header.type_id == TYPE_ID_FUNCTION && {
+            if type_id == TYPE_ID_FUNCTION && {
                 static TRACE: OnceLock<bool> = OnceLock::new();
                 *TRACE.get_or_init(|| {
                     std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION").as_deref() == Ok("1")
@@ -1664,7 +1673,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     );
                 }
             }
-            if header.type_id == TYPE_ID_FUNCTION
+            if type_id == TYPE_ID_FUNCTION
                 && matches!(
                     std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION_ALL")
                         .ok()
@@ -1683,11 +1692,11 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     name, freed_fn_ptr, ptr as usize,
                 );
             }
-            if maybe_run_object_finalizer(py, ptr, header) {
+            if maybe_run_object_finalizer(py, ptr) {
                 return;
             }
             weakref_clear_for_ptr(py, ptr);
-            match header.type_id {
+            match type_id {
                 // Hot path: most-frequently-freed types first
                 TYPE_ID_STRING => {
                     utf8_cache_remove(py, ptr as usize);
@@ -1759,7 +1768,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         let vec = Box::from_raw(vec_ptr);
                         // contains_refs fast-path: skip element dec_ref when
                         // every element is a primitive (int/float/bool/None).
-                        if (header.flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
+                        if (header_flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
                             for bits in vec.iter() {
                                 dec_ref_bits(py, *bits);
                             }
@@ -1770,7 +1779,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let vec_ptr = seq_vec_ptr(ptr);
                     if !vec_ptr.is_null() {
                         let vec = Box::from_raw(vec_ptr);
-                        if (header.flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
+                        if (header_flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
                             for bits in vec.iter() {
                                 dec_ref_bits(py, *bits);
                             }
@@ -1782,7 +1791,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let table_ptr = dict_table_ptr(ptr);
                     if !order_ptr.is_null() {
                         let order = Box::from_raw(order_ptr);
-                        if (header.flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
+                        if (header_flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
                             for bits in order.iter() {
                                 dec_ref_bits(py, *bits);
                             }
@@ -1815,7 +1824,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let table_ptr = set_table_ptr(ptr);
                     if !order_ptr.is_null() {
                         let order = Box::from_raw(order_ptr);
-                        if (header.flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
+                        if (header_flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
                             for bits in order.iter() {
                                 dec_ref_bits(py, *bits);
                             }
@@ -1834,6 +1843,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 TYPE_ID_CALLARGS => {
                     let args_ptr = callargs_ptr(ptr);
                     if !args_ptr.is_null() {
+                        crate::call::bind::note_callargs_free(ptr, args_ptr);
                         callargs_dec_ref_all(py, args_ptr);
                         drop(Box::from_raw(args_ptr));
                     }
@@ -2268,6 +2278,16 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         || itertools_drop_instance(py, ptr)
                         || functools_drop_instance(py, ptr)
                         || types_drop_instance(py, ptr);
+                    let dict_bits = instance_dict_bits(ptr);
+                    if dict_bits != 0 && !obj_from_bits(dict_bits).is_none() {
+                        dec_ref_bits(py, dict_bits);
+                    }
+                    if (header_flags & HEADER_FLAG_SKIP_CLASS_DECREF) == 0 {
+                        let class_bits = object_class_bits(ptr);
+                        if class_bits != 0 && !obj_from_bits(class_bits).is_none() {
+                            dec_ref_bits(py, class_bits);
+                        }
+                    }
                 }
                 TYPE_ID_BIGINT => {
                     std::ptr::drop_in_place(ptr as *mut BigInt);
@@ -2280,7 +2300,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             crate::resource::with_tracker(|t| t.on_free(total_size));
             free_cold_header(header_cold_idx);
             let should_pool = matches!(
-                header_type_id,
+                type_id,
                 TYPE_ID_OBJECT | TYPE_ID_BOUND_METHOD | TYPE_ID_ITER
             ) && object_pool_put(py, total_size, header_ptr as *mut u8);
             if should_pool {
