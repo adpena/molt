@@ -389,6 +389,9 @@ fn preanalyze_function_ir(
             && out != "none"
         {
             var_names.insert(out.clone());
+            // Seed outputs with their definition site so unused temporaries
+            // can still be released deterministically after this op.
+            last_use.entry(out.clone()).or_insert(idx);
             if let Some(src) = preanalyze_alias_source(op, return_alias_summaries) {
                 let root = alias_roots
                     .get(src)
@@ -19329,6 +19332,45 @@ mod tests {
         );
         assert_eq!(analysis.last_use.get("src"), Some(&3));
         assert_eq!(analysis.last_use.get("_bb4_arg0"), Some(&3));
+    }
+
+    #[test]
+    fn preanalysis_marks_unused_outputs_live_through_their_definition_site() {
+        let func = FunctionIR {
+            name: "unused_delete_temp".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "load_var".to_string(),
+                    var: Some("item".to_string()),
+                    out: Some("tmp_loaded".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "missing".to_string(),
+                    out: Some("tmp_missing".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("item".to_string()),
+                    args: Some(vec!["tmp_missing".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+
+        assert_eq!(analysis.last_use.get("tmp_loaded"), Some(&0));
+        assert_eq!(analysis.last_use.get("tmp_missing"), Some(&2));
     }
 
     #[test]
