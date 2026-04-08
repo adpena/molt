@@ -1709,8 +1709,13 @@ pub fn split_large_function(
     let mut depth: i32 = 0;
 
     for (idx, op) in func.ops.iter().enumerate() {
-        // At depth 0 before processing this op, this is a valid split point.
-        if depth == 0 && idx > 0 && !is_forbidden(idx) {
+        // Split only at top-level statement boundaries. A raw depth==0 op
+        // index is not sufficient: large class statements emit thousands of
+        // ops (method FuncNew, CLASS_DEF, export, annotation wiring) without
+        // increasing structured-control depth, so splitting at an arbitrary
+        // op boundary can sever one logical statement across chunks.
+        let is_stmt_boundary = op.kind == "line";
+        if depth == 0 && idx > 0 && is_stmt_boundary && !is_forbidden(idx) {
             split_candidates.push(idx);
         }
 
