@@ -100,3 +100,26 @@ def build_perf_summary_payload(profiles: dict[str, dict[str, Any]]) -> dict[str,
         },
         "recommendations": recommendations,
     }
+
+
+def render_perf_text(summary: dict[str, Any]) -> str:
+    aggregate = summary.get("aggregate", {})
+    hot_paths = aggregate.get("hot_paths", {}) if isinstance(aggregate, dict) else {}
+    allocations = (
+        aggregate.get("allocations", {}) if isinstance(aggregate, dict) else {}
+    )
+    lines = [
+        "Molt Debug Perf",
+        f"Profiles: {summary.get('profile_count', 0)}",
+    ]
+    if isinstance(hot_paths, dict) and hot_paths:
+        hot_bits = [f"{key}={hot_paths[key]}" for key in sorted(hot_paths)]
+        lines.append("Hot Paths: " + ", ".join(hot_bits))
+    if isinstance(allocations, dict) and allocations:
+        alloc_bits = [f"{key}={allocations[key]}" for key in sorted(allocations)]
+        lines.append("Allocations: " + ", ".join(alloc_bits))
+    recommendations = summary.get("recommendations", [])
+    if isinstance(recommendations, list) and recommendations:
+        lines.append(f"Recommendations: {len(recommendations)}")
+        lines.extend(f"- {item}" for item in recommendations if isinstance(item, str))
+    return "\n".join(lines) + "\n"

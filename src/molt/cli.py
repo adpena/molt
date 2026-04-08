@@ -67,7 +67,18 @@ from molt.debug import (
     render_debug_text_summary,
     write_debug_manifest,
 )
+from molt.debug.diff import (
+    build_diff_summary_payload,
+    load_diff_summary,
+    load_failure_queue,
+    render_diff_text,
+)
 from molt.debug.ir import capture_ir_snapshots, render_ir_json, render_ir_text
+from molt.debug.perf import (
+    build_perf_summary_payload,
+    load_profile,
+    render_perf_text,
+)
 from molt.debug.verify import build_verify_result_payload, run_default_verify_checks
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import (
@@ -29100,6 +29111,117 @@ def _handle_debug_verify(
     )
 
 
+def _handle_debug_diff(
+    args: argparse.Namespace,
+    *,
+    subcommand: DebugSubcommand,
+    paths: Any,
+    selectors: dict[str, Any],
+) -> int:
+    summary_path = Path(args.summary_path)
+    if not summary_path.is_file():
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message=f"{summary_path} is not a file",
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+    failure_queue = load_failure_queue(Path(args.failure_queue)) if args.failure_queue else []
+    summary = build_diff_summary_payload(
+        load_diff_summary(summary_path),
+        failures=failure_queue,
+    )
+    payload = normalize_debug_payload(
+        subcommand=subcommand,
+        status=DebugStatus.OK,
+        run_id=paths.run_id,
+        artifact_root=paths.artifact_root,
+        manifest_path=paths.manifest_path,
+        selectors=selectors,
+        retained_output=paths.retained_output,
+        data=summary,
+    )
+    rendered_text = None if args.format == "json" else render_diff_text(summary)
+    return _emit_debug_payload(
+        payload=payload,
+        format_name=args.format,
+        retained_output=paths.retained_output,
+        rendered_text=rendered_text,
+    )
+
+
+def _handle_debug_perf(
+    args: argparse.Namespace,
+    *,
+    subcommand: DebugSubcommand,
+    paths: Any,
+    selectors: dict[str, Any],
+) -> int:
+    profiles: dict[str, dict[str, Any]] = {}
+    missing: list[str] = []
+    empty: list[str] = []
+    for file_arg in args.files:
+        path = Path(file_arg)
+        if not path.exists():
+            missing.append(str(path))
+            continue
+        profile = load_profile(path)
+        if profile is None:
+            empty.append(str(path))
+            continue
+        profiles[path.stem] = profile
+    if missing or empty or not profiles:
+        issues = []
+        issues.extend(f"missing file: {path}" for path in missing)
+        issues.extend(f"no profile data found in: {path}" for path in empty)
+        if not profiles and not issues:
+            issues.append("no profile inputs provided")
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message="; ".join(issues),
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+    summary = build_perf_summary_payload(profiles)
+    payload = normalize_debug_payload(
+        subcommand=subcommand,
+        status=DebugStatus.OK,
+        run_id=paths.run_id,
+        artifact_root=paths.artifact_root,
+        manifest_path=paths.manifest_path,
+        selectors=selectors,
+        retained_output=paths.retained_output,
+        data=summary,
+    )
+    rendered_text = None if args.format == "json" else render_perf_text(summary)
+    return _emit_debug_payload(
+        payload=payload,
+        format_name=args.format,
+        retained_output=paths.retained_output,
+        rendered_text=rendered_text,
+    )
+
+
 def _handle_debug_command(args: argparse.Namespace) -> int:
     subcommand = DebugSubcommand(args.debug_subcommand)
     paths = allocate_debug_paths(
@@ -29123,6 +29245,10 @@ def _handle_debug_command(args: argparse.Namespace) -> int:
         return _handle_debug_ir(args, subcommand=subcommand, paths=paths, selectors=selectors)
     if subcommand == DebugSubcommand.VERIFY:
         return _handle_debug_verify(args, subcommand=subcommand, paths=paths, selectors=selectors)
+    if subcommand == DebugSubcommand.DIFF:
+        return _handle_debug_diff(args, subcommand=subcommand, paths=paths, selectors=selectors)
+    if subcommand == DebugSubcommand.PERF:
+        return _handle_debug_perf(args, subcommand=subcommand, paths=paths, selectors=selectors)
     payload = normalize_debug_payload(
         subcommand=subcommand,
         status=DebugStatus.UNSUPPORTED,
@@ -29641,6 +29767,21 @@ def main() -> int:
                 choices=["pre-midend", "post-midend", "all"],
                 default="all",
                 help="Which compilation stage(s) to dump.",
+            )
+        if debug_subcommand == DebugSubcommand.DIFF:
+            subparser.add_argument(
+                "summary_path",
+                help="Path to a diff summary.json artifact to inspect.",
+            )
+            subparser.add_argument(
+                "--failure-queue",
+                help="Optional path to the diff failure queue file.",
+            )
+        if debug_subcommand == DebugSubcommand.PERF:
+            subparser.add_argument(
+                "files",
+                nargs="+",
+                help="Profile JSON/log files containing runtime feedback.",
             )
 
     check_parser = subparsers.add_parser(
