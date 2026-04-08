@@ -15315,7 +15315,7 @@ def _augment_support_modules(
         name: _logical_generated_module_path(name) for name in namespace_modules
     }
     for stub in stub_parents:
-        if stub != entry_module:
+        if stub != entry_module and stub in namespace_modules:
             module_graph.pop(stub, None)
     if needs_runtime_import_support:
         # Dynamic import helpers bootstrap through these support modules at
@@ -20774,10 +20774,14 @@ def _run_runtime_wasm_cargo_build(
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     build_env = env.copy()
     if target_root_override is not None:
-        build_env["CARGO_TARGET_DIR"] = str(target_root_override)
         target_root = target_root_override
     else:
         target_root = _cargo_target_root(root)
+    # Always propagate target_root to CARGO_TARGET_DIR so cargo builds
+    # into the same directory the artifact lookup will check. Without
+    # this, MOLT_SESSION_ID causes a mismatch: we look in target-{id}/
+    # but cargo writes to target/.
+    build_env["CARGO_TARGET_DIR"] = str(target_root)
     if artifact_kind == "staticlib":
         staticlib = _wasm_runtime_staticlib_path(target_root, profile_dir)
         stale_artifacts = [staticlib]
