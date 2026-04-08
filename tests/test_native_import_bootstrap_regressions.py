@@ -112,6 +112,27 @@ def test_native_import_os_is_clean(tmp_path: Path) -> None:
     assert run.stdout.strip() == "ok"
 
 
+def test_native_metaclass_subclass_of_base_metaclass_is_allowed(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import abc\n"
+            "class Base(metaclass=abc.ABCMeta):\n"
+            "    pass\n"
+            "class Meta(abc.ABCMeta):\n"
+            "    pass\n"
+            "class Derived(Base, metaclass=Meta):\n"
+            "    pass\n"
+            "print('ok')\n"
+        ),
+        "metaclass_subclass_allowed",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "ok"
+
+
 def test_native_import_builtins_descriptor_types_are_bootstrapped(tmp_path: Path) -> None:
     run = _build_and_run(
         tmp_path,
