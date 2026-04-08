@@ -8,6 +8,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
+NATIVE_BOOTSTRAP_SESSION_ID = "pytest-native-bootstrap"
+NATIVE_BUILD_TIMEOUT_SECS = 600
 
 
 def _build_and_run(tmp_path: Path, source: str, name: str) -> subprocess.CompletedProcess[str]:
@@ -17,7 +19,7 @@ def _build_and_run(tmp_path: Path, source: str, name: str) -> subprocess.Complet
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(SRC_DIR)
-    env["MOLT_SESSION_ID"] = f"pytest-{name}"
+    env["MOLT_SESSION_ID"] = NATIVE_BOOTSTRAP_SESSION_ID
     env["CARGO_TARGET_DIR"] = str(ROOT / "target")
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
     env["MOLT_CACHE"] = str(ROOT / ".molt_cache")
@@ -45,7 +47,7 @@ def _build_and_run(tmp_path: Path, source: str, name: str) -> subprocess.Complet
         env=env,
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=NATIVE_BUILD_TIMEOUT_SECS,
     )
     assert build.returncode == 0, build.stdout + build.stderr
 
@@ -86,8 +88,26 @@ def test_native_import_sys_is_clean(tmp_path: Path) -> None:
     assert run.stdout.strip() == "ok"
 
 
+def test_native_false_guarded_raise_does_not_leak_pending_exception(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        "flag = False\nif flag:\n    raise RuntimeError('bad')\nprint('ok')\n",
+        "false_guarded_raise",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "ok"
+
+
 def test_native_import_json_is_clean(tmp_path: Path) -> None:
     run = _build_and_run(tmp_path, "import json\nprint('ok')\n", "import_json")
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "ok"
+
+
+def test_native_import_os_is_clean(tmp_path: Path) -> None:
+    run = _build_and_run(tmp_path, "import os\nprint('ok')\n", "import_os")
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "ok"
 

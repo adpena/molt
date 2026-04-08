@@ -47,6 +47,15 @@ fn infer_scalar_lane(
     float_like_vars: &BTreeSet<String>,
     str_like_vars: &BTreeSet<String>,
 ) -> Option<ScalarLane> {
+    if let Some(type_hint) = op.type_hint.as_deref() {
+        match type_hint {
+            "bool" => return Some(ScalarLane::Bool),
+            "int" => return Some(ScalarLane::Int),
+            "float" => return Some(ScalarLane::Float),
+            "str" | "string" => return Some(ScalarLane::Str),
+            _ => {}
+        }
+    }
     let first_source = || {
         op.var.as_deref().or_else(|| {
             op.args
@@ -82,6 +91,15 @@ fn infer_scalar_lane(
         }),
         "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "bool" | "cast_bool" | "builtin_bool"
         | "is_truthy" | "is" | "not" => Some(ScalarLane::Bool),
+        "if" => first_source().and_then(|src| {
+            if bool_like_vars.contains(src) {
+                Some(ScalarLane::Bool)
+            } else if name_is_int_like(src, int_like_vars, bool_like_vars) {
+                Some(ScalarLane::Int)
+            } else {
+                None
+            }
+        }),
         "add" | "inplace_add" => {
             if args_all(&is_str) {
                 Some(ScalarLane::Str)
@@ -1899,6 +1917,13 @@ impl SimpleBackend {
                 continue;
             }
             let op = ops[op_idx].clone();
+            // Reconcile the logical block-filled flag with Cranelift's actual
+            // block state before emitting any per-op instrumentation. Some
+            // control-flow paths terminate the current block indirectly; if we
+            // trust a stale `is_block_filled=false` here, the traceback
+            // line/column update calls below can try to append instructions to
+            // a filled block and panic.
+            sync_block_filled(&builder, &mut is_block_filled);
             // Update frame stack column offsets for traceback carets.
             // Only emit for module chunks and only when the op carries col info.
             if is_module_chunk
@@ -1921,10 +1946,6 @@ impl SimpleBackend {
                     .ins()
                     .call(frame_line_col_fn, &[col_val, end_col_val]);
             }
-            // Don't use sync_block_filled — it sets is_block_filled=true for EVERY
-            // block with a terminator, including legitimate fallthrough blocks.
-            // Instead, only detect filled blocks when switching to them (in
-            // switch_to_block_tracking).
             if is_block_filled {
                 if op.kind == "if"
                     && let Some(&end_if_idx) = if_to_end_if.get(&op_idx)
@@ -18395,14 +18416,6 @@ impl SimpleBackend {
                             &raw_int_shadow,
                             &label_live_shadow_names,
                         );
-                        if !exception_label_ids.is_empty() {
-                            rebind_named_vars_in_block(&mut builder, &label_live_join_vars);
-                            rebind_shadow_vars_in_block(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &label_live_shadow_names,
-                            );
-                        }
                         if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref()
                             == Ok(func_ir.name.as_str())
                         {
@@ -18439,14 +18452,6 @@ impl SimpleBackend {
                             &raw_int_shadow,
                             &label_live_shadow_names,
                         );
-                        if !exception_label_ids.is_empty() {
-                            rebind_named_vars_in_block(&mut builder, &label_live_join_vars);
-                            rebind_shadow_vars_in_block(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &label_live_shadow_names,
-                            );
-                        }
                         if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref()
                             == Ok(func_ir.name.as_str())
                         {
@@ -18476,14 +18481,6 @@ impl SimpleBackend {
                             &raw_int_shadow,
                             &label_live_shadow_names,
                         );
-                        if !exception_label_ids.is_empty() {
-                            rebind_named_vars_in_block(&mut builder, &label_live_join_vars);
-                            rebind_shadow_vars_in_block(
-                                &mut builder,
-                                &raw_int_shadow,
-                                &label_live_shadow_names,
-                            );
-                        }
                         if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref()
                             == Ok(func_ir.name.as_str())
                         {
