@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
+import platform
+import sys
 from typing import Any, Mapping
 
 
@@ -61,6 +63,13 @@ def normalize_debug_payload(
     normalized_capabilities = [
         asdict(record) for record in (capabilities or [])
     ]
+    normalized_selectors = dict(selectors or {})
+    dimensions = {
+        "python_tag": f"py{sys.version_info.major}{sys.version_info.minor}",
+        "host_os": (platform.system() or "unknown").lower(),
+        "backend": normalized_selectors.get("backend"),
+        "target": normalized_selectors.get("target"),
+    }
     return {
         "schema_version": 1,
         "command": "debug",
@@ -69,7 +78,8 @@ def normalize_debug_payload(
         "run_id": run_id,
         "artifact_root": _normalize_path(artifact_root),
         "manifest_path": _normalize_path(manifest_path),
-        "selectors": dict(selectors or {}),
+        "selectors": normalized_selectors,
+        "dimensions": dimensions,
         "failure_class": (
             str(DebugFailureClass(failure_class))
             if failure_class is not None

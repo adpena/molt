@@ -91,6 +91,8 @@ def test_manifest_write_and_summary_helpers(tmp_path: Path, monkeypatch) -> None
     loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert loaded["subcommand"] == "diff"
     assert loaded["status"] == "unsupported"
+    assert loaded["dimensions"]["python_tag"].startswith("py3")
+    assert loaded["dimensions"]["host_os"]
 
     text_summary = render_debug_text_summary(loaded)
     assert "Status: unsupported" in text_summary
