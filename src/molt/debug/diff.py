@@ -39,3 +39,33 @@ def build_diff_summary_payload(
         "failed_files": list(summary.get("failed_files", [])),
         "failure_queue": list(failures or []),
     }
+
+
+def render_diff_text(summary: dict[str, Any]) -> str:
+    counts = summary.get("counts", {})
+    failed_files = summary.get("failed_files", [])
+    failure_queue = summary.get("failure_queue", [])
+    lines = [
+        "Molt Debug Diff",
+        f"Run ID: {summary.get('run_id') or 'unknown'}",
+        f"Jobs: {summary.get('jobs') or 0}",
+        (
+            "Counts: "
+            f"discovered={counts.get('discovered', 0)} "
+            f"total={counts.get('total', 0)} "
+            f"passed={counts.get('passed', 0)} "
+            f"failed={counts.get('failed', 0)} "
+            f"skipped={counts.get('skipped', 0)} "
+            f"oom={counts.get('oom', 0)}"
+        ),
+        f"Failed Files: {len(failed_files)}",
+        f"Failure Queue: {len(failure_queue)}",
+    ]
+    config = summary.get("config")
+    if isinstance(config, dict) and config:
+        config_bits = [
+            f"{key}={config[key]}"
+            for key in sorted(config)
+        ]
+        lines.append("Config: " + ", ".join(config_bits))
+    return "\n".join(lines) + "\n"
