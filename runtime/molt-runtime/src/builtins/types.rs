@@ -954,6 +954,22 @@ pub extern "C" fn molt_classmethod_new(func_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_bootstrap_descriptor_types() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let builtins = builtin_classes(_py);
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[builtins.classmethod, builtins.staticmethod, builtins.property],
+        );
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let args_obj = obj_from_bits(args_bits);

@@ -25,6 +25,13 @@ When you identify the correct fix and feel tempted to do something "simpler" ins
 - **All backends** (native/Cranelift, WASM, LLVM) must have parity. No backend-specific workarounds.
 - **Extreme optimization and performance**. Choose the most performant algorithm and data structure. No lazy shortcuts.
 
+## Bootstrap Authority (Non-Negotiable)
+
+- Runtime-known module bootstrap must go through the runtime import boundary (`MODULE_IMPORT`). Do not split bootstrap ownership between frontend special cases and runtime import code.
+- Bootstrap-critical builtin type objects such as `classmethod`, `staticmethod`, and `property` must come from explicit runtime bootstrap intrinsics/primitives. Do not probe-construct Python objects in stdlib bootstrap code to discover their types.
+- When modifying `builtins.py`, `sys.py`, `importlib`, `_intrinsics.py`, or frontend import lowering, add or update native end-to-end bootstrap regressions in the same change.
+- If a bootstrap fix depends on control-flow behavior in a fast-moving frontend/backend file, factor that dependency into a first-class runtime/bootstrap contract instead of leaving another chicken-and-egg edge in place.
+
 ## Git Discipline
 
 - **NEVER revert or discard unstaged changes**. They are from trusted partners. Pause and wait.
