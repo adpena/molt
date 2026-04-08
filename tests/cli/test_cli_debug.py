@@ -132,6 +132,24 @@ def test_debug_ir_and_verify_help_exist(tmp_path: Path) -> None:
     assert "usage:" in perf_help.stdout.lower()
 
 
+def test_debug_unwired_flows_accept_input_paths_and_emit_structured_payloads(
+    tmp_path: Path,
+) -> None:
+    source_path = _write_source(tmp_path)
+
+    for subcommand in ("repro", "trace", "reduce", "bisect"):
+        res = _run_cli(
+            ["debug", subcommand, str(source_path), "--format", "json"],
+            cwd=tmp_path,
+        )
+        assert res.returncode == 0, res.stderr
+        payload = json.loads(res.stdout)
+        assert payload["subcommand"] == subcommand
+        assert payload["status"] == "unsupported"
+        assert payload["failure_class"] == "not_yet_wired"
+        assert f"molt debug {subcommand} is not yet wired" == payload["message"]
+
+
 def test_debug_command_writes_manifest_under_tmp_debug_by_default(tmp_path: Path) -> None:
     source_path = _write_source(tmp_path)
     res = _run_cli(["debug", "ir", str(source_path), "--format", "json"], cwd=tmp_path)
