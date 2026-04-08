@@ -5575,7 +5575,7 @@ def test_resolve_cargo_profile_name_defaults_and_validation(
     cli._resolve_cargo_profile_name_cached.cache_clear()
     monkeypatch.delenv("MOLT_DEV_CARGO_PROFILE", raising=False)
     profile, error = cli._resolve_cargo_profile_name("dev")
-    assert profile == "dev"
+    assert profile == "dev-fast"
     assert error is None
 
     monkeypatch.setenv("MOLT_DEV_CARGO_PROFILE", "my-dev_1")
@@ -5585,7 +5585,7 @@ def test_resolve_cargo_profile_name_defaults_and_validation(
 
     monkeypatch.setenv("MOLT_DEV_CARGO_PROFILE", "bad profile")
     profile, error = cli._resolve_cargo_profile_name("dev")
-    assert profile == "dev"
+    assert profile == "dev-fast"
     assert error == "Invalid MOLT_DEV_CARGO_PROFILE value: bad profile"
 
 
@@ -5596,7 +5596,7 @@ def test_resolve_backend_cargo_profile_name_defaults_and_validation(
     monkeypatch.delenv("MOLT_DEV_BACKEND_CARGO_PROFILE", raising=False)
     monkeypatch.delenv("MOLT_DEV_CARGO_PROFILE", raising=False)
     profile, error = cli._resolve_backend_cargo_profile_name("dev")
-    assert profile == "dev"
+    assert profile == "dev-fast"
     assert error is None
 
     monkeypatch.delenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", raising=False)
@@ -5617,7 +5617,7 @@ def test_resolve_backend_cargo_profile_name_defaults_and_validation(
 
     monkeypatch.setenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", "bad profile")
     profile, error = cli._resolve_backend_cargo_profile_name("release")
-    assert profile == "release"
+    assert profile == "release-fast"
     assert error == "Invalid MOLT_RELEASE_BACKEND_CARGO_PROFILE value: bad profile"
 
 
