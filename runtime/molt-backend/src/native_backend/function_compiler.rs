@@ -1301,7 +1301,8 @@ impl SimpleBackend {
         let mut slot_backed_join_names: BTreeSet<String> = BTreeSet::new();
         if !exception_label_ids.is_empty() {
             let mut exception_region_depth = 0i32;
-            let mut first_seen_in_exception: BTreeMap<String, bool> = BTreeMap::new();
+            let mut first_seen_join_in_exception: BTreeMap<String, bool> = BTreeMap::new();
+            let mut exception_written_locals: BTreeSet<String> = BTreeSet::new();
             for op in &func_ir.ops {
                 match op.kind.as_str() {
                     "try_start" => {
@@ -1310,28 +1311,41 @@ impl SimpleBackend {
                     "exception_pop" => {
                         exception_region_depth = (exception_region_depth - 1).max(0);
                     }
-                    "store_var" | "load_var" | "copy_var" if exception_region_depth > 0 => {
+                    "store_var" if exception_region_depth > 0 => {
+                        if let Some(name) = op.var.as_ref().or(op.out.as_ref()) {
+                            // Values first written inside a protected region must
+                            // survive `check_exception`-driven block splits. Pure
+                            // SSA vars are not stable enough here; keep a stack slot.
+                            exception_written_locals.insert(name.clone());
+                            if is_join_slot_name(name) {
+                                first_seen_join_in_exception
+                                    .entry(name.clone())
+                                    .or_insert(true);
+                            }
+                        }
+                    }
+                    "copy_var" | "load_var" if exception_region_depth > 0 => {
                         let candidate = op
                             .var
                             .as_ref()
-                            .or(op.out.as_ref())
                             .or_else(|| op.args.as_ref().and_then(|args| args.first()));
                         if let Some(name) = candidate
                             && is_join_slot_name(name)
                         {
-                            first_seen_in_exception
+                            first_seen_join_in_exception
                                 .entry(name.clone())
-                                .or_insert(exception_region_depth > 0);
+                                .or_insert(true);
                         }
                     }
                     _ => {}
                 }
             }
-            for (name, in_exception) in first_seen_in_exception {
+            for (name, in_exception) in first_seen_join_in_exception {
                 if in_exception {
                     slot_backed_join_names.insert(name);
                 }
             }
+            slot_backed_join_names.extend(exception_written_locals);
         }
         let mut slot_backed_join_slots: BTreeMap<String, cranelift_codegen::ir::StackSlot> =
             BTreeMap::new();
@@ -15195,9 +15209,12 @@ impl SimpleBackend {
                     let merge_block = builder.create_block();
                     if let Some(current_block) = builder.current_block() {
                         builder.insert_block_after(then_block, current_block);
+                        let mut last_layout_block = then_block;
                         if let Some(else_block) = else_block {
                             builder.insert_block_after(else_block, then_block);
+                            last_layout_block = else_block;
                         }
+                        builder.insert_block_after(merge_block, last_layout_block);
                     }
                     reachable_blocks.insert(then_block);
                     if let Some(else_block) = else_block {
@@ -15881,6 +15898,34 @@ impl SimpleBackend {
                         // merge-block parameters to their output variable names.
                         // Guard: skip if the merge block was already filled (can't emit defs).
                         if !is_block_filled && !frame.phi_ops.is_empty() {
+                            let phi_join_slot_names: Vec<Option<String>> = {
+                                let mut names: Vec<Option<String>> = Vec::new();
+                                let mut scan_idx = op_idx + 1;
+                                while scan_idx < ops.len() && ops[scan_idx].kind == "phi" {
+                                    scan_idx += 1;
+                                }
+                                if scan_idx < ops.len()
+                                    && matches!(ops[scan_idx].kind.as_str(), "label" | "state_label")
+                                {
+                                    scan_idx += 1;
+                                }
+                                while scan_idx < ops.len() && names.len() < frame.phi_ops.len() {
+                                    let next = &ops[scan_idx];
+                                    if next.kind != "load_var" {
+                                        break;
+                                    }
+                                    if let Some(var_name) = next.var.as_ref()
+                                        && is_join_slot_name(var_name)
+                                    {
+                                        names.push(Some(var_name.clone()));
+                                        scan_idx += 1;
+                                        continue;
+                                    }
+                                    break;
+                                }
+                                names.resize(frame.phi_ops.len(), None);
+                                names
+                            };
                             let mut remove_names: BTreeSet<&str> = BTreeSet::new();
                             for (idx, (out, _then_name, _else_name)) in
                                 frame.phi_ops.iter().enumerate()
@@ -15890,6 +15935,9 @@ impl SimpleBackend {
                                         panic!("phi param missing for {out} in {}", func_ir.name)
                                     });
                                 def_var_named(&mut builder, &vars, out, param);
+                                if let Some(Some(join_name)) = phi_join_slot_names.get(idx) {
+                                    def_var_named(&mut builder, &vars, join_name, param);
+                                }
                             }
                             // Refcount tracking is name-based. A `phi` output is a new name for a
                             // value that came from one of the predecessor blocks. If we don't

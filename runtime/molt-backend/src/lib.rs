@@ -746,13 +746,18 @@ fn switch_to_block_with_rebind(
     builder: &mut FunctionBuilder,
     block: Block,
     is_block_filled: &mut bool,
-    has_exception_labels: bool,
+    _has_exception_labels: bool,
     vars: &BTreeMap<String, Variable>,
     shadow_vars: &BTreeMap<String, Variable>,
     shadow_names: &BTreeSet<String>,
 ) {
     switch_to_block_tracking(builder, block, is_block_filled);
-    if has_exception_labels && !*is_block_filled && !builder.block_params(block).is_empty() {
+    if !*is_block_filled {
+        // Fresh blocks need explicit rebinding for local SSA variables.
+        // Without this, values defined before a control-flow split can read as
+        // zero/uninitialized in then/else/fallthrough blocks when the backend
+        // later uses `use_var` there. This is required for both normal branch
+        // merges and exception-aware fallthrough blocks.
         rebind_named_vars_in_block(builder, vars);
         rebind_shadow_vars_in_block(builder, shadow_vars, shadow_names);
     }
