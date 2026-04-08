@@ -79,7 +79,15 @@ from molt.debug.perf import (
     load_profile,
     render_perf_text,
 )
+from molt.debug.reduce import (
+    build_candidate_manifest,
+    build_reduction_payload,
+    load_reduction_input,
+    normalize_failure_oracle,
+    reduce_source_text,
+)
 from molt.debug.verify import build_verify_result_payload, run_default_verify_checks
+from molt.debug.bisect import bisect_backend_profile_ic, bisect_first_bad_pass
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.type_facts import (
     TypeFacts,
@@ -29027,6 +29035,93 @@ def _emit_debug_payload(
     return 0
 
 
+def _load_debug_oracle(args: argparse.Namespace) -> dict[str, Any]:
+    oracle_json = getattr(args, "oracle_json", None)
+    oracle_file = getattr(args, "oracle_file", None)
+    if oracle_json and oracle_file:
+        raise ValueError("use --oracle-json or --oracle-file, not both")
+    if oracle_file:
+        oracle_payload = json.loads(Path(oracle_file).read_text(encoding="utf-8"))
+    elif oracle_json:
+        oracle_payload = json.loads(oracle_json)
+    else:
+        raise ValueError("missing oracle; use --oracle-json or --oracle-file")
+    return normalize_failure_oracle(oracle_payload)
+
+
+def _merge_debug_manifest(
+    base_manifest: dict[str, Any],
+    extra_manifest: Any,
+) -> dict[str, Any]:
+    merged = copy.deepcopy(base_manifest)
+    if not isinstance(extra_manifest, Mapping):
+        return merged
+    for key, value in extra_manifest.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, Mapping)
+        ):
+            merged[key] = {**merged[key], **value}
+        else:
+            merged[key] = value
+    return merged
+
+
+def _run_debug_eval_command(
+    command: str | None,
+    *,
+    cwd: Path,
+    env_updates: Mapping[str, str],
+    default_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    evaluation: dict[str, Any] = {
+        "manifest": copy.deepcopy(default_manifest),
+    }
+    if not command:
+        return evaluation
+
+    env = os.environ.copy()
+    env.update(env_updates)
+    proc = subprocess.run(
+        shlex.split(command),
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    stdout = proc.stdout or ""
+    stderr = proc.stderr or ""
+    evaluation.update(
+        {
+            "classification": "nonzero_exit" if proc.returncode else "zero_exit",
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": proc.returncode,
+        }
+    )
+    parsed_stdout: dict[str, Any] | None = None
+    if stdout.strip():
+        try:
+            candidate = json.loads(stdout)
+        except json.JSONDecodeError:
+            candidate = None
+        if isinstance(candidate, dict):
+            parsed_stdout = candidate
+    if parsed_stdout is not None:
+        if "manifest" in parsed_stdout:
+            evaluation["manifest"] = _merge_debug_manifest(
+                default_manifest,
+                parsed_stdout.get("manifest"),
+            )
+        for key, value in parsed_stdout.items():
+            if key == "manifest":
+                continue
+            evaluation[key] = value
+    return evaluation
+
+
 def _handle_debug_ir(
     args: argparse.Namespace,
     *,
@@ -29222,6 +29317,342 @@ def _handle_debug_perf(
     )
 
 
+def _handle_debug_reduce(
+    args: argparse.Namespace,
+    *,
+    subcommand: DebugSubcommand,
+    paths: Any,
+    selectors: dict[str, Any],
+) -> int:
+    input_path = Path(args.input_path)
+    if not input_path.is_file():
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message=f"{input_path} is not a file",
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+    try:
+        oracle = _load_debug_oracle(args)
+    except (ValueError, json.JSONDecodeError) as exc:
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message=str(exc),
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+    if args.eval_command is None and oracle["kind"] != "manifest_predicate":
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message="--eval-command is required for non-manifest reduction oracles",
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+
+    reduction_input = load_reduction_input(input_path)
+    scratch_dir = paths.artifact_root / "scratch"
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    scratch_input_path = scratch_dir / reduction_input.source_path.name
+
+    def evaluator(candidate_text: str) -> dict[str, Any]:
+        scratch_input_path.write_text(candidate_text, encoding="utf-8")
+        default_manifest = build_candidate_manifest(candidate_text, scratch_input_path)
+        env_updates = {
+            "MOLT_DEBUG_EVAL_MODE": "reduce",
+            "MOLT_DEBUG_EVAL_INPUT": str(scratch_input_path),
+            "MOLT_DEBUG_EVAL_SOURCE_PATH": str(reduction_input.source_path),
+            "MOLT_DEBUG_EVAL_ORACLE_JSON": json.dumps(oracle, sort_keys=True),
+        }
+        return _run_debug_eval_command(
+            args.eval_command,
+            cwd=Path.cwd(),
+            env_updates=env_updates,
+            default_manifest=default_manifest,
+        )
+
+    try:
+        result = reduce_source_text(
+            reduction_input,
+            oracle=oracle,
+            evaluator=evaluator,
+        )
+    except ValueError as exc:
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message=str(exc),
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+
+    reduction_payload = build_reduction_payload(result, artifact_root=paths.artifact_root)
+    reduced_source_path = Path(reduction_payload["artifacts"]["reduced_source"])
+    reduced_source_path.parent.mkdir(parents=True, exist_ok=True)
+    reduced_source_path.write_text(result.reduced_source + "\n", encoding="utf-8")
+    payload = normalize_debug_payload(
+        subcommand=subcommand,
+        status=DebugStatus.OK,
+        run_id=paths.run_id,
+        artifact_root=paths.artifact_root,
+        manifest_path=paths.manifest_path,
+        selectors=selectors,
+        retained_output=paths.retained_output,
+        data=reduction_payload,
+    )
+    return _emit_debug_payload(
+        payload=payload,
+        format_name=args.format,
+        retained_output=paths.retained_output,
+    )
+
+
+def _handle_debug_bisect(
+    args: argparse.Namespace,
+    *,
+    subcommand: DebugSubcommand,
+    paths: Any,
+    selectors: dict[str, Any],
+) -> int:
+    input_path = Path(args.input_path)
+    if not input_path.is_file():
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message=f"{input_path} is not a file",
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+    try:
+        oracle = _load_debug_oracle(args)
+    except (ValueError, json.JSONDecodeError) as exc:
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message=str(exc),
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+    if args.eval_command is None:
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message="--eval-command is required for bisect runs",
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+
+    reduction_input = load_reduction_input(input_path)
+    default_input_payload = {
+        "kind": reduction_input.input_kind,
+        "source_path": str(reduction_input.source_path),
+        "manifest_path": (
+            str(reduction_input.manifest_path)
+            if reduction_input.manifest_path is not None
+            else None
+        ),
+    }
+
+    if args.passes:
+        passes = tuple(_split_tokens(args.passes))
+        if not passes:
+            message = "--passes must include at least one pass name"
+            payload = normalize_debug_payload(
+                subcommand=subcommand,
+                status=DebugStatus.ERROR,
+                run_id=paths.run_id,
+                artifact_root=paths.artifact_root,
+                manifest_path=paths.manifest_path,
+                selectors=selectors,
+                failure_class=DebugFailureClass.INVALID_REQUEST,
+                message=message,
+                retained_output=paths.retained_output,
+            )
+            return _emit_debug_payload(
+                payload=payload,
+                format_name=args.format,
+                retained_output=paths.retained_output,
+            )
+
+        def evaluator(prefix: tuple[str, ...]) -> dict[str, Any]:
+            env_updates = {
+                "MOLT_DEBUG_EVAL_MODE": "bisect-pass",
+                "MOLT_DEBUG_EVAL_INPUT": str(reduction_input.source_path),
+                "MOLT_DEBUG_EVAL_SOURCE_PATH": str(reduction_input.source_path),
+                "MOLT_DEBUG_EVAL_PASSES_CSV": ",".join(prefix),
+                "MOLT_DEBUG_EVAL_PASSES_JSON": json.dumps(list(prefix), sort_keys=True),
+                "MOLT_DEBUG_EVAL_ORACLE_JSON": json.dumps(oracle, sort_keys=True),
+            }
+            default_manifest = {
+                "candidate": {
+                    "source_path": str(reduction_input.source_path),
+                    "passes": list(prefix),
+                }
+            }
+            return _run_debug_eval_command(
+                args.eval_command,
+                cwd=Path.cwd(),
+                env_updates=env_updates,
+                default_manifest=default_manifest,
+            )
+
+        bisect_payload = bisect_first_bad_pass(
+            passes,
+            oracle=oracle,
+            evaluator=evaluator,
+        )
+    else:
+        if not args.baseline_json or not args.failing_json:
+            message = "use --passes or both --baseline-json and --failing-json"
+            payload = normalize_debug_payload(
+                subcommand=subcommand,
+                status=DebugStatus.ERROR,
+                run_id=paths.run_id,
+                artifact_root=paths.artifact_root,
+                manifest_path=paths.manifest_path,
+                selectors=selectors,
+                failure_class=DebugFailureClass.INVALID_REQUEST,
+                message=message,
+                retained_output=paths.retained_output,
+            )
+            return _emit_debug_payload(
+                payload=payload,
+                format_name=args.format,
+                retained_output=paths.retained_output,
+            )
+        try:
+            baseline = json.loads(args.baseline_json)
+            failing = json.loads(args.failing_json)
+        except json.JSONDecodeError as exc:
+            payload = normalize_debug_payload(
+                subcommand=subcommand,
+                status=DebugStatus.ERROR,
+                run_id=paths.run_id,
+                artifact_root=paths.artifact_root,
+                manifest_path=paths.manifest_path,
+                selectors=selectors,
+                failure_class=DebugFailureClass.INVALID_REQUEST,
+                message=f"invalid bisect config JSON: {exc}",
+                retained_output=paths.retained_output,
+            )
+            return _emit_debug_payload(
+                payload=payload,
+                format_name=args.format,
+                retained_output=paths.retained_output,
+            )
+
+        def evaluator(candidate: dict[str, Any]) -> dict[str, Any]:
+            env_updates = {
+                "MOLT_DEBUG_EVAL_MODE": "bisect-config",
+                "MOLT_DEBUG_EVAL_INPUT": str(reduction_input.source_path),
+                "MOLT_DEBUG_EVAL_SOURCE_PATH": str(reduction_input.source_path),
+                "MOLT_DEBUG_EVAL_CANDIDATE_JSON": json.dumps(candidate, sort_keys=True),
+                "MOLT_DEBUG_EVAL_ORACLE_JSON": json.dumps(oracle, sort_keys=True),
+            }
+            default_manifest = {
+                "candidate": candidate,
+                "source_path": str(reduction_input.source_path),
+            }
+            return _run_debug_eval_command(
+                args.eval_command,
+                cwd=Path.cwd(),
+                env_updates=env_updates,
+                default_manifest=default_manifest,
+            )
+
+        bisect_payload = bisect_backend_profile_ic(
+            baseline=baseline,
+            failing=failing,
+            oracle=oracle,
+            evaluator=evaluator,
+        )
+
+    payload = normalize_debug_payload(
+        subcommand=subcommand,
+        status=DebugStatus.OK,
+        run_id=paths.run_id,
+        artifact_root=paths.artifact_root,
+        manifest_path=paths.manifest_path,
+        selectors=selectors,
+        retained_output=paths.retained_output,
+        data={
+            "input": default_input_payload,
+            "oracle": oracle,
+            "bisect": bisect_payload,
+        },
+    )
+    return _emit_debug_payload(
+        payload=payload,
+        format_name=args.format,
+        retained_output=paths.retained_output,
+    )
+
+
 def _handle_debug_command(args: argparse.Namespace) -> int:
     subcommand = DebugSubcommand(args.debug_subcommand)
     paths = allocate_debug_paths(
@@ -29249,6 +29680,10 @@ def _handle_debug_command(args: argparse.Namespace) -> int:
         return _handle_debug_diff(args, subcommand=subcommand, paths=paths, selectors=selectors)
     if subcommand == DebugSubcommand.PERF:
         return _handle_debug_perf(args, subcommand=subcommand, paths=paths, selectors=selectors)
+    if subcommand == DebugSubcommand.REDUCE:
+        return _handle_debug_reduce(args, subcommand=subcommand, paths=paths, selectors=selectors)
+    if subcommand == DebugSubcommand.BISECT:
+        return _handle_debug_bisect(args, subcommand=subcommand, paths=paths, selectors=selectors)
     pending_data: dict[str, Any] | None = None
     if hasattr(args, "source"):
         pending_data = {"source": str(Path(args.source))}
@@ -29783,6 +30218,34 @@ def main() -> int:
             subparser.add_argument(
                 "input_path",
                 help="Source or prior manifest path to inspect.",
+            )
+            subparser.add_argument(
+                "--oracle-json",
+                help="Canonical reduction/bisection oracle as a JSON object.",
+            )
+            subparser.add_argument(
+                "--oracle-file",
+                help="Path to a JSON file containing the canonical oracle.",
+            )
+            subparser.add_argument(
+                "--eval-command",
+                help=(
+                    "Command executed for each candidate. It receives context via "
+                    "MOLT_DEBUG_EVAL_* environment variables and may emit JSON on stdout."
+                ),
+            )
+        if debug_subcommand == DebugSubcommand.BISECT:
+            subparser.add_argument(
+                "--passes",
+                help="Comma-separated pass list for first-bad-pass bisection.",
+            )
+            subparser.add_argument(
+                "--baseline-json",
+                help="Baseline backend/profile/IC configuration as JSON.",
+            )
+            subparser.add_argument(
+                "--failing-json",
+                help="Known failing backend/profile/IC configuration as JSON.",
             )
         if debug_subcommand == DebugSubcommand.DIFF:
             subparser.add_argument(

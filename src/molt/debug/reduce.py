@@ -35,6 +35,18 @@ def _sha256_dict(value: Any) -> str:
     return hashlib.sha256(_sorted_json(value).encode("utf-8")).hexdigest()
 
 
+def build_candidate_manifest(source_text: str, source_path: Path) -> dict[str, Any]:
+    line_count = len(source_text.splitlines()) if source_text else 0
+    return {
+        "candidate": {
+            "source_path": str(source_path),
+            "source_text": source_text,
+            "source_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+            "source_lines": line_count,
+        }
+    }
+
+
 def _normalize_predicates(predicates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         [dict(predicate) for predicate in predicates],
@@ -139,7 +151,7 @@ def _manifest_value_at_path(manifest: dict[str, Any], path: str) -> Any:
     return current
 
 
-def _oracle_matches(oracle: dict[str, Any], evaluation: dict[str, Any]) -> bool:
+def oracle_matches(oracle: dict[str, Any], evaluation: dict[str, Any]) -> bool:
     if "matched" in evaluation:
         return bool(evaluation["matched"])
 
@@ -185,6 +197,9 @@ def _oracle_matches(oracle: dict[str, Any], evaluation: dict[str, Any]) -> bool:
             elif op == "equals":
                 if value != predicate["value"]:
                     return False
+            elif op == "contains":
+                if not isinstance(value, str) or str(predicate["value"]) not in value:
+                    return False
             else:
                 raise ValueError(f"unsupported manifest predicate op: {op}")
         return True
@@ -199,7 +214,7 @@ def _reduce_lines(
 ) -> tuple[list[str], dict[str, Any]]:
     current_lines = list(lines)
     current_eval = evaluator("".join(current_lines))
-    if not _oracle_matches(oracle, current_eval):
+    if not oracle_matches(oracle, current_eval):
         raise ValueError("initial source does not satisfy the oracle")
 
     changed = True
@@ -209,7 +224,7 @@ def _reduce_lines(
             candidate_lines = current_lines[:index] + current_lines[index + 1 :]
             candidate_text = "".join(candidate_lines)
             candidate_eval = evaluator(candidate_text)
-            if _oracle_matches(oracle, candidate_eval):
+            if oracle_matches(oracle, candidate_eval):
                 current_lines = candidate_lines
                 current_eval = candidate_eval
                 changed = True
@@ -249,10 +264,16 @@ def reduce_source_text(
     )
 
 
-def build_reduction_payload(result: ReductionResult) -> dict[str, Any]:
+def build_reduction_payload(
+    result: ReductionResult,
+    *,
+    artifact_root: Path | None = None,
+) -> dict[str, Any]:
     source_path = result.reduction_input.source_path
     reduced_name = f"{source_path.stem}_reduced{source_path.suffix or '.py'}"
-    reduced_path = source_path.with_name(reduced_name)
+    reduced_path = (
+        artifact_root / reduced_name if artifact_root is not None else source_path.with_name(reduced_name)
+    )
     original_lines = len(result.original_source.split("\n")) if result.original_source else 0
     reduced_lines = len(result.reduced_source.split("\n")) if result.reduced_source else 0
     return {
