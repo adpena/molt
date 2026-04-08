@@ -298,6 +298,18 @@ Required behavior:
 - support hard-fail debug assertions for runtime/state invariants;
 - integrate cleanly with CI and local targeted debugging.
 
+Verification activation must not split into separate implementations.
+
+Contract:
+
+- `molt debug verify` is the canonical targeted verifier runner;
+- `molt build`, `molt run`, `molt compare`, and `molt diff` may expose verifier
+  enablement flags or profiles, but they must call the same verifier core and
+  result model used by `molt debug verify`;
+- always-on verifier subsets, if any, must be documented as named bundles in
+  the shared verifier registry rather than implemented as ad hoc duplicated
+  checks in individual command paths.
+
 ### 6.4 `molt debug trace`
 
 Owns scoped trace enablement and rendering.
@@ -572,6 +584,23 @@ Reduction lanes:
 - first bad pass identification;
 - backend/configuration reduction.
 
+### 11.2.1 Oracle model
+
+Reducers and bisection flows must use one canonical oracle abstraction, because
+the reduction engine is only as reliable as its retained failure predicate.
+
+Required canonical oracle categories:
+
+- process exit classification;
+- verifier failure classification;
+- structured diff mismatch classification;
+- trace event or invariant signature match;
+- manifest predicate over retained artifacts and result fields.
+
+The reducer CLI may expose user-friendly shorthands, but manifests must record
+the oracle in one normalized machine-readable format so different reduction
+lanes do not invent incompatible predicate systems.
+
 ### 11.3 Required outputs
 
 A successful reduction run must retain:
@@ -662,7 +691,9 @@ standalone-authority behavior in:
 - `tools/ir_dump.py`
 - `tools/ir_probe_supervisor.py`
 - `tools/profile_analyze.py`
-- direct user-facing `tools/check_molt_ir_ops.py` workflows
+- direct user-facing `tools/check_molt_ir_ops.py` workflows, with its
+  inventory/probe validation semantics migrated into the shared verifier core
+  behind `molt debug verify` rather than discarded
 - backend ad hoc `TIR_DUMP` behavior
 - scattered undocumented env-only debug workflows that duplicate canonical
   `molt debug` behavior
