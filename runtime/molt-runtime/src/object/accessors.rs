@@ -9,11 +9,13 @@ use crate::{
     GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT, GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL, PyToken,
-    STRUCT_FIELD_STORE_COUNT, TYPE_ID_DATACLASS, TYPE_ID_OBJECT, TYPE_ID_TYPE,
-    attr_name_bits_from_bytes, class_field_offset, class_layout_version_bits, dec_ref_bits,
-    exception_pending, global_type_version, header_from_obj_ptr, inc_ref_bits, is_missing_bits,
-    obj_from_bits, object_class_bits, object_mark_has_ptrs, object_payload_size, object_type_id,
-    profile_hit, raise_exception, to_i64, usize_from_bits,
+    STRUCT_FIELD_STORE_COUNT, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_OBJECT, TYPE_ID_TYPE,
+    attr_name_bits_from_bytes, class_dict_bits, class_field_offset, class_layout_version_bits,
+    dec_ref_bits, dict_get_in_place, dict_order, dict_set_in_place, exception_pending,
+    global_type_version, header_from_obj_ptr, inc_ref_bits, instance_dict_bits, intern_static_name,
+    is_missing_bits, obj_from_bits, object_class_bits, object_mark_has_ptrs,
+    object_payload_size, object_type_id, profile_hit, raise_exception, runtime_state, to_i64,
+    usize_from_bits,
 };
 
 fn debug_field_bounds_enabled() -> bool {
@@ -24,6 +26,67 @@ fn debug_field_bounds_enabled() -> bool {
             Some("1")
         )
     })
+}
+
+unsafe fn sync_materialized_instance_dict_for_field_offset(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    offset: usize,
+    val_bits: u64,
+) {
+    let dict_bits = instance_dict_bits(obj_ptr);
+    if dict_bits == 0 {
+        return;
+    }
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return;
+    };
+    if object_type_id(dict_ptr) != TYPE_ID_DICT {
+        return;
+    }
+    let class_bits = object_class_bits(obj_ptr);
+    if class_bits == 0 {
+        return;
+    }
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return;
+    };
+    if object_type_id(class_ptr) != TYPE_ID_TYPE {
+        return;
+    }
+    let fields_key = intern_static_name(
+        _py,
+        &runtime_state(_py).interned.field_offsets_name,
+        b"__molt_field_offsets__",
+    );
+    let cls_dict_bits = class_dict_bits(class_ptr);
+    let Some(cls_dict_ptr) = obj_from_bits(cls_dict_bits).as_ptr() else {
+        return;
+    };
+    if object_type_id(cls_dict_ptr) != TYPE_ID_DICT {
+        return;
+    }
+    let Some(offsets_bits) = dict_get_in_place(_py, cls_dict_ptr, fields_key) else {
+        return;
+    };
+    let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
+        return;
+    };
+    if object_type_id(offsets_ptr) != TYPE_ID_DICT {
+        return;
+    }
+    let pairs = dict_order(offsets_ptr).clone();
+    let target_offset = offset as i64;
+    let mut index = 0usize;
+    while index + 1 < pairs.len() {
+        let key_bits = pairs[index];
+        let offset_bits = pairs[index + 1];
+        if obj_from_bits(offset_bits).as_int() == Some(target_offset) {
+            dict_set_in_place(_py, dict_ptr, key_bits, val_bits);
+            break;
+        }
+        index += 2;
+    }
 }
 
 pub(crate) fn resolve_obj_ptr(bits: u64) -> Option<*mut u8> {
@@ -114,12 +177,14 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
                     readback, val_bits
                 );
             }
+            sync_materialized_instance_dict_for_field_offset(_py, obj_ptr, offset, val_bits);
             return MoltObject::none().bits();
         }
         if old_bits != val_bits {
             dec_ref_bits(_py, old_bits);
             inc_ref_bits(_py, val_bits);
             *slot = val_bits;
+            sync_materialized_instance_dict_for_field_offset(_py, obj_ptr, offset, val_bits);
         }
         MoltObject::none().bits()
     }
@@ -325,8 +390,6 @@ pub unsafe extern "C" fn molt_guarded_field_set_ptr(
         crate::with_gil_entry!(_py, {
             let offset = usize_from_bits(offset_bits);
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
-                // Write to field slot only. __dict__ is synthesized lazily
-                // when accessed (merges field slots into instance_dict).
                 return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
             }
             crate::molt_set_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits, val_bits) as u64
