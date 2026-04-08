@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from pathlib import Path
 
 from molt.frontend import MoltValue, SimpleTIRGenerator, compile_to_tir
 
@@ -97,6 +98,113 @@ def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic() -> None:
         "_HOOK = _require_intrinsic('molt_importlib_module_spec_is_package')\n"
     )
     assert _has_builtin_func(source, "molt_importlib_module_spec_is_package")
+
+
+def test_chunked_stdlib_intrinsics_import_binding_survives_reset() -> None:
+    source_path = (
+        Path(__file__).resolve().parents[1] / "src" / "molt" / "stdlib" / "json" / "__init__.py"
+    )
+    source = (
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        "_HOOK = _require_intrinsic('molt_json_parse_scalar_obj')\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="json",
+        source_path=str(source_path),
+        entry_module="json",
+        module_chunking=True,
+        module_chunk_max_ops=1,
+    )
+    gen.visit(ast.parse(source))
+    assert gen.global_imported_names["_require_intrinsic"] == "_intrinsics"
+    assert any(
+        op.kind == "BUILTIN_FUNC" and op.args[0] == "molt_json_parse_scalar_obj"
+        for func in gen.funcs_map.values()
+        for op in func["ops"]
+    )
+
+
+def test_chunked_stdlib_intrinsics_value_binding_uses_runtime_resolver() -> None:
+    source_path = Path(__file__).resolve().parents[1] / "src" / "molt" / "stdlib" / "sys.py"
+    source = (
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        "def _safe(name, _ri=_require_intrinsic):\n"
+        "    return _ri\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="sys",
+        source_path=str(source_path),
+        entry_module="sys",
+        module_chunking=True,
+        module_chunk_max_ops=1,
+    )
+    gen.visit(ast.parse(source))
+    assert gen.global_imported_names["_require_intrinsic"] == "_intrinsics"
+    assert any(
+        op.kind == "BUILTIN_FUNC" and op.args[0] == "molt_intrinsic_resolve"
+        for func in gen.funcs_map.values()
+        for op in func["ops"]
+    )
+
+
+def test_non_phi_or_with_call_avoids_list_cell_result_plumbing() -> None:
+    source = (
+        "def left():\n"
+        "    return None\n"
+        "def f():\n"
+        "    values = left() or (1, 2, 3)\n"
+        "    return values\n"
+    )
+    gen = SimpleTIRGenerator(module_name="partner_boolop", enable_phi=False)
+    gen.visit(ast.parse(source))
+    func_ops = gen.funcs_map["partner_boolop__f"]["ops"]
+    kinds = [op.kind for op in func_ops]
+    assert "LIST_NEW" not in kinds
+    assert "STORE_INDEX" not in kinds
+    assert "INDEX" not in kinds
+
+
+def test_non_phi_and_with_call_avoids_list_cell_result_plumbing() -> None:
+    source = (
+        "def left():\n"
+        "    return 1\n"
+        "def right():\n"
+        "    return 2\n"
+        "def f():\n"
+        "    values = left() and right()\n"
+        "    return values\n"
+    )
+    gen = SimpleTIRGenerator(module_name="partner_boolop", enable_phi=False)
+    gen.visit(ast.parse(source))
+    func_ops = gen.funcs_map["partner_boolop__f"]["ops"]
+    kinds = [op.kind for op in func_ops]
+    assert "LIST_NEW" not in kinds
+    assert "STORE_INDEX" not in kinds
+    assert "INDEX" not in kinds
+
+
+def test_try_wrapped_return_avoids_list_return_slot_in_sync_function() -> None:
+    source = (
+        "from _intrinsics import require_intrinsic as r\n"
+        "def safe(name, default=None, _ri=r):\n"
+        "    try:\n"
+        "        fn = _ri(name)\n"
+        "        if callable(fn):\n"
+        "            return fn\n"
+        "    except (RuntimeError, TypeError):\n"
+        "        pass\n"
+        "    if default is not None:\n"
+        "        return default\n"
+        "    return lambda: None\n"
+    )
+    ir = compile_to_tir(source)
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____safe"
+    )
+    kinds = [op["kind"] for op in func_ops]
+    assert "list_new" not in kinds
+    assert "store_index" not in kinds
+    assert "index" not in kinds
 
 
 def test_imported_class_ctor_avoids_cross_module_name_collision() -> None:
@@ -211,3 +319,17 @@ def test_local_user_class_ctor_lowers_via_call_bind() -> None:
         op.get("kind") not in {"alloc_class", "alloc_class_static", "alloc_class_trusted"}
         for op in main_ops
     ), "local class constructor should not lower via synthetic object allocation"
+
+
+def test_known_module_import_uses_runtime_import_boundary() -> None:
+    gen = SimpleTIRGenerator(known_modules={"sys"})
+    gen.visit(ast.parse("import sys\n"))
+    ir = gen.to_json()
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    assert "sys" in _module_import_targets(main_ops)
+    assert all(
+        not (op.get("kind") == "call" and op.get("s_value") == "molt_init_sys")
+        for op in main_ops
+    )
