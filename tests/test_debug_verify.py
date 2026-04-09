@@ -99,3 +99,46 @@ def test_verify_result_payload_includes_function_pass_and_artifact_references() 
             "artifact": "tmp/debug/ir/selected.json",
         }
     ]
+
+
+def test_debug_verify_accepts_probe_execution_inputs(tmp_path: Path) -> None:
+    rss_metrics = tmp_path / "rss_metrics.jsonl"
+    rss_metrics.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "run_id": "verify-run",
+                    "timestamp": 1.0 + index,
+                    "file": probe,
+                    "status": "ok",
+                }
+            )
+            for index, probe in enumerate(_load_verify_module().REQUIRED_DIFF_PROBES)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    failure_queue = tmp_path / "failures.txt"
+    failure_queue.write_text("", encoding="utf-8")
+
+    res = _run_cli(
+        [
+            "debug",
+            "verify",
+            "--require-probe-execution",
+            "--probe-rss-metrics",
+            str(rss_metrics),
+            "--probe-run-id",
+            "verify-run",
+            "--failure-queue",
+            str(failure_queue),
+            "--format",
+            "json",
+        ],
+        cwd=tmp_path,
+    )
+    assert res.returncode == 0, res.stderr
+
+    payload = json.loads(res.stdout)
+    check_names = [entry["name"] for entry in payload["data"]["checks"]]
+    assert "required-probe-execution" in check_names

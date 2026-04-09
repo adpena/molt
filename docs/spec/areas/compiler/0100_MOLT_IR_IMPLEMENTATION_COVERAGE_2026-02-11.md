@@ -8,13 +8,15 @@ Scope: `docs/spec/areas/compiler/0100_MOLT_IR.md` instruction list vs repository
 - Historical baseline (before 2026-02-11 closure work): 109 implemented, 13 partial, 12 missing.
 - Current snapshot in this document: 109 implemented, 25 partial, 0 missing.
 - Gate alignment:
-  - `tools/check_molt_ir_ops.py` is green (`missing=0`) for spec-op inventory,
-    frontend lowering branches, required native/wasm dedicated lanes, and
-    behavior-level semantic assertions (including dedicated call-site labels for
-    `invoke_ffi_bridge`/`invoke_ffi_deopt` vs `call_func` and `call_indirect`
-    vs `call_bind`), required differential probe presence for dedicated-lane
-    coverage, and CI-enforced probe execution/failure-queue linkage in
-    `--require-probe-execution` mode.
+  - The shared verifier core, exposed publicly via
+    `python3 -m molt.cli debug verify`, is green (`missing=0`) for spec-op
+    inventory, frontend lowering branches, required native/wasm dedicated
+    lanes, and behavior-level semantic assertions (including dedicated
+    call-site labels for `invoke_ffi_bridge`/`invoke_ffi_deopt` vs `call_func`
+    and `call_indirect` vs `call_bind`), required differential probe presence
+    for dedicated-lane coverage, and CI-enforced probe execution/failure-queue
+    linkage in `--require-probe-execution` mode. Internal delegates such as
+    `tools/check_molt_ir_ops.py` consume the same verifier core.
   - Remaining work is semantic hardening (dedicated backend lanes + broader
     differential behavior evidence), not inventory presence.
   - Dedicated-lane differential probes now exist in
