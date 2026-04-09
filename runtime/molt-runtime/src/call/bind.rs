@@ -8,8 +8,8 @@ use crate::{
     CALL_BIND_IC_MISS_COUNT, CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT, GEN_CONTROL_SIZE,
     INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject, PtrDropGuard, PyToken,
     TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE, TYPE_ID_DATACLASS, TYPE_ID_DICT,
-    TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS,
-    TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
+    TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT,
+    TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
     alloc_dict_with_pairs, alloc_exception_from_class_bits, alloc_instance_for_class,
     alloc_instance_for_default_object_new, alloc_object, alloc_string, alloc_tuple,
     apply_class_slots_layout, attr_lookup_ptr, attr_lookup_ptr_allow_missing,
@@ -25,35 +25,34 @@ use crate::{
     function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
     function_trampoline_ptr, generic_alias_origin_bits, has_capability, inc_ref_bits,
     init_atomic_bits, intern_static_name, is_builtin_class_bits, is_trusted, is_truthy,
-    isinstance_bits, issubclass_bits, lookup_call_attr, maybe_ptr_from_bits,
-    missing_bits, molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
+    isinstance_bits, issubclass_bits, lookup_call_attr, maybe_ptr_from_bits, missing_bits,
+    molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
     molt_bytearray_find_slice, molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop,
     molt_bytearray_rfind_slice, molt_bytearray_rindex_slice, molt_bytearray_rsplit_max,
     molt_bytearray_split_max, molt_bytearray_splitlines, molt_bytearray_startswith_slice,
     molt_bytes_count_slice, molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice,
     molt_bytes_hex, molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice,
     molt_bytes_rindex_slice, molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
-    molt_bytes_startswith_slice, molt_class_set_base,
-    molt_dict_from_obj, molt_dict_new, molt_file_reconfigure, molt_frozenset_copy_method,
-    molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
-    molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
-    molt_frozenset_union_multi, molt_generator_new, molt_int_from_bytes, molt_int_new,
-    molt_int_to_bytes, molt_is_callable, molt_iter, molt_iter_next, molt_list_append,
-    molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast,
-    molt_memoryview_hex, molt_object_init, molt_object_init_subclass, molt_object_new_bound,
-    molt_open_builtin, molt_set_clear, molt_set_copy_method, molt_set_difference_multi,
-    molt_set_difference_update_multi, molt_set_intersection_multi,
-    molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
-    molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
-    molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
-    molt_string_endswith_slice, molt_string_find_slice, molt_string_format_method,
-    molt_string_index_slice, molt_string_rfind_slice, molt_string_rindex_slice,
-    molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
-    molt_string_startswith_slice, molt_super_new, molt_tuple_index_range, molt_type_call,
-    molt_type_init, molt_type_new, obj_from_bits, object_class_bits, object_set_class_bits,
-    object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception, raise_not_callable,
-    raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned, type_name,
-    type_of_bits,
+    molt_bytes_startswith_slice, molt_class_set_base, molt_dict_from_obj, molt_dict_new,
+    molt_file_reconfigure, molt_frozenset_copy_method, molt_frozenset_difference_multi,
+    molt_frozenset_intersection_multi, molt_frozenset_isdisjoint, molt_frozenset_issubset,
+    molt_frozenset_issuperset, molt_frozenset_symmetric_difference, molt_frozenset_union_multi,
+    molt_generator_new, molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_is_callable,
+    molt_iter, molt_iter_next, molt_list_append, molt_list_index_range, molt_list_pop,
+    molt_list_sort, molt_memoryview_cast, molt_memoryview_hex, molt_object_init,
+    molt_object_init_subclass, molt_object_new_bound, molt_open_builtin, molt_set_clear,
+    molt_set_copy_method, molt_set_difference_multi, molt_set_difference_update_multi,
+    molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
+    molt_set_issubset, molt_set_issuperset, molt_set_symmetric_difference,
+    molt_set_symmetric_difference_update, molt_set_union_multi, molt_set_update_multi,
+    molt_string_count_slice, molt_string_encode, molt_string_endswith_slice,
+    molt_string_find_slice, molt_string_format_method, molt_string_index_slice,
+    molt_string_rfind_slice, molt_string_rindex_slice, molt_string_rsplit_max,
+    molt_string_split_max, molt_string_splitlines, molt_string_startswith_slice, molt_super_new,
+    molt_tuple_index_range, molt_type_call, molt_type_init, molt_type_new, obj_from_bits,
+    object_class_bits, object_set_class_bits, object_type_id, profile_hit_unchecked, ptr_from_bits,
+    raise_exception, raise_not_callable, raise_not_iterable, runtime_state, seq_vec_ref,
+    string_obj_to_owned, type_name, type_of_bits,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -76,8 +75,19 @@ fn trace_call_bind_ic_enabled() -> bool {
 
 fn trace_function_bind_meta_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_FUNCTION_BIND_META").as_deref() == Ok("1"))
+}
+
+fn trace_call_type_builder_enabled_raw(raw: Option<&str>) -> bool {
+    raw == Some("1")
+}
+
+fn trace_call_type_builder_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var("MOLT_TRACE_FUNCTION_BIND_META").as_deref() == Ok("1")
+        trace_call_type_builder_enabled_raw(
+            std::env::var("MOLT_TRACE_CALL_TYPE_BUILDER").ok().as_deref(),
+        )
     })
 }
 
@@ -113,8 +123,17 @@ pub(crate) fn note_callargs_alloc(builder_ptr: *mut u8, args_ptr: *mut CallArgs)
 }
 
 pub(crate) fn note_callargs_free(builder_ptr: *mut u8, args_ptr: *mut CallArgs) {
+    if trace_callargs_enabled() && !builder_ptr.is_null() {
+        eprintln!(
+            "[molt callargs] free builder_ptr=0x{:x} args_ptr=0x{:x}",
+            builder_ptr as usize, args_ptr as usize,
+        );
+    }
     if !builder_ptr.is_null() {
-        callargs_builder_map().lock().unwrap().remove(&(builder_ptr as usize));
+        callargs_builder_map()
+            .lock()
+            .unwrap()
+            .remove(&(builder_ptr as usize));
     }
     if args_ptr.is_null() {
         return;
@@ -601,15 +620,12 @@ unsafe fn call_type_with_builder(
         }
         let mut resolved_new_bits = None;
         let is_exc_subclass = issubclass_bits(class_bits, builtins.base_exception);
-        {
-            #[cfg(debug_assertions)]
-            {
-                let class_name = class_name_for_error(class_bits);
-                eprintln!(
-                    "[DEBUG] call_type_with_builder: class={} bits={:#x} is_exc_subclass={}",
-                    class_name, class_bits, is_exc_subclass
-                );
-            }
+        if trace_call_type_builder_enabled() {
+            let class_name = class_name_for_error(class_bits);
+            eprintln!(
+                "[DEBUG] call_type_with_builder: class={} bits={:#x} is_exc_subclass={}",
+                class_name, class_bits, is_exc_subclass
+            );
         }
         let inst_bits = if is_exc_subclass {
             let new_name_bits =
@@ -1052,18 +1068,25 @@ unsafe fn require_callargs_ptr(
                     builder_ptr as usize,
                 );
             }
-            return Err(raise_exception::<_>(_py, "TypeError", "invalid callargs builder"));
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "invalid callargs builder",
+            ));
         }
         let args_ptr = callargs_ptr(builder_ptr);
         if args_ptr.is_null() || !callargs_storage_is_live(args_ptr) {
             if trace_callargs_enabled() {
                 eprintln!(
                     "[molt callargs] invalid_storage builder_ptr=0x{:x} args_ptr=0x{:x}",
-                    builder_ptr as usize,
-                    args_ptr as usize,
+                    builder_ptr as usize, args_ptr as usize,
                 );
             }
-            return Err(raise_exception::<_>(_py, "TypeError", "invalid callargs storage"));
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "invalid callargs storage",
+            ));
         }
         Ok(args_ptr)
     }
@@ -1262,8 +1285,7 @@ pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> 
             if trace_callargs_enabled() {
                 eprintln!(
                     "[molt callargs] push_pos_builder builder_bits=0x{:x} builder_ptr=0x{:x} live=true",
-                    builder_bits,
-                    builder_ptr as usize,
+                    builder_bits, builder_ptr as usize,
                 );
             }
             let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
@@ -1382,8 +1404,7 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
             if trace_callargs_enabled() {
                 eprintln!(
                     "[molt callargs] expand_star_builder builder_bits=0x{:x} builder_ptr=0x{:x} live=true",
-                    builder_bits,
-                    builder_ptr as usize,
+                    builder_bits, builder_ptr as usize,
                 );
             }
             let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
@@ -1391,7 +1412,11 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
                 Err(err) => return err,
             };
             if trace_callargs_enabled() {
-                let len = if args_ptr.is_null() { 0 } else { (&*args_ptr).pos.len() };
+                let len = if args_ptr.is_null() {
+                    0
+                } else {
+                    (&*args_ptr).pos.len()
+                };
                 eprintln!(
                     "[molt callargs] expand_star builder_bits=0x{:x} builder_ptr=0x{:x} args_ptr=0x{:x} len_before={} iterable_type={} iterable_bits=0x{:x}",
                     builder_bits,
@@ -1587,7 +1612,11 @@ unsafe fn call_bind_ic_entry_for_call(
                 .unwrap_or_else(|| MoltObject::none().bits())
             };
 
-            for name in [b"__molt_bind_kind__".as_slice(), b"__molt_vararg__", b"__molt_varkw__"] {
+            for name in [
+                b"__molt_bind_kind__".as_slice(),
+                b"__molt_vararg__",
+                b"__molt_varkw__",
+            ] {
                 if !obj_from_bits(attr(name)).is_none() {
                     return true;
                 }
@@ -1807,10 +1836,7 @@ unsafe fn call_bind_ic_dispatch(
                     };
                     eprintln!(
                         "[molt call_bind_ic] hit site={} kind={} arity={} fn_ptr=0x{:x}",
-                        site_id,
-                        kind,
-                        entry.arity,
-                        entry.fn_ptr,
+                        site_id, kind, entry.arity, entry.fn_ptr,
                     );
                 }
                 profile_hit_unchecked(&CALL_BIND_IC_HIT_COUNT);
@@ -4383,4 +4409,17 @@ unsafe fn bind_builtin_pop(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64
     out.push(default_bits);
     out.push(has_default);
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trace_call_type_builder_enabled_raw;
+
+    #[test]
+    fn trace_call_type_builder_gate_requires_explicit_opt_in() {
+        assert!(!trace_call_type_builder_enabled_raw(None));
+        assert!(!trace_call_type_builder_enabled_raw(Some("0")));
+        assert!(!trace_call_type_builder_enabled_raw(Some("true")));
+        assert!(trace_call_type_builder_enabled_raw(Some("1")));
+    }
 }
