@@ -7,6 +7,7 @@ Tensor, DataFrame, ops, and all sub-module imports.
 import json
 import math
 from pathlib import Path
+import pytest
 import struct
 import sys
 
@@ -182,6 +183,58 @@ def test_tensor_linear_weight_layout_matches_transposed_matmul():
     assert got.to_list() == expected.to_list()
 
 
+def test_tensor_linear_preserves_f32_output_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))
+    weight = Tensor(
+        to_device(array.array("f", [5.0, 6.0, 7.0, 8.0, 9.0, 10.0])),
+        shape=(3, 2),
+    )
+
+    out = x.linear(weight)
+
+    assert out.shape == (2, 3)
+    assert out.to_list() == [[17.0, 23.0, 29.0], [39.0, 53.0, 67.0]]
+    assert out._buf.format_char == "f"
+    assert out._buf.itemsize == 4
+
+
+def test_tensor_take_rows_preserves_values_and_f32_buffer_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    weight = Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])), shape=(3, 2))
+
+    out = weight.take_rows([2, 0])
+
+    assert out.shape == (2, 2)
+    assert out.to_list() == [[5.0, 6.0], [1.0, 2.0]]
+    assert out._buf.format_char == "f"
+    assert out._buf.itemsize == 4
+
+
+def test_tensor_indexing_preserves_subtensor_buffer_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    tensor = Tensor(
+        to_device(array.array("f", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])),
+        shape=(3, 2),
+    )
+
+    row = tensor[1]
+
+    assert row.shape == (2,)
+    assert row.to_list() == [3.0, 4.0]
+    assert row._buf.format_char == "f"
+    assert row._buf.itemsize == 4
+
+
 def test_tensor_batched_matmul_preserves_all_leading_dims():
     from molt.gpu.tensor import Tensor
 
@@ -238,6 +291,35 @@ def test_tensor_transpose():
     tt = t.T
     assert tt.shape == (3, 2)
     assert tt.to_list() == [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]]
+
+
+def test_tensor_take_rows_gathers_axis0_slices():
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor(
+        [
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0],
+        ]
+    )
+
+    out = t.take_rows(Tensor([[2, 0], [1, 2]]))
+
+    assert out.shape == (2, 2, 3)
+    assert out.to_list() == [
+        [[7.0, 8.0, 9.0], [1.0, 2.0, 3.0]],
+        [[4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
+    ]
+
+
+def test_tensor_take_rows_rejects_out_of_range_indices():
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor([[1.0, 2.0], [3.0, 4.0]])
+
+    with pytest.raises(IndexError, match="out of range"):
+        t.take_rows(Tensor([2]))
 
 
 def test_tensor_permute_4d_common_orders():
@@ -407,6 +489,26 @@ def test_submodule_nn():
     x = randn(1, 4, seed=1)
     out = linear(x)
     assert out.shape == (1, 2)
+
+
+def test_embedding_lookup_avoids_full_weight_materialization(monkeypatch):
+    from molt.gpu.nn import Embedding
+    from molt.gpu.tensor import Tensor
+
+    emb = Embedding(3, 2)
+    emb.load_weights(Tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]))
+    monkeypatch.setattr(
+        emb.weight,
+        "_data_list",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("embedding lookup should not flatten full weight")
+        ),
+    )
+
+    out = emb(Tensor([2, 0]))
+
+    assert out.shape == (2, 2)
+    assert out.to_list() == [[5.0, 6.0], [1.0, 2.0]]
 
 
 def test_submodule_transformer():

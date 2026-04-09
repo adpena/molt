@@ -17,7 +17,31 @@ from __future__ import annotations
 
 import math
 import struct
+import _intrinsics as _molt_intrinsics
 from . import Buffer, alloc, to_device, from_device
+
+
+def _load_optional_intrinsic(name: str):
+    loader = getattr(_molt_intrinsics, "load_intrinsic", None)
+    if callable(loader):
+        return loader(name)
+    require = getattr(_molt_intrinsics, "require_intrinsic", None)
+    if callable(require):
+        try:
+            return require(name)
+        except RuntimeError:
+            return None
+    return None
+
+
+def _runtime_intrinsics_active() -> bool:
+    runtime_active = getattr(_molt_intrinsics, "runtime_active", None)
+    if callable(runtime_active):
+        return bool(runtime_active())
+    return False
+
+
+_MOLT_GPU_LINEAR_CONTIGUOUS = _load_optional_intrinsic("molt_gpu_linear_contiguous")
 
 
 def _product(seq):
@@ -36,6 +60,16 @@ def _strides(shape):
         stride *= size
     strides.reverse()
     return tuple(strides)
+
+
+def _preferred_float_format(*tensors: "Tensor") -> str:
+    formats = []
+    for tensor in tensors:
+        if tensor._dtype is float and tensor._buf.element_type is float:
+            formats.append(tensor._buf.format_char)
+    if formats and all(fmt == "f" for fmt in formats):
+        return "f"
+    return "d"
 
 
 def _flatten_nested(data):
@@ -133,6 +167,18 @@ class Tensor:
     def _from_flat(self, flat, shape):
         """Create a new Tensor from a flat list and shape."""
         return Tensor(flat, shape=shape, dtype=self._dtype)
+
+    def _copy_contiguous_buffer(self, start_elem: int, elem_count: int) -> Buffer:
+        """Copy a contiguous element range into a new buffer preserving format."""
+        width = self._buf.itemsize
+        start = start_elem * width
+        end = (start_elem + elem_count) * width
+        return Buffer(
+            self._buf._data[start:end],
+            self._buf.element_type,
+            elem_count,
+            format_char=self._buf.format_char,
+        )
 
     # ── Shape operations ──────────────────────────────────────────────
 
@@ -488,10 +534,44 @@ class Tensor:
                 f"Linear shape mismatch: {self._shape} with weight {weight._shape}"
             )
 
-        x_data = self._data_list()
-        w_data = weight._data_list()
         outer = _product(self._shape[:-1]) if self.ndim > 1 else 1
-        result = [0.0] * (outer * out_features)
+        result_format = None
+        if self._dtype is float and weight._dtype is float:
+            result_format = _preferred_float_format(self, weight)
+        else:
+            result_format = self._buf.format_char
+
+        if _MOLT_GPU_LINEAR_CONTIGUOUS is not None:
+            out_bits = _MOLT_GPU_LINEAR_CONTIGUOUS(
+                self._buf._data,
+                self._buf.format_char,
+                weight._buf._data,
+                weight._buf.format_char,
+                outer,
+                in_features,
+                out_features,
+                result_format,
+            )
+            out_buf = Buffer(
+                out_bits,
+                self._dtype,
+                outer * out_features,
+                format_char=result_format,
+            )
+            out_shape = self._shape[:-1] + (out_features,)
+            if not out_shape:
+                out_shape = (out_features,)
+            return Tensor(out_buf, shape=out_shape, dtype=self._dtype)
+
+        if _runtime_intrinsics_active():
+            raise RuntimeError("intrinsic unavailable: molt_gpu_linear_contiguous")
+
+        x_data = self._data_list()
+        out_buf = alloc(
+            outer * out_features,
+            self._dtype,
+            format_char=result_format,
+        )
 
         for batch in range(outer):
             x_off = batch * in_features
@@ -500,13 +580,49 @@ class Tensor:
                 w_off = out_idx * in_features
                 acc = 0.0
                 for k in range(in_features):
-                    acc += x_data[x_off + k] * w_data[w_off + k]
-                result[out_off + out_idx] = acc
+                    acc += x_data[x_off + k] * weight._buf[w_off + k]
+                out_buf[out_off + out_idx] = acc
 
         out_shape = self._shape[:-1] + (out_features,)
         if not out_shape:
             out_shape = (out_features,)
-        return self._from_flat(result, out_shape)
+        return Tensor(out_buf, shape=out_shape, dtype=self._dtype)
+
+    def take_rows(self, indices, *, allow_negative: bool = True) -> 'Tensor':
+        """Gather slices along axis 0 without materializing the full tensor."""
+        if self.ndim == 0:
+            raise ValueError("take_rows requires a tensor with at least 1 dimension")
+
+        if not isinstance(indices, Tensor):
+            indices = Tensor(indices)
+
+        rows = indices._data_list()
+        row_shape = self._shape[1:]
+        row_size = _product(row_shape) if row_shape else 1
+        width = row_size * self._buf.itemsize
+        out = bytearray(len(rows) * width)
+
+        for out_row, raw_idx in enumerate(rows):
+            idx = int(raw_idx)
+            if idx != raw_idx:
+                raise TypeError(f"take_rows indices must be integers, got {raw_idx!r}")
+            if idx < 0 and allow_negative:
+                idx += self._shape[0]
+            if idx < 0 or idx >= self._shape[0]:
+                raise IndexError(
+                    f"Index {raw_idx} out of range for axis 0 with size {self._shape[0]}"
+                )
+            src_start = idx * width
+            dst_start = out_row * width
+            out[dst_start:dst_start + width] = self._buf._data[src_start:src_start + width]
+
+        out_buf = Buffer(
+            out,
+            self._buf.element_type,
+            len(rows) * row_size,
+            format_char=self._buf.format_char,
+        )
+        return Tensor(out_buf, shape=indices.shape + row_shape, dtype=self._dtype)
 
     # ── Reductions ────────────────────────────────────────────────────
 
@@ -749,12 +865,14 @@ class Tensor:
                 raise IndexError(f"Index {idx} out of range for axis 0 with size {self._shape[0]}")
             sub_shape = self._shape[1:]
             sub_size = _product(sub_shape) if sub_shape else 1
-            data = self._data_list()
             start = idx * sub_size
-            sub_data = data[start:start + sub_size]
             if not sub_shape:
-                return Tensor(sub_data[0])
-            return self._from_flat(sub_data, sub_shape)
+                return Tensor(self._buf[start], dtype=self._dtype)
+            return Tensor(
+                self._copy_contiguous_buffer(start, sub_size),
+                shape=sub_shape,
+                dtype=self._dtype,
+            )
         raise TypeError(f"Tensor indexing with {type(idx)} not supported")
 
 
