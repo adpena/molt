@@ -297,8 +297,17 @@ fn build_edges(
             // Return — no successors.
             "ret" | "ret_void" | "return" => {}
 
-            // Loop break — terminates block, no fall-through.
-            "loop_break" => {}
+            // Loop break — terminates block and transfers control to the
+            // block immediately after the enclosing loop. Without this edge,
+            // CFG-based executable-region pruning can incorrectly mark the
+            // real break path unreachable and erase it from later lowering.
+            "loop_break" => {
+                if let Some(&header_bid) = loop_header_stack.last()
+                    && let Some(&post_loop_bid) = loop_break_targets.get(&header_bid)
+                {
+                    add_edge(&mut successors, &mut predecessors, bid, post_loop_bid);
+                }
+            }
 
             // Loop continue — jump back to current loop header, no fall-through.
             "loop_continue" => {
@@ -939,6 +948,25 @@ mod tests {
         assert!(
             cfg.loop_depth[header_bid] >= 1,
             "header should be inside loop"
+        );
+    }
+
+    #[test]
+    fn loop_break_edges_to_post_loop_block() {
+        let ops = vec![
+            op("loop_start"), // 0 header
+            op("loop_break"), // 1 break from loop body
+            op("loop_end"),   // 2 loop end marker
+            op("ret_void"),   // 3 post-loop block
+        ];
+        let cfg = CFG::build(&ops);
+
+        let break_bid = block_containing(&cfg.blocks, 1).expect("loop_break block");
+        let post_loop_bid = block_containing(&cfg.blocks, 3).expect("post-loop block");
+
+        assert!(
+            cfg.successors[break_bid].contains(&post_loop_bid),
+            "loop_break should edge to the post-loop block so break paths stay executable"
         );
     }
 

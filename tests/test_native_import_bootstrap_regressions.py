@@ -274,6 +274,49 @@ def test_native_tuple_loop_dynamic_unpack_list_retention_is_clean(
     assert run.stdout.strip().splitlines() == ["160", "0.5"]
 
 
+def test_native_while_break_exits_after_first_iteration(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "n = 0\n"
+            "while True:\n"
+            "    n = n + 1\n"
+            "    if n > 3:\n"
+            "        raise RuntimeError(n)\n"
+            "    break\n"
+            "print(n)\n"
+        ),
+        "while_break_first_iteration",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "1"
+
+
+def test_native_nested_if_else_for_does_not_fallthrough_then_arm(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "def g(data):\n"
+            "    flat = []\n"
+            "    def walk(obj, depth):\n"
+            "        if depth == 1:\n"
+            "            flat.append(obj)\n"
+            "        else:\n"
+            "            for item in obj:\n"
+            "                flat.append(item)\n"
+            "    walk(data, 0)\n"
+            "    print(len(flat))\n"
+            "    print(type(flat[-1]).__name__)\n"
+            "g([0.0] * 3)\n"
+        ),
+        "nested_if_else_for_no_then_fallthrough",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["3", "float"]
+
+
 def test_native_safe_intrinsic_helper_with_tuple_subclass(tmp_path: Path) -> None:
     run = _build_and_run(
         tmp_path,
