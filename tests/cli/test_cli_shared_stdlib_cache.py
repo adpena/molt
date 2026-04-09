@@ -91,6 +91,31 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
     )
 
 
+def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
+    variant = _cache_variant()
+    ir = _ir_with_stdlib(
+        user_ops=[],
+        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+    )
+
+    key_a = cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        target_triple=None,
+        cache_variant=variant,
+        compiler_fingerprint="compiler-a",
+    )
+    key_b = cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        target_triple=None,
+        cache_variant=variant,
+        compiler_fingerprint="compiler-b",
+    )
+
+    assert key_a != key_b
+
+
 def test_shared_stdlib_cache_matches_key_requires_present_matching_sidecar(
     tmp_path: Path,
 ) -> None:
