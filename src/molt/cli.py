@@ -29605,7 +29605,11 @@ def _handle_debug_trace(
     if getattr(args, "rebuild", False):
         build_args.append("--no-cache")
     profile = args.profile or "dev"
-    with _temporary_env_overrides(trace_config.env):
+    trace_env = dict(trace_config.env)
+    trace_env["MOLT_ASSERT_NO_PENDING_ON_SUCCESS"] = (
+        "1" if getattr(args, "assert_no_pending_on_success", False) else "0"
+    )
+    with _temporary_env_overrides(trace_env):
         inner_rc, inner_payload = _capture_json_cli_result(
             run_script,
             str(source_path),
@@ -29654,7 +29658,12 @@ def _handle_debug_trace(
             "profile": profile,
             "backend": args.backend,
             "families": list(trace_config.families),
-            "trace_env": trace_config.env,
+            "assertions": (
+                ["no_pending_on_success"]
+                if getattr(args, "assert_no_pending_on_success", False)
+                else []
+            ),
+            "trace_env": trace_env,
             "execution": inner_payload,
             "returncode": inner_rc,
         },
@@ -30584,6 +30593,11 @@ def main() -> int:
                 "--rebuild",
                 action="store_true",
                 help="Force a no-cache rebuild before executing the traced repro.",
+            )
+            subparser.add_argument(
+                "--assert-no-pending-on-success",
+                action="store_true",
+                help="Enable the success-path pending-exception trap during traced execution.",
             )
         if debug_subcommand == DebugSubcommand.REPRO:
             subparser.add_argument(
