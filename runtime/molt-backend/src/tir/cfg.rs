@@ -674,6 +674,29 @@ fn compute_exception_edges(
                 edges.push((bid, *handler_bid));
             }
         }
+
+        // `check_exception` also carries its handler label directly even when
+        // the frontend did not materialize an enclosing try_start/try_end
+        // region. This shape appears in method-level guarded field stores and
+        // must still thread live cleanup state into the handler block.
+        for op_idx in block.start_op..block.end_op {
+            let op = &ops[op_idx];
+            if op.kind != "check_exception" {
+                continue;
+            }
+            let Some(target_label) = op.value else {
+                continue;
+            };
+            let Some(&target_op) = label_map.get(&target_label) else {
+                continue;
+            };
+            let Some(target_bid) = block_containing(blocks, target_op) else {
+                continue;
+            };
+            if target_bid != bid {
+                edges.push((bid, target_bid));
+            }
+        }
     }
 
     // De-duplicate.
