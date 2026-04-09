@@ -79,6 +79,7 @@ from molt.debug.perf import (
     load_profile,
     render_perf_text,
 )
+from molt.debug.trace import normalize_trace_families
 from molt.debug.reduce import (
     build_candidate_manifest,
     build_reduction_payload,
@@ -29220,6 +29221,21 @@ def _capture_json_cli_result(
     return returncode, payload
 
 
+@contextmanager
+def _temporary_env_overrides(overrides: Mapping[str, str]) -> Iterator[None]:
+    previous = {name: os.environ.get(name) for name in overrides}
+    try:
+        for name, value in overrides.items():
+            os.environ[name] = value
+        yield
+    finally:
+        for name, old_value in previous.items():
+            if old_value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old_value
+
+
 def _handle_debug_ir(
     args: argparse.Namespace,
     *,
@@ -29513,6 +29529,119 @@ def _handle_debug_repro(
             "profile": profile,
             "backend": args.backend,
             "build_args": build_args,
+            "execution": inner_payload,
+            "returncode": inner_rc,
+        },
+    )
+    return _emit_debug_payload(
+        payload=payload,
+        format_name=args.format,
+        retained_output=paths.retained_output,
+    )
+
+
+def _handle_debug_trace(
+    args: argparse.Namespace,
+    *,
+    subcommand: DebugSubcommand,
+    paths: Any,
+    selectors: dict[str, Any],
+) -> int:
+    source_path = Path(args.source)
+    if not source_path.is_file():
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message=f"{source_path} is not a file",
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+    try:
+        trace_config = normalize_trace_families(args.family)
+    except ValueError as exc:
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INVALID_REQUEST,
+            message=str(exc),
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+
+    source_text = source_path.read_text(encoding="utf-8")
+    build_args: list[str] = []
+    if args.backend:
+        build_args.extend(["--backend", args.backend])
+    if getattr(args, "rebuild", False):
+        build_args.append("--no-cache")
+    profile = args.profile or "dev"
+    with _temporary_env_overrides(trace_config.env):
+        inner_rc, inner_payload = _capture_json_cli_result(
+            run_script,
+            str(source_path),
+            None,
+            [],
+            verbose=False,
+            timing=True,
+            trusted=False,
+            capabilities=None,
+            build_args=build_args,
+            build_profile=cast(BuildProfile | None, profile),
+        )
+    if inner_payload is None:
+        payload = normalize_debug_payload(
+            subcommand=subcommand,
+            status=DebugStatus.ERROR,
+            run_id=paths.run_id,
+            artifact_root=paths.artifact_root,
+            manifest_path=paths.manifest_path,
+            selectors=selectors,
+            failure_class=DebugFailureClass.INTERNAL_ERROR,
+            message="debug trace did not produce a JSON payload",
+            retained_output=paths.retained_output,
+        )
+        return _emit_debug_payload(
+            payload=payload,
+            format_name=args.format,
+            retained_output=paths.retained_output,
+        )
+
+    inner_status = inner_payload.get("status")
+    payload = normalize_debug_payload(
+        subcommand=subcommand,
+        status=DebugStatus.OK if inner_status == "ok" else DebugStatus.ERROR,
+        run_id=paths.run_id,
+        artifact_root=paths.artifact_root,
+        manifest_path=paths.manifest_path,
+        selectors=selectors,
+        retained_output=paths.retained_output,
+        failure_class=None if inner_status == "ok" else DebugFailureClass.INTERNAL_ERROR,
+        message=None if inner_status == "ok" else "debug trace execution failed",
+        data={
+            "mode": "run",
+            "source_path": str(source_path),
+            "source_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+            "profile": profile,
+            "backend": args.backend,
+            "families": list(trace_config.families),
+            "trace_env": trace_config.env,
             "execution": inner_payload,
             "returncode": inner_rc,
         },
@@ -29890,6 +30019,8 @@ def _handle_debug_command(args: argparse.Namespace) -> int:
         return _handle_debug_repro(args, subcommand=subcommand, paths=paths, selectors=selectors)
     if subcommand == DebugSubcommand.VERIFY:
         return _handle_debug_verify(args, subcommand=subcommand, paths=paths, selectors=selectors)
+    if subcommand == DebugSubcommand.TRACE:
+        return _handle_debug_trace(args, subcommand=subcommand, paths=paths, selectors=selectors)
     if subcommand == DebugSubcommand.DIFF:
         return _handle_debug_diff(args, subcommand=subcommand, paths=paths, selectors=selectors)
     if subcommand == DebugSubcommand.PERF:
@@ -30423,8 +30554,24 @@ def main() -> int:
                 default="all",
                 help="Which compilation stage(s) to dump.",
             )
-        if debug_subcommand in {DebugSubcommand.REPRO, DebugSubcommand.TRACE}:
+        if debug_subcommand == DebugSubcommand.REPRO:
+            subparser.add_argument("source", help="Python source file to execute as a repro.")
+        if debug_subcommand == DebugSubcommand.TRACE:
             subparser.add_argument("source", help="Python source file to trace.")
+        if debug_subcommand == DebugSubcommand.TRACE:
+            subparser.add_argument(
+                "--family",
+                action="append",
+                help=(
+                    "Trace family to enable. Repeat for multiple families; "
+                    "defaults to all supported trace families."
+                ),
+            )
+            subparser.add_argument(
+                "--rebuild",
+                action="store_true",
+                help="Force a no-cache rebuild before executing the traced repro.",
+            )
         if debug_subcommand == DebugSubcommand.REPRO:
             subparser.add_argument(
                 "--compare",

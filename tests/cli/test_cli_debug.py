@@ -150,24 +150,6 @@ def test_debug_ir_and_verify_help_exist(tmp_path: Path) -> None:
     assert "usage:" in perf_help.stdout.lower()
 
 
-def test_debug_unwired_flows_accept_input_paths_and_emit_structured_payloads(
-    tmp_path: Path,
-) -> None:
-    source_path = _write_source(tmp_path)
-
-    for subcommand in ("trace",):
-        res = _run_cli(
-            ["debug", subcommand, str(source_path), "--format", "json"],
-            cwd=tmp_path,
-        )
-        assert res.returncode == 0, res.stderr
-        payload = json.loads(res.stdout)
-        assert payload["subcommand"] == subcommand
-        assert payload["status"] == "unsupported"
-        assert payload["failure_class"] == "not_yet_wired"
-        assert f"molt debug {subcommand} is not yet wired" == payload["message"]
-
-
 def test_debug_command_writes_manifest_under_tmp_debug_by_default(tmp_path: Path) -> None:
     source_path = _write_source(tmp_path)
     res = _run_cli(["debug", "ir", str(source_path), "--format", "json"], cwd=tmp_path)
@@ -433,6 +415,71 @@ def test_debug_repro_runs_one_file_and_records_execution(
     assert payload["data"]["source_path"] == str(source_path)
     assert payload["data"]["execution"]["status"] == "ok"
     assert payload["data"]["execution"]["data"]["returncode"] == 0
+
+
+def test_debug_trace_records_enabled_families_and_restores_env(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    source_path = tmp_path / "sample_trace.py"
+    source_path.write_text("print('trace-ok')\n", encoding="utf-8")
+    seen_env = {}
+
+    def fake_capture_json_cli_result(*args, **kwargs):
+        seen_env["callargs"] = os.environ.get("MOLT_TRACE_CALLARGS")
+        seen_env["call_bind_ic"] = os.environ.get("MOLT_TRACE_CALL_BIND_IC")
+        seen_env["function_bind_meta"] = os.environ.get("MOLT_TRACE_FUNCTION_BIND_META")
+        return 0, {
+            "command": "run",
+            "status": "ok",
+            "data": {"returncode": 0, "stderr": "[molt callargs] ..."},
+        }
+
+    monkeypatch.setattr(
+        molt_cli,
+        "_capture_json_cli_result",
+        fake_capture_json_cli_result,
+    )
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(
+        source=str(source_path),
+        family=["callargs", "call_bind_ic"],
+        format="json",
+        rebuild=False,
+        backend=None,
+        profile="dev",
+        out=None,
+    )
+    paths = allocate_debug_paths(
+        DebugSubcommand.TRACE,
+        output_extension="json",
+        run_id="trace-test-run",
+    )
+
+    rc = molt_cli._handle_debug_trace(
+        args,
+        subcommand=DebugSubcommand.TRACE,
+        paths=paths,
+        selectors={},
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["subcommand"] == "trace"
+    assert payload["status"] == "ok"
+    assert payload["data"]["families"] == ["callargs", "call_bind_ic"]
+    assert payload["data"]["trace_env"] == {
+        "MOLT_TRACE_CALLARGS": "1",
+        "MOLT_TRACE_CALL_BIND_IC": "1",
+    }
+    assert seen_env == {
+        "callargs": "1",
+        "call_bind_ic": "1",
+        "function_bind_meta": None,
+    }
+    assert os.environ.get("MOLT_TRACE_CALLARGS") is None
+    assert os.environ.get("MOLT_TRACE_CALL_BIND_IC") is None
 
 
 def test_debug_bisect_locates_first_bad_pass(tmp_path: Path) -> None:
