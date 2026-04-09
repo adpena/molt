@@ -441,6 +441,7 @@ def test_debug_trace_records_enabled_families_and_restores_env(
         "_capture_json_cli_result",
         fake_capture_json_cli_result,
     )
+    monkeypatch.setenv("MOLT_TRACE_FUNCTION_BIND_META", "1")
     monkeypatch.chdir(tmp_path)
     args = argparse.Namespace(
         source=str(source_path),
@@ -472,14 +473,16 @@ def test_debug_trace_records_enabled_families_and_restores_env(
     assert payload["data"]["trace_env"] == {
         "MOLT_TRACE_CALLARGS": "1",
         "MOLT_TRACE_CALL_BIND_IC": "1",
+        "MOLT_TRACE_FUNCTION_BIND_META": "0",
     }
     assert seen_env == {
         "callargs": "1",
         "call_bind_ic": "1",
-        "function_bind_meta": None,
+        "function_bind_meta": "0",
     }
     assert os.environ.get("MOLT_TRACE_CALLARGS") is None
     assert os.environ.get("MOLT_TRACE_CALL_BIND_IC") is None
+    assert os.environ.get("MOLT_TRACE_FUNCTION_BIND_META") == "1"
 
 
 def test_debug_bisect_locates_first_bad_pass(tmp_path: Path) -> None:
