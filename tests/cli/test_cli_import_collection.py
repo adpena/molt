@@ -6501,6 +6501,123 @@ def test_ensure_native_runtime_lib_ready_before_link_passes_resolved_modules(
     assert captured == [frozenset({"json", "socket"})]
 
 
+def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_state = cli._RuntimeArtifactState(
+        runtime_wasm=tmp_path / "molt_runtime.wasm",
+        runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
+    )
+    prepared_backend_setup = cli._PreparedBackendSetup(
+        runtime_state=runtime_state,
+        cache_setup=cli._BackendCacheSetup(
+            cache_enabled=True,
+            cache_key=None,
+            function_cache_key=None,
+            cache_path=None,
+            function_cache_path=None,
+            stdlib_object_path=None,
+            stdlib_object_cache_key=None,
+            cache_candidates=(),
+            cache_hit=False,
+            cache_hit_tier=None,
+        ),
+        cache_hit=False,
+        cache_hit_tier=None,
+        cache_key=None,
+        function_cache_key=None,
+        cache_path=None,
+        function_cache_path=None,
+        stdlib_object_path=None,
+        cache_candidates=[],
+    )
+    captured: list[tuple[bool, frozenset[str]]] = []
+
+    monkeypatch.setattr(
+        cli,
+        "_ensure_runtime_wasm_artifact",
+        lambda runtime_state, *, reloc, **kwargs: captured.append(
+            (reloc, frozenset(cast(set[str], kwargs["resolved_modules"])))
+        )
+        or True,
+    )
+
+    runtime_context = cli._prepare_backend_runtime_context(
+        prepared_backend_setup=prepared_backend_setup,
+        is_wasm_freestanding=False,
+        json_output=True,
+        runtime_cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+        molt_root=tmp_path,
+        stdlib_profile="micro",
+        resolved_modules={"asyncio", "ssl"},
+    )
+
+    assert runtime_context.ensure_runtime_wasm_shared() is True
+    assert runtime_context.ensure_runtime_wasm_reloc() is True
+    assert captured == [
+        (False, frozenset({"asyncio", "ssl"})),
+        (True, frozenset({"asyncio", "ssl"})),
+    ]
+
+
+def test_ensure_runtime_wasm_verified_key_tracks_micro_builtin_feature_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    verification_calls: list[frozenset[str]] = []
+
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint",
+        lambda project_root, **kwargs: {
+            "runtime_features": tuple(cast(tuple[str, ...], kwargs["runtime_features"]))
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "_artifact_needs_rebuild",
+        lambda artifact, fingerprint, stored_fingerprint: verification_calls.append(
+            frozenset(cast(tuple[str, ...], fingerprint["runtime_features"]))
+        )
+        or False,
+    )
+    monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
+
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+        project_root=tmp_path,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules={"json"},
+    )
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+        project_root=tmp_path,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules={"ssl"},
+    )
+
+    assert len(verification_calls) == 2
+    assert verification_calls[0] != verification_calls[1]
+    assert "stdlib_net" in verification_calls[1]
+
+
 def test_ensure_runtime_lib_verified_key_tracks_micro_feature_shape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
