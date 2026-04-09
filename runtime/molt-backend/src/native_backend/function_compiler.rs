@@ -4,6 +4,12 @@ use super::*;
 static EMPTY_VEC_STRING: Vec<String> = Vec::new();
 
 #[cfg(feature = "native-backend")]
+#[inline]
+fn is_cold_module_chunk_function(name: &str) -> bool {
+    name.contains("__molt_module_chunk_")
+}
+
+#[cfg(feature = "native-backend")]
 fn loop_start_has_index_prelude(ops: &[OpIR], start_idx: usize) -> bool {
     let mut scan_idx = start_idx + 1;
     while let Some(next) = ops.get(scan_idx) {
@@ -250,6 +256,25 @@ fn collect_slot_backed_join_names(
     }
     slot_backed_join_names.extend(exception_written_locals);
     slot_backed_join_names
+}
+
+#[cfg(feature = "native-backend")]
+fn live_exception_rebind_vars_for_op(
+    vars: &BTreeMap<String, Variable>,
+    transport_last_use: &BTreeMap<String, usize>,
+    first_defined_at: &BTreeMap<String, usize>,
+    op_idx: usize,
+) -> BTreeMap<String, Variable> {
+    vars.iter()
+        .filter_map(|(name, var)| {
+            let last = transport_last_use.get(name).copied().unwrap_or(usize::MAX);
+            let has_reaching_def = first_defined_at
+                .get(name)
+                .copied()
+                .is_some_and(|first| first <= op_idx);
+            (has_reaching_def && last > op_idx).then_some((name.clone(), *var))
+        })
+        .collect()
 }
 
 #[cfg(feature = "native-backend")]
@@ -660,17 +685,19 @@ fn preanalyze_function_ir(
                 std::collections::HashMap::new();
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 if matches!(op.kind.as_str(), "label" | "state_label")
-                    && let Some(id) = op.value {
-                        label_pos.insert(id, idx);
-                    }
+                    && let Some(id) = op.value
+                {
+                    label_pos.insert(id, idx);
+                }
             }
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 if matches!(op.kind.as_str(), "jump" | "br_if")
                     && let Some(target_id) = op.value
-                        && let Some(&target_pos) = label_pos.get(&target_id)
-                            && target_pos < idx {
-                                ranges.push((target_pos, idx));
-                            }
+                    && let Some(&target_pos) = label_pos.get(&target_id)
+                    && target_pos < idx
+                {
+                    ranges.push((target_pos, idx));
+                }
             }
             ranges
         };
@@ -705,19 +732,21 @@ fn preanalyze_function_ir(
                         }
                     }
                     if let Some(var) = &op.var
-                        && var != "none" {
-                            let entry = last_use.entry(var.clone()).or_insert(end);
-                            if *entry < end {
-                                *entry = end;
-                            }
+                        && var != "none"
+                    {
+                        let entry = last_use.entry(var.clone()).or_insert(end);
+                        if *entry < end {
+                            *entry = end;
                         }
+                    }
                     if let Some(out) = &op.out
-                        && out != "none" {
-                            let entry = last_use.entry(out.clone()).or_insert(end);
-                            if *entry < end {
-                                *entry = end;
-                            }
+                        && out != "none"
+                    {
+                        let entry = last_use.entry(out.clone()).or_insert(end);
+                        if *entry < end {
+                            *entry = end;
                         }
+                    }
                 }
             }
         } // end !_skip
@@ -765,8 +794,7 @@ fn preanalyze_function_ir(
                 {
                     assigned.push(name.clone());
                     let has_pre_loop_store = func_ir.ops[..start].iter().any(|prior| {
-                        prior.kind == "store_var"
-                            && prior.var.as_deref() == Some(name.as_str())
+                        prior.kind == "store_var" && prior.var.as_deref() == Some(name.as_str())
                     });
                     if !has_pre_loop_store {
                         init_needed.push(name.clone());
@@ -1105,14 +1133,14 @@ impl SimpleBackend {
                 && (ce_count > 0
                     || func_ir.name.contains("molt_main")
                     || func_ir.name.contains("test_try"))
-                {
-                    eprintln!(
-                        "[COMPILE] func={} ops={} check_exception_count={}",
-                        func_ir.name,
-                        func_ir.ops.len(),
-                        ce_count
-                    );
-                }
+            {
+                eprintln!(
+                    "[COMPILE] func={} ops={} check_exception_count={}",
+                    func_ir.name,
+                    func_ir.ops.len(),
+                    ce_count
+                );
+            }
         }
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
@@ -1221,13 +1249,27 @@ impl SimpleBackend {
             .iter()
             .filter_map(|name| vars.get(name).copied().map(|var| (name.clone(), var)))
             .collect();
+        let mut first_defined_at: BTreeMap<String, usize> = BTreeMap::new();
+        for name in func_ir.params.iter().filter(|name| name.as_str() != "none") {
+            first_defined_at.entry(name.clone()).or_insert(0);
+        }
+        for (idx, op) in func_ir.ops.iter().enumerate() {
+            if let Some(out) = op.out.as_ref()
+                && out != "none"
+            {
+                first_defined_at.entry(out.clone()).or_insert(idx);
+            }
+            if op.kind == "store_var"
+                && let Some(name) = op.var.as_ref().or(op.out.as_ref())
+                && name != "none"
+            {
+                first_defined_at.entry(name.clone()).or_insert(idx);
+            }
+        }
         let live_rebind_vars_for_op = |op_idx: usize| -> BTreeMap<String, Variable> {
             vars.iter()
                 .filter_map(|(name, var)| {
-                    let last = transport_last_use
-                        .get(name)
-                        .copied()
-                        .unwrap_or(usize::MAX);
+                    let last = transport_last_use.get(name).copied().unwrap_or(usize::MAX);
                     (last > op_idx).then_some((name.clone(), *var))
                 })
                 .collect()
@@ -1314,12 +1356,10 @@ impl SimpleBackend {
                 tracked_vars.retain(|n: &String| {
                     !roots.contains(alias_root_name(&alias_roots, n.as_str()))
                 });
-                tracked_obj_vars_set.retain(|n| {
-                    !roots.contains(alias_root_name(&alias_roots, n.as_str()))
-                });
-                tracked_vars_set.retain(|n| {
-                    !roots.contains(alias_root_name(&alias_roots, n.as_str()))
-                });
+                tracked_obj_vars_set
+                    .retain(|n| !roots.contains(alias_root_name(&alias_roots, n.as_str())));
+                tracked_vars_set
+                    .retain(|n| !roots.contains(alias_root_name(&alias_roots, n.as_str())));
                 entry_vars.retain(|name, _| !roots.contains(alias_root_name(&alias_roots, name)));
                 for tracked_list in block_tracked_obj.values_mut() {
                     tracked_list.retain(|name| {
@@ -1356,11 +1396,13 @@ impl SimpleBackend {
             std::collections::BTreeMap::new();
         let mut list_int_len_cache: std::collections::BTreeMap<String, Variable> =
             std::collections::BTreeMap::new();
-        let var_is_int = |name: &str| int_like_vars.contains(name);
-        let var_is_bool = |name: &str| bool_like_vars.contains(name);
-        let var_is_str = |name: &str| str_like_vars.contains(name);
+        let scalar_fast_paths_enabled = !is_cold_module_chunk_function(&func_ir.name);
+        let var_is_int = |name: &str| scalar_fast_paths_enabled && int_like_vars.contains(name);
+        let var_is_bool =
+            |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
+        let var_is_str = |name: &str| scalar_fast_paths_enabled && str_like_vars.contains(name);
         let op_prefers_int_lane = |op: &OpIR| {
-            matches!(
+            scalar_fast_paths_enabled && matches!(
                 infer_scalar_lane(
                     op,
                     &int_like_vars,
@@ -1372,7 +1414,7 @@ impl SimpleBackend {
             )
         };
         let op_prefers_bool_lane = |op: &OpIR| {
-            matches!(
+            scalar_fast_paths_enabled && matches!(
                 infer_scalar_lane(
                     op,
                     &int_like_vars,
@@ -1384,7 +1426,7 @@ impl SimpleBackend {
             )
         };
         let op_prefers_float_lane = |op: &OpIR| {
-            matches!(
+            scalar_fast_paths_enabled && matches!(
                 infer_scalar_lane(
                     op,
                     &int_like_vars,
@@ -1396,7 +1438,7 @@ impl SimpleBackend {
             )
         };
         let op_prefers_str_lane = |op: &OpIR| {
-            matches!(
+            scalar_fast_paths_enabled && matches!(
                 infer_scalar_lane(
                     op,
                     &int_like_vars,
@@ -1431,7 +1473,7 @@ impl SimpleBackend {
         // non-integer variables (sets, lists, strings) a bogus shadow of 0,
         // causing arithmetic operators to take the fast-int path and produce
         // garbage (e.g., set subtraction returning an int).
-        let int_store_target_names = {
+        let int_store_target_names = if scalar_fast_paths_enabled {
             // First pass: collect variable names whose source is int-typed.
             let mut int_store_targets: std::collections::BTreeSet<String> =
                 std::collections::BTreeSet::new();
@@ -1476,11 +1518,12 @@ impl SimpleBackend {
             for op in &func_ir.ops {
                 if op.kind == "store_var"
                     && let Some(ref name) = op.var.as_ref().or(op.out.as_ref())
-                        && let Some(ref args) = op.args
-                            && let Some(src) = args.first()
-                                && int_valued_outputs.contains(src) {
-                                    int_store_targets.insert(name.to_string());
-                                }
+                    && let Some(ref args) = op.args
+                    && let Some(src) = args.first()
+                    && int_valued_outputs.contains(src)
+                {
+                    int_store_targets.insert(name.to_string());
+                }
             }
             let zero = builder.ins().iconst(types::I64, 0);
             // Pre-declare shadow Variables ONLY for store_var targets (loop variables).
@@ -1497,6 +1540,8 @@ impl SimpleBackend {
                 eprintln!("INT_STORE_TARGETS {} {:?}", func_ir.name, int_store_targets);
             }
             int_store_targets
+        } else {
+            BTreeSet::new()
         };
         // Only explicit store-backed join carriers and exception-fragile names
         // use stack slots. Structured phi joins must stay on the SSA path.
@@ -1737,10 +1782,11 @@ impl SimpleBackend {
                     }
                     "jump" | "br_if" | "loop_continue" => {
                         if let Some(id) = op.value
-                            && defined_labels.contains(&id) {
-                                found = true;
-                                break;
-                            }
+                            && defined_labels.contains(&id)
+                        {
+                            found = true;
+                            break;
+                        }
                     }
                     _ => {}
                 }
@@ -1909,9 +1955,10 @@ impl SimpleBackend {
                     .as_deref()
                     .unwrap_or_else(|| op.s_value.as_deref().unwrap_or("").as_bytes());
                 if let Some(ref out) = op.out
-                    && let Some(&slot) = const_str_hoisted_slots.get(bytes) {
-                        hoisted_str_slot.insert(out.clone(), slot);
-                    }
+                    && let Some(&slot) = const_str_hoisted_slots.get(bytes)
+                {
+                    hoisted_str_slot.insert(out.clone(), slot);
+                }
             }
         }
 
@@ -2065,8 +2112,7 @@ impl SimpleBackend {
             // Only emit for module chunks and only when the op carries col info.
             if is_module_chunk
                 && !is_block_filled
-                && let (Some(col_offset), Some(end_col_offset)) =
-                    (op.col_offset, op.end_col_offset)
+                && let (Some(col_offset), Some(end_col_offset)) = (op.col_offset, op.end_col_offset)
             {
                 let col_val = builder.ins().iconst(types::I64, col_offset);
                 let end_col_val = builder.ins().iconst(types::I64, end_col_offset);
@@ -9584,10 +9630,7 @@ impl SimpleBackend {
                         )
                     };
                     let res = if let (Some(lr), Some(rr)) = (lr, rr) {
-                        let cmp =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThan, lr, rr);
+                        let cmp = builder.ins().icmp(IntCC::SignedLessThan, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if lr.is_some() || rr.is_some() {
                         // One-operand: unbox only the non-raw side
@@ -9693,11 +9736,7 @@ impl SimpleBackend {
                         )
                     };
                     let res = if let (Some(lr), Some(rr)) = (lr, rr) {
-                        let cmp = builder.ins().icmp(
-                            IntCC::SignedLessThanOrEqual,
-                            lr,
-                            rr,
-                        );
+                        let cmp = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lr, rr);
                         box_bool_value(&mut builder, cmp, &nbc)
                     } else if lr.is_some() || rr.is_some() {
                         let lv = lr.unwrap_or_else(|| unbox_int(&mut builder, *lhs, &nbc));
@@ -13641,8 +13680,10 @@ impl SimpleBackend {
                             callargs_arg_cleanup_names.insert(source_name);
                         }
                     }
-                    let callargs_arg_cleanup_roots =
-                        cleanup_roots_for_names(&alias_roots, callargs_arg_cleanup_names.iter().cloned());
+                    let callargs_arg_cleanup_roots = cleanup_roots_for_names(
+                        &alias_roots,
+                        callargs_arg_cleanup_names.iter().cloned(),
+                    );
                     if std::env::var("MOLT_DEBUG_CALLARGS_CLEANUP").as_deref() == Ok("1")
                         && std::env::var("MOLT_DEBUG_FUNC_FILTER")
                             .ok()
@@ -14100,8 +14141,7 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args[0]).expect("Class not found");
                     let offsets_bits =
                         var_get(&mut builder, &vars, &args[1]).expect("Offsets not found");
-                    let size_bits =
-                        var_get(&mut builder, &vars, &args[2]).expect("Size not found");
+                    let size_bits = var_get(&mut builder, &vars, &args[2]).expect("Size not found");
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
@@ -15130,10 +15170,7 @@ impl SimpleBackend {
                                 "native/tracked_cleanup_debug.txt",
                                 format!(
                                     "func={} op_idx={} kind={} cleanup_obj={:?}\n",
-                                    func_ir.name,
-                                    op_idx,
-                                    op.kind,
-                                    cleanup,
+                                    func_ir.name, op_idx, op.kind, cleanup,
                                 ),
                             );
                         }
@@ -15176,10 +15213,7 @@ impl SimpleBackend {
                                 "native/tracked_cleanup_debug.txt",
                                 format!(
                                     "func={} op_idx={} kind={} cleanup_ptr={:?}\n",
-                                    func_ir.name,
-                                    op_idx,
-                                    op.kind,
-                                    cleanup,
+                                    func_ir.name, op_idx, op.kind, cleanup,
                                 ),
                             );
                         }
@@ -15218,7 +15252,13 @@ impl SimpleBackend {
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
-                    let check_exception_live_rebind_vars = live_rebind_vars_for_op(op_idx);
+                    let check_exception_fallthrough_rebind_vars =
+                        live_exception_rebind_vars_for_op(
+                            &vars,
+                            &transport_last_use,
+                            &first_defined_at,
+                            op_idx,
+                        );
                     let flag_ptr_val: Option<Value> =
                         exc_flag_ptr_slot.map(|slot| builder.ins().stack_load(types::I64, slot, 0));
                     if let Some(flag_ptr) = flag_ptr_val {
@@ -15242,7 +15282,7 @@ impl SimpleBackend {
                             validate_block,
                             &mut is_block_filled,
                             true,
-                            &check_exception_live_rebind_vars,
+                            &BTreeMap::new(),
                             &raw_int_shadow,
                             &int_store_target_names,
                         );
@@ -15276,7 +15316,7 @@ impl SimpleBackend {
                         fallthrough,
                         &mut is_block_filled,
                         true,
-                        &check_exception_live_rebind_vars,
+                        &check_exception_fallthrough_rebind_vars,
                         &raw_int_shadow,
                         &int_store_target_names,
                     );
@@ -15654,12 +15694,14 @@ impl SimpleBackend {
                             slot
                         })
                         .collect();
-                    if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref()
-                        == Ok(func_ir.name.as_str())
+                    if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref() == Ok(func_ir.name.as_str())
                     {
                         let _ = crate::debug_artifacts::append_debug_artifact(
                             "native/ifmerge_debug.txt",
-                            format!("MERGE_INIT {} names={:?}\n", func_ir.name, merge_rebind_names),
+                            format!(
+                                "MERGE_INIT {} names={:?}\n",
+                                func_ir.name, merge_rebind_names
+                            ),
                         );
                     }
 
@@ -15745,8 +15787,9 @@ impl SimpleBackend {
                         }
                         if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
                             for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
-                                let val = var_get(&mut builder, &vars, name)
-                                    .unwrap_or_else(|| panic!("merge rebind var not found: {name}"));
+                                let val = var_get(&mut builder, &vars, name).unwrap_or_else(|| {
+                                    panic!("merge rebind var not found: {name}")
+                                });
                                 builder
                                     .ins()
                                     .stack_store(*val, frame.merge_rebind_slots[idx], 0);
@@ -15930,10 +15973,14 @@ impl SimpleBackend {
                             if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
                                 for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
                                     let then_val = var_get(&mut builder, &vars, name)
-                                        .unwrap_or_else(|| panic!("merge rebind var not found: {name}"));
-                                    builder
-                                        .ins()
-                                        .stack_store(*then_val, frame.merge_rebind_slots[idx], 0);
+                                        .unwrap_or_else(|| {
+                                            panic!("merge rebind var not found: {name}")
+                                        });
+                                    builder.ins().stack_store(
+                                        *then_val,
+                                        frame.merge_rebind_slots[idx],
+                                        0,
+                                    );
                                     merge_rebind_args.push(*then_val);
                                 }
                             }
@@ -16070,7 +16117,9 @@ impl SimpleBackend {
                             if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
                                 for name in &frame.merge_rebind_names {
                                     let then_val = var_get(&mut builder, &vars, name)
-                                        .unwrap_or_else(|| panic!("merge rebind var not found: {name}"));
+                                        .unwrap_or_else(|| {
+                                            panic!("merge rebind var not found: {name}")
+                                        });
                                     merge_rebind_args.push(*then_val);
                                 }
                             }
@@ -16215,10 +16264,14 @@ impl SimpleBackend {
                             if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
                                 for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
                                     let else_val = var_get(&mut builder, &vars, name)
-                                        .unwrap_or_else(|| panic!("merge rebind var not found: {name}"));
-                                    builder
-                                        .ins()
-                                        .stack_store(*else_val, frame.merge_rebind_slots[idx], 0);
+                                        .unwrap_or_else(|| {
+                                            panic!("merge rebind var not found: {name}")
+                                        });
+                                    builder.ins().stack_store(
+                                        *else_val,
+                                        frame.merge_rebind_slots[idx],
+                                        0,
+                                    );
                                     merge_rebind_args.push(*else_val);
                                 }
                                 if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref()
@@ -16232,7 +16285,9 @@ impl SimpleBackend {
                                         "native/ifmerge_debug.txt",
                                         format!(
                                             "MERGE_REBIND {} end_if_else names={:?} args={:?}\n",
-                                            func_ir.name, frame.merge_rebind_names, merge_rebind_args
+                                            func_ir.name,
+                                            frame.merge_rebind_names,
+                                            merge_rebind_args
                                         ),
                                     );
                                 }
@@ -16363,8 +16418,11 @@ impl SimpleBackend {
                             && !frame.merge_rebind_names.is_empty()
                         {
                             for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
-                                let val =
-                                    builder.ins().stack_load(types::I64, frame.merge_rebind_slots[idx], 0);
+                                let val = builder.ins().stack_load(
+                                    types::I64,
+                                    frame.merge_rebind_slots[idx],
+                                    0,
+                                );
                                 def_var_named(&mut builder, &vars, name, val);
                             }
                             if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref()
@@ -16372,13 +16430,17 @@ impl SimpleBackend {
                             {
                                 eprintln!(
                                     "MERGE_REBIND {} merge names={:?} params={:?}",
-                                    func_ir.name, frame.merge_rebind_names, frame.merge_rebind_params
+                                    func_ir.name,
+                                    frame.merge_rebind_names,
+                                    frame.merge_rebind_params
                                 );
                                 let _ = crate::debug_artifacts::append_debug_artifact(
                                     "native/ifmerge_debug.txt",
                                     format!(
                                         "MERGE_REBIND {} merge names={:?} params={:?}\n",
-                                        func_ir.name, frame.merge_rebind_names, frame.merge_rebind_params
+                                        func_ir.name,
+                                        frame.merge_rebind_names,
+                                        frame.merge_rebind_params
                                     ),
                                 );
                             }
@@ -16394,7 +16456,10 @@ impl SimpleBackend {
                                     scan_idx += 1;
                                 }
                                 if scan_idx < ops.len()
-                                    && matches!(ops[scan_idx].kind.as_str(), "label" | "state_label")
+                                    && matches!(
+                                        ops[scan_idx].kind.as_str(),
+                                        "label" | "state_label"
+                                    )
                                 {
                                     scan_idx += 1;
                                 }
@@ -16852,7 +16917,11 @@ impl SimpleBackend {
                         if debug_block_origins.is_some() {
                             eprintln!(
                                 "BLOCK_ORIGIN {} op{} loop_break_if_true cleanup={:?} body={:?} after={:?}",
-                                func_ir.name, op_idx, cleanup_block, frame.body_block, frame.after_block
+                                func_ir.name,
+                                op_idx,
+                                cleanup_block,
+                                frame.body_block,
+                                frame.after_block
                             );
                         }
                         if let Some(current_block) = builder.current_block() {
@@ -17013,7 +17082,11 @@ impl SimpleBackend {
                         if debug_block_origins.is_some() {
                             eprintln!(
                                 "BLOCK_ORIGIN {} op{} loop_break_if_false cleanup={:?} body={:?} after={:?}",
-                                func_ir.name, op_idx, cleanup_block, frame.body_block, frame.after_block
+                                func_ir.name,
+                                op_idx,
+                                cleanup_block,
+                                frame.body_block,
+                                frame.after_block
                             );
                         }
                         if let Some(current_block) = builder.current_block() {
@@ -18877,10 +18950,11 @@ impl SimpleBackend {
                         })
                         .cloned()
                         .collect();
-                    let mut rebind_label_join_state = |
-                        builder: &mut FunctionBuilder,
-                        raw_int_shadow_vals: &mut BTreeMap<String, Value>,
-                    | {
+                    let mut rebind_label_join_state = |builder: &mut FunctionBuilder,
+                                                       raw_int_shadow_vals: &mut BTreeMap<
+                        String,
+                        Value,
+                    >| {
                         if builder.block_params(block).is_empty() && !is_function_exception_label {
                             return;
                         }
@@ -19005,18 +19079,22 @@ impl SimpleBackend {
                                 std::collections::HashMap::new();
                             for (i, o) in func_ir.ops.iter().enumerate() {
                                 if matches!(o.kind.as_str(), "label" | "state_label")
-                                    && let Some(id) = o.value {
-                                        lbl_pos.insert(id, i);
-                                    }
+                                    && let Some(id) = o.value
+                                {
+                                    lbl_pos.insert(id, i);
+                                }
                             }
                             for (i, o) in func_ir.ops.iter().enumerate() {
                                 if matches!(o.kind.as_str(), "jump" | "br_if")
                                     && let Some(tid) = o.value
-                                        && let Some(&tp) = lbl_pos.get(&tid)
-                                            && tp < i && op_idx >= tp && op_idx <= i {
-                                                found = true;
-                                                break;
-                                            }
+                                    && let Some(&tp) = lbl_pos.get(&tid)
+                                    && tp < i
+                                    && op_idx >= tp
+                                    && op_idx <= i
+                                {
+                                    found = true;
+                                    break;
+                                }
                             }
                             found
                         };
@@ -19598,13 +19676,14 @@ impl SimpleBackend {
 mod tests {
     use super::{
         alias_root_name, cleanup_roots_for_names, collect_slot_backed_join_names,
+        is_cold_module_chunk_function, live_exception_rebind_vars_for_op,
         materialize_label_block, preanalyze_function_ir, switch_to_block_materialized,
         switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR};
-    use cranelift_codegen::ir::{types, AbiParam, Function, InstBuilder, Signature, UserFuncName};
+    use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, types};
     use cranelift_codegen::isa::CallConv;
-    use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+    use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
@@ -19772,6 +19851,44 @@ mod tests {
         );
         assert_eq!(analysis.last_use.get("src"), Some(&3));
         assert_eq!(analysis.last_use.get("_bb4_arg0"), Some(&3));
+    }
+
+    #[test]
+    fn cold_module_chunk_codegen_classification_only_matches_module_chunks() {
+        assert!(is_cold_module_chunk_function("molt_gpu_tensor__molt_module_chunk_2"));
+        assert!(is_cold_module_chunk_function("builtins__molt_module_chunk_4"));
+        assert!(!is_cold_module_chunk_function("main_molt__Attention___call__"));
+        assert!(!is_cold_module_chunk_function("molt_gpu_tensor__Tensor__broadcast_op"));
+        assert!(!is_cold_module_chunk_function("molt_main"));
+    }
+
+    #[test]
+    fn live_exception_rebind_vars_skip_future_definitions() {
+        let mut vars = BTreeMap::new();
+        vars.insert("early".to_string(), Variable::from_u32(0));
+        vars.insert("late".to_string(), Variable::from_u32(1));
+        vars.insert("dead".to_string(), Variable::from_u32(2));
+
+        let mut transport_last_use = BTreeMap::new();
+        transport_last_use.insert("early".to_string(), 10usize);
+        transport_last_use.insert("late".to_string(), 10usize);
+        transport_last_use.insert("dead".to_string(), 1usize);
+
+        let mut first_defined_at = BTreeMap::new();
+        first_defined_at.insert("early".to_string(), 0usize);
+        first_defined_at.insert("late".to_string(), 5usize);
+        first_defined_at.insert("dead".to_string(), 0usize);
+
+        let live = live_exception_rebind_vars_for_op(
+            &vars,
+            &transport_last_use,
+            &first_defined_at,
+            3,
+        );
+
+        assert!(live.contains_key("early"));
+        assert!(!live.contains_key("late"));
+        assert!(!live.contains_key("dead"));
     }
 
     #[test]
@@ -20187,7 +20304,9 @@ mod tests {
         let stable = builder.ins().iconst(types::I64, 7);
         let cond = builder.ins().iconst(types::I8, 1);
         builder.def_var(stable_var, stable);
-        builder.ins().brif(cond, validate_block, &[], fallthrough, &[]);
+        builder
+            .ins()
+            .brif(cond, validate_block, &[], fallthrough, &[]);
         builder.seal_block(entry);
 
         switch_to_block_materialized(&mut builder, validate_block);
@@ -20273,6 +20392,9 @@ mod tests {
             "textual label must materialize its block even before any emitted predecessor reaches it",
         );
         assert_eq!(builder.current_block(), Some(detached_label));
-        assert!(!is_block_filled, "materialized label block must be open for emission");
+        assert!(
+            !is_block_filled,
+            "materialized label block must be open for emission"
+        );
     }
 }
