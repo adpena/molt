@@ -122,6 +122,8 @@ Under active build-out:
 
 - runtime trace assertion widening beyond the currently wired call-bind families
   and the central `no pending exception on successful return` trap
+- the canonical trace surface now also carries backend compile-time timing via
+  the `backend_timing` family (`MOLT_BACKEND_TIMING=1`)
 
 Rules:
 

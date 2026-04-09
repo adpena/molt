@@ -543,6 +543,65 @@ def test_debug_trace_can_enable_success_path_assertion(
     assert seen_env["assert_no_pending"] == "1"
 
 
+def test_debug_trace_can_enable_backend_timing_family(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    source_path = tmp_path / "sample_trace_backend_timing.py"
+    source_path.write_text("print('trace-ok')\n", encoding="utf-8")
+    seen_env = {}
+
+    def fake_capture_json_cli_result(*args, **kwargs):
+        seen_env["backend_timing"] = os.environ.get("MOLT_BACKEND_TIMING")
+        seen_env["callargs"] = os.environ.get("MOLT_TRACE_CALLARGS")
+        return 0, {
+            "command": "run",
+            "status": "ok",
+            "data": {"returncode": 0},
+        }
+
+    monkeypatch.setattr(
+        molt_cli,
+        "_capture_json_cli_result",
+        fake_capture_json_cli_result,
+    )
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(
+        source=str(source_path),
+        family=["backend_timing"],
+        format="json",
+        rebuild=False,
+        backend=None,
+        profile="dev",
+        assert_no_pending_on_success=False,
+        out=None,
+    )
+    paths = allocate_debug_paths(
+        DebugSubcommand.TRACE,
+        output_extension="json",
+        run_id="trace-backend-timing-test-run",
+    )
+
+    rc = molt_cli._handle_debug_trace(
+        args,
+        subcommand=DebugSubcommand.TRACE,
+        paths=paths,
+        selectors={},
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["data"]["families"] == ["backend_timing"]
+    assert payload["data"]["trace_env"]["MOLT_BACKEND_TIMING"] == "1"
+    assert payload["data"]["trace_env"]["MOLT_TRACE_CALLARGS"] == "0"
+    assert seen_env == {
+        "backend_timing": "1",
+        "callargs": "0",
+    }
+
+
 def test_debug_bisect_locates_first_bad_pass(tmp_path: Path) -> None:
     source_path = _write_source(tmp_path)
     eval_command = _build_eval_command(
