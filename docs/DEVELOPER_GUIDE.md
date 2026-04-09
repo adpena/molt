@@ -112,6 +112,7 @@ Wired today:
 - `molt debug repro`
 - `molt debug ir`
 - `molt debug verify`
+- `molt debug trace`
 - `molt debug diff`
 - `molt debug perf`
 - `molt debug reduce`
@@ -119,7 +120,7 @@ Wired today:
 
 Under active build-out:
 
-- `molt debug trace`
+- runtime trace assertion widening beyond the currently wired call-bind families
 
 Rules:
 
