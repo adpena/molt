@@ -130,6 +130,14 @@ const resolveDefaultWasmPath = (moduleDir = __dirname) =>
 const resolveDefaultLinkedPath = (moduleDir = __dirname) =>
   path.join(moduleDir, '..', 'dist', 'output_linked.wasm');
 
+const resolveDefaultRuntimePath = (moduleDir = __dirname, env = process.env) => {
+  const runtimeDirOverride = env.MOLT_RUNTIME_WASM_DIR;
+  if (runtimeDirOverride) {
+    return path.join(runtimeDirOverride, 'molt_runtime.wasm');
+  }
+  return path.join(moduleDir, 'molt_runtime.wasm');
+};
+
 const resolveSiblingLinkedPath = (candidatePath) => {
   if (!candidatePath) return null;
   const parsed = path.parse(candidatePath);
@@ -137,6 +145,11 @@ const resolveSiblingLinkedPath = (candidatePath) => {
     return candidatePath;
   }
   return path.join(parsed.dir, `${parsed.name}_linked${parsed.ext || '.wasm'}`);
+};
+
+const resolveSiblingRuntimePath = (candidatePath) => {
+  if (!candidatePath) return null;
+  return path.join(path.dirname(candidatePath), 'molt_runtime.wasm');
 };
 
 const resolveWasmPaths = ({
@@ -162,16 +175,24 @@ const resolveWasmPaths = ({
     return parsed.name.endsWith('_linked') ? explicitWasmPath : null;
   })();
   const siblingLinkedPath = resolveSiblingLinkedPath(selectedWasmPath);
+  const siblingRuntimePath = resolveSiblingRuntimePath(selectedWasmPath);
   const resolvedLinkedPath =
     env.MOLT_WASM_LINKED_PATH ||
     explicitLinkedPath ||
     (siblingLinkedPath && fs.existsSync(siblingLinkedPath) ? siblingLinkedPath : null) ||
     null;
+  const canonicalRuntimePath = resolveDefaultRuntimePath(moduleDir, env);
+  const resolvedRuntimePath =
+    env.MOLT_RUNTIME_WASM ||
+    (siblingRuntimePath && fs.existsSync(siblingRuntimePath) ? siblingRuntimePath : null) ||
+    (fs.existsSync(canonicalRuntimePath) ? canonicalRuntimePath : null);
   return {
     wasmPath: selectedWasmPath,
     linkedPath: resolvedLinkedPath,
+    runtimePath: resolvedRuntimePath,
     canonicalWasmPath,
     canonicalLinkedPath,
+    canonicalRuntimePath,
   };
 };
 
@@ -188,6 +209,11 @@ const initWasmAssets = () => {
   }
   const tableBaseProbe = linkedBuffer || wasmBuffer;
   detectedWasmTableBase = extractWasmTableBase(tableBaseProbe);
+  runtimePath = resolved.runtimePath;
+  runtimeBuffer = null;
+  if (runtimePath && fs.existsSync(runtimePath)) {
+    runtimeBuffer = fs.readFileSync(runtimePath);
+  }
   wasmEnv = { ...process.env };
   if (
     detectedWasmTableBase !== null &&
@@ -266,15 +292,22 @@ const loadRuntimeAssets = () => {
     return;
   }
   runtimeAssetsLoaded = true;
-  runtimePath =
-    process.env.MOLT_RUNTIME_WASM || path.join(__dirname, 'wasm', 'molt_runtime.wasm');
-  if (!fs.existsSync(runtimePath)) {
+  if (!runtimePath) {
+    runtimePath = resolveWasmPaths({
+      wasmPath,
+      env: process.env,
+      moduleDir: __dirname,
+    }).runtimePath;
+  }
+  if (!runtimePath || !fs.existsSync(runtimePath)) {
     runtimePath = null;
     runtimeBuffer = null;
     witSource = null;
     return;
   }
-  runtimeBuffer = fs.readFileSync(runtimePath);
+  if (!runtimeBuffer) {
+    runtimeBuffer = fs.readFileSync(runtimePath);
+  }
   const witPath = path.join(__dirname, 'wit', 'molt-runtime.wit');
   if (fs.existsSync(witPath)) {
     witSource = fs.readFileSync(witPath, 'utf8');
