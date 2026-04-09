@@ -26,6 +26,9 @@ use crate::json_boundary::{
 };
 
 const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;
+const DEFAULT_BACKEND_BATCH_SIZE: usize = 64;
+const DEFAULT_STDLIB_BATCH_SIZE: usize = 128;
+const DEFAULT_STDLIB_BATCH_OP_BUDGET: usize = 12_000;
 #[derive(Debug)]
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
@@ -83,6 +86,206 @@ fn ensure_output_parent_dir(output_file: &str) -> io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     Ok(())
+}
+
+fn partition_functions_for_batches(
+    functions: Vec<molt_backend::FunctionIR>,
+    max_functions_per_batch: usize,
+    max_ops_per_batch: usize,
+) -> Vec<Vec<molt_backend::FunctionIR>> {
+    let max_functions_per_batch = max_functions_per_batch.max(1);
+    let max_ops_per_batch = max_ops_per_batch.max(1);
+
+    let mut batches: Vec<Vec<molt_backend::FunctionIR>> = Vec::new();
+    let mut current: Vec<molt_backend::FunctionIR> = Vec::new();
+    let mut current_ops = 0usize;
+
+    for func in functions {
+        let func_ops = func.ops.len();
+        let would_overflow_count = current.len() >= max_functions_per_batch;
+        let would_overflow_ops =
+            !current.is_empty() && current_ops.saturating_add(func_ops) > max_ops_per_batch;
+
+        if would_overflow_count || would_overflow_ops {
+            batches.push(std::mem::take(&mut current));
+            current_ops = 0;
+        }
+
+        current_ops = current_ops.saturating_add(func_ops);
+        current.push(func);
+    }
+
+    if !current.is_empty() {
+        batches.push(current);
+    }
+
+    batches
+}
+
+fn resolved_batch_size_limit(default: usize) -> usize {
+    let raw = std::env::var("MOLT_BACKEND_BATCH_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default);
+    if raw == 0 { usize::MAX } else { raw }
+}
+
+fn relocatable_linker_binary(linker_override: Option<&str>) -> String {
+    linker_override
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| std::env::var("MOLT_LINKER").ok())
+        .or_else(|| std::env::var("LD").ok())
+        .or_else(|| std::env::var("CC").ok())
+        .unwrap_or_else(|| "ld".to_string())
+}
+
+fn merge_relocatable_objects(
+    output_path: &Path,
+    object_paths: &[std::path::PathBuf],
+    linker_override: Option<&str>,
+) -> io::Result<()> {
+    if object_paths.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "no object files to merge",
+        ));
+    }
+
+    ensure_output_parent_dir(output_path.to_str().unwrap_or_default())?;
+
+    if object_paths.len() == 1 {
+        std::fs::copy(&object_paths[0], output_path).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "failed to copy batch object '{}' to '{}': {}",
+                    object_paths[0].display(),
+                    output_path.display(),
+                    err
+                ),
+            )
+        })?;
+        return Ok(());
+    }
+
+    let ld_bin = relocatable_linker_binary(linker_override);
+    let mut cmd = std::process::Command::new(&ld_bin);
+    if ld_bin.contains("clang") || ld_bin.contains("gcc") {
+        cmd.arg("-Wl,-r").arg("-o").arg(output_path);
+    } else {
+        cmd.arg("-r").arg("-o").arg(output_path);
+    }
+    for path in object_paths {
+        cmd.arg(path);
+    }
+    let merge_output = cmd.output().map_err(|err| {
+        io::Error::other(format!(
+            "failed to run relocatable linker '{ld_bin}' for '{}': {err}",
+            output_path.display()
+        ))
+    })?;
+    if merge_output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&merge_output.stderr)
+        .trim()
+        .to_string();
+    let detail = if stderr.is_empty() {
+        format!("exit {}", merge_output.status)
+    } else {
+        stderr
+    };
+    Err(io::Error::other(format!(
+        "relocatable link failed via '{ld_bin}' for '{}': {detail}",
+        output_path.display()
+    )))
+}
+
+#[cfg(feature = "native-backend")]
+fn compile_stdlib_cache_object(
+    stdlib_path: &Path,
+    stdlib_funcs: Vec<molt_backend::FunctionIR>,
+    profile: Option<molt_backend::PgoProfileIR>,
+    target_triple: Option<&str>,
+    log_prefix: &str,
+) -> io::Result<()> {
+    let stdlib_count = stdlib_funcs.len();
+    if stdlib_count == 0 {
+        return Ok(());
+    }
+
+    let stdlib_batch_size = resolved_batch_size_limit(DEFAULT_STDLIB_BATCH_SIZE);
+    let stdlib_batch_ops_budget: usize = std::env::var("MOLT_BACKEND_BATCH_OP_BUDGET")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_STDLIB_BATCH_OP_BUDGET);
+    let all_stdlib_names: std::collections::BTreeSet<String> =
+        stdlib_funcs.iter().map(|f| f.name.clone()).collect();
+    let stdlib_module_context = SimpleBackend::build_module_context(&stdlib_funcs);
+    let stdlib_batches =
+        partition_functions_for_batches(stdlib_funcs, stdlib_batch_size, stdlib_batch_ops_budget);
+    let stdlib_total_batches = stdlib_batches.len();
+
+    if stdlib_total_batches == 1 {
+        let batch_funcs = stdlib_batches.into_iter().next().unwrap_or_default();
+        let batch_ops = batch_funcs.iter().map(|f| f.ops.len()).sum::<usize>();
+        eprintln!(
+            "{log_prefix}: stdlib batch 1/1 ({} functions, {} ops / budget {})",
+            batch_funcs.len(),
+            batch_ops,
+            stdlib_batch_ops_budget
+        );
+        let stdlib_ir = SimpleIR {
+            functions: batch_funcs,
+            profile,
+        };
+        let mut stdlib_backend = SimpleBackend::new_with_target(target_triple);
+        stdlib_backend.skip_ir_passes = true;
+        let stdlib_bytes = stdlib_backend.compile(stdlib_ir);
+        std::fs::write(stdlib_path, &stdlib_bytes)?;
+        return Ok(());
+    }
+
+    let stdlib_tmp_dir =
+        std::env::temp_dir().join(format!("molt_stdlib_batch_{}", std::process::id()));
+    std::fs::create_dir_all(&stdlib_tmp_dir)?;
+    let mut stdlib_batch_paths: Vec<std::path::PathBuf> = Vec::new();
+    let compile_result = (|| -> io::Result<()> {
+        for (stdlib_batch_idx, batch_funcs) in stdlib_batches.into_iter().enumerate() {
+            let batch_ops = batch_funcs.iter().map(|f| f.ops.len()).sum::<usize>();
+            eprintln!(
+                "{log_prefix}: stdlib batch {}/{} ({} functions, {} ops / budget {})",
+                stdlib_batch_idx + 1,
+                stdlib_total_batches,
+                batch_funcs.len(),
+                batch_ops,
+                stdlib_batch_ops_budget
+            );
+            let batch_ir = SimpleIR {
+                functions: batch_funcs,
+                profile: profile.clone(),
+            };
+            let mut batch_backend = SimpleBackend::new_with_target(target_triple);
+            batch_backend.skip_ir_passes = true;
+            batch_backend.external_function_names = all_stdlib_names.clone();
+            batch_backend.set_module_context(stdlib_module_context.clone());
+            let batch_bytes = batch_backend.compile(batch_ir);
+            let batch_path = stdlib_tmp_dir.join(format!("batch_{stdlib_batch_idx}.o"));
+            std::fs::write(&batch_path, &batch_bytes)?;
+            stdlib_batch_paths.push(batch_path);
+        }
+
+        merge_relocatable_objects(stdlib_path, &stdlib_batch_paths, None)
+    })();
+
+    for batch_path in &stdlib_batch_paths {
+        let _ = std::fs::remove_file(batch_path);
+    }
+    let _ = std::fs::remove_dir(&stdlib_tmp_dir);
+
+    compile_result
 }
 
 #[cfg(feature = "native-backend")]
@@ -627,19 +830,18 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 // CLI links output.o + stdlib_shared_*.o together.
                 let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok();
                 let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
-                let entry_module = std::env::var("MOLT_ENTRY_MODULE")
-                    .unwrap_or_else(|_| "__main__".to_string());
+                let entry_module =
+                    std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
 
                 if let Some(ref stdlib_path_str) = stdlib_obj_path {
                     let stdlib_path = std::path::Path::new(stdlib_path_str);
-                    ensure_output_parent_dir(
-                        stdlib_path.to_str().unwrap_or(""),
-                    )
-                    .unwrap_or_else(|e| {
-                        eprintln!(
-                            "MOLT_BACKEND(daemon): warning: failed to create stdlib parent: {e}"
-                        );
-                    });
+                    ensure_output_parent_dir(stdlib_path.to_str().unwrap_or("")).unwrap_or_else(
+                        |e| {
+                            eprintln!(
+                                "MOLT_BACKEND(daemon): warning: failed to create stdlib parent: {e}"
+                            );
+                        },
+                    );
 
                     // Only use the stdlib partition cache when the CLI provides
                     // MOLT_ENTRY_MODULE — without it, entry_module defaults to
@@ -680,12 +882,10 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                                 expected_stdlib_cache_key.as_deref().unwrap_or("<missing>"),
                             );
                             let _ = std::fs::remove_file(stdlib_path);
-                            let _ = std::fs::remove_file(
-                                stdlib_cache_count_sidecar_path(stdlib_path),
-                            );
-                            let _ = std::fs::remove_file(
-                                stdlib_cache_key_sidecar_path(stdlib_path),
-                            );
+                            let _ =
+                                std::fs::remove_file(stdlib_cache_count_sidecar_path(stdlib_path));
+                            let _ =
+                                std::fs::remove_file(stdlib_cache_key_sidecar_path(stdlib_path));
                             // Fall through — stdlib .o no longer exists, handled below.
                         }
                     }
@@ -694,15 +894,13 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                         // First build (or stale cache was just deleted) — compile
                         // stdlib separately and cache it, then keep only user
                         // functions for output.o.
-                        ensure_output_parent_dir(
-                            stdlib_path.to_str().unwrap_or(""),
-                        )
-                        .unwrap_or_else(|e| {
-                            eprintln!(
-                                "MOLT_BACKEND(daemon): warning: could not create \
+                        ensure_output_parent_dir(stdlib_path.to_str().unwrap_or(""))
+                            .unwrap_or_else(|e| {
+                                eprintln!(
+                                    "MOLT_BACKEND(daemon): warning: could not create \
                                  stdlib cache parent dir: {e}"
-                            );
-                        });
+                                );
+                            });
 
                         let user_func_set: std::collections::BTreeSet<String> = ir
                             .functions
@@ -729,105 +927,24 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                                 stdlib_count,
                                 stdlib_path.display()
                             );
-                            let stdlib_batch_size: usize =
-                                std::env::var("MOLT_BACKEND_BATCH_SIZE")
-                                    .ok()
-                                    .and_then(|v| v.parse().ok())
-                                    .unwrap_or(64);
-
-                            if stdlib_count <= stdlib_batch_size {
-                                let stdlib_ir = SimpleIR {
-                                    functions: stdlib_funcs,
-                                    profile: ir.profile.clone(),
+                            if let Err(err) = compile_stdlib_cache_object(
+                                stdlib_path,
+                                stdlib_funcs,
+                                ir.profile.clone(),
+                                target_triple,
+                                "MOLT_BACKEND(daemon)",
+                            ) {
+                                return DaemonJobResponse {
+                                    id: job.id,
+                                    ok: false,
+                                    cached: false,
+                                    cache_tier: None,
+                                    output_written: false,
+                                    needs_ir: false,
+                                    message: Some(format!(
+                                        "failed to materialize shared stdlib cache: {err}"
+                                    )),
                                 };
-                                let mut stdlib_backend =
-                                    SimpleBackend::new_with_target(target_triple);
-                                stdlib_backend.skip_ir_passes = true;
-                                let stdlib_bytes = stdlib_backend.compile(stdlib_ir);
-                                if let Err(e) = std::fs::write(stdlib_path, &stdlib_bytes) {
-                                    eprintln!(
-                                        "MOLT_BACKEND(daemon): failed to write stdlib cache: {e}"
-                                    );
-                                }
-                            } else {
-                                // Batched stdlib compilation to avoid OOM.
-                                let all_stdlib_names: std::collections::BTreeSet<String> =
-                                    stdlib_funcs.iter().map(|f| f.name.clone()).collect();
-                                let stdlib_module_context =
-                                    SimpleBackend::build_module_context(&stdlib_funcs);
-                                let mut stdlib_remaining = stdlib_funcs;
-                                let stdlib_total_batches =
-                                    stdlib_remaining.len().div_ceil(stdlib_batch_size);
-                                let mut stdlib_batch_paths: Vec<std::path::PathBuf> = Vec::new();
-                                let stdlib_tmp_dir = std::env::temp_dir().join(format!(
-                                    "molt_daemon_stdlib_batch_{}",
-                                    std::process::id()
-                                ));
-                                let _ = std::fs::create_dir_all(&stdlib_tmp_dir);
-                                let mut stdlib_batch_idx = 0usize;
-
-                                while !stdlib_remaining.is_empty() {
-                                    let take =
-                                        stdlib_remaining.len().min(stdlib_batch_size);
-                                    let batch_funcs: Vec<_> =
-                                        stdlib_remaining.drain(..take).collect();
-                                    eprintln!(
-                                        "MOLT_BACKEND(daemon): stdlib batch {}/{} ({} functions)",
-                                        stdlib_batch_idx + 1,
-                                        stdlib_total_batches,
-                                        batch_funcs.len()
-                                    );
-                                    let batch_ir = SimpleIR {
-                                        functions: batch_funcs,
-                                        profile: ir.profile.clone(),
-                                    };
-                                    let mut batch_backend =
-                                        SimpleBackend::new_with_target(target_triple);
-                                    batch_backend.skip_ir_passes = true;
-                                    batch_backend.external_function_names =
-                                        all_stdlib_names.clone();
-                                    batch_backend
-                                        .set_module_context(stdlib_module_context.clone());
-                                    let batch_bytes = batch_backend.compile(batch_ir);
-                                    let batch_path = stdlib_tmp_dir
-                                        .join(format!("batch_{stdlib_batch_idx}.o"));
-                                    std::fs::write(&batch_path, &batch_bytes)
-                                        .expect("write stdlib batch .o");
-                                    stdlib_batch_paths.push(batch_path);
-                                    stdlib_batch_idx += 1;
-                                }
-
-                                // Merge stdlib batches with ld -r.
-                                if stdlib_batch_paths.len() == 1 {
-                                    let _ = std::fs::copy(
-                                        &stdlib_batch_paths[0],
-                                        stdlib_path,
-                                    );
-                                } else {
-                                    let linker = std::env::var("MOLT_LINKER")
-                                        .unwrap_or_else(|_| "ld".to_string());
-                                    let status = std::process::Command::new(&linker)
-                                        .arg("-r")
-                                        .args(
-                                            stdlib_batch_paths.iter().map(|p| p.as_os_str()),
-                                        )
-                                        .arg("-o")
-                                        .arg(stdlib_path.as_os_str())
-                                        .status()
-                                        .unwrap_or_else(|e| panic!("ld -r failed: {e}"));
-                                    if !status.success() {
-                                        eprintln!(
-                                            "MOLT_BACKEND(daemon): stdlib partial link failed"
-                                        );
-                                    } else {
-                                        eprintln!(
-                                            "MOLT_BACKEND(daemon): merged {} stdlib batches → {}",
-                                            stdlib_batch_paths.len(),
-                                            stdlib_path.display()
-                                        );
-                                    }
-                                }
-                                let _ = std::fs::remove_dir_all(&stdlib_tmp_dir);
                             }
 
                             write_shared_stdlib_cache_sidecars(
@@ -1177,9 +1294,7 @@ fn detect_physical_memory_bytes() -> Option<u64> {
 #[cfg(windows)]
 fn detect_physical_memory_bytes() -> Option<u64> {
     unsafe {
-        use windows_sys::Win32::System::SystemInformation::{
-            GlobalMemoryStatusEx, MEMORYSTATUSEX,
-        };
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
         let mut status: MEMORYSTATUSEX = core::mem::zeroed();
         status.dwLength = core::mem::size_of::<MEMORYSTATUSEX>() as u32;
         if GlobalMemoryStatusEx(&mut status) == 0 {
@@ -1356,9 +1471,7 @@ fn main() -> io::Result<()> {
             {
                 if let Some(ir_path) = ir_file_path {
                     let file = std::fs::File::open(ir_path).map_err(|e| {
-                        io::Error::other(
-                            format!("failed to open IR file '{}': {}", ir_path, e),
-                        )
+                        io::Error::other(format!("failed to open IR file '{}': {}", ir_path, e))
                     })?;
                     let reader = io::BufReader::new(file);
                     match ciborium::de::from_reader(reader) {
@@ -1631,100 +1744,20 @@ fn main() -> io::Result<()> {
                         stdlib_funcs.len(),
                         stdlib_path.display()
                     );
-                    // Use batched compilation for stdlib to avoid OOM
-                    // (1079 functions in one ObjectModule uses 30+GB).
-                    let stdlib_batch_size: usize = std::env::var("MOLT_BACKEND_BATCH_SIZE")
-                        .ok()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(64);
                     let stdlib_count = stdlib_funcs.len();
 
-                    if stdlib_count <= stdlib_batch_size {
-                        let stdlib_ir = SimpleIR {
-                            functions: stdlib_funcs,
-                            profile: ir.profile.clone(),
-                        };
-                        let mut stdlib_backend = SimpleBackend::new_with_target(target_triple);
-                        stdlib_backend.skip_ir_passes = true;
-                        let stdlib_bytes = stdlib_backend.compile(stdlib_ir);
-                        std::fs::write(stdlib_path, &stdlib_bytes)
-                            .expect("failed to write cached stdlib .o");
-                        write_shared_stdlib_cache_sidecars(
-                            stdlib_path,
-                            stdlib_count,
-                            expected_stdlib_cache_key.as_deref(),
-                        );
-                    } else {
-                        // Batched stdlib compilation
-                        let all_stdlib_names: std::collections::BTreeSet<String> =
-                            stdlib_funcs.iter().map(|f| f.name.clone()).collect();
-                        let stdlib_module_context =
-                            SimpleBackend::build_module_context(&stdlib_funcs);
-                        let mut stdlib_remaining = stdlib_funcs;
-                        let stdlib_total_batches =
-                            stdlib_remaining.len().div_ceil(stdlib_batch_size);
-                        let mut stdlib_batch_paths: Vec<std::path::PathBuf> = Vec::new();
-                        let stdlib_tmp_dir = std::env::temp_dir()
-                            .join(format!("molt_stdlib_batch_{}", std::process::id()));
-                        let _ = std::fs::create_dir_all(&stdlib_tmp_dir);
-                        let mut stdlib_batch_idx = 0usize;
-
-                        while !stdlib_remaining.is_empty() {
-                            let take = stdlib_remaining.len().min(stdlib_batch_size);
-                            let batch_funcs: Vec<_> = stdlib_remaining.drain(..take).collect();
-                            eprintln!(
-                                "MOLT_BACKEND: stdlib batch {}/{} ({} functions)",
-                                stdlib_batch_idx + 1,
-                                stdlib_total_batches,
-                                batch_funcs.len()
-                            );
-                            let batch_ir = SimpleIR {
-                                functions: batch_funcs,
-                                profile: ir.profile.clone(),
-                            };
-                            let mut batch_backend = SimpleBackend::new_with_target(target_triple);
-                            batch_backend.skip_ir_passes = true;
-                            batch_backend.external_function_names = all_stdlib_names.clone();
-                            batch_backend.set_module_context(stdlib_module_context.clone());
-                            let batch_bytes = batch_backend.compile(batch_ir);
-                            let batch_path =
-                                stdlib_tmp_dir.join(format!("batch_{stdlib_batch_idx}.o"));
-                            std::fs::write(&batch_path, &batch_bytes)
-                                .expect("write stdlib batch .o");
-                            stdlib_batch_paths.push(batch_path);
-                            stdlib_batch_idx += 1;
-                        }
-
-                        // Merge stdlib batches with ld -r
-                        if stdlib_batch_paths.len() == 1 {
-                            std::fs::copy(&stdlib_batch_paths[0], stdlib_path)
-                                .expect("copy single stdlib batch");
-                        } else {
-                            let linker =
-                                std::env::var("MOLT_LINKER").unwrap_or_else(|_| "ld".to_string());
-                            let status = std::process::Command::new(&linker)
-                                .arg("-r")
-                                .args(stdlib_batch_paths.iter().map(|p| p.as_os_str()))
-                                .arg("-o")
-                                .arg(stdlib_path.as_os_str())
-                                .status()
-                                .unwrap_or_else(|e| panic!("ld -r failed: {e}"));
-                            if !status.success() {
-                                panic!("stdlib partial link failed: exit {status}");
-                            }
-                            eprintln!(
-                                "MOLT_BACKEND: merged {} stdlib batches → {}",
-                                stdlib_batch_paths.len(),
-                                stdlib_path.display()
-                            );
-                        }
-                        let _ = std::fs::remove_dir_all(&stdlib_tmp_dir);
-                        write_shared_stdlib_cache_sidecars(
-                            stdlib_path,
-                            stdlib_count,
-                            expected_stdlib_cache_key.as_deref(),
-                        );
-                    }
+                    compile_stdlib_cache_object(
+                        stdlib_path,
+                        stdlib_funcs,
+                        ir.profile.clone(),
+                        target_triple,
+                        "MOLT_BACKEND",
+                    )?;
+                    write_shared_stdlib_cache_sidecars(
+                        stdlib_path,
+                        stdlib_count,
+                        expected_stdlib_cache_key.as_deref(),
+                    );
                     // Now compile user functions only
                     ir.functions = user_remaining;
                     eprintln!(
@@ -1751,12 +1784,9 @@ fn main() -> io::Result<()> {
             }
 
             let func_count = ir.functions.len();
-            let batch_size: usize = std::env::var("MOLT_BACKEND_BATCH_SIZE")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(64);
+            let batch_size = resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE);
 
-            if func_count <= batch_size || batch_size == 0 {
+            if func_count <= batch_size {
                 // Small IR (or user-only mode): compile in one shot
                 let backend = SimpleBackend::new_with_target(target_triple);
                 let obj_bytes = backend.compile(ir);
@@ -1811,49 +1841,7 @@ fn main() -> io::Result<()> {
 
                 // Merge batch objects with ld -r (relocatable partial link)
                 drop(file); // close the output file handle
-                if batch_paths.len() == 1 {
-                    std::fs::copy(&batch_paths[0], output_file).map_err(|err| {
-                        io::Error::new(
-                            err.kind(),
-                            format!(
-                                "failed to copy batch object '{}' to '{}': {}",
-                                batch_paths[0].display(),
-                                output_file,
-                                err
-                            ),
-                        )
-                    })?;
-                } else {
-                    // Ensure output parent exists right before ld -r.
-                    ensure_output_parent_dir(output_file).unwrap_or_else(|e| {
-                        eprintln!(
-                            "MOLT_BACKEND: warning: pre-ld-r mkdir failed for '{}': {e}",
-                            output_file
-                        );
-                    });
-                    // Use the system linker for partial linking.
-                    // Respect CC/LD env vars for cross-compilation.
-                    let ld_bin = std::env::var("LD")
-                        .or_else(|_| std::env::var("CC"))
-                        .unwrap_or_else(|_| "ld".to_string());
-                    let mut cmd = std::process::Command::new(&ld_bin);
-                    if ld_bin.contains("clang") || ld_bin.contains("gcc") {
-                        // When using a compiler driver, pass -r via -Wl
-                        cmd.arg("-Wl,-r").arg("-o").arg(output_file);
-                    } else {
-                        cmd.arg("-r").arg("-o").arg(output_file);
-                    }
-                    for p in &batch_paths {
-                        cmd.arg(p);
-                    }
-                    let ld_result = cmd.output().map_err(|e| {
-                        io::Error::other(format!("failed to run ld -r for batch merge: {e}"))
-                    })?;
-                    if !ld_result.status.success() {
-                        let stderr = String::from_utf8_lossy(&ld_result.stderr);
-                        return Err(io::Error::other(format!("ld -r failed: {stderr}")));
-                    }
-                }
+                merge_relocatable_objects(Path::new(output_file), &batch_paths, None)?;
 
                 // Cleanup
                 for p in &batch_paths {
@@ -1880,11 +1868,14 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        GIB, DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse, compile_single_job,
+        DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse, GIB, compile_single_job,
         daemon_response_payload, default_backend_max_rss_gb_from_physical_mem_bytes,
-        ensure_output_parent_dir, is_user_owned_symbol, read_daemon_request_bytes,
+        resolved_batch_size_limit, DEFAULT_BACKEND_BATCH_SIZE, DEFAULT_STDLIB_BATCH_SIZE,
+        ensure_output_parent_dir, is_user_owned_symbol, merge_relocatable_objects,
+        partition_functions_for_batches, read_daemon_request_bytes, relocatable_linker_binary,
         shared_stdlib_cache_matches, write_cached_output, write_shared_stdlib_cache_sidecars,
     };
+    use molt_backend::FunctionIR;
     use std::io::Cursor;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2119,5 +2110,187 @@ mod tests {
         assert!(!shared_stdlib_cache_matches(&stdlib_path, None));
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn partition_functions_for_batches_respects_op_budget() {
+        let funcs = vec![
+            FunctionIR {
+                name: "a".to_string(),
+                params: vec![],
+                ops: vec![Default::default(); 90],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+            FunctionIR {
+                name: "b".to_string(),
+                params: vec![],
+                ops: vec![Default::default(); 90],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+            FunctionIR {
+                name: "c".to_string(),
+                params: vec![],
+                ops: vec![Default::default(); 10],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+        ];
+
+        let batches = partition_functions_for_batches(funcs, 64, 100);
+        let names: Vec<Vec<String>> = batches
+            .into_iter()
+            .map(|batch| batch.into_iter().map(|f| f.name).collect())
+            .collect();
+
+        assert_eq!(
+            names,
+            vec![
+                vec!["a".to_string()],
+                vec!["b".to_string(), "c".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn partition_functions_for_batches_respects_count_budget() {
+        let funcs = (0..5)
+            .map(|idx| FunctionIR {
+                name: format!("f{idx}"),
+                params: vec![],
+                ops: vec![Default::default(); 1],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            })
+            .collect();
+
+        let batches = partition_functions_for_batches(funcs, 2, 1000);
+        let sizes: Vec<usize> = batches.into_iter().map(|batch| batch.len()).collect();
+
+        assert_eq!(sizes, vec![2, 2, 1]);
+    }
+
+    #[test]
+    fn relocatable_linker_binary_prefers_override_then_env() {
+        let prior_molt_linker = std::env::var("MOLT_LINKER").ok();
+        let prior_ld = std::env::var("LD").ok();
+        let prior_cc = std::env::var("CC").ok();
+
+        unsafe {
+            std::env::set_var("MOLT_LINKER", "molt-ld");
+            std::env::set_var("LD", "system-ld");
+            std::env::set_var("CC", "clang");
+        }
+        assert_eq!(relocatable_linker_binary(Some("explicit")), "explicit");
+        assert_eq!(relocatable_linker_binary(None), "molt-ld");
+
+        unsafe {
+            std::env::remove_var("MOLT_LINKER");
+        }
+        assert_eq!(relocatable_linker_binary(None), "system-ld");
+
+        unsafe {
+            std::env::remove_var("LD");
+        }
+        assert_eq!(relocatable_linker_binary(None), "clang");
+
+        match prior_molt_linker {
+            Some(value) => unsafe { std::env::set_var("MOLT_LINKER", value) },
+            None => unsafe { std::env::remove_var("MOLT_LINKER") },
+        }
+        match prior_ld {
+            Some(value) => unsafe { std::env::set_var("LD", value) },
+            None => unsafe { std::env::remove_var("LD") },
+        }
+        match prior_cc {
+            Some(value) => unsafe { std::env::set_var("CC", value) },
+            None => unsafe { std::env::remove_var("CC") },
+        }
+    }
+
+    #[test]
+    fn merge_relocatable_objects_copies_single_input() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "molt-merge-reloc-single-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let input = tmp_dir.join("input.o");
+        let output = tmp_dir.join("output.o");
+        std::fs::write(&input, b"object-bytes").expect("write input object");
+
+        merge_relocatable_objects(&output, std::slice::from_ref(&input), Some("false"))
+            .expect("copy single input object");
+
+        assert_eq!(
+            std::fs::read(&output).expect("read merged output"),
+            b"object-bytes"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn merge_relocatable_objects_reports_linker_failure() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "molt-merge-reloc-fail-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let input_a = tmp_dir.join("a.o");
+        let input_b = tmp_dir.join("b.o");
+        let output = tmp_dir.join("output.o");
+        std::fs::write(&input_a, b"a").expect("write first input object");
+        std::fs::write(&input_b, b"b").expect("write second input object");
+
+        let err =
+            merge_relocatable_objects(&output, &[input_a.clone(), input_b.clone()], Some("false"))
+                .expect_err("merge should fail with false linker");
+        let message = err.to_string();
+        assert!(message.contains("relocatable link failed"), "{message}");
+        assert!(!output.exists());
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn resolved_batch_size_limit_defaults_and_zero_disable_count_cap() {
+        let prior = std::env::var("MOLT_BACKEND_BATCH_SIZE").ok();
+
+        unsafe {
+            std::env::remove_var("MOLT_BACKEND_BATCH_SIZE");
+        }
+        assert_eq!(
+            resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE),
+            DEFAULT_BACKEND_BATCH_SIZE
+        );
+        assert_eq!(
+            resolved_batch_size_limit(DEFAULT_STDLIB_BATCH_SIZE),
+            DEFAULT_STDLIB_BATCH_SIZE
+        );
+
+        unsafe {
+            std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "0");
+        }
+        assert_eq!(resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE), usize::MAX);
+        assert_eq!(resolved_batch_size_limit(DEFAULT_STDLIB_BATCH_SIZE), usize::MAX);
+
+        match prior {
+            Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", value) },
+            None => unsafe { std::env::remove_var("MOLT_BACKEND_BATCH_SIZE") },
+        }
     }
 }
