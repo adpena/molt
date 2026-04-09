@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -565,3 +567,122 @@ def test_run_molt_build_only_uses_build_profile_flag(
             "fs,env,time,random",
         ]
     ]
+
+
+def test_diff_root_defaults_to_repo_tmp_diff_when_ext_root_unset(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    repo_root = tmp_path / "repo"
+    monkeypatch.setattr(module, "_repo_root", lambda: repo_root)
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_ROOT", raising=False)
+
+    assert module._diff_root() == repo_root / "tmp" / "diff"
+
+
+def test_diff_root_defaults_to_ext_tmp_diff_when_ext_root_set(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    ext_root = tmp_path / "ext-root"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
+    monkeypatch.delenv("MOLT_DIFF_ROOT", raising=False)
+
+    assert module._diff_root() == ext_root / "tmp" / "diff"
+
+
+def test_diff_tmp_root_defaults_to_ext_tmp_when_unset(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    ext_root = tmp_path / "ext-root"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
+    monkeypatch.delenv("MOLT_DIFF_TMPDIR", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_ROOT", raising=False)
+
+    assert module._diff_tmp_root() == ext_root / "tmp"
+
+
+@pytest.mark.parametrize(
+    ("envs", "expected"),
+    [
+        ({"MOLT_DIFF_CARGO_TARGET_DIR": "override-target"}, Path("override-target")),
+        ({"CARGO_TARGET_DIR": "cargo-target"}, Path("cargo-target")),
+        ({"MOLT_EXT_ROOT": "ext-root"}, Path("ext-root") / "target"),
+        ({}, Path("repo-root") / "target"),
+    ],
+)
+def test_diff_cargo_target_root_respects_priority_order(
+    monkeypatch, tmp_path: Path, envs: dict[str, str], expected: Path
+) -> None:
+    module = _load_diff_module()
+    repo_root = tmp_path / "repo-root"
+    monkeypatch.setattr(module, "_repo_root", lambda: repo_root)
+    monkeypatch.delenv("MOLT_DIFF_CARGO_TARGET_DIR", raising=False)
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    for key, value in envs.items():
+        monkeypatch.setenv(key, str(tmp_path / value))
+
+    assert module._diff_cargo_target_root() == tmp_path / expected
+
+
+def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    repo_root = tmp_path / "repo"
+    ext_root = tmp_path / "ext-root"
+    target_file = tmp_path / "target.py"
+    target_file.write_text("print('ok')\n", encoding="utf-8")
+    seen_cache_roots: list[str | None] = []
+
+    monkeypatch.setattr(module, "_repo_root", lambda: repo_root)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
+    monkeypatch.delenv("MOLT_CACHE", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_TMPDIR", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_CARGO_TARGET_DIR", raising=False)
+    monkeypatch.setattr(module, "_ensure_diff_run_lock", lambda: None)
+    monkeypatch.setattr(module, "_prune_orphan_diff_workers", lambda: None)
+    monkeypatch.setattr(module, "_prune_orphan_build_helpers", lambda: None)
+    monkeypatch.setattr(module, "_prune_backend_daemons", lambda: None)
+    monkeypatch.setattr(module, "_prune_stale_build_locks", lambda: None)
+    monkeypatch.setattr(module, "_collect_test_files", lambda path: [path])
+    monkeypatch.setattr(module, "_diff_run_id", lambda: "run-id")
+    monkeypatch.setattr(module, "_diff_allow_rustc_wrapper", lambda: False)
+    monkeypatch.setattr(module, "_diff_trusted_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
+    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
+    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
+    monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_diff_log_passes", lambda: False)
+
+    @contextmanager
+    def fake_open_log_file(*_args, **_kwargs):
+        yield None
+
+    monkeypatch.setattr(module, "_open_log_file", fake_open_log_file)
+    monkeypatch.setattr(
+        module,
+        "_diff_run_single",
+        lambda *args, **kwargs: {"path": args[0], "status": "pass"},
+    )
+    monkeypatch.setattr(module, "_order_test_files", lambda test_files, jobs: test_files)
+
+    def fake_run_molt_build_only(file_path: str, build_profile: str):
+        del file_path, build_profile
+        seen_cache_roots.append(os.environ.get("MOLT_CACHE"))
+        return "", "", 0
+
+    monkeypatch.setattr(module, "run_molt_build_only", fake_run_molt_build_only)
+
+    summary = module.run_diff(target_file, "python", warm_cache=True)
+
+    assert summary["failed"] == 0
+    assert seen_cache_roots == [str(ext_root / ".molt_cache")]

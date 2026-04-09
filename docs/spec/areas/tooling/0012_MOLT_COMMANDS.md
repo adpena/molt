@@ -26,7 +26,7 @@ Key flags:
 - `--codec {msgpack,cbor,json}` (default: `msgpack`)
 - `--type-hints {ignore,trust,check}` (default: `ignore`)
 - `--type-facts <path>` (optional Type Facts Artifact from `molt check`)
-- `--output <path>` (optional output path for the native binary, wasm artifact, or object file when `--emit obj`; relative paths resolve under `--out-dir` if set, otherwise the project root; directory paths use the default filename within that directory)
+- `--output <path>` (optional output path for the native binary, wasm artifact, or object file when `--emit obj`; relative paths resolve under `--out-dir` if set, otherwise the project root; when omitted, default final wasm/object outputs land under `dist/`; directory paths use the default filename within that directory)
 - `--out-dir <dir>` (optional output directory for final artifacts; intermediate build outputs stay under `$MOLT_HOME/build/<entry>`; native binaries otherwise default to `$MOLT_BIN`)
 - `--sysroot <path>` (override sysroot for native linking; relative paths resolve under the project root)
 - `--emit {bin,obj,wasm}` (select which artifact to emit)
@@ -52,7 +52,7 @@ Outputs:
 - `output_linked.wasm` when `--linked` is enabled (single-module WASM)
 - When `--require-linked` is enabled, the linked artifact becomes the primary output and the unlinked `output.wasm` is removed after linking.
 - Intermediate artifacts (`main_stub.c`, importer stubs, `output.o` for `--emit bin`) live under `$MOLT_HOME/build/<entry>`.
-- Final outputs (binary/wasm/object) are placed under `--out-dir` when provided; otherwise wasm/object outputs default to the project root and native binaries default to `$MOLT_BIN/<entry>_molt`.
+- Final outputs (binary/wasm/object) are placed under `--out-dir` when provided; otherwise wasm/object outputs default to `dist/` and native binaries default to `$MOLT_BIN/<entry>_molt`.
 - Native binary defaults to `$MOLT_BIN/<entry>_molt` when `--output` is not provided.
 - `--emit obj` skips linking and returns only the object artifact.
 - Cache reuse skips the backend compile step only; linking still runs when `--linked` is enabled. Use `--no-cache` for a full recompile.
