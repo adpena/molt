@@ -112,6 +112,8 @@ def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:
             str(src),
             "--build-profile",
             "dev",
+            "--profile",
+            "browser",
             "--target",
             "wasm",
             "--out-dir",
