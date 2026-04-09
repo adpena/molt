@@ -29299,7 +29299,20 @@ def _handle_debug_verify(
     paths: Any,
     selectors: dict[str, Any],
 ) -> int:
-    checks, errors = run_default_verify_checks()
+    checks, errors = run_default_verify_checks(
+        require_probe_execution=getattr(args, "require_probe_execution", False),
+        probe_rss_metrics=(
+            Path(args.probe_rss_metrics).expanduser()
+            if getattr(args, "probe_rss_metrics", None)
+            else None
+        ),
+        probe_run_id=getattr(args, "probe_run_id", None),
+        failure_queue=(
+            Path(args.failure_queue).expanduser()
+            if getattr(args, "failure_queue", None)
+            else None
+        ),
+    )
     result_payload = build_verify_result_payload(checks)
     payload = normalize_debug_payload(
         subcommand=subcommand,
@@ -30628,6 +30641,24 @@ def main() -> int:
             subparser.add_argument(
                 "--failing-json",
                 help="Known failing backend/profile/IC configuration as JSON.",
+            )
+        if debug_subcommand == DebugSubcommand.VERIFY:
+            subparser.add_argument(
+                "--require-probe-execution",
+                action="store_true",
+                help="Require required differential probes to have executed successfully.",
+            )
+            subparser.add_argument(
+                "--probe-rss-metrics",
+                help="Path to rss_metrics.jsonl from differential runs.",
+            )
+            subparser.add_argument(
+                "--probe-run-id",
+                help="Optional differential run_id to validate for probe execution.",
+            )
+            subparser.add_argument(
+                "--failure-queue",
+                help="Path to the differential failure queue file.",
             )
         if debug_subcommand == DebugSubcommand.DIFF:
             subparser.add_argument(
