@@ -7047,7 +7047,7 @@ impl WasmBackend {
                         emit_call(func, reloc_enabled, import_ids["callargs_new"]);
                         func.instruction(&Instruction::LocalSet(out));
                     }
-                    "list_new" => {
+                    "build_list" | "list_new" => {
                         let empty_args_ln: Vec<String> = Vec::new();
                         let args = op.args.as_ref().unwrap_or(&empty_args_ln);
                         let out = locals[op.out.as_ref().unwrap()];
@@ -7890,6 +7890,32 @@ impl WasmBackend {
                         } else {
                             func.instruction(&Instruction::Drop);
                         }
+                    }
+                    "iter_next_unboxed" => {
+                        let args = op.args.as_ref().unwrap();
+                        let iter = locals[&args[0]];
+                        let pair = locals["__molt_tmp0"];
+                        func.instruction(&Instruction::LocalGet(iter));
+                        emit_call(func, reloc_enabled, import_ids["iter_next"]);
+                        func.instruction(&Instruction::LocalSet(pair));
+                        if let Some(done_name) = op.out.as_ref()
+                            && done_name != "none"
+                        {
+                            func.instruction(&Instruction::LocalGet(pair));
+                            func.instruction(&Instruction::I64Const(box_int(1)));
+                            emit_call(func, reloc_enabled, import_ids["index"]);
+                            func.instruction(&Instruction::LocalSet(locals[done_name]));
+                        }
+                        if let Some(val_name) = op.var.as_ref()
+                            && val_name != "none"
+                        {
+                            func.instruction(&Instruction::LocalGet(pair));
+                            func.instruction(&Instruction::I64Const(box_int(0)));
+                            emit_call(func, reloc_enabled, import_ids["index"]);
+                            func.instruction(&Instruction::LocalSet(locals[val_name]));
+                        }
+                        func.instruction(&Instruction::LocalGet(pair));
+                        emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
                     }
                     "iter_next" => {
                         let args = op.args.as_ref().unwrap();
