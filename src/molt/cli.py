@@ -651,8 +651,7 @@ def _run_wrapper_build(
         return None, duration, contract_error
     assert contract is not None
     if not json_output:
-        if verbose:
-            _emit_wrapper_build_success_signals(payload)
+        _emit_wrapper_build_success_signals(payload)
         # Forward compilation warnings (SyntaxWarning, DeprecationWarning)
         # from the build subprocess so they appear in `molt run` output,
         # matching CPython's behaviour where warnings are emitted during
@@ -19736,7 +19735,7 @@ def _module_lowering_context_payload(
         "parse_codec": parse_codec,
         "type_hint_policy": type_hint_policy,
         "fallback_policy": fallback_policy,
-        "type_facts": scoped_type_facts,
+        "type_facts": _type_facts_cache_payload(scoped_type_facts),
         "enable_phi": enable_phi,
         "known_modules": known_modules_sorted,
         "known_classes": scoped_known_classes,
@@ -19760,6 +19759,17 @@ def _module_lowering_context_digest(payload: dict[str, Any]) -> str | None:
     except (TypeError, ValueError):
         return None
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _type_facts_cache_payload(type_facts: Any) -> Any:
+    if not isinstance(type_facts, TypeFacts):
+        return type_facts
+    payload = type_facts.to_dict()
+    return {
+        "schema_version": payload.get("schema_version", 1),
+        "strict": bool(payload.get("strict", False)),
+        "modules": payload.get("modules", {}),
+    }
 
 
 def _module_lowering_context_digest_for_module(
@@ -20365,6 +20375,15 @@ def _ensure_backend_binary(
             _codesign_binary(backend_bin)
             return backend_bin.exists()
 
+        def _backend_probe_target() -> str:
+            if "wasm-backend" in backend_features:
+                return "wasm"
+            if "luau-backend" in backend_features:
+                return "luau"
+            if "rust-backend" in backend_features:
+                return "rust"
+            return "native"
+
         def _probe_backend_binary_support(probe_target: str) -> tuple[bool, str]:
             probe_ir = json.dumps(
                 {
@@ -20374,9 +20393,13 @@ def _ensure_backend_binary(
                     "metadata": {"target": probe_target, "deterministic": True},
                 }
             ).encode()
-            probe_suffix = ".wasm" if probe_target == "wasm" else ".o"
-            if probe_target == "luau":
+            probe_suffix = ".o"
+            if probe_target == "wasm":
+                probe_suffix = ".wasm"
+            elif probe_target == "luau":
                 probe_suffix = ".luau"
+            elif probe_target == "rust":
+                probe_suffix = ".rs"
             probe_tmp = tempfile.NamedTemporaryFile(
                 prefix="molt_backend_probe_",
                 suffix=probe_suffix,
@@ -20389,6 +20412,8 @@ def _ensure_backend_binary(
                 probe_cmd.extend(["--target", "wasm"])
             elif probe_target == "luau":
                 probe_cmd.extend(["--target", "luau"])
+            elif probe_target == "rust":
+                probe_cmd.extend(["--target", "rust"])
             try:
                 probe = subprocess.run(
                     probe_cmd,
@@ -20413,11 +20438,7 @@ def _ensure_backend_binary(
             # Force a real compile-path probe. An empty stdin-only probe can
             # miss feature-lane poisoning because it never exercises output
             # emission for the requested target.
-            _quick_target = (
-                "wasm"
-                if "wasm-backend" in backend_features
-                else ("luau" if "luau-backend" in backend_features else "native")
-            )
+            _quick_target = _backend_probe_target()
             _probe_ok, _probe_detail = _probe_backend_binary_support(_quick_target)
             if _probe_ok:
                 return True
@@ -20439,11 +20460,7 @@ def _ensure_backend_binary(
             candidate_artifact=canonical_backend_bin,
             candidate_fingerprint_path=canonical_fingerprint_path,
         ):
-            _probe_target = (
-                "wasm"
-                if "wasm-backend" in backend_features
-                else ("luau" if "luau-backend" in backend_features else "native")
-            )
+            _probe_target = _backend_probe_target()
             _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
             if _probe_ok:
                 return True
@@ -20455,11 +20472,7 @@ def _ensure_backend_binary(
             backend_bin,
             _backend_source_paths(project_root, backend_features),
         ):
-            _probe_target = (
-                "wasm"
-                if "wasm-backend" in backend_features
-                else ("luau" if "luau-backend" in backend_features else "native")
-            )
+            _probe_target = _backend_probe_target()
             _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
             if _probe_ok:
                 _write_runtime_fingerprint(fingerprint_path, fingerprint)
@@ -20579,11 +20592,7 @@ def _ensure_backend_binary(
         # Cargo's incremental cache may skip recompilation when only
         # features change, leaving a binary built for the wrong target.
         # Probe the binary and, on mismatch, clean + rebuild once.
-        _probe_target = (
-            "wasm"
-            if "wasm-backend" in backend_features
-            else ("luau" if "luau-backend" in backend_features else "native")
-        )
+        _probe_target = _backend_probe_target()
         _probe_ok, _probe_detail = _probe_backend_binary_support(_probe_target)
         if not _probe_ok:
             if not json_output:
