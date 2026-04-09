@@ -150,7 +150,7 @@ _PERSISTED_JSON_OBJECT_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]]
 # Session-level cache: once we have verified (and possibly built) the release
 # runtime for a given (path, profile, triple) key, skip the check for the rest
 # of this process lifetime.
-_RUNTIME_LIB_VERIFIED: set[tuple[str, str, str | None]] = set()
+_RUNTIME_LIB_VERIFIED: set[tuple[str, str, str | None, str, tuple[str, ...]]] = set()
 _LOCK_CHECK_CACHE_VERSION = 1
 _HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"
 _HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"
@@ -11289,6 +11289,7 @@ def _compile_with_backend_daemon(
                 skip_function_output_if_synced=skip_function_output_if_synced,
                 entry_module=entry_module,
                 stdlib_object_path=stdlib_object_path,
+                stdlib_object_cache_key=stdlib_object_cache_key,
                 include_health=False,
             )
             if encode_err is not None:
@@ -16185,6 +16186,7 @@ def _prepare_backend_setup(
     cache: bool,
     ir: Mapping[str, Any],
     entry_module: str,
+    resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> tuple[_PreparedBackendSetup | None, dict[str, Any] | None]:
     runtime_state = _initialize_runtime_artifact_state(
         is_rust_transpile=is_rust_transpile or is_luau_transpile,
@@ -16211,16 +16213,18 @@ def _prepare_backend_setup(
         warnings=warnings,
         entry_module=entry_module,
     )
-    _maybe_start_native_runtime_lib_ready_async(
-        runtime_state,
-        target_triple=target_triple,
-        json_output=json_output,
-        runtime_cargo_profile=runtime_cargo_profile,
-        molt_root=molt_root,
-        cargo_timeout=cargo_timeout,
-        diagnostics_enabled=False,
-        phase_starts=None,
-    )
+    if emit_mode != "obj":
+        _maybe_start_native_runtime_lib_ready_async(
+            runtime_state,
+            target_triple=target_triple,
+            json_output=json_output,
+            runtime_cargo_profile=runtime_cargo_profile,
+            molt_root=molt_root,
+            cargo_timeout=cargo_timeout,
+            diagnostics_enabled=False,
+            phase_starts=None,
+            resolved_modules=resolved_modules,
+        )
     return _PreparedBackendSetup(
         runtime_state=runtime_state,
         cache_setup=cache_setup,
@@ -16515,7 +16519,6 @@ def _execute_backend_compile(
         backend_output_written = True
         backend_output_exists = False
         daemon_error: str | None = None
-        backend_daemon_request_bytes_cached: bytes | None = None
         output_sync_state_path: Path | None = None
         output_sync_state: dict[str, Any] | None = None
         output_artifact_stat: os.stat_result | None = None
@@ -16567,33 +16570,11 @@ def _execute_backend_compile(
                 state=output_sync_state,
                 output_stat=output_artifact_stat,
             )
-            backend_daemon_request_bytes_cached, request_encode_err = (
-                _backend_daemon_compile_request_bytes(
-                    ir=ir,
-                    backend_output=backend_output,
-                    is_wasm=is_wasm,
-                    wasm_link=wasm_link,
-                    wasm_data_base=wasm_data_base,
-                    wasm_table_base=wasm_table_base,
-                    target_triple=target_triple,
-                    cache_key=cache_key,
-                    function_cache_key=function_cache_key,
-                    config_digest=backend_daemon_config_digest,
-                    skip_module_output_if_synced=skip_module_output_if_synced,
-                    skip_function_output_if_synced=skip_function_output_if_synced,
-                    entry_module=entry_module,
-                    stdlib_object_path=cache_setup.stdlib_object_path,
-                    stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
-                )
-            )
-            if request_encode_err is not None:
-                return None, _fail(
-                    request_encode_err,
-                    json_output,
-                    command="build",
-                )
             if diagnostics_enabled and "backend_daemon_compile" not in phase_starts:
                 phase_starts["backend_daemon_compile"] = time.perf_counter()
+            # Keep probe/full request selection centralized in
+            # _compile_with_backend_daemon(). Eagerly encoding the full
+            # request here defeats the daemon's probe-only warm-cache path.
             daemon_compile = _compile_with_backend_daemon(
                 daemon_socket,
                 ir=ir,
@@ -16612,7 +16593,7 @@ def _execute_backend_compile(
                 stdlib_object_path=cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 timeout=None,
-                request_bytes=backend_daemon_request_bytes_cached,
+                request_bytes=None,
             )
             backend_compiled = daemon_compile.ok
             backend_output_written = daemon_compile.output_written
@@ -16665,7 +16646,7 @@ def _execute_backend_compile(
                         stdlib_object_path=cache_setup.stdlib_object_path,
                         stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                         timeout=None,
-                        request_bytes=backend_daemon_request_bytes_cached,
+                        request_bytes=None,
                     )
                     backend_compiled = daemon_compile.ok
                     backend_output_written = daemon_compile.output_written
@@ -17230,6 +17211,7 @@ def _run_backend_pipeline(
         return prepared_backend_ir_error
     assert prepared_backend_ir is not None
     ir = prepared_backend_ir.ir
+    resolved_modules = frozenset(module_graph)
     backend_ir_bytes: bytes | None = None
     backend_ir_fmt: str = "json"
 
@@ -17260,6 +17242,7 @@ def _run_backend_pipeline(
         cache=cache,
         ir=ir,
         entry_module=resolved_build_entry.entry_module,
+        resolved_modules=resolved_modules,
     )
     if prepared_backend_setup_error is not None:
         return prepared_backend_setup_error
@@ -17480,6 +17463,7 @@ def _run_backend_pipeline(
         diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
         phase_starts=prepared_build_preamble.phase_starts,
         stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
     ):
         return _fail("Runtime build failed", json_output, command="build")
     if prepared_build_preamble.diagnostics_enabled:
@@ -18904,6 +18888,7 @@ def _maybe_start_native_runtime_lib_ready_async(
     diagnostics_enabled: bool,
     phase_starts: dict[str, float] | None,
     stdlib_profile: str | None = "micro",
+    resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> None:
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is None or runtime_state.runtime_lib_ready_future is not None:
@@ -18919,6 +18904,7 @@ def _maybe_start_native_runtime_lib_ready_async(
         molt_root=molt_root,
         cargo_timeout=cargo_timeout,
         stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
     )
 
 
@@ -18959,6 +18945,7 @@ def _ensure_native_runtime_lib_ready_before_link(
     diagnostics_enabled: bool,
     phase_starts: dict[str, float],
     stdlib_profile: str | None = "micro",
+    resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is None:
@@ -18980,6 +18967,7 @@ def _ensure_native_runtime_lib_ready_before_link(
         molt_root=molt_root,
         cargo_timeout=cargo_timeout,
         stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
     )
 
 
@@ -20684,18 +20672,6 @@ def _ensure_runtime_lib(
     stdlib_profile: str | None = "micro",
     resolved_modules: set[str] | None = None,
 ) -> bool:
-    # Session-level short-circuit: once we have verified (and possibly built)
-    # the runtime for this key, don't repeat the fingerprint/stat dance.
-    session_key = (os.fspath(project_root), cargo_profile, target_triple)
-    if session_key in _RUNTIME_LIB_VERIFIED:
-        return True
-    # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
-    # Use when you have already run `cargo build` manually and want to avoid
-    # the ~90s overhead of the CLI re-running cargo.
-    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
-        if runtime_lib.exists():
-            _RUNTIME_LIB_VERIFIED.add(session_key)
-            return True
     rustflags = os.environ.get("RUSTFLAGS", "")
     runtime_features = _runtime_cargo_features(target_triple)
     builtin_features = _builtin_features_from_import_graph(
@@ -20710,6 +20686,25 @@ def _ensure_runtime_lib(
             + sorted(builtin_features)
             + ["stdlib_micro", "no-default-features"]
         )
+    # Session-level short-circuit: once we have verified (and possibly built)
+    # the runtime for the exact fingerprint-driving feature set, do not repeat
+    # the fingerprint/stat dance in this process.
+    session_key = (
+        os.fspath(project_root),
+        cargo_profile,
+        target_triple,
+        rustflags,
+        fingerprint_features,
+    )
+    if session_key in _RUNTIME_LIB_VERIFIED:
+        return True
+    # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
+    # Use when you have already run `cargo build` manually and want to avoid
+    # the ~90s overhead of the CLI re-running cargo.
+    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
+        if runtime_lib.exists():
+            _RUNTIME_LIB_VERIFIED.add(session_key)
+            return True
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
     )
