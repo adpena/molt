@@ -43,6 +43,7 @@ Currently wired commands:
 - `molt debug repro <source.py> [--compare]`
 - `molt debug ir <source.py> --stage pre-midend|post-midend|all`
 - `molt debug verify`
+- `molt debug trace <source.py> [--family callargs|call_bind_ic|function_bind_meta]`
 - `molt debug reduce <source.py|manifest.json> --oracle-json <oracle> [--eval-command <cmd>] [--eval-timeout <sec>]`
 - `molt debug bisect <source.py|manifest.json> --passes <a,b,c> --oracle-json <oracle> --eval-command <cmd>`
 - `molt debug diff <summary.json> [--failure-queue <failures.txt>]`
@@ -66,7 +67,11 @@ Version and platform rules:
 
 Current status note:
 
-- `molt debug trace` is still under active build-out;
+- `molt debug trace` now wraps the currently wired call-bind trace families
+  (`callargs`, `call_bind_ic`, `function_bind_meta`) and records the enabled
+  low-level env knobs in the manifest;
+- wider runtime assertion work, especially `MOLT_ASSERT_NO_PENDING_ON_SUCCESS`,
+  is still under active build-out;
 - `molt debug reduce` and `molt debug bisect` now accept canonical oracles plus
   evaluator commands, explicit evaluator timeouts, and manifest-backed
   reduction/bisection evidence;
