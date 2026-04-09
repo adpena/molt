@@ -48,6 +48,27 @@ thread_local! {
     static VALUE_NAME_OVERRIDES: RefCell<HashMap<ValueId, String>> = RefCell::new(HashMap::new());
 }
 
+fn collect_guard_raise_path_blocks(func: &TirFunction, start: BlockId) -> Vec<BlockId> {
+    let mut raise_blocks = Vec::new();
+    let mut cur = start;
+    let mut visited: HashSet<BlockId> = HashSet::new();
+    for _ in 0..3 {
+        if !visited.insert(cur) {
+            break;
+        }
+        raise_blocks.push(cur);
+        let Some(blk) = func.blocks.get(&cur) else {
+            break;
+        };
+        if let Terminator::Branch { target, .. } = &blk.terminator {
+            cur = *target;
+        } else {
+            break;
+        }
+    }
+    raise_blocks
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -257,26 +278,6 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             false
         };
 
-        // Collect all raise-path blocks reachable from a given block
-        // (the raise successor of a guard CondBranch).  Follows Branch
-        // chains up to 2 hops to capture guard → join → raise patterns.
-        let collect_raise_path_blocks = |start: &BlockId| -> Vec<BlockId> {
-            let mut raise_blocks = Vec::new();
-            let mut cur = *start;
-            for _ in 0..3 {
-                raise_blocks.push(cur);
-                let Some(blk) = func.blocks.get(&cur) else {
-                    break;
-                };
-                if let Terminator::Branch { target, .. } = &blk.terminator {
-                    cur = *target;
-                } else {
-                    break;
-                }
-            }
-            raise_blocks
-        };
-
         loop {
             let Some(blk) = func.blocks.get(&cond_bid) else {
                 break;
@@ -303,7 +304,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     } else {
                         *else_block
                     };
-                    guard_raise_blocks.extend(collect_raise_path_blocks(&raise_bid));
+                    guard_raise_blocks.extend(collect_guard_raise_path_blocks(func, raise_bid));
                     // Follow the non-raising path.
                     let next = if then_raises {
                         *else_block
@@ -1522,7 +1523,7 @@ fn emit_structured_loop_region(
     // Collect deferred raise-path blocks from guard CondBranches
     // where the raise successor is targeted by br_if (not fallthrough).
     // These are emitted as labeled blocks before loop_end.
-    let mut deferred_raise_paths: Vec<(BlockId, Vec<ValueId>)> = Vec::new();
+    let mut deferred_raise_paths: Vec<(BlockId, Vec<ValueId>, HashSet<BlockId>)> = Vec::new();
     let mut loop_inline_blocks: HashSet<BlockId> = if_inlined_blocks.clone();
 
     // 1. Emit label for forward jumps to the header (entry path).
@@ -1686,7 +1687,13 @@ fn emit_structured_loop_region(
                             });
                             // Defer the raise-path block emission to
                             // just before loop_end (dead-end blocks).
-                            deferred_raise_paths.push((*guard_then, guard_then_args.clone()));
+                            deferred_raise_paths.push((
+                                *guard_then,
+                                guard_then_args.clone(),
+                                collect_guard_raise_path_blocks(func, *guard_then)
+                                    .into_iter()
+                                    .collect(),
+                            ));
                             // Store args for the non-raise continuation.
                             emit_block_arg_stores(
                                 *guard_else,
@@ -1725,6 +1732,9 @@ fn emit_structured_loop_region(
                             emit_guard_raise_path(
                                 *guard_else,
                                 guard_else_args,
+                                &collect_guard_raise_path_blocks(func, *guard_else)
+                                    .into_iter()
+                                    .collect(),
                                 func,
                                 block_param_vars,
                                 block_label_id,
@@ -1983,10 +1993,11 @@ fn emit_structured_loop_region(
     //     (end with `raise`) targeted by br_if from guard CondBranches
     //     in the header region.  They must exist within the loop as
     //     labeled blocks so the br_if targets resolve.
-    for (raise_bid, raise_args) in &deferred_raise_paths {
+    for (raise_bid, raise_args, raise_path_blocks) in &deferred_raise_paths {
         emit_guard_raise_path(
             *raise_bid,
             raise_args,
+            raise_path_blocks,
             func,
             block_param_vars,
             block_label_id,
@@ -2074,6 +2085,7 @@ fn emit_structured_loop_region(
 fn emit_guard_raise_path(
     start_bid: BlockId,
     start_args: &[ValueId],
+    raise_path_blocks: &HashSet<BlockId>,
     func: &TirFunction,
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
@@ -2122,25 +2134,39 @@ fn emit_guard_raise_path(
         // Emit ops.
         emit_block_ops_inner(blk, types, original_to_new_label, out);
 
-        // Emit terminator and follow chain.  Stop if the block
-        // contains a Raise (dead end) — don't follow into the
-        // cond block which is already emitted in the header.
+        // Emit terminator and follow chain. A raise block can still branch
+        // into a cleanup block that belongs to the same deferred raise path.
+        // Keep materializing that chain so any handler labels it owns survive.
         let has_raise = blk.ops.iter().any(|op| op.opcode == OpCode::Raise);
-        if has_raise {
-            emit_terminator(
-                blk,
-                block_param_vars,
-                block_label_id,
-                if_inlined_blocks,
-                &func.loop_roles,
-                out,
-                original_has_ret,
-                super::blocks::LoopRole::None,
-                &func.loop_break_kinds,
-            );
-            break;
-        }
         match &blk.terminator {
+            Terminator::Branch { target, .. } if has_raise && raise_path_blocks.contains(target) => {
+                emit_terminator(
+                    blk,
+                    block_param_vars,
+                    block_label_id,
+                    if_inlined_blocks,
+                    &func.loop_roles,
+                    out,
+                    original_has_ret,
+                    super::blocks::LoopRole::None,
+                    &func.loop_break_kinds,
+                );
+                cur = *target;
+            }
+            _ if has_raise => {
+                emit_terminator(
+                    blk,
+                    block_param_vars,
+                    block_label_id,
+                    if_inlined_blocks,
+                    &func.loop_roles,
+                    out,
+                    original_has_ret,
+                    super::blocks::LoopRole::None,
+                    &func.loop_break_kinds,
+                );
+                break;
+            }
             Terminator::Branch { target, args } => {
                 emit_block_arg_stores(*target, args, block_param_vars, out);
                 cur = *target;
@@ -2596,7 +2622,7 @@ fn attr_bytes(attrs: &super::ops::AttrDict, key: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::{Terminator, TirBlock};
+    use crate::tir::blocks::{LoopBreakKind, LoopRole, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
@@ -3752,6 +3778,348 @@ mod tests {
                 .any(|op| matches!(op.kind.as_str(), "label" | "state_label")
                     && op.value == Some(100)),
             "handler target label 100 must remain materialized: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
+        let mut func = TirFunction::new(
+            "emit_guard_raise_path_keeps_cleanup_blocks_after_raise".into(),
+            vec![],
+            TirType::I64,
+        );
+        let raise_block = func.fresh_block();
+        let cleanup_block = func.fresh_block();
+        let raise_value = func.fresh_value();
+        let cleanup_value = func.fresh_value();
+
+        let mut raise_attrs = AttrDict::new();
+        raise_attrs.insert("value".into(), AttrValue::Int(7));
+        func.blocks.insert(
+            raise_block,
+            TirBlock {
+                id: raise_block,
+                args: vec![],
+                ops: vec![
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::ConstInt,
+                        operands: vec![],
+                        results: vec![raise_value],
+                        attrs: raise_attrs,
+                        source_span: None,
+                    },
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::Raise,
+                        operands: vec![raise_value],
+                        results: vec![],
+                        attrs: AttrDict::new(),
+                        source_span: None,
+                    },
+                ],
+                terminator: Terminator::Branch {
+                    target: cleanup_block,
+                    args: vec![],
+                },
+            },
+        );
+
+        let mut cleanup_attrs = AttrDict::new();
+        cleanup_attrs.insert("value".into(), AttrValue::Int(2));
+        func.blocks.insert(
+            cleanup_block,
+            TirBlock {
+                id: cleanup_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![cleanup_value],
+                    attrs: cleanup_attrs,
+                    source_span: None,
+                }],
+                terminator: Terminator::Return {
+                    values: vec![cleanup_value],
+                },
+            },
+        );
+
+        let block_param_vars = HashMap::from([(raise_block, Vec::new()), (cleanup_block, Vec::new())]);
+        let mut out = Vec::new();
+        let labels = HashMap::from([(raise_block, 99_i64), (cleanup_block, 100_i64)]);
+        let block_label_id = |bid: &BlockId| -> i64 { *labels.get(bid).expect("missing test label") };
+
+        emit_guard_raise_path(
+            raise_block,
+            &[],
+            &HashSet::from([raise_block, cleanup_block]),
+            &func,
+            &block_param_vars,
+            &block_label_id,
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut out,
+        );
+
+        assert!(
+            validate_labels(&out),
+            "guard raise path lowering must keep labels reachable after a raise block: {out:?}"
+        );
+        assert!(
+            out.iter()
+                .any(|op| matches!(op.kind.as_str(), "label" | "state_label")
+                    && op.value == Some(100)),
+            "cleanup label 100 must remain materialized after a raise-and-branch chain: {out:?}"
+        );
+    }
+
+    #[test]
+    fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
+        let mut func = TirFunction::new(
+            "loop_guard_raise_chain_keeps_cleanup_handler_label".into(),
+            vec![TirType::Bool, TirType::Bool, TirType::Bool],
+            TirType::I64,
+        );
+
+        let header = func.fresh_block();
+        let guard = func.fresh_block();
+        let cond_block = func.fresh_block();
+        let raise_block = func.fresh_block();
+        let body_block = func.fresh_block();
+        let exit_block = func.fresh_block();
+        let cleanup_block = func.fresh_block();
+        let return_block = func.fresh_block();
+        let continue_block = func.fresh_block();
+
+        let raise_value = func.fresh_value();
+        let exit_value = func.fresh_value();
+        let cleanup_value = func.fresh_value();
+        let return_value = func.fresh_value();
+
+        let mut handler_attrs = AttrDict::new();
+        handler_attrs.insert("value".into(), AttrValue::Int(100));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![],
+            results: vec![],
+            attrs: handler_attrs.clone(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Branch {
+            target: header,
+            args: vec![],
+        };
+
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: guard,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            guard,
+            TirBlock {
+                id: guard,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::CondBranch {
+                    cond: ValueId(0),
+                    then_block: raise_block,
+                    then_args: vec![],
+                    else_block: cond_block,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            cond_block,
+            TirBlock {
+                id: cond_block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::CondBranch {
+                    cond: ValueId(1),
+                    then_block: body_block,
+                    then_args: vec![],
+                    else_block: exit_block,
+                    else_args: vec![],
+                },
+            },
+        );
+
+        let mut raise_attrs = AttrDict::new();
+        raise_attrs.insert("value".into(), AttrValue::Int(7));
+        func.blocks.insert(
+            raise_block,
+            TirBlock {
+                id: raise_block,
+                args: vec![],
+                ops: vec![
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::ConstInt,
+                        operands: vec![],
+                        results: vec![raise_value],
+                        attrs: raise_attrs,
+                        source_span: None,
+                    },
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::Raise,
+                        operands: vec![raise_value],
+                        results: vec![],
+                        attrs: AttrDict::new(),
+                        source_span: None,
+                    },
+                ],
+                terminator: Terminator::Branch {
+                    target: cleanup_block,
+                    args: vec![],
+                },
+            },
+        );
+
+        let mut exit_attrs = AttrDict::new();
+        exit_attrs.insert("value".into(), AttrValue::Int(0));
+        func.blocks.insert(
+            exit_block,
+            TirBlock {
+                id: exit_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![exit_value],
+                    attrs: exit_attrs,
+                    source_span: None,
+                }],
+                terminator: Terminator::Return {
+                    values: vec![exit_value],
+                },
+            },
+        );
+
+        func.blocks.insert(
+            body_block,
+            TirBlock {
+                id: body_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::CheckException,
+                    operands: vec![],
+                    results: vec![],
+                    attrs: handler_attrs.clone(),
+                    source_span: None,
+                }],
+                terminator: Terminator::CondBranch {
+                    cond: ValueId(2),
+                    then_block: return_block,
+                    then_args: vec![],
+                    else_block: continue_block,
+                    else_args: vec![],
+                },
+            },
+        );
+
+        let mut return_attrs = AttrDict::new();
+        return_attrs.insert("value".into(), AttrValue::Int(1));
+        func.blocks.insert(
+            return_block,
+            TirBlock {
+                id: return_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![return_value],
+                    attrs: return_attrs,
+                    source_span: None,
+                }],
+                terminator: Terminator::Return {
+                    values: vec![return_value],
+                },
+            },
+        );
+
+        func.blocks.insert(
+            continue_block,
+            TirBlock {
+                id: continue_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::CheckException,
+                    operands: vec![],
+                    results: vec![],
+                    attrs: handler_attrs.clone(),
+                    source_span: None,
+                }],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            },
+        );
+
+        let mut cleanup_attrs = AttrDict::new();
+        cleanup_attrs.insert("value".into(), AttrValue::Int(2));
+        func.blocks.insert(
+            cleanup_block,
+            TirBlock {
+                id: cleanup_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![cleanup_value],
+                    attrs: cleanup_attrs,
+                    source_span: None,
+                }],
+                terminator: Terminator::Return {
+                    values: vec![cleanup_value],
+                },
+            },
+        );
+
+        func.has_exception_handling = true;
+        func.label_id_map.insert(cleanup_block.0, 100);
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.loop_break_kinds
+            .insert(header, LoopBreakKind::BreakIfFalse);
+        func.loop_cond_blocks.insert(header, cond_block);
+
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+
+        assert!(
+            validate_labels(&ops),
+            "guard raise cleanup handler labels must survive structured loop lowering: {ops:?}"
+        );
+        assert!(
+            ops.iter()
+                .any(|op| op.kind == "check_exception" && op.value == Some(100)),
+            "check_exception must keep targeting handler label 100: {ops:?}"
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op.kind.as_str(), "label" | "state_label")
+                    && op.value == Some(100)),
+            "cleanup handler label 100 must remain materialized: {ops:?}"
         );
     }
 }
