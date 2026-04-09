@@ -24,8 +24,14 @@ use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::builtins::exceptions::{
     molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init,
 };
+use crate::builtins::types::{molt_object_new_bound, molt_type_init, molt_type_new};
+#[cfg(any(target_arch = "wasm32", test))]
 use crate::builtins::types::{
-    molt_object_new_bound, molt_type_init, molt_type_new,
+    molt_types_capsule_new, molt_types_cell_new, molt_types_coroutine,
+    molt_types_dynamic_class_attr_init, molt_types_get_original_bases,
+    molt_types_mappingproxy_init, molt_types_mappingproxy_new, molt_types_method_init,
+    molt_types_method_new, molt_types_new_class, molt_types_prepare_class,
+    molt_types_resolve_bases, molt_types_simplenamespace_init,
 };
 use crate::object::layout::function_set_call_target_ptr;
 use crate::object::ops_builtins::{molt_object_init, molt_object_init_subclass, molt_type_call};
@@ -39,6 +45,7 @@ use std::io::{ErrorKind, Read};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use super::types::cell_class;
 use crate::builtins::numbers::index_i64_with_overflow;
@@ -61,13 +68,30 @@ use memchr::{memchr, memmem};
 const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 33;
 const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFF_FF00_0000_0000;
 
+#[derive(Copy, Clone)]
+struct NativeCallableTarget(*const ());
+
+// Native callable targets are immutable code pointers published once from Rust.
+unsafe impl Send for NativeCallableTarget {}
+unsafe impl Sync for NativeCallableTarget {}
+
+fn native_callable_targets() -> &'static Mutex<HashMap<u64, NativeCallableTarget>> {
+    static TARGETS: OnceLock<Mutex<HashMap<u64, NativeCallableTarget>>> = OnceLock::new();
+    TARGETS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn runtime_callable_name_suffix(symbol_path: &str) -> &str {
     symbol_path.rsplit("::").next().unwrap_or(symbol_path)
 }
 
 pub(crate) fn runtime_fn_addr(symbol_path: &str, raw_ptr: *const ()) -> u64 {
-    runtime_callable_key_from_symbol_name(runtime_callable_name_suffix(symbol_path))
-        .unwrap_or(raw_ptr as usize as u64)
+    let key = runtime_callable_key_from_symbol_name(runtime_callable_name_suffix(symbol_path))
+        .unwrap_or(raw_ptr as usize as u64);
+    if !raw_ptr.is_null() {
+        let mut guard = native_callable_targets().lock().unwrap();
+        guard.entry(key).or_insert(NativeCallableTarget(raw_ptr));
+    }
+    key
 }
 
 fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
@@ -230,6 +254,14 @@ pub(crate) fn runtime_callable_represents_symbol(
 }
 
 pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
+    if let Some(target) = native_callable_targets()
+        .lock()
+        .unwrap()
+        .get(&fn_ptr)
+        .copied()
+    {
+        return Some(target.0);
+    }
     if fn_ptr == RUNTIME_CALLABLE_KEY_BASE {
         return Some(molt_type_call as *const ());
     }
@@ -266,6 +298,13 @@ pub(crate) fn alloc_runtime_function_obj(
     arity: u64,
 ) -> *mut u8 {
     let fn_key = canonicalize_runtime_callable_key(fn_ptr);
+    if fn_key == fn_ptr && fn_ptr != 0 {
+        let raw_target = fn_ptr as usize as *const ();
+        let mut guard = native_callable_targets().lock().unwrap();
+        guard
+            .entry(fn_key)
+            .or_insert(NativeCallableTarget(raw_target));
+    }
     let ptr = alloc_function_obj(_py, fn_key, arity);
     if ptr.is_null() {
         return ptr;
@@ -4424,7 +4463,9 @@ pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) ->
             Some("1")
         );
         if trace {
-            eprintln!("molt func new: fn_ptr={fn_ptr} fn_key={fn_key} tramp_ptr={trampoline_ptr} arity={arity}");
+            eprintln!(
+                "molt func new: fn_ptr={fn_ptr} fn_key={fn_key} tramp_ptr={trampoline_ptr} arity={arity}"
+            );
         }
         let ptr = alloc_function_obj(_py, fn_key, arity);
         if ptr.is_null() {
@@ -5334,6 +5375,27 @@ pub extern "C" fn molt_symtable_runtime_ready() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_import_smoke_runtime_ready() -> u64 {
     crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
+#[cfg(test)]
+mod wasm_runtime_callable_tests {
+    use super::*;
+
+    #[test]
+    fn wasm_runtime_callable_symbols_resolve_in_functions_scope() {
+        macro_rules! entry_list {
+            ($(($idx:expr, $sym:ident, $import:literal, $arity:expr))+) => {{
+                $(
+                    let _ = $sym as *const ();
+                )+
+            }};
+        }
+
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../wasm_runtime_callables.inc"
+        ));
+    }
 }
 
 #[cfg(test)]
