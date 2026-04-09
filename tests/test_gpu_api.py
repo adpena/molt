@@ -4,10 +4,37 @@ Tests the Python-side GPU infrastructure: Buffer, kernel simulation,
 Tensor, DataFrame, ops, and all sub-module imports.
 """
 
+import json
 import math
+from pathlib import Path
+import struct
 import sys
 
 # ── Core imports ─────────────────────────────────────────────────────────────
+
+
+def _write_safetensors_fixture(path: Path) -> None:
+    tensors = {
+        "t0": ([1.0, 2.0], [2]),
+        "t1": ([3.0, 4.0, 5.0, 6.0], [2, 2]),
+    }
+    payload = bytearray()
+    header: dict[str, object] = {}
+    offset = 0
+    for name, (values, shape) in tensors.items():
+        raw = struct.pack(f"<{len(values)}f", *values)
+        header[name] = {
+            "dtype": "F32",
+            "shape": shape,
+            "data_offsets": [offset, offset + len(raw)],
+        }
+        payload.extend(raw)
+        offset += len(raw)
+    header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
+    with path.open("wb") as handle:
+        handle.write(struct.pack("<Q", len(header_bytes)))
+        handle.write(header_bytes)
+        handle.write(payload)
 
 def test_core_imports():
     from molt.gpu import Buffer, kernel, to_device, from_device, alloc
@@ -345,6 +372,46 @@ def test_submodule_hub():
 
 def test_submodule_interop():
     from molt.gpu.interop import load_safetensors
+
+
+def test_load_safetensors_materializes_tensors_on_demand(tmp_path, monkeypatch):
+    import molt.gpu.interop as interop
+    from molt.gpu import from_device
+
+    safetensors_path = tmp_path / "weights.safetensors"
+    _write_safetensors_fixture(safetensors_path)
+
+    materialized: list[tuple[list[float], tuple[int, ...]]] = []
+
+    class FakeTensor:
+        def __init__(self, data, shape=None, dtype=float):
+            if hasattr(data, "element_type") and hasattr(data, "size"):
+                values = from_device(data)
+            else:
+                values = list(data)
+            materialized.append((values, tuple(shape or ())))
+            self.shape = tuple(shape or ())
+            self.dtype = dtype
+
+    monkeypatch.setattr(interop, "Tensor", FakeTensor)
+
+    weights = interop.load_safetensors(str(safetensors_path))
+
+    assert len(weights) == 2
+    assert materialized == []
+
+    first = weights["t0"]
+    assert isinstance(first, FakeTensor)
+    assert materialized == [([1.0, 2.0], (2,))]
+    assert weights["t0"] is first
+
+    second = weights.get("t1")
+    assert isinstance(second, FakeTensor)
+    assert materialized == [
+        ([1.0, 2.0], (2,)),
+        ([3.0, 4.0, 5.0, 6.0], (2, 2)),
+    ]
+    assert weights.get("missing", "fallback") == "fallback"
 
 
 def test_submodule_numpy_io():

@@ -8,6 +8,8 @@ SafeTensors do not pay the compile-time cost of unrelated format loaders.
 import json
 import math
 import struct
+import array
+from . import Buffer
 from .tensor import Tensor
 
 
@@ -24,6 +26,49 @@ _SAFETENSOR_DTYPES = {
     "U8": ("B", 1),
     "BOOL": ("?", 1),
 }
+
+
+class _SafeTensorMap:
+    """Lazy SafeTensors mapping that materializes tensors on first access."""
+
+    def __init__(self, data: bytes, data_start: int, entries: dict):
+        self._data = data
+        self._data_start = data_start
+        self._entries = entries
+        self._cache = {}
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __iter__(self):
+        return iter(self._entries)
+
+    def __contains__(self, key) -> bool:
+        return key in self._entries
+
+    def __getitem__(self, key):
+        if key in self._cache:
+            return self._cache[key]
+        meta = self._entries[key]
+        tensor = _load_safetensor_entry(self._data, self._data_start, meta)
+        self._cache[key] = tensor
+        return tensor
+
+    def get(self, key, default=None):
+        if key not in self._entries:
+            return default
+        return self[key]
+
+    def keys(self):
+        return self._entries.keys()
+
+    def items(self):
+        for key in self._entries:
+            yield key, self[key]
+
+    def values(self):
+        for key in self._entries:
+            yield self[key]
 
 
 def _decode_f16(raw: bytes) -> list:
@@ -59,6 +104,38 @@ def _decode_bf16(raw: bytes) -> list:
     return result
 
 
+def _decode_safetensor_values(raw: bytes, dtype_str: str) -> list:
+    if dtype_str == "F16":
+        values = _decode_f16(raw)
+    elif dtype_str == "BF16":
+        values = _decode_bf16(raw)
+    else:
+        info = _SAFETENSOR_DTYPES.get(dtype_str)
+        if info is None:
+            raise ValueError(f"Unsupported SafeTensors dtype: {dtype_str}")
+        fmt_char, elem_size = info
+        count = len(raw) // elem_size
+        values = list(struct.unpack(f"<{count}{fmt_char}", raw))
+    return [float(v) for v in values]
+
+
+def _load_safetensor_entry(data: bytes, data_start: int, meta: dict):
+    dtype_str = meta["dtype"]
+    shape = tuple(meta["shape"])
+    start, end = meta["data_offsets"]
+    raw = data[data_start + start : data_start + end]
+    if dtype_str == "F64":
+        count = len(raw) // 8
+        return Tensor(Buffer(raw, float, count), shape=shape)
+    if dtype_str == "F32":
+        values_f32 = array.array("f")
+        values_f32.frombytes(raw)
+        values_f64 = array.array("d", values_f32)
+        return Tensor(Buffer(values_f64.tobytes(), float, len(values_f64)), shape=shape)
+    values = _decode_safetensor_values(raw, dtype_str)
+    return Tensor(values, shape=shape)
+
+
 def load_safetensors(path: str) -> dict:
     """Load weights from a .safetensors file."""
     with open(path, "rb") as f:
@@ -71,34 +148,8 @@ def load_safetensors(path: str) -> dict:
     header = json.loads(header_json)
 
     data_start = 8 + header_len
-    tensors = {}
-
-    for name, meta in header.items():
-        if name == "__metadata__":
-            continue
-
-        dtype_str = meta["dtype"]
-        shape = tuple(meta["shape"])
-        start, end = meta["data_offsets"]
-
-        raw = data[data_start + start : data_start + end]
-
-        if dtype_str == "F16":
-            values = _decode_f16(raw)
-        elif dtype_str == "BF16":
-            values = _decode_bf16(raw)
-        else:
-            info = _SAFETENSOR_DTYPES.get(dtype_str)
-            if info is None:
-                raise ValueError(f"Unsupported SafeTensors dtype: {dtype_str}")
-            fmt_char, elem_size = info
-            count = len(raw) // elem_size
-            values = list(struct.unpack(f"<{count}{fmt_char}", raw))
-
-        values = [float(v) for v in values]
-        tensors[name] = Tensor(values, shape=shape)
-
-    return tensors
+    entries = {name: meta for name, meta in header.items() if name != "__metadata__"}
+    return _SafeTensorMap(data, data_start, entries)
 
 
 def load_json_weights(path: str) -> dict:
