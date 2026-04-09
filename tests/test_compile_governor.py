@@ -62,6 +62,39 @@ def test_compile_slot_can_be_disabled(tmp_path: Path) -> None:
     lease.release()
 
 
+def test_guard_root_defaults_to_repo_target_state(monkeypatch) -> None:
+    for key in ("MOLT_COMPILE_GUARD_DIR", "CARGO_TARGET_DIR", "MOLT_EXT_ROOT"):
+        monkeypatch.delenv(key, raising=False)
+
+    repo_root = Path(compile_governor.__file__).resolve().parents[1]
+    assert compile_governor._guard_root({}) == (
+        repo_root / "target" / ".molt_state" / "compile_guard"
+    )
+
+
+def test_guard_root_prefers_explicit_and_repo_canonical_overrides(tmp_path: Path) -> None:
+    explicit_guard = tmp_path / "explicit-guard"
+    ext_root = tmp_path / "ext-root"
+    cargo_target_dir = tmp_path / "cargo-target"
+    env = {
+        "MOLT_COMPILE_GUARD_DIR": str(explicit_guard),
+        "MOLT_EXT_ROOT": str(ext_root),
+        "CARGO_TARGET_DIR": str(cargo_target_dir),
+    }
+
+    assert compile_governor._guard_root(env) == explicit_guard
+
+    env.pop("MOLT_COMPILE_GUARD_DIR")
+    assert compile_governor._guard_root(env) == (
+        cargo_target_dir / ".molt_state" / "compile_guard"
+    )
+
+    env.pop("CARGO_TARGET_DIR")
+    assert compile_governor._guard_root(env) == (
+        ext_root / "target" / ".molt_state" / "compile_guard"
+    )
+
+
 @pytest.mark.skipif(
     compile_governor.fcntl is None, reason="compile governor slots require posix flock"
 )

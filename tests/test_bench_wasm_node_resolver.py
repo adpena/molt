@@ -130,3 +130,103 @@ def test_prepare_wasm_binary_sets_linked_table_base(
     assert wasm is not None
     assert captured_env.get("MOLT_WASM_LINK") == "1"
     assert captured_env.get("MOLT_WASM_TABLE_BASE") == "2354"
+
+
+def test_run_wasm_resolves_explicit_sibling_before_canonical_dist(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    explicit_dir = tmp_path / "artifacts"
+    module_dir = tmp_path / "wasm"
+    dist_dir = tmp_path / "dist"
+    explicit_dir.mkdir()
+    module_dir.mkdir()
+    dist_dir.mkdir()
+
+    explicit_wasm = explicit_dir / "output.wasm"
+    explicit_linked = explicit_dir / "output_linked.wasm"
+    canonical_wasm = dist_dir / "output.wasm"
+    canonical_linked = dist_dir / "output_linked.wasm"
+
+    explicit_wasm.write_bytes(b"\x00asm")
+    explicit_linked.write_bytes(b"\x00asm")
+    canonical_wasm.write_bytes(b"\x00asm")
+    canonical_linked.write_bytes(b"\x00asm")
+
+    script = tmp_path / "resolve_wasm_paths.cjs"
+    script.write_text(
+        "const mod = require(%r);\n"
+        "const resolved = mod.resolveWasmPaths({\n"
+        "  wasmPath: %r,\n"
+        "  moduleDir: %r,\n"
+        "  tmpDir: %r,\n"
+        "});\n"
+        "console.log(JSON.stringify(resolved));\n"
+        % (
+            str(repo_root / "wasm" / "run_wasm.js"),
+            str(explicit_wasm),
+            str(module_dir),
+            str(tmp_path),
+        )
+    )
+
+    run = __import__("subprocess").run(
+        ["node", str(script)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == 0, run.stderr
+    resolved = __import__("json").loads(run.stdout)
+    assert resolved["wasmPath"] == str(explicit_wasm)
+    assert resolved["linkedPath"] == str(explicit_linked)
+
+
+def test_run_wasm_defaults_prefer_canonical_dist_over_temp(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_dir = tmp_path / "wasm"
+    dist_dir = tmp_path / "dist"
+    tmp_dir = tmp_path / "tmp"
+    module_dir.mkdir()
+    dist_dir.mkdir()
+    tmp_dir.mkdir()
+
+    canonical_wasm = dist_dir / "output.wasm"
+    canonical_linked = dist_dir / "output_linked.wasm"
+    temp_wasm = tmp_dir / "output.wasm"
+    temp_linked = tmp_dir / "output_linked.wasm"
+
+    canonical_wasm.write_bytes(b"\x00asm")
+    canonical_linked.write_bytes(b"\x00asm")
+    temp_wasm.write_bytes(b"\x00asm")
+    temp_linked.write_bytes(b"\x00asm")
+
+    script = tmp_path / "resolve_wasm_paths_default.cjs"
+    script.write_text(
+        "const mod = require(%r);\n"
+        "const resolved = mod.resolveWasmPaths({\n"
+        "  moduleDir: %r,\n"
+        "  tmpDir: %r,\n"
+        "});\n"
+        "console.log(JSON.stringify(resolved));\n"
+        % (
+            str(repo_root / "wasm" / "run_wasm.js"),
+            str(module_dir),
+            str(tmp_dir),
+        )
+    )
+
+    run = __import__("subprocess").run(
+        ["node", str(script)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == 0, run.stderr
+    resolved = __import__("json").loads(run.stdout)
+    assert resolved["wasmPath"] == str(canonical_wasm)
+    assert resolved["linkedPath"] == str(canonical_linked)

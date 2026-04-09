@@ -70,6 +70,22 @@ def _default_runtime_path() -> Path:
     return Path("wasm/molt_runtime.wasm")
 
 
+def _default_dist_artifact_path(name: str) -> Path:
+    ext_root = os.environ.get("MOLT_EXT_ROOT")
+    external_root = Path(ext_root).expanduser() if ext_root else None
+    if external_root is not None and external_root.is_dir():
+        return external_root / "dist" / name
+    return Path("dist") / name
+
+
+def _default_input_path() -> Path:
+    return _default_dist_artifact_path("output.wasm")
+
+
+def _default_output_path() -> Path:
+    return _default_dist_artifact_path("output_linked.wasm")
+
+
 def _is_wasm_binary(data: bytes) -> bool:
     return len(data) >= 8 and data[:4] == WASM_MAGIC and data[4:8] == WASM_VERSION
 
@@ -3286,8 +3302,8 @@ def main() -> int:
         description="Attempt to link Molt output/runtime into a single WASM module.",
     )
     parser.add_argument("--runtime", type=Path, default=_default_runtime_path())
-    parser.add_argument("--input", type=Path, default=Path("output.wasm"))
-    parser.add_argument("--output", type=Path, default=Path("output_linked.wasm"))
+    parser.add_argument("--input", type=Path, default=_default_input_path())
+    parser.add_argument("--output", type=Path, default=_default_output_path())
     parser.add_argument(
         "--freestanding", action="store_true", default=False,
         help="Stub out WASI imports post-link for freestanding deployment",

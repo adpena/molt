@@ -95,18 +95,13 @@ def _guard_root(env: Mapping[str, str]) -> Path:
     explicit = env.get("MOLT_COMPILE_GUARD_DIR")
     if explicit:
         return Path(explicit).expanduser()
-    ext_root = env.get("MOLT_EXT_ROOT")
-    if ext_root:
-        return (
-            Path(ext_root).expanduser()
-            / "cargo-target"
-            / ".molt_state"
-            / "compile_guard"
-        )
     target_root = env.get("CARGO_TARGET_DIR")
     if target_root:
         return Path(target_root).expanduser() / ".molt_state" / "compile_guard"
-    return Path("/tmp/molt_compile_guard")
+    ext_root = env.get("MOLT_EXT_ROOT")
+    if ext_root:
+        return Path(ext_root).expanduser() / "target" / ".molt_state" / "compile_guard"
+    return Path(__file__).resolve().parents[1] / "target" / ".molt_state" / "compile_guard"
 
 
 def _count_active_compile_processes() -> int | None:

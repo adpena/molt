@@ -2268,9 +2268,40 @@ const tryFetch = async (url) => {
   }
 };
 
+const resolveDefaultWasmUrl = (moduleUrl = import.meta.url) =>
+  new URL('../dist/output.wasm', moduleUrl).href;
+
+const resolveDefaultLinkedUrl = (moduleUrl = import.meta.url) =>
+  new URL('../dist/output_linked.wasm', moduleUrl).href;
+
+const resolveSiblingLinkedUrl = (wasmUrl, moduleUrl = import.meta.url) => {
+  if (!wasmUrl) return null;
+  try {
+    const resolved = new URL(wasmUrl, moduleUrl);
+    if (resolved.pathname.endsWith('_linked.wasm')) {
+      return resolved.href;
+    }
+    if (!resolved.pathname.endsWith('.wasm')) {
+      return null;
+    }
+    resolved.pathname = resolved.pathname.replace(/\.wasm$/, '_linked.wasm');
+    return resolved.href;
+  } catch {
+    return null;
+  }
+};
+
+export const resolveMoltWasmUrls = (options = {}, moduleUrl = import.meta.url) => {
+  const wasmUrl = options.wasmUrl || resolveDefaultWasmUrl(moduleUrl);
+  const linkedUrl =
+    options.linkedUrl ||
+    resolveSiblingLinkedUrl(wasmUrl, moduleUrl) ||
+    resolveDefaultLinkedUrl(moduleUrl);
+  return { wasmUrl, linkedUrl };
+};
+
 export const loadMoltWasm = async (options = {}) => {
-  const wasmUrl = options.wasmUrl || './output.wasm';
-  const linkedUrl = options.linkedUrl || './output_linked.wasm';
+  const { wasmUrl, linkedUrl } = resolveMoltWasmUrls(options);
   const runtimeUrl = options.runtimeUrl || './molt_runtime.wasm';
   const preferLinked = options.preferLinked !== false;
   const logFn = options.log || null;
