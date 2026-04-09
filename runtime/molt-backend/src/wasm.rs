@@ -2615,6 +2615,7 @@ impl WasmBackend {
             ("molt_class_new", "class_new", 1),
             ("molt_class_set_base", "class_set_base", 2),
             ("molt_class_apply_set_name", "class_apply_set_name", 1),
+            ("molt_class_merge_layout", "class_merge_layout", 3),
             ("molt_function_set_builtin", "function_set_builtin", 1),
             ("molt_exceptiongroup_match", "exceptiongroup_match", 2),
             ("molt_exceptiongroup_combine", "exceptiongroup_combine", 1),
@@ -9329,6 +9330,26 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(class_bits));
                         func.instruction(&Instruction::LocalGet(version_bits));
                         emit_call(func, reloc_enabled, import_ids["class_set_layout_version"]);
+                        if let Some(out) = op.out.as_ref() {
+                            if out != "none" {
+                                let res = locals[out];
+                                func.instruction(&Instruction::LocalSet(res));
+                            } else {
+                                func.instruction(&Instruction::Drop);
+                            }
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "class_merge_layout" => {
+                        let args = op.args.as_ref().unwrap();
+                        let class_bits = locals[&args[0]];
+                        let offsets_bits = locals[&args[1]];
+                        let size_bits = locals[&args[2]];
+                        func.instruction(&Instruction::LocalGet(class_bits));
+                        func.instruction(&Instruction::LocalGet(offsets_bits));
+                        func.instruction(&Instruction::LocalGet(size_bits));
+                        emit_call(func, reloc_enabled, import_ids["class_merge_layout"]);
                         if let Some(out) = op.out.as_ref() {
                             if out != "none" {
                                 let res = locals[out];

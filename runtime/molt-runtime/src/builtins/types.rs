@@ -889,6 +889,179 @@ pub extern "C" fn molt_class_set_layout_version(class_bits: u64, version_bits: u
     })
 }
 
+unsafe fn max_slot_end_from_offsets_dict(offsets_ptr: *mut u8) -> usize {
+    unsafe {
+        if object_type_id(offsets_ptr) != TYPE_ID_DICT {
+            return 0;
+        }
+        let mut max_end = 0usize;
+        let entries = dict_order(offsets_ptr).clone();
+        for pair in entries.chunks(2) {
+            if pair.len() != 2 {
+                continue;
+            }
+            if let Some(offset) = obj_from_bits(pair[1]).as_int()
+                && offset >= 0
+            {
+                let end = (offset as usize).saturating_add(std::mem::size_of::<u64>());
+                if end > max_end {
+                    max_end = end;
+                }
+            }
+        }
+        max_end
+    }
+}
+
+unsafe fn merge_class_layout_metadata(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+    offsets_bits: u64,
+    size_bits: u64,
+) -> Result<(), u64> {
+    unsafe {
+        let class_bits = MoltObject::from_ptr(class_ptr).bits();
+        let dict_bits = class_dict_bits(class_ptr);
+        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            return Ok(());
+        };
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return Ok(());
+        }
+
+        let offsets_name_bits = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.field_offsets_name,
+            b"__molt_field_offsets__",
+        );
+        let layout_name_bits = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.molt_layout_size,
+            b"__molt_layout_size__",
+        );
+
+        let mut merged_offsets_ptr: *mut u8 = std::ptr::null_mut();
+        if !obj_from_bits(offsets_bits).is_none() {
+            let Some(source_offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "__molt_field_offsets__ must be dict or None",
+                ));
+            };
+            if object_type_id(source_offsets_ptr) != TYPE_ID_DICT {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "__molt_field_offsets__ must be dict or None",
+                ));
+            }
+            let mut target_offsets_bits =
+                dict_get_in_place(_py, dict_ptr, offsets_name_bits).unwrap_or(0);
+            if obj_from_bits(target_offsets_bits).is_none() || target_offsets_bits == 0 {
+                let new_ptr = alloc_dict_with_pairs(_py, &[]);
+                if new_ptr.is_null() {
+                    return Err(MoltObject::none().bits());
+                }
+                target_offsets_bits = MoltObject::from_ptr(new_ptr).bits();
+                dict_set_in_place(_py, dict_ptr, offsets_name_bits, target_offsets_bits);
+            }
+            let Some(target_offsets_ptr) = obj_from_bits(target_offsets_bits).as_ptr() else {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "__molt_field_offsets__ must be dict",
+                ));
+            };
+            if object_type_id(target_offsets_ptr) != TYPE_ID_DICT {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "__molt_field_offsets__ must be dict",
+                ));
+            }
+            let entries = dict_order(source_offsets_ptr).clone();
+            for pair in entries.chunks(2) {
+                if pair.len() != 2 {
+                    continue;
+                }
+                if dict_get_in_place(_py, target_offsets_ptr, pair[0]).is_some() {
+                    continue;
+                }
+                dict_set_in_place(_py, target_offsets_ptr, pair[0], pair[1]);
+            }
+            merged_offsets_ptr = target_offsets_ptr;
+        } else if let Some(existing_offsets_bits) = dict_get_in_place(_py, dict_ptr, offsets_name_bits)
+            && let Some(existing_offsets_ptr) = obj_from_bits(existing_offsets_bits).as_ptr()
+            && object_type_id(existing_offsets_ptr) == TYPE_ID_DICT
+        {
+            merged_offsets_ptr = existing_offsets_ptr;
+        }
+
+        let builtins = builtin_classes(_py);
+        let reserved_tail = if issubclass_bits(class_bits, builtins.dict) {
+            2 * std::mem::size_of::<u64>()
+        } else {
+            std::mem::size_of::<u64>()
+        };
+        let mut layout_size = 0usize;
+        if let Some(existing_size_bits) = dict_get_in_place(_py, dict_ptr, layout_name_bits)
+            && let Some(existing_size) = obj_from_bits(existing_size_bits).as_int()
+            && existing_size > 0
+        {
+            layout_size = existing_size as usize;
+        }
+        let hinted_size = match to_i64(obj_from_bits(size_bits)) {
+            Some(value) if value >= 0 => value as usize,
+            _ => {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "__molt_layout_size__ must be int",
+                ));
+            }
+        };
+        layout_size = layout_size.max(hinted_size);
+        if !merged_offsets_ptr.is_null() {
+            let required = max_slot_end_from_offsets_dict(merged_offsets_ptr)
+                .saturating_add(reserved_tail);
+            layout_size = layout_size.max(required);
+        }
+        if layout_size == 0 {
+            layout_size = reserved_tail.max(std::mem::size_of::<u64>());
+        }
+        let layout_bits = MoltObject::from_int(layout_size as i64).bits();
+        dict_set_in_place(_py, dict_ptr, layout_name_bits, layout_bits);
+        if !apply_class_slots_layout(_py, class_ptr) {
+            return Err(MoltObject::none().bits());
+        }
+        Ok(())
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_class_merge_layout(class_bits: u64, offsets_bits: u64, size_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let class_obj = obj_from_bits(class_bits);
+        let Some(class_ptr) = class_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "class layout merge expects type");
+        };
+        unsafe {
+            if object_type_id(class_ptr) != TYPE_ID_TYPE {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "class layout merge expects type",
+                );
+            }
+            match merge_class_layout_metadata(_py, class_ptr, offsets_bits, size_bits) {
+                Ok(()) => MoltObject::none().bits(),
+                Err(bits) => bits,
+            }
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {

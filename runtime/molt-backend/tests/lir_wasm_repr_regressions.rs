@@ -82,6 +82,7 @@ fn wasm_lir_truthiness_materialization_uses_bool_local_and_br_if() {
         loop_roles: std::collections::HashMap::new(),
         loop_pairs: std::collections::HashMap::new(),
         loop_break_kinds: std::collections::HashMap::new(),
+        loop_cond_blocks: std::collections::HashMap::new(),
     };
 
     let lir = lower_function_to_lir(&func);
@@ -161,6 +162,7 @@ fn wasm_lir_loop_carried_i64_params_stay_i64() {
         loop_roles: std::collections::HashMap::new(),
         loop_pairs: std::collections::HashMap::new(),
         loop_break_kinds: std::collections::HashMap::new(),
+        loop_cond_blocks: std::collections::HashMap::new(),
     };
 
     let lir = lower_function_to_lir(&func);
@@ -206,6 +208,7 @@ fn wasm_lir_checked_i64_add_does_not_emit_plain_i64_add() {
         loop_roles: std::collections::HashMap::new(),
         loop_pairs: std::collections::HashMap::new(),
         loop_break_kinds: std::collections::HashMap::new(),
+        loop_cond_blocks: std::collections::HashMap::new(),
     };
 
     let lir = lower_function_to_lir(&func);

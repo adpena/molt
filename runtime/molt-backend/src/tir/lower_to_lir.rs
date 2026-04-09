@@ -498,6 +498,7 @@ mod tests {
             loop_roles: HashMap::new(),
             loop_pairs: HashMap::new(),
             loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
         };
 
         let lir = lower_function_to_lir(&func);
@@ -539,6 +540,7 @@ mod tests {
             loop_roles: HashMap::new(),
             loop_pairs: HashMap::new(),
             loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
         };
 
         let lir = lower_function_to_lir(&func);

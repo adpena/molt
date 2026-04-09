@@ -1731,6 +1731,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.loop_guard_assumptions = []
         self.active_exceptions = []
 
+    def _module_chunk_stmt_cost(self, stmt: ast.stmt) -> int:
+        # Chunking decisions happen before lowering the next top-level
+        # statement, so use a cheap AST-size heuristic to avoid letting one
+        # expensive statement balloon the chunk that came before it.
+        node_cost = sum(1 for _ in ast.walk(stmt)) * 3
+        line_span = (
+            max(1, getattr(stmt, "end_lineno", stmt.lineno) - stmt.lineno + 1)
+            if getattr(stmt, "lineno", None) is not None
+            else 1
+        )
+        span_cost = line_span * 20
+        dominant = max(node_cost, span_cost)
+        secondary = min(node_cost, span_cost)
+        # Reserve headroom for lowering-time metadata expansion
+        # (labels/check_exception/class wiring) so large statements start a
+        # fresh chunk before they poison the preceding one.
+        return max(1, dominant + secondary // 4)
+
     def _c3_merge(self, seqs: list[list[str]]) -> list[str] | None:
         merged: list[str] = []
         working = [list(seq) for seq in seqs]
@@ -3622,9 +3640,33 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self._reset_module_chunk_state()
                 return symbol
 
+            def flush_chunk(symbol: str) -> None:
+                self._emit_function_exception_handler(clear_handlers=True)
+                old_ops = self.funcs_map["molt_main"]["ops"]
+                self.funcs_map["molt_main"]["ops"] = wrapper_ops
+                self._adjust_module_pressure_counts(
+                    ops_delta=len(wrapper_ops) - len(old_ops)
+                )
+                call_out = MoltValue(self.next_var(), type_hint="Any")
+                emit_wrapper(
+                    MoltOp(
+                        kind="CALL",
+                        args=[symbol, wrapper_module_obj],
+                        result=call_out,
+                    )
+                )
+
             current_chunk: str | None = None
             for stmt in node.body:
                 if current_chunk is None:
+                    current_chunk = start_chunk()
+                elif (
+                    self.module_chunk_max_ops > 0
+                    and self.current_ops
+                    and len(self.current_ops) + self._module_chunk_stmt_cost(stmt)
+                    >= self.module_chunk_max_ops
+                ):
+                    flush_chunk(current_chunk)
                     current_chunk = start_chunk()
                 self.visit(stmt)
                 if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -3636,37 +3678,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and self.module_chunk_max_ops > 0
                     and len(self.current_ops) >= self.module_chunk_max_ops
                 ):
-                    self._emit_function_exception_handler(clear_handlers=True)
-                    old_ops = self.funcs_map["molt_main"]["ops"]
-                    self.funcs_map["molt_main"]["ops"] = wrapper_ops
-                    self._adjust_module_pressure_counts(
-                        ops_delta=len(wrapper_ops) - len(old_ops)
-                    )
-                    call_out = MoltValue(self.next_var(), type_hint="Any")
-                    emit_wrapper(
-                        MoltOp(
-                            kind="CALL",
-                            args=[current_chunk, wrapper_module_obj],
-                            result=call_out,
-                        )
-                    )
+                    flush_chunk(current_chunk)
                     current_chunk = None
 
             if current_chunk is not None:
-                self._emit_function_exception_handler(clear_handlers=True)
-                old_ops = self.funcs_map["molt_main"]["ops"]
-                self.funcs_map["molt_main"]["ops"] = wrapper_ops
-                self._adjust_module_pressure_counts(
-                    ops_delta=len(wrapper_ops) - len(old_ops)
-                )
-                call_out = MoltValue(self.next_var(), type_hint="Any")
-                emit_wrapper(
-                    MoltOp(
-                        kind="CALL",
-                        args=[current_chunk, wrapper_module_obj],
-                        result=call_out,
-                    )
-                )
+                flush_chunk(current_chunk)
 
             old_ops = self.funcs_map["molt_main"]["ops"]
             self.funcs_map["molt_main"]["ops"] = wrapper_ops
@@ -15130,6 +15146,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self._store_local_value(node.name, class_val)
             else:
                 self._store_local_value(node.name, class_val)
+            offsets_dict_d: MoltValue | None = None
             if (
                 not class_info.get("dataclass")
                 and not class_info.get("dynamic")
@@ -15152,19 +15169,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(
                     MoltOp(kind="DICT_NEW", args=field_items_d, result=offsets_dict_d)
                 )
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_OBJ",
-                        args=[class_val, "__molt_field_offsets__", offsets_dict_d],
-                        result=MoltValue("none"),
-                    )
-                )
             size_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[class_info["size"]], result=size_val))
+            offsets_arg = offsets_dict_d
+            if offsets_arg is None:
+                offsets_arg = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=offsets_arg))
             self.emit(
                 MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[class_val, "__molt_layout_size__", size_val],
+                    kind="CLASS_MERGE_LAYOUT",
+                    args=[class_val, offsets_arg, size_val],
                     result=MoltValue("none"),
                 )
             )
@@ -29500,6 +29514,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         "out": op.result.name,
                     }
                 )
+            elif op.kind == "CLASS_MERGE_LAYOUT":
+                json_ops.append(
+                    {
+                        "kind": "class_merge_layout",
+                        "args": [arg.name for arg in op.args],
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "GUARD_LAYOUT":
                 json_ops.append(
                     {
@@ -38840,6 +38862,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "call_indirect",
             "call_guarded",
             "call_async",
+            "class_merge_layout",
         }
 
         # CallArgs ops where the value arg escapes into the callargs builder.

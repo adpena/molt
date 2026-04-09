@@ -4841,6 +4841,93 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "class_apply_set_name" => {
+                let Some(&class_id) = op.operands.first() else {
+                    return false;
+                };
+                let apply_fn = self.ensure_runtime_i64_fn("molt_class_apply_set_name", 1);
+                let class_bits = self.ensure_i64(self.resolve(class_id));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(apply_fn, &[class_bits.into()], "class_apply_set_name")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "class_layout_version" => {
+                let Some(&class_id) = op.operands.first() else {
+                    return false;
+                };
+                let version_fn = self.ensure_runtime_i64_fn("molt_class_layout_version", 1);
+                let class_bits = self.ensure_i64(self.resolve(class_id));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(version_fn, &[class_bits.into()], "class_layout_version")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "class_set_layout_version" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let set_fn = self.ensure_runtime_i64_fn("molt_class_set_layout_version", 2);
+                let class_bits = self.ensure_i64(self.resolve(op.operands[0]));
+                let version_bits = self.ensure_i64(self.resolve(op.operands[1]));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        set_fn,
+                        &[class_bits.into(), version_bits.into()],
+                        "class_set_layout_version",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "class_merge_layout" => {
+                if op.operands.len() != 3 {
+                    return false;
+                }
+                let merge_fn = self.ensure_runtime_i64_fn("molt_class_merge_layout", 3);
+                let class_bits = self.ensure_i64(self.resolve(op.operands[0]));
+                let offsets_bits = self.ensure_i64(self.resolve(op.operands[1]));
+                let size_bits = self.ensure_i64(self.resolve(op.operands[2]));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        merge_fn,
+                        &[class_bits.into(), offsets_bits.into(), size_bits.into()],
+                        "class_merge_layout",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "str_from_obj" => {
                 let Some(&src_id) = op.operands.first() else {
                     return false;
