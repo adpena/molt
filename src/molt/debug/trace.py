@@ -8,6 +8,7 @@ TRACE_ENV_BY_FAMILY = {
     "callargs": "MOLT_TRACE_CALLARGS",
     "call_bind_ic": "MOLT_TRACE_CALL_BIND_IC",
     "function_bind_meta": "MOLT_TRACE_FUNCTION_BIND_META",
+    "backend_timing": "MOLT_BACKEND_TIMING",
 }
 
 
