@@ -223,3 +223,97 @@ def test_run_wasm_errors_without_explicit_or_canonical_dist_even_if_temp_exists(
     assert run.returncode != 0, run.stdout
     assert "WASM path not found" in run.stderr
     assert "temp output.wasm" not in run.stderr
+
+
+def test_run_wasm_prefers_sibling_runtime_sidecar_before_canonical_root(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    explicit_dir = tmp_path / "artifacts"
+    module_dir = tmp_path / "wasm"
+    canonical_runtime_dir = tmp_path / "canonical-wasm"
+    explicit_dir.mkdir()
+    module_dir.mkdir()
+    canonical_runtime_dir.mkdir()
+
+    explicit_wasm = explicit_dir / "output.wasm"
+    sibling_runtime = explicit_dir / "molt_runtime.wasm"
+    canonical_runtime = canonical_runtime_dir / "molt_runtime.wasm"
+
+    explicit_wasm.write_bytes(b"\x00asm")
+    sibling_runtime.write_bytes(b"\x00asm")
+    canonical_runtime.write_bytes(b"\x00asm")
+
+    script = tmp_path / "resolve_runtime_sidecar.cjs"
+    script.write_text(
+        "const mod = require(%r);\n"
+        "const resolved = mod.resolveWasmPaths({\n"
+        "  wasmPath: %r,\n"
+        "  moduleDir: %r,\n"
+        "  env: { MOLT_RUNTIME_WASM_DIR: %r },\n"
+        "});\n"
+        "console.log(JSON.stringify(resolved));\n"
+        % (
+            str(repo_root / "wasm" / "run_wasm.js"),
+            str(explicit_wasm),
+            str(module_dir),
+            str(canonical_runtime_dir),
+        )
+    )
+
+    run = __import__("subprocess").run(
+        ["node", str(script)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == 0, run.stderr
+    resolved = __import__("json").loads(run.stdout)
+    assert resolved["runtimePath"] == str(sibling_runtime)
+
+
+def test_run_wasm_uses_canonical_runtime_dir_when_no_sibling_exists(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    explicit_dir = tmp_path / "artifacts"
+    module_dir = tmp_path / "wasm"
+    canonical_runtime_dir = tmp_path / "canonical-wasm"
+    explicit_dir.mkdir()
+    module_dir.mkdir()
+    canonical_runtime_dir.mkdir()
+
+    explicit_wasm = explicit_dir / "output.wasm"
+    canonical_runtime = canonical_runtime_dir / "molt_runtime.wasm"
+
+    explicit_wasm.write_bytes(b"\x00asm")
+    canonical_runtime.write_bytes(b"\x00asm")
+
+    script = tmp_path / "resolve_runtime_canonical.cjs"
+    script.write_text(
+        "const mod = require(%r);\n"
+        "const resolved = mod.resolveWasmPaths({\n"
+        "  wasmPath: %r,\n"
+        "  moduleDir: %r,\n"
+        "  env: { MOLT_RUNTIME_WASM_DIR: %r },\n"
+        "});\n"
+        "console.log(JSON.stringify(resolved));\n"
+        % (
+            str(repo_root / "wasm" / "run_wasm.js"),
+            str(explicit_wasm),
+            str(module_dir),
+            str(canonical_runtime_dir),
+        )
+    )
+
+    run = __import__("subprocess").run(
+        ["node", str(script)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == 0, run.stderr
+    resolved = __import__("json").loads(run.stdout)
+    assert resolved["runtimePath"] == str(canonical_runtime)
