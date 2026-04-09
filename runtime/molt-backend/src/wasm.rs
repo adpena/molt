@@ -1259,10 +1259,9 @@ impl WasmBackend {
                 index: self.data_segments.len().saturating_sub(1) as u32,
             };
         }
-        if cacheable
-            && let Some(existing) = self.data_segment_cache.get(bytes) {
-                return *existing;
-            }
+        if cacheable && let Some(existing) = self.data_segment_cache.get(bytes) {
+            return *existing;
+        }
         let offset = self.data_offset;
         let byte_len: u32 = bytes
             .len()
@@ -1438,9 +1437,10 @@ impl WasmBackend {
                         "tuple_new" => {
                             if let Some(args) = &op.args
                                 && args.len() == *expected_arity
-                                    && let Some(out) = &op.out {
-                                        tuple_new_vars.insert(out.clone());
-                                    }
+                                && let Some(out) = &op.out
+                            {
+                                tuple_new_vars.insert(out.clone());
+                            }
                         }
                         "ret" => {
                             has_any_ret = true;
@@ -1504,10 +1504,11 @@ impl WasmBackend {
 
                 // builtin_func ops reference imports by s_value (with molt_ prefix).
                 if kind == "builtin_func"
-                    && let Some(name) = op.s_value.as_ref() {
-                        let import_name = name.strip_prefix("molt_").unwrap_or(name.as_str());
-                        required.insert(import_name.to_string());
-                    }
+                    && let Some(name) = op.s_value.as_ref()
+                {
+                    let import_name = name.strip_prefix("molt_").unwrap_or(name.as_str());
+                    required.insert(import_name.to_string());
+                }
 
                 // Prefix-based discovery for stdlib groups.
                 // If the op kind starts with a known stdlib prefix, include it.
@@ -1625,17 +1626,17 @@ impl WasmBackend {
                 // Cache hit: restore previously optimized ops and skip the pipeline.
                 if let Some(cached_bytes) = tir_cache.get(&content_hash)
                     && let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
+                {
+                    func_ir.ops = cached_ops;
+                    let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
+                    crate::tir::type_refine::refine_types(&mut tir_func);
+                    if is_production_lir_wasm_fast_path_name(&func_ir.name)
+                        && let Some(output) = prepare_lir_wasm_fast_output(&tir_func)
                     {
-                        func_ir.ops = cached_ops;
-                        let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
-                        crate::tir::type_refine::refine_types(&mut tir_func);
-                        if is_production_lir_wasm_fast_path_name(&func_ir.name)
-                            && let Some(output) = prepare_lir_wasm_fast_output(&tir_func)
-                        {
-                            lir_fast_outputs.insert(func_ir.name.clone(), output);
-                        }
-                        continue;
+                        lir_fast_outputs.insert(func_ir.name.clone(), output);
                     }
+                    continue;
+                }
 
                 let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(func_ir);
                 crate::tir::type_refine::refine_types(&mut tir_func);
@@ -2191,10 +2192,11 @@ impl WasmBackend {
             }
             // In auto mode, skip imports not in the required set.
             if let Some(ref required) = auto_required
-                && !required.contains(name) {
-                    ids.insert(name.to_string(), u32::MAX);
-                    return;
-                }
+                && !required.contains(name)
+            {
+                ids.insert(name.to_string(), u32::MAX);
+                return;
+            }
             self.imports
                 .import("molt_runtime", name, EntityType::Function(ty));
             ids.insert(name.to_string(), import_idx);
@@ -2383,7 +2385,9 @@ impl WasmBackend {
             for (name, ret_count) in &multi_return_candidates {
                 if let Some(&param_count) = func_param_counts.get(name.as_str()) {
                     let key = (param_count, *ret_count);
-                    if let std::collections::btree_map::Entry::Vacant(e) = multi_return_type_map.entry(key) {
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        multi_return_type_map.entry(key)
+                    {
                         e.insert(next_type_idx);
                         needed.push(key);
                         next_type_idx += 1;
@@ -4536,10 +4540,11 @@ impl WasmBackend {
             // that already has a local, reuse that local index.
             if let Some(repr) = coalesced_map.get(name)
                 && repr != name
-                    && let Some(&repr_idx) = locals.get(repr) {
-                        locals.insert(name.to_string(), repr_idx);
-                        return repr_idx;
-                    }
+                && let Some(&repr_idx) = locals.get(repr)
+            {
+                locals.insert(name.to_string(), repr_idx);
+                return repr_idx;
+            }
             let idx = local_count;
             locals.insert(name.to_string(), idx);
             local_types.push(ValType::I64);
@@ -4565,13 +4570,18 @@ impl WasmBackend {
                 }
             }
             if let Some(out) = &op.out
-                && out != "none" {
-                    defined_vars.insert(out.clone());
-                }
+                && out != "none"
+            {
+                defined_vars.insert(out.clone());
+            }
         }
         for op in &func_ir.ops {
             if op.fast_int.unwrap_or(false) {
                 fast_int_count += 1;
+            }
+            if let Some(var) = &op.var {
+                let var_is_dead_out = op.kind == "store_var";
+                ensure_local_inner(var, var_is_dead_out);
             }
             if let Some(args) = &op.args {
                 for arg in args {
@@ -4630,10 +4640,12 @@ impl WasmBackend {
         // 0 which is not a valid boxed value and causes runtime crashes.
         for undef in used_vars.difference(&defined_vars) {
             if let Some(&local_idx) = locals.get(undef.as_str())
-                && local_idx != dead_sink_idx && !const_seed_seen.contains(undef) {
-                    const_seed_seen.insert(undef.clone());
-                    const_seed_locals_all.push((local_idx, box_none()));
-                }
+                && local_idx != dead_sink_idx
+                && !const_seed_seen.contains(undef)
+            {
+                const_seed_seen.insert(undef.clone());
+                const_seed_locals_all.push((local_idx, box_none()));
+            }
         }
 
         if needs_field_fast {
@@ -4656,11 +4668,11 @@ impl WasmBackend {
         if needs_alloc_resolve
             && let std::collections::btree_map::Entry::Vacant(entry) =
                 locals.entry("__wasm_alloc_resolve".to_string())
-            {
-                entry.insert(local_count);
-                local_types.push(ValType::I32);
-                local_count += 1;
-            }
+        {
+            entry.insert(local_count);
+            local_types.push(ValType::I32);
+            local_count += 1;
+        }
 
         for name in ["__molt_tmp0", "__molt_tmp1", "__molt_tmp2", "__molt_tmp3"] {
             if let std::collections::btree_map::Entry::Vacant(entry) =
@@ -4821,10 +4833,11 @@ impl WasmBackend {
             for op in &func_ir.ops {
                 if op.kind == "tuple_new"
                     && let Some(args) = &op.args
-                        && args.len() == ret_count
-                            && let Some(out) = &op.out {
-                                multi_ret_tuple_vars.insert(out.clone());
-                            }
+                    && args.len() == ret_count
+                    && let Some(out) = &op.out
+                {
+                    multi_ret_tuple_vars.insert(out.clone());
+                }
             }
         }
 
@@ -5004,9 +5017,10 @@ impl WasmBackend {
                 let mut lu = BTreeMap::new();
                 for (i, op) in ops.iter().enumerate() {
                     if let Some(var) = &op.var
-                        && var != "none" {
-                            lu.insert(var.clone(), i);
-                        }
+                        && var != "none"
+                    {
+                        lu.insert(var.clone(), i);
+                    }
                     if let Some(args) = &op.args {
                         for name in args {
                             if name != "none" {
@@ -10482,6 +10496,36 @@ impl WasmBackend {
                             }
                         }
                     }
+                    "store_var" => {
+                        let args_names = op.args.as_ref().expect("store_var args missing");
+                        let src_name = args_names
+                            .first()
+                            .expect("store_var requires one source arg");
+                        let src = locals[src_name];
+                        let dst_name = op
+                            .var
+                            .as_ref()
+                            .or(op.out.as_ref())
+                            .expect("store_var requires destination");
+                        let dst = locals[dst_name];
+                        func.instruction(&Instruction::LocalGet(src));
+                        func.instruction(&Instruction::LocalSet(dst));
+                    }
+                    "load_var" | "copy_var" | "copy" | "identity_alias" => {
+                        let src_name = op
+                            .var
+                            .as_ref()
+                            .or_else(|| op.args.as_ref().and_then(|args| args.first()))
+                            .expect("load_var/copy_var requires source");
+                        let src = locals[src_name];
+                        if let Some(out_name) = op.out.as_ref() {
+                            if out_name != "none" {
+                                let out = locals[out_name];
+                                func.instruction(&Instruction::LocalGet(src));
+                                func.instruction(&Instruction::LocalSet(out));
+                            }
+                        }
+                    }
                     "box" | "unbox" | "cast" | "widen" => {
                         let args_names = op.args.as_ref().expect("conversion args missing");
                         let src_name = args_names
@@ -10975,7 +11019,7 @@ impl WasmBackend {
                         let args_names = op.args.as_ref().unwrap();
                         let func_bits = locals[&args_names[0]];
                         let builder_ptr = locals[&args_names[1]];
-                        let out = locals[op.out.as_ref().unwrap()];
+                        let out = op.out.as_ref().and_then(|name| locals.get(name).copied());
                         let call_site_label = if op.kind == "call_indirect" {
                             "call_indirect"
                         } else {
@@ -10994,7 +11038,11 @@ impl WasmBackend {
                         } else {
                             emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
                         }
-                        func.instruction(&Instruction::LocalSet(out));
+                        if let Some(out_local) = out {
+                            func.instruction(&Instruction::LocalSet(out_local));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
                     }
                     "call_method" => {
                         let args_names = op.args.as_ref().unwrap();
@@ -12181,9 +12229,10 @@ impl WasmBackend {
                     // since only that local's value changed.
                     _ => {
                         if let Some(ref out) = op.out
-                            && let Some(&out_idx) = locals.get(out.as_str()) {
-                                known_raw_ints.remove(&out_idx);
-                            }
+                            && let Some(&out_idx) = locals.get(out.as_str())
+                        {
+                            known_raw_ints.remove(&out_idx);
+                        }
                     }
                 }
             }
@@ -13867,31 +13916,24 @@ fn strip_unused_imports(bytes: Vec<u8>, unused_names: &BTreeSet<String>) -> Vec<
                     if let Payload::ElementSection(reader) = payload {
                         for element in reader.into_iter().flatten() {
                             if let ElementItems::Functions(funcs) = element.items {
-                                let indices: Vec<u32> = funcs
-                                    .into_iter()
-                                    .flatten()
-                                    .map(&remap_func_index)
-                                    .collect();
+                                let indices: Vec<u32> =
+                                    funcs.into_iter().flatten().map(&remap_func_index).collect();
                                 match element.kind {
                                     wasmparser::ElementKind::Active {
                                         table_index,
                                         offset_expr,
                                     } => {
                                         let mut ops = offset_expr.get_operators_reader();
-                                        let offset_val = if let Ok(Operator::I32Const { value }) =
-                                            ops.read()
-                                        {
-                                            value
-                                        } else {
-                                            0
-                                        };
+                                        let offset_val =
+                                            if let Ok(Operator::I32Const { value }) = ops.read() {
+                                                value
+                                            } else {
+                                                0
+                                            };
                                         let c = ConstExpr::i32_const(offset_val);
                                         let table = table_index.filter(|&t| t != 0);
                                         section.segment(ElementSegment {
-                                            mode: ElementMode::Active {
-                                                table,
-                                                offset: &c,
-                                            },
+                                            mode: ElementMode::Active { table, offset: &c },
                                             elements: Elements::Functions(Cow::Owned(indices)),
                                         });
                                     }

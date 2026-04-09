@@ -461,6 +461,107 @@ def test_native_dynamic_abc_slot_class_preserves_runtime_layout(tmp_path: Path) 
     assert run.stdout.strip().splitlines() == ["MappingView", "1"]
 
 
+def test_native_abc_register_builtin_iterator_type(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import abc\n"
+            "class IterABC(metaclass=abc.ABCMeta):\n"
+            "    pass\n"
+            "IterABC.register(type(iter(b'')))\n"
+            "print('ok')\n"
+        ),
+        "abc_register_builtin_iterator_type",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "ok"
+
+
+def test_native_abc_register_builtin_iterator_type_on_derived_abc(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import abc\n"
+            "class Iterable(metaclass=abc.ABCMeta):\n"
+            "    pass\n"
+            "class Iterator(Iterable):\n"
+            "    pass\n"
+            "Iterator.register(type(iter(b'')))\n"
+            "print('ok')\n"
+        ),
+        "abc_register_builtin_iterator_type_derived",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "ok"
+
+
+def test_native_abc_register_builtin_iterator_family_on_derived_abc(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import abc\n"
+            "class Iterable(metaclass=abc.ABCMeta):\n"
+            "    pass\n"
+            "class Iterator(Iterable):\n"
+            "    pass\n"
+            "types = [\n"
+            "    type(iter(b'')),\n"
+            "    type(iter(bytearray())),\n"
+            "    type(iter({}.keys())),\n"
+            "    type(iter({}.values())),\n"
+            "    type(iter({}.items())),\n"
+            "    type(iter([])),\n"
+            "    type(reversed([])),\n"
+            "    type(iter(range(0))),\n"
+            "    type(iter(set())),\n"
+            "    type(iter('')),\n"
+            "    type(iter(())),\n"
+            "    type(zip()),\n"
+            "]\n"
+            "for tp in types:\n"
+            "    Iterator.register(tp)\n"
+            "print('ok')\n"
+        ),
+        "abc_register_builtin_iterator_family",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "ok"
+
+
+def test_native_abc_register_realistic_iterator_abc_shape(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import abc\n"
+            "class Iterable(metaclass=abc.ABCMeta):\n"
+            "    __slots__ = ()\n"
+            "    @abc.abstractmethod\n"
+            "    def __iter__(self):\n"
+            "        while False:\n"
+            "            yield None\n"
+            "    @classmethod\n"
+            "    def __subclasshook__(cls, C):\n"
+            "        return NotImplemented\n"
+            "class Iterator(Iterable):\n"
+            "    __slots__ = ()\n"
+            "    @abc.abstractmethod\n"
+            "    def __next__(self):\n"
+            "        raise StopIteration\n"
+            "    def __iter__(self):\n"
+            "        return self\n"
+            "    @classmethod\n"
+            "    def __subclasshook__(cls, C):\n"
+            "        return NotImplemented\n"
+            "for tp in [type(iter(b'')), type(iter(bytearray())), type(iter({}.keys()))]:\n"
+            "    Iterator.register(tp)\n"
+            "print('ok')\n"
+        ),
+        "abc_register_realistic_iterator_shape",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "ok"
+
+
 def test_native_safe_intrinsic_helper_with_tuple_subclass(tmp_path: Path) -> None:
     run = _build_and_run(
         tmp_path,

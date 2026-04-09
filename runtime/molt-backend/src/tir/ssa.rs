@@ -164,21 +164,23 @@ impl<'a> SsaContext<'a> {
                 let scan_op = &ops[j];
                 if scan_op.kind == "index"
                     && let Some(args) = &scan_op.args
-                        && args.len() >= 2 && args[0] == pair_var {
-                            let idx_name = &args[1];
-                            let const_val = ops[..j].iter().rev().take(20).find_map(|c| {
-                                if c.kind == "const" && c.out.as_deref() == Some(idx_name) {
-                                    c.value
-                                } else {
-                                    None
-                                }
-                            });
-                            if const_val == Some(1) && done_idx.is_none() {
-                                done_idx = Some(j);
-                            } else if const_val == Some(0) && val_idx.is_none() {
-                                val_idx = Some(j);
-                            }
+                    && args.len() >= 2
+                    && args[0] == pair_var
+                {
+                    let idx_name = &args[1];
+                    let const_val = ops[..j].iter().rev().take(20).find_map(|c| {
+                        if c.kind == "const" && c.out.as_deref() == Some(idx_name) {
+                            c.value
+                        } else {
+                            None
                         }
+                    });
+                    if const_val == Some(1) && done_idx.is_none() {
+                        done_idx = Some(j);
+                    } else if const_val == Some(0) && val_idx.is_none() {
+                        val_idx = Some(j);
+                    }
+                }
             }
             if let (Some(di), Some(vi)) = (done_idx, val_idx) {
                 let done_var = ops[di].out.clone().unwrap_or_default();
@@ -663,26 +665,28 @@ impl<'a> SsaContext<'a> {
                 let target_vars = &self.block_arg_vars[target_bid];
                 for (i, arg) in args.iter_mut().enumerate() {
                     if *arg == undef_vid
-                        && let Some(var_name) = target_vars.get(i) {
-                            // Walk dominator chain from bid upward to find
-                            // the nearest dominator that defines this variable.
-                            // Values in block_exit_vars[d] dominate d, and
-                            // since d dominates bid, they also dominate bid.
-                            let mut d = Some(bid);
-                            while let Some(dom_bid) = d {
-                                if let Some(vars) = block_exit_vars.get(&dom_bid)
-                                    && let Some(&val) = vars.get(var_name)
-                                        && val != undef_vid {
-                                            *arg = val;
-                                            break;
-                                        }
-                                let next = self.cfg.dominators[dom_bid];
-                                if next == Some(dom_bid) || next == d {
-                                    break; // entry block or cycle
-                                }
-                                d = next;
+                        && let Some(var_name) = target_vars.get(i)
+                    {
+                        // Walk dominator chain from bid upward to find
+                        // the nearest dominator that defines this variable.
+                        // Values in block_exit_vars[d] dominate d, and
+                        // since d dominates bid, they also dominate bid.
+                        let mut d = Some(bid);
+                        while let Some(dom_bid) = d {
+                            if let Some(vars) = block_exit_vars.get(&dom_bid)
+                                && let Some(&val) = vars.get(var_name)
+                                && val != undef_vid
+                            {
+                                *arg = val;
+                                break;
                             }
+                            let next = self.cfg.dominators[dom_bid];
+                            if next == Some(dom_bid) || next == d {
+                                break; // entry block or cycle
+                            }
+                            d = next;
                         }
+                    }
                 }
             };
             match terminator {
@@ -1902,6 +1906,142 @@ mod tests {
             check_ops[0].operands.is_empty(),
             "check_exception should not carry dead handler args, got operands {:?}",
             check_ops[0].operands
+        );
+    }
+
+    #[test]
+    fn check_exception_threads_live_cleanup_state_for_method_guarded_field_set() {
+        let ops = vec![
+            OpIR {
+                kind: "exception_stack_enter".to_string(),
+                out: Some("v88".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "exception_stack_depth".to_string(),
+                out: Some("v89".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("self".to_string()),
+                args: Some(vec!["self".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "line".to_string(),
+                value: Some(3),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            op_val_out("const", 1, "v90"),
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("C".to_string()),
+                out: Some("v91".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("method_trace".to_string()),
+                out: Some("v92".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_cache_get".to_string(),
+                args: Some(vec!["v92".to_string()]),
+                out: Some("v93".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_get_attr".to_string(),
+                args: Some(vec!["v93".to_string(), "v91".to_string()]),
+                out: Some("v94".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            op_val_out("const", 3, "v95"),
+            OpIR {
+                kind: "guarded_field_set".to_string(),
+                args: Some(vec![
+                    "self".to_string(),
+                    "v94".to_string(),
+                    "v95".to_string(),
+                    "v90".to_string(),
+                ]),
+                s_value: Some("x".to_string()),
+                value: Some(0),
+                out: Some("none".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            op_val_out("const", 0, "v96"),
+            OpIR {
+                kind: "ret".to_string(),
+                var: Some("v96".to_string()),
+                ..OpIR::default()
+            },
+            op_val("label", 1),
+            OpIR {
+                kind: "exception_stack_set_depth".to_string(),
+                args: Some(vec!["v89".to_string()]),
+                out: Some("none".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "exception_stack_exit".to_string(),
+                args: Some(vec!["v88".to_string()]),
+                out: Some("none".to_string()),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let handler_bid = cfg
+            .blocks
+            .iter()
+            .position(|b| b.start_op <= 17 && b.end_op > 17)
+            .expect("handler block should exist");
+        let handler_block = &output.blocks[handler_bid];
+        assert!(
+            handler_block.args.len() >= 2,
+            "handler block must receive cleanup state args, got {:?}",
+            handler_block.args
+        );
+
+        let check_ops: Vec<_> = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| op.opcode == OpCode::CheckException)
+            .collect();
+        let rich_check = check_ops
+            .iter()
+            .find(|op| !op.operands.is_empty())
+            .expect("at least one check_exception must carry handler args");
+        assert!(
+            rich_check.operands.len() >= 2,
+            "method guarded-field path must thread cleanup vars into handler edge: {:?}",
+            rich_check.operands
         );
     }
 
