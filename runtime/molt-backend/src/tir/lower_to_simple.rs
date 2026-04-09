@@ -48,6 +48,27 @@ thread_local! {
     static VALUE_NAME_OVERRIDES: RefCell<HashMap<ValueId, String>> = RefCell::new(HashMap::new());
 }
 
+fn collect_guard_raise_path_blocks(func: &TirFunction, start: BlockId) -> Vec<BlockId> {
+    let mut raise_blocks = Vec::new();
+    let mut cur = start;
+    let mut visited: HashSet<BlockId> = HashSet::new();
+    for _ in 0..3 {
+        if !visited.insert(cur) {
+            break;
+        }
+        raise_blocks.push(cur);
+        let Some(blk) = func.blocks.get(&cur) else {
+            break;
+        };
+        if let Terminator::Branch { target, .. } = &blk.terminator {
+            cur = *target;
+        } else {
+            break;
+        }
+    }
+    raise_blocks
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -127,9 +148,10 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         for (&bid_u32, &original_id) in &func.label_id_map {
             let block_id = BlockId(bid_u32);
             if let Some(&new_id) = label_id_for_block.get(&block_id)
-                && original_id != new_id {
-                    map.insert(original_id, new_id);
-                }
+                && original_id != new_id
+            {
+                map.insert(original_id, new_id);
+            }
         }
         map
     };
@@ -251,30 +273,11 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             // One hop further (guard → join block → raise)
             if let Terminator::Branch { target, .. } = &blk.terminator
                 && let Some(next) = func.blocks.get(target)
-                    && next.ops.iter().any(|op| op.opcode == OpCode::Raise) {
-                        return true;
-                    }
-            false
-        };
-
-        // Collect all raise-path blocks reachable from a given block
-        // (the raise successor of a guard CondBranch).  Follows Branch
-        // chains up to 2 hops to capture guard → join → raise patterns.
-        let collect_raise_path_blocks = |start: &BlockId| -> Vec<BlockId> {
-            let mut raise_blocks = Vec::new();
-            let mut cur = *start;
-            for _ in 0..3 {
-                raise_blocks.push(cur);
-                let Some(blk) = func.blocks.get(&cur) else {
-                    break;
-                };
-                if let Terminator::Branch { target, .. } = &blk.terminator {
-                    cur = *target;
-                } else {
-                    break;
-                }
+                && next.ops.iter().any(|op| op.opcode == OpCode::Raise)
+            {
+                return true;
             }
-            raise_blocks
+            false
         };
 
         loop {
@@ -303,7 +306,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     } else {
                         *else_block
                     };
-                    guard_raise_blocks.extend(collect_raise_path_blocks(&raise_bid));
+                    guard_raise_blocks.extend(collect_guard_raise_path_blocks(func, raise_bid));
                     // Follow the non-raising path.
                     let next = if then_raises {
                         *else_block
@@ -620,23 +623,22 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         // If this block is a LoopHeader with a detected region, emit the
         // entire structured loop (header + body + back-edge) and skip to
         // the next RPO block.
-        if loop_role == super::blocks::LoopRole::LoopHeader
-            && loop_regions.contains_key(bid) {
-	                emit_structured_loop_region(
-	                    *bid,
-	                    func,
-	                    &loop_regions,
-	                    &rpo,
-	                    &block_param_vars,
-	                    &block_label_id,
-	                    &if_inlined_blocks,
-	                    types,
-	                    &original_to_new_label,
-	                    &mut out,
-	                    &mut loop_consumed,
-	                );
-                continue;
-            }
+        if loop_role == super::blocks::LoopRole::LoopHeader && loop_regions.contains_key(bid) {
+            emit_structured_loop_region(
+                *bid,
+                func,
+                &loop_regions,
+                &rpo,
+                &block_param_vars,
+                &block_label_id,
+                &if_inlined_blocks,
+                types,
+                &original_to_new_label,
+                &mut out,
+                &mut loop_consumed,
+            );
+            continue;
+        }
 
         let block = match func.blocks.get(bid) {
             Some(b) => b,
@@ -750,11 +752,11 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     if matches!(
                         opir.kind.as_str(),
                         "check_exception" | "try_start" | "try_end"
-                    )
-                        && let Some(orig_id) = opir.value
-                            && let Some(&new_id) = original_to_new_label.get(&orig_id) {
-                                opir.value = Some(new_id);
-                            }
+                    ) && let Some(orig_id) = opir.value
+                        && let Some(&new_id) = original_to_new_label.get(&orig_id)
+                    {
+                        opir.value = Some(new_id);
+                    }
                     out.push(opir);
                 }
             }
@@ -776,11 +778,11 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                     if matches!(
                         opir.kind.as_str(),
                         "check_exception" | "try_start" | "try_end"
-                    )
-                        && let Some(orig_id) = opir.value
-                            && let Some(&new_id) = original_to_new_label.get(&orig_id) {
-                                opir.value = Some(new_id);
-                            }
+                    ) && let Some(orig_id) = opir.value
+                        && let Some(&new_id) = original_to_new_label.get(&orig_id)
+                    {
+                        opir.value = Some(new_id);
+                    }
                     out.push(opir);
                 }
             }
@@ -1522,7 +1524,7 @@ fn emit_structured_loop_region(
     // Collect deferred raise-path blocks from guard CondBranches
     // where the raise successor is targeted by br_if (not fallthrough).
     // These are emitted as labeled blocks before loop_end.
-    let mut deferred_raise_paths: Vec<(BlockId, Vec<ValueId>)> = Vec::new();
+    let mut deferred_raise_paths: Vec<(BlockId, Vec<ValueId>, HashSet<BlockId>)> = Vec::new();
     let mut loop_inline_blocks: HashSet<BlockId> = if_inlined_blocks.clone();
 
     // 1. Emit label for forward jumps to the header (entry path).
@@ -1546,18 +1548,19 @@ fn emit_structured_loop_region(
 
     // 3. Header block argument loads (phi values from entry/back-edge).
     if header != func.entry_block
-        && let Some(param_vars) = block_param_vars.get(&header) {
-            for (i, var_name) in param_vars.iter().enumerate() {
-                if i < block.args.len() {
-                    out.push(OpIR {
-                        kind: "load_var".to_string(),
-                        var: Some(var_name.clone()),
-                        out: Some(value_var(block.args[i].id)),
-                        ..OpIR::default()
-                    });
-                }
+        && let Some(param_vars) = block_param_vars.get(&header)
+    {
+        for (i, var_name) in param_vars.iter().enumerate() {
+            if i < block.args.len() {
+                out.push(OpIR {
+                    kind: "load_var".to_string(),
+                    var: Some(var_name.clone()),
+                    out: Some(value_var(block.args[i].id)),
+                    ..OpIR::default()
+                });
             }
         }
+    }
 
     // 4. Emit all header-region blocks' ops sequentially in CFG order.
     //    The header region = [header, chain blocks (guards + non-guards), cond_block].
@@ -1636,20 +1639,8 @@ fn emit_structured_loop_region(
                         // next is a non-guard), also load for next_bid.
                         if *target != next_bid {
                             if let Some(next_block) = func.blocks.get(&next_bid)
-                                && let Some(param_vars) = block_param_vars.get(&next_bid) {
-                                    for (i, var_name) in param_vars.iter().enumerate() {
-                                        if i < next_block.args.len() {
-                                            out.push(OpIR {
-                                                kind: "load_var".to_string(),
-                                                var: Some(var_name.clone()),
-                                                out: Some(value_var(next_block.args[i].id)),
-                                                ..OpIR::default()
-                                            });
-                                        }
-                                    }
-                                }
-                        } else if let Some(next_block) = func.blocks.get(&next_bid)
-                            && let Some(param_vars) = block_param_vars.get(&next_bid) {
+                                && let Some(param_vars) = block_param_vars.get(&next_bid)
+                            {
                                 for (i, var_name) in param_vars.iter().enumerate() {
                                     if i < next_block.args.len() {
                                         out.push(OpIR {
@@ -1661,6 +1652,20 @@ fn emit_structured_loop_region(
                                     }
                                 }
                             }
+                        } else if let Some(next_block) = func.blocks.get(&next_bid)
+                            && let Some(param_vars) = block_param_vars.get(&next_bid)
+                        {
+                            for (i, var_name) in param_vars.iter().enumerate() {
+                                if i < next_block.args.len() {
+                                    out.push(OpIR {
+                                        kind: "load_var".to_string(),
+                                        var: Some(var_name.clone()),
+                                        out: Some(value_var(next_block.args[i].id)),
+                                        ..OpIR::default()
+                                    });
+                                }
+                            }
+                        }
                     }
                     Terminator::CondBranch {
                         cond: guard_cond,
@@ -1686,7 +1691,13 @@ fn emit_structured_loop_region(
                             });
                             // Defer the raise-path block emission to
                             // just before loop_end (dead-end blocks).
-                            deferred_raise_paths.push((*guard_then, guard_then_args.clone()));
+                            deferred_raise_paths.push((
+                                *guard_then,
+                                guard_then_args.clone(),
+                                collect_guard_raise_path_blocks(func, *guard_then)
+                                    .into_iter()
+                                    .collect(),
+                            ));
                             // Store args for the non-raise continuation.
                             emit_block_arg_stores(
                                 *guard_else,
@@ -1696,18 +1707,19 @@ fn emit_structured_loop_region(
                             );
                             // Load args for next block in emission sequence.
                             if let Some(next_block) = func.blocks.get(&next_bid)
-                                && let Some(param_vars) = block_param_vars.get(&next_bid) {
-                                    for (i, var_name) in param_vars.iter().enumerate() {
-                                        if i < next_block.args.len() {
-                                            out.push(OpIR {
-                                                kind: "load_var".to_string(),
-                                                var: Some(var_name.clone()),
-                                                out: Some(value_var(next_block.args[i].id)),
-                                                ..OpIR::default()
-                                            });
-                                        }
+                                && let Some(param_vars) = block_param_vars.get(&next_bid)
+                            {
+                                for (i, var_name) in param_vars.iter().enumerate() {
+                                    if i < next_block.args.len() {
+                                        out.push(OpIR {
+                                            kind: "load_var".to_string(),
+                                            var: Some(var_name.clone()),
+                                            out: Some(value_var(next_block.args[i].id)),
+                                            ..OpIR::default()
+                                        });
                                     }
                                 }
+                            }
                         } else {
                             // else = raise, then = continue.
                             // br_if cond → continue (skip raise on true).
@@ -1725,6 +1737,9 @@ fn emit_structured_loop_region(
                             emit_guard_raise_path(
                                 *guard_else,
                                 guard_else_args,
+                                &collect_guard_raise_path_blocks(func, *guard_else)
+                                    .into_iter()
+                                    .collect(),
                                 func,
                                 block_param_vars,
                                 block_label_id,
@@ -1746,18 +1761,19 @@ fn emit_structured_loop_region(
                                 out,
                             );
                             if let Some(next_block) = func.blocks.get(&next_bid)
-                                && let Some(param_vars) = block_param_vars.get(&next_bid) {
-                                    for (i, var_name) in param_vars.iter().enumerate() {
-                                        if i < next_block.args.len() {
-                                            out.push(OpIR {
-                                                kind: "load_var".to_string(),
-                                                var: Some(var_name.clone()),
-                                                out: Some(value_var(next_block.args[i].id)),
-                                                ..OpIR::default()
-                                            });
-                                        }
+                                && let Some(param_vars) = block_param_vars.get(&next_bid)
+                            {
+                                for (i, var_name) in param_vars.iter().enumerate() {
+                                    if i < next_block.args.len() {
+                                        out.push(OpIR {
+                                            kind: "load_var".to_string(),
+                                            var: Some(var_name.clone()),
+                                            out: Some(value_var(next_block.args[i].id)),
+                                            ..OpIR::default()
+                                        });
                                     }
                                 }
+                            }
                         }
                     }
                     _ => {
@@ -1983,10 +1999,11 @@ fn emit_structured_loop_region(
     //     (end with `raise`) targeted by br_if from guard CondBranches
     //     in the header region.  They must exist within the loop as
     //     labeled blocks so the br_if targets resolve.
-    for (raise_bid, raise_args) in &deferred_raise_paths {
+    for (raise_bid, raise_args, raise_path_blocks) in &deferred_raise_paths {
         emit_guard_raise_path(
             *raise_bid,
             raise_args,
+            raise_path_blocks,
             func,
             block_param_vars,
             block_label_id,
@@ -2074,6 +2091,7 @@ fn emit_structured_loop_region(
 fn emit_guard_raise_path(
     start_bid: BlockId,
     start_args: &[ValueId],
+    raise_path_blocks: &HashSet<BlockId>,
     func: &TirFunction,
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
@@ -2122,25 +2140,39 @@ fn emit_guard_raise_path(
         // Emit ops.
         emit_block_ops_inner(blk, types, original_to_new_label, out);
 
-        // Emit terminator and follow chain.  Stop if the block
-        // contains a Raise (dead end) — don't follow into the
-        // cond block which is already emitted in the header.
+        // Emit terminator and follow chain. A raise block can still branch
+        // into a cleanup block that belongs to the same deferred raise path.
+        // Keep materializing that chain so any handler labels it owns survive.
         let has_raise = blk.ops.iter().any(|op| op.opcode == OpCode::Raise);
-        if has_raise {
-            emit_terminator(
-                blk,
-                block_param_vars,
-                block_label_id,
-                if_inlined_blocks,
-                &func.loop_roles,
-                out,
-                original_has_ret,
-                super::blocks::LoopRole::None,
-                &func.loop_break_kinds,
-            );
-            break;
-        }
         match &blk.terminator {
+            Terminator::Branch { target, .. } if has_raise && raise_path_blocks.contains(target) => {
+                emit_terminator(
+                    blk,
+                    block_param_vars,
+                    block_label_id,
+                    if_inlined_blocks,
+                    &func.loop_roles,
+                    out,
+                    original_has_ret,
+                    super::blocks::LoopRole::None,
+                    &func.loop_break_kinds,
+                );
+                cur = *target;
+            }
+            _ if has_raise => {
+                emit_terminator(
+                    blk,
+                    block_param_vars,
+                    block_label_id,
+                    if_inlined_blocks,
+                    &func.loop_roles,
+                    out,
+                    original_has_ret,
+                    super::blocks::LoopRole::None,
+                    &func.loop_break_kinds,
+                );
+                break;
+            }
             Terminator::Branch { target, args } => {
                 emit_block_arg_stores(*target, args, block_param_vars, out);
                 cur = *target;
@@ -2178,11 +2210,11 @@ fn emit_block_ops_inner(
             if matches!(
                 opir.kind.as_str(),
                 "check_exception" | "try_start" | "try_end"
-            )
-                && let Some(orig_id) = opir.value
-                    && let Some(&new_id) = original_to_new_label.get(&orig_id) {
-                        opir.value = Some(new_id);
-                    }
+            ) && let Some(orig_id) = opir.value
+                && let Some(&new_id) = original_to_new_label.get(&orig_id)
+            {
+                opir.value = Some(new_id);
+            }
             out.push(opir);
         }
     }
@@ -2515,13 +2547,15 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp, types: &HashMap<ValueId,
 
     // Restore col_offset/end_col_offset for traceback caret annotations.
     if opir.col_offset.is_none()
-        && let Some(AttrValue::Int(col)) = tir_op.attrs.get("_col_offset") {
-            opir.col_offset = Some(*col);
-        }
+        && let Some(AttrValue::Int(col)) = tir_op.attrs.get("_col_offset")
+    {
+        opir.col_offset = Some(*col);
+    }
     if opir.end_col_offset.is_none()
-        && let Some(AttrValue::Int(ecol)) = tir_op.attrs.get("_end_col_offset") {
-            opir.end_col_offset = Some(*ecol);
-        }
+        && let Some(AttrValue::Int(ecol)) = tir_op.attrs.get("_end_col_offset")
+    {
+        opir.end_col_offset = Some(*ecol);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2596,7 +2630,7 @@ fn attr_bytes(attrs: &super::ops::AttrDict, key: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::{Terminator, TirBlock};
+    use crate::tir::blocks::{LoopBreakKind, LoopRole, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
@@ -3566,6 +3600,901 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
+        use crate::ir::{FunctionIR, OpIR};
+        use crate::tir::lower_from_simple::lower_to_tir;
+        use crate::tir::passes::run_pipeline;
+        use crate::tir::type_refine::{extract_type_map, refine_types};
+
+        let func_ir = FunctionIR {
+            name: "method_trace__C_f".into(),
+            params: vec!["self".into()],
+            ops: vec![
+                OpIR {
+                    kind: "exception_stack_enter".into(),
+                    out: Some("v88".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_stack_depth".into(),
+                    out: Some("v89".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".into(),
+                    var: Some("self".into()),
+                    args: Some(vec!["self".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "line".into(),
+                    value: Some(3),
+                    col_offset: Some(8),
+                    end_col_offset: Some(18),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(1),
+                    out: Some("v90".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("C".into()),
+                    out: Some("v91".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("method_trace".into()),
+                    out: Some("v92".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_cache_get".into(),
+                    args: Some(vec!["v92".into()]),
+                    out: Some("v93".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_get_attr".into(),
+                    args: Some(vec!["v93".into(), "v91".into()]),
+                    out: Some("v94".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(3),
+                    out: Some("v95".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "guarded_field_set".into(),
+                    args: Some(vec![
+                        "self".into(),
+                        "v94".into(),
+                        "v95".into(),
+                        "v90".into(),
+                    ]),
+                    s_value: Some("x".into()),
+                    value: Some(0),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(0),
+                    out: Some("v96".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    var: Some("v96".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_stack_set_depth".into(),
+                    args: Some(vec!["v89".into()]),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_stack_exit".into(),
+                    args: Some(vec!["v88".into()]),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["i64".into()]),
+            source_file: None,
+            is_extern: false,
+        };
+
+        let mut tir_func = lower_to_tir(&func_ir);
+        refine_types(&mut tir_func);
+        run_pipeline(&mut tir_func);
+        refine_types(&mut tir_func);
+        let type_map = extract_type_map(&tir_func);
+        let round_tripped = lower_to_simple_ir(&tir_func, &type_map);
+
+        let cache_get_idx = round_tripped
+            .iter()
+            .position(|op| op.kind == "module_cache_get")
+            .expect("module_cache_get must survive TIR roundtrip");
+        let module_get_idx = round_tripped
+            .iter()
+            .position(|op| op.kind == "module_get_attr")
+            .expect("module_get_attr must survive TIR roundtrip");
+        let field_set_idx = round_tripped
+            .iter()
+            .position(|op| op.kind == "guarded_field_set")
+            .expect("guarded_field_set must survive TIR roundtrip");
+
+        assert!(
+            cache_get_idx < module_get_idx && module_get_idx < field_set_idx,
+            "method guarded field set path must preserve class lookup ordering: {round_tripped:?}"
+        );
+
+        let producer_by_out: std::collections::HashMap<String, &OpIR> = round_tripped
+            .iter()
+            .filter_map(|op| op.out.as_ref().map(|out| (out.clone(), op)))
+            .collect();
+
+        let cache_get = &round_tripped[cache_get_idx];
+        let cache_arg = cache_get
+            .args
+            .as_ref()
+            .and_then(|args| args.first())
+            .expect("module_cache_get must keep module-name operand");
+        let cache_arg_op = producer_by_out
+            .get(cache_arg)
+            .expect("module_cache_get operand must come from an op");
+        assert_eq!(cache_arg_op.kind, "const_str");
+        assert_eq!(cache_arg_op.s_value.as_deref(), Some("method_trace"));
+
+        let class_lookup = &round_tripped[module_get_idx];
+        let class_lookup_args = class_lookup
+            .args
+            .as_ref()
+            .expect("module_get_attr must keep operands");
+        assert_eq!(class_lookup_args.len(), 2);
+        assert_eq!(class_lookup_args[0], cache_get.out.clone().unwrap());
+        let class_name_op = producer_by_out
+            .get(&class_lookup_args[1])
+            .expect("module_get_attr class-name operand must come from an op");
+        assert_eq!(class_name_op.kind, "const_str");
+        assert_eq!(class_name_op.s_value.as_deref(), Some("C"));
+
+        let field_set = &round_tripped[field_set_idx];
+        let field_set_args = field_set
+            .args
+            .as_ref()
+            .expect("guarded_field_set must keep operands");
+        assert_eq!(field_set_args.len(), 4);
+        let self_value_op = producer_by_out
+            .get(&field_set_args[0])
+            .expect("guarded_field_set receiver must come from an op");
+        assert_eq!(self_value_op.kind, "copy_var");
+        assert_eq!(self_value_op.var.as_deref(), Some("self"));
+        assert_eq!(field_set_args[1], class_lookup.out.clone().unwrap());
+        let expected_version_op = producer_by_out
+            .get(&field_set_args[2])
+            .expect("guarded_field_set version operand must come from an op");
+        assert_eq!(expected_version_op.kind, "const");
+        assert_eq!(expected_version_op.value, Some(3));
+        let stored_value_op = producer_by_out
+            .get(&field_set_args[3])
+            .expect("guarded_field_set value operand must come from an op");
+        assert_eq!(stored_value_op.kind, "const");
+        assert_eq!(stored_value_op.value, Some(1));
+        assert_eq!(field_set.s_value.as_deref(), Some("x"));
+        assert_eq!(field_set.value, Some(0));
+
+        let set_depth_idx = round_tripped
+            .iter()
+            .position(|op| op.kind == "exception_stack_set_depth")
+            .expect("handler cleanup must preserve exception_stack_set_depth");
+        let exit_idx = round_tripped
+            .iter()
+            .position(|op| op.kind == "exception_stack_exit")
+            .expect("handler cleanup must preserve exception_stack_exit");
+        let set_depth_arg = round_tripped[set_depth_idx]
+            .args
+            .as_ref()
+            .and_then(|args| args.first())
+            .expect("exception_stack_set_depth must keep its operand");
+        let exit_arg = round_tripped[exit_idx]
+            .args
+            .as_ref()
+            .and_then(|args| args.first())
+            .expect("exception_stack_exit must keep its operand");
+        let set_depth_arg_op = producer_by_out
+            .get(set_depth_arg)
+            .expect("exception_stack_set_depth operand must come from a load_var");
+        let exit_arg_op = producer_by_out
+            .get(exit_arg)
+            .expect("exception_stack_exit operand must come from a load_var");
+        assert_eq!(set_depth_arg_op.kind, "load_var");
+        assert_eq!(exit_arg_op.kind, "load_var");
+    }
+
+    #[test]
+    fn tir_round_trip_preserves_object_argument_call_sequence() {
+        use crate::ir::{FunctionIR, OpIR};
+        use crate::tir::lower_from_simple::lower_to_tir;
+        use crate::tir::passes::run_pipeline;
+        use crate::tir::type_refine::{extract_type_map, refine_types};
+
+        let callee_ir = FunctionIR {
+            name: "func_objarg__g".into(),
+            params: vec!["x".into()],
+            ops: vec![
+                OpIR {
+                    kind: "store_var".into(),
+                    var: Some("x".into()),
+                    args: Some(vec!["x".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "line".into(),
+                    value: Some(5),
+                    col_offset: Some(4),
+                    end_col_offset: Some(18),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "type_of".into(),
+                    args: Some(vec!["x".into()]),
+                    out: Some("v99".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "print".into(),
+                    args: Some(vec!["v99".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_none".into(),
+                    out: Some("v100".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    var: Some("v100".into()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["i64".into()]),
+            source_file: None,
+            is_extern: false,
+        };
+
+        let caller_ir = FunctionIR {
+            name: "func_objarg__molt_module_chunk_1".into(),
+            params: vec!["__molt_module_obj__".into()],
+            ops: vec![
+                OpIR {
+                    kind: "line".into(),
+                    value: Some(1),
+                    col_offset: Some(0),
+                    end_col_offset: Some(8),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(100),
+                    out: Some("v63".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "builtin_type".into(),
+                    args: Some(vec!["v63".into()]),
+                    out: Some("v64".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("C".into()),
+                    out: Some("v65".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("C".into()),
+                    out: Some("v66".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("__main__".into()),
+                    out: Some("v67".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(1),
+                    out: Some("v68".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("__name__".into()),
+                    out: Some("v69".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("__qualname__".into()),
+                    out: Some("v70".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("__module__".into()),
+                    out: Some("v71".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("__firstlineno__".into()),
+                    out: Some("v72".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "class_def".into(),
+                    args: Some(vec![
+                        "v65".into(),
+                        "v64".into(),
+                        "v69".into(),
+                        "v65".into(),
+                        "v70".into(),
+                        "v66".into(),
+                        "v71".into(),
+                        "v67".into(),
+                        "v72".into(),
+                        "v68".into(),
+                    ]),
+                    s_value: Some("1,4,8,1,1".into()),
+                    out: Some("v73".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("C".into()),
+                    out: Some("v74".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_set_attr".into(),
+                    args: Some(vec!["__molt_module_obj__".into(), "v74".into(), "v73".into()]),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "line".into(),
+                    value: Some(4),
+                    col_offset: Some(0),
+                    end_col_offset: Some(18),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "func_new".into(),
+                    s_value: Some("func_objarg__g".into()),
+                    value: Some(1),
+                    out: Some("v75".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("g".into()),
+                    out: Some("v76".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "set_attr_generic_obj".into(),
+                    args: Some(vec!["v75".into(), "v76".into()]),
+                    s_value: Some("__name__".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("g".into()),
+                    out: Some("v77".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "set_attr_generic_obj".into(),
+                    args: Some(vec!["v75".into(), "v77".into()]),
+                    s_value: Some("__qualname__".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("func_objarg".into()),
+                    out: Some("v78".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "set_attr_generic_obj".into(),
+                    args: Some(vec!["v75".into(), "v78".into()]),
+                    s_value: Some("__module__".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("x".into()),
+                    out: Some("v79".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "tuple_new".into(),
+                    args: Some(vec!["v79".into()]),
+                    out: Some("v80".into()),
+                    type_hint: Some("tuple".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "set_attr_generic_obj".into(),
+                    args: Some(vec!["v75".into(), "v80".into()]),
+                    s_value: Some("__molt_arg_names__".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(0),
+                    out: Some("v81".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "set_attr_generic_obj".into(),
+                    args: Some(vec!["v75".into(), "v81".into()]),
+                    s_value: Some("__molt_posonly__".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "tuple_new".into(),
+                    args: Some(vec![]),
+                    out: Some("v82".into()),
+                    type_hint: Some("tuple".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "set_attr_generic_obj".into(),
+                    args: Some(vec!["v75".into(), "v82".into()]),
+                    s_value: Some("__molt_kwonly_names__".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_none".into(),
+                    out: Some("v83".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "set_attr_generic_obj".into(),
+                    args: Some(vec!["v75".into(), "v83".into()]),
+                    s_value: Some("__molt_vararg__".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "set_attr_generic_obj".into(),
+                    args: Some(vec!["v75".into(), "v83".into()]),
+                    s_value: Some("__molt_varkw__".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "set_attr_generic_obj".into(),
+                    args: Some(vec!["v75".into(), "v83".into()]),
+                    s_value: Some("__defaults__".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "set_attr_generic_obj".into(),
+                    args: Some(vec!["v75".into(), "v83".into()]),
+                    s_value: Some("__kwdefaults__".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "set_attr_generic_obj".into(),
+                    args: Some(vec!["v75".into(), "v83".into()]),
+                    s_value: Some("__doc__".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("/tmp/func_objarg.py".into()),
+                    out: Some("v88".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(4),
+                    out: Some("v89".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("g".into()),
+                    out: Some("v90".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("x".into()),
+                    out: Some("v92".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "tuple_new".into(),
+                    args: Some(vec!["v92".into()]),
+                    out: Some("v93".into()),
+                    type_hint: Some("tuple".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "code_new".into(),
+                    args: Some(vec![
+                        "v88".into(),
+                        "v90".into(),
+                        "v89".into(),
+                        "v83".into(),
+                        "v93".into(),
+                        "v68".into(),
+                        "v81".into(),
+                        "v81".into(),
+                    ]),
+                    out: Some("v97".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "set_attr_generic_obj".into(),
+                    args: Some(vec!["v75".into(), "v97".into()]),
+                    s_value: Some("__code__".into()),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "code_slot_set".into(),
+                    value: Some(0),
+                    args: Some(vec!["v97".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("g".into()),
+                    out: Some("v98".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_set_attr".into(),
+                    args: Some(vec!["__molt_module_obj__".into(), "v98".into(), "v75".into()]),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "line".into(),
+                    value: Some(7),
+                    col_offset: Some(0),
+                    end_col_offset: Some(7),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("C".into()),
+                    out: Some("v101".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_get_attr".into(),
+                    args: Some(vec!["__molt_module_obj__".into(), "v101".into()]),
+                    out: Some("v102".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "callargs_new".into(),
+                    out: Some("v103".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_bind".into(),
+                    args: Some(vec!["v102".into(), "v103".into()]),
+                    out: Some("v104".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("c".into()),
+                    out: Some("v105".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_set_attr".into(),
+                    args: Some(vec!["__molt_module_obj__".into(), "v105".into(), "v104".into()]),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "line".into(),
+                    value: Some(8),
+                    col_offset: Some(0),
+                    end_col_offset: Some(4),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call".into(),
+                    s_value: Some("func_objarg__g".into()),
+                    args: Some(vec!["v104".into()]),
+                    value: Some(0),
+                    out: Some("v106".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_last".into(),
+                    out: Some("v107".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_none".into(),
+                    out: Some("v108".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_none".into(),
+                    out: Some("v108".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "is".into(),
+                    args: Some(vec!["v107".into(), "v108".into()]),
+                    out: Some("v109".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "not".into(),
+                    args: Some(vec!["v109".into()]),
+                    out: Some("v110".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "if".into(),
+                    args: Some(vec!["v110".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("func_objarg".into()),
+                    out: Some("v111".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_cache_del".into(),
+                    args: Some(vec!["v111".into()]),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("__main__".into()),
+                    out: Some("v112".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_cache_del".into(),
+                    args: Some(vec!["v112".into()]),
+                    out: Some("none".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "end_if".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["i64".into()]),
+            source_file: None,
+            is_extern: false,
+        };
+
+        for func_ir in [callee_ir, caller_ir] {
+            let mut tir_func = lower_to_tir(&func_ir);
+            refine_types(&mut tir_func);
+            run_pipeline(&mut tir_func);
+            refine_types(&mut tir_func);
+            let type_map = extract_type_map(&tir_func);
+            let round_tripped = lower_to_simple_ir(&tir_func, &type_map);
+
+            for op in &round_tripped {
+                assert!(
+                    op.fast_float.is_none(),
+                    "roundtrip must not mark object-arg call path as fast_float: {round_tripped:?}"
+                );
+            }
+
+            if func_ir.name == "func_objarg__g" {
+                let type_of = round_tripped
+                    .iter()
+                    .find(|op| op.kind == "type_of")
+                    .expect("callee must preserve type_of");
+                assert_eq!(type_of.args.as_ref().map(Vec::len), Some(1));
+                let arg_name = type_of.args.as_ref().unwrap()[0].clone();
+                let producer_by_out: std::collections::HashMap<String, &OpIR> = round_tripped
+                    .iter()
+                    .filter_map(|op| op.out.as_ref().map(|out| (out.clone(), op)))
+                    .collect();
+                let arg_op = producer_by_out
+                    .get(&arg_name)
+                    .expect("type_of operand must come from a copy_var");
+                assert_eq!(arg_op.kind, "copy_var");
+                assert_eq!(arg_op.var.as_deref(), Some("x"));
+            } else {
+                let producer_by_out: std::collections::HashMap<String, &OpIR> = round_tripped
+                    .iter()
+                    .filter_map(|op| op.out.as_ref().map(|out| (out.clone(), op)))
+                    .collect();
+                let call = round_tripped
+                    .iter()
+                    .find(|op| op.kind == "call" && op.s_value.as_deref() == Some("func_objarg__g"))
+                    .expect("caller must preserve direct call to func_objarg__g");
+                let call_args = call.args.as_ref().expect("direct call must keep its argument");
+                assert_eq!(call_args.len(), 1);
+                let arg_op = producer_by_out
+                    .get(&call_args[0])
+                    .expect("direct call argument must come from an op");
+                assert_eq!(arg_op.kind, "call_bind");
+                assert_eq!(arg_op.s_value, None);
+            }
+        }
+    }
+
     /// Regression test: counted loops are normalized into loop-carried
     /// store_var/load_var form, and control flow must not re-enter above the
     /// first carrier load after loop_start.
@@ -3752,6 +4681,348 @@ mod tests {
                 .any(|op| matches!(op.kind.as_str(), "label" | "state_label")
                     && op.value == Some(100)),
             "handler target label 100 must remain materialized: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
+        let mut func = TirFunction::new(
+            "emit_guard_raise_path_keeps_cleanup_blocks_after_raise".into(),
+            vec![],
+            TirType::I64,
+        );
+        let raise_block = func.fresh_block();
+        let cleanup_block = func.fresh_block();
+        let raise_value = func.fresh_value();
+        let cleanup_value = func.fresh_value();
+
+        let mut raise_attrs = AttrDict::new();
+        raise_attrs.insert("value".into(), AttrValue::Int(7));
+        func.blocks.insert(
+            raise_block,
+            TirBlock {
+                id: raise_block,
+                args: vec![],
+                ops: vec![
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::ConstInt,
+                        operands: vec![],
+                        results: vec![raise_value],
+                        attrs: raise_attrs,
+                        source_span: None,
+                    },
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::Raise,
+                        operands: vec![raise_value],
+                        results: vec![],
+                        attrs: AttrDict::new(),
+                        source_span: None,
+                    },
+                ],
+                terminator: Terminator::Branch {
+                    target: cleanup_block,
+                    args: vec![],
+                },
+            },
+        );
+
+        let mut cleanup_attrs = AttrDict::new();
+        cleanup_attrs.insert("value".into(), AttrValue::Int(2));
+        func.blocks.insert(
+            cleanup_block,
+            TirBlock {
+                id: cleanup_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![cleanup_value],
+                    attrs: cleanup_attrs,
+                    source_span: None,
+                }],
+                terminator: Terminator::Return {
+                    values: vec![cleanup_value],
+                },
+            },
+        );
+
+        let block_param_vars = HashMap::from([(raise_block, Vec::new()), (cleanup_block, Vec::new())]);
+        let mut out = Vec::new();
+        let labels = HashMap::from([(raise_block, 99_i64), (cleanup_block, 100_i64)]);
+        let block_label_id = |bid: &BlockId| -> i64 { *labels.get(bid).expect("missing test label") };
+
+        emit_guard_raise_path(
+            raise_block,
+            &[],
+            &HashSet::from([raise_block, cleanup_block]),
+            &func,
+            &block_param_vars,
+            &block_label_id,
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut out,
+        );
+
+        assert!(
+            validate_labels(&out),
+            "guard raise path lowering must keep labels reachable after a raise block: {out:?}"
+        );
+        assert!(
+            out.iter()
+                .any(|op| matches!(op.kind.as_str(), "label" | "state_label")
+                    && op.value == Some(100)),
+            "cleanup label 100 must remain materialized after a raise-and-branch chain: {out:?}"
+        );
+    }
+
+    #[test]
+    fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
+        let mut func = TirFunction::new(
+            "loop_guard_raise_chain_keeps_cleanup_handler_label".into(),
+            vec![TirType::Bool, TirType::Bool, TirType::Bool],
+            TirType::I64,
+        );
+
+        let header = func.fresh_block();
+        let guard = func.fresh_block();
+        let cond_block = func.fresh_block();
+        let raise_block = func.fresh_block();
+        let body_block = func.fresh_block();
+        let exit_block = func.fresh_block();
+        let cleanup_block = func.fresh_block();
+        let return_block = func.fresh_block();
+        let continue_block = func.fresh_block();
+
+        let raise_value = func.fresh_value();
+        let exit_value = func.fresh_value();
+        let cleanup_value = func.fresh_value();
+        let return_value = func.fresh_value();
+
+        let mut handler_attrs = AttrDict::new();
+        handler_attrs.insert("value".into(), AttrValue::Int(100));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![],
+            results: vec![],
+            attrs: handler_attrs.clone(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Branch {
+            target: header,
+            args: vec![],
+        };
+
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: guard,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            guard,
+            TirBlock {
+                id: guard,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::CondBranch {
+                    cond: ValueId(0),
+                    then_block: raise_block,
+                    then_args: vec![],
+                    else_block: cond_block,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            cond_block,
+            TirBlock {
+                id: cond_block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::CondBranch {
+                    cond: ValueId(1),
+                    then_block: body_block,
+                    then_args: vec![],
+                    else_block: exit_block,
+                    else_args: vec![],
+                },
+            },
+        );
+
+        let mut raise_attrs = AttrDict::new();
+        raise_attrs.insert("value".into(), AttrValue::Int(7));
+        func.blocks.insert(
+            raise_block,
+            TirBlock {
+                id: raise_block,
+                args: vec![],
+                ops: vec![
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::ConstInt,
+                        operands: vec![],
+                        results: vec![raise_value],
+                        attrs: raise_attrs,
+                        source_span: None,
+                    },
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::Raise,
+                        operands: vec![raise_value],
+                        results: vec![],
+                        attrs: AttrDict::new(),
+                        source_span: None,
+                    },
+                ],
+                terminator: Terminator::Branch {
+                    target: cleanup_block,
+                    args: vec![],
+                },
+            },
+        );
+
+        let mut exit_attrs = AttrDict::new();
+        exit_attrs.insert("value".into(), AttrValue::Int(0));
+        func.blocks.insert(
+            exit_block,
+            TirBlock {
+                id: exit_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![exit_value],
+                    attrs: exit_attrs,
+                    source_span: None,
+                }],
+                terminator: Terminator::Return {
+                    values: vec![exit_value],
+                },
+            },
+        );
+
+        func.blocks.insert(
+            body_block,
+            TirBlock {
+                id: body_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::CheckException,
+                    operands: vec![],
+                    results: vec![],
+                    attrs: handler_attrs.clone(),
+                    source_span: None,
+                }],
+                terminator: Terminator::CondBranch {
+                    cond: ValueId(2),
+                    then_block: return_block,
+                    then_args: vec![],
+                    else_block: continue_block,
+                    else_args: vec![],
+                },
+            },
+        );
+
+        let mut return_attrs = AttrDict::new();
+        return_attrs.insert("value".into(), AttrValue::Int(1));
+        func.blocks.insert(
+            return_block,
+            TirBlock {
+                id: return_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![return_value],
+                    attrs: return_attrs,
+                    source_span: None,
+                }],
+                terminator: Terminator::Return {
+                    values: vec![return_value],
+                },
+            },
+        );
+
+        func.blocks.insert(
+            continue_block,
+            TirBlock {
+                id: continue_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::CheckException,
+                    operands: vec![],
+                    results: vec![],
+                    attrs: handler_attrs.clone(),
+                    source_span: None,
+                }],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            },
+        );
+
+        let mut cleanup_attrs = AttrDict::new();
+        cleanup_attrs.insert("value".into(), AttrValue::Int(2));
+        func.blocks.insert(
+            cleanup_block,
+            TirBlock {
+                id: cleanup_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![cleanup_value],
+                    attrs: cleanup_attrs,
+                    source_span: None,
+                }],
+                terminator: Terminator::Return {
+                    values: vec![cleanup_value],
+                },
+            },
+        );
+
+        func.has_exception_handling = true;
+        func.label_id_map.insert(cleanup_block.0, 100);
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.loop_break_kinds
+            .insert(header, LoopBreakKind::BreakIfFalse);
+        func.loop_cond_blocks.insert(header, cond_block);
+
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+
+        assert!(
+            validate_labels(&ops),
+            "guard raise cleanup handler labels must survive structured loop lowering: {ops:?}"
+        );
+        assert!(
+            ops.iter()
+                .any(|op| op.kind == "check_exception" && op.value == Some(100)),
+            "check_exception must keep targeting handler label 100: {ops:?}"
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op.kind.as_str(), "label" | "state_label")
+                    && op.value == Some(100)),
+            "cleanup handler label 100 must remain materialized: {ops:?}"
         );
     }
 }
