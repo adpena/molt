@@ -48,8 +48,7 @@ def _reduce_combine(op, acc, val):
 
 def _read_buf(buf, i):
     """Read element i from a Buffer."""
-    fmt = 'd' if buf.element_type == float else 'q'
-    return struct.unpack_from(fmt, buf._data, i * 8)[0]
+    return struct.unpack_from(buf.format_char, buf._data, i * buf.itemsize)[0]
 
 
 # ── Fused two-stage operations ────────────────────────────────────────
@@ -146,8 +145,7 @@ def fused_map_filter(map_fn, pred, buf):
         result = fused_map_filter(lambda x: x * x, lambda x: x > 100, data)
     """
     n = buf.size
-    fmt = 'd' if buf.element_type == float else 'q'
-    out_fmt = fmt
+    out_fmt = buf.format_char
 
     selected = []
     for i in range(n):
@@ -157,12 +155,12 @@ def fused_map_filter(map_fn, pred, buf):
             selected.append(mapped)
 
     if not selected:
-        return alloc(0, buf.element_type)
+        return alloc(0, buf.element_type, format_char=buf.format_char)
 
-    result = alloc(len(selected), buf.element_type)
+    result = alloc(len(selected), buf.element_type, format_char=buf.format_char)
     result._data = bytearray(result._data)
     for i, val in enumerate(selected):
-        struct.pack_into(out_fmt, result._data, i * 8, val)
+        struct.pack_into(out_fmt, result._data, i * result.itemsize, val)
     result._size = len(selected)
     return result
 
@@ -325,7 +323,7 @@ class FusedPipeline:
             for op_type, *_ in self._ops:
                 if op_type == 'reduce':
                     return _REDUCE_INIT.get(_[0] if _ else 'sum', 0.0)
-            return alloc(0, self._input.element_type)
+            return alloc(0, self._input.element_type, format_char=self._input.format_char)
 
         # Separate ops into stages
         transforms = []  # (type, func) pairs for map/filter
@@ -371,7 +369,6 @@ class FusedPipeline:
         else:
             # No reduce terminal — produce a buffer
             # Single pass: apply all map/filter in order
-            fmt = 'd' if self._input.element_type == float else 'q'
             selected = []
 
             for i in range(n):
@@ -390,11 +387,11 @@ class FusedPipeline:
                     selected.append(val)
 
             if not selected:
-                return alloc(0, self._input.element_type)
+                return alloc(0, self._input.element_type, format_char=self._input.format_char)
 
-            result = alloc(len(selected), self._input.element_type)
+            result = alloc(len(selected), self._input.element_type, format_char=self._input.format_char)
             result._data = bytearray(result._data)
             for i, val in enumerate(selected):
-                struct.pack_into(fmt, result._data, i * 8, val)
+                struct.pack_into(result.format_char, result._data, i * result.itemsize, val)
             result._size = len(selected)
             return result

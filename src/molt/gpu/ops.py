@@ -30,17 +30,18 @@ def map(func, buf: Buffer, dtype: type = None) -> Buffer:
     """
     dtype = dtype or buf.element_type
     n = buf.size
-    result = alloc(n, dtype)
+    result_format = buf.format_char if dtype == float and buf.element_type == float else None
+    result = alloc(n, dtype, format_char=result_format)
 
     # Interpreted fallback: apply element-wise on CPU
-    fmt = 'd' if buf.element_type == float else 'q'
-    out_fmt = 'd' if dtype == float else 'q'
+    fmt = buf.format_char
+    out_fmt = result.format_char
     for i in range(n):
-        val = struct.unpack_from(fmt, buf._data, i * 8)[0]
+        val = struct.unpack_from(fmt, buf._data, i * buf.itemsize)[0]
         out_val = func(val)
         if isinstance(result._data, bytes):
             result._data = bytearray(result._data)
-        struct.pack_into(out_fmt, result._data, i * 8, out_val)
+        struct.pack_into(out_fmt, result._data, i * result.itemsize, out_val)
 
     return result
 
@@ -58,8 +59,8 @@ def reduce(buf: Buffer, op: str = 'sum', initial=None):
     if n == 0:
         return initial if initial is not None else 0
 
-    fmt = 'd' if buf.element_type == float else 'q'
-    values = [struct.unpack_from(fmt, buf._data, i * 8)[0] for i in range(n)]
+    fmt = buf.format_char
+    values = [struct.unpack_from(fmt, buf._data, i * buf.itemsize)[0] for i in range(n)]
 
     if op == 'sum':
         return sum(values) if initial is None else sum(values, initial)
@@ -84,20 +85,20 @@ def filter(pred, buf: Buffer) -> Buffer:
     Example:
         positives = gpu.ops.filter(lambda x: x > 0, data)
     """
-    fmt = 'd' if buf.element_type == float else 'q'
+    fmt = buf.format_char
     selected = []
     for i in range(buf.size):
-        val = struct.unpack_from(fmt, buf._data, i * 8)[0]
+        val = struct.unpack_from(fmt, buf._data, i * buf.itemsize)[0]
         if pred(val):
             selected.append(val)
 
     if not selected:
-        return alloc(0, buf.element_type)
+        return alloc(0, buf.element_type, format_char=buf.format_char)
 
-    result = alloc(len(selected), buf.element_type)
+    result = alloc(len(selected), buf.element_type, format_char=buf.format_char)
     result._data = bytearray(result._data)
     for i, val in enumerate(selected):
-        struct.pack_into(fmt, result._data, i * 8, val)
+        struct.pack_into(fmt, result._data, i * result.itemsize, val)
     result._size = len(selected)
     return result
 
@@ -112,10 +113,10 @@ def scan(buf: Buffer, op: str = 'sum', exclusive: bool = False) -> Buffer:
     """
     n = buf.size
     if n == 0:
-        return alloc(0, buf.element_type)
+        return alloc(0, buf.element_type, format_char=buf.format_char)
 
-    fmt = 'd' if buf.element_type == float else 'q'
-    values = [struct.unpack_from(fmt, buf._data, i * 8)[0] for i in range(n)]
+    fmt = buf.format_char
+    values = [struct.unpack_from(fmt, buf._data, i * buf.itemsize)[0] for i in range(n)]
 
     # Use type-appropriate identity values so they can be packed into the buffer's format.
     # For int buffers, float('inf') cannot be packed as 'q'; use 2**62 instead.
@@ -142,10 +143,10 @@ def scan(buf: Buffer, op: str = 'sum', exclusive: bool = False) -> Buffer:
             acc = fn(acc, v)
             result_vals.append(acc)
 
-    result = alloc(n, buf.element_type)
+    result = alloc(n, buf.element_type, format_char=buf.format_char)
     result._data = bytearray(result._data)
     for i, val in enumerate(result_vals):
-        struct.pack_into(fmt, result._data, i * 8, val if isinstance(val, (int, float)) else float(val))
+        struct.pack_into(fmt, result._data, i * result.itemsize, val if isinstance(val, (int, float)) else float(val))
 
     return result
 
@@ -157,17 +158,17 @@ def gather(buf: Buffer, indices: Buffer) -> Buffer:
         selected = gpu.ops.gather(data, index_buf)
     """
     n = indices.size
-    result = alloc(n, buf.element_type)
+    result = alloc(n, buf.element_type, format_char=buf.format_char)
     result._data = bytearray(result._data)
-    val_fmt = 'd' if buf.element_type == float else 'q'
-    idx_fmt = 'q'  # indices are always int
+    val_fmt = buf.format_char
+    idx_fmt = indices.format_char
 
     for i in range(n):
-        idx = struct.unpack_from(idx_fmt, indices._data, i * 8)[0]
+        idx = struct.unpack_from(idx_fmt, indices._data, i * indices.itemsize)[0]
         if idx < 0 or idx >= buf.size:
             raise IndexError(f"gather index {idx} out of range [0, {buf.size})")
-        val = struct.unpack_from(val_fmt, buf._data, idx * 8)[0]
-        struct.pack_into(val_fmt, result._data, i * 8, val)
+        val = struct.unpack_from(val_fmt, buf._data, idx * buf.itemsize)[0]
+        struct.pack_into(val_fmt, result._data, i * result.itemsize, val)
 
     return result
 
@@ -178,18 +179,18 @@ def scatter(buf: Buffer, indices: Buffer, values: Buffer) -> Buffer:
     Example:
         updated = gpu.ops.scatter(data, index_buf, new_values)
     """
-    result = alloc(buf.size, buf.element_type)
+    result = alloc(buf.size, buf.element_type, format_char=buf.format_char)
     result._data = bytearray(buf._data)  # copy source
-    val_fmt = 'd' if buf.element_type == float else 'q'
-    idx_fmt = 'q'
+    val_fmt = values.format_char if values.element_type == buf.element_type else buf.format_char
+    idx_fmt = indices.format_char
 
     n = min(indices.size, values.size)
     for i in range(n):
-        idx = struct.unpack_from(idx_fmt, indices._data, i * 8)[0]
+        idx = struct.unpack_from(idx_fmt, indices._data, i * indices.itemsize)[0]
         if idx < 0 or idx >= buf.size:
             raise IndexError(f"scatter index {idx} out of range [0, {buf.size})")
-        val = struct.unpack_from(val_fmt, values._data, i * 8)[0]
-        struct.pack_into(val_fmt, result._data, idx * 8, val)
+        val = struct.unpack_from(val_fmt, values._data, i * values.itemsize)[0]
+        struct.pack_into(result.format_char, result._data, idx * result.itemsize, val)
 
     return result
 
@@ -204,15 +205,16 @@ def where(cond: Buffer, a: Buffer, b: Buffer) -> Buffer:
         result = gpu.ops.where(mask, data_a, data_b)
     """
     n = min(cond.size, a.size, b.size)
-    result = alloc(n, a.element_type)
+    result = alloc(n, a.element_type, format_char=a.format_char)
     result._data = bytearray(result._data)
-    cond_fmt = 'q'  # condition as int (0 = false, nonzero = true)
-    val_fmt = 'd' if a.element_type == float else 'q'
+    cond_fmt = cond.format_char
+    val_fmt = a.format_char
 
     for i in range(n):
-        c = struct.unpack_from(cond_fmt, cond._data, i * 8)[0]
-        val = struct.unpack_from(val_fmt, (a if c else b)._data, i * 8)[0]
-        struct.pack_into(val_fmt, result._data, i * 8, val)
+        c = struct.unpack_from(cond_fmt, cond._data, i * cond.itemsize)[0]
+        src = a if c else b
+        val = struct.unpack_from(src.format_char, src._data, i * src.itemsize)[0]
+        struct.pack_into(result.format_char, result._data, i * result.itemsize, val)
 
     return result
 
@@ -265,11 +267,11 @@ def dot(a: Buffer, b: Buffer) -> float:
         result = gpu.ops.dot(vec_a, vec_b)
     """
     n = min(a.size, b.size)
-    fmt = 'd' if a.element_type == float else 'q'
+    fmt = a.format_char
     total = 0.0
     for i in range(n):
-        va = struct.unpack_from(fmt, a._data, i * 8)[0]
-        vb = struct.unpack_from(fmt, b._data, i * 8)[0]
+        va = struct.unpack_from(fmt, a._data, i * a.itemsize)[0]
+        vb = struct.unpack_from(b.format_char, b._data, i * b.itemsize)[0]
         total += va * vb
     return total
 
@@ -281,8 +283,8 @@ def norm(buf: Buffer, ord: int = 2) -> float:
     ord=2: L2 norm (Euclidean distance)
     ord=inf: Linf norm (max absolute value)
     """
-    fmt = 'd' if buf.element_type == float else 'q'
-    values = [struct.unpack_from(fmt, buf._data, i * 8)[0] for i in range(buf.size)]
+    fmt = buf.format_char
+    values = [struct.unpack_from(fmt, buf._data, i * buf.itemsize)[0] for i in range(buf.size)]
 
     if ord == 1:
         return sum(abs(v) for v in values)
