@@ -138,6 +138,7 @@ fn trace_callargs_emits_builder_lifecycle_logs() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("[molt callargs] new"));
     assert!(stderr.contains("[molt callargs] push_pos"));
+    assert!(stderr.contains("[molt callargs] free"));
 }
 
 #[test]

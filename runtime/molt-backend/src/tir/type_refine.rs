@@ -442,6 +442,7 @@ mod tests {
             loop_roles: HashMap::new(),
             loop_pairs: HashMap::new(),
             loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
         }
     }
 
@@ -670,6 +671,7 @@ mod tests {
             loop_roles: HashMap::new(),
             loop_pairs: HashMap::new(),
             loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
         };
 
         let refined = refine_types(&mut func);
@@ -775,6 +777,7 @@ mod tests {
             loop_roles: HashMap::new(),
             loop_pairs: HashMap::new(),
             loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
         };
 
         let refined = refine_types(&mut func);
@@ -859,6 +862,7 @@ mod tests {
             loop_roles: HashMap::new(),
             loop_pairs: HashMap::new(),
             loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
         };
         let refined = refine_types(&mut func);
         assert_eq!(refined, 0);

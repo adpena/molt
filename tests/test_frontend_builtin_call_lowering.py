@@ -147,6 +147,56 @@ def test_chunked_stdlib_intrinsics_value_binding_uses_runtime_require_intrinsic(
     )
 
 
+def test_module_chunking_starts_new_chunk_before_large_top_level_statement() -> None:
+    source = (
+        "seed = 0\n"
+        "limit = 1\n"
+        "if seed:\n"
+        + "".join(f"    limit = limit + {i}\n" for i in range(60))
+        + "else:\n"
+        "    limit = limit + 1\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="chunk_probe",
+        module_chunking=True,
+        module_chunk_max_ops=120,
+    )
+    gen.visit(ast.parse(source))
+
+    assert len(gen.module_chunk_symbols) >= 2
+    first_chunk = gen.funcs_map[gen.module_chunk_symbols[0]]["ops"]
+    second_chunk = gen.funcs_map[gen.module_chunk_symbols[1]]["ops"]
+
+    assert len(first_chunk) < 120
+    assert [3] not in [op.args for op in first_chunk if op.kind == "LINE"]
+    assert [3] in [op.args for op in second_chunk if op.kind == "LINE"]
+
+
+def test_module_chunking_starts_new_chunk_before_large_multiline_assignment() -> None:
+    entries = "".join(f"    {i}: {i},\n" for i in range(80))
+    source = (
+        "seed = 0\n"
+        "limit = 1\n"
+        "table = {\n"
+        f"{entries}"
+        "}\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="chunk_probe_assign",
+        module_chunking=True,
+        module_chunk_max_ops=120,
+    )
+    gen.visit(ast.parse(source))
+
+    assert len(gen.module_chunk_symbols) >= 2
+    first_chunk = gen.funcs_map[gen.module_chunk_symbols[0]]["ops"]
+    second_chunk = gen.funcs_map[gen.module_chunk_symbols[1]]["ops"]
+
+    assert len(first_chunk) < 120
+    assert [3] not in [op.args for op in first_chunk if op.kind == "LINE"]
+    assert [3] in [op.args for op in second_chunk if op.kind == "LINE"]
+
+
 def test_non_phi_or_with_call_avoids_list_cell_result_plumbing() -> None:
     source = (
         "def left():\n"

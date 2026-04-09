@@ -7811,23 +7811,18 @@ def _lock_check_cache_path_cached(
     project_root_str: str,
     name: str,
     cargo_target_override: str | None,
+    cwd_str: str,
     session_id: str | None = None,
 ) -> Path:
     # The lock-check cache can grow (especially for Cargo metadata inputs).
     # Keep it colocated with Cargo build outputs when CARGO_TARGET_DIR is set so
     # developers can move all large artifacts onto an external volume.
-    project_root = Path(project_root_str)
-    if cargo_target_override:
-        target_dir = Path(cargo_target_override)
-        if not target_dir.is_absolute():
-            target_dir = project_root / target_dir
-    elif session_id is not None:
-        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[
-            :32
-        ]
-        target_dir = project_root / f"target-{safe_id}"
-    else:
-        target_dir = project_root / "target"
+    target_dir = _cargo_target_root_cached(
+        project_root_str,
+        cargo_target_override,
+        cwd_str,
+        session_id,
+    )
     return target_dir / "lock_checks" / f"{name}.json"
 
 
@@ -7836,6 +7831,7 @@ def _lock_check_cache_path(project_root: Path, name: str) -> Path:
         os.fspath(project_root),
         name,
         os.environ.get("CARGO_TARGET_DIR"),
+        os.fspath(Path.cwd()),
         _molt_session_id(),
     )
 
@@ -9904,19 +9900,22 @@ def _molt_session_id() -> str | None:
     return os.environ.get("MOLT_SESSION_ID")
 
 
+def _session_artifact_component(session_id: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[:32]
+
+
 def _session_target_dir(project_root: Path) -> Path | None:
     """Return a per-session CARGO_TARGET_DIR, or None for default.
 
-    When MOLT_SESSION_ID is set, returns project_root/target-<session_id>.
-    This gives each session its own cargo build directory, eliminating
-    lock contention between concurrent builds.
+    When MOLT_SESSION_ID is set, returns
+    project_root/target/sessions/<session_id>.
+    This keeps session-isolated Cargo output under the canonical target root
+    while still eliminating lock contention between concurrent builds.
     """
     sid = _molt_session_id()
     if sid is None:
         return None
-    # Sanitize session ID for filesystem use
-    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in sid)[:32]
-    return project_root / f"target-{safe_id}"
+    return project_root / "target" / "sessions" / _session_artifact_component(sid)
 
 
 def _backend_daemon_socket_dir(project_root: Path) -> Path:
@@ -10133,13 +10132,9 @@ def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
             candidate = candidate.parent
         else:
             candidate = backend_bin.parent.parent.parent  # fallback
-        # Check per-session target dir first, then CARGO_TARGET_DIR, then default
-        _session_tgt = _session_target_dir(candidate)
-        target_root = Path(
-            str(_session_tgt)
-            if _session_tgt is not None
-            else os.environ.get("CARGO_TARGET_DIR", str(candidate / "target"))
-        )
+        # Resolve the runtime artifact root through the canonical cargo-target
+        # resolver so explicit CARGO_TARGET_DIR always wins over session fallback.
+        target_root = _cargo_target_root(candidate)
         for profile_dir in ("release", "release-fast", "debug"):
             runtime_lib = target_root / profile_dir / "libmolt_runtime.a"
             try:
@@ -10834,13 +10829,12 @@ def _start_backend_daemon(
                         *_profile_flag,
                     ]
                     _rebuild_cmd.extend(["--features", "native-backend"])
-                    # Per-session build isolation: use a separate
-                    # CARGO_TARGET_DIR when MOLT_SESSION_ID is set.
-                    _rebuild_env = None
-                    _session_dir = _session_target_dir(project_root)
-                    if _session_dir is not None:
-                        _rebuild_env = os.environ.copy()
-                        _rebuild_env["CARGO_TARGET_DIR"] = str(_session_dir)
+                    # Always route the rebuild through the canonical cargo
+                    # target resolver so read/write paths stay aligned.
+                    _rebuild_env = os.environ.copy()
+                    _rebuild_env["CARGO_TARGET_DIR"] = str(
+                        _cargo_target_root(project_root)
+                    )
                     with _build_slot() as _slot:
                         _rebuild = subprocess.run(
                             _rebuild_cmd,
@@ -14086,14 +14080,9 @@ def _invalidate_stale_stdlib_cache(
     else:
         _root = candidate
 
-    # Use session-specific target dir when MOLT_SESSION_ID is active,
-    # falling back to CARGO_TARGET_DIR, then the default target/.
-    _session_tgt_stdlib = _session_target_dir(_root)
-    target_root = Path(
-        str(_session_tgt_stdlib)
-        if _session_tgt_stdlib is not None
-        else os.environ.get("CARGO_TARGET_DIR", str(_root / "target"))
-    )
+    # Resolve the artifact root through the canonical cargo-target resolver so
+    # explicit CARGO_TARGET_DIR remains authoritative across stale-cache checks.
+    target_root = _cargo_target_root(_root)
 
     # Check backend binary and runtime library across all profile dirs.
     for profile_dir in ("release", "release-fast", "debug"):
@@ -20489,18 +20478,25 @@ def _ensure_backend_binary(
         # steps depend on.  Only remove the specific artifact caches.
         import shutil
 
+        _cache_root = _default_molt_cache()
         for cache_dir in [
             project_root / ".molt_cache",
             Path.home() / "Library" / "Caches" / "molt" / "home" / "bin",
         ]:
             if cache_dir.is_dir():
+                # If the project-local cache root is also the active shared
+                # cache root, keep it intact here and let the selective purge
+                # below remove only stale artifacts.  A full rmtree here would
+                # delete stdlib_shared_* artifacts before the preservation
+                # pass can see them.
+                if cache_dir == _cache_root:
+                    continue
                 shutil.rmtree(cache_dir, ignore_errors=True)
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 if not json_output:
                     print(f"  Cleared stale cache: {cache_dir}", file=sys.stderr)
         # Remove cached .o and .wasm artifacts from the cache root without
         # destroying the directory tree (home/build/*, home/bin/, etc.).
-        _cache_root = _default_molt_cache()
         if _cache_root.is_dir():
             for _cached_file in _cache_root.iterdir():
                 # Preserve keyed shared stdlib caches and their sidecars —
@@ -20533,12 +20529,11 @@ def _ensure_backend_binary(
             cmd.append("--no-default-features")
             cmd.extend(["--features", ",".join(backend_features)])
         build_env = os.environ.copy()
-        # Per-session build isolation: route cargo output to target-<id>/
+        # Per-session build isolation: route cargo output to
+        # target/sessions/<id>/ under the canonical target root
         # when MOLT_SESSION_ID is active to prevent concurrent agents from
         # clobbering each other's backend artifacts.
-        _session_tgt_backend = _session_target_dir(project_root)
-        if _session_tgt_backend is not None and "CARGO_TARGET_DIR" not in os.environ:
-            build_env["CARGO_TARGET_DIR"] = str(_session_tgt_backend)
+        build_env["CARGO_TARGET_DIR"] = str(_cargo_target_root(project_root))
         # When building with the LLVM feature, ensure the pinned llvm-sys
         # prefix env var points at the matching Homebrew install so
         # inkwell/llvm-sys can link without extra shell setup.
@@ -20813,12 +20808,11 @@ def _ensure_runtime_lib(
         if target_triple:
             cmd.extend(["--target", target_triple])
         build_env = os.environ.copy()
-        # Per-session build isolation: route cargo output to target-<id>/
+        # Per-session build isolation: route cargo output to
+        # target/sessions/<id>/ under the canonical target root
         # when MOLT_SESSION_ID is active to prevent concurrent agents from
         # clobbering each other's runtime artifacts.
-        _session_tgt_runtime = _session_target_dir(project_root)
-        if _session_tgt_runtime is not None and "CARGO_TARGET_DIR" not in os.environ:
-            build_env["CARGO_TARGET_DIR"] = str(_session_tgt_runtime)
+        build_env["CARGO_TARGET_DIR"] = str(_cargo_target_root(project_root))
         _maybe_enable_sccache(build_env)
         try:
             with _build_slot() as _slot:
@@ -20932,8 +20926,7 @@ def _run_runtime_wasm_cargo_build(
         target_root = _cargo_target_root(root)
     # Always propagate target_root to CARGO_TARGET_DIR so cargo builds
     # into the same directory the artifact lookup will check. Without
-    # this, MOLT_SESSION_ID causes a mismatch: we look in target-{id}/
-    # but cargo writes to target/.
+    # this, explicit and session-aware target resolution can drift apart.
     build_env["CARGO_TARGET_DIR"] = str(target_root)
     if artifact_kind == "staticlib":
         staticlib = _wasm_runtime_staticlib_path(target_root, profile_dir)
@@ -21777,14 +21770,16 @@ def _cargo_target_root_cached(
     project_root = Path(project_root_str)
     if not cargo_target_override:
         # When MOLT_SESSION_ID is active and no explicit CARGO_TARGET_DIR is
-        # set, each session builds into its own target-<id>/ directory.  This
-        # prevents concurrent agents from clobbering each other's cargo
-        # artifacts (lock contention, binary deletion mid-test, etc.).
+        # set, each session builds into target/sessions/<id>/.  This preserves
+        # canonical target-root layout while preventing concurrent agents from
+        # clobbering each other's cargo artifacts.
         if session_id is not None:
-            safe_id = "".join(
-                c if c.isalnum() or c in "-_" else "_" for c in session_id
-            )[:32]
-            return project_root / f"target-{safe_id}"
+            return (
+                project_root
+                / "target"
+                / "sessions"
+                / _session_artifact_component(session_id)
+            )
         return project_root / "target"
     path = Path(cargo_target_override).expanduser()
     if not path.is_absolute():
@@ -28393,11 +28388,16 @@ def clean(
             root / "logs",
             root / "dist",
             root / "build",
+            root / "tmp",
+            root / ".uv-cache",
+            root / ".molt_cache",
             root / ".pytest_cache",
             root / ".ruff_cache",
             root / ".mypy_cache",
             root / "__pycache__",
         ]
+        repo_dirs.extend(sorted(root.glob(".molt_cache-*")))
+        repo_dirs.extend(sorted(root.glob(".uv-cache-*")))
         for path in repo_dirs:
             _remove_path(path)
         for path in _iter_pycache_dirs(root):
@@ -28411,8 +28411,9 @@ def clean(
         for path in repo_files:
             _remove_path(path)
     if cargo_target:
-        cargo_root = root / "target"
-        _remove_path(cargo_root)
+        cargo_paths = [root / "target", *sorted(root.glob("target-*"))]
+        for path in cargo_paths:
+            _remove_path(path)
     if json_output:
         data: dict[str, Any] = {"removed": removed}
         if verbose:

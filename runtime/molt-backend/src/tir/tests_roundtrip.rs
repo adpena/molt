@@ -154,6 +154,102 @@ mod tests {
         assert!(!result.is_empty());
     }
 
+    #[test]
+    fn roundtrip_iter_loop_with_inner_return_keeps_post_loop_control() {
+        let ops = vec![
+            op_out("missing", "v86"),
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("v".to_string()),
+                args: Some(vec!["v86".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "iter".to_string(),
+                args: Some(vec!["xs".to_string()]),
+                out: Some("it".to_string()),
+                ..OpIR::default()
+            },
+            op_out("const_none", "none0"),
+            OpIR {
+                kind: "is".to_string(),
+                args: Some(vec!["it".to_string(), "none0".to_string()]),
+                out: Some("not_iterable".to_string()),
+                ..OpIR::default()
+            },
+            op_args("if", &["not_iterable"]),
+            op_out("const_str", "msg"),
+            op_out("const_str", "etype"),
+            op_out_args("tuple_new", "emsg", &["msg"]),
+            op_out_args("exception_new", "exc", &["etype", "emsg"]),
+            op_args("raise", &["exc"]),
+            op("end_if"),
+            op_out("const", "idx0"),
+            op_out("const", "idx1"),
+            op_out("const_bool", "ret_true"),
+            op("loop_start"),
+            OpIR {
+                kind: "iter_next".to_string(),
+                args: Some(vec!["it".to_string()]),
+                out: Some("pair".to_string()),
+                ..OpIR::default()
+            },
+            op_out_args("index", "done", &["pair", "idx1"]),
+            op_args("loop_break_if_true", &["done"]),
+            op_out_args("index", "elem", &["pair", "idx0"]),
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("v".to_string()),
+                args: Some(vec!["elem".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "load_var".to_string(),
+                var: Some("v".to_string()),
+                out: Some("cur".to_string()),
+                ..OpIR::default()
+            },
+            op_out_args("eq", "cmp", &["cur", "value"]),
+            op_args("if", &["cmp"]),
+            OpIR {
+                kind: "ret".to_string(),
+                var: Some("ret_true".to_string()),
+                ..OpIR::default()
+            },
+            op("end_if"),
+            op("loop_continue"),
+            op("loop_end"),
+            op_out("const_bool", "ret_false"),
+            OpIR {
+                kind: "ret".to_string(),
+                var: Some("ret_false".to_string()),
+                ..OpIR::default()
+            },
+        ];
+        let ir = FunctionIR {
+            name: "loop_if_return_continue_roundtrip".to_string(),
+            params: vec!["xs".to_string(), "value".to_string()],
+            ops,
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let mut tir = lower_to_tir(&ir);
+        refine_types(&mut tir);
+        let _stats = run_pipeline(&mut tir);
+        assert!(verify_function(&tir).is_ok(), "TIR verification failed");
+        let type_map = extract_type_map(&tir);
+        let result = lower_to_simple_ir(&tir, &type_map);
+
+        let ret_count = result.iter().filter(|op| op.kind == "ret").count();
+        assert_eq!(ret_count, 2, "both return paths must survive roundtrip: {result:?}");
+        assert!(
+            result.iter().any(|op| op.kind == "loop_end"),
+            "loop must keep its loop_end marker: {result:?}"
+        );
+    }
+
     // ---------------------------------------------------------------------------
     // Test 5: Multiple return paths
     // ---------------------------------------------------------------------------

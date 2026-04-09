@@ -1133,18 +1133,21 @@ impl<'a> SsaContext<'a> {
                 if (kind == "ret" || kind == "return")
                     && let Some(op) = last_op
                 {
-                    // The frontend emits `ret` with the return value in
-                    // `op.var` (not `op.args`).  Check both locations so
-                    // the return value is never silently dropped.
-                    let mut candidates: Vec<&String> = Vec::new();
-                    if let Some(ref v) = op.var {
-                        candidates.push(v);
-                    }
-                    if let Some(ref args) = op.args {
-                        for a in args {
-                            candidates.push(a);
-                        }
-                    }
+                    // Canonical ret surface:
+                    // - multi-value returns use `op.args`
+                    // - single-value returns may carry the value in `op.var`
+                    //   and/or redundantly in `op.args`
+                    //
+                    // Treat `op.args` as authoritative when present; only
+                    // fall back to `op.var` when args are absent. Otherwise
+                    // the roundtrip path duplicates the first return value.
+                    let candidates: Vec<&String> = if let Some(ref args) = op.args {
+                        args.iter().collect()
+                    } else if let Some(ref v) = op.var {
+                        vec![v]
+                    } else {
+                        Vec::new()
+                    };
                     for a in candidates {
                         if is_variable(a)
                             && let Some(vid) = self.resolve_known_var(a, var_stacks)

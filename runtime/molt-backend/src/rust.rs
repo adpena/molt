@@ -2563,6 +2563,20 @@ impl RustBackend {
                     }
                 }
             }
+            "class_merge_layout" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let class_obj = rust_ident(&args[0]);
+                    let offsets = rust_clone(&args[1]);
+                    let size = rust_clone(&args[2]);
+                    if is_assignable_var(&class_obj) {
+                        self.emit_line(&format!(
+                            "molt_class_merge_layout(&mut {class_obj}, {offsets}, {size});"
+                        ));
+                        self.emit_alias_writeback(&class_obj);
+                    }
+                }
+            }
             "class_apply_set_name"
             | "class_layout_version"
             | "class_layout_field_count"
