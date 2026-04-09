@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 import pytest
+import molt.cli as cli
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,14 +37,22 @@ _STARTUP_TIMEOUT_S = 10.0
 
 
 def _candidate_daemon_binaries() -> list[Path]:
-    """Return existing molt-backend binaries in priority order."""
-    target = ROOT / "target"
-    candidates = [
-        target / "release-fast" / "molt-backend",
-        target / "release" / "molt-backend",
-        target / "debug" / "molt-backend",
-    ]
-    return [p for p in candidates if p.is_file()]
+    """Return the canonical native daemon binary in priority order."""
+    profile = "dev-fast"
+    path = cli._backend_bin_path(ROOT, profile, ("native-backend",))
+    try:
+        if cli._ensure_backend_binary(
+            path,
+            cargo_timeout=180.0,
+            json_output=True,
+            cargo_profile=profile,
+            project_root=ROOT,
+            backend_features=("native-backend",),
+        ):
+            return [path]
+    except Exception:
+        return []
+    return []
 
 
 def _daemon_binary() -> Path | None:
