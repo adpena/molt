@@ -7,7 +7,7 @@ import codecs
 from collections import deque
 import copy
 import contextlib
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 import errno
 import datetime as dt
 import functools
@@ -161,6 +161,7 @@ _BACKEND_REQUEST_ENV_KNOBS = (
     "MOLT_TIR_OPT",
     "MOLT_DISABLE_DEAD_FUNC_ELIM",
     "MOLT_BACKEND_BATCH_SIZE",
+    "MOLT_BACKEND_BATCH_OP_BUDGET",
     "MOLT_MAX_FUNCTION_OPS",
     "MOLT_DISABLE_RC_COALESCING",
     "TIR_DUMP",
@@ -1205,6 +1206,7 @@ class _RuntimeArtifactState:
     runtime_reloc_wasm: Path | None = None
     runtime_wasm_ready: bool = False
     runtime_reloc_wasm_ready: bool = False
+    runtime_lib_ready_future: Future[bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -9940,10 +9942,20 @@ def _backend_daemon_paths_cached(
 ) -> tuple[Path, Path, Path]:
     project_root = Path(project_root_str)
     build_state_root = Path(build_state_root_str)
+    session_id = session_id.strip()
+
+    def _sidecar_label(raw: str) -> str:
+        cleaned = _OUTPUT_BASE_SAFE_RE.sub("-", raw).strip("._-")
+        return cleaned[:32]
+
     if explicit_socket:
         socket_path = Path(explicit_socket).expanduser()
         if not socket_path.is_absolute():
             socket_path = (project_root / socket_path).absolute()
+        sidecar_suffix = hashlib.sha256(
+            os.fspath(socket_path).encode("utf-8")
+        ).hexdigest()[:16]
+        sidecar_label = ""
     else:
         default_dir = Path(tempdir_str) / "molt-backend-daemon"
         if socket_dir_override:
@@ -9957,15 +9969,19 @@ def _backend_daemon_paths_cached(
         )
         # Include session ID in the socket key so each session gets
         # its own daemon (no kill/restart conflicts between agents).
-        session_id = _molt_session_id() or ""
         key = f"{project_root.resolve()}|{build_state_root}|{cargo_profile}|{daemon_digest}|{session_id}"
-        suffix = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-        socket_path = socket_dir / f"moltbd.{suffix}.sock"
+        sidecar_suffix = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        socket_path = socket_dir / f"moltbd.{sidecar_suffix}.sock"
+        sidecar_label = _sidecar_label(session_id)
     daemon_root = build_state_root / "backend_daemon"
+    sidecar_stem = f"molt-backend.{cargo_profile}"
+    if sidecar_label:
+        sidecar_stem = f"{sidecar_stem}.{sidecar_label}"
+    sidecar_stem = f"{sidecar_stem}.{sidecar_suffix}"
     return (
         socket_path,
-        daemon_root / f"molt-backend.{cargo_profile}.log",
-        daemon_root / f"molt-backend.{cargo_profile}.pid",
+        daemon_root / f"{sidecar_stem}.log",
+        daemon_root / f"{sidecar_stem}.pid",
     )
 
 
@@ -16169,7 +16185,6 @@ def _prepare_backend_setup(
     cache: bool,
     ir: Mapping[str, Any],
     entry_module: str,
-    stdlib_profile: str | None = "micro",
 ) -> tuple[_PreparedBackendSetup | None, dict[str, Any] | None]:
     runtime_state = _initialize_runtime_artifact_state(
         is_rust_transpile=is_rust_transpile or is_luau_transpile,
@@ -16196,21 +16211,16 @@ def _prepare_backend_setup(
         warnings=warnings,
         entry_module=entry_module,
     )
-    runtime_lib = runtime_state.runtime_lib
-    if (
-        runtime_lib is not None
-        and not cache_setup.cache_hit
-        and not _ensure_runtime_lib_ready(
-            runtime_state,
-            target_triple=target_triple,
-            json_output=json_output,
-            runtime_cargo_profile=runtime_cargo_profile,
-            molt_root=molt_root,
-            cargo_timeout=cargo_timeout,
-            stdlib_profile=stdlib_profile,
-        )
-    ):
-        return None, _fail("Runtime build failed", json_output, command="build")
+    _maybe_start_native_runtime_lib_ready_async(
+        runtime_state,
+        target_triple=target_triple,
+        json_output=json_output,
+        runtime_cargo_profile=runtime_cargo_profile,
+        molt_root=molt_root,
+        cargo_timeout=cargo_timeout,
+        diagnostics_enabled=False,
+        phase_starts=None,
+    )
     return _PreparedBackendSetup(
         runtime_state=runtime_state,
         cache_setup=cache_setup,
@@ -17220,8 +17230,6 @@ def _run_backend_pipeline(
         return prepared_backend_ir_error
     assert prepared_backend_ir is not None
     ir = prepared_backend_ir.ir
-    if prepared_build_preamble.diagnostics_enabled:
-        prepared_build_preamble.phase_starts["runtime_setup"] = time.perf_counter()
     backend_ir_bytes: bytes | None = None
     backend_ir_fmt: str = "json"
 
@@ -17252,7 +17260,6 @@ def _run_backend_pipeline(
         cache=cache,
         ir=ir,
         entry_module=resolved_build_entry.entry_module,
-        stdlib_profile=stdlib_profile,
     )
     if prepared_backend_setup_error is not None:
         return prepared_backend_setup_error
@@ -17463,22 +17470,20 @@ def _run_backend_pipeline(
             success_messages=[f"Successfully built {prepared_object_output}"],
         )
 
-    if cache_hit and runtime_lib is not None:
-        if (
-            prepared_build_preamble.diagnostics_enabled
-            and "runtime_setup" not in prepared_build_preamble.phase_starts
-        ):
-            prepared_build_preamble.phase_starts["runtime_setup"] = time.perf_counter()
-        if not _ensure_runtime_lib_ready(
-            prepared_backend_runtime_context.runtime_state,
-            target_triple=output_layout.target_triple,
-            json_output=json_output,
-            runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
-            molt_root=prepared_build_roots.molt_root,
-            cargo_timeout=prepared_build_config.cargo_timeout,
-            stdlib_profile=stdlib_profile,
-        ):
-            return _fail("Runtime build failed", json_output, command="build")
+    if not _ensure_native_runtime_lib_ready_before_link(
+        prepared_backend_runtime_context.runtime_state,
+        target_triple=output_layout.target_triple,
+        json_output=json_output,
+        runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
+        molt_root=prepared_build_roots.molt_root,
+        cargo_timeout=prepared_build_config.cargo_timeout,
+        diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+        phase_starts=prepared_build_preamble.phase_starts,
+        stdlib_profile=stdlib_profile,
+    ):
+        return _fail("Runtime build failed", json_output, command="build")
+    if prepared_build_preamble.diagnostics_enabled:
+        diagnostics_payload, diagnostics_path = build_diagnostics_payload()
     prepared_native_link, prepared_native_link_error = _prepare_native_link(
         output_artifact=output_layout.output_artifact,
         trusted=trusted,
@@ -18875,6 +18880,48 @@ def _initialize_runtime_artifact_state(
     return state
 
 
+_NATIVE_RUNTIME_READY_EXECUTOR: ThreadPoolExecutor | None = None
+
+
+def _native_runtime_ready_executor() -> ThreadPoolExecutor:
+    global _NATIVE_RUNTIME_READY_EXECUTOR
+    if _NATIVE_RUNTIME_READY_EXECUTOR is None:
+        _NATIVE_RUNTIME_READY_EXECUTOR = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="molt-runtime-ready",
+        )
+    return _NATIVE_RUNTIME_READY_EXECUTOR
+
+
+def _maybe_start_native_runtime_lib_ready_async(
+    runtime_state: _RuntimeArtifactState,
+    *,
+    target_triple: str | None,
+    json_output: bool,
+    runtime_cargo_profile: str,
+    molt_root: Path,
+    cargo_timeout: float | None,
+    diagnostics_enabled: bool,
+    phase_starts: dict[str, float] | None,
+    stdlib_profile: str | None = "micro",
+) -> None:
+    runtime_lib = runtime_state.runtime_lib
+    if runtime_lib is None or runtime_state.runtime_lib_ready_future is not None:
+        return
+    if diagnostics_enabled and phase_starts is not None and "runtime_setup" not in phase_starts:
+        phase_starts["runtime_setup"] = time.perf_counter()
+    runtime_state.runtime_lib_ready_future = _native_runtime_ready_executor().submit(
+        _ensure_runtime_lib_ready,
+        runtime_state,
+        target_triple=target_triple,
+        json_output=json_output,
+        runtime_cargo_profile=runtime_cargo_profile,
+        molt_root=molt_root,
+        cargo_timeout=cargo_timeout,
+        stdlib_profile=stdlib_profile,
+    )
+
+
 def _ensure_runtime_lib_ready(
     runtime_state: _RuntimeArtifactState,
     *,
@@ -18898,6 +18945,41 @@ def _ensure_runtime_lib_ready(
         cargo_timeout,
         stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
+    )
+
+
+def _ensure_native_runtime_lib_ready_before_link(
+    runtime_state: _RuntimeArtifactState,
+    *,
+    target_triple: str | None,
+    json_output: bool,
+    runtime_cargo_profile: str,
+    molt_root: Path,
+    cargo_timeout: float | None,
+    diagnostics_enabled: bool,
+    phase_starts: dict[str, float],
+    stdlib_profile: str | None = "micro",
+) -> bool:
+    runtime_lib = runtime_state.runtime_lib
+    if runtime_lib is None:
+        return True
+    if runtime_state.runtime_lib_ready_future is not None:
+        if diagnostics_enabled and "runtime_setup" not in phase_starts:
+            phase_starts["runtime_setup"] = time.perf_counter()
+        try:
+            return bool(runtime_state.runtime_lib_ready_future.result())
+        finally:
+            runtime_state.runtime_lib_ready_future = None
+    if diagnostics_enabled and "runtime_setup" not in phase_starts:
+        phase_starts["runtime_setup"] = time.perf_counter()
+    return _ensure_runtime_lib_ready(
+        runtime_state,
+        target_triple=target_triple,
+        json_output=json_output,
+        runtime_cargo_profile=runtime_cargo_profile,
+        molt_root=molt_root,
+        cargo_timeout=cargo_timeout,
+        stdlib_profile=stdlib_profile,
     )
 
 
