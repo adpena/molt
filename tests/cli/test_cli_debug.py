@@ -476,6 +476,8 @@ def test_debug_trace_records_enabled_families_and_restores_env(
         "MOLT_TRACE_CALLARGS": "1",
         "MOLT_TRACE_CALL_BIND_IC": "1",
         "MOLT_TRACE_FUNCTION_BIND_META": "0",
+        "MOLT_BACKEND_TIMING": "0",
+        "MOLT_TRACE_COMPILE_FUNC": "0",
         "MOLT_ASSERT_NO_PENDING_ON_SUCCESS": "0",
     }
     assert seen_env == {
@@ -599,6 +601,65 @@ def test_debug_trace_can_enable_backend_timing_family(
     assert seen_env == {
         "backend_timing": "1",
         "callargs": "0",
+    }
+
+
+def test_debug_trace_can_enable_compile_func_family(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    source_path = tmp_path / "sample_trace_compile_func.py"
+    source_path.write_text("print('trace-ok')\n", encoding="utf-8")
+    seen_env = {}
+
+    def fake_capture_json_cli_result(*args, **kwargs):
+        seen_env["compile_func"] = os.environ.get("MOLT_TRACE_COMPILE_FUNC")
+        seen_env["backend_timing"] = os.environ.get("MOLT_BACKEND_TIMING")
+        return 0, {
+            "command": "run",
+            "status": "ok",
+            "data": {"returncode": 0},
+        }
+
+    monkeypatch.setattr(
+        molt_cli,
+        "_capture_json_cli_result",
+        fake_capture_json_cli_result,
+    )
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(
+        source=str(source_path),
+        family=["compile_func"],
+        format="json",
+        rebuild=False,
+        backend=None,
+        profile="dev",
+        assert_no_pending_on_success=False,
+        out=None,
+    )
+    paths = allocate_debug_paths(
+        DebugSubcommand.TRACE,
+        output_extension="json",
+        run_id="trace-compile-func-test-run",
+    )
+
+    rc = molt_cli._handle_debug_trace(
+        args,
+        subcommand=DebugSubcommand.TRACE,
+        paths=paths,
+        selectors={},
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["data"]["families"] == ["compile_func"]
+    assert payload["data"]["trace_env"]["MOLT_TRACE_COMPILE_FUNC"] == "1"
+    assert payload["data"]["trace_env"]["MOLT_BACKEND_TIMING"] == "0"
+    assert seen_env == {
+        "compile_func": "1",
+        "backend_timing": "0",
     }
 
 

@@ -191,3 +191,66 @@ fn rust_backend_lowers_module_attr_round_trip() {
     );
     assert!(source.contains("molt_get_attr_name(&module_obj, &attr_name)"));
 }
+
+#[test]
+fn rust_backend_lowers_class_merge_layout_with_real_helper_and_result() {
+    let mut class_new = op("class_new");
+    class_new.out = Some("point_cls".to_string());
+
+    let mut field_name = op("const_str");
+    field_name.s_value = Some("x".to_string());
+    field_name.out = Some("field_name".to_string());
+
+    let mut field_offset = op("const");
+    field_offset.value = Some(0);
+    field_offset.out = Some("field_offset".to_string());
+
+    let mut offsets = op("dict_new");
+    offsets.args = Some(vec!["field_name".to_string(), "field_offset".to_string()]);
+    offsets.out = Some("offsets".to_string());
+
+    let mut layout_size = op("const");
+    layout_size.value = Some(8);
+    layout_size.out = Some("layout_size".to_string());
+
+    let mut merge_layout = op("class_merge_layout");
+    merge_layout.args = Some(vec![
+        "point_cls".to_string(),
+        "offsets".to_string(),
+        "layout_size".to_string(),
+    ]);
+    merge_layout.out = Some("merge_result".to_string());
+
+    let mut ret = op("ret");
+    ret.args = Some(vec!["merge_result".to_string()]);
+
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_class_merge_layout".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                class_new,
+                field_name,
+                field_offset,
+                offsets,
+                layout_size,
+                merge_layout,
+                ret,
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    };
+
+    let mut backend = RustBackend::new();
+    let source = backend
+        .compile_checked(&ir)
+        .expect("preview rust backend should lower class layout merge IR");
+
+    assert!(source.contains("fn molt_class_merge_layout("));
+    assert!(source.contains(
+        "let mut merge_result: MoltValue = molt_class_merge_layout(&mut point_cls, offsets.clone(), layout_size.clone());"
+    ));
+}

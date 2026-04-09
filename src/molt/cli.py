@@ -10083,46 +10083,24 @@ def _remove_backend_daemon_pid(pid_path: Path) -> None:
         pass
 
 
-def _kill_stale_backend_daemon() -> None:
-    """Kill any running backend daemon process.
-
-    Called before rebuilding the backend binary so the daemon doesn't
-    continue serving stale compiled code. Uses both PID file lookup and
-    process name matching for robustness.
-    """
+def _kill_stale_backend_daemon(project_root: Path, cargo_profile: str) -> None:
+    """Kill canonical backend daemon processes for this project/profile."""
     import signal
 
-    # Try PID file first (all known daemon socket dirs)
-    for cache_dir in [
-        Path.home() / ".molt" / "daemon",
-        Path.home() / "Library" / "Caches" / "molt" / "daemon",
-    ]:
-        for pid_file in cache_dir.glob("*.pid"):
-            pid = _read_backend_daemon_pid(pid_file)
-            if pid is not None:
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except OSError:
-                    pass
-                _remove_backend_daemon_pid(pid_file)
-
-    # Also check the project-local daemon socket directory
-    project_root = Path.cwd()
-    for socket_dir in [
-        project_root / ".molt" / "daemon",
-        _backend_daemon_socket_dir(project_root),
-    ]:
-        try:
-            for pid_file in socket_dir.glob("*.pid"):
-                pid = _read_backend_daemon_pid(pid_file)
-                if pid is not None:
-                    try:
-                        os.kill(pid, signal.SIGTERM)
-                    except OSError:
-                        pass
-                    _remove_backend_daemon_pid(pid_file)
-        except OSError:
-            pass
+    daemon_root = _build_state_root(project_root) / "backend_daemon"
+    pattern = f"molt-backend.{cargo_profile}*.pid"
+    try:
+        pid_files = list(daemon_root.glob(pattern))
+    except OSError:
+        return
+    for pid_file in pid_files:
+        pid = _read_backend_daemon_pid(pid_file)
+        if pid is not None:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        _remove_backend_daemon_pid(pid_file)
 
 
 def _backend_daemon_binary_is_newer(backend_bin: Path, pid_path: Path) -> bool:
@@ -10565,21 +10543,11 @@ def _backend_daemon_request_bytes(
     timeout: float | None,
     daemon_pid: int | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    # Check for daemon redirect (overflow agent sharing another daemon).
-    actual_socket = socket_path
-    redirect_file = socket_path.with_suffix(".redirect")
-    if redirect_file.exists():
-        try:
-            redirected = Path(redirect_file.read_text().strip())
-            if redirected.exists():
-                actual_socket = redirected
-        except OSError:
-            pass
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             if timeout is not None or daemon_pid is not None:
                 sock.settimeout(timeout if timeout is not None else 1.0)
-            sock.connect(str(actual_socket))
+            sock.connect(str(socket_path))
             return _backend_daemon_request_on_socket(
                 sock,
                 data,
@@ -11009,71 +10977,11 @@ def _start_backend_daemon(
             socket_path.unlink()
     except OSError:
         pass
-    daemon_pid: int | None = None
-    # ── Stale daemon cleanup + concurrency limit ──
-    # 1. Remove sockets whose owning daemon is dead (stale cleanup).
-    # 2. If too many live daemons exist, reuse the newest one instead of
-    #    spawning.  This serializes the overflow agent's builds through a
-    #    shared daemon — graceful degradation instead of OOM.
-    _MAX_CONCURRENT_DAEMONS = 3
     try:
-        sock_dir = socket_path.parent
-        live_daemons: list[tuple[Path, int]] = []  # (socket_path, pid)
-        for sock_file in sock_dir.glob("moltbd.*.sock"):
-            if sock_file.is_symlink():
-                # Previous overflow redirect — remove stale symlink.
-                try:
-                    sock_file.unlink()
-                except OSError:
-                    pass
-                continue
-            pid_file = sock_file.with_suffix(".pid")
-            if pid_file.exists():
-                try:
-                    daemon_pid_probe = int(pid_file.read_text().strip())
-                    os.kill(daemon_pid_probe, 0)  # probe — doesn't kill
-                    live_daemons.append((sock_file, daemon_pid_probe))
-                    continue
-                except (ValueError, ProcessLookupError, PermissionError, OSError):
-                    pass
-            # Dead daemon — clean up socket and PID file.
-            for f in (sock_file, pid_file):
-                try:
-                    f.unlink()
-                except OSError:
-                    pass
-        if len(live_daemons) >= _MAX_CONCURRENT_DAEMONS:
-            # Reuse the newest daemon instead of spawning a new one.
-            # Sort by socket mtime (newest first) to pick the most recently
-            # started daemon, which is most likely to have the latest binary.
-            live_daemons.sort(key=lambda x: x[0].stat().st_mtime, reverse=True)
-            shared_sock, shared_pid = live_daemons[0]
-            if not json_output:
-                print(
-                    f"[molt] daemon limit ({_MAX_CONCURRENT_DAEMONS}) reached; "
-                    f"sharing daemon pid={shared_pid} at {shared_sock.name}",
-                    file=sys.stderr,
-                )
-            # Point our socket path to the shared daemon via copy (not
-            # symlink — Unix sockets can't be symlinked reliably).
-            # Instead, just use the shared socket path directly by
-            # writing it to our PID file so the caller can find it.
-            try:
-                pid_path.parent.mkdir(parents=True, exist_ok=True)
-                pid_path.write_text(str(shared_pid))
-            except OSError:
-                pass
-            # Return the shared socket path to the caller.  The caller
-            # will connect to it instead of our session-specific socket.
-            # We signal this by creating a redirect file.
-            redirect_file = socket_path.with_suffix(".redirect")
-            try:
-                redirect_file.write_text(str(shared_sock))
-            except OSError:
-                pass
-            return True
+        socket_path.with_suffix(".redirect").unlink()
     except OSError:
         pass
+    daemon_pid: int | None = None
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         # Propagate all environment variables to the daemon so that
@@ -20585,7 +20493,7 @@ def _ensure_backend_binary(
             print("Backend sources changed; rebuilding backend...", file=sys.stderr)
         # Kill any running backend daemon so it doesn't serve stale code
         # after the binary is rebuilt.
-        _kill_stale_backend_daemon()
+        _kill_stale_backend_daemon(project_root, cargo_profile)
         # Invalidate TIR optimization cache — the optimized IR from the old
         # backend may produce wrong code with the new passes (e.g. SCCP folding
         # loop-carried phis). Also clear compiled binary cache.

@@ -879,10 +879,10 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 let entry_module =
                     std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
                 let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
-                let (mut user_remaining, mut stdlib_funcs) =
-                    prune_and_partition_native_stdlib(&mut ir, &entry_module);
 
                 if let Some(ref stdlib_path_str) = stdlib_obj_path {
+                    let (mut user_remaining, mut stdlib_funcs) =
+                        prune_and_partition_native_stdlib(&mut ir, &entry_module);
                     let stdlib_path = std::path::Path::new(stdlib_path_str);
                     ensure_output_parent_dir(stdlib_path.to_str().unwrap_or("")).unwrap_or_else(
                         |e| {
@@ -933,7 +933,9 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                         }
                     }
 
-                    if !stdlib_path.exists() && !ir.functions.is_empty() {
+                    if !stdlib_path.exists()
+                        && (!user_remaining.is_empty() || !stdlib_funcs.is_empty())
+                    {
                         // First build (or stale cache was just deleted) — compile
                         // stdlib separately and cache it, then keep only user
                         // functions for output.o.
@@ -1870,14 +1872,15 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse, GIB, compile_single_job,
-        daemon_response_payload, default_backend_max_rss_gb_from_physical_mem_bytes,
-        default_backend_output_path, ensure_output_parent_dir, is_user_owned_symbol,
-        merge_relocatable_objects, resolved_batch_size_limit, resolve_backend_output_path,
-        BackendOutputKind, DEFAULT_BACKEND_BATCH_SIZE, DEFAULT_STDLIB_BATCH_SIZE,
+        BACKEND_DAEMON_PROTOCOL_VERSION, BackendOutputKind, DEFAULT_BACKEND_BATCH_SIZE,
+        DEFAULT_STDLIB_BATCH_SIZE, DaemonCache, DaemonJobRequest, DaemonRequest,
+        DaemonResponse, GIB, compile_single_job, daemon_response_payload,
+        default_backend_max_rss_gb_from_physical_mem_bytes, default_backend_output_path,
+        ensure_output_parent_dir, is_user_owned_symbol, merge_relocatable_objects,
         partition_functions_for_batches, prune_and_partition_native_stdlib,
-        read_daemon_request_bytes, relocatable_linker_binary, shared_stdlib_cache_matches,
-        write_cached_output, write_shared_stdlib_cache_sidecars,
+        read_daemon_request_bytes, relocatable_linker_binary, resolved_batch_size_limit,
+        resolve_backend_output_path, shared_stdlib_cache_matches, write_cached_output,
+        write_shared_stdlib_cache_sidecars,
     };
     use molt_backend::{FunctionIR, OpIR, SimpleIR};
     use std::io::Cursor;
@@ -2517,5 +2520,227 @@ mod tests {
 
         assert_eq!(user_names, vec!["molt_main", "molt_isolate_import"]);
         assert_eq!(stdlib_names, vec!["demo__module"]);
+    }
+
+    #[test]
+    fn daemon_native_without_stdlib_obj_keeps_full_ir() {
+        let mut ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "call".to_string(),
+                        s_value: Some("demo__module".to_string()),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "demo__module".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_isolate_bootstrap".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_isolate_import".to_string(),
+                    params: vec!["p0".to_string()],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            profile: None,
+        };
+
+        let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok();
+        let entry_module = std::env::var("MOLT_ENTRY_MODULE").ok();
+        unsafe {
+            std::env::remove_var("MOLT_STDLIB_OBJ");
+            std::env::remove_var("MOLT_ENTRY_MODULE");
+        }
+
+        // Mirror the daemon native path: without a stdlib cache target,
+        // it must compile the full IR, not the drained remainder.
+        let maybe_stdlib = std::env::var("MOLT_STDLIB_OBJ").ok();
+        if maybe_stdlib.is_none() {
+            molt_backend::eliminate_dead_functions(&mut ir);
+        }
+
+        let names: Vec<_> = ir.functions.iter().map(|func| func.name.as_str()).collect();
+
+        match stdlib_obj_path {
+            Some(value) => unsafe { std::env::set_var("MOLT_STDLIB_OBJ", value) },
+            None => unsafe { std::env::remove_var("MOLT_STDLIB_OBJ") },
+        }
+        match entry_module {
+            Some(value) => unsafe { std::env::set_var("MOLT_ENTRY_MODULE", value) },
+            None => unsafe { std::env::remove_var("MOLT_ENTRY_MODULE") },
+        }
+
+        assert_eq!(names, vec!["molt_main", "demo__module", "molt_isolate_bootstrap", "molt_isolate_import"]);
+    }
+
+    #[test]
+    fn daemon_request_with_env_preserves_user_entry_object() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "molt-daemon-request-env-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let output = tmp_dir.join("out.o");
+        let stdlib = tmp_dir.join("stdlib.o");
+        let request = serde_json::json!({
+            "version": BACKEND_DAEMON_PROTOCOL_VERSION,
+            "config_digest": "daemon-test",
+            "env": {
+                "MOLT_ENTRY_MODULE": "demo",
+                "MOLT_STDLIB_OBJ": stdlib.to_string_lossy(),
+                "MOLT_STDLIB_CACHE_KEY": "daemon-stdlib-key",
+            },
+            "jobs": [{
+                "id": "job0",
+                "is_wasm": false,
+                "output": output.to_string_lossy(),
+                "cache_key": "",
+                "function_cache_key": "",
+                "ir": {
+                    "functions": [
+                        {"name": "molt_main", "params": [], "ops": [{"kind": "call", "s_value": "demo__module", "value": 0}]},
+                        {"name": "demo__module", "params": [], "ops": [{"kind": "ret_void"}]},
+                        {"name": "molt_isolate_bootstrap", "params": [], "ops": [{"kind": "ret_void"}]},
+                        {"name": "molt_isolate_import", "params": ["p0"], "ops": [{"kind": "ret_void"}]},
+                        {"name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
+                    ],
+                    "profile": null
+                }
+            }]
+        });
+
+        let request = DaemonRequest::from_json_bytes(
+            serde_json::to_string(&request)
+                .expect("serialize request")
+                .as_bytes(),
+        )
+        .expect("parse daemon request");
+        assert_eq!(
+            std::env::var("MOLT_ENTRY_MODULE").ok().as_deref(),
+            Some("demo")
+        );
+        assert_eq!(
+            std::env::var("MOLT_STDLIB_OBJ")
+                .ok()
+                .as_deref(),
+            Some(stdlib.to_string_lossy().as_ref())
+        );
+        let job = request.jobs.expect("jobs").into_iter().next().expect("job");
+        let mut partition_ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "call".to_string(),
+                        s_value: Some("demo__module".to_string()),
+                        value: Some(0),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "demo__module".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_isolate_bootstrap".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_isolate_import".to_string(),
+                    params: vec!["p0".to_string()],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_init_sys".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            profile: None,
+        };
+        let (user_remaining, stdlib_funcs) =
+            prune_and_partition_native_stdlib(&mut partition_ir, "demo");
+        let user_names: Vec<_> = user_remaining.iter().map(|func| func.name.as_str()).collect();
+        let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
+        assert_eq!(
+            user_names,
+            vec!["molt_main", "demo__module", "molt_isolate_bootstrap", "molt_isolate_import"]
+        );
+        assert!(stdlib_names.is_empty());
+        let mut cache = DaemonCache::new(None);
+        let result = compile_single_job(job, &mut cache);
+
+        assert!(result.ok, "daemon compile failed: {:?}", result.message);
+        assert!(output.exists(), "output object missing");
+        assert!(
+            output.metadata().expect("output metadata").len() > 240,
+            "daemon path emitted empty object"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }
