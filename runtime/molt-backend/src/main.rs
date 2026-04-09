@@ -1676,10 +1676,10 @@ fn main() -> io::Result<()> {
             let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
             let entry_module =
                 std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
-            let (mut user_remaining, mut stdlib_funcs) =
-                prune_and_partition_native_stdlib(&mut ir, &entry_module);
 
             if let Some(ref stdlib_path) = stdlib_obj_path {
+                let (mut user_remaining, mut stdlib_funcs) =
+                    prune_and_partition_native_stdlib(&mut ir, &entry_module);
                 let stdlib_path = std::path::Path::new(stdlib_path);
                 // Ensure parent directory exists for stdlib cache path —
                 // --rebuild may have cleared the build directory tree.
@@ -2466,5 +2466,56 @@ mod tests {
 
         assert_eq!(user_names, vec!["molt_main"]);
         assert_eq!(stdlib_names, vec!["molt_init_sys"]);
+    }
+
+    #[test]
+    fn prune_and_partition_native_stdlib_misclassifies_non_entry_user_module() {
+        let mut ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "call".to_string(),
+                        s_value: Some("demo__module".to_string()),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "demo__module".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_isolate_import".to_string(),
+                    params: vec!["p0".to_string()],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            profile: None,
+        };
+
+        let (user_remaining, stdlib_funcs) =
+            prune_and_partition_native_stdlib(&mut ir, "__main__");
+        let user_names: Vec<_> = user_remaining.iter().map(|func| func.name.as_str()).collect();
+        let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
+
+        assert_eq!(user_names, vec!["molt_main", "molt_isolate_import"]);
+        assert_eq!(stdlib_names, vec!["demo__module"]);
     }
 }
