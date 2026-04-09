@@ -343,7 +343,7 @@ If you want to modify Molt, follow these steps:
     when it tries to sync or resolve dependencies. Use `UV_NO_SYNC=1` to reuse
     the existing environment and avoid the sync path:
     ```bash
-    UV_NO_SYNC=1 UV_CACHE_DIR=/tmp/uv-cache uv run --python 3.12 python3 tools/dev.py test
+    UV_NO_SYNC=1 UV_CACHE_DIR=$PWD/.uv-cache uv run --python 3.12 python3 tools/dev.py test
     ```
     If you need to install or update deps, run `uv sync` locally outside the
     sandbox, then re-run commands with `UV_NO_SYNC=1`.
@@ -411,9 +411,9 @@ sccache -s
 ```bash
 cargo bloat -p molt-runtime --release
 cargo llvm-lines -p molt-runtime
-twiggy top output.wasm
-wasm-opt -Oz -o output.opt.wasm output.wasm
-wasm-tools strip output.opt.wasm -o output.stripped.wasm
+twiggy top dist/output.wasm
+wasm-opt -Oz -o dist/output.opt.wasm dist/output.wasm
+wasm-tools strip dist/output.opt.wasm -o dist/output.stripped.wasm
 ```
 
 ### Native flamegraphs
@@ -426,7 +426,7 @@ cargo flamegraph -p molt-runtime --bench ptr_registry
 - Build (linked): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py`
 - Build (custom linked output): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`
 - Build (require linked): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py`
-- Run (Node/WASI): `node wasm/run_wasm.js /path/to/output.wasm` (requires linked output; build with `--linked` or `--require-linked`)
+- Run (Node/WASI): `node wasm/run_wasm.js dist/output_linked.wasm` (requires linked output; build with `--linked` or `--require-linked`)
 
 ## Operational Assumptions
 

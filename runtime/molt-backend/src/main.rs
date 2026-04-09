@@ -29,6 +29,15 @@ const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_BACKEND_BATCH_SIZE: usize = 64;
 const DEFAULT_STDLIB_BATCH_SIZE: usize = 128;
 const DEFAULT_STDLIB_BATCH_OP_BUDGET: usize = 12_000;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum BackendOutputKind {
+    Luau,
+    Rust,
+    Wasm,
+    Native,
+}
+
 #[derive(Debug)]
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
@@ -86,6 +95,22 @@ fn ensure_output_parent_dir(output_file: &str) -> io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     Ok(())
+}
+
+fn default_backend_output_path(kind: BackendOutputKind) -> &'static str {
+    match kind {
+        BackendOutputKind::Luau => "dist/output.luau",
+        BackendOutputKind::Rust => "dist/output.rs",
+        BackendOutputKind::Wasm => "dist/output.wasm",
+        BackendOutputKind::Native => "dist/output.o",
+    }
+}
+
+fn resolve_backend_output_path(
+    output_path: Option<&str>,
+    kind: BackendOutputKind,
+) -> &str {
+    output_path.unwrap_or(default_backend_output_path(kind))
 }
 
 fn partition_functions_for_batches(
@@ -1556,16 +1581,16 @@ fn main() -> io::Result<()> {
         ir.tree_shake_luau();
     }
 
-    let default_output = if is_luau {
-        "output.luau"
+    let output_kind = if is_luau {
+        BackendOutputKind::Luau
     } else if is_rust {
-        "output.rs"
+        BackendOutputKind::Rust
     } else if is_wasm {
-        "output.wasm"
+        BackendOutputKind::Wasm
     } else {
-        "output.o"
+        BackendOutputKind::Native
     };
-    let output_file = output_path.unwrap_or(default_output);
+    let output_file = resolve_backend_output_path(output_path.as_deref(), output_kind);
     ensure_output_parent_dir(output_file).map_err(|err| {
         io::Error::new(
             err.kind(),
@@ -1629,7 +1654,7 @@ fn main() -> io::Result<()> {
             let backend = WasmBackend::with_options(WasmCompileOptions::default());
             let wasm_bytes = backend.compile(ir);
             file.write_all(&wasm_bytes)?;
-            println!("Successfully compiled to output.wasm");
+            println!("Successfully compiled to {output_file}");
         }
         #[cfg(not(feature = "wasm-backend"))]
         {
@@ -1768,7 +1793,7 @@ fn main() -> io::Result<()> {
                 let backend = SimpleBackend::new_with_target(target_triple);
                 let obj_bytes = backend.compile(ir);
                 file.write_all(&obj_bytes)?;
-                eprintln!("Successfully compiled to output.o ({func_count} functions)");
+                eprintln!("Successfully compiled to {output_file} ({func_count} functions)");
             } else {
                 // Large IR: split into batches, compile each independently,
                 // then merge with ld -r (partial link).  This prevents OOM
@@ -1826,7 +1851,7 @@ fn main() -> io::Result<()> {
                 }
                 let _ = std::fs::remove_dir(&tmp_dir);
                 eprintln!(
-                    "Successfully compiled to output.o ({func_count} functions, {total_batches} batches)"
+                    "Successfully compiled to {output_file} ({func_count} functions, {total_batches} batches)"
                 );
             }
         }
@@ -1847,8 +1872,9 @@ mod tests {
     use super::{
         DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse, GIB, compile_single_job,
         daemon_response_payload, default_backend_max_rss_gb_from_physical_mem_bytes,
-        resolved_batch_size_limit, DEFAULT_BACKEND_BATCH_SIZE, DEFAULT_STDLIB_BATCH_SIZE,
-        ensure_output_parent_dir, is_user_owned_symbol, merge_relocatable_objects,
+        default_backend_output_path, ensure_output_parent_dir, is_user_owned_symbol,
+        merge_relocatable_objects, resolved_batch_size_limit, resolve_backend_output_path,
+        BackendOutputKind, DEFAULT_BACKEND_BATCH_SIZE, DEFAULT_STDLIB_BATCH_SIZE,
         partition_functions_for_batches, prune_and_partition_native_stdlib,
         read_daemon_request_bytes, relocatable_linker_binary, shared_stdlib_cache_matches,
         write_cached_output, write_shared_stdlib_cache_sidecars,
@@ -1968,6 +1994,39 @@ mod tests {
 
         assert!(output.parent().expect("parent exists").is_dir());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn default_backend_output_paths_use_dist_root() {
+        assert_eq!(
+            default_backend_output_path(BackendOutputKind::Luau),
+            "dist/output.luau"
+        );
+        assert_eq!(
+            default_backend_output_path(BackendOutputKind::Rust),
+            "dist/output.rs"
+        );
+        assert_eq!(
+            default_backend_output_path(BackendOutputKind::Wasm),
+            "dist/output.wasm"
+        );
+        assert_eq!(
+            default_backend_output_path(BackendOutputKind::Native),
+            "dist/output.o"
+        );
+    }
+
+    #[test]
+    fn resolve_backend_output_path_prefers_explicit_output() {
+        let explicit = "/tmp/custom/output.wasm";
+        assert_eq!(
+            resolve_backend_output_path(Some(explicit), BackendOutputKind::Wasm),
+            explicit
+        );
+        assert_eq!(
+            resolve_backend_output_path(None, BackendOutputKind::Wasm),
+            "dist/output.wasm"
+        );
     }
 
     #[test]
