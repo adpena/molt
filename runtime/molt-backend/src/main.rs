@@ -147,6 +147,19 @@ fn partition_functions_for_batches(
     batches
 }
 
+fn batch_external_function_names(
+    all_function_names: &std::collections::BTreeSet<String>,
+    batch_funcs: &[molt_backend::FunctionIR],
+) -> std::collections::BTreeSet<String> {
+    let batch_names: std::collections::BTreeSet<&str> =
+        batch_funcs.iter().map(|func| func.name.as_str()).collect();
+    all_function_names
+        .iter()
+        .filter(|name| !batch_names.contains(name.as_str()))
+        .cloned()
+        .collect()
+}
+
 fn resolved_batch_size_limit(default: usize) -> usize {
     let raw = std::env::var("MOLT_BACKEND_BATCH_SIZE")
         .ok()
@@ -294,7 +307,8 @@ fn compile_stdlib_cache_object(
             };
             let mut batch_backend = SimpleBackend::new_with_target(target_triple);
             batch_backend.skip_ir_passes = true;
-            batch_backend.external_function_names = all_stdlib_names.clone();
+            batch_backend.external_function_names =
+                batch_external_function_names(&all_stdlib_names, &batch_ir.functions);
             batch_backend.set_module_context(stdlib_module_context.clone());
             let batch_bytes = batch_backend.compile(batch_ir);
             let batch_path = stdlib_tmp_dir.join(format!("batch_{stdlib_batch_idx}.o"));
@@ -1833,7 +1847,8 @@ fn main() -> io::Result<()> {
                     // for batched compilation — those were already run on the
                     // full IR above. Each batch only does Cranelift codegen.
                     backend.skip_ir_passes = true;
-                    backend.external_function_names = all_func_names.clone();
+                    backend.external_function_names =
+                        batch_external_function_names(&all_func_names, &batch_ir.functions);
                     backend.set_module_context(module_context.clone());
                     let obj_bytes = backend.compile(batch_ir);
 
@@ -2742,5 +2757,51 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn batch_external_function_names_excludes_current_batch_symbols() {
+        let all_names = std::collections::BTreeSet::from([
+            "molt_main".to_string(),
+            "demo__module".to_string(),
+            "molt_isolate_bootstrap".to_string(),
+            "molt_isolate_import".to_string(),
+        ]);
+        let batch_funcs = vec![
+            FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+            FunctionIR {
+                name: "demo__module".to_string(),
+                params: vec![],
+                ops: vec![OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+        ];
+
+        let external_names = super::batch_external_function_names(&all_names, &batch_funcs);
+
+        assert_eq!(
+            external_names,
+            std::collections::BTreeSet::from([
+                "molt_isolate_bootstrap".to_string(),
+                "molt_isolate_import".to_string(),
+            ])
+        );
+        assert!(!external_names.contains("molt_main"));
+        assert!(!external_names.contains("demo__module"));
     }
 }
