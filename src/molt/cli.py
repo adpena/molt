@@ -22430,7 +22430,7 @@ def _resolve_output_roots(
     else:
         artifacts_root = _default_build_root(output_base)
         bin_root = _default_molt_bin()
-        output_root = project_root
+        output_root = project_root / "dist"
 
     def _repair_broken_symlink_parents(path: Path) -> bool:
         repaired = False
@@ -30308,7 +30308,8 @@ def main() -> int:
         "--output",
         help=(
             "Output path for the native binary or wasm artifact "
-            "(relative to --out-dir when set, otherwise project root). "
+            "(relative to --out-dir when set, otherwise the project root for explicit paths; "
+            "default final artifacts land under dist/ when omitted). "
             "If the path is a directory (or ends with a path separator), "
             "the default filename is used within that directory."
         ),
@@ -30344,7 +30345,8 @@ def main() -> int:
         "--linked-output",
         help=(
             "Output path for the linked wasm artifact "
-            "(relative to --out-dir when set, otherwise project root)."
+            "(relative to --out-dir when set, otherwise the project root for explicit paths; "
+            "the default linked artifact lands under dist/ when omitted)."
         ),
     )
     build_parser.add_argument(
