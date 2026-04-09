@@ -13955,6 +13955,107 @@ def _is_user_owned_symbol(name: str, entry_module: str) -> bool:
     )
 
 
+_DEAD_FUNCTION_ELIM_REFERENCE_KINDS = frozenset(
+    {
+        "call",
+        "call_internal",
+        "func_new",
+        "func_new_closure",
+        "func_new_builtin",
+        "code_new",
+        "call_guarded",
+        "call_indirect",
+        "alloc_task",
+        "generator_create",
+        "coro_create",
+        "fn_ptr_code_set",
+        "asyncgen_locals_register",
+        "gen_locals_register",
+        "task_new",
+        "generator_send",
+        "spawn",
+        "call_func",
+        "call_method",
+        "import_from",
+        "import_name",
+        "class_def",
+        "make_function",
+        "decorator",
+        "super_call",
+        "yield_from",
+        "await",
+    }
+)
+
+
+def _is_protected_runtime_entrypoint(name: str) -> bool:
+    return name in {"molt_main", "_start"} or name.startswith("molt_isolate_")
+
+
+def _reachable_function_names_for_stdlib_cache(
+    ir: Mapping[str, Any],
+) -> set[str]:
+    functions = ir.get("functions")
+    if not isinstance(functions, list) or not functions:
+        return set()
+
+    defined: set[str] = set()
+    references: dict[str, set[str]] = {}
+
+    for func in functions:
+        if not isinstance(func, Mapping):
+            continue
+        name = func.get("name")
+        if isinstance(name, str) and name:
+            defined.add(name)
+
+    for func in functions:
+        if not isinstance(func, Mapping):
+            continue
+        name = func.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        refs: set[str] = set()
+        ops = func.get("ops")
+        if isinstance(ops, list):
+            for op in ops:
+                if not isinstance(op, Mapping):
+                    continue
+                kind = op.get("kind")
+                if not isinstance(kind, str):
+                    continue
+                target = op.get("s_value")
+                if kind in _DEAD_FUNCTION_ELIM_REFERENCE_KINDS and isinstance(target, str):
+                    if target in defined:
+                        refs.add(target)
+                    if kind in {"generator_create", "coro_create"} and not target.endswith("_poll"):
+                        poll_name = f"{target}_poll"
+                        if poll_name in defined:
+                            refs.add(poll_name)
+        references[name] = refs
+
+    roots: list[str] = []
+    if "molt_main" in defined:
+        roots.append("molt_main")
+    roots.extend(sorted(name for name in defined if _is_protected_runtime_entrypoint(name)))
+
+    reachable: set[str] = set()
+    queue: deque[str] = deque()
+    for root in roots:
+        if root not in reachable:
+            reachable.add(root)
+            queue.append(root)
+
+    while queue:
+        current = queue.popleft()
+        for target in references.get(current, ()):
+            if target not in reachable:
+                reachable.add(target)
+                queue.append(target)
+
+    return reachable
+
+
 def _shared_stdlib_cache_payload(
     ir: Mapping[str, Any],
     *,
@@ -13970,12 +14071,15 @@ def _shared_stdlib_cache_payload(
     """
     functions = ir.get("functions")
     stdlib_functions: list[dict[str, Any]] = []
+    reachable = _reachable_function_names_for_stdlib_cache(ir)
     if isinstance(functions, list):
         for func in functions:
             if not isinstance(func, dict):
                 continue
             name = func.get("name")
             if not isinstance(name, str) or _is_user_owned_symbol(name, entry_module):
+                continue
+            if reachable and name not in reachable:
                 continue
             stdlib_functions.append(func)
     stdlib_functions = _sorted_ir_functions(stdlib_functions)
