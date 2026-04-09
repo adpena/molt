@@ -10910,16 +10910,17 @@ def _start_backend_daemon(
                 existing_pid = None
             else:
                 if socket_path.exists():
+                    probe_window = _backend_daemon_spawn_probe_timeout(startup_wait)
                     ready, _ = _backend_daemon_wait_until_ready(
                         socket_path,
-                        ready_timeout=startup_wait,
-                        probe_timeout=None,
+                        ready_timeout=probe_window,
+                        probe_timeout=probe_window,
                     )
                     if ready:
                         return True
                     message = (
                         "Backend daemon was running but did not become ready "
-                        f"within {startup_wait or 0.0:.2f}s; restarting."
+                        f"within {probe_window:.2f}s; restarting."
                     )
                     log_tail = _backend_daemon_log_tail(log_path)
                     if log_tail:
@@ -10939,30 +10940,30 @@ def _start_backend_daemon(
             _remove_backend_daemon_pid(pid_path)
     try:
         if socket_path.exists():
-            # Fast path: if no daemon process is alive, the socket is
-            # definitely stale — skip the expensive readiness probe that
-            # would otherwise block for startup_wait (10s default).
             _pid_for_sock = _read_backend_daemon_pid(pid_path)
             _daemon_alive = _pid_for_sock is not None and _pid_alive(_pid_for_sock)
+            probe_window = _backend_daemon_spawn_probe_timeout(startup_wait)
+            # A live PID is not enough to trust the socket. If the socket
+            # cannot answer a short probe, treat it as stale and restart.
             if _daemon_alive:
                 ready, _ = _backend_daemon_wait_until_ready(
                     socket_path,
-                    ready_timeout=startup_wait,
-                    probe_timeout=None,
+                    ready_timeout=probe_window,
+                    probe_timeout=probe_window,
                 )
                 if ready:
                     return True
                 message = (
                     f"Backend daemon socket {socket_path} existed but did not answer "
-                    f"readiness probes within {startup_wait or 0.0:.2f}s; removing stale socket."
+                    f"readiness probes within {probe_window:.2f}s; removing stale socket."
                 )
             else:
                 # Quick single-shot probe in case an orphaned daemon is
                 # still listening (PID file was lost but process lives).
                 ready, _ = _backend_daemon_wait_until_ready(
                     socket_path,
-                    ready_timeout=0.5,
-                    probe_timeout=0.25,
+                    ready_timeout=probe_window,
+                    probe_timeout=probe_window,
                 )
                 if ready:
                     return True
