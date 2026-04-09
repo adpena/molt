@@ -19,15 +19,12 @@ fn get_attr_default(
     if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
         unsafe {
             if object_type_id(obj_ptr) == TYPE_ID_TYPE {
-                let dict_bits = class_dict_bits(obj_ptr);
-                if let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits)
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT
-                    && let Some(name_bits) = attr_name_bits_from_bytes(_py, name)
-                {
-                    let out = dict_get_in_place(_py, dict_ptr, name_bits)
-                        .unwrap_or_else(|| default_bits);
+                if let Some(name_bits) = attr_name_bits_from_bytes(_py, name) {
+                    let out = class_lookup_mro_attr(_py, obj_bits, name_bits);
                     dec_ref_bits(_py, name_bits);
-                    return out;
+                    if !obj_from_bits(out).is_none() {
+                        return out;
+                    }
                 }
                 return default_bits;
             }
@@ -1429,4 +1426,162 @@ pub extern "C" fn molt_typing_get_args(tp_bits: u64) -> u64 {
         let empty_tuple = alloc_tuple(_py, &[]) as u64;
         get_attr_default(_py, tp_bits, b"__args__", empty_tuple)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    fn init_runtime() {
+        INIT.call_once(|| {
+            assert_ne!(crate::lifecycle::init(), 0);
+        });
+        let _ = crate::molt_exception_clear();
+    }
+
+    #[test]
+    fn get_attr_default_reads_inherited_type_attrs_through_mro() {
+        init_runtime();
+
+        let (set_base_ok, set_base_pending, set_attr_ok, set_attr_pending, inherited) =
+            crate::with_gil_entry!(_py, {
+            let builtins = builtin_classes(_py);
+            let none_bits = MoltObject::none().bits();
+
+            let base_name_ptr = alloc_string(_py, b"AbcAttrBase");
+            if base_name_ptr.is_null() {
+                return (
+                    false,
+                    exception_pending(_py),
+                    false,
+                    exception_pending(_py),
+                    MoltObject::none().bits(),
+                );
+            }
+            let base_name_bits = MoltObject::from_ptr(base_name_ptr).bits();
+            let base_bases_ptr = alloc_tuple(_py, &[builtins.object]);
+            if base_bases_ptr.is_null() {
+                dec_ref_bits(_py, base_name_bits);
+                return (
+                    false,
+                    exception_pending(_py),
+                    false,
+                    exception_pending(_py),
+                    MoltObject::none().bits(),
+                );
+            }
+            let base_bases_bits = MoltObject::from_ptr(base_bases_ptr).bits();
+            let base_ns_ptr = alloc_dict_with_pairs(_py, &[]);
+            if base_ns_ptr.is_null() {
+                dec_ref_bits(_py, base_name_bits);
+                dec_ref_bits(_py, base_bases_bits);
+                return (
+                    false,
+                    exception_pending(_py),
+                    false,
+                    exception_pending(_py),
+                    MoltObject::none().bits(),
+                );
+            }
+            let base_ns_bits = MoltObject::from_ptr(base_ns_ptr).bits();
+            let base_bits =
+                crate::molt_type_new(builtins.type_obj, base_name_bits, base_bases_bits, base_ns_bits, none_bits);
+            dec_ref_bits(_py, base_name_bits);
+            dec_ref_bits(_py, base_bases_bits);
+            dec_ref_bits(_py, base_ns_bits);
+
+            let child_name_ptr = alloc_string(_py, b"AbcAttrChild");
+            if child_name_ptr.is_null() {
+                dec_ref_bits(_py, base_bits);
+                return (
+                    false,
+                    exception_pending(_py),
+                    false,
+                    exception_pending(_py),
+                    MoltObject::none().bits(),
+                );
+            }
+            let child_name_bits = MoltObject::from_ptr(child_name_ptr).bits();
+            let child_bases_ptr = alloc_tuple(_py, &[base_bits]);
+            if child_bases_ptr.is_null() {
+                dec_ref_bits(_py, base_bits);
+                dec_ref_bits(_py, child_name_bits);
+                return (
+                    false,
+                    exception_pending(_py),
+                    false,
+                    exception_pending(_py),
+                    MoltObject::none().bits(),
+                );
+            }
+            let child_bases_bits = MoltObject::from_ptr(child_bases_ptr).bits();
+            let child_ns_ptr = alloc_dict_with_pairs(_py, &[]);
+            if child_ns_ptr.is_null() {
+                dec_ref_bits(_py, base_bits);
+                dec_ref_bits(_py, child_name_bits);
+                dec_ref_bits(_py, child_bases_bits);
+                return (
+                    false,
+                    exception_pending(_py),
+                    false,
+                    exception_pending(_py),
+                    MoltObject::none().bits(),
+                );
+            }
+            let child_ns_bits = MoltObject::from_ptr(child_ns_ptr).bits();
+            let child_bits = crate::molt_type_new(
+                builtins.type_obj,
+                child_name_bits,
+                child_bases_bits,
+                child_ns_bits,
+                none_bits,
+            );
+            dec_ref_bits(_py, child_name_bits);
+            dec_ref_bits(_py, child_bases_bits);
+            dec_ref_bits(_py, child_ns_bits);
+            let set_base_ok = is_type_object(base_bits) && is_type_object(child_bits);
+            let set_base_pending = exception_pending(_py);
+
+            let attr_name_bits = attr_name_bits_from_bytes(_py, b"bootstrap_flag")
+                .expect("attr name allocation failed");
+            let set_attr = crate::molt_set_attr_name(
+                base_bits,
+                attr_name_bits,
+                MoltObject::from_bool(true).bits(),
+            );
+            dec_ref_bits(_py, attr_name_bits);
+            let set_attr_ok = set_attr == MoltObject::none().bits();
+            let set_attr_pending = exception_pending(_py);
+
+            let inherited = get_attr_default(
+                _py,
+                child_bits,
+                b"bootstrap_flag",
+                MoltObject::none().bits(),
+            );
+
+            dec_ref_bits(_py, child_bits);
+            dec_ref_bits(_py, base_bits);
+            (
+                set_base_ok,
+                set_base_pending,
+                set_attr_ok,
+                set_attr_pending,
+                inherited,
+            )
+        });
+
+        assert!(set_base_ok, "class_set_base failed");
+        assert!(!set_base_pending, "class_set_base left an exception pending");
+        assert!(set_attr_ok, "set_attr_name failed for base class attr");
+        assert!(!set_attr_pending, "set_attr_name left an exception pending");
+        assert_eq!(
+            inherited,
+            MoltObject::from_bool(true).bits(),
+            "type-object attr lookup should honor inherited class attrs",
+        );
+    }
 }
