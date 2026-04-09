@@ -15,8 +15,7 @@ Scope: `docs/spec/areas/compiler/0100_MOLT_IR.md` instruction list vs repository
     call-site labels for `invoke_ffi_bridge`/`invoke_ffi_deopt` vs `call_func`
     and `call_indirect` vs `call_bind`), required differential probe presence
     for dedicated-lane coverage, and CI-enforced probe execution/failure-queue
-    linkage in `--require-probe-execution` mode. Internal delegates such as
-    `tools/check_molt_ir_ops.py` consume the same verifier core.
+    linkage in `--require-probe-execution` mode.
   - Remaining work is semantic hardening (dedicated backend lanes + broader
     differential behavior evidence), not inventory presence.
   - Dedicated-lane differential probes now exist in

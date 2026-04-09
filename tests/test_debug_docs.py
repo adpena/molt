@@ -15,9 +15,17 @@ PUBLIC_DEBUG_DOCS = (
     / "areas"
     / "testing"
     / "0008_MINIMUM_MUST_PASS_MATRIX.md",
+    ROOT / "docs" / "spec" / "areas" / "compiler" / "0100_MOLT_IR.md",
+    ROOT
+    / "docs"
+    / "spec"
+    / "areas"
+    / "compiler"
+    / "0100_MOLT_IR_IMPLEMENTATION_COVERAGE_2026-02-11.md",
 )
 
 LEGACY_WRAPPERS = (
+    "tools/check_molt_ir_ops.py",
     "tools/ir_dump.py",
     "tools/profile_analyze.py",
     "tools/ir_probe_supervisor.py",
