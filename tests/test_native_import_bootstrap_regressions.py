@@ -292,6 +292,48 @@ def test_native_load_safetensors_multi_entry_is_clean(tmp_path: Path) -> None:
     assert run.stdout.strip().splitlines() == ["160", "Tensor"]
 
 
+def test_native_load_safetensors_mapping_get_returns_tensor_and_default(
+    tmp_path: Path,
+) -> None:
+    safetensors_path = tmp_path / "multi_get.safetensors"
+    _write_safetensors_fixture(safetensors_path, count=8)
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "from molt.gpu.interop import load_safetensors\n"
+            f"weights = load_safetensors({str(safetensors_path)!r})\n"
+            "print(type(weights.get('t0')).__name__)\n"
+            "print(weights.get('missing', 'fallback'))\n"
+        ),
+        "load_safetensors_mapping_get",
+        session_id="pytest-native-bootstrap-safetensors-get",
+        cache_dir=ROOT / ".molt_cache-safetensors-get",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["Tensor", "fallback"]
+
+
+def test_native_dict_annotation_does_not_force_dict_get_fast_path(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class MappingLike:\n"
+            "    def __init__(self):\n"
+            "        self.data = {'x': 7}\n"
+            "    def get(self, key, default=None):\n"
+            "        return self.data.get(key, default)\n"
+            "def f(state: dict):\n"
+            "    print(state.get('x', 'fallback'))\n"
+            "f(MappingLike())\n"
+        ),
+        "dict_annotation_mapping_get",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "7"
+
+
 def test_native_tuple_loop_dynamic_unpack_list_retention_is_clean(
     tmp_path: Path,
 ) -> None:
