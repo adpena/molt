@@ -10576,8 +10576,10 @@ def _backend_daemon_request_on_socket(
             try:
                 received = sock.recv_into(recv_view)
             except socket.timeout as exc:
-                if daemon_pid is not None and not _pid_alive(daemon_pid):
-                    return None, "backend daemon died while request was in flight"
+                if daemon_pid is not None:
+                    if not _pid_alive(daemon_pid):
+                        return None, "backend daemon died while request was in flight"
+                    continue
                 return None, f"backend daemon connection failed: {exc}"
             if received == 0:
                 break
