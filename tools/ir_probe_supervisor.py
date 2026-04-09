@@ -24,7 +24,6 @@ from molt.debug.bisect import (  # noqa: E402
 from molt.debug.verify import REQUIRED_DIFF_PROBES  # noqa: E402
 
 DIFF_SCRIPT = ROOT / "tests" / "molt_diff.py"
-IR_GATE_SCRIPT = ROOT / "tools" / "check_molt_ir_ops.py"
 
 
 def _now_utc() -> str:
@@ -400,7 +399,10 @@ def main() -> int:
         if run_id:
             gate_cmd = [
                 sys.executable,
-                str(IR_GATE_SCRIPT),
+                "-m",
+                "molt.cli",
+                "debug",
+                "verify",
                 "--require-probe-execution",
                 "--probe-rss-metrics",
                 str(metrics_path),
@@ -408,6 +410,8 @@ def main() -> int:
                 str(failures_path),
                 "--probe-run-id",
                 run_id,
+                "--format",
+                "json",
             ]
             gate_rc, gate_out, gate_err, _ = _run_command(
                 gate_cmd,
