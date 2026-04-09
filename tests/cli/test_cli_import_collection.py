@@ -5844,6 +5844,9 @@ def test_backend_daemon_retryable_error_classification() -> None:
     assert cli._backend_daemon_retryable_error(
         "backend daemon connection failed: timeout"
     )
+    assert cli._backend_daemon_retryable_error(
+        "backend daemon died while request was in flight"
+    )
     assert not cli._backend_daemon_retryable_error(
         "backend daemon failed to compile job"
     )
@@ -8823,6 +8826,12 @@ def test_compile_with_backend_daemon_probes_cache_without_ir_on_hit(
         def __init__(self) -> None:
             self._chunks: list[bytes] = []
 
+        def __enter__(self) -> "_FakeSocket":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
         def settimeout(self, timeout: float) -> None:
             assert timeout == 0.1
 
@@ -8897,6 +8906,12 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
         def __init__(self) -> None:
             self._chunks: list[bytes] = []
 
+        def __enter__(self) -> "_FakeSocket":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
         def settimeout(self, timeout: float) -> None:
             assert timeout == 0.1
 
@@ -8967,7 +8982,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
 
     assert result.ok is True
     assert len(seen_payloads) == 2
-    assert connects == 1
+    assert connects == 2
     assert seen_payloads[0]["jobs"][0]["probe_cache_only"] is True
     assert "ir" not in seen_payloads[0]["jobs"][0]
     assert seen_payloads[0]["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
@@ -8997,6 +9012,12 @@ def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
     class _FakeSocket:
         def __init__(self) -> None:
             self._chunks: list[bytes] = []
+
+        def __enter__(self) -> "_FakeSocket":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
 
         def settimeout(self, timeout: float) -> None:
             assert timeout == 0.1
