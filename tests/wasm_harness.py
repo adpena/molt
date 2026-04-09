@@ -12397,6 +12397,74 @@ BASE_IMPORTS = """\
     classLayoutVersions.set(classBits, version);
     return boxNone();
   },
+  class_merge_layout: (classBits, offsetsBits, sizeBits) => {
+    const cls = getClass(classBits);
+    if (!cls) {
+      throw new Error('TypeError: class layout merge expects type');
+    }
+    if (!isIntLike(sizeBits)) {
+      throw new Error('TypeError: __molt_layout_size__ must be int');
+    }
+    const hintedSize = Number(unboxIntLike(sizeBits));
+    if (hintedSize < 0) {
+      throw new Error('TypeError: __molt_layout_size__ must be int');
+    }
+
+    let mergedOffsets = new Map(classFieldOffsets.get(classBits) ?? []);
+    let offsetsDictBits = lookupClassAttr(classBits, '__molt_field_offsets__');
+    let offsetsDict = offsetsDictBits !== undefined ? getDict(offsetsDictBits) : null;
+
+    if (!isNone(offsetsBits)) {
+      const sourceOffsets = getDict(offsetsBits);
+      if (!sourceOffsets) {
+        throw new Error('TypeError: __molt_field_offsets__ must be dict or None');
+      }
+      if (!offsetsDict) {
+        offsetsDictBits = boxPtr({ type: 'dict', entries: [], lookup: new Map() });
+        offsetsDict = getDict(offsetsDictBits);
+        cls.attrs.set('__molt_field_offsets__', offsetsDictBits);
+      }
+      for (const [keyBits, offsetBits] of sourceOffsets.entries) {
+        const key = getStrObj(keyBits);
+        if (key === null || !isIntLike(offsetBits)) continue;
+        const offset = Number(unboxIntLike(offsetBits));
+        if (offset < 0 || mergedOffsets.has(key)) continue;
+        mergedOffsets.set(key, offset);
+        if (offsetsDict && dictGetValue(offsetsDict, keyBits) === null) {
+          dictSetValue(offsetsDict, keyBits, offsetBits);
+        }
+      }
+    } else if (offsetsDict && mergedOffsets.size === 0) {
+      for (const [keyBits, offsetBits] of offsetsDict.entries) {
+        const key = getStrObj(keyBits);
+        if (key === null || !isIntLike(offsetBits)) continue;
+        const offset = Number(unboxIntLike(offsetBits));
+        if (offset >= 0) mergedOffsets.set(key, offset);
+      }
+    }
+
+    if (mergedOffsets.size > 0) {
+      classFieldOffsets.set(classBits, mergedOffsets);
+    }
+
+    let layoutSize = 0;
+    const existingSizeBits = lookupClassAttr(classBits, '__molt_layout_size__');
+    if (existingSizeBits !== undefined && isIntLike(existingSizeBits)) {
+      layoutSize = Number(unboxIntLike(existingSizeBits));
+    }
+    layoutSize = Math.max(layoutSize, hintedSize);
+    let maxEnd = 0;
+    for (const offset of mergedOffsets.values()) {
+      maxEnd = Math.max(maxEnd, offset + 8);
+    }
+    const reservedTail = isSubclass(classBits, getBuiltinType(10)) ? 16 : 8;
+    layoutSize = Math.max(layoutSize, maxEnd + reservedTail);
+    if (layoutSize === 0) {
+      layoutSize = reservedTail;
+    }
+    cls.attrs.set('__molt_layout_size__', boxInt(BigInt(layoutSize)));
+    return boxNone();
+  },
   isinstance: (objBits, classBits) => {
     const tuple = getTuple(classBits);
     if (tuple) {
