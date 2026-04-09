@@ -10339,7 +10339,10 @@ def _try_cached_backend_candidates(
             ):
                 if stdlib_object_path.exists():
                     warnings.append(
-                        f"Ignoring shared stdlib cache with mismatched key: {stdlib_object_path}"
+                        "Ignoring shared stdlib cache with mismatched key: "
+                        + _shared_stdlib_cache_mismatch_detail(
+                            stdlib_object_path, stdlib_object_cache_key
+                        )
                     )
                     _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
                 # Native output.o cache hits are invalid without the matching
@@ -13945,19 +13948,17 @@ def _shared_stdlib_cache_payload(
     ir: Mapping[str, Any],
     *,
     entry_module: str,
+    compiler_fingerprint: str | None = None,
 ) -> bytes:
     """Build a cache payload for the stdlib shared object.
 
-    The key is based on sorted stdlib function NAMES only — not their
-    full IR bodies.  Function bodies are deterministic for a given
-    compiler version (captured by the cache_variant / backend fingerprint).
-    This ensures all programs that import the same stdlib module set
-    share one cached stdlib_shared.o, eliminating redundant 25s cold
-    compiles for each unique user program.
+    The key is based on the sorted stdlib function subset and their
+    backend-facing IR bodies, excluding user-owned symbols. This preserves
+    sharing across programs that import the same stdlib surface while
+    invalidating automatically when stdlib lowering changes.
     """
     functions = ir.get("functions")
-    names: list[str] = []
-    seen: set[str] = set()
+    stdlib_functions: list[dict[str, Any]] = []
     if isinstance(functions, list):
         for func in functions:
             if not isinstance(func, dict):
@@ -13965,15 +13966,22 @@ def _shared_stdlib_cache_payload(
             name = func.get("name")
             if not isinstance(name, str) or _is_user_owned_symbol(name, entry_module):
                 continue
-            if name in seen:
-                continue
-            seen.add(name)
-            names.append(name)
-    names.sort()
+            stdlib_functions.append(func)
+    stdlib_functions = _sorted_ir_functions(stdlib_functions)
+    if compiler_fingerprint is None:
+        compiler_fingerprint = _shared_stdlib_compiler_fingerprint()
     return json.dumps(
-        {"stdlib_names": names, "profile": ir.get("profile")},
+        {
+            "compiler_fingerprint": compiler_fingerprint,
+            "functions": stdlib_functions,
+            "profile": ir.get("profile"),
+            "top_level_extras_digest": _ir_top_level_extras_digest(
+                cast(dict[str, Any], ir)
+            ),
+        },
         sort_keys=True,
         separators=(",", ":"),
+        default=_json_ir_default,
     ).encode("utf-8")
 
 
@@ -13983,8 +13991,13 @@ def _shared_stdlib_cache_key(
     entry_module: str,
     target_triple: str | None,
     cache_variant: str,
+    compiler_fingerprint: str | None = None,
 ) -> str:
-    payload = _shared_stdlib_cache_payload(ir, entry_module=entry_module)
+    payload = _shared_stdlib_cache_payload(
+        ir,
+        entry_module=entry_module,
+        compiler_fingerprint=compiler_fingerprint,
+    )
     return _cache_key(
         cast(dict[str, Any], ir),
         "native-stdlib",
@@ -13992,6 +14005,29 @@ def _shared_stdlib_cache_key(
         cache_variant,
         payload=payload,
     )
+
+
+def _shared_stdlib_compiler_fingerprint() -> str:
+    payload = {
+        "runtime_backend": _cache_fingerprint(),
+        "tooling": _cache_tooling_fingerprint(),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _shared_stdlib_cache_mismatch_detail(
+    stdlib_path: Path,
+    expected_key: str | None,
+) -> str:
+    actual_key = read_stdlib_cache_key(stdlib_path)
+    if not expected_key:
+        return f"{stdlib_path} (missing expected key)"
+    if actual_key is None:
+        return f"{stdlib_path} (missing sidecar; expected key {expected_key})"
+    if actual_key == expected_key:
+        return str(stdlib_path)
+    return f"{stdlib_path} (expected {expected_key}, found {actual_key})"
 
 
 def _stdlib_object_cache_path(
@@ -15903,12 +15939,13 @@ def _prepare_frontend_lowering_config(
     # module-level names (including ABC) are fully defined before any downstream
     # module tries to access them.
     if not is_wasm:
-        # Default native chunk size: 3000 ops per module init function.
-        # This prevents OOM when compiling large stdlib modules (like
-        # _collections_abc at 23K+ ops) into a single Cranelift ObjectModule.
-        # The default of 3000 produces ~100-300 functions per compilation
-        # unit, well within Cranelift's comfort zone.
-        module_chunk_max_ops = 3000
+        # Default native chunk size: 2000 ops per module init function.
+        # Native stdlib bootstrap functions accumulate dense check_exception /
+        # label CFG and post-lowering metadata, so a 3000-op frontend budget
+        # can still yield backend chunks well above Cranelift's sweet spot.
+        # A 2000-op default keeps import/bootstrap compilation more
+        # deterministic without changing runtime semantics.
+        module_chunk_max_ops = 2000
         env_native_chunk_ops = os.environ.get("MOLT_MODULE_CHUNK_OPS")
         if env_native_chunk_ops:
             try:

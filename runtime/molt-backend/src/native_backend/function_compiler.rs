@@ -89,8 +89,18 @@ fn infer_scalar_lane(
                 None
             }
         }),
-        "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "bool" | "cast_bool" | "builtin_bool"
-        | "is_truthy" | "is" | "not" => Some(ScalarLane::Bool),
+        "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "is" => Some(ScalarLane::Bool),
+        "bool" | "cast_bool" | "builtin_bool" | "is_truthy" | "not" => {
+            first_source().and_then(|src| {
+                if bool_like_vars.contains(src) {
+                    Some(ScalarLane::Bool)
+                } else if name_is_int_like(src, int_like_vars, bool_like_vars) {
+                    Some(ScalarLane::Int)
+                } else {
+                    None
+                }
+            })
+        }
         "if" => first_source().and_then(|src| {
             if bool_like_vars.contains(src) {
                 Some(ScalarLane::Bool)
@@ -170,6 +180,79 @@ fn shadow_pair_available(
 }
 
 #[cfg(feature = "native-backend")]
+fn collect_slot_backed_join_names(
+    ops: &[OpIR],
+    exception_label_ids: &BTreeSet<i64>,
+) -> BTreeSet<String> {
+    let mut slot_backed_join_names: BTreeSet<String> = BTreeSet::new();
+
+    // Join carriers that are explicitly materialized with store/load in the IR
+    // are memory-backed transport by construction. Keep them on the stack-backed
+    // path so later label materialization does not try to reinterpret them as
+    // structured phi joins.
+    for op in ops {
+        if op.kind == "store_var"
+            && let Some(name) = op.var.as_ref().or(op.out.as_ref())
+            && is_join_slot_name(name)
+        {
+            slot_backed_join_names.insert(name.clone());
+        }
+    }
+
+    if exception_label_ids.is_empty() {
+        return slot_backed_join_names;
+    }
+
+    let mut exception_region_depth = 0i32;
+    let mut first_seen_join_in_exception: BTreeMap<String, bool> = BTreeMap::new();
+    let mut exception_written_locals: BTreeSet<String> = BTreeSet::new();
+    for op in ops {
+        match op.kind.as_str() {
+            "try_start" => {
+                exception_region_depth += 1;
+            }
+            "exception_pop" => {
+                exception_region_depth = (exception_region_depth - 1).max(0);
+            }
+            "store_var" if exception_region_depth > 0 => {
+                if let Some(name) = op.var.as_ref().or(op.out.as_ref()) {
+                    // Values first written inside a protected region must
+                    // survive `check_exception`-driven block splits. Pure
+                    // SSA vars are not stable enough here; keep a stack slot.
+                    exception_written_locals.insert(name.clone());
+                    if is_join_slot_name(name) {
+                        first_seen_join_in_exception
+                            .entry(name.clone())
+                            .or_insert(true);
+                    }
+                }
+            }
+            "copy_var" | "load_var" if exception_region_depth > 0 => {
+                let candidate = op
+                    .var
+                    .as_ref()
+                    .or_else(|| op.args.as_ref().and_then(|args| args.first()));
+                if let Some(name) = candidate
+                    && is_join_slot_name(name)
+                {
+                    first_seen_join_in_exception
+                        .entry(name.clone())
+                        .or_insert(true);
+                }
+            }
+            _ => {}
+        }
+    }
+    for (name, in_exception) in first_seen_join_in_exception {
+        if in_exception {
+            slot_backed_join_names.insert(name);
+        }
+    }
+    slot_backed_join_names.extend(exception_written_locals);
+    slot_backed_join_names
+}
+
+#[cfg(feature = "native-backend")]
 fn switch_to_block_with_rebind(
     builder: &mut FunctionBuilder,
     block: Block,
@@ -179,22 +262,42 @@ fn switch_to_block_with_rebind(
     shadow_vars: &BTreeMap<String, Variable>,
     shadow_names: &BTreeSet<String>,
 ) {
-    let _ = (has_exception_labels, vars, shadow_vars, shadow_names);
     crate::switch_to_block_tracking(builder, block, is_block_filled);
-    // Selectively rebind only the variables that the caller has proven live
-    // across this boundary. This avoids the old "rebind everything" block-param
-    // explosion while still preserving values through check_exception / loop
-    // boundary block splits.
-    for var in vars.values() {
-        let value = builder.use_var(*var);
-        builder.def_var(*var, value);
-    }
-    for name in shadow_names {
-        if let Some(var) = shadow_vars.get(name) {
+    if !*is_block_filled && (has_exception_labels || !builder.block_params(block).is_empty()) {
+        // Rebind only when the target block already owns explicit SSA transport
+        // (block params) or exception-aware fallthrough semantics. Ordinary
+        // labels must not accrete implicit params as later predecessors appear.
+        for var in vars.values() {
             let value = builder.use_var(*var);
             builder.def_var(*var, value);
         }
+        for name in shadow_names {
+            if let Some(var) = shadow_vars.get(name) {
+                let value = builder.use_var(*var);
+                builder.def_var(*var, value);
+            }
+        }
     }
+}
+
+#[cfg(feature = "native-backend")]
+fn materialize_label_block(
+    builder: &mut FunctionBuilder,
+    block: Block,
+    is_block_filled: &mut bool,
+) {
+    ensure_block_in_layout(builder, block);
+    if !*is_block_filled {
+        jump_block(builder, block, &[]);
+    }
+    crate::switch_to_block_tracking(builder, block, is_block_filled);
+}
+
+#[cfg(feature = "native-backend")]
+#[inline]
+fn switch_to_block_materialized(builder: &mut FunctionBuilder, block: Block) {
+    ensure_block_in_layout(builder, block);
+    builder.switch_to_block(block);
 }
 
 #[cfg(feature = "native-backend")]
@@ -1134,6 +1237,9 @@ impl SimpleBackend {
         let debug_loop_cfg = std::env::var("MOLT_DEBUG_LOOP_CFG")
             .ok()
             .filter(|raw| raw == "1" || func_ir.name.contains(raw));
+        let debug_block_origins = std::env::var("MOLT_DEBUG_BLOCK_ORIGINS")
+            .ok()
+            .filter(|raw| raw == "1" || raw.as_str() == func_ir.name || func_ir.name.contains(raw));
         let debug_seal = std::env::var("MOLT_DEBUG_SEAL").as_deref() == Ok(func_ir.name.as_str());
         let maybe_debug_seal = |tag: &str, op_idx: usize, block: Block| {
             if debug_seal {
@@ -1312,7 +1418,7 @@ impl SimpleBackend {
             .collect();
 
         reachable_blocks.insert(entry_block);
-        builder.switch_to_block(entry_block);
+        switch_to_block_materialized(&mut builder, entry_block);
 
         for (i, val) in entry_param_values.iter().copied().enumerate() {
             let name = &func_ir.params[i];
@@ -1392,55 +1498,10 @@ impl SimpleBackend {
             }
             int_store_targets
         };
-        let mut slot_backed_join_names: BTreeSet<String> = BTreeSet::new();
-        if !exception_label_ids.is_empty() {
-            let mut exception_region_depth = 0i32;
-            let mut first_seen_join_in_exception: BTreeMap<String, bool> = BTreeMap::new();
-            let mut exception_written_locals: BTreeSet<String> = BTreeSet::new();
-            for op in &func_ir.ops {
-                match op.kind.as_str() {
-                    "try_start" => {
-                        exception_region_depth += 1;
-                    }
-                    "exception_pop" => {
-                        exception_region_depth = (exception_region_depth - 1).max(0);
-                    }
-                    "store_var" if exception_region_depth > 0 => {
-                        if let Some(name) = op.var.as_ref().or(op.out.as_ref()) {
-                            // Values first written inside a protected region must
-                            // survive `check_exception`-driven block splits. Pure
-                            // SSA vars are not stable enough here; keep a stack slot.
-                            exception_written_locals.insert(name.clone());
-                            if is_join_slot_name(name) {
-                                first_seen_join_in_exception
-                                    .entry(name.clone())
-                                    .or_insert(true);
-                            }
-                        }
-                    }
-                    "copy_var" | "load_var" if exception_region_depth > 0 => {
-                        let candidate = op
-                            .var
-                            .as_ref()
-                            .or_else(|| op.args.as_ref().and_then(|args| args.first()));
-                        if let Some(name) = candidate
-                            && is_join_slot_name(name)
-                        {
-                            first_seen_join_in_exception
-                                .entry(name.clone())
-                                .or_insert(true);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            for (name, in_exception) in first_seen_join_in_exception {
-                if in_exception {
-                    slot_backed_join_names.insert(name);
-                }
-            }
-            slot_backed_join_names.extend(exception_written_locals);
-        }
+        // Only explicit store-backed join carriers and exception-fragile names
+        // use stack slots. Structured phi joins must stay on the SSA path.
+        let slot_backed_join_names =
+            collect_slot_backed_join_names(&func_ir.ops, &exception_label_ids);
         let mut slot_backed_join_slots: BTreeMap<String, cranelift_codegen::ir::StackSlot> =
             BTreeMap::new();
         if !slot_backed_join_names.is_empty() {
@@ -2048,7 +2109,7 @@ impl SimpleBackend {
                     || block_has_terminator(&builder, builder.current_block().unwrap())
                 {
                     let dead = builder.create_block();
-                    builder.switch_to_block(dead);
+                    switch_to_block_materialized(&mut builder, dead);
                     seal_block_once(&mut builder, &mut sealed_blocks, dead);
                 }
                 is_block_filled = false;
@@ -2464,19 +2525,19 @@ impl SimpleBackend {
                                 .ins()
                                 .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                            builder.switch_to_block(fast_block);
+                            switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                             let fast_res = box_int_value(&mut builder, sum, &nbc);
                             jump_block(&mut builder, merge_block, &[fast_res, sum]);
 
-                            builder.switch_to_block(slow_block);
+                            switch_to_block_materialized(&mut builder, slow_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                             let slow_res = builder.inst_results(call)[0];
                             let zero = builder.ins().iconst(types::I64, 0);
                             jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
-                            builder.switch_to_block(merge_block);
+                            switch_to_block_materialized(&mut builder, merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                             let merged_boxed = builder.block_params(merge_block)[0];
                             let merged_raw = builder.block_params(merge_block)[1];
@@ -2501,7 +2562,7 @@ impl SimpleBackend {
                                 .ins()
                                 .brif(both_inline, guard_fast_block, &[], slow_block, &[]);
 
-                            builder.switch_to_block(guard_fast_block);
+                            switch_to_block_materialized(&mut builder, guard_fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, guard_fast_block);
                             let fast_block = builder.create_block();
                             let lhs_val = unbox_int_or_bool(&mut builder, *lhs, &nbc);
@@ -2513,17 +2574,17 @@ impl SimpleBackend {
                                 .ins()
                                 .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                            builder.switch_to_block(fast_block);
+                            switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                             jump_block(&mut builder, merge_block, &[fast_res]);
 
-                            builder.switch_to_block(slow_block);
+                            switch_to_block_materialized(&mut builder, slow_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                             let slow_res = builder.inst_results(call)[0];
                             jump_block(&mut builder, merge_block, &[slow_res]);
 
-                            builder.switch_to_block(merge_block);
+                            switch_to_block_materialized(&mut builder, merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                             builder.block_params(merge_block)[0]
                         }
@@ -2551,7 +2612,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, sum, &nbc);
@@ -2565,7 +2626,7 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         // Inline float fast path: if both operands are floats, do f64 add directly.
                         let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
@@ -2576,7 +2637,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_flt, float_block, &[], call_block, &[]);
 
-                        builder.switch_to_block(float_block);
+                        switch_to_block_materialized(&mut builder, float_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, float_block);
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -2584,14 +2645,14 @@ impl SimpleBackend {
                         let flt_res = box_float_value(&mut builder, flt_sum, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         emit_mixed_int_float_op(&mut builder, *lhs, *rhs, &nbc, 0, merge_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -2666,19 +2727,19 @@ impl SimpleBackend {
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
                         let merge_raw = builder.block_params(merge_block)[1];
@@ -2713,17 +2774,17 @@ impl SimpleBackend {
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -2750,7 +2811,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, sum, &nbc);
@@ -2764,7 +2825,7 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
@@ -2774,7 +2835,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_flt, float_block, &[], call_block, &[]);
 
-                        builder.switch_to_block(float_block);
+                        switch_to_block_materialized(&mut builder, float_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, float_block);
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -2782,14 +2843,14 @@ impl SimpleBackend {
                         let flt_res = box_float_value(&mut builder, flt_sum, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         emit_mixed_int_float_op(&mut builder, *lhs, *rhs, &nbc, 0, merge_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -3307,19 +3368,19 @@ impl SimpleBackend {
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
                         let merge_raw = builder.block_params(merge_block)[1];
@@ -3356,7 +3417,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -3367,15 +3428,15 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         jump_block(&mut builder, merge_block, &[fast_res]);
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -3394,7 +3455,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, diff, &nbc);
@@ -3408,7 +3469,7 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -3426,7 +3487,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_flt, float_block, &[], call_block, &[]);
 
-                        builder.switch_to_block(float_block);
+                        switch_to_block_materialized(&mut builder, float_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, float_block);
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -3434,14 +3495,14 @@ impl SimpleBackend {
                         let flt_res = box_float_value(&mut builder, flt_diff, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         emit_mixed_int_float_op(&mut builder, *lhs, *rhs, &nbc, 1, merge_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -3507,19 +3568,19 @@ impl SimpleBackend {
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
                         let merge_raw = builder.block_params(merge_block)[1];
@@ -3556,7 +3617,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -3567,15 +3628,15 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         jump_block(&mut builder, merge_block, &[fast_res]);
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -3594,7 +3655,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, diff, &nbc);
@@ -3608,7 +3669,7 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -3626,7 +3687,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_flt, float_block, &[], call_block, &[]);
 
-                        builder.switch_to_block(float_block);
+                        switch_to_block_materialized(&mut builder, float_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, float_block);
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -3634,14 +3695,14 @@ impl SimpleBackend {
                         let flt_res = box_float_value(&mut builder, flt_diff, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         emit_mixed_int_float_op(&mut builder, *lhs, *rhs, &nbc, 1, merge_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -3701,19 +3762,19 @@ impl SimpleBackend {
                         builder.append_block_param(merge_block, types::I64); // raw shadow
                         builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         jump_block(&mut builder, merge_block, &[boxed, raw_result]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         let zero = builder.ins().iconst(types::I64, 0);
                         jump_block(&mut builder, merge_block, &[slow_res, zero]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
                         let merge_raw = builder.block_params(merge_block)[1];
@@ -3749,7 +3810,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -3758,17 +3819,17 @@ impl SimpleBackend {
                         let fast_res = box_int_value(&mut builder, prod, &nbc);
                         builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -3795,7 +3856,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, prod, &nbc);
@@ -3808,7 +3869,7 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
@@ -3818,7 +3879,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_flt, float_block, &[], call_block, &[]);
 
-                        builder.switch_to_block(float_block);
+                        switch_to_block_materialized(&mut builder, float_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, float_block);
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -3826,14 +3887,14 @@ impl SimpleBackend {
                         let flt_res = box_float_value(&mut builder, flt_prod, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         emit_mixed_int_float_op(&mut builder, *lhs, *rhs, &nbc, 2, merge_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -3891,18 +3952,18 @@ impl SimpleBackend {
                         builder.append_block_param(merge_block, types::I64);
                         builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let boxed = box_int_value(&mut builder, raw_result, &nbc);
                         jump_block(&mut builder, merge_block, &[boxed]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let merge_res = builder.block_params(merge_block)[0];
                         if let Some(ref out_name) = op.out {
@@ -3933,7 +3994,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -3942,17 +4003,17 @@ impl SimpleBackend {
                         let fast_res = box_int_value(&mut builder, prod, &nbc);
                         builder.ins().brif(fits, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -3979,7 +4040,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, prod, &nbc);
@@ -3992,7 +4053,7 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
                         let float_block = builder.create_block();
@@ -4002,7 +4063,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_flt, float_block, &[], call_block, &[]);
 
-                        builder.switch_to_block(float_block);
+                        switch_to_block_materialized(&mut builder, float_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, float_block);
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -4010,14 +4071,14 @@ impl SimpleBackend {
                         let flt_res = box_float_value(&mut builder, flt_prod, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         emit_mixed_int_float_op(&mut builder, *lhs, *rhs, &nbc, 2, merge_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -4055,7 +4116,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -4066,18 +4127,18 @@ impl SimpleBackend {
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let fast_res = box_int_value(&mut builder, raw, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -4104,7 +4165,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().bor(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, raw, &nbc);
@@ -4118,13 +4179,13 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -4160,7 +4221,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -4171,18 +4232,18 @@ impl SimpleBackend {
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let fast_res = box_int_value(&mut builder, raw, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -4209,7 +4270,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().bor(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, raw, &nbc);
@@ -4223,13 +4284,13 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -4265,7 +4326,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -4276,18 +4337,18 @@ impl SimpleBackend {
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let fast_res = box_int_value(&mut builder, raw, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -4314,7 +4375,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().band(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, raw, &nbc);
@@ -4328,13 +4389,13 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -4370,7 +4431,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -4381,18 +4442,18 @@ impl SimpleBackend {
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let fast_res = box_int_value(&mut builder, raw, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -4419,7 +4480,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().band(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, raw, &nbc);
@@ -4433,13 +4494,13 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -4475,7 +4536,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -4486,18 +4547,18 @@ impl SimpleBackend {
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let fast_res = box_int_value(&mut builder, raw, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -4524,7 +4585,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().bxor(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, raw, &nbc);
@@ -4538,13 +4599,13 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -4580,7 +4641,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -4591,18 +4652,18 @@ impl SimpleBackend {
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let fast_res = box_int_value(&mut builder, raw, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -4629,7 +4690,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().bxor(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, raw, &nbc);
@@ -4643,13 +4704,13 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -4687,7 +4748,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -4707,7 +4768,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(rhs_in_range, range_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(range_block);
+                        switch_to_block_materialized(&mut builder, range_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, range_block);
                         let shifted = builder.ins().ishl(lhs_val, rhs_val);
                         let reversed = builder.ins().sshr(shifted, rhs_val);
@@ -4718,19 +4779,19 @@ impl SimpleBackend {
                             .ins()
                             .brif(can_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let shifted = builder.ins().ishl(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, shifted, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -4760,7 +4821,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, int_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(int_block);
+                        switch_to_block_materialized(&mut builder, int_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, int_block);
                         let zero = builder.ins().iconst(types::I64, 0);
                         let max_shift = builder.ins().iconst(types::I64, 64);
@@ -4777,7 +4838,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(rhs_in_range, range_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(range_block);
+                        switch_to_block_materialized(&mut builder, range_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, range_block);
                         let shifted = builder.ins().ishl(lhs_val, rhs_val);
                         let reversed = builder.ins().sshr(shifted, rhs_val);
@@ -4788,19 +4849,19 @@ impl SimpleBackend {
                             .ins()
                             .brif(can_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let shifted = builder.ins().ishl(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, shifted, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -4836,7 +4897,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -4856,19 +4917,19 @@ impl SimpleBackend {
                             .ins()
                             .brif(rhs_in_range, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let shifted = builder.ins().sshr(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, shifted, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -4896,7 +4957,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, int_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(int_block);
+                        switch_to_block_materialized(&mut builder, int_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, int_block);
                         let zero = builder.ins().iconst(types::I64, 0);
                         let max_shift = builder.ins().iconst(types::I64, 64);
@@ -4913,19 +4974,19 @@ impl SimpleBackend {
                             .ins()
                             .brif(rhs_in_range, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let shifted = builder.ins().sshr(lhs_val, rhs_val);
                         let fast_res = box_int_value(&mut builder, shifted, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -4971,7 +5032,7 @@ impl SimpleBackend {
                         builder.append_block_param(merge_block, types::I64);
                         builder.ins().brif(is_zero, zero_block, &[], ok_block, &[]);
                         // Zero divisor → call runtime for ZeroDivisionError.
-                        builder.switch_to_block(zero_block);
+                        switch_to_block_materialized(&mut builder, zero_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, zero_block);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -4985,12 +5046,12 @@ impl SimpleBackend {
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
                         // Non-zero → fast fdiv.
-                        builder.switch_to_block(ok_block);
+                        switch_to_block_materialized(&mut builder, ok_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, ok_block);
                         let result_f = builder.ins().fdiv(lhs_f, rhs_f);
                         let fast_res = box_float_value(&mut builder, result_f, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else if op_prefers_int_lane(&op) {
@@ -5020,7 +5081,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -5033,7 +5094,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         // Python true division: int / int -> float.
                         let lhs_f = builder.ins().fcvt_from_sint(types::F64, lhs_val);
@@ -5051,13 +5112,13 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -5084,7 +5145,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, int_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(int_block);
+                        switch_to_block_materialized(&mut builder, int_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, int_block);
                         let zero = builder.ins().iconst(types::I64, 0);
                         let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
@@ -5093,7 +5154,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         // Python true division: int / int -> float.
                         let lhs_f = builder.ins().fcvt_from_sint(types::F64, lhs_val);
@@ -5102,7 +5163,7 @@ impl SimpleBackend {
                         let fast_res = box_float_value(&mut builder, result_f, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         // Inline float fast path: if both operands are floats, do f64 div directly.
                         let both_flt = both_float_check(&mut builder, *lhs, *rhs, &nbc);
@@ -5113,7 +5174,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_flt, float_block, &[], call_block, &[]);
 
-                        builder.switch_to_block(float_block);
+                        switch_to_block_materialized(&mut builder, float_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, float_block);
                         let lhs_ff = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_ff = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -5121,13 +5182,13 @@ impl SimpleBackend {
                         let flt_res = box_float_value(&mut builder, flt_quot, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -5164,7 +5225,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_check_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_check_block);
+                        switch_to_block_materialized(&mut builder, inline_check_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_check_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -5176,7 +5237,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         // SAFETY: Cranelift sdiv traps on INT_MIN/-1 (unlike x86 SIGFPE).
                         // NaN-boxed ints are 47-bit (range [-(2^46), 2^46-1]), so INT64_MIN
@@ -5202,13 +5263,13 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -5236,7 +5297,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, int_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(int_block);
+                        switch_to_block_materialized(&mut builder, int_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, int_block);
                         let zero = builder.ins().iconst(types::I64, 0);
                         let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
@@ -5244,7 +5305,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let one = builder.ins().iconst(types::I64, 1);
                         // SAFETY: Cranelift sdiv traps on INT_MIN/-1 (unlike x86 SIGFPE).
@@ -5271,13 +5332,13 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -5314,7 +5375,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_check_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_check_block);
+                        switch_to_block_materialized(&mut builder, inline_check_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_check_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -5325,7 +5386,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let rem = builder.ins().srem(lhs_val, rhs_val);
                         let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
@@ -5346,13 +5407,13 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -5380,7 +5441,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, int_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(int_block);
+                        switch_to_block_materialized(&mut builder, int_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, int_block);
                         let zero = builder.ins().iconst(types::I64, 0);
                         let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
@@ -5388,7 +5449,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let rem = builder.ins().srem(lhs_val, rhs_val);
                         let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
@@ -5409,13 +5470,13 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -5455,7 +5516,7 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        builder.switch_to_block(inline_guard_block);
+                        switch_to_block_materialized(&mut builder, inline_guard_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
 
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
@@ -5466,7 +5527,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let quot = builder.ins().sdiv(lhs_val, rhs_val);
                         let rem = builder.ins().srem(lhs_val, rhs_val);
@@ -5490,13 +5551,13 @@ impl SimpleBackend {
                             &[],
                         );
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -5550,14 +5611,14 @@ impl SimpleBackend {
                             .brif(is_zero, exp0_block, &[], exp1_block, &[]);
 
                         // exp == 0 → result is 1
-                        builder.switch_to_block(exp0_block);
+                        switch_to_block_materialized(&mut builder, exp0_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, exp0_block);
                         let one = builder.ins().iconst(types::I64, 1);
                         let res_one = box_int_value(&mut builder, one, &nbc);
                         jump_block(&mut builder, merge_block, &[res_one]);
 
                         // Check exp == 1 → result is base (return lhs as-is)
-                        builder.switch_to_block(exp1_block);
+                        switch_to_block_materialized(&mut builder, exp1_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, exp1_block);
                         let is_one = builder.ins().icmp_imm(IntCC::Equal, exp_val, 1);
                         let exp1_ret_block = builder.create_block();
@@ -5565,12 +5626,12 @@ impl SimpleBackend {
                             .ins()
                             .brif(is_one, exp1_ret_block, &[], exp2_block, &[]);
 
-                        builder.switch_to_block(exp1_ret_block);
+                        switch_to_block_materialized(&mut builder, exp1_ret_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, exp1_ret_block);
                         jump_block(&mut builder, merge_block, &[*lhs]);
 
                         // Check exp == 2
-                        builder.switch_to_block(exp2_block);
+                        switch_to_block_materialized(&mut builder, exp2_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, exp2_block);
                         let is_two = builder.ins().icmp_imm(IntCC::Equal, exp_val, 2);
                         builder
@@ -5578,19 +5639,19 @@ impl SimpleBackend {
                             .brif(is_two, exp2_fast_block, &[], slow_block, &[]);
 
                         // exp == 2 → base * base with overflow check
-                        builder.switch_to_block(exp2_fast_block);
+                        switch_to_block_materialized(&mut builder, exp2_fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, exp2_fast_block);
                         let (sq, fits) = imul_checked_inline(&mut builder, base_val, base_val);
                         let sq_res = box_int_value(&mut builder, sq, &nbc);
                         brif_block(&mut builder, fits, merge_block, &[sq_res], slow_block, &[]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -7480,7 +7541,7 @@ impl SimpleBackend {
                                     .brif(in_bounds, fast_block, &[], slow_block, &[]);
 
                                 // Fast path: direct load
-                                builder.switch_to_block(fast_block);
+                                switch_to_block_materialized(&mut builder, fast_block);
                                 seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                                 let byte_offset = builder.ins().imul_imm(raw_idx, 8);
                                 let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
@@ -7494,7 +7555,7 @@ impl SimpleBackend {
                                 jump_block(&mut builder, merge_block, &[boxed_res, raw_result]);
 
                                 // Slow path: safe runtime call (handles negative index, IndexError)
-                                builder.switch_to_block(slow_block);
+                                switch_to_block_materialized(&mut builder, slow_block);
                                 seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                                 let callee = Self::import_func_id_split(
                                     &mut self.module,
@@ -7514,7 +7575,7 @@ impl SimpleBackend {
                                 jump_block(&mut builder, merge_block, &[slow_res, slow_raw]);
 
                                 // Merge
-                                builder.switch_to_block(merge_block);
+                                switch_to_block_materialized(&mut builder, merge_block);
                                 seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                                 let merged_boxed = builder.block_params(merge_block)[0];
                                 let merged_raw = builder.block_params(merge_block)[1];
@@ -7671,7 +7732,7 @@ impl SimpleBackend {
                                 .brif(in_bounds, fast_block, &[], slow_block, &[]);
 
                             // Fast path: direct store
-                            builder.switch_to_block(fast_block);
+                            switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                             let byte_offset = builder.ins().imul_imm(raw_idx, 8);
                             let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
@@ -7681,7 +7742,7 @@ impl SimpleBackend {
                             jump_block(&mut builder, merge_block, &[]);
 
                             // Slow path: safe runtime call
-                            builder.switch_to_block(slow_block);
+                            switch_to_block_materialized(&mut builder, slow_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                             let callee = Self::import_func_id_split(
                                 &mut self.module,
@@ -7695,7 +7756,7 @@ impl SimpleBackend {
                             builder.ins().call(local_callee, &[*obj, *idx, *val]);
                             jump_block(&mut builder, merge_block, &[]);
 
-                            builder.switch_to_block(merge_block);
+                            switch_to_block_materialized(&mut builder, merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                             if let Some(out__) = op.out {
                                 def_var_named(&mut builder, &vars, out__, *obj);
@@ -9560,13 +9621,13 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
                         let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -9584,7 +9645,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_flt, float_block, &[], call_block, &[]);
 
-                        builder.switch_to_block(float_block);
+                        switch_to_block_materialized(&mut builder, float_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, float_block);
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -9592,13 +9653,13 @@ impl SimpleBackend {
                         let flt_res = box_bool_value(&mut builder, fcmp, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -9672,7 +9733,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let cmp =
                             builder
@@ -9681,7 +9742,7 @@ impl SimpleBackend {
                         let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -9699,7 +9760,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_flt, float_block, &[], call_block, &[]);
 
-                        builder.switch_to_block(float_block);
+                        switch_to_block_materialized(&mut builder, float_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, float_block);
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -9707,13 +9768,13 @@ impl SimpleBackend {
                         let flt_res = box_bool_value(&mut builder, fcmp, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -9777,7 +9838,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let cmp = builder
                             .ins()
@@ -9785,7 +9846,7 @@ impl SimpleBackend {
                         let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -9803,7 +9864,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_flt, float_block, &[], call_block, &[]);
 
-                        builder.switch_to_block(float_block);
+                        switch_to_block_materialized(&mut builder, float_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, float_block);
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -9811,13 +9872,13 @@ impl SimpleBackend {
                         let flt_res = box_bool_value(&mut builder, fcmp, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -9884,7 +9945,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let cmp =
                             builder
@@ -9893,7 +9954,7 @@ impl SimpleBackend {
                         let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -9911,7 +9972,7 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_flt, float_block, &[], call_block, &[]);
 
-                        builder.switch_to_block(float_block);
+                        switch_to_block_materialized(&mut builder, float_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, float_block);
                         let lhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *lhs);
                         let rhs_f = builder.ins().bitcast(types::F64, MemFlags::new(), *rhs);
@@ -9921,13 +9982,13 @@ impl SimpleBackend {
                         let flt_res = box_bool_value(&mut builder, fcmp, &nbc);
                         jump_block(&mut builder, merge_block, &[flt_res]);
 
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -9958,14 +10019,14 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
                         let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let eq_callee = Self::import_func_id_split(
                             &mut self.module,
@@ -9978,7 +10039,7 @@ impl SimpleBackend {
                         let eq_call = builder.ins().call(eq_local, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(eq_call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -9997,13 +10058,13 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
                         let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -10017,7 +10078,7 @@ impl SimpleBackend {
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -10048,14 +10109,14 @@ impl SimpleBackend {
                         builder
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
                         let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
                         let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
                         let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let ne_callee = Self::import_func_id_split(
                             &mut self.module,
@@ -10068,7 +10129,7 @@ impl SimpleBackend {
                         let ne_call = builder.ins().call(ne_local, &[*lhs, *rhs]);
                         let slow_res = builder.inst_results(ne_call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -10087,13 +10148,13 @@ impl SimpleBackend {
                             .ins()
                             .brif(both_int, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
                         let fast_res = box_bool_value(&mut builder, cmp, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let callee = Self::import_func_id_split(
                             &mut self.module,
@@ -10107,7 +10168,7 @@ impl SimpleBackend {
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     };
@@ -10197,18 +10258,18 @@ impl SimpleBackend {
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let fast_res = box_int_value(&mut builder, negated, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*val]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -10256,18 +10317,18 @@ impl SimpleBackend {
                             .ins()
                             .brif(fits_inline, fast_block, &[], slow_block, &[]);
 
-                        builder.switch_to_block(fast_block);
+                        switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let fast_res = box_int_value(&mut builder, abs_val, &nbc);
                         jump_block(&mut builder, merge_block, &[fast_res]);
 
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let call = builder.ins().call(local_callee, &[*val]);
                         let slow_res = builder.inst_results(call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -10542,7 +10603,7 @@ impl SimpleBackend {
                         let ok = builder.ins().icmp_imm(IntCC::Equal, rc, 0);
                         brif_block(&mut builder, ok, ok_block, &[], err_block, &[]);
 
-                        builder.switch_to_block(ok_block);
+                        switch_to_block_materialized(&mut builder, ok_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, ok_block);
                         let ok_res =
                             builder
@@ -10550,7 +10611,7 @@ impl SimpleBackend {
                                 .load(types::I64, MemFlags::trusted(), out_ptr, 0);
                         jump_block(&mut builder, merge_block, &[ok_res]);
 
-                        builder.switch_to_block(err_block);
+                        switch_to_block_materialized(&mut builder, err_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, err_block);
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("String arg not found");
@@ -10566,7 +10627,7 @@ impl SimpleBackend {
                         let err_res = builder.inst_results(err_call)[0];
                         jump_block(&mut builder, merge_block, &[err_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let res = builder.block_params(merge_block)[0];
                         if let Some(out__) = op.out {
@@ -10621,7 +10682,7 @@ impl SimpleBackend {
                         let ok = builder.ins().icmp_imm(IntCC::Equal, rc, 0);
                         brif_block(&mut builder, ok, ok_block, &[], err_block, &[]);
 
-                        builder.switch_to_block(ok_block);
+                        switch_to_block_materialized(&mut builder, ok_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, ok_block);
                         let ok_res =
                             builder
@@ -10629,7 +10690,7 @@ impl SimpleBackend {
                                 .load(types::I64, MemFlags::trusted(), out_ptr, 0);
                         jump_block(&mut builder, merge_block, &[ok_res]);
 
-                        builder.switch_to_block(err_block);
+                        switch_to_block_materialized(&mut builder, err_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, err_block);
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
@@ -10645,7 +10706,7 @@ impl SimpleBackend {
                         let err_res = builder.inst_results(err_call)[0];
                         jump_block(&mut builder, merge_block, &[err_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let res = builder.block_params(merge_block)[0];
                         if let Some(out__) = op.out {
@@ -10700,7 +10761,7 @@ impl SimpleBackend {
                         let ok = builder.ins().icmp_imm(IntCC::Equal, rc, 0);
                         brif_block(&mut builder, ok, ok_block, &[], err_block, &[]);
 
-                        builder.switch_to_block(ok_block);
+                        switch_to_block_materialized(&mut builder, ok_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, ok_block);
                         let ok_res =
                             builder
@@ -10708,7 +10769,7 @@ impl SimpleBackend {
                                 .load(types::I64, MemFlags::trusted(), out_ptr, 0);
                         jump_block(&mut builder, merge_block, &[ok_res]);
 
-                        builder.switch_to_block(err_block);
+                        switch_to_block_materialized(&mut builder, err_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, err_block);
                         let arg_bits =
                             var_get(&mut builder, &vars, arg_name).expect("Bytes arg not found");
@@ -10724,7 +10785,7 @@ impl SimpleBackend {
                         let err_res = builder.inst_results(err_call)[0];
                         jump_block(&mut builder, merge_block, &[err_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         let res = builder.block_params(merge_block)[0];
                         if let Some(out__) = op.out {
@@ -10798,7 +10859,7 @@ impl SimpleBackend {
                         &mut builder,
                         fallback_block,
                         &mut is_block_filled,
-                        !exception_label_ids.is_empty(),
+                        false,
                         &rebind_vars,
                         &raw_int_shadow,
                         &int_store_target_names,
@@ -10874,7 +10935,7 @@ impl SimpleBackend {
                         &mut builder,
                         pending_path,
                         &mut is_block_filled,
-                        !exception_label_ids.is_empty(),
+                        false,
                         &rebind_vars,
                         &raw_int_shadow,
                         &int_store_target_names,
@@ -10896,7 +10957,7 @@ impl SimpleBackend {
                         &mut builder,
                         ready_path,
                         &mut is_block_filled,
-                        !exception_label_ids.is_empty(),
+                        false,
                         &rebind_vars,
                         &raw_int_shadow,
                         &int_store_target_names,
@@ -10936,7 +10997,7 @@ impl SimpleBackend {
                         &mut builder,
                         next_block,
                         &mut is_block_filled,
-                        !exception_label_ids.is_empty(),
+                        false,
                         &rebind_vars,
                         &raw_int_shadow,
                         &int_store_target_names,
@@ -10979,7 +11040,7 @@ impl SimpleBackend {
                             &mut builder,
                             next_block,
                             &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
+                            false,
                             &rebind_vars,
                             &raw_int_shadow,
                             &int_store_target_names,
@@ -11046,7 +11107,7 @@ impl SimpleBackend {
                         &mut builder,
                         ready_path,
                         &mut is_block_filled,
-                        !exception_label_ids.is_empty(),
+                        false,
                         &rebind_vars,
                         &raw_int_shadow,
                         &int_store_target_names,
@@ -11074,7 +11135,7 @@ impl SimpleBackend {
                             &mut builder,
                             next_block,
                             &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
+                            false,
                             &rebind_vars,
                             &raw_int_shadow,
                             &int_store_target_names,
@@ -11140,7 +11201,7 @@ impl SimpleBackend {
                         &mut builder,
                         ready_path,
                         &mut is_block_filled,
-                        !exception_label_ids.is_empty(),
+                        false,
                         &rebind_vars,
                         &raw_int_shadow,
                         &int_store_target_names,
@@ -11168,7 +11229,7 @@ impl SimpleBackend {
                             &mut builder,
                             next_block,
                             &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
+                            false,
                             &rebind_vars,
                             &raw_int_shadow,
                             &int_store_target_names,
@@ -12468,7 +12529,7 @@ impl SimpleBackend {
                         // Return immediately so the pending RecursionError
                         // propagates to the caller instead of being silently
                         // swallowed as None when no check_exception follows.
-                        builder.switch_to_block(error_block);
+                        switch_to_block_materialized(&mut builder, error_block);
                         let raise_ref = import_func_ref(
                             &mut self.module,
                             &mut self.import_ids,
@@ -12492,7 +12553,7 @@ impl SimpleBackend {
                         }
 
                         // Call block: direct call to the target function.
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         let direct_call = builder.ins().call(local_callee, &args);
                         let direct_results = builder.inst_results(direct_call);
                         let call_res = if direct_results.is_empty() {
@@ -12514,7 +12575,7 @@ impl SimpleBackend {
                         builder.ins().call(exit_ref, &[]);
                         jump_block(&mut builder, merge_block, &[call_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
                         // --- Outlined guarded call via molt_guarded_call ---
@@ -12596,7 +12657,7 @@ impl SimpleBackend {
 
                         // Exception pending: return None immediately so the
                         // exception propagates to the caller.
-                        builder.switch_to_block(exc_return_block);
+                        switch_to_block_materialized(&mut builder, exc_return_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, exc_return_block);
                         if has_ret {
                             let none_val = builder.ins().iconst(types::I64, box_none());
@@ -12605,7 +12666,7 @@ impl SimpleBackend {
                             builder.ins().return_(&[]);
                         }
 
-                        builder.switch_to_block(continue_block);
+                        switch_to_block_materialized(&mut builder, continue_block);
                         builder.block_params(continue_block)[0]
                     } else {
                         res
@@ -13064,7 +13125,7 @@ impl SimpleBackend {
                         .ins()
                         .brif(is_func_bool, func_block, &[], fallback_block, &[]);
 
-                    builder.switch_to_block(fallback_block);
+                    switch_to_block_materialized(&mut builder, fallback_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, fallback_block);
                     let callargs_new_local = import_func_ref(
                         &mut self.module,
@@ -13118,7 +13179,7 @@ impl SimpleBackend {
                     let fallback_res = builder.inst_results(fallback_call)[0];
                     jump_block(&mut builder, merge_block, &[fallback_res]);
 
-                    builder.switch_to_block(func_block);
+                    switch_to_block_materialized(&mut builder, func_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, func_block);
                     let resolve_call = builder.ins().call(resolve_local, &[*callee_bits]);
                     let func_ptr = builder.inst_results(resolve_call)[0];
@@ -13132,7 +13193,7 @@ impl SimpleBackend {
                         .ins()
                         .brif(matches, then_block, &[], else_block, &[]);
 
-                    builder.switch_to_block(then_block);
+                    switch_to_block_materialized(&mut builder, then_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, then_block);
                     let guard_call = builder.ins().call(guard_enter_local, &[]);
                     let guard_val = builder.inst_results(guard_call)[0];
@@ -13143,7 +13204,7 @@ impl SimpleBackend {
                         .ins()
                         .brif(guard_ok, then_call_block, &[], then_fail_block, &[]);
 
-                    builder.switch_to_block(then_call_block);
+                    switch_to_block_materialized(&mut builder, then_call_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, then_call_block);
                     if emit_traces {
                         let _ = builder.ins().call(trace_enter_local, &[*callee_bits]);
@@ -13161,7 +13222,7 @@ impl SimpleBackend {
                     let _ = builder.ins().call(guard_exit_local, &[]);
                     jump_block(&mut builder, merge_block, &[direct_res]);
 
-                    builder.switch_to_block(then_fail_block);
+                    switch_to_block_materialized(&mut builder, then_fail_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, then_fail_block);
                     // Recursion guard failed — exception is already pending
                     // from molt_recursion_guard_enter.  Return immediately so
@@ -13175,7 +13236,7 @@ impl SimpleBackend {
                         builder.ins().return_(&[]);
                     }
 
-                    builder.switch_to_block(else_block);
+                    switch_to_block_materialized(&mut builder, else_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, else_block);
                     let guard_call = builder.ins().call(guard_enter_local, &[]);
                     let guard_val = builder.inst_results(guard_call)[0];
@@ -13186,7 +13247,7 @@ impl SimpleBackend {
                         .ins()
                         .brif(guard_ok, else_call_block, &[], else_fail_block, &[]);
 
-                    builder.switch_to_block(else_call_block);
+                    switch_to_block_materialized(&mut builder, else_call_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, else_call_block);
                     if emit_traces {
                         let _ = builder.ins().call(trace_enter_local, &[*callee_bits]);
@@ -13205,7 +13266,7 @@ impl SimpleBackend {
                     let _ = builder.ins().call(guard_exit_local, &[]);
                     jump_block(&mut builder, merge_block, &[fallback_res]);
 
-                    builder.switch_to_block(else_fail_block);
+                    switch_to_block_materialized(&mut builder, else_fail_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, else_fail_block);
                     // Same as then_fail_block: return immediately on recursion
                     // guard failure so the pending RecursionError propagates.
@@ -13216,7 +13277,7 @@ impl SimpleBackend {
                         builder.ins().return_(&[]);
                     }
 
-                    builder.switch_to_block(merge_block);
+                    switch_to_block_materialized(&mut builder, merge_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                     let res = builder.block_params(merge_block)[0];
                     if let Some(out__) = op.out {
@@ -13265,7 +13326,7 @@ impl SimpleBackend {
                         brif_block(&mut builder, is_ptr, probe_block, &[], slow_block, &[]);
 
                         // Step 2: Extract pointer, check TYPE_ID_FUNCTION (221)
-                        builder.switch_to_block(probe_block);
+                        switch_to_block_materialized(&mut builder, probe_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, probe_block);
                         let raw_ptr = builder.ins().band(*func_bits, ptr_mask_val);
                         let shift16 = builder.ins().iconst(types::I64, 16);
@@ -13288,7 +13349,7 @@ impl SimpleBackend {
                         );
 
                         // Step 3: Check closure_bits == 0 (at ptr+24)
-                        builder.switch_to_block(closure_check_block);
+                        switch_to_block_materialized(&mut builder, closure_check_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, closure_check_block);
                         let closure_bits_v =
                             builder
@@ -13309,7 +13370,7 @@ impl SimpleBackend {
                         // Step 4: Reject trampoline-backed functions. Those are
                         // lowered through the canonical runtime trampoline path
                         // rather than a raw fn_ptr call.
-                        builder.switch_to_block(trampoline_check_block);
+                        switch_to_block_materialized(&mut builder, trampoline_check_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, trampoline_check_block);
                         let tramp_ptr_v =
                             builder
@@ -13327,7 +13388,7 @@ impl SimpleBackend {
                         );
 
                         // Step 5: Check arity (at ptr+8)
-                        builder.switch_to_block(arity_check_block);
+                        switch_to_block_materialized(&mut builder, arity_check_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, arity_check_block);
                         let arity =
                             builder
@@ -13346,7 +13407,7 @@ impl SimpleBackend {
                         );
 
                         // Step 6: Load fn_ptr (at ptr+0), recursion guard, call_indirect
-                        builder.switch_to_block(direct_call_block);
+                        switch_to_block_materialized(&mut builder, direct_call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, direct_call_block);
                         let fn_ptr_v =
                             builder
@@ -13377,7 +13438,7 @@ impl SimpleBackend {
                         );
 
                         // Guard fail: raise RecursionError (cold)
-                        builder.switch_to_block(guard_fail_block);
+                        switch_to_block_materialized(&mut builder, guard_fail_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, guard_fail_block);
                         let raise_ref = import_func_ref(
                             &mut self.module,
@@ -13393,7 +13454,7 @@ impl SimpleBackend {
                         jump_block(&mut builder, merge_block, &[err_val]);
 
                         // Direct call via call_indirect
-                        builder.switch_to_block(call_block);
+                        switch_to_block_materialized(&mut builder, call_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, call_block);
                         let mut call_sig = self.module.make_signature();
                         for _ in 0..nargs {
@@ -13416,7 +13477,7 @@ impl SimpleBackend {
                         jump_block(&mut builder, merge_block, &[direct_res]);
 
                         // Slow path: call molt_call_func_fast{N}
-                        builder.switch_to_block(slow_block);
+                        switch_to_block_materialized(&mut builder, slow_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                         let fast_name: &'static str = match nargs {
                             0 => "molt_call_func_fast0",
@@ -13442,7 +13503,7 @@ impl SimpleBackend {
                         let slow_res = builder.inst_results(slow_call)[0];
                         jump_block(&mut builder, merge_block, &[slow_res]);
 
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -14026,6 +14087,32 @@ impl SimpleBackend {
                     let call = builder
                         .ins()
                         .call(local_callee, &[*class_bits, *version_bits]);
+                    if let Some(out_name) = op.out.as_ref()
+                        && out_name != "none"
+                    {
+                        let res = builder.inst_results(call)[0];
+                        def_var_named(&mut builder, &vars, out_name.clone(), res);
+                    }
+                }
+                "class_merge_layout" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let class_bits =
+                        var_get(&mut builder, &vars, &args[0]).expect("Class not found");
+                    let offsets_bits =
+                        var_get(&mut builder, &vars, &args[1]).expect("Offsets not found");
+                    let size_bits =
+                        var_get(&mut builder, &vars, &args[2]).expect("Size not found");
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_class_merge_layout",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*class_bits, *offsets_bits, *size_bits]);
                     if let Some(out_name) = op.out.as_ref()
                         && out_name != "none"
                     {
@@ -15154,7 +15241,7 @@ impl SimpleBackend {
                             &mut builder,
                             validate_block,
                             &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
+                            true,
                             &check_exception_live_rebind_vars,
                             &raw_int_shadow,
                             &int_store_target_names,
@@ -15188,7 +15275,7 @@ impl SimpleBackend {
                         &mut builder,
                         fallthrough,
                         &mut is_block_filled,
-                        !exception_label_ids.is_empty(),
+                        true,
                         &check_exception_live_rebind_vars,
                         &raw_int_shadow,
                         &int_store_target_names,
@@ -15507,6 +15594,7 @@ impl SimpleBackend {
                     }
 
                     let mut phi_ops: Vec<(String, String, String)> = Vec::new();
+                    let mut merge_rebind_names: Vec<String> = Vec::new();
                     if let Some(end_if_idx) = if_to_end_if.get(&op_idx).copied() {
                         let mut scan_idx = end_if_idx + 1;
                         while scan_idx < ops.len() {
@@ -15523,17 +15611,65 @@ impl SimpleBackend {
                             skip_ops.insert(scan_idx);
                             scan_idx += 1;
                         }
+                        if phi_ops.is_empty() {
+                            let mut seen_merge_rebind: BTreeSet<String> = BTreeSet::new();
+                            for branch_idx in (op_idx + 1)..end_if_idx {
+                                let branch_op = &ops[branch_idx];
+                                if branch_op.kind != "store_var" {
+                                    continue;
+                                }
+                                let Some(name) = branch_op.var.as_ref() else {
+                                    continue;
+                                };
+                                if name == "none" || int_store_target_names.contains(name) {
+                                    continue;
+                                }
+                                if last_use.get(name).copied().unwrap_or(0) <= end_if_idx {
+                                    continue;
+                                }
+                                if seen_merge_rebind.insert(name.clone()) {
+                                    merge_rebind_names.push(name.clone());
+                                }
+                            }
+                        }
                     }
                     let phi_params: Vec<Value> = (0..phi_ops.len())
                         .map(|_| builder.append_block_param(merge_block, types::I64))
                         .collect();
+                    let merge_rebind_params: Vec<Value> = (0..merge_rebind_names.len())
+                        .map(|_| builder.append_block_param(merge_block, types::I64))
+                        .collect();
+                    let merge_rebind_slots = merge_rebind_names
+                        .iter()
+                        .map(|name| {
+                            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot,
+                                8,
+                                3,
+                            ));
+                            let init = var_get(&mut builder, &vars, name)
+                                .map(|v| *v)
+                                .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                            builder.ins().stack_store(init, slot, 0);
+                            slot
+                        })
+                        .collect();
+                    if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref()
+                        == Ok(func_ir.name.as_str())
+                    {
+                        let _ = crate::debug_artifacts::append_debug_artifact(
+                            "native/ifmerge_debug.txt",
+                            format!("MERGE_INIT {} names={:?}\n", func_ir.name, merge_rebind_names),
+                        );
+                    }
 
+                    let branch_rebind_vars = live_rebind_vars_for_op(op_idx);
                     switch_to_block_with_rebind(
                         &mut builder,
                         then_block,
                         &mut is_block_filled,
-                        !exception_label_ids.is_empty(),
-                        &rebind_vars,
+                        false,
+                        &branch_rebind_vars,
                         &raw_int_shadow,
                         &int_store_target_names,
                     );
@@ -15545,6 +15681,9 @@ impl SimpleBackend {
                         else_terminal: false,
                         phi_ops,
                         phi_params,
+                        merge_rebind_names,
+                        merge_rebind_params,
+                        merge_rebind_slots,
                     });
                 }
                 "else" => {
@@ -15581,6 +15720,7 @@ impl SimpleBackend {
                         // merge-block parameters (real SSA join) instead of attempting to "define"
                         // the output in each predecessor block.
                         let mut phi_args: Vec<Value> = Vec::new();
+                        let mut merge_rebind_args: Vec<Value> = Vec::new();
                         if !frame.phi_ops.is_empty() {
                             if frame.phi_params.is_empty() {
                                 for (_out, then_name, _else_name) in &frame.phi_ops {
@@ -15601,6 +15741,31 @@ impl SimpleBackend {
                                         });
                                     phi_args.push(*then_val);
                                 }
+                            }
+                        }
+                        if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
+                            for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
+                                let val = var_get(&mut builder, &vars, name)
+                                    .unwrap_or_else(|| panic!("merge rebind var not found: {name}"));
+                                builder
+                                    .ins()
+                                    .stack_store(*val, frame.merge_rebind_slots[idx], 0);
+                                merge_rebind_args.push(*val);
+                            }
+                            if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref()
+                                == Ok(func_ir.name.as_str())
+                            {
+                                eprintln!(
+                                    "MERGE_REBIND {} else_op names={:?} args={:?}",
+                                    func_ir.name, frame.merge_rebind_names, merge_rebind_args
+                                );
+                                let _ = crate::debug_artifacts::append_debug_artifact(
+                                    "native/ifmerge_debug.txt",
+                                    format!(
+                                        "MERGE_REBIND {} else_op names={:?} args={:?}\n",
+                                        func_ir.name, frame.merge_rebind_names, merge_rebind_args
+                                    ),
+                                );
                             }
                         }
                         if let Some(block) = builder.current_block() {
@@ -15688,16 +15853,22 @@ impl SimpleBackend {
                                     frame.phi_ops
                                 );
                             }
-                            jump_block(&mut builder, frame.merge_block, &phi_args);
+                            let jump_args = if frame.phi_ops.is_empty() {
+                                &merge_rebind_args
+                            } else {
+                                &phi_args
+                            };
+                            jump_block(&mut builder, frame.merge_block, jump_args);
                         }
                     }
 
+                    let else_rebind_vars = live_rebind_vars_for_op(op_idx);
                     switch_to_block_with_rebind(
                         &mut builder,
                         frame.else_block.expect("else without placeholder block"),
                         &mut is_block_filled,
-                        !exception_label_ids.is_empty(),
-                        &rebind_vars,
+                        false,
+                        &else_rebind_vars,
                         &raw_int_shadow,
                         &int_store_target_names,
                     );
@@ -15732,6 +15903,7 @@ impl SimpleBackend {
                         frame.else_terminal = is_block_filled;
                         if !is_block_filled {
                             let mut phi_args: Vec<Value> = Vec::new();
+                            let mut merge_rebind_args: Vec<Value> = Vec::new();
                             if !frame.phi_ops.is_empty() {
                                 if frame.phi_params.is_empty() {
                                     for (_out, _then_name, else_name) in &frame.phi_ops {
@@ -15753,6 +15925,16 @@ impl SimpleBackend {
                                             });
                                         phi_args.push(*else_val);
                                     }
+                                }
+                            }
+                            if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
+                                for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
+                                    let then_val = var_get(&mut builder, &vars, name)
+                                        .unwrap_or_else(|| panic!("merge rebind var not found: {name}"));
+                                    builder
+                                        .ins()
+                                        .stack_store(*then_val, frame.merge_rebind_slots[idx], 0);
+                                    merge_rebind_args.push(*then_val);
                                 }
                             }
                             if let Some(block) = builder.current_block() {
@@ -15848,7 +16030,12 @@ impl SimpleBackend {
                                         frame.phi_ops
                                     );
                                 }
-                                jump_block(&mut builder, frame.merge_block, &phi_args);
+                                let jump_args = if frame.phi_ops.is_empty() {
+                                    &merge_rebind_args
+                                } else {
+                                    &phi_args
+                                };
+                                jump_block(&mut builder, frame.merge_block, jump_args);
                             }
                         }
                     } else {
@@ -15856,6 +16043,7 @@ impl SimpleBackend {
                         frame.else_terminal = false;
                         if !is_block_filled {
                             let mut phi_args: Vec<Value> = Vec::new();
+                            let mut merge_rebind_args: Vec<Value> = Vec::new();
                             if !frame.phi_ops.is_empty() {
                                 if frame.phi_params.is_empty() {
                                     for (_out, then_name, _else_name) in &frame.phi_ops {
@@ -15877,6 +16065,13 @@ impl SimpleBackend {
                                             });
                                         phi_args.push(*then_val);
                                     }
+                                }
+                            }
+                            if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
+                                for name in &frame.merge_rebind_names {
+                                    let then_val = var_get(&mut builder, &vars, name)
+                                        .unwrap_or_else(|| panic!("merge rebind var not found: {name}"));
+                                    merge_rebind_args.push(*then_val);
                                 }
                             }
                             if let Some(block) = builder.current_block() {
@@ -15972,21 +16167,28 @@ impl SimpleBackend {
                                         frame.phi_ops
                                     );
                                 }
-                                jump_block(&mut builder, frame.merge_block, &phi_args);
+                                let jump_args = if frame.phi_ops.is_empty() {
+                                    &merge_rebind_args
+                                } else {
+                                    &phi_args
+                                };
+                                jump_block(&mut builder, frame.merge_block, jump_args);
                             }
                         }
 
                         if let Some(else_block) = frame.else_block {
+                            let synthetic_else_rebind_vars = live_rebind_vars_for_op(op_idx);
                             switch_to_block_with_rebind(
                                 &mut builder,
                                 else_block,
                                 &mut is_block_filled,
-                                !exception_label_ids.is_empty(),
-                                &rebind_vars,
+                                false,
+                                &synthetic_else_rebind_vars,
                                 &raw_int_shadow,
                                 &int_store_target_names,
                             );
                             let mut phi_args: Vec<Value> = Vec::new();
+                            let mut merge_rebind_args: Vec<Value> = Vec::new();
                             if !frame.phi_ops.is_empty() {
                                 if frame.phi_params.is_empty() {
                                     for (_out, _then_name, else_name) in &frame.phi_ops {
@@ -16008,6 +16210,31 @@ impl SimpleBackend {
                                             });
                                         phi_args.push(*else_val);
                                     }
+                                }
+                            }
+                            if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
+                                for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
+                                    let else_val = var_get(&mut builder, &vars, name)
+                                        .unwrap_or_else(|| panic!("merge rebind var not found: {name}"));
+                                    builder
+                                        .ins()
+                                        .stack_store(*else_val, frame.merge_rebind_slots[idx], 0);
+                                    merge_rebind_args.push(*else_val);
+                                }
+                                if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref()
+                                    == Ok(func_ir.name.as_str())
+                                {
+                                    eprintln!(
+                                        "MERGE_REBIND {} end_if_else names={:?} args={:?}",
+                                        func_ir.name, frame.merge_rebind_names, merge_rebind_args
+                                    );
+                                    let _ = crate::debug_artifacts::append_debug_artifact(
+                                        "native/ifmerge_debug.txt",
+                                        format!(
+                                            "MERGE_REBIND {} end_if_else names={:?} args={:?}\n",
+                                            func_ir.name, frame.merge_rebind_names, merge_rebind_args
+                                        ),
+                                    );
                                 }
                             }
                             if let Some(block) = builder.current_block() {
@@ -16089,7 +16316,12 @@ impl SimpleBackend {
                                     frame.phi_ops
                                 );
                             }
-                            jump_block(&mut builder, frame.merge_block, &phi_args);
+                            let jump_args = if frame.phi_ops.is_empty() {
+                                &merge_rebind_args
+                            } else {
+                                &phi_args
+                            };
+                            jump_block(&mut builder, frame.merge_block, jump_args);
                         }
                     }
 
@@ -16112,15 +16344,45 @@ impl SimpleBackend {
                             maybe_debug_seal("if_merge", op_idx, frame.merge_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, frame.merge_block);
                         }
+                        let merge_rebind_vars = if frame.phi_ops.is_empty() {
+                            BTreeMap::new()
+                        } else {
+                            rebind_vars.clone()
+                        };
                         switch_to_block_with_rebind(
                             &mut builder,
                             frame.merge_block,
                             &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
-                            &rebind_vars,
+                            false,
+                            &merge_rebind_vars,
                             &raw_int_shadow,
                             &int_store_target_names,
                         );
+                        if !is_block_filled
+                            && frame.phi_ops.is_empty()
+                            && !frame.merge_rebind_names.is_empty()
+                        {
+                            for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
+                                let val =
+                                    builder.ins().stack_load(types::I64, frame.merge_rebind_slots[idx], 0);
+                                def_var_named(&mut builder, &vars, name, val);
+                            }
+                            if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref()
+                                == Ok(func_ir.name.as_str())
+                            {
+                                eprintln!(
+                                    "MERGE_REBIND {} merge names={:?} params={:?}",
+                                    func_ir.name, frame.merge_rebind_names, frame.merge_rebind_params
+                                );
+                                let _ = crate::debug_artifacts::append_debug_artifact(
+                                    "native/ifmerge_debug.txt",
+                                    format!(
+                                        "MERGE_REBIND {} merge names={:?} params={:?}\n",
+                                        func_ir.name, frame.merge_rebind_names, frame.merge_rebind_params
+                                    ),
+                                );
+                            }
+                        }
                         // Materialize the merged value(s) for any `phi` ops by binding the
                         // merge-block parameters to their output variable names.
                         // Guard: skip if the merge block was already filled (can't emit defs).
@@ -16250,7 +16512,7 @@ impl SimpleBackend {
                             &mut builder,
                             loop_block,
                             &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
+                            false,
                             &rebind_vars,
                             &raw_int_shadow,
                             &int_store_target_names,
@@ -16471,7 +16733,7 @@ impl SimpleBackend {
                             &mut builder,
                             loop_block,
                             &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
+                            false,
                             &rebind_vars,
                             &raw_int_shadow,
                             &int_store_target_names,
@@ -16587,6 +16849,12 @@ impl SimpleBackend {
                             builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
                         };
                         let cleanup_block = builder.create_block();
+                        if debug_block_origins.is_some() {
+                            eprintln!(
+                                "BLOCK_ORIGIN {} op{} loop_break_if_true cleanup={:?} body={:?} after={:?}",
+                                func_ir.name, op_idx, cleanup_block, frame.body_block, frame.after_block
+                            );
+                        }
                         if let Some(current_block) = builder.current_block() {
                             builder.insert_block_after(cleanup_block, current_block);
                         }
@@ -16599,7 +16867,7 @@ impl SimpleBackend {
                             &mut builder,
                             cleanup_block,
                             &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
+                            false,
                             &rebind_vars,
                             &raw_int_shadow,
                             &int_store_target_names,
@@ -16631,12 +16899,13 @@ impl SimpleBackend {
                             builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                         reachable_blocks.insert(frame.after_block);
+                        ensure_block_in_layout(&mut builder, frame.after_block);
                         jump_block(&mut builder, frame.after_block, &[]);
                         switch_to_block_with_rebind(
                             &mut builder,
                             frame.body_block,
                             &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
+                            false,
                             &rebind_vars,
                             &raw_int_shadow,
                             &int_store_target_names,
@@ -16741,6 +17010,12 @@ impl SimpleBackend {
                             builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
                         };
                         let cleanup_block = builder.create_block();
+                        if debug_block_origins.is_some() {
+                            eprintln!(
+                                "BLOCK_ORIGIN {} op{} loop_break_if_false cleanup={:?} body={:?} after={:?}",
+                                func_ir.name, op_idx, cleanup_block, frame.body_block, frame.after_block
+                            );
+                        }
                         if let Some(current_block) = builder.current_block() {
                             builder.insert_block_after(cleanup_block, current_block);
                         }
@@ -16753,7 +17028,7 @@ impl SimpleBackend {
                             &mut builder,
                             cleanup_block,
                             &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
+                            false,
                             &rebind_vars,
                             &raw_int_shadow,
                             &int_store_target_names,
@@ -16785,12 +17060,13 @@ impl SimpleBackend {
                             builder.ins().call(local_dec_ref_obj, &[val]);
                         }
                         reachable_blocks.insert(frame.after_block);
+                        ensure_block_in_layout(&mut builder, frame.after_block);
                         jump_block(&mut builder, frame.after_block, &[]);
                         switch_to_block_with_rebind(
                             &mut builder,
                             frame.body_block,
                             &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
+                            false,
                             &rebind_vars,
                             &raw_int_shadow,
                             &int_store_target_names,
@@ -16869,6 +17145,7 @@ impl SimpleBackend {
                             }
                         }
                         reachable_blocks.insert(frame.after_block);
+                        ensure_block_in_layout(&mut builder, frame.after_block);
                         jump_block(&mut builder, frame.after_block, &[]);
                         is_block_filled = true;
                     }
@@ -17060,7 +17337,7 @@ impl SimpleBackend {
                                 &mut builder,
                                 frame.after_block,
                                 &mut is_block_filled,
-                                !exception_label_ids.is_empty(),
+                                false,
                                 &rebind_vars,
                                 &raw_int_shadow,
                                 &int_store_target_names,
@@ -17277,11 +17554,11 @@ impl SimpleBackend {
                     builder
                         .ins()
                         .brif(profile_bool, profile_block, &[], profile_cont, &[]);
-                    builder.switch_to_block(profile_block);
+                    switch_to_block_materialized(&mut builder, profile_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, profile_block);
                     builder.ins().call(local_profile_struct, &[]);
                     jump_block(&mut builder, profile_cont, &[]);
-                    builder.switch_to_block(profile_cont);
+                    switch_to_block_materialized(&mut builder, profile_cont);
                     seal_block_once(&mut builder, &mut sealed_blocks, profile_cont);
                     let offset_bits = builder.ins().iconst(types::I64, i64::from(offset));
                     let callee = Self::import_func_id_split(
@@ -17710,12 +17987,12 @@ impl SimpleBackend {
                         builder.ins().brif(is_hit, hit_block, &[], miss_block, &[]);
 
                         // --- Hit block: probe returned an owned reference ---
-                        builder.switch_to_block(hit_block);
+                        switch_to_block_materialized(&mut builder, hit_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, hit_block);
                         jump_block(&mut builder, merge_block, &[probe_result]);
 
                         // --- Miss block: full resolution via slow path ---
-                        builder.switch_to_block(miss_block);
+                        switch_to_block_materialized(&mut builder, miss_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, miss_block);
                         let slow_call = builder
                             .ins()
@@ -17731,7 +18008,7 @@ impl SimpleBackend {
                         jump_block(&mut builder, merge_block, &[slow_result]);
 
                         // --- Merge ---
-                        builder.switch_to_block(merge_block);
+                        switch_to_block_materialized(&mut builder, merge_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
                         builder.block_params(merge_block)[0]
                     } else {
@@ -18458,6 +18735,12 @@ impl SimpleBackend {
                         .expect("br_if requires an active block");
 
                     let fallthrough_block = builder.create_block();
+                    if debug_block_origins.is_some() {
+                        eprintln!(
+                            "BLOCK_ORIGIN {} op{} br_if target_label={} target_block={:?} fallthrough={:?}",
+                            func_ir.name, op_idx, target_id, target_block, fallthrough_block
+                        );
+                    }
                     // cond is NaN-boxed — dispatch based on type hint to avoid
                     // unnecessary GIL-wrapped molt_is_truthy calls.
                     let cond_name = &args[0];
@@ -18563,7 +18846,7 @@ impl SimpleBackend {
                         &mut builder,
                         fallthrough_block,
                         &mut is_block_filled,
-                        !exception_label_ids.is_empty(),
+                        false,
                         &rebind_vars,
                         &raw_int_shadow,
                         &int_store_target_names,
@@ -18594,6 +18877,30 @@ impl SimpleBackend {
                         })
                         .cloned()
                         .collect();
+                    let mut rebind_label_join_state = |
+                        builder: &mut FunctionBuilder,
+                        raw_int_shadow_vals: &mut BTreeMap<String, Value>,
+                    | {
+                        if builder.block_params(block).is_empty() && !is_function_exception_label {
+                            return;
+                        }
+                        for (name, var) in &label_live_join_vars {
+                            let value = builder.use_var(*var);
+                            builder.def_var(*var, value);
+                            if label_live_shadow_names.contains(name) {
+                                let raw = if var_is_bool(name) {
+                                    let one = builder.ins().iconst(types::I64, 1);
+                                    builder.ins().band(value, one)
+                                } else {
+                                    unbox_int(builder, value, &nbc)
+                                };
+                                raw_int_shadow_vals.insert(name.clone(), raw);
+                                if let Some(&shadow_var) = raw_int_shadow.get(name.as_str()) {
+                                    builder.def_var(shadow_var, raw);
+                                }
+                            }
+                        }
+                    };
 
                     // Prevent normal fallthrough into the function-level exception handler.
                     if is_function_exception_label && !is_block_filled {
@@ -18611,82 +18918,11 @@ impl SimpleBackend {
                         // Exception handlers are cold — move them out of the
                         // hot execution path for better i-cache/branch behavior.
                         builder.set_cold_block(block);
-                        ensure_block_in_layout(&mut builder, block);
                         reachable_blocks.insert(block);
-                        switch_to_block_with_rebind(
-                            &mut builder,
-                            block,
-                            &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
-                            &label_live_join_vars,
-                            &raw_int_shadow,
-                            &label_live_shadow_names,
-                        );
-                        if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref()
-                            == Ok(func_ir.name.as_str())
-                        {
-                            eprintln!(
-                                "LABEL_BIND {} label={} block={:?} params={:?}",
-                                func_ir.name,
-                                label_id,
-                                block,
-                                builder.block_params(block)
-                            );
+                        materialize_label_block(&mut builder, block, &mut is_block_filled);
+                        if !is_block_filled {
+                            rebind_label_join_state(&mut builder, &mut raw_int_shadow_vals);
                         }
-                    } else if !is_block_filled {
-                        reachable_blocks.insert(block);
-                        jump_block(&mut builder, block, &[]);
-                        // Seal the label block: all predecessors are now
-                        // connected.  Predecessors from jump/br_if ops are
-                        // forward references (emitted before this label in
-                        // the linear sequence).  The fallthrough edge was
-                        // just emitted above.  Exception handler labels are
-                        // excluded (they receive check_exception edges from
-                        // later code and are sealed by seal_all_blocks).
-                        if exception_label_ids.is_empty()
-                            && !exception_label_ids.contains(&label_id)
-                        {
-                            maybe_debug_seal("label_fallthrough", op_idx, block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, block);
-                        }
-                        switch_to_block_with_rebind(
-                            &mut builder,
-                            block,
-                            &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
-                            &label_live_join_vars,
-                            &raw_int_shadow,
-                            &label_live_shadow_names,
-                        );
-                        if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref()
-                            == Ok(func_ir.name.as_str())
-                        {
-                            eprintln!(
-                                "LABEL_BIND {} label={} block={:?} params={:?}",
-                                func_ir.name,
-                                label_id,
-                                block,
-                                builder.block_params(block)
-                            );
-                        }
-                    } else if reachable_blocks.contains(&block) {
-                        // Block was already terminated — no fallthrough edge.
-                        // Seal if all predecessors are from earlier code.
-                        if exception_label_ids.is_empty()
-                            && !exception_label_ids.contains(&label_id)
-                        {
-                            maybe_debug_seal("label_reachable", op_idx, block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, block);
-                        }
-                        switch_to_block_with_rebind(
-                            &mut builder,
-                            block,
-                            &mut is_block_filled,
-                            !exception_label_ids.is_empty(),
-                            &label_live_join_vars,
-                            &raw_int_shadow,
-                            &label_live_shadow_names,
-                        );
                         if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref()
                             == Ok(func_ir.name.as_str())
                         {
@@ -18699,7 +18935,26 @@ impl SimpleBackend {
                             );
                         }
                     } else {
-                        is_block_filled = true;
+                        reachable_blocks.insert(block);
+                        // Textual label sites define CFG ownership. Materialize
+                        // the block even when no already-emitted predecessor
+                        // has reached it yet; later backedges / deferred
+                        // branches may still target it.
+                        materialize_label_block(&mut builder, block, &mut is_block_filled);
+                        if !is_block_filled {
+                            rebind_label_join_state(&mut builder, &mut raw_int_shadow_vals);
+                        }
+                        if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref()
+                            == Ok(func_ir.name.as_str())
+                        {
+                            eprintln!(
+                                "LABEL_BIND {} label={} block={:?} params={:?}",
+                                func_ir.name,
+                                label_id,
+                                block,
+                                builder.block_params(block)
+                            );
+                        }
                     }
                 }
                 "phi" => {
@@ -19117,7 +19372,7 @@ impl SimpleBackend {
             }
         }
 
-        builder.switch_to_block(master_return_block);
+        switch_to_block_materialized(&mut builder, master_return_block);
         seal_block_once(&mut builder, &mut sealed_blocks, master_return_block);
 
         // Pop frame stack for module chunk functions — but only on the
@@ -19150,7 +19405,7 @@ impl SimpleBackend {
                 .ins()
                 .brif(not_pending, pop_block, &[], skip_pop_block, &[]);
 
-            builder.switch_to_block(pop_block);
+            switch_to_block_materialized(&mut builder, pop_block);
             builder.seal_block(pop_block);
             let frame_pop_fn = import_func_ref(
                 &mut self.module,
@@ -19164,7 +19419,7 @@ impl SimpleBackend {
             builder.ins().call(frame_pop_fn, &[]);
             builder.ins().jump(skip_pop_block, &[]);
 
-            builder.switch_to_block(skip_pop_block);
+            switch_to_block_materialized(&mut builder, skip_pop_block);
             builder.seal_block(skip_pop_block);
         }
 
@@ -19237,7 +19492,7 @@ impl SimpleBackend {
                     // Cranelift's finalize() will remove it as unreachable.
                     // We must NOT call switch_to_block on a filled block.
                     if builder.func.layout.block_insts(block).next().is_none() {
-                        builder.switch_to_block(block);
+                        switch_to_block_materialized(&mut builder, block);
                         builder
                             .ins()
                             .trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
@@ -19342,7 +19597,8 @@ impl SimpleBackend {
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
     use super::{
-        alias_root_name, cleanup_roots_for_names, preanalyze_function_ir,
+        alias_root_name, cleanup_roots_for_names, collect_slot_backed_join_names,
+        materialize_label_block, preanalyze_function_ir, switch_to_block_materialized,
         switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR};
@@ -19733,6 +19989,66 @@ mod tests {
     }
 
     #[test]
+    fn slot_backed_join_names_skip_load_only_phi_join_carriers() {
+        let ops = vec![
+            OpIR {
+                kind: "phi".to_string(),
+                out: Some("joined".to_string()),
+                args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".to_string(),
+                value: Some(18),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "load_var".to_string(),
+                var: Some("_bb4_arg0".to_string()),
+                out: Some("joined".to_string()),
+                ..OpIR::default()
+            },
+        ];
+
+        let names = collect_slot_backed_join_names(&ops, &BTreeSet::new());
+
+        assert!(
+            !names.contains("_bb4_arg0"),
+            "load-only structured phi join carriers must stay on the SSA path",
+        );
+    }
+
+    #[test]
+    fn slot_backed_join_names_keep_explicit_store_backed_join_carriers() {
+        let ops = vec![
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("_bb4_arg0".to_string()),
+                args: Some(vec!["src".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".to_string(),
+                value: Some(18),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "load_var".to_string(),
+                var: Some("_bb4_arg0".to_string()),
+                out: Some("joined".to_string()),
+                ..OpIR::default()
+            },
+        ];
+
+        let names = collect_slot_backed_join_names(&ops, &BTreeSet::new());
+
+        assert!(
+            names.contains("_bb4_arg0"),
+            "explicit store-backed join carriers must remain slot-backed",
+        );
+    }
+
+    #[test]
     fn cleanup_roots_collapse_join_alias_duplicates() {
         let func = FunctionIR {
             name: "join_alias_cleanup".to_string(),
@@ -19813,7 +20129,7 @@ mod tests {
         let merge_block = builder.create_block();
         builder.append_block_param(merge_block, types::I64);
 
-        builder.switch_to_block(entry);
+        switch_to_block_materialized(&mut builder, entry);
         let stable = builder.ins().iconst(types::I64, 7);
         let cond = builder.ins().iconst(types::I8, 1);
         let then_val = builder.ins().iconst(types::I64, 11);
@@ -19822,12 +20138,12 @@ mod tests {
         builder.ins().brif(cond, then_block, &[], else_block, &[]);
         builder.seal_block(entry);
 
-        builder.switch_to_block(then_block);
+        switch_to_block_materialized(&mut builder, then_block);
         builder.def_var(phi_var, then_val);
         crate::jump_block(&mut builder, merge_block, &[then_val]);
         builder.seal_block(then_block);
 
-        builder.switch_to_block(else_block);
+        switch_to_block_materialized(&mut builder, else_block);
         builder.def_var(phi_var, else_val);
         crate::jump_block(&mut builder, merge_block, &[else_val]);
         builder.seal_block(else_block);
@@ -19867,14 +20183,14 @@ mod tests {
         let validate_block = builder.create_block();
         let fallthrough = builder.create_block();
 
-        builder.switch_to_block(entry);
+        switch_to_block_materialized(&mut builder, entry);
         let stable = builder.ins().iconst(types::I64, 7);
         let cond = builder.ins().iconst(types::I8, 1);
         builder.def_var(stable_var, stable);
         builder.ins().brif(cond, validate_block, &[], fallthrough, &[]);
         builder.seal_block(entry);
 
-        builder.switch_to_block(validate_block);
+        switch_to_block_materialized(&mut builder, validate_block);
         builder.ins().jump(fallthrough, &[]);
         builder.seal_block(validate_block);
 
@@ -19893,5 +20209,70 @@ mod tests {
             builder.block_params(fallthrough).is_empty(),
             "exception fallthrough should not synthesize params for invariant vars",
         );
+    }
+
+    #[test]
+    fn switch_to_block_with_rebind_does_not_create_params_for_plain_label_blocks() {
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut func = Function::with_name_signature(UserFuncName::default(), sig);
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut func, &mut builder_ctx);
+
+        let stable_var = builder.declare_var(types::I64);
+        let vars = BTreeMap::from([("stable".to_string(), stable_var)]);
+        let shadow_vars = BTreeMap::new();
+        let shadow_names = BTreeSet::new();
+
+        let entry = builder.create_block();
+        let label_block = builder.create_block();
+
+        switch_to_block_materialized(&mut builder, entry);
+        let stable = builder.ins().iconst(types::I64, 7);
+        builder.def_var(stable_var, stable);
+        crate::jump_block(&mut builder, label_block, &[]);
+        builder.seal_block(entry);
+
+        let mut is_block_filled = false;
+        switch_to_block_with_rebind(
+            &mut builder,
+            label_block,
+            &mut is_block_filled,
+            false,
+            &vars,
+            &shadow_vars,
+            &shadow_names,
+        );
+
+        assert!(
+            builder.block_params(label_block).is_empty(),
+            "plain label blocks must not gain implicit params from SSA repair",
+        );
+    }
+
+    #[test]
+    fn materialize_label_block_defines_unreached_forward_label() {
+        let mut sig = Signature::new(CallConv::SystemV);
+        let mut func = Function::with_name_signature(UserFuncName::default(), sig);
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut func, &mut builder_ctx);
+
+        let entry = builder.create_block();
+        let later = builder.create_block();
+        let detached_label = builder.create_block();
+
+        switch_to_block_materialized(&mut builder, entry);
+        builder.ins().jump(later, &[]);
+        builder.seal_block(entry);
+
+        let mut is_block_filled = true;
+        materialize_label_block(&mut builder, detached_label, &mut is_block_filled);
+
+        assert!(
+            builder.func.layout.is_block_inserted(detached_label),
+            "textual label must materialize its block even before any emitted predecessor reaches it",
+        );
+        assert_eq!(builder.current_block(), Some(detached_label));
+        assert!(!is_block_filled, "materialized label block must be open for emission");
     }
 }

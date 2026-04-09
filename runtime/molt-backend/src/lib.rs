@@ -715,6 +715,7 @@ fn switch_to_block_tracking(
         *is_block_filled = true;
         return;
     }
+    ensure_block_in_layout(builder, block);
     builder.switch_to_block(block);
     *is_block_filled = false;
 }
@@ -746,18 +747,19 @@ fn switch_to_block_with_rebind(
     builder: &mut FunctionBuilder,
     block: Block,
     is_block_filled: &mut bool,
-    _has_exception_labels: bool,
+    has_exception_labels: bool,
     vars: &BTreeMap<String, Variable>,
     shadow_vars: &BTreeMap<String, Variable>,
     shadow_names: &BTreeSet<String>,
 ) {
     switch_to_block_tracking(builder, block, is_block_filled);
-    if !*is_block_filled {
-        // Fresh blocks need explicit rebinding for local SSA variables.
-        // Without this, values defined before a control-flow split can read as
-        // zero/uninitialized in then/else/fallthrough blocks when the backend
-        // later uses `use_var` there. This is required for both normal branch
-        // merges and exception-aware fallthrough blocks.
+    if !*is_block_filled && (has_exception_labels || !builder.block_params(block).is_empty()) {
+        // Rebind only where the backend genuinely crosses SSA regions:
+        // - exception-aware fallthrough blocks after `check_exception`
+        // - merge/header blocks that carry real block params
+        //
+        // Rebinding every fresh block is too broad and can introduce
+        // non-dominating `use_var` reads in unrelated control-flow shapes.
         rebind_named_vars_in_block(builder, vars);
         rebind_shadow_vars_in_block(builder, shadow_vars, shadow_names);
     }
@@ -2021,6 +2023,9 @@ struct IfFrame {
     else_terminal: bool,
     phi_ops: Vec<(String, String, String)>,
     phi_params: Vec<Value>,
+    merge_rebind_names: Vec<String>,
+    merge_rebind_params: Vec<Value>,
+    merge_rebind_slots: Vec<cranelift_codegen::ir::StackSlot>,
 }
 
 #[cfg(feature = "native-backend")]

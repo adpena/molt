@@ -82,6 +82,12 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
 
     // Compute block visit order (reverse-postorder from entry).
     let rpo = reverse_postorder(func);
+    let debug_lower_func = std::env::var("MOLT_DEBUG_LOWER_FUNC").ok();
+    let debug_loop_if_return = func.name == "loop_if_return_continue_roundtrip"
+        || debug_lower_func.as_deref() == Some(func.name.as_str());
+    if debug_loop_if_return {
+        eprintln!("LOWER_DEBUG_RPO: {:?}", rpo);
+    }
 
     // Build a BlockId → label_id mapping.  Blocks that have an original
     // SimpleIR label value (stored in label_id_map during lifting) reuse that
@@ -177,6 +183,17 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     let mut loop_regions: HashMap<BlockId, LoopRegion> = HashMap::new();
     let mut loop_consumed: HashSet<BlockId> = HashSet::new();
     for bid in &rpo {
+        if debug_loop_if_return {
+            eprintln!(
+                "LOWER_DEBUG_PRE_IFPATTERN bid={:?} role={:?} loop_consumed={}",
+                bid,
+                func.loop_roles
+                    .get(bid)
+                    .cloned()
+                    .unwrap_or(super::blocks::LoopRole::None),
+                loop_consumed.contains(bid)
+            );
+        }
         let role = func
             .loop_roles
             .get(bid)
@@ -199,9 +216,29 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         let mut header_chain: Vec<BlockId> = Vec::new();
         let mut guard_chain: Vec<BlockId> = Vec::new();
         let mut guard_raise_blocks: Vec<BlockId> = Vec::new();
-        let mut cond_bid = *bid;
+        let mut cond_bid = func.loop_cond_blocks.get(bid).copied().unwrap_or(*bid);
         let mut chain_visited: HashSet<BlockId> = HashSet::new();
         chain_visited.insert(*bid);
+        if cond_bid != *bid {
+            let mut cur = *bid;
+            let mut visited_chain = HashSet::from([cur]);
+            while cur != cond_bid {
+                let Some(blk) = func.blocks.get(&cur) else {
+                    break;
+                };
+                let Terminator::Branch { target, .. } = &blk.terminator else {
+                    break;
+                };
+                if *target == cond_bid {
+                    break;
+                }
+                if !visited_chain.insert(*target) {
+                    break;
+                }
+                header_chain.push(*target);
+                cur = *target;
+            }
+        }
 
         // Helper: detect if a block is a raise/error path (within 2 hops).
         let is_guard_raise_path = |check_bid: &BlockId| -> bool {
@@ -322,6 +359,12 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 then_args.clone(),
             ),
         };
+        if debug_loop_if_return {
+            eprintln!(
+                "LOWER_DEBUG_REGION bid={:?} cond_bid={:?} break_kind={:?} body_entry={:?} exit_block={:?} then={:?} else={:?}",
+                bid, cond_bid, break_kind, body_entry, exit_block, then_block, else_block
+            );
+        }
         // Collect body blocks via DFS from body_entry, stopping at the
         // header (back-edge), header chain blocks, guard chain blocks,
         // cond block, and exit.
@@ -426,7 +469,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             .get(bid)
             .cloned()
             .unwrap_or(super::blocks::LoopRole::None);
-        if role != super::blocks::LoopRole::None {
+        if role != super::blocks::LoopRole::None || loop_consumed.contains(bid) {
             continue;
         }
         let Some(block) = func.blocks.get(bid) else {
@@ -540,6 +583,18 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         if_inlined_blocks.insert(else_bid);
     }
     for bid in &rpo {
+        if debug_loop_if_return {
+            eprintln!(
+                "LOWER_DEBUG_EMIT bid={:?} loop_consumed={} role={:?} if_inlined={}",
+                bid,
+                loop_consumed.contains(bid),
+                func.loop_roles
+                    .get(bid)
+                    .cloned()
+                    .unwrap_or(super::blocks::LoopRole::None),
+                if_inlined_blocks.contains(bid)
+            );
+        }
         // Skip blocks consumed by structured loop emission.
         if loop_consumed.contains(bid) {
             continue;
@@ -773,6 +828,9 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
 
     VALUE_NAME_OVERRIDES.with(|overrides| overrides.borrow_mut().clear());
 
+    if debug_loop_if_return {
+        eprintln!("LOWER_DEBUG_PRE_ELIM: {out:#?}");
+    }
     eliminate_dead_labels(&mut out);
 
     // Validate: every label referenced by check_exception/jump/br_if must
@@ -828,75 +886,129 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
 /// (e.g., `loop_end` switches to an `after_block` and the following ops
 /// are emitted into that block).
 fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
-    // Phase 1: collect all label ids that are explicit branch targets.
-    let mut branch_targets: HashSet<i64> = HashSet::new();
-    for op in ops.iter() {
-        match op.kind.as_str() {
-            "jump" | "br_if" | "check_exception" | "loop_continue" => {
-                if let Some(id) = op.value {
-                    branch_targets.insert(id);
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum FilledState {
+        Open,
+        Closed,
+        LoopContinue,
+    }
+
+    loop {
+        // Phase 1: collect all label ids that are explicit branch targets.
+        let mut branch_targets: HashSet<i64> = HashSet::new();
+        for op in ops.iter() {
+            match op.kind.as_str() {
+                "jump" | "br_if" | "check_exception" | "loop_continue" => {
+                    if let Some(id) = op.value {
+                        branch_targets.insert(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Phase 2: walk ops, detecting dead labels.
+        // `is_filled` tracks whether the current block has been terminated
+        // (by jump/ret/raise/loop_continue) without a subsequent label
+        // starting a new live block.
+        let mut filled_state = FilledState::Open;
+        let mut current_block_started_at_live_label = false;
+        let mut keep = vec![true; ops.len()];
+
+        for i in 0..ops.len() {
+            let kind = ops[i].kind.as_str();
+            match kind {
+                "jump" | "ret" | "raise" | "loop_break" => {
+                    if filled_state != FilledState::Open {
+                        keep[i] = false;
+                    } else {
+                        filled_state = FilledState::Closed;
+                    }
+                }
+                "loop_continue" => {
+                    if filled_state != FilledState::Open {
+                        keep[i] = false;
+                    } else {
+                        filled_state = FilledState::LoopContinue;
+                    }
+                }
+                "label" | "state_label" => {
+                    let label_id = ops[i].value.unwrap_or(-1);
+                    if filled_state != FilledState::Open && !branch_targets.contains(&label_id) {
+                        // Dead label: preceded by a terminator and not a
+                        // branch target.  Remove the label op but keep the
+                        // code that follows (it may be reachable via
+                        // structured control flow like loop_end → after_block).
+                        keep[i] = false;
+                    } else {
+                        // Live label (reachable via fallthrough or branch).
+                        filled_state = FilledState::Open;
+                        current_block_started_at_live_label = true;
+                    }
+                }
+                // loop_end resets the filled state only when the current block
+                // is still live, or when it closes the implicit break path of
+                // a structured loop after a textual `loop_continue`.
+                "loop_end" => {
+                    if filled_state == FilledState::Closed && !current_block_started_at_live_label {
+                        keep[i] = false;
+                    } else {
+                        filled_state = FilledState::Open;
+                        current_block_started_at_live_label = false;
+                    }
+                }
+                "else" | "end_if" => {
+                    // Structured if markers remain live even when the
+                    // immediately preceding textual branch returned or raised,
+                    // because the alternate branch can still flow through them.
+                    filled_state = FilledState::Open;
+                    current_block_started_at_live_label = false;
+                }
+                // loop_start, loop_break_if_false/true do not fill.
+                "loop_start"
+                | "loop_break_if_false"
+                | "loop_break_if_true"
+                | "loop_index_start" => {
+                    // These are control-flow markers that don't terminate blocks.
+                    if kind == "loop_start" {
+                        current_block_started_at_live_label = false;
+                    }
+                }
+                "br_if" => {
+                    if filled_state != FilledState::Open {
+                        keep[i] = false;
+                    } else {
+                        // br_if has a fallthrough path — does not fill.
+                        filled_state = FilledState::Open;
+                    }
+                }
+                _ => {
+                    if filled_state != FilledState::Open {
+                        // Once a block is terminated, any straight-line ops that
+                        // follow before the next live label are unreachable. Keep
+                        // only the structural boundary ops handled above.
+                        keep[i] = false;
+                    }
                 }
             }
-            _ => {}
         }
-    }
 
-    // Phase 2: walk ops, detecting dead labels.
-    // `is_filled` tracks whether the current block has been terminated
-    // (by jump/ret/raise/loop_continue) without a subsequent label
-    // starting a new live block.
-    let mut is_filled = false;
-    let mut keep = vec![true; ops.len()];
-
-    for i in 0..ops.len() {
-        let kind = ops[i].kind.as_str();
-        match kind {
-            "jump" | "ret" | "raise" | "loop_continue" | "loop_break" => {
-                is_filled = true;
-            }
-            "label" | "state_label" => {
-                let label_id = ops[i].value.unwrap_or(-1);
-                if is_filled && !branch_targets.contains(&label_id) {
-                    // Dead label: preceded by a terminator and not a
-                    // branch target.  Remove the label op but keep the
-                    // code that follows (it may be reachable via
-                    // structured control flow like loop_end → after_block).
-                    keep[i] = false;
-                } else {
-                    // Live label (reachable via fallthrough or branch).
-                    is_filled = false;
+        // Phase 3: compact — remove dead ops.
+        let old_len = ops.len();
+        let mut write_idx = 0;
+        for read_idx in 0..ops.len() {
+            if keep[read_idx] {
+                if write_idx != read_idx {
+                    ops.swap(write_idx, read_idx);
                 }
-            }
-            // loop_end resets the filled state because the native backend
-            // switches to the after_block, making following ops reachable.
-            "loop_end" => {
-                is_filled = false;
-            }
-            // loop_start, loop_break_if_false/true do not fill.
-            "loop_start" | "loop_break_if_false" | "loop_break_if_true" | "loop_index_start" => {
-                // These are control-flow markers that don't terminate blocks.
-            }
-            "br_if" => {
-                // br_if has a fallthrough path — does not fill.
-                is_filled = false;
-            }
-            _ => {
-                // Normal ops do not change is_filled state.
+                write_idx += 1;
             }
         }
-    }
-
-    // Phase 3: compact — remove dead label ops.
-    let mut write_idx = 0;
-    for read_idx in 0..ops.len() {
-        if keep[read_idx] {
-            if write_idx != read_idx {
-                ops.swap(write_idx, read_idx);
-            }
-            write_idx += 1;
+        ops.truncate(write_idx);
+        if ops.len() == old_len {
+            break;
         }
     }
-    ops.truncate(write_idx);
 }
 
 /// Validate that every label referenced by jump/br_if/check_exception exists
@@ -1683,12 +1795,27 @@ fn emit_structured_loop_region(
         .filter(|b| region.body_set.contains(b))
         .copied()
         .collect();
+    let deferred_terminal_body_blocks: Vec<BlockId> = body_rpo
+        .iter()
+        .copied()
+        .filter(|bid| {
+            func.blocks.get(bid).is_some_and(|blk| {
+                matches!(
+                    blk.terminator,
+                    Terminator::Return { .. } | Terminator::Unreachable
+                )
+            })
+        })
+        .collect();
 
     let mut is_first_body = true;
     let mut inner_consumed: HashSet<BlockId> = HashSet::new();
 
     for body_bid in &body_rpo {
         if inner_consumed.contains(body_bid) {
+            continue;
+        }
+        if deferred_terminal_body_blocks.contains(body_bid) {
             continue;
         }
 
@@ -1897,6 +2024,45 @@ fn emit_structured_loop_region(
             value: Some(block_label_id(&region.exit_block)),
             ..OpIR::default()
         });
+    }
+
+    // 8d. Emit terminal dead-end body blocks after the loop boundary. These are
+    // internal branch targets that end in `ret`/`raise`/`unreachable`; keeping
+    // them inside the linear loop body breaks the structured `loop_continue`
+    // → `loop_end` region shape for native lowering.
+    for body_bid in deferred_terminal_body_blocks {
+        let Some(body_block) = func.blocks.get(&body_bid) else {
+            continue;
+        };
+        out.push(OpIR {
+            kind: "label".to_string(),
+            value: Some(block_label_id(&body_bid)),
+            ..OpIR::default()
+        });
+        if let Some(param_vars) = block_param_vars.get(&body_bid) {
+            for (i, var_name) in param_vars.iter().enumerate() {
+                if i < body_block.args.len() {
+                    out.push(OpIR {
+                        kind: "load_var".to_string(),
+                        var: Some(var_name.clone()),
+                        out: Some(value_var(body_block.args[i].id)),
+                        ..OpIR::default()
+                    });
+                }
+            }
+        }
+        emit_block_ops_inner(body_block, types, original_to_new_label, out);
+        emit_terminator(
+            body_block,
+            block_param_vars,
+            block_label_id,
+            if_inlined_blocks,
+            &func.loop_roles,
+            out,
+            original_has_ret,
+            super::blocks::LoopRole::None,
+            &func.loop_break_kinds,
+        );
     }
 }
 
@@ -2906,6 +3072,185 @@ mod tests {
             !ops.iter()
                 .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
             "successors containing nested SCF must stay label-based instead of inlining to structured if/else: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn eliminate_dead_loop_end_after_return() {
+        let mut ops = vec![
+            OpIR {
+                kind: "ret".into(),
+                out: None,
+                var: Some("_ret0".into()),
+                args: Some(vec!["_ret0".into()]),
+                value: None,
+                f_value: None,
+                s_value: None,
+                bytes: None,
+                fast_int: None,
+                fast_float: None,
+                stack_eligible: None,
+                task_kind: None,
+                container_type: None,
+                type_hint: None,
+                ic_index: None,
+                col_offset: None,
+                end_col_offset: None,
+            },
+            OpIR {
+                kind: "loop_end".into(),
+                out: None,
+                var: None,
+                args: Some(vec![]),
+                value: None,
+                f_value: None,
+                s_value: None,
+                bytes: None,
+                fast_int: None,
+                fast_float: None,
+                stack_eligible: None,
+                task_kind: None,
+                container_type: None,
+                type_hint: None,
+                ic_index: None,
+                col_offset: None,
+                end_col_offset: None,
+            },
+            OpIR {
+                kind: "label".into(),
+                out: None,
+                var: None,
+                args: Some(vec![]),
+                value: Some(42),
+                f_value: None,
+                s_value: None,
+                bytes: None,
+                fast_int: None,
+                fast_float: None,
+                stack_eligible: None,
+                task_kind: None,
+                container_type: None,
+                type_hint: None,
+                ic_index: None,
+                col_offset: None,
+                end_col_offset: None,
+            },
+        ];
+
+        eliminate_dead_labels(&mut ops);
+
+        assert!(
+            !ops.iter().any(|op| op.kind == "loop_end"),
+            "dead loop_end must not survive after a real return: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn eliminate_dead_jump_after_return() {
+        let mut ops = vec![
+            OpIR {
+                kind: "ret".into(),
+                out: None,
+                var: Some("_ret0".into()),
+                args: Some(vec!["_ret0".into()]),
+                value: None,
+                f_value: None,
+                s_value: None,
+                bytes: None,
+                fast_int: None,
+                fast_float: None,
+                stack_eligible: None,
+                task_kind: None,
+                container_type: None,
+                type_hint: None,
+                ic_index: None,
+                col_offset: None,
+                end_col_offset: None,
+            },
+            OpIR {
+                kind: "jump".into(),
+                out: None,
+                var: None,
+                args: None,
+                value: Some(42),
+                f_value: None,
+                s_value: None,
+                bytes: None,
+                fast_int: None,
+                fast_float: None,
+                stack_eligible: None,
+                task_kind: None,
+                container_type: None,
+                type_hint: None,
+                ic_index: None,
+                col_offset: None,
+                end_col_offset: None,
+            },
+            OpIR {
+                kind: "label".into(),
+                out: None,
+                var: None,
+                args: Some(vec![]),
+                value: Some(42),
+                f_value: None,
+                s_value: None,
+                bytes: None,
+                fast_int: None,
+                fast_float: None,
+                stack_eligible: None,
+                task_kind: None,
+                container_type: None,
+                type_hint: None,
+                ic_index: None,
+                col_offset: None,
+                end_col_offset: None,
+            },
+        ];
+
+        eliminate_dead_labels(&mut ops);
+
+        assert!(
+            !ops.iter().any(|op| op.kind == "jump"),
+            "dead jump must not survive after a real return: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn preserve_loop_end_after_live_labeled_raise_path() {
+        let mut ops = vec![
+            OpIR {
+                kind: "br_if".into(),
+                args: Some(vec!["cond".into()]),
+                value: Some(7),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_continue".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".into(),
+                value: Some(7),
+                args: Some(vec![]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "raise".into(),
+                args: Some(vec!["exc".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".into(),
+                args: Some(vec![]),
+                ..OpIR::default()
+            },
+        ];
+
+        eliminate_dead_labels(&mut ops);
+
+        assert!(
+            ops.iter().any(|op| op.kind == "loop_end"),
+            "loop_end must survive after a live labeled terminal block because it still closes the structured loop break path: {ops:?}"
         );
     }
 

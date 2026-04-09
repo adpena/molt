@@ -150,6 +150,48 @@ def test_native_import_os_is_clean(tmp_path: Path) -> None:
     assert run.stdout.strip() == "ok"
 
 
+def test_native_os_env_snapshot_executes(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        "import os\nprint(type(os._molt_env_snapshot()).__name__)\n",
+        "os_env_snapshot_executes",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "dict"
+
+
+def test_native_os_listdir_executes(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        "import os\nprint(type(os.listdir('.')).__name__)\n",
+        "os_listdir_executes",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "list"
+
+
+def test_native_os_stat_executes(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        "import os\nprint(type(os.stat('.')).__name__)\n",
+        "os_stat_executes",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "stat_result"
+
+
+def test_native_import_typing_optional_is_clean(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        "import typing\nfrom typing import Optional\nprint('ok')\n",
+        "import_typing_optional",
+        session_id="pytest-native-bootstrap-typing",
+        cache_dir=ROOT / ".molt_cache-typing",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "ok"
+
+
 def test_native_metaclass_subclass_of_base_metaclass_is_allowed(
     tmp_path: Path,
 ) -> None:
@@ -292,6 +334,43 @@ def test_native_while_break_exits_after_first_iteration(tmp_path: Path) -> None:
     assert run.stdout.strip() == "1"
 
 
+def test_native_for_contains_early_return_is_clean(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "def contains(xs, value):\n"
+            "    for v in xs:\n"
+            "        if v == value:\n"
+            "            return True\n"
+            "    return False\n"
+            "print(contains([1, 2, 3], 2))\n"
+            "print(contains([1, 2, 3], 9))\n"
+        ),
+        "for_contains_early_return",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["True", "False"]
+
+
+def test_native_nested_for_early_return_is_clean(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "def first_match(grid, target):\n"
+            "    for row in grid:\n"
+            "        for value in row:\n"
+            "            if value == target:\n"
+            "                return value\n"
+            "    return -1\n"
+            "print(first_match([[1, 2], [3, 4]], 3))\n"
+            "print(first_match([[1, 2], [3, 4]], 9))\n"
+        ),
+        "nested_for_early_return",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["3", "-1"]
+
+
 def test_native_nested_if_else_for_does_not_fallthrough_then_arm(
     tmp_path: Path,
 ) -> None:
@@ -315,6 +394,29 @@ def test_native_nested_if_else_for_does_not_fallthrough_then_arm(
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == ["3", "float"]
+
+
+def test_native_dynamic_abc_slot_class_preserves_runtime_layout(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import abc\n"
+            "class Sized(metaclass=abc.ABCMeta):\n"
+            "    __slots__ = ()\n"
+            "    def __len__(self):\n"
+            "        return 0\n"
+            "class MappingView(Sized):\n"
+            "    __slots__ = ('_mapping',)\n"
+            "    def __init__(self, mapping):\n"
+            "        self._mapping = mapping\n"
+            "view = MappingView({'x': 1})\n"
+            "print(type(view).__name__)\n"
+            "print(view._mapping['x'])\n"
+        ),
+        "dynamic_abc_slot_layout",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["MappingView", "1"]
 
 
 def test_native_safe_intrinsic_helper_with_tuple_subclass(tmp_path: Path) -> None:
@@ -368,6 +470,43 @@ def test_native_safe_intrinsic_helper_with_tuple_subclass(tmp_path: Path) -> Non
         "51118320",
         "(3, 12, 0, 'final', 0)",
     ]
+
+
+def test_native_nonempty_tuple_truthiness_is_true(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "def f():\n"
+            "    v = (1,)\n"
+            "    print(bool(v))\n"
+            "    print(bool(()))\n"
+            "    print(v or (2,))\n"
+            "f()\n"
+        ),
+        "tuple_truthiness",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["True", "False", "(1,)"]
+
+
+def test_native_tuple_if_merge_preserves_object_value(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "def f():\n"
+            "    v = (1,)\n"
+            "    if v:\n"
+            "        x = v\n"
+            "    else:\n"
+            "        x = (2,)\n"
+            "    print(type(x).__name__)\n"
+            "    print(x)\n"
+            "f()\n"
+        ),
+        "tuple_if_merge",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["tuple", "(1,)"]
 
 
 def test_native_intrinsic_alias_preserves_namespace_compatible_signature(
