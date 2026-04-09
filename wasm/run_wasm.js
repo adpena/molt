@@ -144,18 +144,16 @@ const resolveWasmPaths = ({
   argv2 = process.argv[2],
   env = process.env,
   moduleDir = __dirname,
-  tmpDir = os.tmpdir(),
 } = {}) => {
   const explicitWasmPath = wasmPath || argv2 || env.MOLT_WASM_PATH || null;
   const canonicalWasmPath = resolveDefaultWasmPath(moduleDir);
   const canonicalLinkedPath = resolveDefaultLinkedPath(moduleDir);
-  const tempWasmPath = path.join(tmpDir, 'output.wasm');
-  const selectedWasmPath = explicitWasmPath
-    || (fs.existsSync(canonicalWasmPath) ? canonicalWasmPath : null)
-    || (fs.existsSync(tempWasmPath) ? tempWasmPath : null);
+  const selectedWasmPath =
+    explicitWasmPath ||
+    (fs.existsSync(canonicalWasmPath) ? canonicalWasmPath : null);
   if (!selectedWasmPath) {
     throw new Error(
-      'WASM path not found (arg, MOLT_WASM_PATH, canonical dist/output.wasm, or temp output.wasm)'
+      'WASM path not found (arg, MOLT_WASM_PATH, or canonical dist/output.wasm)'
     );
   }
   const explicitLinkedPath = (() => {
@@ -174,7 +172,6 @@ const resolveWasmPaths = ({
     linkedPath: resolvedLinkedPath,
     canonicalWasmPath,
     canonicalLinkedPath,
-    tempWasmPath,
   };
 };
 
