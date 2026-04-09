@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import types
@@ -6020,6 +6021,72 @@ def test_start_backend_daemon_uses_short_probe_for_stale_socket_with_live_pid(
     assert removed == [pid_path]
 
 
+def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_bin = tmp_path / "molt-backend"
+    backend_bin.write_text("backend")
+    socket_dir = tmp_path / "sockets"
+    socket_dir.mkdir()
+    socket_path = socket_dir / "moltbd.current.sock"
+    build_state_root = tmp_path / "target" / ".molt_state"
+    wait_timeouts: list[float | None] = []
+
+    for idx in range(3):
+        (socket_dir / f"moltbd.foreign{idx}.sock").write_text("")
+
+    pid_path = build_state_root / "backend_daemon" / "molt-backend.dev-fast.pid"
+    log_path = build_state_root / "backend_daemon" / "molt-backend.dev-fast.log"
+
+    class _FakePopen:
+        pid = 4321
+
+    def fake_wait_until_ready(
+        *args: object, **kwargs: object
+    ) -> tuple[bool, dict[str, object] | None]:
+        del args
+        wait_timeouts.append(cast(float | None, kwargs.get("ready_timeout")))
+        return True, None
+
+    spawn_calls: list[list[str]] = []
+
+    def fake_popen(cmd: list[str], **kwargs: object) -> _FakePopen:
+        spawn_calls.append(cmd)
+        return _FakePopen()
+
+    monkeypatch.setattr(
+        cli, "_backend_daemon_pid_path", lambda *args, **kwargs: pid_path
+    )
+    monkeypatch.setattr(
+        cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path
+    )
+    monkeypatch.setattr(cli, "_read_backend_daemon_pid", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_backend_daemon_wait_until_ready", fake_wait_until_ready)
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+
+    assert (
+        cli._start_backend_daemon(
+            backend_bin,
+            socket_path,
+            cargo_profile="dev-fast",
+            project_root=tmp_path,
+            startup_timeout=2.0,
+            json_output=True,
+            warnings=[],
+        )
+        is True
+    )
+
+    assert spawn_calls == [
+        [str(backend_bin), "--daemon", "--socket", str(socket_path)]
+    ]
+    assert wait_timeouts == [0.25]
+    assert not socket_path.with_suffix(".redirect").exists()
+    for idx in range(3):
+        assert (socket_dir / f"moltbd.foreign{idx}.sock").exists()
+
+
 def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -9260,6 +9327,87 @@ def test_backend_daemon_request_bytes_rejects_whitespace_only_response(
 
     assert response is None
     assert err == "backend daemon returned empty response"
+
+
+def test_backend_daemon_request_bytes_ignores_redirect_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sent: list[bytes] = []
+    socket_path = tmp_path / "daemon.sock"
+    socket_path.with_suffix(".redirect").write_text(str(tmp_path / "foreign.sock"))
+
+    class _FakeSocket:
+        def __enter__(self) -> "_FakeSocket":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def settimeout(self, timeout: float) -> None:
+            assert timeout == 0.25
+
+        def connect(self, address: str) -> None:
+            assert address == str(socket_path)
+
+        def sendall(self, data: bytes) -> None:
+            sent.append(data)
+
+        def shutdown(self, how: int) -> None:
+            assert how == cli.socket.SHUT_WR
+
+        def recv_into(self, buffer: memoryview) -> int:
+            assert len(buffer) == 65536
+            if not hasattr(self, "_chunks"):
+                self._chunks = [b'{"ok":true}', b""]
+            chunk = self._chunks.pop(0)
+            buffer[: len(chunk)] = chunk
+            return len(chunk)
+
+    monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
+
+    response, err = cli._backend_daemon_request_bytes(
+        socket_path,
+        b'{"version":1}\n',
+        timeout=0.25,
+    )
+
+    assert err is None
+    assert response == {"ok": True}
+    assert sent == [b'{"version":1}\n']
+
+
+def test_kill_stale_backend_daemon_uses_project_canonical_sidecars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical_root = tmp_path / "target" / ".molt_state"
+    daemon_root = canonical_root / "backend_daemon"
+    daemon_root.mkdir(parents=True)
+    pid_path = daemon_root / "molt-backend.dev-fast.alpha.deadbeef.pid"
+    pid_path.write_text("4321\n")
+    killed: list[tuple[int, int]] = []
+    removed: list[Path] = []
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(cli, "_build_state_root", lambda project_root: canonical_root)
+
+    def fake_kill(pid: int, sig: int) -> None:
+        killed.append((pid, sig))
+
+    monkeypatch.setattr(cli.os, "kill", fake_kill)
+    monkeypatch.setattr(
+        cli,
+        "_remove_backend_daemon_pid",
+        lambda path: removed.append(path),
+    )
+
+    cli._kill_stale_backend_daemon(tmp_path, "dev-fast")
+
+    assert killed == [(4321, signal.SIGTERM)]
+    assert removed == [pid_path]
 
 
 def test_backend_daemon_skip_output_sync_flags_track_artifact_state(

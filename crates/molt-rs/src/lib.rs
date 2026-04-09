@@ -514,6 +514,109 @@ pub fn molt_get_attr(obj: &MoltValue, attr: &str) -> MoltValue {
     }
 }
 
+/// Merge class layout metadata for transpiled Rust class objects.
+pub fn molt_class_merge_layout(
+    class_obj: &mut MoltValue,
+    offsets: MoltValue,
+    size: MoltValue,
+) -> MoltValue {
+    let class_dict = match class_obj {
+        MoltValue::Dict(d) => d,
+        _ => panic!("class layout merge expects type"),
+    };
+    let hinted_size = match size {
+        MoltValue::Int(v) if v >= 0 => v as usize,
+        _ => panic!("__molt_layout_size__ must be int"),
+    };
+    let mut merged_offsets: Option<Vec<(MoltValue, MoltValue)>> = None;
+    match offsets {
+        MoltValue::None => {
+            if let Some((_, MoltValue::Dict(existing))) = class_dict
+                .iter()
+                .find(
+                    |(key, _)| matches!(key, MoltValue::Str(name) if name == "__molt_field_offsets__"),
+                )
+            {
+                merged_offsets = Some(existing.clone());
+            }
+        }
+        MoltValue::Dict(source_offsets) => {
+            let target_index = if let Some(index) = class_dict
+                .iter()
+                .position(
+                    |(key, _)| matches!(key, MoltValue::Str(name) if name == "__molt_field_offsets__"),
+                )
+            {
+                index
+            } else {
+                class_dict.push((
+                    MoltValue::Str("__molt_field_offsets__".to_string()),
+                    MoltValue::Dict(vec![]),
+                ));
+                class_dict.len() - 1
+            };
+            let target_offsets = match &mut class_dict[target_index].1 {
+                MoltValue::Dict(d) => d,
+                _ => panic!("__molt_field_offsets__ must be dict"),
+            };
+            for (name, offset) in source_offsets {
+                if target_offsets.iter().any(|(existing, _)| existing == &name) {
+                    continue;
+                }
+                target_offsets.push((name, offset));
+            }
+            merged_offsets = Some(target_offsets.clone());
+        }
+        _ => panic!("__molt_field_offsets__ must be dict or None"),
+    }
+
+    let mut layout_size = class_dict
+        .iter()
+        .find_map(|(key, value)| match (key, value) {
+            (MoltValue::Str(name), MoltValue::Int(existing))
+                if name == "__molt_layout_size__" && *existing > 0 =>
+            {
+                Some(*existing as usize)
+            }
+            _ => None,
+        })
+        .unwrap_or(0);
+    layout_size = layout_size.max(hinted_size);
+    if let Some(offsets_dict) = merged_offsets.as_ref() {
+        let mut max_end = 0usize;
+        for (_, offset) in offsets_dict.iter() {
+            if let MoltValue::Int(value) = offset {
+                if *value < 0 {
+                    continue;
+                }
+                let end = (*value as usize).saturating_add(std::mem::size_of::<u64>());
+                if end > max_end {
+                    max_end = end;
+                }
+            }
+        }
+        layout_size = layout_size.max(max_end.saturating_add(std::mem::size_of::<u64>()));
+    }
+    if layout_size == 0 {
+        layout_size = std::mem::size_of::<u64>();
+    }
+
+    if let Some((_, value)) = class_dict
+        .iter_mut()
+        .find(
+            |(key, _)| matches!(key, MoltValue::Str(name) if name == "__molt_layout_size__"),
+        )
+    {
+        *value = MoltValue::Int(layout_size as i64);
+    } else {
+        class_dict.push((
+            MoltValue::Str("__molt_layout_size__".to_string()),
+            MoltValue::Int(layout_size as i64),
+        ));
+    }
+    MoltValue::None
+}
+
 /// Python `elem in container`.
 pub fn molt_in(elem: &MoltValue, container: &MoltValue) -> bool {
     match container {
@@ -769,6 +872,37 @@ mod tests {
         assert_eq!(
             molt_get_item(&d, &MoltValue::Str("x".to_string())),
             MoltValue::Int(99)
+        );
+    }
+
+    #[test]
+    fn test_class_merge_layout_merges_offsets_and_layout_size() {
+        let mut class_obj = MoltValue::Dict(vec![]);
+        let result = molt_class_merge_layout(
+            &mut class_obj,
+            MoltValue::Dict(vec![
+                (MoltValue::Str("x".to_string()), MoltValue::Int(0)),
+                (MoltValue::Str("y".to_string()), MoltValue::Int(8)),
+            ]),
+            MoltValue::Int(8),
+        );
+        assert_eq!(result, MoltValue::None);
+        assert_eq!(
+            molt_get_item(
+                &class_obj,
+                &MoltValue::Str("__molt_layout_size__".to_string()),
+            ),
+            MoltValue::Int(24)
+        );
+        assert_eq!(
+            molt_get_item(
+                &class_obj,
+                &MoltValue::Str("__molt_field_offsets__".to_string()),
+            ),
+            MoltValue::Dict(vec![
+                (MoltValue::Str("x".to_string()), MoltValue::Int(0)),
+                (MoltValue::Str("y".to_string()), MoltValue::Int(8)),
+            ])
         );
     }
 
