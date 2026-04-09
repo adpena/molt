@@ -311,6 +311,67 @@ def test_resolve_output_path_uses_out_dir(tmp_path: Path) -> None:
     assert resolved == out_dir / "obj"
 
 
+def test_resolve_output_roots_defaults_final_outputs_to_dist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / ".molt_cache"))
+
+    _artifacts_root, bin_root, output_root = cli._resolve_output_roots(
+        tmp_path, None, "app"
+    )
+
+    assert output_root == tmp_path / "dist"
+    assert bin_root == cli._default_molt_bin()
+
+
+def test_resolve_build_output_layout_defaults_wasm_outputs_to_dist(
+    tmp_path: Path,
+) -> None:
+    layout = cli._resolve_build_output_layout(
+        target="wasm",
+        trusted=False,
+        require_linked=False,
+        linked=False,
+        linked_output=None,
+        emit=None,
+        output=None,
+        emit_ir=None,
+        artifacts_root=tmp_path / "artifacts",
+        bin_root=tmp_path / "bin",
+        output_root=tmp_path / "dist",
+        output_base="app",
+        out_dir_path=None,
+        project_root=tmp_path,
+    )
+
+    assert layout.output_artifact == tmp_path / "dist" / "output.wasm"
+    assert layout.linked_output_path == tmp_path / "dist" / "output_linked.wasm"
+
+
+def test_resolve_build_output_layout_defaults_object_output_to_dist(
+    tmp_path: Path,
+) -> None:
+    layout = cli._resolve_build_output_layout(
+        target="native",
+        trusted=False,
+        require_linked=False,
+        linked=False,
+        linked_output=None,
+        emit="obj",
+        output=None,
+        emit_ir=None,
+        artifacts_root=tmp_path / "artifacts",
+        bin_root=tmp_path / "bin",
+        output_root=tmp_path / "dist",
+        output_base="app",
+        out_dir_path=None,
+        project_root=tmp_path,
+    )
+
+    assert layout.output_artifact == tmp_path / "dist" / "output.o"
+
+
 def test_resolve_build_output_layout_allows_linked_output_for_default_wasm_linking(
     tmp_path: Path,
 ) -> None:

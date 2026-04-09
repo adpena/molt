@@ -41,7 +41,7 @@ molt build app.py --profile cloudflare   # Platform-optimized build
 | `--target TARGET` | Build target: `native` (default), `wasm`, `luau`, or a target triple (e.g. `aarch64-unknown-linux-gnu`). |
 | `--release` | Optimized release build (alias for `--build-profile release`). |
 | `--module MODULE` | Entry module name. Uses `pkg.__main__` when present. |
-| `--output PATH` | Output path for the artifact. |
+| `--output PATH` | Output path for the artifact. Default final wasm/object outputs land under `dist/` when omitted. |
 | `--out-dir DIR` | Output directory for final artifacts. |
 | `--profile PLATFORM` | Deployment platform profile: `cloudflare`, `browser`, `wasi`, `fastly`. Sets optimization defaults. |
 | `--rebuild` | Disable build cache (alias for `--no-cache`). |

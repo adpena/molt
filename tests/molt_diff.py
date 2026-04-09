@@ -468,7 +468,6 @@ def _diff_build_timeout(run_timeout: float | None) -> float | None:
     # defaulting too high can leave deadlocked helpers alive for too long.
     return max(run_timeout * 2.0, 300.0)
 
-
 def _diff_root() -> Path:
     raw = os.environ.get("MOLT_DIFF_ROOT", "").strip()
     if raw:
@@ -476,9 +475,9 @@ def _diff_root() -> Path:
     else:
         artifact_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
         if artifact_root:
-            root = Path(artifact_root).expanduser() / "diff"
+            root = Path(artifact_root).expanduser() / "tmp" / "diff"
         else:
-            root = Path("logs") / "molt_diff"
+            root = _repo_root() / "tmp" / "diff"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -488,7 +487,11 @@ def _diff_tmp_root() -> Path:
     if raw:
         root = Path(raw).expanduser()
     else:
-        root = _diff_root() / "tmp"
+        artifact_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
+        if artifact_root:
+            root = Path(artifact_root).expanduser() / "tmp"
+        else:
+            root = _repo_root() / "tmp"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -498,7 +501,25 @@ def _diff_cargo_target_root() -> Path:
     if raw:
         root = Path(raw).expanduser()
     else:
-        root = _diff_root() / "target"
+        cargo_target = os.environ.get("CARGO_TARGET_DIR", "").strip()
+        if cargo_target:
+            root = Path(cargo_target).expanduser()
+        else:
+            artifact_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
+            if artifact_root:
+                root = Path(artifact_root).expanduser() / "target"
+            else:
+                root = _repo_root() / "target"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _diff_cache_root() -> Path:
+    artifact_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if artifact_root:
+        root = Path(artifact_root).expanduser() / ".molt_cache"
+    else:
+        root = _repo_root() / ".molt_cache"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -3380,7 +3401,7 @@ def run_diff(
     if warm_cache:
         shared_cache = os.environ.get("MOLT_CACHE")
         if not shared_cache:
-            shared_cache = str(_diff_root() / "molt_cache")
+            shared_cache = str(_diff_cache_root())
             os.environ["MOLT_CACHE"] = shared_cache
         for file_path in test_files:
             _out, err, rc = run_molt_build_only(str(file_path), build_profile)
