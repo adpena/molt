@@ -1,11 +1,11 @@
-use crate::object::ops::string_obj_to_owned;
-use crate::object::layout::function_call_target_ptr;
 use crate::builtins::functions::runtime_callable_target_ptr;
+use crate::object::layout::function_call_target_ptr;
+use crate::object::ops::string_obj_to_owned;
 use crate::{
     CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
     HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, PyToken, TYPE_ID_FUNCTION, TYPE_ID_TUPLE,
-    ensure_function_code_bits, exception_pending, frame_stack_pop, frame_stack_push, function_arity,
-    function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
+    ensure_function_code_bits, exception_pending, frame_stack_pop, frame_stack_push,
+    function_arity, function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
     function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy,
     molt_exception_clear, obj_from_bits, object_type_id, profile_hit, raise_exception,
     recursion_guard_enter, recursion_guard_exit, runtime_state, seq_vec_ref,
@@ -619,8 +619,7 @@ pub(crate) unsafe fn call_function_obj2(
                 // `function_fn_ptr` targets a 2-arg extern "C" function. The compiler must
                 // emit a valid non-null pointer. UB if fn_ptr is null or has wrong arity.
                 if let Some(runtime_target) = function_runtime_call_target_ptr(func_ptr, fn_ptr) {
-                    let func: extern "C" fn(u64, u64) -> u64 =
-                        std::mem::transmute(runtime_target);
+                    let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(runtime_target);
                     func(arg0_bits, arg1_bits)
                 } else {
                     let call_target = function_call_target_or_legacy_ptr(func_ptr, fn_ptr);
@@ -920,7 +919,14 @@ unsafe fn call_function_obj5(
                     fn_ptr,
                     extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64,
                     extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64,
-                    (closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits)
+                    (
+                        closure_bits,
+                        arg0_bits,
+                        arg1_bits,
+                        arg2_bits,
+                        arg3_bits,
+                        arg4_bits
+                    )
                 )
             }
         } else {
@@ -2298,7 +2304,8 @@ mod tests {
 
     fn string_bits(text: &str) -> u64 {
         let mut out = 0u64;
-        let rc = unsafe { crate::molt_string_from_bytes(text.as_ptr(), text.len() as u64, &mut out) };
+        let rc =
+            unsafe { crate::molt_string_from_bytes(text.as_ptr(), text.len() as u64, &mut out) };
         assert_eq!(rc, 0);
         out
     }
@@ -2369,12 +2376,9 @@ mod tests {
             let args_list = crate::molt_list_builtin(crate::molt_missing());
             let _ = crate::molt_list_append(args_list, msg_bits);
             let args_bits = crate::molt_tuple_from_list(args_list);
-            let exc_bits =
-                crate::builtins::exceptions::molt_exception_new(kind_bits, args_bits);
+            let exc_bits = crate::builtins::exceptions::molt_exception_new(kind_bits, args_bits);
             let _ = crate::molt_exception_set_last(exc_bits);
-            let _ = unsafe {
-                enforce_no_pending_on_success(_py, int(7), "call_function_obj0")
-            };
+            let _ = unsafe { enforce_no_pending_on_success(_py, int(7), "call_function_obj0") };
         });
     }
 }

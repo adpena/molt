@@ -16,7 +16,12 @@ unsafe extern "C" {
     fn molt_runtime_init() -> u64;
     fn molt_exception_clear() -> u64;
     fn molt_object_getattr_bytes(obj_bits: u64, name_ptr: *const u8, name_len: u64) -> u64;
-    fn molt_object_setattr_bytes(obj_bits: u64, name_ptr: *const u8, name_len: u64, val_bits: u64) -> i32;
+    fn molt_object_setattr_bytes(
+        obj_bits: u64,
+        name_ptr: *const u8,
+        name_len: u64,
+        val_bits: u64,
+    ) -> i32;
     fn molt_object_call(callable_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64;
     fn molt_bool_builtin(val_bits: u64) -> u64;
     fn molt_func_new_builtin(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64;
@@ -74,7 +79,12 @@ fn setattr_bytes(obj_bits: u64, name: &[u8], value_bits: u64) {
     let rc = unsafe {
         molt_object_setattr_bytes(obj_bits, name.as_ptr(), name.len() as u64, value_bits)
     };
-    assert_eq!(rc, 0, "setattr failed for {:?}", std::str::from_utf8(name).ok());
+    assert_eq!(
+        rc,
+        0,
+        "setattr failed for {:?}",
+        std::str::from_utf8(name).ok()
+    );
 }
 
 fn plain_function_with_metadata() -> u64 {
@@ -119,10 +129,7 @@ fn trace_callargs_emits_builder_lifecycle_logs() {
     if std::env::var("MOLT_TRACE_CHILD").as_deref() == Ok("1") {
         return;
     }
-    let output = spawn_child(
-        "trace_callargs_child",
-        &[("MOLT_TRACE_CALLARGS", "1")],
-    );
+    let output = spawn_child("trace_callargs_child", &[("MOLT_TRACE_CALLARGS", "1")]);
     assert!(
         output.status.success(),
         "{}",
