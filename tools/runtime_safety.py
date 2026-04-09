@@ -6,8 +6,8 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+from collections.abc import Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_DIR = ROOT / "runtime/molt-runtime"
@@ -19,6 +19,16 @@ SANITIZERS = {
     "tsan": "thread",
     "ubsan": "undefined",
 }
+
+
+def _miri_tmp_root(env: Mapping[str, str] | None = None) -> Path:
+    env_view = os.environ if env is None else env
+    explicit = env_view.get("MOLT_DIFF_TMPDIR") or env_view.get("TMPDIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    ext_root = env_view.get("MOLT_EXT_ROOT")
+    base = Path(ext_root).expanduser() if ext_root else ROOT
+    return base / "tmp" / "runtime_safety" / "miri"
 
 
 def _run(
@@ -96,7 +106,9 @@ def run_miri(log_dir: Path | None) -> None:
     miriflags = env.get("MIRIFLAGS", "")
     if "-Zmiri-disable-isolation" not in miriflags:
         env["MIRIFLAGS"] = f"{miriflags} -Zmiri-disable-isolation".strip()
-    env["TMPDIR"] = "/tmp" if os.name == "posix" else tempfile.gettempdir()
+    miri_tmp = _miri_tmp_root(env)
+    miri_tmp.mkdir(parents=True, exist_ok=True)
+    env.setdefault("TMPDIR", str(miri_tmp))
     log_path = log_dir / "runtime_miri.log" if log_dir else None
     _run(
         ["cargo", "+nightly", "miri", "test", "-p", "molt-runtime"],

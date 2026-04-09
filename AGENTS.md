@@ -235,14 +235,14 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 
 ## Concurrent Development (Required for Multi-Agent)
 
-`MOLT_SESSION_ID` **must be set BEFORE any build command**. Every agent must export it at the start of every shell command:
+`MOLT_SESSION_ID` is available when a workflow needs session-scoped build state, but the canonical repository target root remains `target/`. Export it before any build command when another agent may be active:
 
 ```bash
 export MOLT_SESSION_ID="<unique-name>"  # e.g., "agent-1", "debug-session", UUID
 ```
 
 **What it does:**
-- Routes ALL cargo builds to `target-<session>/` (e.g., `target-agent_1/`) — no cargo lock contention, no artifact clobbering
+- Keeps build state and daemon/socket isolation session-scoped without changing the canonical `target/` guidance
 - Isolates daemon socket — no kill/restart conflicts between sessions
 - Isolates build state, lock-check caches, and staleness checks — fully independent build lifecycle
 - Disables `cargo clean` — incremental builds only, no binary deletion
@@ -250,7 +250,7 @@ export MOLT_SESSION_ID="<unique-name>"  # e.g., "agent-1", "debug-session", UUID
 **Pre-build step** (first build in a new session takes ~5 min for full compile):
 ```bash
 export MOLT_SESSION_ID="agent-1"
-cargo build --profile release-fast -p molt-backend --features native-backend --target-dir target-agent_1
+cargo build --profile release-fast -p molt-backend --features native-backend --target-dir target
 ```
 
 **Daemon management:**
@@ -258,7 +258,7 @@ cargo build --profile release-fast -p molt-backend --features native-backend --t
 - To kill only YOUR session's daemon: `pkill -9 -f "moltbd.*<session-id>"`
 - Each session's daemon has a unique socket path derived from the session ID
 
-**Without it:** All sessions share `target/` and the same daemon. One agent's `cargo build` blocks all others. One agent's rebuild deletes artifacts that other sessions depend on.
+**Without it:** All sessions share the canonical `target/` and the same daemon. One agent's `cargo build` can block others, and one agent's rebuild can delete artifacts that other sessions depend on.
 
 **Resource limits:** Maximum 2 concurrent builds (OOM risk on machines with less than 128GB RAM).
 
@@ -488,13 +488,13 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
   - Optional: set `MOLT_DIFF_DYLD_LOCAL_ROOT=<abs path>` to override the local dyld quarantine root (default: `/tmp/molt_diff_dyld`).
   - Optional: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache` in diff runs. Default is platform-safe auto (`1` on macOS, `0` elsewhere) and dyld guard/retry also enables it.
   - Optional cleanup for interrupted/crashed sessions before starting a new long run: `ps -axo pid,command | rg "tests/molt_diff.py"` then `kill -TERM <pid>` (and `kill -KILL <pid>` if needed). Keep one supervising diff run per shared target to minimize contention and memory spikes.
-  - Example (configured artifact root + shared cache + temp root): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
-- Example (RSS metrics): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
+- Example (configured artifact root + shared cache + temp root): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
+- Example (RSS metrics): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
   - Example (watch RSS during run): `ps -o pid=,rss=,command= -p <PID> | awk '{printf "pid=%s rss_kb=%s cmd=%s\n",$1,$2,$3}'` (record spikes in [tests/differential/INDEX.md](tests/differential/INDEX.md)).
   - Example (kill on blowup): `kill -TERM <PID>` then `kill -KILL <PID>` if it does not exit quickly; log the abort + last-known RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md).
-- Example (multi-target list, auto-parallel): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
+- Example (multi-target list, auto-parallel): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
   - Example (parallel full sweep + live log + aggregate log + per-test logs):
-    `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python3 -u tests/molt_diff.py --jobs 8 --live --log-file ${ARTIFACT_ROOT}/tmp/diff_live.log --log-aggregate ${ARTIFACT_ROOT}/tmp/diff_full.log --log-dir ${ARTIFACT_ROOT}/tmp/diff_logs tests/differential`
+    `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python3 -u tests/molt_diff.py --jobs 8 --live --log-file ${ARTIFACT_ROOT}/tmp/diff_live.log --log-aggregate ${ARTIFACT_ROOT}/tmp/diff_full.log --log-dir ${ARTIFACT_ROOT}/tmp/diff_logs tests/differential`
   - Example (monitor live log): `tail -f ${ARTIFACT_ROOT}/tmp/diff_live.log`
   - Example (monitor aggregate log): `tail -f ${ARTIFACT_ROOT}/tmp/diff_full.log`
   - Disable trusted default: `MOLT_DEV_TRUSTED=0 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.

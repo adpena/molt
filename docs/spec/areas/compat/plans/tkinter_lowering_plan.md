@@ -239,10 +239,10 @@ Default stance:
 Use canonical artifact roots for all heavy runs:
 ```bash
 export MOLT_EXT_ROOT=/path/to/artifact-root  # optional external root
-export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/cargo-target
+export CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target
 export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR
-export MOLT_CACHE=$MOLT_EXT_ROOT/molt_cache
-export MOLT_DIFF_ROOT=$MOLT_EXT_ROOT/diff
+export MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache
+export MOLT_DIFF_ROOT=$MOLT_EXT_ROOT/tmp/diff
 export MOLT_DIFF_TMPDIR=$MOLT_EXT_ROOT/tmp
 export TMPDIR=$MOLT_EXT_ROOT/tmp
 export MOLT_DIFF_MEASURE_RSS=1

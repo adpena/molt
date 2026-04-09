@@ -124,37 +124,65 @@ const ensureWasmLocaleEnv = (env) => {
   }
 };
 
-const initWasmAssets = () => {
-  const wasmArg = process.argv[2];
-  const wasmEnvPath = process.env.MOLT_WASM_PATH;
-  const explicitWasmPath = wasmArg || wasmEnvPath || null;
-  const localWasm = path.join(__dirname, 'output.wasm');
-  const tempWasm = path.join(os.tmpdir(), 'output.wasm');
-  wasmPath =
-    explicitWasmPath || (fs.existsSync(localWasm) ? localWasm : tempWasm);
-  if (!wasmPath || !fs.existsSync(wasmPath)) {
-    throw new Error('WASM path not found (arg, MOLT_WASM_PATH, ./output.wasm, or temp output.wasm)');
+const resolveDefaultWasmPath = (moduleDir = __dirname) =>
+  path.join(moduleDir, '..', 'dist', 'output.wasm');
+
+const resolveDefaultLinkedPath = (moduleDir = __dirname) =>
+  path.join(moduleDir, '..', 'dist', 'output_linked.wasm');
+
+const resolveSiblingLinkedPath = (candidatePath) => {
+  if (!candidatePath) return null;
+  const parsed = path.parse(candidatePath);
+  if (parsed.name.endsWith('_linked')) {
+    return candidatePath;
   }
-  wasmBuffer = fs.readFileSync(wasmPath);
-  const linkedEnvPath = process.env.MOLT_WASM_LINKED_PATH;
-  const defaultLinkedPath = path.join(__dirname, 'output_linked.wasm');
+  return path.join(parsed.dir, `${parsed.name}_linked${parsed.ext || '.wasm'}`);
+};
+
+const resolveWasmPaths = ({
+  wasmPath = null,
+  argv2 = process.argv[2],
+  env = process.env,
+  moduleDir = __dirname,
+  tmpDir = os.tmpdir(),
+} = {}) => {
+  const explicitWasmPath = wasmPath || argv2 || env.MOLT_WASM_PATH || null;
+  const canonicalWasmPath = resolveDefaultWasmPath(moduleDir);
+  const canonicalLinkedPath = resolveDefaultLinkedPath(moduleDir);
+  const tempWasmPath = path.join(tmpDir, 'output.wasm');
+  const selectedWasmPath = explicitWasmPath
+    || (fs.existsSync(canonicalWasmPath) ? canonicalWasmPath : null)
+    || (fs.existsSync(tempWasmPath) ? tempWasmPath : null);
+  if (!selectedWasmPath) {
+    throw new Error(
+      'WASM path not found (arg, MOLT_WASM_PATH, canonical dist/output.wasm, or temp output.wasm)'
+    );
+  }
   const explicitLinkedPath = (() => {
     if (!explicitWasmPath) return null;
     const parsed = path.parse(explicitWasmPath);
     return parsed.name.endsWith('_linked') ? explicitWasmPath : null;
   })();
-  const siblingLinkedPath = (() => {
-    if (!wasmPath) return null;
-    const parsed = path.parse(wasmPath);
-    const ext = parsed.ext || '.wasm';
-    const candidate = path.join(parsed.dir, `${parsed.name}_linked${ext}`);
-    return fs.existsSync(candidate) ? candidate : null;
-  })();
-  linkedPath =
-    linkedEnvPath ||
+  const siblingLinkedPath = resolveSiblingLinkedPath(selectedWasmPath);
+  const resolvedLinkedPath =
+    env.MOLT_WASM_LINKED_PATH ||
     explicitLinkedPath ||
-    siblingLinkedPath ||
-    (!explicitWasmPath && fs.existsSync(defaultLinkedPath) ? defaultLinkedPath : null);
+    (siblingLinkedPath && fs.existsSync(siblingLinkedPath) ? siblingLinkedPath : null) ||
+    null;
+  return {
+    wasmPath: selectedWasmPath,
+    linkedPath: resolvedLinkedPath,
+    canonicalWasmPath,
+    canonicalLinkedPath,
+    tempWasmPath,
+  };
+};
+
+const initWasmAssets = () => {
+  const resolved = resolveWasmPaths();
+  wasmPath = resolved.wasmPath;
+  wasmBuffer = fs.readFileSync(wasmPath);
+  linkedPath = resolved.linkedPath;
   linkedBuffer = null;
   if (linkedPath && linkedPath === wasmPath) {
     linkedBuffer = wasmBuffer;
@@ -4761,7 +4789,7 @@ const runMain = async () => {
   }
 };
 
-if (!IS_DB_WORKER && !IS_SOCKET_WORKER) {
+if (require.main === module && !IS_DB_WORKER && !IS_SOCKET_WORKER) {
   runMain()
     .then((exitCode) => {
       if (exitCode !== 0) {
@@ -4790,3 +4818,7 @@ if (!IS_DB_WORKER && !IS_SOCKET_WORKER) {
       process.exit(1);
     });
 }
+
+module.exports = {
+  resolveWasmPaths,
+};
