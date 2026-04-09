@@ -1206,6 +1206,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.del_targets: set[str] = set()
         self.unbound_check_names: set[str] = set()
         self.exact_locals: dict[str, str] = {}
+        self.exact_builtin_locals: dict[str, str] = {}
         self.globals: dict[str, MoltValue] = {}
         self.module_chunk_globals: set[str] = set()
         self.func_symbol_names: dict[str, str] = {}
@@ -1679,6 +1680,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.scope_assigned = set()
         self.unbound_check_names = set()
         self.exact_locals = {}
+        self.exact_builtin_locals = {}
         self.globals = {}
         self.imported_names = dict(self.global_imported_names)
         self.imported_modules = dict(self.global_imported_modules)
@@ -2824,6 +2826,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.del_targets = set()
         self.unbound_check_names = set()
         self.exact_locals = {}
+        self.exact_builtin_locals = {}
         self.imported_names = dict(self.global_imported_names)
         self.imported_modules = dict(self.global_imported_modules)
         self.async_locals = {}
@@ -3439,6 +3442,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "del_targets": self.del_targets,
             "unbound_check_names": self.unbound_check_names,
             "exact_locals": self.exact_locals,
+            "exact_builtin_locals": self.exact_builtin_locals,
             "async_locals": self.async_locals,
             "async_internal_locals": self.async_internal_locals,
             "async_public_locals": self.async_public_locals,
@@ -3494,6 +3498,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.del_targets = state["del_targets"]
         self.unbound_check_names = state["unbound_check_names"]
         self.exact_locals = state["exact_locals"]
+        self.exact_builtin_locals = state["exact_builtin_locals"]
         self.async_locals = state["async_locals"]
         self.async_internal_locals = state["async_internal_locals"]
         self.async_public_locals = state["async_public_locals"]
@@ -7836,7 +7841,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return node.func.id
         return None
 
+    def _builtin_exact_type_from_expr(self, value: ast.AST | None) -> str | None:
+        if isinstance(value, ast.Dict):
+            return "dict"
+        if isinstance(value, ast.List):
+            return "list"
+        if isinstance(value, ast.Set):
+            return "set"
+        if isinstance(value, ast.Tuple):
+            return "tuple"
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+            func_id = value.func.id
+            if func_id in {"dict", "list", "set", "tuple"}:
+                return func_id
+        return None
+
     def _update_exact_local(self, name: str, value: ast.AST | None) -> None:
+        builtin_exact = self._builtin_exact_type_from_expr(value)
+        if builtin_exact is not None:
+            self.exact_builtin_locals[name] = builtin_exact
+            self.exact_locals.pop(name, None)
+            return
         if isinstance(value, ast.Call):
             class_id = self._class_id_from_call(value)
             if class_id is not None:
@@ -7847,6 +7872,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and not class_info.get("dataclass")
                 ):
                     self.exact_locals[name] = class_id
+                    self.exact_builtin_locals.pop(name, None)
                     return
         if isinstance(value, ast.Name):
             if value.id in self.exact_locals and (
@@ -7854,8 +7880,29 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 or value.id not in self.global_decls
             ):
                 self.exact_locals[name] = self.exact_locals[value.id]
+                self.exact_builtin_locals.pop(name, None)
+                return
+            if value.id in self.exact_builtin_locals and (
+                self.current_func_name == "molt_main"
+                or value.id not in self.global_decls
+            ):
+                self.exact_builtin_locals[name] = self.exact_builtin_locals[value.id]
+                self.exact_locals.pop(name, None)
                 return
         self.exact_locals.pop(name, None)
+        self.exact_builtin_locals.pop(name, None)
+
+    def _has_exact_builtin_receiver(
+        self, node: ast.AST, receiver: MoltValue, expected_type: str
+    ) -> bool:
+        if receiver.type_hint != expected_type:
+            return False
+        exact_from_expr = self._builtin_exact_type_from_expr(node)
+        if exact_from_expr == expected_type:
+            return True
+        if isinstance(node, ast.Name):
+            return self.exact_builtin_locals.get(node.id) == expected_type
+        return False
 
     def _propagate_func_type_hint(
         self, value_node: MoltValue, source_expr: ast.AST | None
@@ -16137,7 +16184,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
                 return res
-            if method == "pop" and receiver.type_hint == "dict":
+            if method == "pop" and self._has_exact_builtin_receiver(
+                attr_node.value, receiver, "dict"
+            ):
                 if len(node.args) not in (1, 2):
                     raise NotImplementedError("dict.pop expects 1 or 2 arguments")
                 key = self.visit(node.args[0])
@@ -16181,7 +16230,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(MoltOp(kind="LIST_POP", args=[receiver, idx], result=res))
                 return res
-            if method == "get" and receiver.type_hint == "dict":
+            if method == "get" and self._has_exact_builtin_receiver(
+                attr_node.value, receiver, "dict"
+            ):
                 if len(node.args) not in (1, 2):
                     raise NotImplementedError("dict.get expects 1 or 2 arguments")
                 key = self.visit(node.args[0])
@@ -16200,7 +16251,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     MoltOp(kind="DICT_GET", args=[receiver, key, default], result=res)
                 )
                 return res
-            if method == "setdefault" and receiver.type_hint == "dict":
+            if method == "setdefault" and self._has_exact_builtin_receiver(
+                attr_node.value, receiver, "dict"
+            ):
                 if node.keywords or len(node.args) not in (1, 2):
                     raise NotImplementedError(
                         "dict.setdefault expects 1 or 2 arguments"
@@ -16244,7 +16297,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
                 return res
-            if method == "update" and receiver.type_hint == "dict":
+            if method == "update" and self._has_exact_builtin_receiver(
+                attr_node.value, receiver, "dict"
+            ):
                 if len(node.args) > 1:
                     msg = f"update expected at most 1 argument, got {len(node.args)}"
                     return self._emit_type_error_value(msg, "None")
@@ -16291,33 +16346,45 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 return res
-            if method == "clear" and receiver.type_hint == "dict":
+            if method == "clear" and self._has_exact_builtin_receiver(
+                attr_node.value, receiver, "dict"
+            ):
                 if node.args or node.keywords:
                     raise NotImplementedError("dict.clear expects 0 arguments")
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="DICT_CLEAR", args=[receiver], result=res))
                 return res
-            if method == "copy" and receiver.type_hint == "dict":
+            if method == "copy" and self._has_exact_builtin_receiver(
+                attr_node.value, receiver, "dict"
+            ):
                 if node.args or node.keywords:
                     raise NotImplementedError("dict.copy expects 0 arguments")
                 res = MoltValue(self.next_var(), type_hint="dict")
                 self.emit(MoltOp(kind="DICT_COPY", args=[receiver], result=res))
                 return res
-            if method == "popitem" and receiver.type_hint == "dict":
+            if method == "popitem" and self._has_exact_builtin_receiver(
+                attr_node.value, receiver, "dict"
+            ):
                 if node.args or node.keywords:
                     raise NotImplementedError("dict.popitem expects 0 arguments")
                 res = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="DICT_POPITEM", args=[receiver], result=res))
                 return res
-            if method == "keys" and receiver.type_hint == "dict":
+            if method == "keys" and self._has_exact_builtin_receiver(
+                attr_node.value, receiver, "dict"
+            ):
                 res = MoltValue(self.next_var(), type_hint="dict_keys_view")
                 self.emit(MoltOp(kind="DICT_KEYS", args=[receiver], result=res))
                 return res
-            if method == "values" and receiver.type_hint == "dict":
+            if method == "values" and self._has_exact_builtin_receiver(
+                attr_node.value, receiver, "dict"
+            ):
                 res = MoltValue(self.next_var(), type_hint="dict_values_view")
                 self.emit(MoltOp(kind="DICT_VALUES", args=[receiver], result=res))
                 return res
-            if method == "items" and receiver.type_hint == "dict":
+            if method == "items" and self._has_exact_builtin_receiver(
+                attr_node.value, receiver, "dict"
+            ):
                 res = MoltValue(self.next_var(), type_hint="dict_items_view")
                 self.emit(MoltOp(kind="DICT_ITEMS", args=[receiver], result=res))
                 return res
