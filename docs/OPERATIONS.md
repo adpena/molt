@@ -43,7 +43,7 @@ Currently wired commands:
 - `molt debug repro <source.py> [--compare]`
 - `molt debug ir <source.py> --stage pre-midend|post-midend|all`
 - `molt debug verify`
-- `molt debug trace <source.py> [--family callargs|call_bind_ic|function_bind_meta|backend_timing] [--assert-no-pending-on-success]`
+- `molt debug trace <source.py> [--family callargs|call_bind_ic|function_bind_meta|backend_timing|compile_func] [--assert-no-pending-on-success]`
 - `molt debug reduce <source.py|manifest.json> --oracle-json <oracle> [--eval-command <cmd>] [--eval-timeout <sec>]`
 - `molt debug bisect <source.py|manifest.json> --passes <a,b,c> --oracle-json <oracle> --eval-command <cmd>`
 - `molt debug diff <summary.json> [--failure-queue <failures.txt>]`
@@ -67,11 +67,13 @@ Version and platform rules:
 
 Current status note:
 
-- `molt debug trace` now wraps the currently wired call-bind trace families
-  (`callargs`, `call_bind_ic`, `function_bind_meta`, `backend_timing`) and records the effective
+- `molt debug trace` now wraps the currently wired call-bind/backend trace families
+  (`callargs`, `call_bind_ic`, `function_bind_meta`, `backend_timing`, `compile_func`) and records the effective
   low-level trace env knobs in the manifest;
 - `backend_timing` enables the existing backend compile-time timing surface
   (`MOLT_BACKEND_TIMING=1`) through the same canonical trace command;
+- `compile_func` enables the per-function backend compile trace surface
+  (`MOLT_TRACE_COMPILE_FUNC=1`) through the same canonical trace command;
 - `--assert-no-pending-on-success` enables the central
   `MOLT_ASSERT_NO_PENDING_ON_SUCCESS=1` trap in the clean runtime call core;
 - wider runtime assertion rollout beyond that central call core is still under

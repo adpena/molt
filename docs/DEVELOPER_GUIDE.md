@@ -124,6 +124,8 @@ Under active build-out:
   and the central `no pending exception on successful return` trap
 - the canonical trace surface now also carries backend compile-time timing via
   the `backend_timing` family (`MOLT_BACKEND_TIMING=1`)
+- the canonical trace surface now also carries per-function backend compile
+  tracing via the `compile_func` family (`MOLT_TRACE_COMPILE_FUNC=1`)
 
 Rules:
 
