@@ -9286,6 +9286,66 @@ def test_backend_daemon_request_bytes_accumulates_partial_chunks(
     assert sent == [b'{"version":1}\n']
 
 
+def test_backend_daemon_request_bytes_waits_while_live_daemon_is_still_compiling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sent: list[bytes] = []
+    pid_checks: list[int] = []
+
+    class _FakeSocket:
+        def __enter__(self) -> "_FakeSocket":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def settimeout(self, timeout: float) -> None:
+            assert timeout == 1.0
+
+        def connect(self, address: str) -> None:
+            assert address == str(tmp_path / "daemon.sock")
+
+        def sendall(self, data: bytes) -> None:
+            sent.append(data)
+
+        def shutdown(self, how: int) -> None:
+            assert how == cli.socket.SHUT_WR
+
+        def recv_into(self, buffer: memoryview) -> int:
+            if not hasattr(self, "_steps"):
+                self._steps = [
+                    cli.socket.timeout("still compiling"),
+                    cli.socket.timeout("still compiling"),
+                    b'{"ok":true,"pong":false}',
+                    b"",
+                ]
+            step = self._steps.pop(0)
+            if isinstance(step, BaseException):
+                raise step
+            buffer[: len(step)] = step
+            return len(step)
+
+    def fake_pid_alive(pid: int) -> bool:
+        pid_checks.append(pid)
+        return True
+
+    monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
+    monkeypatch.setattr(cli, "_pid_alive", fake_pid_alive)
+
+    response, err = cli._backend_daemon_request_bytes(
+        tmp_path / "daemon.sock",
+        b'{"version":1}\n',
+        timeout=None,
+        daemon_pid=4321,
+    )
+
+    assert err is None
+    assert response == {"ok": True, "pong": False}
+    assert sent == [b'{"version":1}\n']
+    assert pid_checks == [4321, 4321]
+
+
 def test_backend_daemon_request_bytes_rejects_whitespace_only_response(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
