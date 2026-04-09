@@ -62,6 +62,21 @@ def test_buffer_roundtrip_float():
     assert from_device(buf) == data
 
 
+def test_buffer_roundtrip_f32_array():
+    import array
+    from molt.gpu import to_device, from_device
+
+    data = array.array("f", [1.25, 2.5, 3.75])
+    buf = to_device(data)
+
+    assert buf.element_type is float
+    assert buf.format_char == "f"
+    assert buf.itemsize == 4
+    assert buf.nbytes == 12
+    assert from_device(buf) == [1.25, 2.5, 3.75]
+    assert buf[1] == 2.5
+
+
 def test_buffer_roundtrip_int():
     from molt.gpu import to_device, from_device
     data = [10, 20, 30]

@@ -24,16 +24,38 @@ from __future__ import annotations
 import struct
 import array
 
+
+def _default_format_char(element_type: type) -> str:
+    return "d" if element_type == float else "q"
+
+
+def _format_itemsize(format_char: str) -> int:
+    return struct.calcsize(format_char)
+
+
 class Buffer:
     """GPU buffer handle. Created via gpu.to_device() or gpu.alloc()."""
 
     def __class_getitem__(cls, _item):
         return cls
 
-    def __init__(self, data: bytes, element_type: type, size: int):
+    def __init__(
+        self,
+        data: bytes,
+        element_type: type,
+        size: int,
+        *,
+        format_char: str | None = None,
+    ):
         self._data = data
         self._element_type = element_type
         self._size = size
+        self._format_char = format_char or _default_format_char(element_type)
+        self._itemsize = _format_itemsize(self._format_char)
+        if len(self._data) < self._size * self._itemsize:
+            raise ValueError(
+                f"Buffer payload too small for {self._size} items of format {self._format_char}"
+            )
 
     @property
     def nbytes(self) -> int:
@@ -47,16 +69,20 @@ class Buffer:
     def element_type(self) -> type:
         return self._element_type
 
+    @property
+    def format_char(self) -> str:
+        return self._format_char
+
+    @property
+    def itemsize(self) -> int:
+        return self._itemsize
+
     def __getitem__(self, index: int):
         """Read element at index from the buffer."""
         if index < 0 or index >= self._size:
             raise IndexError(f"Buffer index {index} out of range [0, {self._size})")
-        if self._element_type == float:
-            offset = index * 8
-            return struct.unpack_from('d', self._data, offset)[0]
-        else:
-            offset = index * 8
-            return struct.unpack_from('q', self._data, offset)[0]
+        offset = index * self._itemsize
+        return struct.unpack_from(self._format_char, self._data, offset)[0]
 
     def __setitem__(self, index: int, value):
         """Write element at index into the buffer."""
@@ -65,12 +91,11 @@ class Buffer:
         # Convert immutable bytes to bytearray if needed
         if isinstance(self._data, bytes):
             self._data = bytearray(self._data)
+        offset = index * self._itemsize
         if self._element_type == float:
-            offset = index * 8
-            struct.pack_into('d', self._data, offset, float(value))
+            struct.pack_into(self._format_char, self._data, offset, float(value))
         else:
-            offset = index * 8
-            struct.pack_into('q', self._data, offset, int(value))
+            struct.pack_into(self._format_char, self._data, offset, int(value))
 
 
 def to_device(data) -> Buffer:
@@ -79,37 +104,38 @@ def to_device(data) -> Buffer:
     Accepts: list[int], list[float], array.array, bytes, or any sequence.
     """
     if isinstance(data, bytes):
-        return Buffer(data, int, len(data) // 8)
+        return Buffer(data, int, len(data) // 8, format_char="q")
     elif isinstance(data, array.array):
         raw = data.tobytes()
-        return Buffer(raw, float if data.typecode in ('f', 'd') else int, len(data))
+        if data.typecode in ("f", "d"):
+            return Buffer(raw, float, len(data), format_char=data.typecode)
+        return Buffer(raw, int, len(data), format_char="q")
     elif isinstance(data, (list, tuple)):
         if not data:
             return Buffer(b'', float, 0)
         if isinstance(data[0], float):
             raw = struct.pack(f'{len(data)}d', *data)
-            return Buffer(raw, float, len(data))
+            return Buffer(raw, float, len(data), format_char="d")
         else:
             raw = struct.pack(f'{len(data)}q', *data)
-            return Buffer(raw, int, len(data))
+            return Buffer(raw, int, len(data), format_char="q")
     else:
         raise TypeError(f"Cannot convert {type(data)} to GPU buffer")
 
 
 def from_device(buf: Buffer) -> list:
     """Copy GPU buffer back to host as a Python list."""
-    if buf.element_type == float:
-        count = buf.nbytes // 8
-        return list(struct.unpack(f'{count}d', buf._data[:count * 8]))
-    else:
-        count = buf.nbytes // 8
-        return list(struct.unpack(f'{count}q', buf._data[:count * 8]))
+    count = buf.size
+    if count == 0:
+        return []
+    width = buf.itemsize
+    return list(struct.unpack(f'{count}{buf.format_char}', buf._data[:count * width]))
 
-
-def alloc(size: int, dtype: type = float) -> Buffer:
+def alloc(size: int, dtype: type = float, *, format_char: str | None = None) -> Buffer:
     """Allocate an empty GPU buffer."""
-    elem_size = 8  # f64 or i64
-    return Buffer(bytes(size * elem_size), dtype, size)
+    resolved_format = format_char or _default_format_char(dtype)
+    elem_size = _format_itemsize(resolved_format)
+    return Buffer(bytes(size * elem_size), dtype, size, format_char=resolved_format)
 
 
 def thread_id() -> int:
