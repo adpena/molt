@@ -9975,8 +9975,26 @@ def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
     native_empty.write_bytes(b"")
     assert not cli._is_valid_cached_backend_artifact(native_empty, is_wasm=False)
 
+    empty_c = tmp_path / "empty.c"
+    empty_c.write_text("", encoding="utf-8")
+    empty_object = tmp_path / "empty-object.o"
+    subprocess.run(
+        ["clang", "-c", str(empty_c), "-o", str(empty_object)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert not cli._is_valid_cached_backend_artifact(empty_object, is_wasm=False)
+
+    native_c = tmp_path / "native.c"
+    native_c.write_text("int foo(void){return 0;}\n", encoding="utf-8")
     native_nonempty = tmp_path / "nonempty.o"
-    native_nonempty.write_bytes(b"\x01")
+    subprocess.run(
+        ["clang", "-c", str(native_c), "-o", str(native_nonempty)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     assert cli._is_valid_cached_backend_artifact(native_nonempty, is_wasm=False)
 
 
