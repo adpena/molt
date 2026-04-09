@@ -4882,6 +4882,7 @@ def _compile_with_backend_daemon_non_wasm(
     stdlib_object_cache_key: str | None = None,
     timeout: float | None,
     request_bytes: bytes | None = None,
+    daemon_pid: int | None = None,
 ) -> cli._BackendDaemonCompileResult:
     return cli._compile_with_backend_daemon(
         socket_path,
@@ -4901,6 +4902,7 @@ def _compile_with_backend_daemon_non_wasm(
         stdlib_object_cache_key=stdlib_object_cache_key,
         timeout=timeout,
         request_bytes=request_bytes,
+        daemon_pid=daemon_pid,
     )
 
 
@@ -8176,6 +8178,86 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
     assert result.backend_daemon_cache_tier == "module"
 
 
+def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    artifacts_root = tmp_path / "artifacts"
+    output_artifact = project_root / "build" / "main.o"
+    output_artifact.parent.mkdir(parents=True, exist_ok=True)
+    output_artifact.write_bytes(b"stale")
+
+    monkeypatch.setattr(
+        cli,
+        "_compile_with_backend_daemon",
+        lambda socket_path, **kwargs: cli._BackendDaemonCompileResult(
+            True,
+            None,
+            {"pid": 42},
+            False,
+            "module",
+            False,
+            False,
+        ),
+    )
+
+    result, error = cli._execute_backend_compile(
+        cache=True,
+        cache_path=project_root / ".molt_cache" / "cache-key.o",
+        function_cache_path=None,
+        artifacts_root=artifacts_root,
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=False,
+        diagnostics_enabled=False,
+        phase_starts={},
+        daemon_ready=True,
+        daemon_socket=tmp_path / "daemon.sock",
+        project_root=project_root,
+        output_artifact=output_artifact,
+        cache_key="cache-key",
+        function_cache_key=None,
+        cache_setup=cli._BackendCacheSetup(
+            cache_enabled=True,
+            cache_key="cache-key",
+            function_cache_key=None,
+            cache_path=project_root / ".molt_cache" / "cache-key.o",
+            function_cache_path=None,
+            stdlib_object_path=None,
+            stdlib_object_cache_key=None,
+            cache_candidates=(("module", project_root / ".molt_cache" / "cache-key.o"),),
+            cache_hit=False,
+            cache_hit_tier=None,
+        ),
+        target_triple=None,
+        backend_daemon_config_digest="digest123",
+        entry_module="pkg.app",
+        ir={"functions": [{"name": "heavy"}]},
+        json_output=True,
+        warnings=[],
+        verbose=False,
+        backend_bin=tmp_path / "backend-bin",
+        backend_env=None,
+        backend_timeout=None,
+        molt_root=project_root,
+        backend_cargo_profile="dev-fast",
+        _ensure_backend_ir_bytes=lambda: b"{}",
+        _get_backend_ir_fmt=lambda: "json",
+        cache_hit=False,
+        backend_daemon_cached=None,
+        backend_daemon_cache_tier=None,
+        backend_daemon_health=None,
+    )
+
+    assert result is None
+    assert error == 2
+    captured = capsys.readouterr()
+    assert "skipped output write without a synced-artifact contract" in captured.out
+
+
 def test_backend_daemon_compile_request_includes_partition_env(
     tmp_path: Path,
 ) -> None:
@@ -8471,6 +8553,28 @@ def test_backend_daemon_log_and_pid_paths_are_session_isolated(
     assert alpha_pid != beta_pid
     assert alpha_log.parent == beta_log.parent
     assert alpha_pid.parent == beta_pid.parent
+
+
+def test_backend_daemon_paths_allow_missing_session_id(tmp_path: Path) -> None:
+    cli._backend_daemon_paths_cached.cache_clear()
+
+    socket_path, log_path, pid_path = cli._backend_daemon_paths_cached(
+        os.fspath(tmp_path),
+        "dev-fast",
+        "digest123",
+        "",
+        None,
+        os.fspath(tmp_path / "build-state"),
+        os.fspath(tmp_path / "tmp"),
+        session_id=None,
+    )
+
+    assert socket_path.name.startswith("moltbd.")
+    assert socket_path.suffix == ".sock"
+    assert log_path.name.startswith("molt-backend.dev-fast.")
+    assert log_path.suffix == ".log"
+    assert pid_path.name.startswith("molt-backend.dev-fast.")
+    assert pid_path.suffix == ".pid"
 
 
 def test_function_cache_key_tracks_top_level_ir_extras() -> None:
@@ -8952,6 +9056,56 @@ def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
 
     assert result.ok is True
     assert calls == [(True, False)]
+
+
+def test_compile_with_backend_daemon_fails_fast_when_daemon_dies_mid_request(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.o"
+
+    class _FakeSocket:
+        def __enter__(self) -> "_FakeSocket":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def settimeout(self, timeout: float) -> None:
+            assert timeout == 1.0
+
+        def connect(self, address: str) -> None:
+            assert address == str(tmp_path / "daemon.sock")
+
+        def sendall(self, data: bytes) -> None:
+            payload = json.loads(data)
+            assert payload["jobs"][0]["id"] == "job0"
+
+        def shutdown(self, how: int) -> None:
+            assert how == cli.socket.SHUT_WR
+
+        def recv_into(self, buffer: memoryview) -> int:
+            raise cli.socket.timeout("timed out")
+
+    monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
+    monkeypatch.setattr(cli, "_pid_alive", lambda pid: False)
+
+    result = _compile_with_backend_daemon_non_wasm(
+        tmp_path / "daemon.sock",
+        ir={"functions": []},
+        backend_output=backend_output,
+        target_triple=None,
+        cache_key=None,
+        function_cache_key=None,
+        config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+        timeout=None,
+        daemon_pid=1234,
+    )
+
+    assert result.ok is False
+    assert result.error == "backend daemon died while request was in flight"
 
 
 def test_compile_with_backend_daemon_reports_missing_output_in_result(
