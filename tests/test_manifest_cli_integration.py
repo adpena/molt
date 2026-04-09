@@ -1,6 +1,7 @@
 """Tests for CLI flag -> manifest -> env var integration."""
 import sys
 import os
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
@@ -35,6 +36,24 @@ def test_parse_audit_log_flag_accepts_all_valid_sinks():
     for sink in _VALID_AUDIT_SINKS:
         env = _parse_audit_log_flag(f"{sink}:stderr")
         assert env["MOLT_AUDIT_SINK"] == sink
+
+
+def test_build_slot_dir_defaults_to_repo_tmp(monkeypatch, tmp_path: Path):
+    from molt import cli
+
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: tmp_path)
+
+    assert cli._build_slot_dir() == tmp_path / "tmp" / "molt-build-slots"
+
+
+def test_build_slot_dir_prefers_ext_root(monkeypatch, tmp_path: Path):
+    from molt import cli
+
+    ext_root = tmp_path / "external"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
+
+    assert cli._build_slot_dir() == ext_root / "tmp" / "molt-build-slots"
 
 
 def test_parse_io_mode_flag_virtual():
