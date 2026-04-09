@@ -153,11 +153,11 @@ def _case_env(
     case_root: Path,
     molt_ext_root: Path,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    target_root = case_root / "cargo-target"
-    cache_root = case_root / "molt_cache"
-    diff_root = case_root / "diff"
+    target_root = case_root / "target"
+    cache_root = case_root / ".molt_cache"
     tmp_root = case_root / "tmp"
-    uv_cache_root = case_root / "uv-cache"
+    diff_root = tmp_root / "diff"
+    uv_cache_root = case_root / ".uv-cache"
     for path in (target_root, cache_root, diff_root, tmp_root, uv_cache_root):
         path.mkdir(parents=True, exist_ok=True)
 

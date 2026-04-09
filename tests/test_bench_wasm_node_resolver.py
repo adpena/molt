@@ -183,24 +183,18 @@ def test_run_wasm_resolves_explicit_sibling_before_canonical_dist(
     assert resolved["linkedPath"] == str(explicit_linked)
 
 
-def test_run_wasm_defaults_prefer_canonical_dist_over_temp(
+def test_run_wasm_errors_without_explicit_or_canonical_dist_even_if_temp_exists(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     module_dir = tmp_path / "wasm"
-    dist_dir = tmp_path / "dist"
     tmp_dir = tmp_path / "tmp"
     module_dir.mkdir()
-    dist_dir.mkdir()
     tmp_dir.mkdir()
 
-    canonical_wasm = dist_dir / "output.wasm"
-    canonical_linked = dist_dir / "output_linked.wasm"
     temp_wasm = tmp_dir / "output.wasm"
     temp_linked = tmp_dir / "output_linked.wasm"
 
-    canonical_wasm.write_bytes(b"\x00asm")
-    canonical_linked.write_bytes(b"\x00asm")
     temp_wasm.write_bytes(b"\x00asm")
     temp_linked.write_bytes(b"\x00asm")
 
@@ -226,7 +220,6 @@ def test_run_wasm_defaults_prefer_canonical_dist_over_temp(
         text=True,
         check=False,
     )
-    assert run.returncode == 0, run.stderr
-    resolved = __import__("json").loads(run.stdout)
-    assert resolved["wasmPath"] == str(canonical_wasm)
-    assert resolved["linkedPath"] == str(canonical_linked)
+    assert run.returncode != 0, run.stdout
+    assert "WASM path not found" in run.stderr
+    assert "temp output.wasm" not in run.stderr
