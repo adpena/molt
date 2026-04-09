@@ -5896,6 +5896,7 @@ def test_start_backend_daemon_leaves_warming_process_running(
     wait_timeouts: list[float | None] = []
     terminated: list[int] = []
     removed: list[Path] = []
+    ready_results = iter([False, True])
 
     class _FakePopen:
         pid = 4321
@@ -5913,7 +5914,7 @@ def test_start_backend_daemon_leaves_warming_process_running(
     ) -> tuple[bool, dict[str, object] | None]:
         del args
         wait_timeouts.append(cast(float | None, kwargs.get("ready_timeout")))
-        return False, None
+        return next(ready_results), None
 
     monkeypatch.setattr(cli, "_backend_daemon_wait_until_ready", fake_wait_until_ready)
     monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: _FakePopen())
@@ -5944,6 +5945,74 @@ def test_start_backend_daemon_leaves_warming_process_running(
     assert pid_path.read_text().strip() == "4321"
     assert terminated == []
     assert removed == []
+
+
+def test_start_backend_daemon_uses_short_probe_for_stale_socket_with_live_pid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_bin = tmp_path / "molt-backend"
+    backend_bin.write_text("backend")
+    socket_path = tmp_path / "daemon.sock"
+    socket_path.write_text("")
+    pid_path = tmp_path / "daemon.pid"
+    pid_path.write_text("1234")
+    log_path = tmp_path / "daemon.log"
+    wait_timeouts: list[float | None] = []
+    terminated: list[int] = []
+    removed: list[Path] = []
+    ready_results = iter([False, True])
+
+    class _FakePopen:
+        pid = 4321
+
+    monkeypatch.setattr(
+        cli, "_backend_daemon_pid_path", lambda *args, **kwargs: pid_path
+    )
+    monkeypatch.setattr(
+        cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path
+    )
+    monkeypatch.setattr(cli, "_read_backend_daemon_pid", lambda *args, **kwargs: 1234)
+    monkeypatch.setattr(cli, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        cli, "_backend_daemon_binary_is_newer", lambda *args, **kwargs: False
+    )
+
+    def fake_wait_until_ready(
+        *args: object, **kwargs: object
+    ) -> tuple[bool, dict[str, object] | None]:
+        del args
+        wait_timeouts.append(cast(float | None, kwargs.get("ready_timeout")))
+        return next(ready_results), None
+
+    monkeypatch.setattr(cli, "_backend_daemon_wait_until_ready", fake_wait_until_ready)
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: _FakePopen())
+    monkeypatch.setattr(
+        cli,
+        "_terminate_backend_daemon_pid",
+        lambda pid, **kwargs: terminated.append(pid),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_remove_backend_daemon_pid",
+        lambda path: removed.append(path),
+    )
+
+    assert (
+        cli._start_backend_daemon(
+            backend_bin,
+            socket_path,
+            cargo_profile="dev-fast",
+            project_root=tmp_path,
+            startup_timeout=2.0,
+            json_output=True,
+            warnings=[],
+        )
+        is True
+    )
+    assert wait_timeouts == [0.25, 0.25]
+    assert terminated == [1234]
+    assert removed == [pid_path]
 
 
 def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
