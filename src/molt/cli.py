@@ -8587,7 +8587,7 @@ _VALID_AUDIT_SINKS = frozenset({"jsonl", "stderr", "null", "buffered"})
 def _parse_audit_log_flag(value: str) -> dict[str, str]:
     """Parse --audit-log flag value into environment variables.
 
-    Format: SINK:OUTPUT (e.g., 'jsonl:stderr', 'stderr:stderr', 'jsonl:/tmp/audit.log')
+    Format: SINK:OUTPUT (e.g., 'jsonl:stderr', 'stderr:stderr', 'jsonl:logs/audit.log')
     """
     parts = value.split(":", 1)
     sink = parts[0]
@@ -9839,7 +9839,16 @@ def _backend_daemon_log_tail(log_path: Path, *, max_lines: int = 30) -> str | No
 
 
 _MAX_CONCURRENT_BUILDS = 2
-_BUILD_SLOT_DIR = Path("/tmp/molt-build-slots")
+
+
+def _build_slot_dir() -> Path:
+    ext_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if ext_root:
+        return Path(ext_root).expanduser() / "tmp" / "molt-build-slots"
+    root = _find_molt_root(Path.cwd())
+    if root is None:
+        root = Path.cwd()
+    return root / "tmp" / "molt-build-slots"
 
 
 @contextlib.contextmanager
