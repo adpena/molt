@@ -28,6 +28,16 @@ def _product(seq):
     return result
 
 
+def _strides(shape):
+    strides = []
+    stride = 1
+    for size in reversed(shape):
+        strides.append(stride)
+        stride *= size
+    strides.reverse()
+    return tuple(strides)
+
+
 def _flatten_nested(data):
     """Flatten a nested list and infer its shape."""
     if not isinstance(data, (list, tuple)):
@@ -176,6 +186,65 @@ class Tensor:
         new_shape = batch_shape + (cols, rows)
         return self._from_flat(result, new_shape)
 
+    def permute(self, *dims) -> 'Tensor':
+        """Reorder tensor dimensions."""
+        if len(dims) == 1 and isinstance(dims[0], (list, tuple)):
+            dims = tuple(dims[0])
+        else:
+            dims = tuple(dims)
+
+        if len(dims) != self.ndim:
+            raise ValueError(
+                f"permute expected {self.ndim} dims for shape {self._shape}, got {dims}"
+            )
+
+        normalized = []
+        for dim in dims:
+            if dim < 0:
+                dim += self.ndim
+            if dim < 0 or dim >= self.ndim:
+                raise ValueError(f"permute dim {dim} out of range for ndim={self.ndim}")
+            normalized.append(dim)
+        if sorted(normalized) != list(range(self.ndim)):
+            raise ValueError(f"permute dims must be a permutation of 0..{self.ndim - 1}")
+
+        if self.ndim <= 1:
+            return Tensor(self._buf, shape=self._shape, dtype=self._dtype)
+
+        old_shape = self._shape
+        new_shape = tuple(old_shape[dim] for dim in normalized)
+        data = self._data_list()
+        result = [0.0] * len(data)
+
+        old_strides = []
+        stride = 1
+        for size in reversed(old_shape):
+            old_strides.append(stride)
+            stride *= size
+        old_strides.reverse()
+
+        new_strides = []
+        stride = 1
+        for size in reversed(new_shape):
+            new_strides.append(stride)
+            stride *= size
+        new_strides.reverse()
+
+        for old_index, value in enumerate(data):
+            rem = old_index
+            coords = []
+            for axis_stride, axis_size in zip(old_strides, old_shape):
+                coord = rem // axis_stride
+                rem %= axis_stride
+                coords.append(coord)
+
+            new_index = 0
+            for axis, coord in enumerate(normalized):
+                new_index += coords[coord] * new_strides[axis]
+            result[new_index] = value
+
+        return self._from_flat(result, new_shape)
+
     @property
     def T(self) -> 'Tensor':
         """Transpose (property alias)."""
@@ -213,24 +282,41 @@ class Tensor:
             s = a_data[0]
             return other._from_flat([op(s, x) for x in b_data], other._shape)
 
-        # Broadcast: trailing dimensions match (simple case)
-        if self.ndim >= other.ndim:
-            big, small = self, other
-            big_data, small_data = a_data, b_data
-        else:
-            big, small = other, self
-            big_data, small_data = b_data, a_data
+        out_ndim = max(self.ndim, other.ndim)
+        a_shape = (1,) * (out_ndim - self.ndim) + self._shape
+        b_shape = (1,) * (out_ndim - other.ndim) + other._shape
+        out_shape = []
+        for a_dim, b_dim in zip(a_shape, b_shape):
+            if a_dim == b_dim:
+                out_shape.append(a_dim)
+            elif a_dim == 1:
+                out_shape.append(b_dim)
+            elif b_dim == 1:
+                out_shape.append(a_dim)
+            else:
+                raise ValueError(
+                    f"Cannot broadcast shapes {self._shape} and {other._shape}"
+                )
 
-        small_size = small.size
-        if big.size % small_size == 0:
-            result = [0.0] * big.size
-            for i in range(big.size):
-                result[i] = op(big_data[i], small_data[i % small_size])
-            return self._from_flat(result, big._shape)
+        a_strides = _strides(a_shape)
+        b_strides = _strides(b_shape)
+        out_strides = _strides(tuple(out_shape))
+        result = [0.0] * _product(out_shape)
 
-        raise ValueError(
-            f"Cannot broadcast shapes {self._shape} and {other._shape}"
-        )
+        for out_index in range(len(result)):
+            rem = out_index
+            a_index = 0
+            b_index = 0
+            for axis, out_stride in enumerate(out_strides):
+                coord = rem // out_stride
+                rem %= out_stride
+                if a_shape[axis] != 1:
+                    a_index += coord * a_strides[axis]
+                if b_shape[axis] != 1:
+                    b_index += coord * b_strides[axis]
+            result[out_index] = op(a_data[a_index], b_data[b_index])
+
+        return self._from_flat(result, tuple(out_shape))
 
     def __add__(self, other) -> 'Tensor':
         return self._broadcast_op(other, lambda a, b: a + b)

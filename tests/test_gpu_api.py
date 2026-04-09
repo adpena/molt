@@ -136,6 +136,22 @@ def test_tensor_elementwise():
     assert (a - b).to_list() == [-3.0, -3.0, -3.0]
 
 
+def test_tensor_broadcast_leading_singletons():
+    from molt.gpu.tensor import Tensor
+
+    a = Tensor(list(range(1, 1 + 2 * 2 * 2)), shape=(2, 2, 2))
+    b = Tensor([10.0, 20.0], shape=(1, 1, 1, 2))
+
+    c = a + b
+    assert c.shape == (1, 2, 2, 2)
+    assert c.to_list() == [
+        [
+            [[11.0, 22.0], [13.0, 24.0]],
+            [[15.0, 26.0], [17.0, 28.0]],
+        ]
+    ]
+
+
 def test_tensor_reshape():
     from molt.gpu.tensor import Tensor
     t = Tensor([1, 2, 3, 4, 5, 6], shape=(6,))
@@ -150,6 +166,30 @@ def test_tensor_transpose():
     tt = t.T
     assert tt.shape == (3, 2)
     assert tt.to_list() == [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]]
+
+
+def test_tensor_permute_4d_common_orders():
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor(list(range(1, 17)), shape=(1, 2, 2, 4))
+
+    shsd = t.permute(0, 2, 1, 3)
+    assert shsd.shape == (1, 2, 2, 4)
+    assert shsd.to_list() == [
+        [
+            [[1.0, 2.0, 3.0, 4.0], [9.0, 10.0, 11.0, 12.0]],
+            [[5.0, 6.0, 7.0, 8.0], [13.0, 14.0, 15.0, 16.0]],
+        ]
+    ]
+
+    ssdh = t.permute(0, 1, 3, 2)
+    assert ssdh.shape == (1, 2, 4, 2)
+    assert ssdh.to_list() == [
+        [
+            [[1.0, 5.0], [2.0, 6.0], [3.0, 7.0], [4.0, 8.0]],
+            [[9.0, 13.0], [10.0, 14.0], [11.0, 15.0], [12.0, 16.0]],
+        ]
+    ]
 
 
 def test_tensor_reductions():
