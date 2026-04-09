@@ -119,10 +119,9 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
     `IncRef`/`DecRef`/`Borrow`/`Release` plus conversion families
     (`Box`/`Unbox`/`Cast`/`Widen`); deterministic semantic-depth hardening and
     broader differential evidence are still in progress.
-  - The shared verifier core, exposed publicly via `molt debug verify` and
-    still consumed by internal delegates such as `tools/check_molt_ir_ops.py`,
-    now enforces inventory coverage, dedicated-lane presence, and
-    behavior-level semantic assertions for these lanes across
+  - The shared verifier core, exposed publicly via `molt debug verify`, now
+    enforces inventory coverage, dedicated-lane presence, and behavior-level
+    semantic assertions for these lanes across
     frontend/native/wasm (including dedicated native+wasm call-site labels for
     `invoke_ffi_bridge`/`invoke_ffi_deopt` vs `call_func` and `call_indirect`
     vs `call_bind`).
