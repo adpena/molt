@@ -136,3 +136,8 @@ def test_wasm_harness_data_end_handles_const_offset(tmp_path: Path) -> None:
     )
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "dataEnd=132"
+
+
+def test_wasm_harness_exposes_class_merge_layout_import() -> None:
+    source = Path(__file__).resolve().parent / "wasm_harness.py"
+    assert "class_merge_layout: (classBits, offsetsBits, sizeBits) => {" in source.read_text()
