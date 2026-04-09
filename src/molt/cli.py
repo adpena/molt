@@ -8160,9 +8160,27 @@ def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
     if is_wasm:
         return _is_reusable_wasm_artifact(path)
     try:
-        return path.stat().st_size > 0
+        if path.stat().st_size <= 0:
+            return False
     except OSError:
         return False
+    nm_bin = shutil.which("nm") or shutil.which("llvm-nm")
+    if nm_bin is None:
+        return True
+    nm_cmd = [nm_bin, "-gU", str(path)] if sys.platform == "darwin" else [nm_bin, "-g", str(path)]
+    try:
+        result = subprocess.run(
+            nm_cmd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    return bool(result.stdout.strip())
 
 
 def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
