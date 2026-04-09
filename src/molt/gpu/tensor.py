@@ -412,17 +412,47 @@ class Tensor:
         a_data = a._data_list()
         b_data = b._data_list()
 
-        batch_a = _product(a._shape[:-2]) if a.ndim > 2 else 1
-        batch_b = _product(b._shape[:-2]) if b.ndim > 2 else 1
-        batches = max(batch_a, batch_b)
+        a_batch_shape = a._shape[:-2]
+        b_batch_shape = b._shape[:-2]
+        out_batch_ndim = max(len(a_batch_shape), len(b_batch_shape))
+        padded_a_batch_shape = (1,) * (out_batch_ndim - len(a_batch_shape)) + a_batch_shape
+        padded_b_batch_shape = (1,) * (out_batch_ndim - len(b_batch_shape)) + b_batch_shape
+        out_batch_shape = []
+        for a_dim, b_dim in zip(padded_a_batch_shape, padded_b_batch_shape):
+            if a_dim == b_dim:
+                out_batch_shape.append(a_dim)
+            elif a_dim == 1:
+                out_batch_shape.append(b_dim)
+            elif b_dim == 1:
+                out_batch_shape.append(a_dim)
+            else:
+                raise ValueError(
+                    f"Matmul batch shape mismatch: {self._shape} @ {other._shape}"
+                )
+        out_batch_shape = tuple(out_batch_shape)
+        batch_count = _product(out_batch_shape) if out_batch_shape else 1
 
         result = []
         a_stride = a_rows * a_cols
         b_stride = b_rows * b_cols
 
-        for batch in range(batches):
-            a_off = (batch % batch_a) * a_stride
-            b_off = (batch % batch_b) * b_stride
+        a_batch_strides = _strides(padded_a_batch_shape) if padded_a_batch_shape else ()
+        b_batch_strides = _strides(padded_b_batch_shape) if padded_b_batch_shape else ()
+        out_batch_strides = _strides(out_batch_shape) if out_batch_shape else ()
+
+        for batch in range(batch_count):
+            rem = batch
+            a_batch_index = 0
+            b_batch_index = 0
+            for axis, out_stride in enumerate(out_batch_strides):
+                coord = rem // out_stride
+                rem %= out_stride
+                if padded_a_batch_shape[axis] != 1:
+                    a_batch_index += coord * a_batch_strides[axis]
+                if padded_b_batch_shape[axis] != 1:
+                    b_batch_index += coord * b_batch_strides[axis]
+            a_off = a_batch_index * a_stride
+            b_off = b_batch_index * b_stride
             for i in range(a_rows):
                 for j in range(b_cols):
                     s = 0.0
@@ -430,16 +460,57 @@ class Tensor:
                         s += a_data[a_off + i * a_cols + k] * b_data[b_off + k * b_cols + j]
                     result.append(s)
 
-        if batches > 1:
-            out_shape = (batches, a_rows, b_cols)
-        else:
+        out_shape = out_batch_shape + (a_rows, b_cols)
+        if not out_shape:
             out_shape = (a_rows, b_cols)
 
         return self._from_flat(result, out_shape)
 
+    def linear(self, weight) -> 'Tensor':
+        """Apply a linear projection with weight shaped (out_features, in_features).
+
+        This computes ``self @ weight.T`` without materializing a transposed copy
+        of ``weight``. Leading dimensions on ``self`` are treated as batch dims.
+        """
+        if not isinstance(weight, Tensor):
+            return NotImplemented
+
+        if weight.ndim != 2:
+            raise ValueError(f"linear weight must be 2D, got {weight.shape}")
+
+        if self.ndim == 0:
+            raise ValueError("linear input must be at least 1D")
+
+        in_features = self._shape[-1]
+        out_features, weight_in = weight._shape
+        if in_features != weight_in:
+            raise ValueError(
+                f"Linear shape mismatch: {self._shape} with weight {weight._shape}"
+            )
+
+        x_data = self._data_list()
+        w_data = weight._data_list()
+        outer = _product(self._shape[:-1]) if self.ndim > 1 else 1
+        result = [0.0] * (outer * out_features)
+
+        for batch in range(outer):
+            x_off = batch * in_features
+            out_off = batch * out_features
+            for out_idx in range(out_features):
+                w_off = out_idx * in_features
+                acc = 0.0
+                for k in range(in_features):
+                    acc += x_data[x_off + k] * w_data[w_off + k]
+                result[out_off + out_idx] = acc
+
+        out_shape = self._shape[:-1] + (out_features,)
+        if not out_shape:
+            out_shape = (out_features,)
+        return self._from_flat(result, out_shape)
+
     # ── Reductions ────────────────────────────────────────────────────
 
-    def _reduce(self, op, axis=None, initial=None):
+    def _reduce(self, op, axis=None, initial=None, keepdim: bool = False):
         """Generic reduction along an axis."""
         data = self._data_list()
 
@@ -457,8 +528,11 @@ class Tensor:
         if axis < 0 or axis >= self.ndim:
             raise ValueError(f"Invalid axis {axis} for tensor with {self.ndim} dims")
 
-        # Compute output shape (remove the reduction axis)
-        out_shape = self._shape[:axis] + self._shape[axis + 1:]
+        # Compute output shape (remove or preserve the reduction axis)
+        if keepdim:
+            out_shape = self._shape[:axis] + (1,) + self._shape[axis + 1:]
+        else:
+            out_shape = self._shape[:axis] + self._shape[axis + 1:]
         if not out_shape:
             out_shape = ()
 
@@ -487,13 +561,13 @@ class Tensor:
             return Tensor(result[0])
         return self._from_flat(result, out_shape)
 
-    def sum(self, axis=None) -> 'Tensor':
+    def sum(self, axis=None, keepdim: bool = False) -> 'Tensor':
         """Sum elements, optionally along an axis."""
-        return self._reduce(lambda a, b: a + b, axis=axis, initial=0.0)
+        return self._reduce(lambda a, b: a + b, axis=axis, initial=0.0, keepdim=keepdim)
 
-    def mean(self, axis=None) -> 'Tensor':
+    def mean(self, axis=None, keepdim: bool = False) -> 'Tensor':
         """Mean of elements, optionally along an axis."""
-        s = self.sum(axis=axis)
+        s = self.sum(axis=axis, keepdim=keepdim)
         if axis is None:
             n = self.size
         else:
@@ -502,13 +576,13 @@ class Tensor:
             n = self._shape[axis]
         return s / float(n)
 
-    def max(self, axis=None) -> 'Tensor':
+    def max(self, axis=None, keepdim: bool = False) -> 'Tensor':
         """Max element, optionally along an axis."""
-        return self._reduce(lambda a, b: a if a >= b else b, axis=axis)
+        return self._reduce(lambda a, b: a if a >= b else b, axis=axis, keepdim=keepdim)
 
-    def min(self, axis=None) -> 'Tensor':
+    def min(self, axis=None, keepdim: bool = False) -> 'Tensor':
         """Min element, optionally along an axis."""
-        return self._reduce(lambda a, b: a if a <= b else b, axis=axis)
+        return self._reduce(lambda a, b: a if a <= b else b, axis=axis, keepdim=keepdim)
 
     # ── Activation functions ──────────────────────────────────────────
 

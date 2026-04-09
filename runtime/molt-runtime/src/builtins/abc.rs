@@ -16,6 +16,23 @@ fn get_attr_default(
     name: &[u8],
     default_bits: u64,
 ) -> u64 {
+    if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
+        unsafe {
+            if object_type_id(obj_ptr) == TYPE_ID_TYPE {
+                let dict_bits = class_dict_bits(obj_ptr);
+                if let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits)
+                    && object_type_id(dict_ptr) == TYPE_ID_DICT
+                    && let Some(name_bits) = attr_name_bits_from_bytes(_py, name)
+                {
+                    let out = dict_get_in_place(_py, dict_ptr, name_bits)
+                        .unwrap_or_else(|| default_bits);
+                    dec_ref_bits(_py, name_bits);
+                    return out;
+                }
+                return default_bits;
+            }
+        }
+    }
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return MoltObject::none().bits();
     };
@@ -228,7 +245,27 @@ fn abc_counter_inc(_py: &crate::PyToken<'_>) -> u64 {
 }
 
 fn abc_state_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name: &[u8]) -> u64 {
-    get_attr_default(_py, cls_bits, name, MoltObject::none().bits())
+    let Some(cls_ptr) = maybe_ptr_from_bits(cls_bits) else {
+        return MoltObject::none().bits();
+    };
+    unsafe {
+        if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+            return MoltObject::none().bits();
+        }
+        let dict_bits = class_dict_bits(cls_ptr);
+        let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits) else {
+            return MoltObject::none().bits();
+        };
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return MoltObject::none().bits();
+        }
+        let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+            return MoltObject::none().bits();
+        };
+        let out = dict_get_in_place(_py, dict_ptr, name_bits).unwrap_or_else(|| MoltObject::none().bits());
+        dec_ref_bits(_py, name_bits);
+        out
+    }
 }
 
 fn class_lookup_mro_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name_bits: u64) -> u64 {
@@ -694,15 +731,11 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
         dec_ref_bits(_py, empty_tuple_bits);
 
         let builtins = builtin_classes(_py);
-        let type_dict_bits = get_attr_default(
-            _py,
-            builtins.type_obj,
-            b"__dict__",
-            MoltObject::none().bits(),
-        );
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
+        let type_dict_bits = if let Some(type_ptr) = maybe_ptr_from_bits(builtins.type_obj) {
+            class_dict_bits(type_ptr)
+        } else {
+            MoltObject::none().bits()
+        };
         if obj_from_bits(type_dict_bits).is_none() {
             return raise_exception::<_>(
                 _py,

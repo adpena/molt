@@ -169,6 +169,36 @@ def test_tensor_matmul():
     assert c.to_list() == [[19.0, 22.0], [43.0, 50.0]]
 
 
+def test_tensor_linear_weight_layout_matches_transposed_matmul():
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor([[1.0, 2.0], [3.0, 4.0]])
+    weight = Tensor([[5.0, 6.0], [7.0, 8.0], [9.0, 10.0]])
+
+    expected = x @ weight.transpose()
+    got = x.linear(weight)
+
+    assert got.shape == (2, 3)
+    assert got.to_list() == expected.to_list()
+
+
+def test_tensor_batched_matmul_preserves_all_leading_dims():
+    from molt.gpu.tensor import Tensor
+
+    a = Tensor(list(range(1, 1 + 1 * 2 * 3 * 4)), shape=(1, 2, 3, 4))
+    b = Tensor(list(range(1, 1 + 1 * 2 * 4 * 2)), shape=(1, 2, 4, 2))
+
+    out = a @ b
+
+    assert out.shape == (1, 2, 3, 2)
+    assert out.to_list() == [
+        [
+            [[50.0, 60.0], [114.0, 140.0], [178.0, 220.0]],
+            [[706.0, 764.0], [898.0, 972.0], [1090.0, 1180.0]],
+        ]
+    ]
+
+
 def test_tensor_elementwise():
     from molt.gpu.tensor import Tensor
     a = Tensor([1.0, 2.0, 3.0])
@@ -241,6 +271,16 @@ def test_tensor_reductions():
     assert t.mean().item() == 2.5
     assert t.max().item() == 4.0
     assert t.min().item() == 1.0
+
+
+def test_tensor_mean_keepdim_preserves_reduced_axis():
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor([1.0, 2.0, 3.0, 4.0], shape=(1, 2, 2))
+    m = t.mean(axis=-1, keepdim=True)
+
+    assert m.shape == (1, 2, 1)
+    assert m.to_list() == [[[1.5], [3.5]]]
 
 
 def test_tensor_activations():
