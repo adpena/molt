@@ -22,16 +22,19 @@ def normalize_trace_families(families: Iterable[str] | None) -> TraceConfig:
     if not requested:
         requested = tuple(TRACE_ENV_BY_FAMILY)
     normalized: list[str] = []
-    env: dict[str, str] = {}
+    selected: set[str] = set()
     for family in requested:
         key = family.strip()
         if key not in TRACE_ENV_BY_FAMILY:
             raise ValueError(f"unsupported trace family: {family}")
-        if key in env:
+        if key in selected:
             continue
         normalized.append(key)
-        env[key] = TRACE_ENV_BY_FAMILY[key]
+        selected.add(key)
     return TraceConfig(
         families=tuple(normalized),
-        env={env_key: "1" for env_key in env.values()},
+        env={
+            env_key: ("1" if family in selected else "0")
+            for family, env_key in TRACE_ENV_BY_FAMILY.items()
+        },
     )
