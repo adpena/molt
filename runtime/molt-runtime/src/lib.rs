@@ -163,8 +163,8 @@ pub mod lifecycle {
 /// otherwise `pub(crate)` or require GIL-internal helpers.
 pub mod ffi_bridge {
     use crate::concurrency::GilGuard;
-    use crate::object::{string_bytes, string_len, object_type_id};
     use crate::object::type_ids::TYPE_ID_STRING;
+    use crate::object::{object_type_id, string_bytes, string_len};
 
     /// Check whether a runtime capability is granted.
     ///
@@ -197,12 +197,17 @@ pub mod ffi_bridge {
             return 0;
         };
 
-        if crate::has_capability(py, name) { 1 } else { 0 }
+        if crate::has_capability(py, name) {
+            1
+        } else {
+            0
+        }
     }
 }
 
 #[allow(unused_imports)]
 pub(crate) use crate::async_rt::*;
+pub use crate::builtins::gpu::molt_gpu_linear_contiguous;
 pub use crate::builtins::strings::molt_string_from_bytes;
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{
@@ -417,8 +422,8 @@ pub use crate::builtins::functions_http::*;
 #[cfg(not(feature = "stdlib_http"))]
 pub use crate::builtins::functions_logging::*;
 pub use crate::builtins::functions_pickle::*;
-pub use crate::builtins::functions_stat::*;
 pub use crate::builtins::functions_re::*;
+pub use crate::builtins::functions_stat::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::functions_zipfile::*;
 pub use crate::builtins::functools::*;

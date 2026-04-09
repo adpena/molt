@@ -517,21 +517,12 @@ class Embedding:
         Returns:
             tensor of shape (*indices.shape, embedding_dim)
         """
-        idx_data = indices._data_list()
-        w_data = self.weight._data_list()
-
-        result = []
-        for idx_val in idx_data:
-            idx = int(idx_val)
-            if idx < 0 or idx >= self.num_embeddings:
-                raise IndexError(
-                    f"Embedding index {idx} out of range [0, {self.num_embeddings})"
-                )
-            base = idx * self.embedding_dim
-            result.extend(w_data[base:base + self.embedding_dim])
-
-        out_shape = indices.shape + (self.embedding_dim,)
-        return Tensor(result, shape=out_shape)
+        try:
+            return self.weight.take_rows(indices, allow_negative=False)
+        except IndexError as exc:
+            raise IndexError(
+                f"Embedding index out of range [0, {self.num_embeddings})"
+            ) from exc
 
     def load_weights(self, weight):
         """Load pre-trained embedding weights."""

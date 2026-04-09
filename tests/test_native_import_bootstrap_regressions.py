@@ -180,6 +180,28 @@ def test_native_os_stat_executes(tmp_path: Path) -> None:
     assert run.stdout.strip() == "stat_result"
 
 
+def test_native_tensor_linear_f32_contiguous_fast_path(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor\n"
+            "x = Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))\n"
+            "w = Tensor(to_device(array('f', [5.0, 6.0, 7.0, 8.0, 9.0, 10.0])), shape=(3, 2))\n"
+            "out = x.linear(w)\n"
+            "print(out._buf.format_char)\n"
+            "print(out.to_list())\n"
+        ),
+        "tensor_linear_f32_contiguous",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "[[17.0, 23.0, 29.0], [39.0, 53.0, 67.0]]",
+    ]
+
+
 def test_native_import_typing_optional_is_clean(tmp_path: Path) -> None:
     run = _build_and_run_with_env(
         tmp_path,

@@ -59,14 +59,14 @@ pub(crate) mod frames;
 pub(crate) mod functions;
 #[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod functions_email;
+pub(crate) mod functions_fnmatch;
 #[cfg(not(feature = "stdlib_http"))]
 pub(crate) mod functions_http;
 #[cfg(not(feature = "stdlib_http"))]
 pub(crate) mod functions_logging;
 pub(crate) mod functions_pickle;
-pub(crate) mod functions_stat;
 pub(crate) mod functions_re;
-pub(crate) mod functions_fnmatch;
+pub(crate) mod functions_stat;
 pub(crate) mod functions_textwrap;
 #[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod functions_zipfile;
@@ -76,6 +76,7 @@ pub(crate) mod glob_mod;
 pub(crate) mod graphlib;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod gzip;
+pub(crate) mod gpu;
 #[cfg(feature = "stdlib_crypto")]
 pub(crate) mod hashlib;
 #[cfg(feature = "stdlib_crypto")]
