@@ -4,10 +4,11 @@
 //! string constants, arithmetic, function calls, and exception handling.
 
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use molt_backend::wasm::WasmBackend;
-use std::f64::consts::PI;
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
+use std::f64::consts::PI;
 use wasmparser::{Operator, Parser, Payload, TypeRef, Validator};
 
 fn op(kind: &str) -> OpIR {
@@ -33,6 +34,49 @@ fn compile_single_function(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
         }],
         profile: None,
     })
+}
+
+fn compile_ir_with_env(ir: SimpleIR, env: &[(&str, Option<&str>)]) -> Vec<u8> {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = ENV_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("env lock");
+    let prior: Vec<(String, Option<std::ffi::OsString>)> = env
+        .iter()
+        .map(|(key, _)| ((*key).to_string(), std::env::var_os(key)))
+        .collect();
+    for (key, value) in env {
+        match value {
+            Some(value) => unsafe { std::env::set_var(key, value) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+    let wasm = compile_ir(ir);
+    for (key, value) in prior {
+        match value {
+            Some(value) => unsafe { std::env::set_var(&key, value) },
+            None => unsafe { std::env::remove_var(&key) },
+        }
+    }
+    wasm
+}
+
+fn compile_single_function_without_tir(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
+    compile_ir_with_env(
+        SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_test_func".to_string(),
+                params: params.iter().map(|p| (*p).to_string()).collect(),
+                ops,
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        },
+        &[("MOLT_TIR_OPT", Some("0"))],
+    )
 }
 
 fn extract_exports(wasm: &[u8]) -> Vec<String> {
@@ -339,6 +383,25 @@ fn call_func_uses_dispatch() {
 }
 
 #[test]
+fn call_bind_without_output_compiles() {
+    let mut call = op("call_bind");
+    call.args = Some(vec!["p0".to_string(), "p1".to_string()]);
+
+    let wasm = compile_single_function(vec![call, op("ret_void")], &["p0", "p1"]);
+    validate_wasm(&wasm).expect("output-less call_bind should still produce valid wasm");
+}
+
+#[test]
+fn call_indirect_without_output_compiles() {
+    let mut call = op("call_indirect");
+    call.args = Some(vec!["p0".to_string(), "p1".to_string()]);
+
+    let wasm = compile_single_function(vec![call, op("ret_void")], &["p0", "p1"]);
+    validate_wasm(&wasm)
+        .expect("output-less call_indirect should still produce valid wasm");
+}
+
+#[test]
 fn call_guarded_escaped_function_dispatches_on_object() {
     let mut func_new = op("func_new");
     func_new.s_value = Some("guarded_target".to_string());
@@ -569,6 +632,47 @@ fn list_new_compiles_using_builder_imports() {
     assert!(
         count_import(&calls, "list_builder_finish") > 0,
         "list_new should call list_builder_finish"
+    );
+}
+
+#[test]
+fn build_list_compiles_using_builder_imports() {
+    let mut list = op("build_list");
+    list.args = Some(vec!["p0".to_string(), "p1".to_string()]);
+    list.out = Some("v0".to_string());
+
+    let wasm = compile_single_function_without_tir(vec![list, op("ret_void")], &["p0", "p1"]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "list_builder_new") > 0,
+        "build_list should call list_builder_new"
+    );
+    assert!(
+        count_import(&calls, "list_builder_append") > 0,
+        "build_list should call list_builder_append"
+    );
+    assert!(
+        count_import(&calls, "list_builder_finish") > 0,
+        "build_list should call list_builder_finish"
+    );
+}
+
+#[test]
+fn iter_next_unboxed_compiles_using_iter_next_and_index_imports() {
+    let mut iter_next = op("iter_next_unboxed");
+    iter_next.args = Some(vec!["p0".to_string()]);
+    iter_next.var = Some("value".to_string());
+    iter_next.out = Some("done".to_string());
+
+    let wasm = compile_single_function(vec![iter_next, ret_value("done")], &["p0"]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "iter_next") > 0,
+        "iter_next_unboxed should lower through iter_next on wasm"
+    );
+    assert!(
+        count_import(&calls, "index") > 0,
+        "iter_next_unboxed should extract value/done via index on wasm"
     );
 }
 

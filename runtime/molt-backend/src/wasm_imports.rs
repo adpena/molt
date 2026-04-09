@@ -1124,6 +1124,7 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     // Iterator ops
     ("iter", &["iter"]),
     ("iter_next", &["iter_next"]),
+    ("iter_next_unboxed", &["index", "iter_next"]),
     ("iter_sentinel", &["iter_sentinel"]),
     ("contains", &["contains"]),
     // Comparison/identity ops
@@ -1303,6 +1304,14 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("list_int_new", &["list_int_new"]),
+    (
+        "build_list",
+        &[
+            "list_builder_append",
+            "list_builder_finish",
+            "list_builder_new",
+        ],
+    ),
     (
         "list_new",
         &[
