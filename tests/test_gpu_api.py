@@ -429,6 +429,21 @@ def test_load_safetensors_materializes_tensors_on_demand(tmp_path, monkeypatch):
     assert weights.get("missing", "fallback") == "fallback"
 
 
+def test_load_safetensors_f32_entries_stay_f32_buffer_backed(tmp_path):
+    from molt.gpu.interop import load_safetensors
+    from molt.gpu import from_device
+
+    safetensors_path = tmp_path / "weights_f32.safetensors"
+    _write_safetensors_fixture(safetensors_path)
+
+    weights = load_safetensors(str(safetensors_path))
+    tensor = weights["t0"]
+
+    assert tensor._buf.format_char == "f"
+    assert tensor._buf.itemsize == 4
+    assert from_device(tensor._buf) == [1.0, 2.0]
+
+
 def test_submodule_numpy_io():
     from molt.gpu.numpy_io import load_numpy, load_npz
 
