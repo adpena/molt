@@ -21,6 +21,7 @@ Molt targets **Python 3.12+** semantics only.
 
 - Canonical debug operations and artifact roots: [OPERATIONS.md](OPERATIONS.md)
 - Architecture and ownership map for the debug surface: [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)
+- Public debug command family: `molt debug repro|ir|verify|trace|reduce|bisect|diff|perf`
 
 ## Product And Proof
 
