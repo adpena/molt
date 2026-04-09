@@ -4667,6 +4667,8 @@ def _compile_with_backend_daemon_non_wasm(
     config_digest: str | None,
     skip_module_output_if_synced: bool = False,
     skip_function_output_if_synced: bool = False,
+    stdlib_object_path: Path | None = None,
+    stdlib_object_cache_key: str | None = None,
     timeout: float | None,
     request_bytes: bytes | None = None,
 ) -> cli._BackendDaemonCompileResult:
@@ -4684,6 +4686,8 @@ def _compile_with_backend_daemon_non_wasm(
         config_digest=config_digest,
         skip_module_output_if_synced=skip_module_output_if_synced,
         skip_function_output_if_synced=skip_function_output_if_synced,
+        stdlib_object_path=stdlib_object_path,
+        stdlib_object_cache_key=stdlib_object_cache_key,
         timeout=timeout,
         request_bytes=request_bytes,
     )
@@ -5881,7 +5885,7 @@ def test_prepare_backend_setup_starts_native_runtime_build_async(
 ) -> None:
     runtime_lib = tmp_path / "libmolt_runtime.a"
     output_artifact = tmp_path / "output.o"
-    scheduled: list[tuple[Path | None, str | None, str]] = []
+    scheduled: list[tuple[Path | None, str | None, str, frozenset[str]]] = []
 
     monkeypatch.setattr(
         cli,
@@ -5915,6 +5919,7 @@ def test_prepare_backend_setup_starts_native_runtime_build_async(
                 runtime_state.runtime_lib,
                 cast(str | None, kwargs["target_triple"]),
                 cast(str, kwargs["runtime_cargo_profile"]),
+                frozenset(cast(set[str], kwargs["resolved_modules"])),
             )
         ),
     )
@@ -5939,11 +5944,75 @@ def test_prepare_backend_setup_starts_native_runtime_build_async(
         cache=True,
         ir={"functions": []},
         entry_module="__main__",
+        resolved_modules={"__main__", "json"},
     )
 
     assert backend_setup_error is None
     assert prepared_backend_setup is not None
-    assert scheduled == [(runtime_lib, None, "release-fast")]
+    assert scheduled == [(runtime_lib, None, "release-fast", frozenset({"__main__", "json"}))]
+
+
+def test_prepare_backend_setup_skips_native_runtime_build_async_for_object_emit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    output_artifact = tmp_path / "output.o"
+    scheduled: list[Path | None] = []
+
+    monkeypatch.setattr(
+        cli,
+        "_initialize_runtime_artifact_state",
+        lambda **kwargs: cli._RuntimeArtifactState(runtime_lib=runtime_lib),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_prepare_backend_cache_setup",
+        lambda **kwargs: cli._BackendCacheSetup(
+            cache_enabled=True,
+            cache_key="module-cache",
+            function_cache_key=None,
+            cache_path=tmp_path / "module-cache.o",
+            function_cache_path=None,
+            stdlib_object_path=None,
+            stdlib_object_cache_key=None,
+            cache_candidates=(("module", tmp_path / "module-cache.o"),),
+            cache_hit=False,
+            cache_hit_tier=None,
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_maybe_start_native_runtime_lib_ready_async",
+        lambda runtime_state, **kwargs: scheduled.append(runtime_state.runtime_lib),
+    )
+
+    prepared_backend_setup, backend_setup_error = cli._prepare_backend_setup(
+        is_rust_transpile=False,
+        is_wasm=False,
+        emit_mode="obj",
+        molt_root=tmp_path,
+        runtime_cargo_profile="release-fast",
+        target_triple=None,
+        json_output=True,
+        cargo_timeout=1.0,
+        target="native",
+        profile="release",
+        backend_cargo_profile="release-fast",
+        linked=False,
+        project_root=tmp_path,
+        cache_dir=None,
+        output_artifact=output_artifact,
+        warnings=[],
+        cache=True,
+        ir={"functions": []},
+        entry_module="__main__",
+        resolved_modules={"__main__"},
+    )
+
+    assert backend_setup_error is None
+    assert prepared_backend_setup is not None
+    assert scheduled == []
 
 
 def test_ensure_native_runtime_lib_ready_before_link_awaits_async_future(
@@ -5985,6 +6054,91 @@ def test_ensure_native_runtime_lib_ready_before_link_awaits_async_future(
 
     assert ready is True
     assert fake_future.calls == 1
+
+
+def test_ensure_native_runtime_lib_ready_before_link_passes_resolved_modules(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_state = cli._RuntimeArtifactState(runtime_lib=tmp_path / "libmolt_runtime.a")
+    captured: list[frozenset[str]] = []
+
+    monkeypatch.setattr(
+        cli,
+        "_ensure_runtime_lib_ready",
+        lambda runtime_state, **kwargs: captured.append(
+            frozenset(cast(set[str], kwargs["resolved_modules"]))
+        )
+        or True,
+    )
+
+    ready = cli._ensure_native_runtime_lib_ready_before_link(
+        runtime_state,
+        target_triple=None,
+        json_output=True,
+        runtime_cargo_profile="release-fast",
+        molt_root=tmp_path,
+        cargo_timeout=1.0,
+        diagnostics_enabled=False,
+        phase_starts={},
+        resolved_modules={"json", "socket"},
+    )
+
+    assert ready is True
+    assert captured == [frozenset({"json", "socket"})]
+
+
+def test_ensure_runtime_lib_verified_key_tracks_micro_feature_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    runtime_lib.write_bytes(b"archive")
+    cli._RUNTIME_LIB_VERIFIED.clear()
+    verification_calls: list[frozenset[str]] = []
+
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint",
+        lambda project_root, **kwargs: {
+            "runtime_features": tuple(cast(tuple[str, ...], kwargs["runtime_features"]))
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "_artifact_needs_rebuild",
+        lambda artifact, fingerprint, stored_fingerprint: verification_calls.append(
+            frozenset(cast(tuple[str, ...], fingerprint["runtime_features"]))
+        )
+        or False,
+    )
+
+    try:
+        assert cli._ensure_runtime_lib(
+            runtime_lib,
+            target_triple=None,
+            json_output=True,
+            cargo_profile="release-fast",
+            project_root=tmp_path,
+            cargo_timeout=1.0,
+            stdlib_profile="micro",
+            resolved_modules={"json"},
+        )
+        assert cli._ensure_runtime_lib(
+            runtime_lib,
+            target_triple=None,
+            json_output=True,
+            cargo_profile="release-fast",
+            project_root=tmp_path,
+            cargo_timeout=1.0,
+            stdlib_profile="micro",
+            resolved_modules={"socket"},
+        )
+    finally:
+        cli._RUNTIME_LIB_VERIFIED.clear()
+
+    assert len(verification_calls) == 2
+    assert verification_calls[0] != verification_calls[1]
 
 
 def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen(
@@ -7455,6 +7609,228 @@ def test_backend_compile_stages_one_shot_output_into_cache(
     assert function_cache_path.read_bytes() == b"wasm-bytes"
 
 
+def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_miss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    artifacts_root = tmp_path / "artifacts"
+    output_artifact = project_root / "build" / "main.o"
+    cache_path = project_root / ".molt_cache" / "cache-key.o"
+    function_cache_path = project_root / ".molt_cache" / "fn-cache-key.o"
+    stdlib_object_path = project_root / "build" / "main.stdlib.o"
+    request_encode_calls: list[tuple[bool, bool]] = []
+    daemon_request_bytes: list[bytes | None] = []
+
+    def fake_request_bytes(**kwargs: object) -> tuple[bytes | None, str | None]:
+        request_encode_calls.append(
+            (
+                bool(kwargs.get("probe_cache_only")),
+                kwargs.get("ir") is not None,
+            )
+        )
+        return b'{"version":1,"jobs":[{"id":"job0"}]}\n', None
+
+    def fake_compile_with_backend_daemon(
+        socket_path: Path,
+        **kwargs: object,
+    ) -> cli._BackendDaemonCompileResult:
+        assert socket_path == tmp_path / "daemon.sock"
+        daemon_request_bytes.append(cast(bytes | None, kwargs.get("request_bytes")))
+        return cli._BackendDaemonCompileResult(
+            True,
+            None,
+            {"pid": 42},
+            True,
+            "module",
+            False,
+            True,
+        )
+
+    monkeypatch.setattr(cli, "_backend_daemon_compile_request_bytes", fake_request_bytes)
+    monkeypatch.setattr(
+        cli, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
+    )
+
+    result, error = cli._execute_backend_compile(
+        cache=True,
+        cache_path=cache_path,
+        function_cache_path=function_cache_path,
+        artifacts_root=artifacts_root,
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=False,
+        diagnostics_enabled=False,
+        phase_starts={},
+        daemon_ready=True,
+        daemon_socket=tmp_path / "daemon.sock",
+        project_root=project_root,
+        output_artifact=output_artifact,
+        cache_key="cache-key",
+        function_cache_key="fn-cache-key",
+        cache_setup=cli._BackendCacheSetup(
+            cache_enabled=True,
+            cache_key="cache-key",
+            function_cache_key="fn-cache-key",
+            cache_path=cache_path,
+            function_cache_path=function_cache_path,
+            stdlib_object_path=stdlib_object_path,
+            stdlib_object_cache_key="stdlib-cache-key",
+            cache_candidates=(("module", cache_path), ("function", function_cache_path)),
+            cache_hit=False,
+            cache_hit_tier=None,
+        ),
+        target_triple=None,
+        backend_daemon_config_digest="digest123",
+        entry_module="pkg.app",
+        ir={"functions": [{"name": "heavy"}]},
+        json_output=False,
+        warnings=[],
+        verbose=False,
+        backend_bin=tmp_path / "backend-bin",
+        backend_env=None,
+        backend_timeout=None,
+        molt_root=project_root,
+        backend_cargo_profile="dev-fast",
+        _ensure_backend_ir_bytes=lambda: b"{}",
+        _get_backend_ir_fmt=lambda: "json",
+        cache_hit=False,
+        backend_daemon_cached=None,
+        backend_daemon_cache_tier=None,
+        backend_daemon_health=None,
+    )
+
+    assert error is None
+    assert result is not None
+    assert request_encode_calls == []
+    assert daemon_request_bytes == [None]
+    assert result.backend_daemon_cached is True
+    assert result.backend_daemon_cache_tier == "module"
+
+
+def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    artifacts_root = tmp_path / "artifacts"
+    output_artifact = project_root / "build" / "main.o"
+    cache_path = project_root / ".molt_cache" / "cache-key.o"
+    function_cache_path = project_root / ".molt_cache" / "fn-cache-key.o"
+    request_encode_calls: list[tuple[bool, bool]] = []
+    daemon_request_bytes: list[bytes | None] = []
+    compile_attempts = 0
+    restart_calls = 0
+
+    def fake_request_bytes(**kwargs: object) -> tuple[bytes | None, str | None]:
+        request_encode_calls.append(
+            (
+                bool(kwargs.get("probe_cache_only")),
+                kwargs.get("ir") is not None,
+            )
+        )
+        return b'{"version":1,"jobs":[{"id":"job0"}]}\n', None
+
+    def fake_compile_with_backend_daemon(
+        socket_path: Path,
+        **kwargs: object,
+    ) -> cli._BackendDaemonCompileResult:
+        nonlocal compile_attempts
+        assert socket_path == tmp_path / "daemon.sock"
+        compile_attempts += 1
+        daemon_request_bytes.append(cast(bytes | None, kwargs.get("request_bytes")))
+        if compile_attempts == 1:
+            return cli._BackendDaemonCompileResult(
+                False,
+                "backend daemon connection failed: boom",
+                None,
+                None,
+                None,
+                True,
+                False,
+            )
+        return cli._BackendDaemonCompileResult(
+            True,
+            None,
+            {"pid": 42},
+            True,
+            "module",
+            False,
+            True,
+        )
+
+    def fake_start_backend_daemon(*args: object, **kwargs: object) -> bool:
+        nonlocal restart_calls
+        restart_calls += 1
+        assert args[1] == tmp_path / "daemon.sock"
+        return True
+
+    monkeypatch.setattr(cli, "_backend_daemon_compile_request_bytes", fake_request_bytes)
+    monkeypatch.setattr(
+        cli, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
+    )
+    monkeypatch.setattr(cli, "_start_backend_daemon", fake_start_backend_daemon)
+
+    result, error = cli._execute_backend_compile(
+        cache=True,
+        cache_path=cache_path,
+        function_cache_path=function_cache_path,
+        artifacts_root=artifacts_root,
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=False,
+        diagnostics_enabled=False,
+        phase_starts={},
+        daemon_ready=True,
+        daemon_socket=tmp_path / "daemon.sock",
+        project_root=project_root,
+        output_artifact=output_artifact,
+        cache_key="cache-key",
+        function_cache_key="fn-cache-key",
+        cache_setup=cli._BackendCacheSetup(
+            cache_enabled=True,
+            cache_key="cache-key",
+            function_cache_key="fn-cache-key",
+            cache_path=cache_path,
+            function_cache_path=function_cache_path,
+            stdlib_object_path=None,
+            stdlib_object_cache_key=None,
+            cache_candidates=(("module", cache_path), ("function", function_cache_path)),
+            cache_hit=False,
+            cache_hit_tier=None,
+        ),
+        target_triple=None,
+        backend_daemon_config_digest="digest123",
+        entry_module="pkg.app",
+        ir={"functions": [{"name": "heavy"}]},
+        json_output=False,
+        warnings=[],
+        verbose=False,
+        backend_bin=tmp_path / "backend-bin",
+        backend_env=None,
+        backend_timeout=None,
+        molt_root=project_root,
+        backend_cargo_profile="dev-fast",
+        _ensure_backend_ir_bytes=lambda: b"{}",
+        _get_backend_ir_fmt=lambda: "json",
+        cache_hit=False,
+        backend_daemon_cached=None,
+        backend_daemon_cache_tier=None,
+        backend_daemon_health=None,
+    )
+
+    assert error is None
+    assert result is not None
+    assert compile_attempts == 2
+    assert restart_calls == 1
+    assert request_encode_calls == []
+    assert daemon_request_bytes == [None, None]
+    assert result.backend_daemon_cached is True
+    assert result.backend_daemon_cache_tier == "module"
+
+
 def test_backend_daemon_compile_request_includes_partition_env(
     tmp_path: Path,
 ) -> None:
@@ -8064,6 +8440,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     tmp_path: Path,
 ) -> None:
     backend_output = tmp_path / "output.o"
+    stdlib_object_path = tmp_path / "cache" / "main.stdlib.o"
     seen_payloads: list[dict[str, object]] = []
     connects = 0
 
@@ -8134,6 +8511,8 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
         config_digest="digest123",
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
+        stdlib_object_path=stdlib_object_path,
+        stdlib_object_cache_key="stdlib-cache-key",
         timeout=0.1,
     )
 
@@ -8142,7 +8521,11 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     assert connects == 1
     assert seen_payloads[0]["jobs"][0]["probe_cache_only"] is True
     assert "ir" not in seen_payloads[0]["jobs"][0]
+    assert seen_payloads[0]["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
+    assert seen_payloads[0]["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
     assert seen_payloads[1]["jobs"][0]["ir"] == {"functions": [{"name": "heavy"}]}
+    assert seen_payloads[1]["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
+    assert seen_payloads[1]["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
 
 
 def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
