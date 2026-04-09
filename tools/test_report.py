@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Human-readable report generator for Molt nightly/weekly test runs.
 
-Reads JSON results from ``$MOLT_EXT_ROOT/test_reports/`` (or a custom path)
-and produces markdown summaries with trend analysis.
+Reads JSON results from ``$MOLT_EXT_ROOT/test_reports/`` or the repo-local
+``tmp/molt_testing/test_reports`` canonical root and produces markdown
+summaries with trend analysis.
 
 Usage::
 
@@ -16,7 +17,7 @@ Usage::
     uv run --python 3.12 python3 tools/test_report.py --compare 2026-03-10 2026-03-12
 
     # Custom report directory
-    uv run --python 3.12 python3 tools/test_report.py --report-dir /tmp/reports
+    uv run --python 3.12 python3 tools/test_report.py --report-dir tmp/reports
 """
 
 from __future__ import annotations
@@ -34,16 +35,17 @@ from typing import Any
 # Constants
 # ---------------------------------------------------------------------------
 
-_EXT_ROOT_DEFAULT = "/tmp/molt_testing"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_EXT_ROOT_DEFAULT = REPO_ROOT / "tmp" / "molt_testing"
 
 
 def _reports_root(override: str | None = None) -> Path:
     if override:
-        return Path(override)
-    raw = os.environ.get("MOLT_EXT_ROOT", "")
-    if raw and Path(raw).is_dir():
-        return Path(raw) / "test_reports"
-    return Path(_EXT_ROOT_DEFAULT) / "test_reports"
+        return Path(override).expanduser()
+    raw = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if raw:
+        return Path(raw).expanduser() / "test_reports"
+    return _REPO_EXT_ROOT_DEFAULT / "test_reports"
 
 
 # ---------------------------------------------------------------------------

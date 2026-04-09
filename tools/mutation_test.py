@@ -812,13 +812,25 @@ def apply_single_mutation(source: str, site: MutationSite) -> str | None:
 
 
 def _temp_root() -> Path:
-    ext = os.environ.get("MOLT_EXT_ROOT", "")
-    if ext and Path(ext).is_dir():
-        base = Path(ext) / "mutation_tmp"
+    ext = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if ext:
+        base = Path(ext).expanduser() / "mutation_tmp"
     else:
-        base = Path(tempfile.gettempdir()) / "molt_mutation_tmp"
+        base = REPO_ROOT / "tmp" / "mutation_tmp"
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def _default_cargo_target_dir() -> Path:
+    configured = os.environ.get("CARGO_TARGET_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+
+    ext = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if ext:
+        return Path(ext).expanduser() / "target"
+
+    return REPO_ROOT / "target"
 
 
 def create_mutant_workspace(
@@ -863,13 +875,8 @@ def run_diff_against_mutant(
     env["PYTHONPATH"] = str(workspace)
     # Force single job and no cache to keep mutations isolated.
     env["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
-    env.setdefault(
-        "CARGO_TARGET_DIR",
-        os.environ.get(
-            "CARGO_TARGET_DIR",
-            str(Path(os.environ.get("MOLT_EXT_ROOT", "/tmp")) / "cargo-target"),
-        ),
-    )
+    if not env.get("CARGO_TARGET_DIR", "").strip():
+        env["CARGO_TARGET_DIR"] = str(_default_cargo_target_dir())
 
     cmd = [
         sys.executable,
@@ -1523,7 +1530,9 @@ def _mutate_program_file(
         tmp_path = None
         try:
             tmp_fd, tmp_path = tempfile.mkstemp(
-                suffix=".py", prefix=f"mutation_{op_name}_"
+                suffix=".py",
+                prefix=f"mutation_{op_name}_",
+                dir=str(_temp_root()),
             )
             os.write(tmp_fd, mutated_source.encode("utf-8"))
             os.close(tmp_fd)
