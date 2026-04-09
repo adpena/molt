@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -77,6 +79,25 @@ def _build_and_run_with_env(
         timeout=60,
     )
     return run
+
+
+def _write_safetensors_fixture(path: Path, *, count: int) -> None:
+    header: dict[str, dict[str, object]] = {}
+    payload = bytearray()
+    offset = 0
+    for index in range(count):
+        name = f"t{index}"
+        values = [float(index) + 0.5]
+        raw = struct.pack("<f", values[0])
+        header[name] = {
+            "dtype": "F32",
+            "shape": [1],
+            "data_offsets": [offset, offset + len(raw)],
+        }
+        payload.extend(raw)
+        offset += len(raw)
+    header_json = json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    path.write_bytes(struct.pack("<Q", len(header_json)) + header_json + payload)
 
 
 def test_native_or_short_circuit_preserves_truthy_left(tmp_path: Path) -> None:
@@ -208,6 +229,49 @@ def test_native_struct_pack_starargs_inside_function_remains_bound_as_tuple(
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == ["8", "8"]
+
+
+def test_native_load_safetensors_multi_entry_is_clean(tmp_path: Path) -> None:
+    safetensors_path = tmp_path / "multi.safetensors"
+    _write_safetensors_fixture(safetensors_path, count=160)
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "from molt.gpu.interop import load_safetensors\n"
+            f"weights = load_safetensors({str(safetensors_path)!r})\n"
+            "print(len(weights))\n"
+            "print(type(weights['t0']).__name__)\n"
+        ),
+        "load_safetensors_multi_entry",
+        session_id="pytest-native-bootstrap-safetensors",
+        cache_dir=ROOT / ".molt_cache-safetensors",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["160", "Tensor"]
+
+
+def test_native_tuple_loop_dynamic_unpack_list_retention_is_clean(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import struct\n"
+            "count = 1\n"
+            "fmt_char = 'f'\n"
+            "raw = bytes.fromhex('0000003f')\n"
+            "items = [(f't{i}', {}) for i in range(160)]\n"
+            "all_values = []\n"
+            "for name, meta in items:\n"
+            "    values = list(struct.unpack(f'<{count}{fmt_char}', raw))\n"
+            "    all_values.append(values)\n"
+            "print(len(all_values))\n"
+            "print(all_values[0][0])\n"
+        ),
+        "tuple_loop_dynamic_unpack_list_retention",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["160", "0.5"]
 
 
 def test_native_safe_intrinsic_helper_with_tuple_subclass(tmp_path: Path) -> None:

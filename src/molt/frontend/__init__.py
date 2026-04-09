@@ -8430,8 +8430,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             else:
                 items.append(("kw", kw.value, kw.arg))
         callargs = MoltValue(self.next_var(), type_hint="callargs")
-        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
         if not items:
+            self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
             return callargs
         values: list[MoltValue] = []
         if not self.is_async():
@@ -8462,6 +8462,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         spills.append((idx, slot, val.type_hint))
                 for idx, slot, hint in spills:
                     values[idx] = self._reload_async_value(slot, hint)
+        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
         for (kind, _, name), val in zip(items, values):
             if kind == "pos":
                 res = MoltValue(self.next_var(), type_hint="None")
@@ -8516,8 +8517,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             else:
                 items.append(("kw", kw.value, kw.arg))
         callargs = MoltValue(self.next_var(), type_hint="callargs")
-        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
         if not items:
+            self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
             return callargs, False
         values: list[MoltValue] = []
         saw_name_error = False
@@ -8594,6 +8595,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         spills.append((idx, slot, val.type_hint))
                 for idx, slot, hint in spills:
                     values[idx] = self._reload_async_value(slot, hint)
+        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
         for (kind, _, name), val in zip(items, values):
             if kind == "pos":
                 res = MoltValue(self.next_var(), type_hint="None")
