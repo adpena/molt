@@ -177,3 +177,79 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
     assert seen_profiles == ["wasm-release", "wasm-release", "release-fast"]
     assert seen_targets[0] == primary_target
     assert seen_targets[1] == cli._wasm_runtime_recovery_target_root(primary_target)
+
+
+def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifact_is_newer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\x00asm\x01\x00\x00\x00old")
+
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new-shape"}, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: tmp_path / "fingerprint.json",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+    )
+    monkeypatch.setattr(
+        cli, "_artifact_newer_than_sources", lambda *args, **kwargs: True, raising=True
+    )
+    monkeypatch.setattr(
+        cli, "_is_valid_runtime_wasm_artifact", lambda *args, **kwargs: True, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+
+    build_calls: list[tuple[tuple[str, ...], Path]] = []
+
+    def fake_run_runtime_wasm_cargo_build(
+        *,
+        cmd: list[str],
+        root: Path,
+        env: dict[str, str],
+        cargo_timeout: float | None,
+        profile_dir: str,
+        target_root_override: Path | None = None,
+        json_output: bool,
+        artifact_kind: str = "cdylib",
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        del cargo_timeout, profile_dir, json_output, artifact_kind
+        target_root = target_root_override or cli._cargo_target_root(root)
+        src = target_root / "wasm32-wasip1" / "dev-fast" / "molt_runtime.wasm"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"\x00asm\x01\x00\x00\x00rebuilt")
+        build_calls.append((tuple(cmd), src))
+        return subprocess.CompletedProcess(cmd, 0), src
+
+    monkeypatch.setattr(
+        cli,
+        "_run_runtime_wasm_cargo_build",
+        fake_run_runtime_wasm_cargo_build,
+        raising=True,
+    )
+
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+        stdlib_profile="micro",
+        resolved_modules={"ssl"},
+    )
+    assert build_calls, "feature-shape changes must force a wasm runtime rebuild"
+    assert runtime_wasm.read_bytes() == b"\x00asm\x01\x00\x00\x00rebuilt"
