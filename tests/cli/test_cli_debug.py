@@ -442,6 +442,7 @@ def test_debug_trace_records_enabled_families_and_restores_env(
         fake_capture_json_cli_result,
     )
     monkeypatch.setenv("MOLT_TRACE_FUNCTION_BIND_META", "1")
+    monkeypatch.setenv("MOLT_ASSERT_NO_PENDING_ON_SUCCESS", "1")
     monkeypatch.chdir(tmp_path)
     args = argparse.Namespace(
         source=str(source_path),
@@ -450,6 +451,7 @@ def test_debug_trace_records_enabled_families_and_restores_env(
         rebuild=False,
         backend=None,
         profile="dev",
+        assert_no_pending_on_success=False,
         out=None,
     )
     paths = allocate_debug_paths(
@@ -474,6 +476,7 @@ def test_debug_trace_records_enabled_families_and_restores_env(
         "MOLT_TRACE_CALLARGS": "1",
         "MOLT_TRACE_CALL_BIND_IC": "1",
         "MOLT_TRACE_FUNCTION_BIND_META": "0",
+        "MOLT_ASSERT_NO_PENDING_ON_SUCCESS": "0",
     }
     assert seen_env == {
         "callargs": "1",
@@ -483,6 +486,61 @@ def test_debug_trace_records_enabled_families_and_restores_env(
     assert os.environ.get("MOLT_TRACE_CALLARGS") is None
     assert os.environ.get("MOLT_TRACE_CALL_BIND_IC") is None
     assert os.environ.get("MOLT_TRACE_FUNCTION_BIND_META") == "1"
+    assert os.environ.get("MOLT_ASSERT_NO_PENDING_ON_SUCCESS") == "1"
+
+
+def test_debug_trace_can_enable_success_path_assertion(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    source_path = tmp_path / "sample_trace_assert.py"
+    source_path.write_text("print('trace-ok')\n", encoding="utf-8")
+    seen_env = {}
+
+    def fake_capture_json_cli_result(*args, **kwargs):
+        seen_env["assert_no_pending"] = os.environ.get("MOLT_ASSERT_NO_PENDING_ON_SUCCESS")
+        return 0, {
+            "command": "run",
+            "status": "ok",
+            "data": {"returncode": 0},
+        }
+
+    monkeypatch.setattr(
+        molt_cli,
+        "_capture_json_cli_result",
+        fake_capture_json_cli_result,
+    )
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(
+        source=str(source_path),
+        family=None,
+        format="json",
+        rebuild=False,
+        backend=None,
+        profile="dev",
+        assert_no_pending_on_success=True,
+        out=None,
+    )
+    paths = allocate_debug_paths(
+        DebugSubcommand.TRACE,
+        output_extension="json",
+        run_id="trace-assert-test-run",
+    )
+
+    rc = molt_cli._handle_debug_trace(
+        args,
+        subcommand=DebugSubcommand.TRACE,
+        paths=paths,
+        selectors={},
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["data"]["assertions"] == ["no_pending_on_success"]
+    assert payload["data"]["trace_env"]["MOLT_ASSERT_NO_PENDING_ON_SUCCESS"] == "1"
+    assert seen_env["assert_no_pending"] == "1"
 
 
 def test_debug_bisect_locates_first_bad_pass(tmp_path: Path) -> None:

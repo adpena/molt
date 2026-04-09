@@ -121,6 +121,7 @@ Wired today:
 Under active build-out:
 
 - runtime trace assertion widening beyond the currently wired call-bind families
+  and the central `no pending exception on successful return` trap
 
 Rules:
 

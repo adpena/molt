@@ -4,11 +4,11 @@ use crate::builtins::functions::runtime_callable_target_ptr;
 use crate::{
     CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
     HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, PyToken, TYPE_ID_FUNCTION, TYPE_ID_TUPLE,
-    ensure_function_code_bits, frame_stack_pop, frame_stack_push, function_arity,
+    ensure_function_code_bits, exception_pending, frame_stack_pop, frame_stack_push, function_arity,
     function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
-    function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy, obj_from_bits,
-    object_type_id, profile_hit, raise_exception, recursion_guard_enter, recursion_guard_exit,
-    runtime_state, seq_vec_ref,
+    function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy,
+    molt_exception_clear, obj_from_bits, object_type_id, profile_hit, raise_exception,
+    recursion_guard_enter, recursion_guard_exit, runtime_state, seq_vec_ref,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -116,6 +116,29 @@ fn trace_call_vec_enabled() -> bool {
             Some("1")
         )
     })
+}
+
+fn assert_no_pending_on_success_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("MOLT_ASSERT_NO_PENDING_ON_SUCCESS")
+                .ok()
+                .as_deref(),
+            Some("1")
+        )
+    })
+}
+
+unsafe fn enforce_no_pending_on_success(_py: &PyToken<'_>, result: u64, context: &str) -> u64 {
+    unsafe {
+        if !assert_no_pending_on_success_enabled() || !exception_pending(_py) {
+            return result;
+        }
+        let _ = molt_exception_clear();
+        eprintln!("pending exception on success path: {context} result=0x{result:x}");
+        std::process::abort();
+    }
 }
 
 unsafe fn trace_function_vec_call(_py: &PyToken<'_>, func_ptr: *mut u8, args: &[u64], lane: &str) {
@@ -329,6 +352,8 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                 }
             }
         };
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj1");
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj7");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -497,6 +522,8 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
                 }
             }
         };
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj0");
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj8");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -602,6 +629,8 @@ pub(crate) unsafe fn call_function_obj2(
                 }
             }
         };
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj2");
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj9");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -703,6 +732,8 @@ pub(crate) unsafe fn call_function_obj3(
                 )
             }
         };
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj3");
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj10");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -807,6 +838,8 @@ pub(crate) unsafe fn call_function_obj4(
                 )
             }
         };
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj4");
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj11");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -921,6 +954,8 @@ unsafe fn call_function_obj5(
                 )
             }
         };
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj5");
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj12");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -1050,6 +1085,8 @@ unsafe fn call_function_obj6(
                 ) as u64
             }
         };
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj6");
+        let res = enforce_no_pending_on_success(_py, res, "call_function_obj_trampoline");
         frame_stack_pop(_py);
         recursion_guard_exit();
         res
@@ -2239,7 +2276,42 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
 
 #[cfg(test)]
 mod tests {
-    use super::{fixed_arity_call_target_ptr, should_force_trampoline_for_fixed_arity_call};
+    use super::{
+        enforce_no_pending_on_success, fixed_arity_call_target_ptr,
+        should_force_trampoline_for_fixed_arity_call,
+    };
+    use molt_obj_model::MoltObject;
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    fn init() {
+        INIT.call_once(|| {
+            let _ = crate::lifecycle::init();
+        });
+        let _ = crate::molt_exception_clear();
+    }
+
+    fn int(v: i64) -> u64 {
+        MoltObject::from_int(v).bits()
+    }
+
+    fn string_bits(text: &str) -> u64 {
+        let mut out = 0u64;
+        let rc = unsafe { crate::molt_string_from_bytes(text.as_ptr(), text.len() as u64, &mut out) };
+        assert_eq!(rc, 0);
+        out
+    }
+
+    struct EnvGuard(&'static str);
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var(self.0);
+            }
+        }
+    }
 
     #[test]
     fn fixed_arity_call_target_uses_fn_ptr_without_trampoline() {
@@ -2254,5 +2326,55 @@ mod tests {
     #[test]
     fn fixed_arity_call_policy_keeps_task_trampolines_on_vector_path() {
         assert!(should_force_trampoline_for_fixed_arity_call(293, true));
+    }
+
+    fn spawn_child(test_name: &str, envs: &[(&str, &str)]) -> std::process::Output {
+        let exe = std::env::current_exe().expect("current test executable");
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("--exact").arg(test_name).arg("--nocapture");
+        cmd.env("MOLT_ASSERT_CHILD", "1");
+        for (key, value) in envs {
+            cmd.env(key, value);
+        }
+        cmd.output().expect("spawn assert child")
+    }
+
+    #[test]
+    fn assert_no_pending_on_success_traps_stale_exception() {
+        if std::env::var("MOLT_ASSERT_CHILD").as_deref() == Ok("1") {
+            return;
+        }
+        let output = spawn_child(
+            "call::function::tests::assert_no_pending_on_success_child",
+            &[("MOLT_ASSERT_NO_PENDING_ON_SUCCESS", "1")],
+        );
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pending exception on success path"));
+    }
+
+    #[test]
+    fn assert_no_pending_on_success_child() {
+        if std::env::var("MOLT_ASSERT_CHILD").as_deref() != Ok("1") {
+            return;
+        }
+        init();
+        unsafe {
+            std::env::set_var("MOLT_ASSERT_NO_PENDING_ON_SUCCESS", "1");
+        }
+        let _guard = EnvGuard("MOLT_ASSERT_NO_PENDING_ON_SUCCESS");
+        crate::with_gil_entry!(_py, {
+            let kind_bits = string_bits("RuntimeError");
+            let msg_bits = string_bits("stale pending");
+            let args_list = crate::molt_list_builtin(crate::molt_missing());
+            let _ = crate::molt_list_append(args_list, msg_bits);
+            let args_bits = crate::molt_tuple_from_list(args_list);
+            let exc_bits =
+                crate::builtins::exceptions::molt_exception_new(kind_bits, args_bits);
+            let _ = crate::molt_exception_set_last(exc_bits);
+            let _ = unsafe {
+                enforce_no_pending_on_success(_py, int(7), "call_function_obj0")
+            };
+        });
     }
 }
