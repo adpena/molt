@@ -181,16 +181,20 @@ fn switch_to_block_with_rebind(
 ) {
     let _ = (has_exception_labels, vars, shadow_vars, shadow_names);
     crate::switch_to_block_tracking(builder, block, is_block_filled);
-    // Do not proactively rebind named/shadow variables here.
-    //
-    // `var_get()` already performs `use_var()` lazily at the actual point of
-    // use. Eagerly re-binding the entire function-wide variable set at block
-    // entry manufactures synthetic live-ins and extra block params for values
-    // that are not semantically merged in the target block. Cranelift then
-    // spends compile time deleting that SSA noise again.
-    //
-    // If a value is genuinely live across this boundary, the first downstream
-    // `use_var()` will create exactly the needed SSA edge.
+    // Selectively rebind only the variables that the caller has proven live
+    // across this boundary. This avoids the old "rebind everything" block-param
+    // explosion while still preserving values through check_exception / loop
+    // boundary block splits.
+    for var in vars.values() {
+        let value = builder.use_var(*var);
+        builder.def_var(*var, value);
+    }
+    for name in shadow_names {
+        if let Some(var) = shadow_vars.get(name) {
+            let value = builder.use_var(*var);
+            builder.def_var(*var, value);
+        }
+    }
 }
 
 #[cfg(feature = "native-backend")]
@@ -200,6 +204,7 @@ struct FunctionPreanalysis {
     has_store: bool,
     var_names: Vec<String>,
     last_use: BTreeMap<String, usize>,
+    transport_last_use: BTreeMap<String, usize>,
     alias_roots: BTreeMap<String, String>,
     if_to_end_if: BTreeMap<usize, usize>,
     if_to_else: BTreeMap<usize, usize>,
@@ -487,6 +492,7 @@ fn preanalyze_function_ir(
     // ops sit inside the range; variables they reference are extended.
     // At loop_break, drain_cleanup_tracked sees last_use > op_idx and
     // keeps variables alive; they propagate to after_block for later cleanup.
+    let transport_last_use = last_use.clone();
     let mut loop_body_out_vars: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     {
         let mut loop_stack_post: Vec<usize> = Vec::new(); // stack of loop start indices
@@ -608,9 +614,12 @@ fn preanalyze_function_ir(
             }
         } // end !_skip
 
-        // Collect output variable names assigned inside each loop body.
-        // These variables are reassigned on every iteration; the old value
-        // must be dec_ref'd at the back-edge to avoid permanent leaks.
+        // Collect loop-carried slot assignments inside each loop body.
+        // Only named storage slots (`store_var`) need CPython-style
+        // "old slot occupant" handling across iterations. SSA temporaries are
+        // recomputed within an iteration and must not be forced into
+        // loop-carried state, or check_exception fallthrough can select stale
+        // previous-iteration values for transient heap objects.
         for &(start, end) in &loop_ranges {
             let mut assigned: Vec<String> = Vec::new();
             let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -637,44 +646,15 @@ fn preanalyze_function_ir(
             };
             for idx in (start + 1)..end {
                 let op = &func_ir.ops[idx];
-                // Skip loop infrastructure ops — their outputs are managed
-                // by the loop machinery (counter increments, break conditions).
-                if matches!(
-                    op.kind.as_str(),
-                    "loop_index_start"
-                        | "loop_index_next"
-                        | "loop_break_if_true"
-                        | "loop_break_if_false"
-                        | "loop_break"
-                        | "loop_continue"
-                        | "loop_start"
-                        | "loop_end"
-                        | "const"
-                        | "const_str"
-                        | "const_bytes"
-                        | "const_bigint"
-                        | "const_float"
-                        | "const_none"
-                        | "const_bool"
-                        | "load_var"
-                        | "copy_var"
-                        // store_index/load_index/index return or alias
-                        // existing containers, not new heap allocations.
-                        // Per-iteration dec_ref of the container itself
-                        // corrupts the cell list (the container's refcount
-                        // drops to 0 and the cell is freed).
-                        | "store_index"
-                        | "load_index"
-                        | "index"
-                ) {
+                if op.kind != "store_var" {
                     continue;
                 }
-                if let Some(out) = &op.out
-                    && out != "none"
-                    && counter_name != Some(out.as_str())
-                    && seen.insert(out.clone())
+                if let Some(name) = &op.var
+                    && name != "none"
+                    && counter_name != Some(name.as_str())
+                    && seen.insert(name.clone())
                 {
-                    assigned.push(out.clone());
+                    assigned.push(name.clone());
                 }
             }
             if !assigned.is_empty() {
@@ -792,6 +772,7 @@ fn preanalyze_function_ir(
         has_store,
         var_names,
         last_use,
+        transport_last_use,
         alias_roots,
         if_to_end_if,
         if_to_else,
@@ -1021,6 +1002,7 @@ impl SimpleBackend {
             has_store,
             var_names,
             last_use,
+            transport_last_use,
             alias_roots,
             if_to_end_if,
             if_to_else,
@@ -1118,6 +1100,17 @@ impl SimpleBackend {
             .iter()
             .filter_map(|name| vars.get(name).copied().map(|var| (name.clone(), var)))
             .collect();
+        let live_rebind_vars_for_op = |op_idx: usize| -> BTreeMap<String, Variable> {
+            vars.iter()
+                .filter_map(|(name, var)| {
+                    let last = transport_last_use
+                        .get(name)
+                        .copied()
+                        .unwrap_or(usize::MAX);
+                    (last > op_idx).then_some((name.clone(), *var))
+                })
+                .collect()
+        };
         let trace_ops = should_trace_ops(&func_ir.name);
         let trace_stride = trace_ops.as_ref().map(|cfg| cfg.stride);
         let debug_loop_cfg = std::env::var("MOLT_DEBUG_LOOP_CFG")
@@ -1156,6 +1149,7 @@ impl SimpleBackend {
         let mut tracked_obj_vars_set: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let mut entry_vars: BTreeMap<String, Value> = BTreeMap::new();
+        let mut callargs_source_names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut state_blocks = BTreeMap::new();
         let mut import_refs: BTreeMap<&'static str, FuncRef> = BTreeMap::new();
         let mut reachable_blocks: BTreeSet<Block> = BTreeSet::new();
@@ -1177,6 +1171,43 @@ impl SimpleBackend {
         // values are cloned to multiple blocks by if/check_exception/br_if.
         let mut already_decrefed: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
+
+        let mut scrub_tracked_roots =
+            |roots: &BTreeSet<String>,
+             tracked_vars: &mut Vec<String>,
+             tracked_obj_vars: &mut Vec<String>,
+             tracked_vars_set: &mut std::collections::HashSet<String>,
+             tracked_obj_vars_set: &mut std::collections::HashSet<String>,
+             entry_vars: &mut BTreeMap<String, Value>,
+             block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
+             block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>| {
+                if roots.is_empty() {
+                    return;
+                }
+                tracked_obj_vars.retain(|n: &String| {
+                    !roots.contains(alias_root_name(&alias_roots, n.as_str()))
+                });
+                tracked_vars.retain(|n: &String| {
+                    !roots.contains(alias_root_name(&alias_roots, n.as_str()))
+                });
+                tracked_obj_vars_set.retain(|n| {
+                    !roots.contains(alias_root_name(&alias_roots, n.as_str()))
+                });
+                tracked_vars_set.retain(|n| {
+                    !roots.contains(alias_root_name(&alias_roots, n.as_str()))
+                });
+                entry_vars.retain(|name, _| !roots.contains(alias_root_name(&alias_roots, name)));
+                for tracked_list in block_tracked_obj.values_mut() {
+                    tracked_list.retain(|name| {
+                        !roots.contains(alias_root_name(&alias_roots, name.as_str()))
+                    });
+                }
+                for tracked_list in block_tracked_ptr.values_mut() {
+                    tracked_list.retain(|name| {
+                        !roots.contains(alias_root_name(&alias_roots, name.as_str()))
+                    });
+                }
+            };
 
         // Raw int shadow: two-tier unboxed i64 tracking.
         //
@@ -5713,6 +5744,7 @@ impl SimpleBackend {
                     let Some(out_name) = op.out else {
                         continue;
                     };
+                    callargs_source_names.insert(out_name.to_string(), BTreeSet::new());
                     let zero = builder.ins().iconst(types::I64, 0);
                     let local_callee = import_func_ref(
                         &mut self.module,
@@ -5807,6 +5839,12 @@ impl SimpleBackend {
                 }
                 "callargs_push_pos" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    if let Some(builder_name) = args.first()
+                        && let Some(source_name) = args.get(1)
+                        && let Some(names) = callargs_source_names.get_mut(builder_name)
+                    {
+                        names.insert(source_name.clone());
+                    }
                     let builder_ptr =
                         var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
                     let val =
@@ -5824,6 +5862,13 @@ impl SimpleBackend {
                 }
                 "callargs_push_kw" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    if let Some(builder_name) = args.first()
+                        && let Some(names) = callargs_source_names.get_mut(builder_name)
+                    {
+                        for source_name in args.iter().skip(1) {
+                            names.insert(source_name.clone());
+                        }
+                    }
                     let builder_ptr =
                         var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
                     let name =
@@ -5844,6 +5889,12 @@ impl SimpleBackend {
                 }
                 "callargs_expand_star" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    if let Some(builder_name) = args.first()
+                        && let Some(source_name) = args.get(1)
+                        && let Some(names) = callargs_source_names.get_mut(builder_name)
+                    {
+                        names.insert(source_name.clone());
+                    }
                     let builder_ptr =
                         var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
                     let iterable = var_get(&mut builder, &vars, &args[1])
@@ -5860,6 +5911,12 @@ impl SimpleBackend {
                 }
                 "callargs_expand_kwstar" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    if let Some(builder_name) = args.first()
+                        && let Some(source_name) = args.get(1)
+                        && let Some(names) = callargs_source_names.get_mut(builder_name)
+                    {
+                        names.insert(source_name.clone());
+                    }
                     let builder_ptr =
                         var_get(&mut builder, &vars, &args[0]).expect("Callargs builder not found");
                     let mapping =
@@ -13482,6 +13539,53 @@ impl SimpleBackend {
                         var_get(&mut builder, &vars, &args_names[0]).expect("Func not found");
                     let builder_ptr =
                         var_get(&mut builder, &vars, &args_names[1]).expect("Callargs not found");
+                    let callargs_name = &args_names[1];
+                    let mut callargs_arg_cleanup = Vec::new();
+                    let mut callargs_arg_cleanup_names = BTreeSet::new();
+                    if let Some(source_names) = callargs_source_names.remove(callargs_name) {
+                        for source_name in source_names {
+                            if param_name_set.contains(source_name.as_str()) {
+                                continue;
+                            }
+                            let last = last_use.get(&source_name).copied().unwrap_or(usize::MAX);
+                            if last > op_idx {
+                                continue;
+                            }
+                            let val = entry_vars
+                                .get(&source_name)
+                                .copied()
+                                .or_else(|| var_get(&mut builder, &vars, &source_name).map(|v| *v));
+                            let Some(val) = val else {
+                                continue;
+                            };
+                            callargs_arg_cleanup.push(val);
+                            callargs_arg_cleanup_names.insert(source_name);
+                        }
+                    }
+                    let callargs_arg_cleanup_roots =
+                        cleanup_roots_for_names(&alias_roots, callargs_arg_cleanup_names.iter().cloned());
+                    if std::env::var("MOLT_DEBUG_CALLARGS_CLEANUP").as_deref() == Ok("1")
+                        && std::env::var("MOLT_DEBUG_FUNC_FILTER")
+                            .ok()
+                            .is_none_or(|f| func_ir.name.contains(&f))
+                        && std::env::var("MOLT_DEBUG_OP_INDEX")
+                            .ok()
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .is_none_or(|target| target == op_idx)
+                    {
+                        let _ = crate::debug_artifacts::append_debug_artifact(
+                            "native/callargs_cleanup_debug.txt",
+                            format!(
+                                "func={} op_idx={} kind={} builder={} source_names={:?} roots={:?}\n",
+                                func_ir.name,
+                                op_idx,
+                                op.kind,
+                                callargs_name,
+                                callargs_arg_cleanup_names,
+                                callargs_arg_cleanup_roots,
+                            ),
+                        );
+                    }
                     let mut sig = self.module.make_signature();
                     sig.params.push(AbiParam::new(types::I64));
                     sig.params.push(AbiParam::new(types::I64));
@@ -13539,17 +13643,38 @@ impl SimpleBackend {
                     // tracking to prevent double-free. The last_use assertion is
                     // omitted: the IR may reference the variable in unreachable
                     // branches (different if/else arms), inflating last_use.
-                    let callargs_name = &args_names[1];
-                    tracked_obj_vars.retain(|n| n != callargs_name);
-                    tracked_vars.retain(|n| n != callargs_name);
-                    tracked_obj_vars_set.remove(callargs_name);
-                    tracked_vars_set.remove(callargs_name);
-                    entry_vars.remove(callargs_name);
-                    for names in block_tracked_obj.values_mut() {
-                        names.retain(|n| n != callargs_name);
-                    }
-                    for names in block_tracked_ptr.values_mut() {
-                        names.retain(|n| n != callargs_name);
+                    let consumed_builder_roots =
+                        cleanup_roots_for_names(&alias_roots, [callargs_name.to_string()]);
+                    scrub_tracked_roots(
+                        &consumed_builder_roots,
+                        &mut tracked_vars,
+                        &mut tracked_obj_vars,
+                        &mut tracked_vars_set,
+                        &mut tracked_obj_vars_set,
+                        &mut entry_vars,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
+                    );
+                    if !callargs_arg_cleanup_roots.is_empty() {
+                        for val in &callargs_arg_cleanup {
+                            builder.ins().call(local_dec_ref_obj, &[*val]);
+                        }
+                        let cleared_val = builder.ins().iconst(types::I64, box_none());
+                        for name in &callargs_arg_cleanup_names {
+                            if let Some(var) = vars.get(name) {
+                                builder.def_var(*var, cleared_val);
+                            }
+                        }
+                        scrub_tracked_roots(
+                            &callargs_arg_cleanup_roots,
+                            &mut tracked_vars,
+                            &mut tracked_obj_vars,
+                            &mut tracked_vars_set,
+                            &mut tracked_obj_vars_set,
+                            &mut entry_vars,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
                     }
                 }
                 "call_method" => {
@@ -14887,6 +15012,26 @@ impl SimpleBackend {
                             None,
                             Some(&mut already_decrefed),
                         );
+                        if std::env::var("MOLT_DEBUG_TRACKED_CLEANUP").as_deref() == Ok("1")
+                            && std::env::var("MOLT_DEBUG_FUNC_FILTER")
+                                .ok()
+                                .is_none_or(|f| func_ir.name.contains(&f))
+                            && std::env::var("MOLT_DEBUG_OP_INDEX")
+                                .ok()
+                                .and_then(|s| s.parse::<usize>().ok())
+                                .is_none_or(|target| target == op_idx)
+                        {
+                            let _ = crate::debug_artifacts::append_debug_artifact(
+                                "native/tracked_cleanup_debug.txt",
+                                format!(
+                                    "func={} op_idx={} kind={} cleanup_obj={:?}\n",
+                                    func_ir.name,
+                                    op_idx,
+                                    op.kind,
+                                    cleanup,
+                                ),
+                            );
+                        }
                         for name in cleanup {
                             let val = entry_vars
                                 .get(&name)
@@ -14913,6 +15058,26 @@ impl SimpleBackend {
                             None,
                             Some(&mut already_decrefed),
                         );
+                        if std::env::var("MOLT_DEBUG_TRACKED_CLEANUP").as_deref() == Ok("1")
+                            && std::env::var("MOLT_DEBUG_FUNC_FILTER")
+                                .ok()
+                                .is_none_or(|f| func_ir.name.contains(&f))
+                            && std::env::var("MOLT_DEBUG_OP_INDEX")
+                                .ok()
+                                .and_then(|s| s.parse::<usize>().ok())
+                                .is_none_or(|target| target == op_idx)
+                        {
+                            let _ = crate::debug_artifacts::append_debug_artifact(
+                                "native/tracked_cleanup_debug.txt",
+                                format!(
+                                    "func={} op_idx={} kind={} cleanup_ptr={:?}\n",
+                                    func_ir.name,
+                                    op_idx,
+                                    op.kind,
+                                    cleanup,
+                                ),
+                            );
+                        }
                         for name in cleanup {
                             let val = entry_vars
                                 .get(&name)
@@ -14948,6 +15113,7 @@ impl SimpleBackend {
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
+                    let check_exception_live_rebind_vars = live_rebind_vars_for_op(op_idx);
                     let flag_ptr_val: Option<Value> =
                         exc_flag_ptr_slot.map(|slot| builder.ins().stack_load(types::I64, slot, 0));
                     if let Some(flag_ptr) = flag_ptr_val {
@@ -14971,7 +15137,7 @@ impl SimpleBackend {
                             validate_block,
                             &mut is_block_filled,
                             !exception_label_ids.is_empty(),
-                            &rebind_vars,
+                            &check_exception_live_rebind_vars,
                             &raw_int_shadow,
                             &int_store_target_names,
                         );
@@ -15005,7 +15171,7 @@ impl SimpleBackend {
                         fallthrough,
                         &mut is_block_filled,
                         !exception_label_ids.is_empty(),
-                        &rebind_vars,
+                        &check_exception_live_rebind_vars,
                         &raw_int_shadow,
                         &int_store_target_names,
                     );
@@ -19371,6 +19537,108 @@ mod tests {
 
         assert_eq!(analysis.last_use.get("tmp_loaded"), Some(&0));
         assert_eq!(analysis.last_use.get("tmp_missing"), Some(&2));
+    }
+
+    #[test]
+    fn preanalysis_keeps_transport_last_use_precise_when_loop_cleanup_last_use_is_extended() {
+        let func = FunctionIR {
+            name: "loop_temp_transport_split".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "loop_start".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".to_string(),
+                    out: Some("tmp".to_string()),
+                    s_value: Some("hi".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".to_string(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_continue".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_end".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+
+        assert_eq!(
+            analysis.transport_last_use.get("tmp"),
+            Some(&1),
+            "transport liveness should reflect the temp's actual textual lifetime",
+        );
+        assert_eq!(
+            analysis.last_use.get("tmp"),
+            Some(&5),
+            "cleanup liveness may remain conservatively extended through loop functions",
+        );
+    }
+
+    #[test]
+    fn preanalysis_only_marks_store_slots_as_loop_body_reassignments() {
+        let func = FunctionIR {
+            name: "loop_store_slot_only".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "loop_start".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".to_string(),
+                    out: Some("tmp".to_string()),
+                    s_value: Some("hi".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("slot".to_string()),
+                    args: Some(vec!["tmp".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_continue".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_end".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+
+        assert_eq!(
+            analysis.loop_body_out_vars.get(&0),
+            Some(&vec!["slot".to_string()]),
+            "loop-body slot tracking should ignore SSA temps and only keep slot-backed reassignments",
+        );
     }
 
     #[test]
