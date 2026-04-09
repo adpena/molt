@@ -4014,6 +4014,40 @@ const skipImportDesc = (bytes, offset, kind) => {
 const extractWasmTableBase = (buffer) => {
   if (!buffer) return null;
   try {
+    const readConstExprI32 = (bytes, offset) => {
+      if (offset >= bytes.length) {
+        throw new Error('Unexpected EOF while reading const expr');
+      }
+      let pos = offset;
+      const opcode = bytes[pos++];
+      let value = null;
+      if (opcode === 0x41) {
+        [value, pos] = readVarInt32(bytes, pos);
+      } else if (opcode === 0x23 || opcode === 0xd2) {
+        [, pos] = readVarUint(bytes, pos);
+      } else if (opcode === 0xd0) {
+        if (pos >= bytes.length) {
+          throw new Error('Unexpected EOF while reading ref.null expr');
+        }
+        pos += 1;
+      } else {
+        throw new Error(`Unsupported const expr opcode ${opcode}`);
+      }
+      if (pos >= bytes.length || bytes[pos] !== 0x0b) {
+        throw new Error('Malformed const expr');
+      }
+      return [value, pos + 1];
+    };
+
+    const skipVec = (bytes, offset, skipItem) => {
+      let count;
+      [count, offset] = readVarUint(bytes, offset);
+      for (let i = 0; i < count; i += 1) {
+        offset = skipItem(bytes, offset);
+      }
+      return offset;
+    };
+
     const bytes = new Uint8Array(buffer);
     if (bytes.length < 8) {
       return null;
@@ -4057,6 +4091,41 @@ const extractWasmTableBase = (buffer) => {
           if (kind === 0 && name === 'molt_table_init') {
             tableInitFuncIndex = index;
           }
+        }
+      } else if (sectionId === 9) {
+        let count;
+        [count, offset] = readVarUint(bytes, offset);
+        for (let i = 0; i < count; i += 1) {
+          let flags;
+          [flags, offset] = readVarUint(bytes, offset);
+          const usesExpressions = (flags & 0x04) !== 0;
+          const isActive = flags === 0 || flags === 2 || flags === 4 || flags === 6;
+          if (flags === 2 || flags === 6) {
+            [, offset] = readVarUint(bytes, offset);
+          }
+          if (isActive) {
+            let tableBase;
+            [tableBase, offset] = readConstExprI32(bytes, offset);
+            if (flags === 2 || flags === 3) {
+              offset += 1;
+            } else if (flags === 6 || flags === 7 || flags === 5) {
+              offset += 1;
+            }
+            if (Number.isFinite(tableBase) && tableBase > 0) {
+              return tableBase;
+            }
+          } else if (flags === 1 || flags === 3 || flags === 5 || flags === 7) {
+            offset += 1;
+          } else {
+            throw new Error(`Unsupported element segment flags ${flags}`);
+          }
+          offset = skipVec(
+            bytes,
+            offset,
+            usesExpressions
+              ? (view, pos) => readConstExprI32(view, pos)[1]
+              : (view, pos) => readVarUint(view, pos)[1]
+          );
         }
       } else if (sectionId === 10) {
         let count;
@@ -4335,16 +4404,53 @@ const buildRuntimeImportWrappers = () => {
 
 const buildRuntimeImportDirect = (runtimeInst) => {
   const runtimeImports = {};
+  const callBindIc = runtimeInst.exports.molt_call_bind_ic;
+  const callargsNew = runtimeInst.exports.molt_callargs_new;
+  const callargsPushPos = runtimeInst.exports.molt_callargs_push_pos;
+  const dictSet = runtimeInst.exports.molt_dict_set;
+  const dictGetitemBorrowed = runtimeInst.exports.molt_dict_getitem_borrowed;
+  const tupleGetitemBorrowed = runtimeInst.exports.molt_tuple_getitem_borrowed;
+  const makeCallBindFallback = (arity) => {
+    if (typeof callBindIc !== 'function' || typeof callargsNew !== 'function' || typeof callargsPushPos !== 'function') {
+      return null;
+    }
+    return (methodBits, ...argBits) => {
+      const builderBits = callargsNew(boxInt(arity), boxInt(0));
+      for (const argBitsValue of argBits) {
+        callargsPushPos(builderBits, argBitsValue);
+      }
+      return callBindIc(boxInt(0), methodBits, builderBits);
+    };
+  };
   for (const entry of outputImports.funcImports) {
     if (entry.module !== 'molt_runtime') {
       continue;
     }
     const exportName = entry.name.startsWith('molt_') ? entry.name : `molt_${entry.name}`;
-    const fn = runtimeInst.exports[exportName];
+    let fn = runtimeInst.exports[exportName];
+    if (typeof fn !== 'function') {
+      if (entry.name === 'resource_on_allocate') {
+        fn = () => 0;
+      } else if (entry.name === 'resource_on_free') {
+        fn = () => {};
+      } else if (entry.name === 'fast_list_append') {
+        fn = makeCallBindFallback(1);
+      } else if (entry.name === 'fast_str_join') {
+        fn = makeCallBindFallback(1);
+      } else if (entry.name === 'fast_dict_get') {
+        fn = makeCallBindFallback(2);
+      } else if (entry.name === 'dict_setitem') {
+        fn = typeof dictSet === 'function' ? dictSet : null;
+      } else if (entry.name === 'dict_getitem') {
+        fn = typeof dictGetitemBorrowed === 'function' ? dictGetitemBorrowed : null;
+      } else if (entry.name === 'tuple_getitem') {
+        fn = typeof tupleGetitemBorrowed === 'function' ? tupleGetitemBorrowed : null;
+      }
+    }
     if (typeof fn !== 'function') {
       throw new Error(`molt_runtime.${entry.name} missing export ${exportName}`);
     }
-    runtimeImports[entry.name] = fn;
+    runtimeImports[entry.name] = (...args) => fn(...args);
   }
   return runtimeImports;
 };
@@ -4549,7 +4655,16 @@ const runDirectLink = async () => {
     molt_table_init();
   }
   for (const name of runtimeCallIndirectNames) {
-    const fn = outputInstance.exports[name];
+    let fn = outputInstance.exports[name];
+    if (typeof fn !== 'function') {
+      const mangledMatch = name.match(/^molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E$)/);
+      const plainMatch = name.match(/^molt_call_indirect(\d+)$/);
+      const arityRaw = (mangledMatch && mangledMatch[1]) || (plainMatch && plainMatch[1]);
+      if (arityRaw) {
+        const arity = Number.parseInt(arityRaw, 10);
+        fn = outputInstance.exports[`molt_call_indirect${arity}`];
+      }
+    }
     if (typeof fn !== 'function') {
       throw new Error(`${wasmPath} missing ${name} export`);
     }
