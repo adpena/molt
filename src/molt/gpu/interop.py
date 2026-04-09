@@ -128,10 +128,8 @@ def _load_safetensor_entry(data: bytes, data_start: int, meta: dict):
         count = len(raw) // 8
         return Tensor(Buffer(raw, float, count), shape=shape)
     if dtype_str == "F32":
-        values_f32 = array.array("f")
-        values_f32.frombytes(raw)
-        values_f64 = array.array("d", values_f32)
-        return Tensor(Buffer(values_f64.tobytes(), float, len(values_f64)), shape=shape)
+        count = len(raw) // 4
+        return Tensor(Buffer(raw, float, count, format_char="f"), shape=shape)
     values = _decode_safetensor_values(raw, dtype_str)
     return Tensor(values, shape=shape)
 
