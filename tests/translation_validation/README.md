@@ -55,20 +55,20 @@ uv run --python 3.12 python3 tools/translation_validate.py --json examples/hello
 uv run --python 3.12 python3 tools/translation_validate.py --no-cpython examples/hello.py
 ```
 
-### `tools/ir_dump.py`
+### `molt debug ir`
 
 IR snapshot utility. Dumps TIR at pre-midend and post-midend stages for
 manual inspection and automated diffing.
 
 ```bash
 # Dump all stages (text)
-uv run --python 3.12 python3 tools/ir_dump.py examples/hello.py
+uv run --python 3.12 python3 -m molt.cli debug ir examples/hello.py
 
 # Pre-midend only
-uv run --python 3.12 python3 tools/ir_dump.py --stage=pre-midend examples/hello.py
+uv run --python 3.12 python3 -m molt.cli debug ir --stage=pre-midend examples/hello.py
 
-# JSON output to directory
-uv run --python 3.12 python3 tools/ir_dump.py --stage=all --json --out-dir /tmp/ir_dumps examples/hello.py
+# JSON output with retained artifact
+uv run --python 3.12 python3 -m molt.cli debug ir --stage=all --format json --out logs/debug/ir/hello.json examples/hello.py
 ```
 
 ## Midend Pass Pipeline
