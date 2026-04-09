@@ -16,8 +16,10 @@ Usage from inside the mid-end (without modifying ``__init__.py``)::
         tv_emit_after(function_name, pass_name, ops)
 
 The dump directory defaults to ``$MOLT_TV_DIR`` if set, otherwise a
-fresh ``tempfile.mkdtemp`` under ``$TMPDIR`` (or ``/tmp``).  The path
-is printed to stderr on first use so external tooling can discover it.
+fresh ``tempfile.mkdtemp`` under the canonical temp root
+(``$MOLT_DIFF_TMPDIR``, ``$TMPDIR``, ``$MOLT_EXT_ROOT/tmp``, or the
+repo-local ``tmp/`` directory).  The path is printed to stderr on
+first use so external tooling can discover it.
 
 File naming convention::
 
@@ -51,6 +53,7 @@ import re
 import sys
 import tempfile
 from pathlib import Path
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -62,6 +65,19 @@ if TYPE_CHECKING:
 
 _tv_enabled: bool | None = None
 _dump_dir: Path | None = None
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _temp_root(env: Mapping[str, str] | None = None) -> Path:
+    """Return the canonical temp root for TV snapshots."""
+    env_view = os.environ if env is None else env
+    explicit = env_view.get("MOLT_DIFF_TMPDIR") or env_view.get("TMPDIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    ext_root = env_view.get("MOLT_EXT_ROOT")
+    if ext_root:
+        return Path(ext_root).expanduser() / "tmp"
+    return _REPO_ROOT / "tmp"
 
 
 def tv_active() -> bool:
@@ -78,13 +94,15 @@ def tv_dump_dir() -> Path:
     if _dump_dir is None:
         explicit = os.environ.get("MOLT_TV_DIR")
         if explicit:
-            _dump_dir = Path(explicit)
+            _dump_dir = Path(explicit).expanduser()
             _dump_dir.mkdir(parents=True, exist_ok=True)
         else:
+            temp_root = _temp_root()
+            temp_root.mkdir(parents=True, exist_ok=True)
             _dump_dir = Path(
                 tempfile.mkdtemp(
                     prefix="molt_tv_",
-                    dir=os.environ.get("TMPDIR", "/tmp"),
+                    dir=str(temp_root),
                 )
             )
         print(

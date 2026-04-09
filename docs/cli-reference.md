@@ -247,10 +247,10 @@ molt vendor --extras dev
 Remove build artifacts and caches.
 
 ```bash
-molt clean                               # Remove caches and build artifacts
-molt clean --all                         # Remove everything (caches, bins, cargo)
+molt clean                               # Remove caches, tmp, and build artifacts
+molt clean --all                         # Remove everything (caches, bins, cargo, legacy target-* dirs)
 molt clean --bins                        # Also remove compiled binaries
-molt clean --cargo-target                # Also remove Cargo target/ dir
+molt clean --cargo-target                # Also remove the repo-local Cargo target/ dir
 ```
 
 #### `molt doctor`

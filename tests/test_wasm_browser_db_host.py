@@ -166,3 +166,41 @@ host.run();
         assert lines == ["ok", "arrow_ipc", str(len(ARROW_BYTES)), "cancelled"]
     finally:
         server.shutdown()
+
+
+def test_browser_host_default_urls_prefer_canonical_dist_and_explicit_sibling(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for wasm browser host path resolution test")
+
+    root = Path(__file__).resolve().parents[1]
+    browser_host_uri = (root / "wasm" / "browser_host.js").as_uri()
+    script = tmp_path / "resolve_browser_urls.mjs"
+    script.write_text(
+        f"""
+import {{ resolveMoltWasmUrls }} from '{browser_host_uri}';
+
+const canonical = resolveMoltWasmUrls({{}}, {repr((root / 'wasm' / 'browser_host.js').as_uri())});
+const explicit = resolveMoltWasmUrls({{
+  wasmUrl: 'https://example.com/build/output.wasm',
+}}, {repr((root / 'wasm' / 'browser_host.js').as_uri())});
+
+console.log(JSON.stringify({{ canonical, explicit }}));
+""".lstrip()
+    )
+
+    run = subprocess.run(
+        ["node", str(script)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 0, run.stderr
+    payload = json.loads(run.stdout)
+    canonical = payload["canonical"]
+    explicit = payload["explicit"]
+    assert canonical["wasmUrl"].endswith("/dist/output.wasm")
+    assert canonical["linkedUrl"].endswith("/dist/output_linked.wasm")
+    assert explicit["wasmUrl"] == "https://example.com/build/output.wasm"
+    assert explicit["linkedUrl"] == "https://example.com/build/output_linked.wasm"

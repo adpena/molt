@@ -398,35 +398,54 @@ fn db_cancel_untrack(state: &mut HostState, req_id: u64) {
 }
 
 fn resolve_wasm_path(arg: Option<String>) -> Result<PathBuf> {
-    let env_path = env::var("MOLT_WASM_PATH").ok();
-    let local = PathBuf::from("output.wasm");
-    let temp = env::temp_dir().join("output.wasm");
-    let candidates = [arg, env_path]
-        .into_iter()
-        .flatten()
-        .map(PathBuf::from)
-        .collect::<Vec<_>>();
+    let env_path = env::var("MOLT_WASM_PATH").ok().map(PathBuf::from);
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let candidates = wasm_path_candidates(arg.map(PathBuf::from), env_path, &cwd);
 
     for candidate in candidates {
         if candidate.exists() {
             return Ok(candidate);
         }
     }
-    if local.exists() {
-        return Ok(local);
-    }
-    if temp.exists() {
-        return Ok(temp);
-    }
-    bail!("WASM path not found (arg, MOLT_WASM_PATH, ./output.wasm, or temp output.wasm)");
+    bail!("WASM path not found (arg, MOLT_WASM_PATH, or ./dist/output.wasm)");
 }
 
 fn resolve_linked_path(wasm_path: &Path) -> Option<PathBuf> {
-    if let Ok(path) = env::var("MOLT_WASM_LINKED_PATH") {
-        let path = PathBuf::from(path);
-        if path.exists() {
-            return Some(path);
+    let env_path = env::var("MOLT_WASM_LINKED_PATH").ok().map(PathBuf::from);
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    for candidate in linked_path_candidates(wasm_path, env_path, &cwd) {
+        if candidate.exists() {
+            return Some(candidate);
         }
+    }
+    None
+}
+
+fn wasm_path_candidates(arg: Option<PathBuf>, env_path: Option<PathBuf>, cwd: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = arg {
+        candidates.push(path);
+    }
+    if let Some(path) = env_path {
+        if !candidates.iter().any(|candidate| candidate == &path) {
+            candidates.push(path);
+        }
+    }
+    let canonical = cwd.join("dist").join("output.wasm");
+    if !candidates.iter().any(|candidate| candidate == &canonical) {
+        candidates.push(canonical);
+    }
+    candidates
+}
+
+fn linked_path_candidates(
+    wasm_path: &Path,
+    env_path: Option<PathBuf>,
+    cwd: &Path,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = env_path {
+        candidates.push(path);
     }
     if let Some(stem) = wasm_path.file_stem().and_then(|s| s.to_str()) {
         let ext = wasm_path
@@ -434,15 +453,15 @@ fn resolve_linked_path(wasm_path: &Path) -> Option<PathBuf> {
             .and_then(|s| s.to_str())
             .unwrap_or("wasm");
         let sibling = wasm_path.with_file_name(format!("{stem}_linked.{ext}"));
-        if sibling.exists() {
-            return Some(sibling);
+        if !candidates.iter().any(|candidate| candidate == &sibling) {
+            candidates.push(sibling);
         }
     }
-    let default_linked = PathBuf::from("output_linked.wasm");
-    if default_linked.exists() {
-        return Some(default_linked);
+    let canonical = cwd.join("dist").join("output_linked.wasm");
+    if !candidates.iter().any(|candidate| candidate == &canonical) {
+        candidates.push(canonical);
     }
-    None
+    candidates
 }
 
 fn prefer_linked() -> bool {

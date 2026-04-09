@@ -40,6 +40,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -52,13 +53,32 @@ _DEFAULT_TIMEOUT = int(os.environ.get("MOLT_TV_TIMEOUT", "60"))
 _DEFAULT_BUILD_PROFILE = os.environ.get("MOLT_TV_BUILD_PROFILE", "dev")
 _DEFAULT_JOBS = int(os.environ.get("MOLT_TV_JOBS", "4"))
 
-# Temp file root: prefer external volume, fall back to /tmp.
-_TMP_ROOT = Path(
-    os.environ.get(
-        "MOLT_DIFF_TMPDIR",
-        os.environ.get("TMPDIR", "/tmp"),
-    )
-)
+
+def _artifact_root(env: Mapping[str, str] | None = None) -> Path:
+    """Return the canonical artifact root for translation validation."""
+    env_view = os.environ if env is None else env
+    explicit = env_view.get("MOLT_EXT_ROOT")
+    if explicit:
+        return Path(explicit).expanduser()
+    return _REPO_ROOT
+
+
+def _temp_root(env: Mapping[str, str] | None = None) -> Path:
+    """Return the canonical temp root for translation validation."""
+    env_view = os.environ if env is None else env
+    explicit = env_view.get("MOLT_DIFF_TMPDIR") or env_view.get("TMPDIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    return _artifact_root(env_view) / "tmp"
+
+
+def _cargo_target_root(env: Mapping[str, str] | None = None) -> Path:
+    """Return the canonical Cargo target root for translation validation."""
+    env_view = os.environ if env is None else env
+    explicit = env_view.get("CARGO_TARGET_DIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    return _artifact_root(env_view) / "target"
 
 
 def _resolve_python() -> str:
@@ -226,7 +246,9 @@ def _run_molt(
     """Build and run a Python file through Molt."""
     mode = "molt_no_midend" if disable_midend else "molt_full"
     t0 = time.perf_counter()
-    tmp_dir = tempfile.mkdtemp(prefix="molt_tv_", dir=str(_TMP_ROOT))
+    temp_root = _temp_root()
+    temp_root.mkdir(parents=True, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(prefix="molt_tv_", dir=str(temp_root))
     try:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(_SRC_DIR)
@@ -235,11 +257,10 @@ def _run_molt(
             env["MOLT_MIDEND_DISABLE"] = "1"
         else:
             env.pop("MOLT_MIDEND_DISABLE", None)
-        # Route build artifacts to tmp
+        # Route build artifacts and per-run temps to the canonical temp root.
         env.setdefault("MOLT_CACHE", os.path.join(tmp_dir, "cache"))
-        env.setdefault("TMPDIR", tmp_dir)
-        artifact_root = os.environ.get("MOLT_EXT_ROOT", str(_ROOT))
-        env.setdefault("CARGO_TARGET_DIR", os.path.join(artifact_root, "target"))
+        env.setdefault("TMPDIR", str(tmp_dir))
+        env.setdefault("CARGO_TARGET_DIR", str(_cargo_target_root(env)))
 
         stem = Path(source_path).stem
         output_binary = os.path.join(tmp_dir, f"{stem}_molt")

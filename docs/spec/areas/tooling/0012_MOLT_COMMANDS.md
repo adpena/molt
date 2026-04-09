@@ -252,7 +252,7 @@ Key flags:
 ### 4.5 `molt clean`
 **Status:** Implemented (initial).
 
-Purpose: Remove Molt caches (`$MOLT_CACHE`), Molt build artifacts (`$MOLT_HOME/build`), Molt binaries (`$MOLT_BIN`), repo-local artifacts (vendor/logs/output*.wasm/cache dirs), and optional Cargo build artifacts.
+Purpose: Remove Molt caches (`$MOLT_CACHE`), repo-local temp/cache variants (`tmp/`, `.uv-cache/`, `.molt_cache/`), Molt build artifacts (`$MOLT_HOME/build`), Molt binaries (`$MOLT_BIN`), repo-local artifacts (vendor/logs/output*.wasm/cache dirs), and optional Cargo build artifacts.
 
 Key flags:
 - `--cache/--no-cache`
@@ -261,7 +261,7 @@ Key flags:
 - `--repo-artifacts/--no-repo-artifacts` (skips virtualenvs by default)
 - `--include-venvs` (include virtualenv caches when cleaning repo artifacts)
 - `--cargo-target/--no-cargo-target` (remove Cargo `target/` artifacts in the repo root)
-- `--all` (enable all cleanup targets, including `target/`)
+- `--all` (enable all cleanup targets, including `target/` and legacy `target-*` dirs if present)
 
 ### 4.6 `molt config`
 **Status:** Implemented (initial).
