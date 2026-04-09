@@ -110,6 +110,8 @@ def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:
             "molt.cli",
             "build",
             str(src),
+            "--build-profile",
+            "dev",
             "--target",
             "wasm",
             "--out-dir",

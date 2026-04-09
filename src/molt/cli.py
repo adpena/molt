@@ -3413,17 +3413,7 @@ def _prepare_build_config(
     backend_profile, profile_err = _resolve_backend_profile(profile)
     if profile_err:
         return None, _fail(profile_err, json_output, command="build")
-    # Always link the release-built runtime for performance.  The backend
-    # can be dev (fast Cranelift compilation) but the runtime must be
-    # optimized — otherwise every runtime call (dict ops, function dispatch,
-    # refcounting) is 10-100x slower due to missing inlining and bounds
-    # check elimination.
-    runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name("release")
-    if runtime_profile_err:
-        # Fallback: use whatever profile was requested
-        runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(
-            profile
-        )
+    runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(profile)
     if runtime_profile_err:
         return None, _fail(runtime_profile_err, json_output, command="build")
     backend_cargo_profile, backend_profile_err = _resolve_backend_cargo_profile_name(
