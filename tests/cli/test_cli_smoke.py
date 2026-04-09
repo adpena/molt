@@ -23,9 +23,12 @@ ROOT = Path(__file__).resolve().parents[2]
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
-    # Disable backend daemon in tests to avoid stale daemon state from
-    # previous runs interfering with test assertions.
-    env.setdefault("MOLT_BACKEND_DAEMON", "0")
+    # Route nested CLI calls through one deterministic smoke-test session so
+    # they do not inherit a developer session's daemon/target state while still
+    # reusing the same isolated build artifacts across smoke cases.
+    env["MOLT_SESSION_ID"] = "tests-cli-smoke"
+    env.pop("CARGO_TARGET_DIR", None)
+    env.pop("MOLT_DIFF_CARGO_TARGET_DIR", None)
     return env
 
 

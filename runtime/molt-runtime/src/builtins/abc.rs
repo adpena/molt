@@ -732,7 +732,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
 
         let builtins = builtin_classes(_py);
         let type_dict_bits = if let Some(type_ptr) = maybe_ptr_from_bits(builtins.type_obj) {
-            class_dict_bits(type_ptr)
+            unsafe { class_dict_bits(type_ptr) }
         } else {
             MoltObject::none().bits()
         };
