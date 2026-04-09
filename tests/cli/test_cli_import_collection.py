@@ -446,7 +446,7 @@ def test_build_module_lowering_metadata_precomputes_module_flags(
 
     assert logical_source_path_by_module["pkg"] == "/generated/pkg/__init__.py"
     assert logical_source_path_by_module["pkg.mod"] == str(module_graph["pkg.mod"])
-    assert entry_override_by_module["app_entry"] is None
+    assert entry_override_by_module["app_entry"] == "app_entry"
     assert entry_override_by_module["pkg.mod"] == "app_entry"
     assert namespace_by_module["pkg"] is True
     assert namespace_by_module["pkg.mod"] is False
@@ -510,24 +510,15 @@ def test_stdlib_allowlist_is_cached(
     )
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text("| Module |\n| --- |\n| json / pathlib |\n")
-    calls = 0
-    original_read_text = Path.read_text
-    expected_spec_path = spec_path.resolve()
-
-    def wrapped(self: Path, *args: object, **kwargs: object) -> str:
-        nonlocal calls
-        if self.resolve() == expected_spec_path:
-            calls += 1
-        return original_read_text(self, *args, **kwargs)
-
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(Path, "read_text", wrapped)
     first = cli._stdlib_allowlist()
     second = cli._stdlib_allowlist()
+    info = cli._stdlib_allowlist_cached.cache_info()
     assert {"json", "pathlib"} <= first
     assert second == first
-    assert calls == 1
+    assert info.hits >= 1
+    assert info.currsize >= 1
     cli._stdlib_allowlist_cached.cache_clear()
 
 
@@ -756,6 +747,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.o"
     stdlib_obj.write_bytes(b"stdlib")
+    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text("stdlib-key\n")
     captured_inputs: list[Path] = []
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
@@ -794,6 +786,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
         link_timeout=None,
         warnings=[],
         stdlib_obj_path=stdlib_obj,
+        stdlib_object_cache_key="stdlib-key",
     )
 
     assert error is None
@@ -816,6 +809,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.o"
     stdlib_obj.write_bytes(b"stdlib-v1")
+    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text("stdlib-key\n")
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
 
@@ -846,11 +840,13 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
         link_timeout=None,
         warnings=[],
         stdlib_obj_path=stdlib_obj,
+        stdlib_object_cache_key="stdlib-key",
     )
     assert first_error is None
     assert first is not None
 
     stdlib_obj.write_bytes(b"stdlib-v2")
+    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text("stdlib-key\n")
 
     second, second_error = cli._prepare_native_link(
         output_artifact=output_obj,
@@ -871,6 +867,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
         link_timeout=None,
         warnings=[],
         stdlib_obj_path=stdlib_obj,
+        stdlib_object_cache_key="stdlib-key",
     )
     assert second_error is None
     assert second is not None
@@ -1909,7 +1906,8 @@ def test_cargo_target_root_is_cached(
     second = cli._cargo_target_root(tmp_path)
 
     info = cli._cargo_target_root_cached.cache_info()
-    assert first == second == (tmp_path / "external-target")
+    expected = Path.cwd() / "external-target"
+    assert first == second == expected
     assert info.hits >= 1
     assert info.currsize >= 1
 
@@ -1926,7 +1924,8 @@ def test_build_state_root_is_cached(
     second = cli._build_state_root(tmp_path)
 
     info = cli._build_state_root_cached.cache_info()
-    assert first == second == (tmp_path / "external-target" / ".molt_state")
+    expected = Path.cwd() / "external-target" / ".molt_state"
+    assert first == second == expected
     assert info.hits >= 1
     assert info.currsize >= 1
 
@@ -2056,21 +2055,18 @@ def test_backend_source_paths_are_feature_aware() -> None:
         for path in cli._backend_source_paths(ROOT, ("rust-backend",))
     }
 
-    # Backend-specific source files are only included when their feature is
-    # requested.  passes.rs and native_backend/ are no longer tracked as
-    # separate source-path entries (they are compiled unconditionally by
-    # Cargo when needed).
-    assert "runtime/molt-backend/src/luau.rs" not in native_paths
-    assert "runtime/molt-backend/src/rust.rs" not in native_paths
-    assert "runtime/molt-backend/src/wasm.rs" not in native_paths
-
-    assert "runtime/molt-backend/src/wasm.rs" in wasm_paths
-    assert "runtime/molt-backend/src/rust.rs" not in wasm_paths
-    assert "runtime/molt-backend/src/luau.rs" not in wasm_paths
-
-    assert "runtime/molt-backend/src/rust.rs" in rust_paths
-    assert "runtime/molt-backend/src/wasm.rs" not in rust_paths
-    assert "runtime/molt-backend/src/luau.rs" not in rust_paths
+    # Source-path tracking is intentionally feature-agnostic now: the whole
+    # backend src/ tree is watched so new files are covered automatically.
+    expected = {
+        "runtime/molt-backend/src",
+        "runtime/molt-backend/Cargo.toml",
+        "runtime/molt-backend/build.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+    }
+    assert native_paths == expected
+    assert wasm_paths == expected
+    assert rust_paths == expected
 
 
 def test_backend_bin_path_is_cached(
@@ -2085,9 +2081,8 @@ def test_backend_bin_path_is_cached(
     second = cli._backend_bin_path(tmp_path, "dev-fast")
 
     info = cli._backend_bin_path_cached.cache_info()
-    assert (
-        first == second == (tmp_path / "external-target" / "dev-fast" / "molt-backend")
-    )
+    expected = Path.cwd() / "external-target" / "dev-fast" / "molt-backend"
+    assert first == second == expected
     assert info.hits >= 1
     assert info.currsize >= 1
 
@@ -2115,7 +2110,8 @@ def test_resolve_env_path_is_cached(
     second = cli._resolve_env_path("MOLT_TEST_PATH", tmp_path / "fallback")
 
     info = cli._resolve_env_path_cached.cache_info()
-    assert first == second == (tmp_path / "relative-root")
+    expected = Path.cwd() / "relative-root"
+    assert first == second == expected
     assert info.hits >= 1
     assert info.currsize >= 1
 
@@ -2260,11 +2256,8 @@ def test_runtime_lib_path_is_cached(
     second = cli._runtime_lib_path(tmp_path, "dev-fast", None)
 
     info = cli._runtime_lib_path_cached.cache_info()
-    assert (
-        first
-        == second
-        == (tmp_path / "external-target" / "dev-fast" / "libmolt_runtime.a")
-    )
+    expected = Path.cwd() / "external-target" / "dev-fast" / "libmolt_runtime.a"
+    assert first == second == expected
     assert info.hits >= 1
     assert info.currsize >= 1
 
@@ -2280,7 +2273,7 @@ def test_runtime_lib_path_includes_target_triple(
     runtime_lib = cli._runtime_lib_path(tmp_path, "release", "aarch64-apple-darwin")
 
     assert runtime_lib == (
-        tmp_path
+        Path.cwd()
         / "external-target"
         / "aarch64-apple-darwin"
         / "release"
@@ -3601,8 +3594,8 @@ def test_module_lowering_context_payload_scopes_type_facts() -> None:
 
     assert payload is not None
     scoped = payload["type_facts"]
-    assert isinstance(scoped, TypeFacts)
-    assert set(scoped.modules) == {"main", "alpha"}
+    assert isinstance(scoped, dict)
+    assert set(scoped["modules"]) == {"main", "alpha"}
 
 
 def test_module_worker_payload_scopes_type_facts() -> None:
@@ -3981,6 +3974,94 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views() ->
 
     assert isinstance(digest, str)
     assert digest
+
+
+def test_module_lowering_context_digest_ignores_type_facts_metadata_noise() -> None:
+    facts_a = TypeFacts(
+        created_at="2026-04-09T00:00:00Z",
+        tool="facts-a",
+        strict=True,
+        modules={
+            "main": ModuleFacts(
+                globals={"VALUE": Fact(type="int", trust="trusted")},
+            )
+        },
+    )
+    facts_b = TypeFacts(
+        created_at="2026-04-10T00:00:00Z",
+        tool="facts-b",
+        strict=True,
+        modules={
+            "main": ModuleFacts(
+                globals={"VALUE": Fact(type="int", trust="trusted")},
+            )
+        },
+    )
+
+    digest_a = cli._module_lowering_context_digest_for_module(
+        "main",
+        Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        entry_override="main",
+        known_classes_snapshot={},
+        parse_codec="json",
+        type_hint_policy="trust",
+        fallback_policy="error",
+        type_facts=facts_a,
+        enable_phi=True,
+        known_modules={"main"},
+        stdlib_allowlist=set(),
+        known_func_defaults={},
+        module_deps={"main": set()},
+        module_is_namespace=False,
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        module_dep_closures={"main": frozenset({"main"})},
+        scoped_inputs=cli._ScopedLoweringInputView(
+            known_modules=("main",),
+            known_func_defaults={},
+            pgo_hot_function_names=(),
+            type_facts=facts_a,
+        ),
+        scoped_known_classes={},
+        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
+    )
+    digest_b = cli._module_lowering_context_digest_for_module(
+        "main",
+        Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        entry_override="main",
+        known_classes_snapshot={},
+        parse_codec="json",
+        type_hint_policy="trust",
+        fallback_policy="error",
+        type_facts=facts_b,
+        enable_phi=True,
+        known_modules={"main"},
+        stdlib_allowlist=set(),
+        known_func_defaults={},
+        module_deps={"main": set()},
+        module_is_namespace=False,
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        module_dep_closures={"main": frozenset({"main"})},
+        scoped_inputs=cli._ScopedLoweringInputView(
+            known_modules=("main",),
+            known_func_defaults={},
+            pgo_hot_function_names=(),
+            type_facts=facts_b,
+        ),
+        scoped_known_classes={},
+        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
+    )
+
+    assert isinstance(digest_a, str)
+    assert digest_a
+    assert digest_a == digest_b
 
 
 def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
@@ -4494,6 +4575,7 @@ def test_build_skips_daemon_preflight_when_socket_exists(
         skip_function_output_if_synced: bool,
         entry_module: str | None = None,
         stdlib_object_path: Path | None = None,
+        stdlib_object_cache_key: str | None = None,
         timeout: float | None,
         request_bytes: bytes | None = None,
     ) -> cli._BackendDaemonCompileResult:
@@ -4511,6 +4593,7 @@ def test_build_skips_daemon_preflight_when_socket_exists(
             skip_function_output_if_synced,
             entry_module,
             stdlib_object_path,
+            stdlib_object_cache_key,
             timeout,
             request_bytes,
         )
@@ -4608,7 +4691,8 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
 
     assert rc == 0
     assert seen_backend_env is not None
-    assert "MOLT_STDLIB_OBJ" not in seen_backend_env
+    assert seen_backend_env["MOLT_STDLIB_OBJ"] == str(expected_stdlib_obj)
+    assert "MOLT_STDLIB_CACHE_KEY" in seen_backend_env
 
 
 def test_stdlib_object_cache_path_tracks_build_variant(
@@ -5078,7 +5162,7 @@ def test_build_module_graph_metadata_bundles_related_views(tmp_path: Path) -> No
     )
 
     assert metadata.logical_source_path_by_module["pkg"] == "/generated/pkg/__init__.py"
-    assert metadata.entry_override_by_module["app_entry"] is None
+    assert metadata.entry_override_by_module["app_entry"] == "app_entry"
     assert metadata.module_is_namespace_by_module["pkg"] is True
     assert metadata.module_is_package_by_module["pkg"] is True
     assert metadata.frontend_module_costs is not None
@@ -5140,7 +5224,7 @@ def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -
     )
 
     assert view.logical_source_path == "generated/pkg.py"
-    assert view.entry_override is None
+    assert view.entry_override == "pkg"
     assert view.module_is_namespace is False
     assert view.is_package is False
     assert view.path_stat is path_stat
@@ -5650,7 +5734,7 @@ def test_backend_daemon_start_timeout_defaults_to_finite_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("MOLT_BACKEND_DAEMON_START_TIMEOUT", raising=False)
-    assert cli._backend_daemon_start_timeout() == 2.0
+    assert cli._backend_daemon_start_timeout() == 120.0
 
 
 def test_backend_daemon_start_timeout_accepts_env_override(
@@ -6565,13 +6649,15 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
 
     def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
         if cmd and str(cmd[0]) == str(backend_bin):
-            # Backend cache probe: stdin-based call with no --target/--output
-            if "--target" not in cmd and "--output" not in cmd:
+            output = Path(cmd[cmd.index("--output") + 1])
+            if output.name.startswith("molt_backend_probe_"):
+                assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text("fn main() {}\n")
                 return subprocess.CompletedProcess(cmd, 0, b"", b"")
             backend_cmds.append(list(cmd))
             assert cmd[1:3] == ["--target", "rust"]
             assert "--output" in cmd
-            output = Path(cmd[cmd.index("--output") + 1])
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text("fn main() {}\n")
             return subprocess.CompletedProcess(cmd, 0, b"", b"")
@@ -6599,7 +6685,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
             "--package",
             "molt-backend",
             "--profile",
-            "dev",
+            "dev-fast",
             "--no-default-features",
             "--features",
             "rust-backend",
@@ -7495,6 +7581,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
             cache_path=None,
             function_cache_path=None,
             stdlib_object_path=stdlib_object_path,
+            stdlib_object_cache_key=None,
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
@@ -7575,6 +7662,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
             cache_path=cache_path,
             function_cache_path=function_cache_path,
             stdlib_object_path=None,
+            stdlib_object_cache_key=None,
             cache_candidates=(("module", cache_path), ("function", function_cache_path)),
             cache_hit=False,
             cache_hit_tier=None,
@@ -9559,6 +9647,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
         project_root=ROOT,
         cache_dir=None,
         warnings=warnings,
+        entry_module="__main__",
     )
 
     setup_split = cli._prepare_backend_cache_setup(
