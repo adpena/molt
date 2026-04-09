@@ -13991,9 +13991,6 @@ def _shared_stdlib_cache_payload(
             "compiler_fingerprint": compiler_fingerprint,
             "functions": stdlib_functions,
             "profile": ir.get("profile"),
-            "top_level_extras_digest": _ir_top_level_extras_digest(
-                cast(dict[str, Any], ir)
-            ),
         },
         sort_keys=True,
         separators=(",", ":"),
