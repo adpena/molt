@@ -1,9 +1,9 @@
 use crate::intrinsics::generated::{INTRINSICS, resolve_symbol};
 use crate::{
-    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING,
-    alloc_dict_with_pairs, alloc_string, builtin_classes, dec_ref_bits, dict_get_in_place,
-    dict_set_in_place, inc_ref_bits, module_dict_bits, obj_from_bits,
-    object_set_class_bits, object_type_id, raise_exception, string_bytes, string_len,
+    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING, alloc_dict_with_pairs,
+    alloc_string, builtin_classes, dec_ref_bits, dict_get_in_place, dict_set_in_place,
+    inc_ref_bits, module_dict_bits, obj_from_bits, object_set_class_bits, object_type_id,
+    raise_exception, string_bytes, string_len,
 };
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
@@ -269,9 +269,10 @@ fn find_spec(name: &str) -> Option<&'static crate::intrinsics::generated::Intrin
     // Try Python builtin aliases (e.g. `globals` -> `molt_globals_builtin`).
     for &(py_name, intrinsic_name) in PYTHON_BUILTIN_ALIASES {
         if name == py_name
-            && let Some(spec) = find_spec_by_name(intrinsic_name) {
-                return Some(spec);
-            }
+            && let Some(spec) = find_spec_by_name(intrinsic_name)
+        {
+            return Some(spec);
+        }
     }
     None
 }
@@ -349,11 +350,7 @@ fn alias_name(name: &str) -> Option<String> {
     Some(alias)
 }
 
-fn build_runtime_function(
-    _py: &PyToken<'_>,
-    fn_ptr: u64,
-    arity: u8,
-) -> Option<u64> {
+fn build_runtime_function(_py: &PyToken<'_>, fn_ptr: u64, arity: u8) -> Option<u64> {
     let _nursery_guard = crate::object::NurserySuspendGuard::new();
     let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity as u64);
     if ptr.is_null() {
@@ -478,6 +475,15 @@ pub(crate) fn try_resolve_intrinsic_func(
 pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     use crate::object::builders::alloc_module_obj;
     use crate::{alloc_string, dict_set_in_place, module_dict_bits};
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        // WASM builds ship the compiled stdlib `_intrinsics` module in the
+        // application artifact. Prefer that canonical Python module over the
+        // legacy synthetic cache entry so direct-link hosts do not depend on
+        // bootstrap-only wrapper function semantics.
+        return;
+    }
 
     // Create the _intrinsics module
     let name_ptr = alloc_string(_py, b"_intrinsics");

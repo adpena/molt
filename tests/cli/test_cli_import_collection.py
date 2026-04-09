@@ -5490,6 +5490,43 @@ def test_frontend_lower_module_worker_smoke(tmp_path: Path) -> None:
     assert worker["finished_ns"] >= worker["started_ns"]
 
 
+def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_path = tmp_path / "entry.py"
+    source_path.write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.delenv("MOLT_MODULE_CHUNK_OPS", raising=False)
+    monkeypatch.delenv("MOLT_WASM_MODULE_CHUNK_OPS", raising=False)
+
+    config, failure = cli._prepare_frontend_lowering_config(
+        type_facts_path=None,
+        type_hint_policy="ignore",
+        module_graph={"entry": source_path},
+        source_path=source_path,
+        json_output=False,
+        warnings=[],
+        module_deps={"entry": set()},
+        module_dep_closures={"entry": set()},
+        has_back_edges=False,
+        known_modules={"entry"},
+        known_func_defaults={},
+        pgo_hot_function_names=set(),
+        generated_module_source_paths={},
+        entry_module="entry",
+        namespace_module_names=set(),
+        module_sources={"entry": "print('ok')\n"},
+        is_wasm=False,
+        target_triple=None,
+        frontend_parallel_details={},
+        frontend_phase_timeout=None,
+    )
+
+    assert failure is None
+    assert config is not None
+    assert config.module_chunking is True
+    assert config.module_chunk_max_ops == 1400
+
+
 def test_duration_ms_from_ns_clamps_and_converts() -> None:
     assert cli._duration_ms_from_ns(1_000_000, 2_500_000) == 1.5
     assert cli._duration_ms_from_ns(5, 4) == 0.0
@@ -6499,6 +6536,161 @@ def test_ensure_native_runtime_lib_ready_before_link_passes_resolved_modules(
 
     assert ready is True
     assert captured == [frozenset({"json", "socket"})]
+
+
+def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_state = cli._RuntimeArtifactState(
+        runtime_wasm=tmp_path / "molt_runtime.wasm",
+        runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
+    )
+    prepared_backend_setup = cli._PreparedBackendSetup(
+        runtime_state=runtime_state,
+        cache_setup=cli._BackendCacheSetup(
+            cache_enabled=True,
+            cache_key=None,
+            function_cache_key=None,
+            cache_path=None,
+            function_cache_path=None,
+            stdlib_object_path=None,
+            stdlib_object_cache_key=None,
+            cache_candidates=(),
+            cache_hit=False,
+            cache_hit_tier=None,
+        ),
+        cache_hit=False,
+        cache_hit_tier=None,
+        cache_key=None,
+        function_cache_key=None,
+        cache_path=None,
+        function_cache_path=None,
+        stdlib_object_path=None,
+        cache_candidates=[],
+    )
+    captured: list[tuple[bool, frozenset[str]]] = []
+
+    monkeypatch.setattr(
+        cli,
+        "_ensure_runtime_wasm_artifact",
+        lambda runtime_state, *, reloc, **kwargs: captured.append(
+            (reloc, frozenset(cast(set[str], kwargs["resolved_modules"])))
+        )
+        or True,
+    )
+
+    runtime_context = cli._prepare_backend_runtime_context(
+        prepared_backend_setup=prepared_backend_setup,
+        is_wasm_freestanding=False,
+        json_output=True,
+        runtime_cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+        molt_root=tmp_path,
+        stdlib_profile="micro",
+        resolved_modules={"asyncio", "ssl"},
+    )
+
+    assert runtime_context.ensure_runtime_wasm_shared() is True
+    assert runtime_context.ensure_runtime_wasm_reloc() is True
+    assert captured == [
+        (False, frozenset({"asyncio", "ssl"})),
+        (True, frozenset({"asyncio", "ssl"})),
+    ]
+
+
+def test_ensure_runtime_wasm_verified_key_tracks_micro_builtin_feature_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    verification_calls: list[frozenset[str]] = []
+
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint",
+        lambda project_root, **kwargs: {
+            "runtime_features": tuple(cast(tuple[str, ...], kwargs["runtime_features"]))
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "_artifact_needs_rebuild",
+        lambda artifact, fingerprint, stored_fingerprint: verification_calls.append(
+            frozenset(cast(tuple[str, ...], fingerprint["runtime_features"]))
+        )
+        or False,
+    )
+    monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
+
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+        project_root=tmp_path,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules={"json"},
+    )
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+        project_root=tmp_path,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules={"ssl"},
+    )
+
+    assert len(verification_calls) == 2
+    assert verification_calls[0] != verification_calls[1]
+    assert "stdlib_net" in verification_calls[1]
+
+
+def test_prepare_non_native_build_result_stages_runtime_wasm_sidecar(
+    tmp_path: Path,
+) -> None:
+    output_wasm = tmp_path / "out" / "output.wasm"
+    output_wasm.parent.mkdir(parents=True, exist_ok=True)
+    output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+
+    prepared, err = cli._prepare_non_native_build_result(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        is_wasm_freestanding=False,
+        linked=False,
+        require_linked=False,
+        linked_output_path=None,
+        output_artifact=output_wasm,
+        json_output=True,
+        runtime_wasm=runtime_wasm,
+        runtime_reloc_wasm=None,
+        ensure_runtime_wasm_shared=lambda: True,
+        ensure_runtime_wasm_reloc=lambda: True,
+        molt_root=tmp_path,
+        split_runtime=False,
+        precompile=False,
+    )
+
+    assert err is None
+    assert prepared is not None
+    staged = output_wasm.parent / "molt_runtime.wasm"
+    assert staged.exists()
+    assert staged.read_bytes() == runtime_wasm.read_bytes()
+    assert prepared.artifacts is not None
+    assert prepared.artifacts["runtime_wasm"] == str(staged)
 
 
 def test_ensure_runtime_lib_verified_key_tracks_micro_feature_shape(

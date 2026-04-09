@@ -39,6 +39,58 @@ const IPPROTO_TCP = 6;
 const IPPROTO_UDP = 17;
 const TCP_NODELAY = 1;
 const MSG_PEEK = 2;
+const EROFS = 30;
+const EISDIR = 21;
+const ENOTDIR = 20;
+const ESPIPE = 29;
+const WASI_FILETYPE_CHARACTER_DEVICE = 2;
+const WASI_FILETYPE_DIRECTORY = 3;
+const WASI_FILETYPE_REGULAR_FILE = 4;
+const WASI_PREOPENTYPE_DIR = 0;
+const WASI_RIGHTS_ALL = 0xffffffffffffffffn;
+const WASI_OFLAGS_CREAT = 1;
+const WASI_OFLAGS_DIRECTORY = 2;
+const WASI_OFLAGS_EXCL = 4;
+const WASI_OFLAGS_TRUNC = 8;
+const WASI_WHENCE_SET = 0;
+const WASI_WHENCE_CUR = 1;
+const WASI_WHENCE_END = 2;
+
+let browserVfsModulePromise = null;
+const loadBrowserVfsModule = () => {
+  if (!browserVfsModulePromise) {
+    browserVfsModulePromise = import(new URL('./molt_vfs_browser.js', import.meta.url));
+  }
+  return browserVfsModulePromise;
+};
+
+const prepareBrowserVfs = async (options = {}) => {
+  const provided = options.vfs || null;
+  if (provided) {
+    if (options.stdin !== undefined && provided.dev && typeof provided.dev.setStdin === 'function') {
+      provided.dev.setStdin(options.stdin);
+    }
+    return provided;
+  }
+  const { MoltVfs } = await loadBrowserVfsModule();
+  const vfs = new MoltVfs();
+  if (options.bundleUrl) {
+    await vfs.loadBundle(options.bundleUrl);
+  } else if (options.bundleTar) {
+    vfs.loadBundleFromTar(options.bundleTar);
+  } else if (options.bundleFiles) {
+    vfs.loadBundleFromFiles(options.bundleFiles);
+  }
+  if (options.stdin !== undefined) {
+    vfs.dev.setStdin(options.stdin);
+  }
+  return vfs;
+};
+const traceBrowserWasi =
+  typeof process !== 'undefined' &&
+  process &&
+  process.env &&
+  process.env.MOLT_WASM_TRACE_WASI === '1';
 
 const readVarUint = (view, offset) => {
   let result = 0;
@@ -68,6 +120,28 @@ const readString = (view, offset) => {
   }
   const text = new TextDecoder('utf-8').decode(view.subarray(start, end));
   return { value: text, offset: end };
+};
+
+const readVarInt32 = (view, offset) => {
+  let result = 0;
+  let shift = 0;
+  let byte = 0;
+  let pos = offset;
+  while (true) {
+    if (pos >= view.length) {
+      throw new Error('Unexpected EOF while reading varint');
+    }
+    byte = view[pos++];
+    result |= (byte & 0x7f) << shift;
+    shift += 7;
+    if ((byte & 0x80) === 0) {
+      break;
+    }
+  }
+  if (shift < 32 && (byte & 0x40)) {
+    result |= -1 << shift;
+  }
+  return { value: result, offset: pos };
 };
 
 const readLimits = (view, offset) => {
@@ -162,6 +236,28 @@ const mergeLimits = (left, right, label) => {
   return { min, max };
 };
 
+const skipImportDesc = (view, offset, kind) => {
+  let pos = offset;
+  if (kind === 0) {
+    return readVarUint(view, pos).offset;
+  }
+  if (kind === 1) {
+    pos += 1;
+    return readLimits(view, pos).offset;
+  }
+  if (kind === 2) {
+    return readLimits(view, pos).offset;
+  }
+  if (kind === 3) {
+    return pos + 2;
+  }
+  if (kind === 4) {
+    pos += 1;
+    return readVarUint(view, pos).offset;
+  }
+  throw new Error(`Unknown import kind ${kind}`);
+};
+
 const makeMemory = (limits) => {
   if (!limits) return null;
   const descriptor = { initial: limits.min };
@@ -174,6 +270,207 @@ const makeTable = (limits) => {
   const descriptor = { element: 'anyfunc', initial: limits.min };
   if (limits.max !== null) descriptor.maximum = limits.max;
   return new WebAssembly.Table(descriptor);
+};
+
+const extractWasmTableBase = (buffer) => {
+  if (!buffer) return null;
+  try {
+    const readConstExprI32 = (view, offset) => {
+      if (offset >= view.length) {
+        throw new Error('Unexpected EOF while reading const expr');
+      }
+      let pos = offset;
+      const opcode = view[pos++];
+      let value = null;
+      if (opcode === 0x41) {
+        const res = readVarInt32(view, pos);
+        value = res.value;
+        pos = res.offset;
+      } else if (opcode === 0x23 || opcode === 0xd2) {
+        ({ offset: pos } = readVarUint(view, pos));
+      } else if (opcode === 0xd0) {
+        if (pos >= view.length) {
+          throw new Error('Unexpected EOF while reading ref.null expr');
+        }
+        pos += 1;
+      } else {
+        throw new Error(`Unsupported const expr opcode ${opcode}`);
+      }
+      if (pos >= view.length || view[pos] !== 0x0b) {
+        throw new Error('Malformed const expr');
+      }
+      return { value, offset: pos + 1 };
+    };
+
+    const skipVec = (view, offset, skipItem) => {
+      let count;
+      ({ value: count, offset } = readVarUint(view, offset));
+      for (let i = 0; i < count; i += 1) {
+        offset = skipItem(view, offset);
+      }
+      return offset;
+    };
+
+    const bytes = new Uint8Array(buffer);
+    if (bytes.length < 8) {
+      return null;
+    }
+    let offset = 8;
+    let importFuncCount = 0;
+    let tableInitFuncIndex = null;
+    let codeBodies = null;
+    while (offset < bytes.length) {
+      const sectionId = bytes[offset++];
+      const sizeRes = readVarUint(bytes, offset);
+      const sectionSize = sizeRes.value;
+      offset = sizeRes.offset;
+      const sectionEnd = offset + sectionSize;
+      if (sectionEnd > bytes.length) {
+        return null;
+      }
+      if (sectionId === 2) {
+        let count;
+        ({ value: count, offset } = readVarUint(bytes, offset));
+        for (let i = 0; i < count; i += 1) {
+          ({ offset } = readString(bytes, offset));
+          ({ offset } = readString(bytes, offset));
+          const kind = bytes[offset++];
+          if (kind === 0) {
+            importFuncCount += 1;
+          }
+          offset = skipImportDesc(bytes, offset, kind);
+        }
+      } else if (sectionId === 7) {
+        let count;
+        ({ value: count, offset } = readVarUint(bytes, offset));
+        for (let i = 0; i < count; i += 1) {
+          let name;
+          ({ value: name, offset } = readString(bytes, offset));
+          if (offset >= bytes.length) {
+            return null;
+          }
+          const kind = bytes[offset++];
+          let index;
+          ({ value: index, offset } = readVarUint(bytes, offset));
+          if (kind === 0 && name === 'molt_table_init') {
+            tableInitFuncIndex = index;
+          }
+        }
+      } else if (sectionId === 9) {
+        let count;
+        ({ value: count, offset } = readVarUint(bytes, offset));
+        for (let i = 0; i < count; i += 1) {
+          let flags;
+          ({ value: flags, offset } = readVarUint(bytes, offset));
+          const usesExpressions = (flags & 0x04) !== 0;
+          const isActive = flags === 0 || flags === 2 || flags === 4 || flags === 6;
+          if (flags === 2 || flags === 6) {
+            ({ offset } = readVarUint(bytes, offset));
+          }
+          if (isActive) {
+            const expr = readConstExprI32(bytes, offset);
+            offset = expr.offset;
+            if (flags === 2 || flags === 3) {
+              offset += 1;
+            } else if (flags === 6 || flags === 7 || flags === 5) {
+              offset += 1;
+            }
+            if (Number.isFinite(expr.value) && expr.value > 0) {
+              return expr.value;
+            }
+          } else if (flags === 1 || flags === 3 || flags === 5 || flags === 7) {
+            offset += 1;
+          } else {
+            throw new Error(`Unsupported element segment flags ${flags}`);
+          }
+          offset = skipVec(
+            bytes,
+            offset,
+            usesExpressions
+              ? (view, pos) => readConstExprI32(view, pos).offset
+              : (view, pos) => readVarUint(view, pos).offset
+          );
+        }
+      } else if (sectionId === 10) {
+        let count;
+        ({ value: count, offset } = readVarUint(bytes, offset));
+        const bodies = new Array(count);
+        for (let i = 0; i < count; i += 1) {
+          let bodySize;
+          ({ value: bodySize, offset } = readVarUint(bytes, offset));
+          const bodyStart = offset;
+          const bodyEnd = bodyStart + bodySize;
+          if (bodyEnd > bytes.length) {
+            return null;
+          }
+          bodies[i] = [bodyStart, bodyEnd];
+          offset = bodyEnd;
+        }
+        codeBodies = bodies;
+      } else {
+        offset = sectionEnd;
+      }
+      if (offset !== sectionEnd && sectionId !== 10) {
+        offset = sectionEnd;
+      }
+    }
+
+    if (tableInitFuncIndex === null || !codeBodies) {
+      return null;
+    }
+    const definedIndex = tableInitFuncIndex - importFuncCount;
+    if (definedIndex < 0 || definedIndex >= codeBodies.length) {
+      return null;
+    }
+    const [bodyStart, bodyEnd] = codeBodies[definedIndex];
+    let pos = bodyStart;
+    let localDeclCount;
+    ({ value: localDeclCount, offset: pos } = readVarUint(bytes, pos));
+    for (let i = 0; i < localDeclCount; i += 1) {
+      ({ offset: pos } = readVarUint(bytes, pos));
+      if (pos >= bodyEnd) {
+        return null;
+      }
+      pos += 1;
+    }
+    if (pos >= bodyEnd || bytes[pos] !== 0x41) {
+      return null;
+    }
+    pos += 1;
+    const tableBaseRes = readVarInt32(bytes, pos);
+    const tableBase = tableBaseRes.value;
+    if (!Number.isFinite(tableBase) || tableBase <= 0) {
+      return null;
+    }
+    return tableBase;
+  } catch {
+    return null;
+  }
+};
+
+const installTableRefs = (instance, table) => {
+  if (!instance || !table) {
+    return;
+  }
+  const refs = [];
+  for (const [name, value] of Object.entries(instance.exports)) {
+    const match = /^__molt_table_ref_(\d+)$/.exec(name);
+    if (!match || typeof value !== 'function') {
+      continue;
+    }
+    refs.push({ index: Number(match[1]), fn: value });
+  }
+  if (refs.length === 0) {
+    return;
+  }
+  refs.sort((a, b) => a.index - b.index);
+  const maxIndex = refs[refs.length - 1].index;
+  if (maxIndex >= table.length) {
+    table.grow(maxIndex + 1 - table.length);
+  }
+  for (const ref of refs) {
+    table.set(ref.index, ref.fn);
+  }
 };
 
 const UTF8_DECODER = new TextDecoder('utf-8');
@@ -770,14 +1067,51 @@ const buildEnv = (memory, table, callIndirect, logFn, overrides) => {
 
 const buildRuntimeImports = (outputImports, runtimeInstance) => {
   const imports = {};
+  const callBindIc = runtimeInstance.exports.molt_call_bind_ic;
+  const callargsNew = runtimeInstance.exports.molt_callargs_new;
+  const callargsPushPos = runtimeInstance.exports.molt_callargs_push_pos;
+  const dictSet = runtimeInstance.exports.molt_dict_set;
+  const dictGetitemBorrowed = runtimeInstance.exports.molt_dict_getitem_borrowed;
+  const tupleGetitemBorrowed = runtimeInstance.exports.molt_tuple_getitem_borrowed;
+  const makeCallBindFallback = (arity) => {
+    if (typeof callBindIc !== 'function' || typeof callargsNew !== 'function' || typeof callargsPushPos !== 'function') {
+      return null;
+    }
+    return (methodBits, ...argBits) => {
+      const builderBits = callargsNew(boxInt(arity), boxInt(0));
+      for (const argBitsValue of argBits) {
+        callargsPushPos(builderBits, argBitsValue);
+      }
+      return callBindIc(boxInt(0), methodBits, builderBits);
+    };
+  };
   for (const entry of outputImports.funcImports) {
     if (entry.module !== 'molt_runtime') continue;
-    const exportName = `molt_${entry.name}`;
-    const fn = runtimeInstance.exports[exportName];
+    const exportName = entry.name.startsWith('molt_') ? entry.name : `molt_${entry.name}`;
+    let fn = runtimeInstance.exports[exportName];
+    if (typeof fn !== 'function') {
+      if (entry.name === 'resource_on_allocate') {
+        fn = () => 0;
+      } else if (entry.name === 'resource_on_free') {
+        fn = () => {};
+      } else if (entry.name === 'fast_list_append') {
+        fn = makeCallBindFallback(1);
+      } else if (entry.name === 'fast_str_join') {
+        fn = makeCallBindFallback(1);
+      } else if (entry.name === 'fast_dict_get') {
+        fn = makeCallBindFallback(2);
+      } else if (entry.name === 'dict_setitem') {
+        fn = typeof dictSet === 'function' ? dictSet : null;
+      } else if (entry.name === 'dict_getitem') {
+        fn = typeof dictGetitemBorrowed === 'function' ? dictGetitemBorrowed : null;
+      } else if (entry.name === 'tuple_getitem') {
+        fn = typeof tupleGetitemBorrowed === 'function' ? tupleGetitemBorrowed : null;
+      }
+    }
     if (typeof fn !== 'function') {
       throw new Error(`molt_runtime missing export ${exportName}`);
     }
-    imports[entry.name] = fn;
+    imports[entry.name] = (...args) => fn(...args);
   }
   return imports;
 };
@@ -2151,33 +2485,204 @@ export const createBrowserWebSocketHost = (state, options) => {
 
 const buildWasiStub = (state, logFn) => {
   const stdio = createStdIoEmitter(logFn);
+  const WASI_ERRNO_BADF = 8;
+  const WASI_ERRNO_INVAL = 28;
+  const WASI_ERRNO_ISDIR = 31;
+  const WASI_ERRNO_NOENT = 44;
+  const WASI_ERRNO_NOSYS = 52;
+  const WASI_ERRNO_NOTDIR = 54;
+  const WASI_ERRNO_ROFS = 69;
+  const WASI_ERRNO_SPIPE = 70;
+  if (!state.wasiFiles) {
+    state.wasiFiles = new Map();
+  }
+  if (!state.wasiPreopens) {
+    state.wasiPreopens = [
+      { fd: 3, path: '/bundle' },
+      { fd: 4, path: '/tmp' },
+      { fd: 5, path: '/dev' },
+    ];
+  }
+  if (typeof state.wasiNextFd !== 'number') {
+    state.wasiNextFd = 6;
+  }
+  const toNumber = (value) => (typeof value === 'bigint' ? Number(value) : Number(value >>> 0));
   const writeWasiU32 = (ptr, value) => {
     const memory = state.memory;
     if (!memory) return false;
     new DataView(memory.buffer).setUint32(Number(ptr), Number(value) >>> 0, true);
     return true;
   };
-  const wasiUnsupported = () => ENOSYS;
+  const writeWasiU64 = (ptr, value) => {
+    const memory = state.memory;
+    if (!memory) return false;
+    new DataView(memory.buffer).setBigUint64(Number(ptr), BigInt(value), true);
+    return true;
+  };
+  const writeFilestat = (ptr, stat) => {
+    const memory = state.memory;
+    if (!memory) return false;
+    const view = new DataView(memory.buffer);
+    const base = Number(ptr);
+    new Uint8Array(memory.buffer, base, 64).fill(0);
+    view.setUint8(base + 16, stat.isDir ? WASI_FILETYPE_DIRECTORY : WASI_FILETYPE_REGULAR_FILE);
+    view.setBigUint64(base + 32, BigInt(stat.size || 0), true);
+    view.setBigUint64(base + 40, BigInt(stat.size || 0), true);
+    view.setBigUint64(base + 48, 0n, true);
+    view.setBigUint64(base + 56, 0n, true);
+    return true;
+  };
+  const wasiUnsupported = () => WASI_ERRNO_NOSYS;
+  const preopenByFd = (fdNum) =>
+    state.wasiPreopens.find((entry) => entry.fd === fdNum) || null;
+  const readGuestPath = (ptr, len) => {
+    const memory = state.memory;
+    if (!memory) return null;
+    return UTF8_DECODER.decode(new Uint8Array(memory.buffer, Number(ptr), Number(len)));
+  };
+  const normalizeRelativePath = (rawPath) => {
+    const parts = [];
+    for (const part of rawPath.split('/')) {
+      if (!part || part === '.') {
+        continue;
+      }
+      if (part === '..') {
+        if (parts.length === 0) {
+          return null;
+        }
+        parts.pop();
+        continue;
+      }
+      parts.push(part);
+    }
+    return parts.join('/');
+  };
+  const absoluteVfsPath = (preopen, relativePath) =>
+    relativePath ? `${preopen.path}/${relativePath}` : preopen.path;
+  const statResolvedPath = (absolutePath) => {
+    if (!state.vfs) {
+      return null;
+    }
+    const resolved = state.vfs.resolve(absolutePath);
+    if (!resolved || !resolved.mount || typeof resolved.mount.stat !== 'function') {
+      return null;
+    }
+    const stat = resolved.mount.stat(resolved.rel);
+    if (!stat) {
+      return null;
+    }
+    return { resolved, stat };
+  };
+  const openResolvedPath = (preopen, relativePath, oflags) => {
+    const wantDirectory = (oflags & WASI_OFLAGS_DIRECTORY) !== 0;
+    const absolutePath = absoluteVfsPath(preopen, relativePath);
+    let info = statResolvedPath(absolutePath);
+    if (!info) {
+      if ((oflags & WASI_OFLAGS_CREAT) === 0) {
+        return { errno: WASI_ERRNO_NOENT };
+      }
+      if (preopen.path !== '/tmp' || !state.vfs || !state.vfs.tmp) {
+        return { errno: WASI_ERRNO_ROFS };
+      }
+      state.vfs.tmp.write(relativePath, new Uint8Array(0));
+      info = statResolvedPath(absolutePath);
+      if (!info) {
+        return { errno: WASI_ERRNO_NOENT };
+      }
+    } else if ((oflags & WASI_OFLAGS_EXCL) !== 0 && (oflags & WASI_OFLAGS_CREAT) !== 0) {
+      return { errno: WASI_ERRNO_INVAL };
+    }
+    if (info.stat.isDir) {
+      if (!wantDirectory) {
+        return { errno: WASI_ERRNO_ISDIR };
+      }
+      const fd = state.wasiNextFd++;
+      state.wasiFiles.set(fd, {
+        kind: 'dir',
+        absolutePath,
+        resolved: info.resolved,
+        readable: true,
+        writable: false,
+        pos: 0,
+      });
+      return { errno: 0, fd };
+    }
+    if (wantDirectory) {
+      return { errno: WASI_ERRNO_NOTDIR };
+    }
+    if ((oflags & WASI_OFLAGS_TRUNC) !== 0) {
+      if (info.resolved.prefix !== '/tmp') {
+        return { errno: WASI_ERRNO_ROFS };
+      }
+      info.resolved.mount.write(info.resolved.rel, new Uint8Array(0));
+      info = statResolvedPath(absolutePath);
+      if (!info) {
+        return { errno: WASI_ERRNO_NOENT };
+      }
+    }
+    let buffer;
+    try {
+      buffer = info.resolved.mount.read(info.resolved.rel);
+    } catch {
+      return { errno: WASI_ERRNO_NOENT };
+    }
+    const fd = state.wasiNextFd++;
+    state.wasiFiles.set(fd, {
+      kind: 'file',
+      absolutePath,
+      resolved: info.resolved,
+      readable: true,
+      writable: info.resolved.prefix === '/tmp',
+      pos: 0,
+      buffer: new Uint8Array(buffer),
+    });
+    return { errno: 0, fd };
+  };
+  const syncWritableFile = (entry) => {
+    if (!entry || entry.kind !== 'file' || !entry.writable) {
+      return 0;
+    }
+    try {
+      entry.resolved.mount.write(entry.resolved.rel, entry.buffer);
+      return 0;
+    } catch (err) {
+      return WASI_ERRNO_INVAL;
+    }
+  };
+  const writeFdstat = (statPtr, filetype) => {
+    const memory = state.memory;
+    if (!memory) return WASI_ERRNO_NOSYS;
+    const view = new DataView(memory.buffer);
+    const base = Number(statPtr);
+    view.setUint8(base, filetype);
+    view.setUint16(base + 2, 0, true);
+    view.setBigUint64(base + 8, WASI_RIGHTS_ALL, true);
+    view.setBigUint64(base + 16, WASI_RIGHTS_ALL, true);
+    return 0;
+  };
   return {
     proc_exit: (code) => {
+      if (traceBrowserWasi) {
+        console.error(`[molt browser wasi] proc_exit(${code})`);
+      }
       stdio.flushAll();
       throw new Error(`WASM proc_exit ${code}`);
     },
     args_sizes_get: (argcPtr, argvBufSizePtr) => {
-      if (!writeWasiU32(argcPtr, 0)) return ENOSYS;
-      if (!writeWasiU32(argvBufSizePtr, 0)) return ENOSYS;
+      if (!writeWasiU32(argcPtr, 0)) return WASI_ERRNO_NOSYS;
+      if (!writeWasiU32(argvBufSizePtr, 0)) return WASI_ERRNO_NOSYS;
       return 0;
     },
     args_get: () => 0,
     environ_sizes_get: (countPtr, bufSizePtr) => {
-      if (!writeWasiU32(countPtr, 0)) return ENOSYS;
-      if (!writeWasiU32(bufSizePtr, 0)) return ENOSYS;
+      if (!writeWasiU32(countPtr, 0)) return WASI_ERRNO_NOSYS;
+      if (!writeWasiU32(bufSizePtr, 0)) return WASI_ERRNO_NOSYS;
       return 0;
     },
     environ_get: () => 0,
     fd_write: (fd, iovsPtr, iovsLen, outWrittenPtr) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return WASI_ERRNO_NOSYS;
       const view = new DataView(memory.buffer);
       const basePtr = typeof iovsPtr === 'bigint' ? Number(iovsPtr) : Number(iovsPtr >>> 0);
       const count = typeof iovsLen === 'bigint' ? Number(iovsLen) : Number(iovsLen >>> 0);
@@ -2197,19 +2702,237 @@ const buildWasiStub = (state, logFn) => {
       stdio.write(Number(fd), text);
       return 0;
     },
-    fd_read: wasiUnsupported,
-    fd_close: () => 0,
-    fd_seek: wasiUnsupported,
-    fd_tell: wasiUnsupported,
-    fd_fdstat_get: wasiUnsupported,
+    fd_read: (fd, iovsPtr, iovsLen, outReadPtr) => {
+      const memory = state.memory;
+      if (!memory) return WASI_ERRNO_NOSYS;
+      const fdNum = toNumber(fd);
+      const view = new DataView(memory.buffer);
+      if (fdNum === 0 && state.vfs && state.vfs.dev) {
+        const basePtr = toNumber(iovsPtr);
+        const count = toNumber(iovsLen);
+        let totalRead = 0;
+        for (let index = 0; index < count; index += 1) {
+          const ptr = view.getUint32(basePtr + index * 8, true);
+          const len = view.getUint32(basePtr + index * 8 + 4, true);
+          if (len === 0) {
+            continue;
+          }
+          const chunk = state.vfs.dev.readStdin(len);
+          new Uint8Array(memory.buffer, ptr, chunk.length).set(chunk);
+          totalRead += chunk.length;
+          if (chunk.length < len) {
+            break;
+          }
+        }
+        if (outReadPtr) {
+          view.setUint32(Number(outReadPtr), totalRead >>> 0, true);
+        }
+        return 0;
+      }
+      const entry = state.wasiFiles.get(fdNum);
+      if (!entry || entry.kind !== 'file' || !entry.readable) {
+        return WASI_ERRNO_BADF;
+      }
+      const basePtr = toNumber(iovsPtr);
+      const count = toNumber(iovsLen);
+      let totalRead = 0;
+      for (let index = 0; index < count; index += 1) {
+        const ptr = view.getUint32(basePtr + index * 8, true);
+        const len = view.getUint32(basePtr + index * 8 + 4, true);
+        if (len === 0) {
+          continue;
+        }
+        const remaining = entry.buffer.subarray(entry.pos, entry.pos + len);
+        new Uint8Array(memory.buffer, ptr, remaining.length).set(remaining);
+        entry.pos += remaining.length;
+        totalRead += remaining.length;
+        if (remaining.length < len) {
+          break;
+        }
+      }
+      if (outReadPtr) {
+        view.setUint32(Number(outReadPtr), totalRead >>> 0, true);
+      }
+      return 0;
+    },
+    fd_close: (fd) => {
+      const fdNum = toNumber(fd);
+      const entry = state.wasiFiles.get(fdNum);
+      if (!entry) {
+        return 0;
+      }
+      const rc = syncWritableFile(entry);
+      if (rc !== 0) {
+        return rc;
+      }
+      state.wasiFiles.delete(fdNum);
+      return 0;
+    },
+    fd_seek: (fd, offset, whence, outOffsetPtr) => {
+      const fdNum = toNumber(fd);
+      const entry = state.wasiFiles.get(fdNum);
+      if (!entry || entry.kind !== 'file') {
+        return WASI_ERRNO_BADF;
+      }
+      const delta = typeof offset === 'bigint' ? Number(offset) : Number(offset);
+      let next = 0;
+      if (whence === WASI_WHENCE_SET) {
+        next = delta;
+      } else if (whence === WASI_WHENCE_CUR) {
+        next = entry.pos + delta;
+      } else if (whence === WASI_WHENCE_END) {
+        next = entry.buffer.length + delta;
+      } else {
+        return WASI_ERRNO_INVAL;
+      }
+      if (next < 0) {
+        return WASI_ERRNO_INVAL;
+      }
+      entry.pos = next;
+      if (outOffsetPtr) {
+        writeWasiU64(outOffsetPtr, BigInt(next));
+      }
+      return 0;
+    },
+    fd_tell: (fd, outOffsetPtr) => {
+      const fdNum = toNumber(fd);
+      const entry = state.wasiFiles.get(fdNum);
+      if (!entry || entry.kind !== 'file') {
+        return WASI_ERRNO_SPIPE;
+      }
+      return writeWasiU64(outOffsetPtr, BigInt(entry.pos)) ? 0 : WASI_ERRNO_NOSYS;
+    },
+    fd_fdstat_get: (fd, statPtr) => {
+      const fdNum = toNumber(fd);
+      if (fdNum === 0 || fdNum === 1 || fdNum === 2) {
+        return writeFdstat(statPtr, WASI_FILETYPE_CHARACTER_DEVICE);
+      }
+      if (preopenByFd(fdNum)) {
+        return writeFdstat(statPtr, WASI_FILETYPE_DIRECTORY);
+      }
+      const entry = state.wasiFiles.get(fdNum);
+      if (!entry) {
+        return WASI_ERRNO_BADF;
+      }
+      return writeFdstat(
+        statPtr,
+        entry.kind === 'dir' ? WASI_FILETYPE_DIRECTORY : WASI_FILETYPE_REGULAR_FILE
+      );
+    },
     fd_fdstat_set_flags: wasiUnsupported,
-    fd_filestat_get: wasiUnsupported,
+    fd_filestat_get: (fd, bufPtr) => {
+      const fdNum = toNumber(fd);
+      if (preopenByFd(fdNum)) {
+        return writeFilestat(bufPtr, { isDir: true, isFile: false, size: 0 })
+          ? 0
+          : WASI_ERRNO_NOSYS;
+      }
+      const entry = state.wasiFiles.get(fdNum);
+      if (!entry) {
+        return WASI_ERRNO_BADF;
+      }
+      const stat =
+        entry.kind === 'dir'
+          ? { isDir: true, isFile: false, size: 0 }
+          : { isDir: false, isFile: true, size: entry.buffer.length };
+      return writeFilestat(bufPtr, stat) ? 0 : WASI_ERRNO_NOSYS;
+    },
     fd_filestat_set_size: wasiUnsupported,
     fd_readdir: wasiUnsupported,
-    fd_prestat_get: wasiUnsupported,
-    fd_prestat_dir_name: wasiUnsupported,
-    path_open: wasiUnsupported,
-    path_filestat_get: wasiUnsupported,
+    fd_prestat_get: (fd, prestatPtr) => {
+      const memory = state.memory;
+      if (!memory) return WASI_ERRNO_NOSYS;
+      const fdNum = toNumber(fd);
+      const preopen = preopenByFd(fdNum);
+      if (!preopen) {
+        if (traceBrowserWasi) {
+          console.error(`[molt browser wasi] fd_prestat_get fd=${fdNum} -> EBADF`);
+        }
+        return WASI_ERRNO_BADF;
+      }
+      const view = new DataView(memory.buffer);
+      view.setUint8(Number(prestatPtr), WASI_PREOPENTYPE_DIR);
+      view.setUint8(Number(prestatPtr) + 1, 0);
+      view.setUint8(Number(prestatPtr) + 2, 0);
+      view.setUint8(Number(prestatPtr) + 3, 0);
+      view.setUint32(Number(prestatPtr) + 4, preopen.path.length, true);
+      if (traceBrowserWasi) {
+        console.error(
+          `[molt browser wasi] fd_prestat_get fd=${fdNum} path=${preopen.path} len=${preopen.path.length}`
+        );
+      }
+      return 0;
+    },
+    fd_prestat_dir_name: (fd, pathPtr, pathLen) => {
+      const memory = state.memory;
+      if (!memory) return WASI_ERRNO_NOSYS;
+      const fdNum = toNumber(fd);
+      const preopen = preopenByFd(fdNum);
+      if (!preopen) {
+        if (traceBrowserWasi) {
+          console.error(`[molt browser wasi] fd_prestat_dir_name fd=${fdNum} -> EBADF`);
+        }
+        return WASI_ERRNO_BADF;
+      }
+      const bytes = UTF8_ENCODER.encode(preopen.path);
+      if (toNumber(pathLen) < bytes.length) {
+        return WASI_ERRNO_INVAL;
+      }
+      if (traceBrowserWasi) {
+        console.error(
+          `[molt browser wasi] fd_prestat_dir_name fd=${fdNum} path=${preopen.path}`
+        );
+      }
+      return writeBytesToMemory(memory, pathPtr, bytes) ? 0 : WASI_ERRNO_INVAL;
+    },
+    path_open: (fd, _dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, _fdflags, openedFdPtr) => {
+      const fdNum = toNumber(fd);
+      const preopen = preopenByFd(fdNum);
+      if (!preopen) {
+        if (traceBrowserWasi) {
+          console.error(`[molt browser wasi] path_open fd=${fdNum} -> EBADF`);
+        }
+        return WASI_ERRNO_BADF;
+      }
+      const rawPath = readGuestPath(pathPtr, pathLen);
+      if (rawPath === null) {
+        return WASI_ERRNO_NOSYS;
+      }
+      const relativePath = normalizeRelativePath(rawPath);
+      if (relativePath === null) {
+        return WASI_ERRNO_INVAL;
+      }
+      const opened = openResolvedPath(preopen, relativePath, toNumber(oflags));
+      if (traceBrowserWasi) {
+        console.error(
+          `[molt browser wasi] path_open fd=${fdNum} base=${preopen.path} raw=${rawPath} rel=${relativePath} errno=${opened.errno} opened=${opened.fd ?? 'none'}`
+        );
+      }
+      if (opened.errno !== 0) {
+        return opened.errno;
+      }
+      return writeWasiU32(openedFdPtr, opened.fd) ? 0 : WASI_ERRNO_NOSYS;
+    },
+    path_filestat_get: (fd, _flags, pathPtr, pathLen, bufPtr) => {
+      const fdNum = toNumber(fd);
+      const preopen = preopenByFd(fdNum);
+      if (!preopen) {
+        return WASI_ERRNO_BADF;
+      }
+      const rawPath = readGuestPath(pathPtr, pathLen);
+      if (rawPath === null) {
+        return WASI_ERRNO_NOSYS;
+      }
+      const relativePath = normalizeRelativePath(rawPath);
+      if (relativePath === null) {
+        return WASI_ERRNO_INVAL;
+      }
+      const info = statResolvedPath(absoluteVfsPath(preopen, relativePath));
+      if (!info) {
+        return WASI_ERRNO_NOENT;
+      }
+      return writeFilestat(bufPtr, info.stat) ? 0 : WASI_ERRNO_NOSYS;
+    },
     path_create_directory: wasiUnsupported,
     path_remove_directory: wasiUnsupported,
     path_unlink_file: wasiUnsupported,
@@ -2217,7 +2940,7 @@ const buildWasiStub = (state, logFn) => {
     path_readlink: wasiUnsupported,
     random_get: (bufPtr, bufLen) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return WASI_ERRNO_NOSYS;
       const ptr = typeof bufPtr === 'bigint' ? Number(bufPtr) : Number(bufPtr >>> 0);
       const len = typeof bufLen === 'bigint' ? Number(bufLen) : Number(bufLen >>> 0);
       const bytes = new Uint8Array(memory.buffer, ptr, len);
@@ -2231,13 +2954,13 @@ const buildWasiStub = (state, logFn) => {
       return 0;
     },
     poll_oneoff: (_inPtr, _outPtr, _nsubscriptions, outEventsPtr) => {
-      if (outEventsPtr && !writeWasiU32(outEventsPtr, 0)) return ENOSYS;
+      if (outEventsPtr && !writeWasiU32(outEventsPtr, 0)) return WASI_ERRNO_NOSYS;
       return 0;
     },
     sched_yield: () => 0,
     clock_time_get: (clockIdRaw, _precisionRaw, outPtr) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return WASI_ERRNO_NOSYS;
       const clockId =
         typeof clockIdRaw === 'bigint' ? Number(clockIdRaw) : Number(clockIdRaw >>> 0);
       let nanos;
@@ -2250,7 +2973,7 @@ const buildWasiStub = (state, logFn) => {
             : Date.now();
         nanos = BigInt(Math.trunc(now * 1000000));
       } else {
-        return ENOSYS;
+        return WASI_ERRNO_NOSYS;
       }
       new DataView(memory.buffer).setBigUint64(Number(outPtr), nanos, true);
       return 0;
@@ -2305,7 +3028,19 @@ export const loadMoltWasm = async (options = {}) => {
   const runtimeUrl = options.runtimeUrl || './molt_runtime.wasm';
   const preferLinked = options.preferLinked !== false;
   const logFn = options.log || null;
-  const state = { runtimeInstance: null, memory: null };
+  const browserVfs = await prepareBrowserVfs(options);
+  const state = {
+    runtimeInstance: null,
+    memory: null,
+    vfs: browserVfs,
+    wasiFiles: new Map(),
+    wasiNextFd: 6,
+    wasiPreopens: [
+      { fd: 3, path: '/bundle' },
+      { fd: 4, path: '/tmp' },
+      { fd: 5, path: '/dev' },
+    ],
+  };
   const dbHost = createBrowserDbHost(state, {
     dbEndpoint: options.dbEndpoint,
     dbAdapter: options.dbAdapter,
@@ -2441,6 +3176,7 @@ export const loadMoltWasm = async (options = {}) => {
   }
   const outputImports = parseWasmImports(wasmBytes);
   const runtimeImports = parseWasmImports(runtimeBytes);
+  const detectedWasmTableBase = extractWasmTableBase(wasmBytes);
   if (!outputImports.memory || !runtimeImports.memory) {
     throw new Error('Direct-link wasm requires shared memory imports');
   }
@@ -2448,6 +3184,7 @@ export const loadMoltWasm = async (options = {}) => {
   const table = makeTable(mergeLimits(outputImports.table, runtimeImports.table, 'table'));
   state.memory = memory;
   const callIndirectFns = {};
+  let outputInstance = null;
   const callIndirectNames = runtimeImports.funcImports
     .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
     .map((imp) => imp.name);
@@ -2462,11 +3199,24 @@ export const loadMoltWasm = async (options = {}) => {
     };
   }
   const env = buildEnv(memory, table, callIndirect, logFn, overrides);
+  env.molt_isolate_import = (...args) => {
+    if (!outputInstance || typeof outputInstance.exports.molt_isolate_import !== 'function') {
+      throw new Error('molt_isolate_import used before output instantiation');
+    }
+    return outputInstance.exports.molt_isolate_import(...args);
+  };
   const runtimeModule = await WebAssembly.instantiate(runtimeBytes, {
     env,
     wasi_snapshot_preview1: buildWasiStub(state, logFn),
   });
   const runtimeInstance = runtimeModule.instance;
+  if (detectedWasmTableBase !== null) {
+    const setTableBase = runtimeInstance.exports.molt_set_wasm_table_base;
+    if (typeof setTableBase === 'function') {
+      setTableBase(BigInt(detectedWasmTableBase));
+    }
+  }
+  installTableRefs(runtimeInstance, table);
   state.runtimeInstance = runtimeInstance;
   const runtimeImportsObj = buildRuntimeImports(outputImports, runtimeInstance);
   const outputModule = await WebAssembly.instantiate(wasmBytes, {
@@ -2476,8 +3226,22 @@ export const loadMoltWasm = async (options = {}) => {
       __indirect_function_table: table,
     },
   });
+  outputInstance = outputModule.instance;
+  if (typeof outputModule.instance.exports.molt_table_init === 'function') {
+    outputModule.instance.exports.molt_table_init();
+  }
+  installTableRefs(outputInstance, table);
   for (const name of callIndirectNames) {
-    const fn = outputModule.instance.exports[name];
+    let fn = outputModule.instance.exports[name];
+    if (typeof fn !== 'function') {
+      const mangledMatch = name.match(/^molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E$)/);
+      const plainMatch = name.match(/^molt_call_indirect(\d+)$/);
+      const arityRaw = (mangledMatch && mangledMatch[1]) || (plainMatch && plainMatch[1]);
+      if (arityRaw) {
+        const arity = Number.parseInt(arityRaw, 10);
+        fn = outputModule.instance.exports[`molt_call_indirect${arity}`];
+      }
+    }
     if (typeof fn !== 'function') {
       throw new Error(`WASM output missing export ${name}`);
     }

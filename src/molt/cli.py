@@ -15944,13 +15944,14 @@ def _prepare_frontend_lowering_config(
     # module-level names (including ABC) are fully defined before any downstream
     # module tries to access them.
     if not is_wasm:
-        # Default native chunk size: 2000 ops per module init function.
+        # Default native chunk size: 1400 ops per module init function.
         # Native stdlib bootstrap functions accumulate dense check_exception /
-        # label CFG and post-lowering metadata, so a 3000-op frontend budget
-        # can still yield backend chunks well above Cranelift's sweet spot.
-        # A 2000-op default keeps import/bootstrap compilation more
-        # deterministic without changing runtime semantics.
-        module_chunk_max_ops = 2000
+        # label CFG and post-lowering metadata, so even a 2000-op frontend
+        # chunk can still arrive at the backend as a ~2800-op megafunction.
+        # Tightening the frontend budget keeps those exception-heavy stdlib
+        # chunks under the backend's practical Cranelift sweet spot without
+        # changing runtime semantics.
+        module_chunk_max_ops = 1400
         env_native_chunk_ops = os.environ.get("MOLT_MODULE_CHUNK_OPS")
         if env_native_chunk_ops:
             try:
@@ -16236,6 +16237,7 @@ def _prepare_backend_runtime_context(
     cargo_timeout: float | None,
     molt_root: Path,
     stdlib_profile: str | None = "micro",
+    resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> _PreparedBackendRuntimeContext:
     runtime_state = prepared_backend_setup.runtime_state
 
@@ -16250,6 +16252,7 @@ def _prepare_backend_runtime_context(
             simd_enabled=not is_wasm_freestanding,
             freestanding=is_wasm_freestanding,
             stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
         )
 
     def ensure_runtime_wasm_reloc() -> bool:
@@ -16263,6 +16266,7 @@ def _prepare_backend_runtime_context(
             simd_enabled=not is_wasm_freestanding,
             freestanding=is_wasm_freestanding,
             stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
         )
 
     return _PreparedBackendRuntimeContext(
@@ -17268,6 +17272,7 @@ def _run_backend_pipeline(
         cargo_timeout=prepared_build_config.cargo_timeout,
         molt_root=prepared_build_roots.molt_root,
         stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
     )
     prepared_backend_compile, prepared_backend_compile_error = _prepare_backend_compile(
         diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
@@ -17316,7 +17321,11 @@ def _run_backend_pipeline(
     assert prepared_backend_compile is not None
     diagnostics_payload, diagnostics_path = build_diagnostics_payload()
     runtime_lib = prepared_backend_runtime_context.runtime_lib
+    runtime_wasm = prepared_backend_runtime_context.runtime_wasm
     runtime_reloc_wasm = prepared_backend_runtime_context.runtime_reloc_wasm
+    ensure_runtime_wasm_shared = (
+        prepared_backend_runtime_context.ensure_runtime_wasm_shared
+    )
     ensure_runtime_wasm_reloc = (
         prepared_backend_runtime_context.ensure_runtime_wasm_reloc
     )
@@ -17350,7 +17359,9 @@ def _run_backend_pipeline(
                 linked_output_path=output_layout.linked_output_path,
                 output_artifact=output_layout.output_artifact,
                 json_output=json_output,
+                runtime_wasm=runtime_wasm,
                 runtime_reloc_wasm=runtime_reloc_wasm,
+                ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
                 ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
                 molt_root=prepared_build_roots.molt_root,
                 precompile=precompile,
@@ -17562,7 +17573,9 @@ def _prepare_non_native_build_result(
     linked_output_path: Path | None,
     output_artifact: Path,
     json_output: bool,
+    runtime_wasm: Path | None,
     runtime_reloc_wasm: Path | None,
+    ensure_runtime_wasm_shared: Callable[[], bool],
     ensure_runtime_wasm_reloc: Callable[[], bool],
     molt_root: Path,
     split_runtime: bool = False,
@@ -17594,6 +17607,7 @@ def _prepare_non_native_build_result(
         bundle_root: Path | None = None
         artifacts: dict[str, str] = {"wasm": str(output_wasm)}
         _split_runtime = split_runtime or os.environ.get("MOLT_SPLIT_RUNTIME") == "1"
+        staged_runtime_wasm: Path | None = None
         if linked:
             structural_error = _validate_wasm_structural(output_wasm)
             if structural_error is not None:
@@ -17665,6 +17679,30 @@ def _prepare_non_native_build_result(
                             json_output,
                             command="build",
                         )
+        if not is_wasm_freestanding and not _split_runtime:
+            if not ensure_runtime_wasm_shared():
+                return None, _fail(
+                    "Runtime wasm build failed",
+                    json_output,
+                    command="build",
+                )
+            if runtime_wasm is None or not runtime_wasm.exists():
+                return None, _fail(
+                    "Runtime wasm build failed",
+                    json_output,
+                    command="build",
+                )
+            staged_runtime_wasm = output_wasm.with_name("molt_runtime.wasm")
+            if staged_runtime_wasm != runtime_wasm:
+                try:
+                    shutil.copy2(runtime_wasm, staged_runtime_wasm)
+                except OSError as exc:
+                    return None, _fail(
+                        f"Failed to stage runtime wasm: {exc}",
+                        json_output,
+                        command="build",
+                    )
+            artifacts["runtime_wasm"] = str(staged_runtime_wasm)
         if resolved_linked_output is not None:
             artifacts["linked_wasm"] = str(resolved_linked_output)
         # -- Precompile step: produce .cwasm for faster startup -----------
@@ -18995,6 +19033,7 @@ def _ensure_runtime_wasm_artifact(
     simd_enabled: bool,
     freestanding: bool,
     stdlib_profile: str | None = "micro",
+    resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> bool:
     runtime_path = (
         runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
@@ -19016,6 +19055,7 @@ def _ensure_runtime_wasm_artifact(
         simd_enabled=simd_enabled,
         freestanding=freestanding,
         stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
     ):
         return False
     if reloc:
@@ -21074,6 +21114,7 @@ def _ensure_runtime_wasm(
     simd_enabled: bool = True,
     freestanding: bool = False,
     stdlib_profile: str | None = "micro",
+    resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> bool:
     root = project_root or Path(__file__).resolve().parents[2]
     # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
@@ -21123,7 +21164,18 @@ def _ensure_runtime_wasm(
     if freestanding and 'getrandom_backend="' not in rustflags:
         rustflags = f'{rustflags} --cfg getrandom_backend="unsupported"'.strip()
     cargo_runtime_features = ("wasm_freestanding",) if freestanding else ()
+    builtin_features = _builtin_features_from_import_graph(
+        set(resolved_modules) if resolved_modules is not None else None,
+        stdlib_profile,
+    )
     runtime_features = cargo_runtime_features
+    fingerprint_features: tuple[str, ...] = runtime_features
+    if stdlib_profile == "micro":
+        fingerprint_features = tuple(
+            list(runtime_features)
+            + sorted(builtin_features)
+            + ["stdlib_micro", "no-default-features"]
+        )
     fingerprint_path = _runtime_fingerprint_path(
         root, runtime_wasm, cargo_profile, "wasm32-wasip1"
     )
@@ -21133,7 +21185,7 @@ def _ensure_runtime_wasm(
         cargo_profile=cargo_profile,
         target_triple="wasm32-wasip1",
         rustflags=rustflags,
-        runtime_features=runtime_features,
+        runtime_features=fingerprint_features,
         stored_fingerprint=stored_fingerprint,
     )
     lock_suffix = "reloc" if reloc else "shared"
@@ -21151,15 +21203,6 @@ def _ensure_runtime_wasm(
                 "Runtime wasm artifact invalid/corrupt; forcing rebuild.",
                 file=sys.stderr,
             )
-        # Fast path: if the .wasm exists and is newer than every source
-        # file, skip the expensive cargo build and just update the stored
-        # fingerprint (common after running `cargo build` manually).
-        if needs_rebuild and _artifact_newer_than_sources(
-            runtime_wasm, _runtime_source_paths(root)
-        ):
-            if _is_valid_runtime_wasm_artifact(runtime_wasm):
-                _write_runtime_fingerprint(fingerprint_path, fingerprint)
-                return True
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...", file=sys.stderr)
         if rustflags:
@@ -21204,8 +21247,11 @@ def _ensure_runtime_wasm(
             ]
         if stdlib_profile == "micro":
             cmd.append("--no-default-features")
-            if cargo_runtime_features:
-                cmd.extend(["--features", ",".join(cargo_runtime_features)])
+            micro_features = list(runtime_features) + sorted(builtin_features) + [
+                "stdlib_micro"
+            ]
+            if micro_features:
+                cmd.extend(["--features", ",".join(micro_features)])
         else:
             # Exclude stdlib_ast (rustpython-parser ~2MB) and
             # stdlib_unicode_names (unicode_names2 ~1MB) from WASM builds.
