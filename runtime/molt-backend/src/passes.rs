@@ -1590,7 +1590,12 @@ fn is_protected_runtime_entrypoint(name: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Default maximum number of ops before a function is split into chunks.
-const DEFAULT_MAX_FUNCTION_OPS: usize = 4000;
+///
+/// Native frontend module chunking already targets 2000 ops, but lower/midend
+/// rewrites can still inflate a chunk well past that budget. Keep the backend
+/// splitter aligned with that native default so Cranelift does not see giant
+/// `*_molt_module_chunk_*` functions slip through unsplit.
+const DEFAULT_MAX_FUNCTION_OPS: usize = 2000;
 
 /// Split a single large function into multiple chunk functions.
 ///
@@ -2501,5 +2506,53 @@ mod tests {
                 .all(|chunk| chunk.params == vec!["p0".to_string()]),
             "split chunks must preserve original params"
         );
+    }
+
+    #[test]
+    fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
+        let previous = std::env::var("MOLT_MAX_FUNCTION_OPS").ok();
+        unsafe {
+            std::env::remove_var("MOLT_MAX_FUNCTION_OPS");
+        }
+
+        let mut ops = Vec::new();
+        for i in 0..1401 {
+            ops.push(OpIR {
+                kind: "line".to_string(),
+                value: Some(i),
+                ..OpIR::default()
+            });
+            ops.push(make_const_int(&format!("v{i}"), i as i64));
+        }
+        ops.push(make_op("ret_void"));
+
+        let mut ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "builtins__molt_module_chunk_2".to_string(),
+                params: vec!["__molt_module_obj__".to_string()],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops,
+            }],
+            profile: None,
+        };
+
+        split_megafunctions(&mut ir);
+
+        let names: BTreeSet<&str> = ir.functions.iter().map(|func| func.name.as_str()).collect();
+        assert!(
+            names.contains("builtins__molt_module_chunk_2"),
+            "stub must keep the original module chunk symbol"
+        );
+        assert!(
+            names.iter().any(|name| name.starts_with("__molt_chunk_builtins__molt_module_chunk_2_")),
+            "module chunk should be split into backend private chunks at the native default threshold"
+        );
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("MOLT_MAX_FUNCTION_OPS", value) },
+            None => unsafe { std::env::remove_var("MOLT_MAX_FUNCTION_OPS") },
+        }
     }
 }
