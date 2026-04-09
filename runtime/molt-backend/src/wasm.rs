@@ -10975,7 +10975,7 @@ impl WasmBackend {
                         let args_names = op.args.as_ref().unwrap();
                         let func_bits = locals[&args_names[0]];
                         let builder_ptr = locals[&args_names[1]];
-                        let out = op.out.as_ref().and_then(|name| locals.get(name).copied());
+                        let out = locals[op.out.as_ref().unwrap()];
                         let call_site_label = if op.kind == "call_indirect" {
                             "call_indirect"
                         } else {
@@ -10994,11 +10994,7 @@ impl WasmBackend {
                         } else {
                             emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
                         }
-                        if let Some(out_local) = out {
-                            func.instruction(&Instruction::LocalSet(out_local));
-                        } else {
-                            func.instruction(&Instruction::Drop);
-                        }
+                        func.instruction(&Instruction::LocalSet(out));
                     }
                     "call_method" => {
                         let args_names = op.args.as_ref().unwrap();

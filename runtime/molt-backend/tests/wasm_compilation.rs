@@ -339,25 +339,6 @@ fn call_func_uses_dispatch() {
 }
 
 #[test]
-fn call_bind_without_output_compiles() {
-    let mut call = op("call_bind");
-    call.args = Some(vec!["p0".to_string(), "p1".to_string()]);
-
-    let wasm = compile_single_function(vec![call, op("ret_void")], &["p0", "p1"]);
-    validate_wasm(&wasm).expect("output-less call_bind should still produce valid wasm");
-}
-
-#[test]
-fn call_indirect_without_output_compiles() {
-    let mut call = op("call_indirect");
-    call.args = Some(vec!["p0".to_string(), "p1".to_string()]);
-
-    let wasm = compile_single_function(vec![call, op("ret_void")], &["p0", "p1"]);
-    validate_wasm(&wasm)
-        .expect("output-less call_indirect should still produce valid wasm");
-}
-
-#[test]
 fn call_guarded_escaped_function_dispatches_on_object() {
     let mut func_new = op("func_new");
     func_new.s_value = Some("guarded_target".to_string());
