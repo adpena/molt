@@ -9863,13 +9863,14 @@ def _build_slot():
     """
     import fcntl
 
-    _BUILD_SLOT_DIR.mkdir(exist_ok=True)
+    build_slot_dir = _build_slot_dir()
+    build_slot_dir.mkdir(parents=True, exist_ok=True)
     max_slots = int(
         os.environ.get("MOLT_MAX_CONCURRENT_BUILDS", _MAX_CONCURRENT_BUILDS)
     )
 
     for slot_idx in range(max_slots):
-        slot_path = _BUILD_SLOT_DIR / f"slot-{slot_idx}.lock"
+        slot_path = build_slot_dir / f"slot-{slot_idx}.lock"
         fd = slot_path.open("w")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -9885,7 +9886,7 @@ def _build_slot():
             continue
 
     # All slots busy — wait for any slot (blocking)
-    slot_path = _BUILD_SLOT_DIR / "slot-0.lock"
+    slot_path = build_slot_dir / "slot-0.lock"
     fd = slot_path.open("w")
     fcntl.flock(fd, fcntl.LOCK_EX)  # blocks until available
     try:
@@ -9949,7 +9950,7 @@ def _backend_daemon_paths_cached(
 ) -> tuple[Path, Path, Path]:
     project_root = Path(project_root_str)
     build_state_root = Path(build_state_root_str)
-    session_id = session_id.strip()
+    session_id = (session_id or "").strip()
 
     def _sidecar_label(raw: str) -> str:
         cleaned = _OUTPUT_BASE_SAFE_RE.sub("-", raw).strip("._-")
@@ -10554,6 +10555,7 @@ def _backend_daemon_request_bytes(
     data: bytes,
     *,
     timeout: float | None,
+    daemon_pid: int | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     # Check for daemon redirect (overflow agent sharing another daemon).
     actual_socket = socket_path
@@ -10567,10 +10569,15 @@ def _backend_daemon_request_bytes(
             pass
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            if timeout is not None:
-                sock.settimeout(timeout)
+            if timeout is not None or daemon_pid is not None:
+                sock.settimeout(timeout if timeout is not None else 1.0)
             sock.connect(str(actual_socket))
-            return _backend_daemon_request_on_socket(sock, data, shutdown_write=True)
+            return _backend_daemon_request_on_socket(
+                sock,
+                data,
+                shutdown_write=True,
+                daemon_pid=daemon_pid,
+            )
     except OSError as exc:
         return None, f"backend daemon connection failed: {exc}"
 
@@ -10580,6 +10587,7 @@ def _backend_daemon_request_on_socket(
     data: bytes,
     *,
     shutdown_write: bool,
+    daemon_pid: int | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     try:
         sock.sendall(data)
@@ -10589,7 +10597,12 @@ def _backend_daemon_request_on_socket(
         recv_buffer = bytearray(65536)
         recv_view = memoryview(recv_buffer)
         while True:
-            received = sock.recv_into(recv_view)
+            try:
+                received = sock.recv_into(recv_view)
+            except socket.timeout as exc:
+                if daemon_pid is not None and not _pid_alive(daemon_pid):
+                    return None, "backend daemon died while request was in flight"
+                return None, f"backend daemon connection failed: {exc}"
             if received == 0:
                 break
             raw.extend(recv_view[:received])
@@ -10770,6 +10783,7 @@ def _backend_daemon_retryable_error(error: str | None) -> bool:
     lowered = error.lower()
     return (
         "connection failed" in lowered
+        or "died while request was in flight" in lowered
         or "empty response" in lowered
         or "invalid json" in lowered
         or "unsupported protocol version" in lowered
@@ -11115,10 +11129,10 @@ def _compile_with_backend_daemon(
     stdlib_object_cache_key: str | None = None,
     timeout: float | None,
     request_bytes: bytes | None = None,
+    daemon_pid: int | None = None,
 ) -> _BackendDaemonCompileResult:
     full_request_bytes = request_bytes
     probe_request_bytes: bytes | None = None
-    probe_followup_socket: socket.socket | None = None
     if request_bytes is None and (cache_key or function_cache_key):
         probe_request_bytes, probe_encode_err = _backend_daemon_compile_request_bytes(
             ir=None,
@@ -11168,52 +11182,16 @@ def _compile_with_backend_daemon(
             )
         assert full_request_bytes is not None
     if probe_request_bytes is not None:
-        try:
-            probe_followup_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            if timeout is not None:
-                probe_followup_socket.settimeout(timeout)
-            # Resolve daemon redirect (overflow agent sharing another daemon).
-            _actual_probe_socket = socket_path
-            _probe_redirect = socket_path.with_suffix(".redirect")
-            if _probe_redirect.exists():
-                try:
-                    _redir = Path(_probe_redirect.read_text().strip())
-                    if _redir.exists():
-                        _actual_probe_socket = _redir
-                except OSError:
-                    pass
-            probe_followup_socket.connect(str(_actual_probe_socket))
-            response, err = _backend_daemon_request_on_socket(
-                probe_followup_socket,
-                probe_request_bytes,
-                shutdown_write=False,
-            )
-        except OSError as exc:
-            if probe_followup_socket is not None:
-                with contextlib.suppress(OSError):
-                    probe_followup_socket.close()
-            return _BackendDaemonCompileResult(
-                False,
-                f"backend daemon connection failed: {exc}",
-                None,
-                None,
-                None,
-                True,
-                False,
-            )
+        response, err = _backend_daemon_request_bytes(
+            socket_path, probe_request_bytes, timeout=timeout, daemon_pid=daemon_pid
+        )
     else:
         response, err = _backend_daemon_request_bytes(
-            socket_path, full_request_bytes, timeout=timeout
+            socket_path, full_request_bytes, timeout=timeout, daemon_pid=daemon_pid
         )
     if err is not None:
-        if probe_followup_socket is not None:
-            with contextlib.suppress(OSError):
-                probe_followup_socket.close()
         return _BackendDaemonCompileResult(False, err, None, None, None, True, False)
     if response is None:
-        if probe_followup_socket is not None:
-            with contextlib.suppress(OSError):
-                probe_followup_socket.close()
         return _BackendDaemonCompileResult(
             False,
             "backend daemon returned no response",
@@ -11300,21 +11278,17 @@ def _compile_with_backend_daemon(
                     False, encode_err, health, None, None, True, False
                 )
             assert full_request_bytes is not None
-        assert probe_followup_socket is not None
-        response, err = _backend_daemon_request_on_socket(
-            probe_followup_socket,
+        response, err = _backend_daemon_request_bytes(
+            socket_path,
             full_request_bytes,
-            shutdown_write=True,
+            timeout=timeout,
+            daemon_pid=daemon_pid,
         )
         if err is not None:
-            with contextlib.suppress(OSError):
-                probe_followup_socket.close()
             return _BackendDaemonCompileResult(
                 False, err, health, None, None, True, False
             )
         if response is None:
-            with contextlib.suppress(OSError):
-                probe_followup_socket.close()
             return _BackendDaemonCompileResult(
                 False,
                 "backend daemon returned no response",
@@ -11373,9 +11347,6 @@ def _compile_with_backend_daemon(
             else True
         )
         output_exists = not output_written
-    if probe_followup_socket is not None:
-        with contextlib.suppress(OSError):
-            probe_followup_socket.close()
     if not bool(first.get("ok")):
         message = first.get("message")
         if isinstance(message, str) and message:
@@ -16614,6 +16585,16 @@ def _execute_backend_compile(
         is_wasm=is_wasm,
     )
     with backend_output_ctx as backend_output:
+        daemon_pid_path = (
+            _backend_daemon_pid_path(molt_root, backend_cargo_profile)
+            if daemon_socket is not None
+            else None
+        )
+        daemon_pid = (
+            _read_backend_daemon_pid(daemon_pid_path)
+            if daemon_pid_path is not None
+            else None
+        )
         backend_compiled = False
         backend_output_written = True
         backend_output_exists = False
@@ -16693,6 +16674,7 @@ def _execute_backend_compile(
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 timeout=None,
                 request_bytes=None,
+                daemon_pid=daemon_pid,
             )
             backend_compiled = daemon_compile.ok
             backend_output_written = daemon_compile.output_written
@@ -16746,6 +16728,9 @@ def _execute_backend_compile(
                         stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                         timeout=None,
                         request_bytes=None,
+                        daemon_pid=_read_backend_daemon_pid(daemon_pid_path)
+                        if daemon_pid_path is not None
+                        else None,
                     )
                     backend_compiled = daemon_compile.ok
                     backend_output_written = daemon_compile.output_written
@@ -16763,6 +16748,17 @@ def _execute_backend_compile(
                     "Backend daemon compile failed; falling back to one-shot mode: "
                     f"{daemon_error}",
                     file=sys.stderr,
+                )
+        if not backend_output_written:
+            if not (skip_module_output_if_synced or skip_function_output_if_synced):
+                return None, _fail(
+                    "Backend daemon skipped output write without a synced-artifact contract",
+                    json_output,
+                    command="build",
+                )
+            if not output_artifact.exists():
+                return None, _fail(
+                    "Backend output missing", json_output, command="build"
                 )
         if not backend_compiled:
             if diagnostics_enabled and "backend_subprocess_compile" not in phase_starts:
@@ -24758,7 +24754,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             f"defaulting to {root / 'target'}",
             level="warning",
             advice=[
-                "export CARGO_TARGET_DIR=<external>/cargo-target",
+                "export CARGO_TARGET_DIR=<external>/target",
                 "export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR",
             ],
         )
