@@ -21169,15 +21169,6 @@ def _ensure_runtime_wasm(
                 "Runtime wasm artifact invalid/corrupt; forcing rebuild.",
                 file=sys.stderr,
             )
-        # Fast path: if the .wasm exists and is newer than every source
-        # file, skip the expensive cargo build and just update the stored
-        # fingerprint (common after running `cargo build` manually).
-        if needs_rebuild and _artifact_newer_than_sources(
-            runtime_wasm, _runtime_source_paths(root)
-        ):
-            if _is_valid_runtime_wasm_artifact(runtime_wasm):
-                _write_runtime_fingerprint(fingerprint_path, fingerprint)
-                return True
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...", file=sys.stderr)
         if rustflags:
