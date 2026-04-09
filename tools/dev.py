@@ -151,7 +151,7 @@ def main() -> None:
             tty=use_tty,
         )
         run_uv(
-            ["python3", "tools/check_molt_ir_ops.py"],
+            ["python3", "-m", "molt.cli", "debug", "verify", "--format", "json"],
             python=TEST_PYTHONS[0],
             tty=use_tty,
         )
