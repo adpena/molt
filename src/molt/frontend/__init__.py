@@ -9058,8 +9058,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             item = MoltValue(self.next_var(), type_hint=item_hint)
             self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
             self._emit_assign_target(target, item, None)
-            self._visit_loop_body(node.body, guard_map, loop_break_flag=loop_break_flag)
-            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            body_terminated = self._visit_loop_body(
+                node.body, guard_map, loop_break_flag=loop_break_flag
+            )
+            if not body_terminated:
+                self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
             return
         guard_map = (
@@ -9089,8 +9092,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             item = MoltValue(self.next_var(), type_hint=item_hint)
             self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
             self._emit_assign_target(target, item, None)
-            self._visit_loop_body(node.body, None, loop_break_flag=loop_break_flag)
-            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            body_terminated = self._visit_loop_body(
+                node.body, None, loop_break_flag=loop_break_flag
+            )
+            if not body_terminated:
+                self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
 
         if guard_map:
@@ -9186,28 +9192,31 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="INDEX", args=[seq_val, idx], result=item))
             self._emit_assign_target(target, item, None)
             self.async_index_loop_stack.append(idx_slot)
-            self._visit_loop_body(node.body, guard_map, loop_break_flag=loop_break_flag)
+            body_terminated = self._visit_loop_body(
+                node.body, guard_map, loop_break_flag=loop_break_flag
+            )
             self.async_index_loop_stack.pop()
-            idx_after = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", idx_slot],
-                    result=idx_after,
+            if not body_terminated:
+                idx_after = MoltValue(self.next_var(), type_hint="int")
+                self.emit(
+                    MoltOp(
+                        kind="LOAD_CLOSURE",
+                        args=["self", idx_slot],
+                        result=idx_after,
+                    )
                 )
-            )
-            one = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[1], result=one))
-            next_idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="ADD", args=[idx_after, one], result=next_idx))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", idx_slot, next_idx],
-                    result=MoltValue("none"),
+                one = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[1], result=one))
+                next_idx = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="ADD", args=[idx_after, one], result=next_idx))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_CLOSURE",
+                        args=["self", idx_slot, next_idx],
+                        result=MoltValue("none"),
+                    )
                 )
-            )
-            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+                self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
             return
         guard_map = self._emit_hoisted_loop_guards(node.body)
@@ -9236,12 +9245,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="INDEX", args=[iterable, idx], result=item))
             self._emit_assign_target(target, item, None)
             self.range_loop_stack.append((idx, one))
-            self._visit_loop_body(node.body, None, loop_break_flag=loop_break_flag)
+            body_terminated = self._visit_loop_body(
+                node.body, None, loop_break_flag=loop_break_flag
+            )
             self.range_loop_stack.pop()
-            next_idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
-            self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
-            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            if not body_terminated:
+                next_idx = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
+                self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+                self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
 
         if guard_map:
@@ -9381,17 +9393,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if not simple_name_target:
                     self._emit_assign_target(target, idx, None)
                 self.range_loop_stack.append((idx, step))
-                self._visit_loop_body(node.body, None, loop_break_flag=loop_break_flag)
+                body_terminated = self._visit_loop_body(
+                    node.body, None, loop_break_flag=loop_break_flag
+                )
                 self.range_loop_stack.pop()
-                with self._suppress_check_exception(emit_on_exit=False):
-                    next_idx = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
-                    self.emit(
-                        MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx)
-                    )
-                    self.emit(
-                        MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
-                    )
+                if not body_terminated:
+                    with self._suppress_check_exception(emit_on_exit=False):
+                        next_idx = MoltValue(self.next_var(), type_hint="int")
+                        self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
+                        self.emit(
+                            MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx)
+                        )
+                        self.emit(
+                            MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
+                        )
                     self.emit(
                         MoltOp(kind="LOOP_END", args=[], result=MoltValue("none"))
                     )
@@ -9422,16 +9437,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if not simple_name_target:
                 self._emit_assign_target(target, idx, None)
             self.range_loop_stack.append((idx, step))
-            self._visit_loop_body(node.body, None, loop_break_flag=loop_break_flag)
+            body_terminated = self._visit_loop_body(
+                node.body, None, loop_break_flag=loop_break_flag
+            )
             self.range_loop_stack.pop()
-            with self._suppress_check_exception(emit_on_exit=False):
-                next_idx = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
-                self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
-                self.emit(
-                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
-                )
-                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            if not body_terminated:
+                with self._suppress_check_exception(emit_on_exit=False):
+                    next_idx = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
+                    self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+                    self.emit(
+                        MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
+                    )
+                    self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
             with self._suppress_check_exception(emit_on_exit=False):
                 step_neg = MoltValue(self.next_var(), type_hint="bool")
@@ -9455,18 +9473,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if not simple_name_target:
                 self._emit_assign_target(target, idx_neg, None)
             self.range_loop_stack.append((idx_neg, step))
-            self._visit_loop_body(node.body, None, loop_break_flag=loop_break_flag)
+            body_terminated = self._visit_loop_body(
+                node.body, None, loop_break_flag=loop_break_flag
+            )
             self.range_loop_stack.pop()
-            with self._suppress_check_exception(emit_on_exit=False):
-                next_idx_neg = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="ADD", args=[idx_neg, step], result=next_idx_neg))
-                self.emit(
-                    MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx_neg], result=idx_neg)
-                )
-                self.emit(
-                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
-                )
-                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            if not body_terminated:
+                with self._suppress_check_exception(emit_on_exit=False):
+                    next_idx_neg = MoltValue(self.next_var(), type_hint="int")
+                    self.emit(MoltOp(kind="ADD", args=[idx_neg, step], result=next_idx_neg))
+                    self.emit(
+                        MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx_neg], result=idx_neg)
+                    )
+                    self.emit(
+                        MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
+                    )
+                    self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
@@ -10855,11 +10876,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
-        self._visit_loop_body(body, guard_map)
-        next_idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
-        self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        body_terminated = self._visit_loop_body(body, guard_map)
+        if not body_terminated:
+            next_idx = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
+            self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         self._store_local_value(index_name, idx)
         if self.current_func_name == "molt_main" and self.module_var is not None:
@@ -24193,8 +24215,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         self._emit_assign_target(node.target, item_val, None)
         guard_map = self._emit_hoisted_loop_guards(node.body)
-        self._visit_loop_body(node.body, guard_map, loop_break_flag=break_slot)
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        body_terminated = self._visit_loop_body(
+            node.body, guard_map, loop_break_flag=break_slot
+        )
+        if not body_terminated:
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         if node.orelse:
             break_val = MoltValue(self.next_var(), type_hint="bool")
@@ -24318,10 +24343,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             self.control_flow_depth += 1
             try:
-                self._visit_loop_body(node.body, None, loop_break_flag=break_name)
+                body_terminated = self._visit_loop_body(
+                    node.body, None, loop_break_flag=break_name
+                )
             finally:
                 self.control_flow_depth -= 1
-            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            if not body_terminated:
+                self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
 
         if guard_map:
@@ -24357,12 +24385,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._emit_loop_orelse(break_name, node.orelse)
         return None
 
-    def _visit_block(self, body: list[ast.stmt]) -> None:
+    def _visit_block(self, body: list[ast.stmt]) -> bool:
         prior = self.block_terminated
         self.block_terminated = False
+        terminated = False
         for stmt in body:
             self.visit(stmt)
             if self.block_terminated:
+                terminated = True
                 break
             # Emit a check_exception after each statement to catch any
             # pending exception from the preceding ops.  This uses the
@@ -24383,24 +24413,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
         self.block_terminated = prior
+        return terminated
 
     def _visit_loop_body(
         self,
         body: list[ast.stmt],
         prefill: dict[str, tuple[str, MoltValue]] | None = None,
         loop_break_flag: int | str | None = None,
-    ) -> None:
+    ) -> bool:
         if not self.is_async() and self._emit_taq_ingest_loop_body(body):
-            return
+            return True
         if not self.is_async():
             guard_map = dict(prefill) if prefill else {}
             self.loop_layout_guards.append(guard_map)
         self.loop_break_flags.append(loop_break_flag)
         self.loop_try_depths.append(len(self.try_scopes))
+        terminated = False
         try:
             self.control_flow_depth += 1
             try:
-                self._visit_block(body)
+                terminated = self._visit_block(body)
             finally:
                 self.control_flow_depth -= 1
         finally:
@@ -24408,6 +24440,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.loop_try_depths.pop()
             if not self.is_async():
                 self.loop_layout_guards.pop()
+        return terminated
 
     def _emit_guarded_body(
         self, body: list[ast.stmt], baseline_exc: ActiveException | None

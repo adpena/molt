@@ -403,6 +403,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         else_bid: BlockId,
         join_bid: Option<BlockId>,
     }
+    let block_contains_nested_scf = |block: &TirBlock| {
+        block.ops.iter().any(|op| {
+            matches!(
+                op.opcode,
+                OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield
+            )
+        })
+    };
     let mut if_patterns: HashMap<BlockId, IfPattern> = HashMap::new();
     let mut if_inlined_blocks: HashSet<BlockId> = HashSet::new();
     let mut predecessors: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
@@ -478,6 +486,12 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             .iter()
             .any(|op| op.opcode == OpCode::CheckException)
         {
+            continue;
+        }
+        // Only straight-line successors are safe to inline as structured
+        // if/else/end_if. Nested SCF inside a successor needs label-based
+        // lowering so the nested region retains an explicit merge edge.
+        if block_contains_nested_scf(then_blk) || block_contains_nested_scf(else_blk) {
             continue;
         }
         // Simple terminators only.
@@ -1861,6 +1875,29 @@ fn emit_structured_loop_region(
         kind: "loop_end".to_string(),
         ..OpIR::default()
     });
+    // 8c. Materialize the post-loop control-flow edge explicitly.
+    //
+    // The native backend resumes execution after LOOP_END in the loop's
+    // after_block. When the surrounding linearization does not place the
+    // loop's exit block immediately next, fallthrough can run unrelated
+    // sibling code before the real post-loop continuation. Emit the edge
+    // explicitly so nested loop regions inside larger branch regions retain
+    // their outer merge target.
+    let exit_role = func
+        .loop_roles
+        .get(&region.exit_block)
+        .cloned()
+        .unwrap_or(super::blocks::LoopRole::None);
+    let exit_needs_fallthrough = if_inlined_blocks.contains(&region.exit_block)
+        || region.exit_block == func.entry_block
+        || exit_role == super::blocks::LoopRole::LoopHeader;
+    if !exit_needs_fallthrough {
+        out.push(OpIR {
+            kind: "jump".to_string(),
+            value: Some(block_label_id(&region.exit_block)),
+            ..OpIR::default()
+        });
+    }
 }
 
 /// Emit the raise-path blocks for a guard CondBranch.
@@ -2795,6 +2832,80 @@ mod tests {
             !ops.iter()
                 .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
             "mixed return/fallthrough shape must stay label-based until region analysis proves it safe: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn structured_if_skips_successor_with_nested_scf() {
+        let mut func = TirFunction::new(
+            "branch_with_nested_scf_successor".into(),
+            vec![TirType::Bool],
+            TirType::None,
+        );
+
+        let then_blk = func.fresh_block();
+        let else_blk = func.fresh_block();
+        let join_blk = func.fresh_block();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.terminator = Terminator::CondBranch {
+            cond: ValueId(0),
+            then_block: then_blk,
+            then_args: vec![],
+            else_block: else_blk,
+            else_args: vec![],
+        };
+
+        func.blocks.insert(
+            then_blk,
+            TirBlock {
+                id: then_blk,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: join_blk,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            else_blk,
+            TirBlock {
+                id: else_blk,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: super::super::ops::Dialect::Scf,
+                    opcode: OpCode::ScfWhile,
+                    operands: vec![],
+                    results: vec![],
+                    attrs: HashMap::new(),
+                    source_span: None,
+                }],
+                terminator: Terminator::Branch {
+                    target: join_blk,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            join_blk,
+            TirBlock {
+                id: join_blk,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        assert!(
+            validate_labels(&ops),
+            "nested-scf successor lowering must keep valid labels after lower_to_simple: {ops:?}"
+        );
+        assert!(
+            !ops.iter()
+                .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
+            "successors containing nested SCF must stay label-based instead of inlining to structured if/else: {ops:?}"
         );
     }
 

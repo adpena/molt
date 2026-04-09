@@ -221,6 +221,10 @@ struct FunctionPreanalysis {
     /// dec_ref at the loop back-edge so reassigned containers are freed
     /// instead of leaking.
     loop_body_out_vars: BTreeMap<usize, Vec<String>>,
+    /// Subset of loop_body_out_vars that lack any reaching pre-loop store.
+    /// These need an explicit None sentinel before the first iteration so
+    /// the native backend has a valid old-value slot for loop-carried cleanup.
+    loop_body_init_vars: BTreeMap<usize, Vec<String>>,
     int_like_vars: BTreeSet<String>,
     bool_like_vars: BTreeSet<String>,
     float_like_vars: BTreeSet<String>,
@@ -494,6 +498,7 @@ fn preanalyze_function_ir(
     // keeps variables alive; they propagate to after_block for later cleanup.
     let transport_last_use = last_use.clone();
     let mut loop_body_out_vars: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    let mut loop_body_init_vars: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     {
         let mut loop_stack_post: Vec<usize> = Vec::new(); // stack of loop start indices
         let mut loop_ranges: Vec<(usize, usize)> = Vec::new();
@@ -622,6 +627,7 @@ fn preanalyze_function_ir(
         // previous-iteration values for transient heap objects.
         for &(start, end) in &loop_ranges {
             let mut assigned: Vec<String> = Vec::new();
+            let mut init_needed: Vec<String> = Vec::new();
             let mut seen: BTreeSet<String> = BTreeSet::new();
             // Identify the loop counter name so we can exclude it —
             // the loop machinery manages its refcount separately.
@@ -655,10 +661,20 @@ fn preanalyze_function_ir(
                     && seen.insert(name.clone())
                 {
                     assigned.push(name.clone());
+                    let has_pre_loop_store = func_ir.ops[..start].iter().any(|prior| {
+                        prior.kind == "store_var"
+                            && prior.var.as_deref() == Some(name.as_str())
+                    });
+                    if !has_pre_loop_store {
+                        init_needed.push(name.clone());
+                    }
                 }
             }
             if !assigned.is_empty() {
                 loop_body_out_vars.insert(start, assigned);
+            }
+            if !init_needed.is_empty() {
+                loop_body_init_vars.insert(start, init_needed);
             }
         }
     }
@@ -783,6 +799,7 @@ fn preanalyze_function_ir(
         exception_label_ids,
         const_int_map,
         loop_body_out_vars,
+        loop_body_init_vars,
         int_like_vars,
         bool_like_vars,
         float_like_vars,
@@ -1013,6 +1030,7 @@ impl SimpleBackend {
             exception_label_ids,
             const_int_map: _const_int_map,
             loop_body_out_vars,
+            loop_body_init_vars,
             int_like_vars,
             bool_like_vars,
             float_like_vars,
@@ -16219,7 +16237,7 @@ impl SimpleBackend {
                         // the first iteration so the per-iteration dec_ref at
                         // the back-edge safely no-ops (molt_dec_ref_obj skips
                         // non-pointer NaN-boxed values).
-                        if let Some(body_vars) = loop_body_out_vars.get(&op_idx) {
+                        if let Some(body_vars) = loop_body_init_vars.get(&op_idx) {
                             let none_val = builder.ins().iconst(types::I64, 0);
                             for name in body_vars {
                                 def_var_named(&mut builder, &vars, name, none_val);
@@ -16374,7 +16392,7 @@ impl SimpleBackend {
                             );
                             // Initialize loop-body output variables for
                             // linearized loops (same rationale as structured).
-                            if let Some(body_vars) = loop_body_out_vars.get(&op_idx) {
+                            if let Some(body_vars) = loop_body_init_vars.get(&op_idx) {
                                 let none_val = builder.ins().iconst(types::I64, 0);
                                 for name in body_vars {
                                     def_var_named(&mut builder, &vars, name, none_val);
@@ -16440,7 +16458,7 @@ impl SimpleBackend {
                         // Initialize loop-body output variables to None (0)
                         // before entering the loop header — see loop_start
                         // for the full rationale.
-                        if let Some(body_vars) = loop_body_out_vars.get(&op_idx) {
+                        if let Some(body_vars) = loop_body_init_vars.get(&op_idx) {
                             let none_val = builder.ins().iconst(types::I64, 0);
                             for name in body_vars {
                                 def_var_named(&mut builder, &vars, name, none_val);
@@ -19638,6 +19656,79 @@ mod tests {
             analysis.loop_body_out_vars.get(&0),
             Some(&vec!["slot".to_string()]),
             "loop-body slot tracking should ignore SSA temps and only keep slot-backed reassignments",
+        );
+        assert_eq!(
+            analysis.loop_body_init_vars.get(&0),
+            Some(&vec!["slot".to_string()]),
+            "slot-backed loop vars without any pre-loop store need an explicit first-iteration sentinel",
+        );
+    }
+
+    #[test]
+    fn preanalysis_does_not_reinitialize_loop_slots_with_preloop_store() {
+        let func = FunctionIR {
+            name: "loop_store_slot_preinit".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const_bool".to_string(),
+                    out: Some("v0".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("slot".to_string()),
+                    args: Some(vec!["v0".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_start".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_bool".to_string(),
+                    out: Some("v1".to_string()),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("slot".to_string()),
+                    args: Some(vec!["v1".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_continue".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "loop_end".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_function_ir(&func, &BTreeMap::new());
+
+        assert_eq!(
+            analysis.loop_body_out_vars.get(&2),
+            Some(&vec!["slot".to_string()]),
+            "loop cleanup still needs to track the slot as loop-carried",
+        );
+        assert!(
+            analysis
+                .loop_body_init_vars
+                .get(&2)
+                .is_none_or(|names| !names.iter().any(|name| name == "slot")),
+            "pre-loop stores must not be clobbered by synthetic None initialization",
         );
     }
 
