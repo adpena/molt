@@ -60,11 +60,11 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
 def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> None:
     variant = _cache_variant()
     ir_a = _ir_with_stdlib(
-        user_ops=[],
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
         stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
     )
     ir_b = _ir_with_stdlib(
-        user_ops=[],
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
         stdlib_ops=[{"kind": "code_slot_set", "value": 843}],
     )
 
@@ -131,6 +131,153 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
     )
     ir_a["entry_metadata"] = {"driver": "stage5"}
     ir_b["entry_metadata"] = {"driver": "stage8"}
+
+    key_a = cli._shared_stdlib_cache_key(
+        ir_a,
+        entry_module="app",
+        target_triple=None,
+        cache_variant=variant,
+    )
+    key_b = cli._shared_stdlib_cache_key(
+        ir_b,
+        entry_module="app",
+        target_triple=None,
+        cache_variant=variant,
+    )
+
+    assert key_a == key_b
+
+
+def test_shared_stdlib_cache_key_changes_with_reachable_stdlib_subset() -> None:
+    variant = _cache_variant()
+    ir_a = {
+        "profile": "dev-fast",
+        "functions": [
+            {
+                "name": "molt_main",
+                "params": [],
+                "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}],
+            },
+            {"name": "molt_init_app", "params": [], "ops": []},
+            {"name": "app__module", "params": [], "ops": []},
+            {"name": "molt_init_sys", "params": [], "ops": [{"kind": "code_slot_set", "value": 73}]},
+            {"name": "molt_init_json", "params": [], "ops": [{"kind": "code_slot_set", "value": 843}]},
+        ],
+    }
+    ir_b = {
+        "profile": "dev-fast",
+        "functions": [
+            {
+                "name": "molt_main",
+                "params": [],
+                "ops": [{"kind": "call_internal", "s_value": "molt_init_json"}],
+            },
+            {"name": "molt_init_app", "params": [], "ops": []},
+            {"name": "app__module", "params": [], "ops": []},
+            {"name": "molt_init_sys", "params": [], "ops": [{"kind": "code_slot_set", "value": 73}]},
+            {"name": "molt_init_json", "params": [], "ops": [{"kind": "code_slot_set", "value": 843}]},
+        ],
+    }
+
+    key_a = cli._shared_stdlib_cache_key(
+        ir_a,
+        entry_module="app",
+        target_triple=None,
+        cache_variant=variant,
+    )
+    key_b = cli._shared_stdlib_cache_key(
+        ir_b,
+        entry_module="app",
+        target_triple=None,
+        cache_variant=variant,
+    )
+
+    assert key_a != key_b
+
+
+def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_matches() -> None:
+    variant = _cache_variant()
+    shared_stdlib = [
+        {
+            "name": "molt_init_sys",
+            "params": [],
+            "ops": [{"kind": "call_internal", "s_value": "molt_init_json"}],
+        },
+        {
+            "name": "molt_init_json",
+            "params": [],
+            "ops": [{"kind": "code_slot_set", "value": 73}],
+        },
+    ]
+    ir_a = {
+        "profile": "dev-fast",
+        "entry_metadata": {"driver": "stage5"},
+        "functions": [
+            {"name": "helper_a", "params": [], "ops": []},
+            {"name": "molt_main", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}]},
+            {"name": "molt_init_app", "params": [], "ops": []},
+            {"name": "app__module", "params": [], "ops": []},
+            *shared_stdlib,
+        ],
+    }
+    ir_b = {
+        "profile": "dev-fast",
+        "entry_metadata": {"driver": "stage8"},
+        "functions": [
+            {"name": "helper_b", "params": [], "ops": []},
+            {"name": "molt_init_app", "params": [], "ops": []},
+            {"name": "app__module", "params": [], "ops": []},
+            {"name": "molt_main", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}]},
+            *shared_stdlib,
+        ],
+    }
+
+    key_a = cli._shared_stdlib_cache_key(
+        ir_a,
+        entry_module="app",
+        target_triple=None,
+        cache_variant=variant,
+    )
+    key_b = cli._shared_stdlib_cache_key(
+        ir_b,
+        entry_module="app",
+        target_triple=None,
+        cache_variant=variant,
+    )
+
+    assert key_a == key_b
+
+
+def test_shared_stdlib_cache_key_ignores_unreachable_stdlib_changes() -> None:
+    variant = _cache_variant()
+    ir_a = {
+        "profile": "dev-fast",
+        "functions": [
+            {
+                "name": "molt_main",
+                "params": [],
+                "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}],
+            },
+            {"name": "molt_init_app", "params": [], "ops": []},
+            {"name": "app__module", "params": [], "ops": []},
+            {"name": "molt_init_sys", "params": [], "ops": [{"kind": "code_slot_set", "value": 73}]},
+            {"name": "molt_init_json", "params": [], "ops": [{"kind": "code_slot_set", "value": 843}]},
+        ],
+    }
+    ir_b = {
+        "profile": "dev-fast",
+        "functions": [
+            {
+                "name": "molt_main",
+                "params": [],
+                "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}],
+            },
+            {"name": "molt_init_app", "params": [], "ops": []},
+            {"name": "app__module", "params": [], "ops": []},
+            {"name": "molt_init_sys", "params": [], "ops": [{"kind": "code_slot_set", "value": 73}]},
+            {"name": "molt_init_json", "params": [], "ops": [{"kind": "code_slot_set", "value": 999999}]},
+        ],
+    }
 
     key_a = cli._shared_stdlib_cache_key(
         ir_a,

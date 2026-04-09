@@ -300,6 +300,27 @@ fn is_user_owned_symbol(name: &str, entry_module: &str) -> bool {
 }
 
 #[cfg(feature = "native-backend")]
+fn prune_and_partition_native_stdlib(
+    ir: &mut SimpleIR,
+    entry_module: &str,
+) -> (Vec<molt_backend::FunctionIR>, Vec<molt_backend::FunctionIR>) {
+    molt_backend::eliminate_dead_functions(ir);
+    let user_func_set: std::collections::BTreeSet<String> = ir
+        .functions
+        .iter()
+        .filter(|f| is_user_owned_symbol(&f.name, entry_module))
+        .map(|f| f.name.clone())
+        .collect();
+    let all_funcs: Vec<_> = ir.functions.drain(..).collect();
+    let (user_remaining, mut stdlib_funcs): (Vec<_>, Vec<_>) = all_funcs
+        .into_iter()
+        .partition(|f| user_func_set.contains(&f.name));
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    stdlib_funcs.retain(|f| seen.insert(f.name.clone()));
+    (user_remaining, stdlib_funcs)
+}
+
+#[cfg(feature = "native-backend")]
 fn stdlib_cache_count_sidecar_path(stdlib_path: &Path) -> std::path::PathBuf {
     stdlib_path.with_extension("count")
 }
@@ -832,6 +853,9 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
                 let entry_module =
                     std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
+                let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
+                let (mut user_remaining, mut stdlib_funcs) =
+                    prune_and_partition_native_stdlib(&mut ir, &entry_module);
 
                 if let Some(ref stdlib_path_str) = stdlib_obj_path {
                     let stdlib_path = std::path::Path::new(stdlib_path_str);
@@ -843,11 +867,6 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                         },
                     );
 
-                    // Only use the stdlib partition cache when the CLI provides
-                    // MOLT_ENTRY_MODULE — without it, entry_module defaults to
-                    // "__main__" which misclassifies ALL user functions as stdlib
-                    // (their names start with e.g. "test_sieve__", not "__main____").
-                    let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
                     if have_entry_module && stdlib_path.exists() {
                         if shared_stdlib_cache_matches(
                             stdlib_path,
@@ -856,17 +875,16 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                             // Cache matches — mark stdlib functions as extern stubs.
                             // The backend will declare them as Import (no body); the
                             // linker resolves symbols from stdlib_shared.o.
-                            let mut user_count = 0;
-                            let mut extern_count = 0;
-                            for func in ir.functions.iter_mut() {
-                                if !is_user_owned_symbol(&func.name, &entry_module) {
-                                    func.is_extern = true;
-                                    func.ops.clear();
-                                    extern_count += 1;
-                                } else {
-                                    user_count += 1;
-                                }
+                            let mut retained = std::mem::take(&mut user_remaining);
+                            let mut extern_count = 0usize;
+                            for mut func in std::mem::take(&mut stdlib_funcs) {
+                                func.is_extern = true;
+                                func.ops.clear();
+                                extern_count += 1;
+                                retained.push(func);
                             }
+                            let user_count = retained.len().saturating_sub(extern_count);
+                            ir.functions = retained;
                             eprintln!(
                                 "MOLT_BACKEND(daemon): incremental — compiling {user_count} user functions \
                                  ({extern_count} stdlib extern from {})",
@@ -902,24 +920,6 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                                 );
                             });
 
-                        let user_func_set: std::collections::BTreeSet<String> = ir
-                            .functions
-                            .iter()
-                            .filter(|f| is_user_owned_symbol(&f.name, &entry_module))
-                            .map(|f| f.name.clone())
-                            .collect();
-                        let all_funcs: Vec<_> = ir.functions.drain(..).collect();
-                        let (user_remaining, mut stdlib_funcs): (Vec<_>, Vec<_>) = all_funcs
-                            .into_iter()
-                            .partition(|f| user_func_set.contains(&f.name));
-
-                        // Deduplicate stdlib functions by name (keep first).
-                        {
-                            let mut seen: std::collections::BTreeSet<String> =
-                                std::collections::BTreeSet::new();
-                            stdlib_funcs.retain(|f| seen.insert(f.name.clone()));
-                        }
-
                         let stdlib_count = stdlib_funcs.len();
                         if stdlib_count > 0 {
                             eprintln!(
@@ -929,7 +929,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                             );
                             if let Err(err) = compile_stdlib_cache_object(
                                 stdlib_path,
-                                stdlib_funcs,
+                                std::mem::take(&mut stdlib_funcs),
                                 ir.profile.clone(),
                                 target_triple,
                                 "MOLT_BACKEND(daemon)",
@@ -954,7 +954,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                             );
                         }
 
-                        ir.functions = user_remaining;
+                        ir.functions = std::mem::take(&mut user_remaining);
                         eprintln!(
                             "MOLT_BACKEND(daemon): compiling {} user functions",
                             ir.functions.len()
@@ -1651,6 +1651,8 @@ fn main() -> io::Result<()> {
             let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
             let entry_module =
                 std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
+            let (mut user_remaining, mut stdlib_funcs) =
+                prune_and_partition_native_stdlib(&mut ir, &entry_module);
 
             if let Some(ref stdlib_path) = stdlib_obj_path {
                 let stdlib_path = std::path::Path::new(stdlib_path);
@@ -1662,12 +1664,7 @@ fn main() -> io::Result<()> {
                 if have_entry_module && stdlib_path.exists() {
                     // Cached stdlib exists — only reuse it when the CLI and
                     // backend agree on the exact stdlib IR identity.
-                    let _total = ir.functions.len();
-                    let current_stdlib_count = ir
-                        .functions
-                        .iter()
-                        .filter(|f| !is_user_owned_symbol(&f.name, &entry_module))
-                        .count();
+                    let current_stdlib_count = stdlib_funcs.len();
                     let count_path = stdlib_cache_count_sidecar_path(stdlib_path);
                     let cached_count: usize = std::fs::read_to_string(&count_path)
                         .ok()
@@ -1681,17 +1678,16 @@ fn main() -> io::Result<()> {
                         // Cache exactly matches the requested stdlib IR — mark
                         // stdlib functions as extern stubs so the backend declares
                         // them as Import.  The linker resolves from stdlib_shared.o.
-                        let mut user_count = 0;
-                        let mut extern_count = 0;
-                        for func in ir.functions.iter_mut() {
-                            if !is_user_owned_symbol(&func.name, &entry_module) {
-                                func.is_extern = true;
-                                func.ops.clear();
-                                extern_count += 1;
-                            } else {
-                                user_count += 1;
-                            }
+                        let mut retained = std::mem::take(&mut user_remaining);
+                        let mut extern_count = 0usize;
+                        for mut func in stdlib_funcs.drain(..) {
+                            func.is_extern = true;
+                            func.ops.clear();
+                            extern_count += 1;
+                            retained.push(func);
                         }
+                        let user_count = retained.len().saturating_sub(extern_count);
+                        ir.functions = retained;
                         eprintln!(
                             "MOLT_BACKEND: incremental — compiling {user_count} user functions ({extern_count} stdlib extern from {})",
                             stdlib_path.display()
@@ -1719,25 +1715,6 @@ fn main() -> io::Result<()> {
                             eprintln!("warning: could not create stdlib cache parent dir: {e}");
                         },
                     );
-                    let _total = ir.functions.len();
-                    let user_funcs: Vec<_> = ir
-                        .functions
-                        .iter()
-                        .filter(|f| is_user_owned_symbol(&f.name, &entry_module))
-                        .map(|f| f.name.clone())
-                        .collect();
-                    let user_func_set: std::collections::BTreeSet<_> =
-                        user_funcs.iter().cloned().collect();
-                    let all_funcs: Vec<_> = ir.functions.drain(..).collect();
-                    let (user_remaining, mut stdlib_funcs): (Vec<_>, Vec<_>) = all_funcs
-                        .into_iter()
-                        .partition(|f| user_func_set.contains(&f.name));
-                    // Deduplicate stdlib functions by name (keep first occurrence).
-                    {
-                        let mut seen: std::collections::BTreeSet<String> =
-                            std::collections::BTreeSet::new();
-                        stdlib_funcs.retain(|f| seen.insert(f.name.clone()));
-                    }
                     // Compile stdlib
                     eprintln!(
                         "MOLT_BACKEND: first build — caching {} stdlib functions to {}",
@@ -1748,7 +1725,7 @@ fn main() -> io::Result<()> {
 
                     compile_stdlib_cache_object(
                         stdlib_path,
-                        stdlib_funcs,
+                        std::mem::take(&mut stdlib_funcs),
                         ir.profile.clone(),
                         target_triple,
                         "MOLT_BACKEND",
@@ -1759,7 +1736,7 @@ fn main() -> io::Result<()> {
                         expected_stdlib_cache_key.as_deref(),
                     );
                     // Now compile user functions only
-                    ir.functions = user_remaining;
+                    ir.functions = std::mem::take(&mut user_remaining);
                     eprintln!(
                         "MOLT_BACKEND: compiling {} user functions",
                         ir.functions.len()
@@ -1767,11 +1744,11 @@ fn main() -> io::Result<()> {
                 }
             }
 
-            // Run dead function elimination on the full IR *before* batching.
-            // For small programs (e.g. `print("hello")`), this can remove the
-            // majority of stdlib functions, cutting the binary from ~29 MB to
-            // ~3 MB and cold-cache startup from ~300 ms to <10 ms.
-            molt_backend::eliminate_dead_functions(&mut ir);
+            if stdlib_obj_path.is_none() {
+                // Run dead function elimination on the full IR before batching
+                // when the stdlib path did not already do the prune/partition split.
+                molt_backend::eliminate_dead_functions(&mut ir);
+            }
 
             // Deduplicate functions by name — the compiler can emit the same
             // function name multiple times (e.g. stdlib re-imports).  Keep the
@@ -1872,10 +1849,11 @@ mod tests {
         daemon_response_payload, default_backend_max_rss_gb_from_physical_mem_bytes,
         resolved_batch_size_limit, DEFAULT_BACKEND_BATCH_SIZE, DEFAULT_STDLIB_BATCH_SIZE,
         ensure_output_parent_dir, is_user_owned_symbol, merge_relocatable_objects,
-        partition_functions_for_batches, read_daemon_request_bytes, relocatable_linker_binary,
-        shared_stdlib_cache_matches, write_cached_output, write_shared_stdlib_cache_sidecars,
+        partition_functions_for_batches, prune_and_partition_native_stdlib,
+        read_daemon_request_bytes, relocatable_linker_binary, shared_stdlib_cache_matches,
+        write_cached_output, write_shared_stdlib_cache_sidecars,
     };
-    use molt_backend::FunctionIR;
+    use molt_backend::{FunctionIR, OpIR, SimpleIR};
     use std::io::Cursor;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2292,5 +2270,142 @@ mod tests {
             Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", value) },
             None => unsafe { std::env::remove_var("MOLT_BACKEND_BATCH_SIZE") },
         }
+    }
+
+    #[test]
+    fn dead_function_elimination_prunes_stdlib_before_partition() {
+        let mut ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "call_internal".to_string(),
+                        s_value: Some("molt_init_sys".to_string()),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_init_app".to_string(),
+                    params: vec![],
+                    ops: vec![],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "app__module".to_string(),
+                    params: vec![],
+                    ops: vec![],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_init_sys".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "code_slot_set".to_string(),
+                        value: Some(73),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_init_json".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "code_slot_set".to_string(),
+                        value: Some(843),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            profile: None,
+        };
+
+        molt_backend::eliminate_dead_functions(&mut ir);
+        let retained: std::collections::BTreeSet<_> =
+            ir.functions.iter().map(|func| func.name.as_str()).collect();
+
+        assert!(retained.contains("molt_main"));
+        assert!(retained.contains("molt_init_sys"));
+        assert!(!retained.contains("molt_init_json"));
+    }
+
+    #[test]
+    fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
+        let mut ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "call_internal".to_string(),
+                        s_value: Some("molt_init_sys".to_string()),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_init_app".to_string(),
+                    params: vec![],
+                    ops: vec![],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "app__module".to_string(),
+                    params: vec![],
+                    ops: vec![],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_init_sys".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "code_slot_set".to_string(),
+                        value: Some(73),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_init_json".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "code_slot_set".to_string(),
+                        value: Some(843),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            profile: None,
+        };
+
+        let (user_remaining, stdlib_funcs) = prune_and_partition_native_stdlib(&mut ir, "app");
+        let user_names: Vec<_> = user_remaining.iter().map(|func| func.name.as_str()).collect();
+        let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
+
+        assert_eq!(user_names, vec!["molt_main"]);
+        assert_eq!(stdlib_names, vec!["molt_init_sys"]);
     }
 }
