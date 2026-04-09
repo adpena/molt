@@ -22,10 +22,10 @@ Usage::
     uv run --python 3.12 python3 tools/nightly_test_suite.py --mode weekly
     uv run --python 3.12 python3 tools/nightly_test_suite.py --mode nightly --dry-run
     uv run --python 3.12 python3 tools/nightly_test_suite.py --mode weekly --json
-    uv run --python 3.12 python3 tools/nightly_test_suite.py --report-dir /tmp/reports
+    uv run --python 3.12 python3 tools/nightly_test_suite.py --report-dir tmp/reports
 
 Environment:
-    MOLT_EXT_ROOT     External volume for artifacts (fallback: /tmp/molt_testing)
+    MOLT_EXT_ROOT     External volume for artifacts (default: repo-local tmp/molt_testing)
     CARGO_TARGET_DIR  Rust build target directory
 """
 
@@ -48,23 +48,24 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-_EXT_ROOT_DEFAULT = "/tmp/molt_testing"
+_REPO_EXT_ROOT_DEFAULT = REPO_ROOT / "tmp" / "molt_testing"
 
 
 def _ext_root() -> Path:
-    """Resolve MOLT_EXT_ROOT with /tmp fallback."""
-    raw = os.environ.get("MOLT_EXT_ROOT", "")
-    if raw and Path(raw).is_dir():
-        return Path(raw)
-    fallback = Path(_EXT_ROOT_DEFAULT)
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback
+    """Resolve MOLT_EXT_ROOT with a repo-local canonical fallback."""
+    raw = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if raw:
+        root = Path(raw).expanduser()
+    else:
+        root = _REPO_EXT_ROOT_DEFAULT
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def _report_dir(override: str | None = None) -> Path:
     """Return the dated report directory."""
     if override:
-        d = Path(override)
+        d = Path(override).expanduser()
     else:
         d = (
             _ext_root()

@@ -11,7 +11,7 @@ Requires: wasm-tools CLI (https://github.com/bytecodealliance/wasm-tools)
 
 Usage:
     python tools/wasm_strip_unused.py path/to/module.wasm
-    python tools/wasm_strip_unused.py path/to/module.wasm --strip -o /tmp/trimmed.wasm
+    python tools/wasm_strip_unused.py path/to/module.wasm --strip -o dist/trimmed.wasm
     python tools/wasm_strip_unused.py path/to/module.wasm --json
 """
 
@@ -718,7 +718,10 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Output path for stripped binary (default: /tmp/<name>-stripped.wasm)",
+        help=(
+            "Output path for stripped binary (default: sibling "
+            "<name>-stripped.wasm next to input)"
+        ),
     )
     parser.add_argument(
         "--json",
@@ -748,8 +751,7 @@ def main() -> None:
     if args.strip:
         output = args.output
         if output is None:
-            stem = args.wasm.stem
-            output = Path(f"/tmp/{stem}-stripped.wasm")
+            output = args.wasm.with_name(f"{args.wasm.stem}-stripped.wasm")
         strip_imports(args.wasm, output, result)
         print(f"\nStripped output: {output}")
 
