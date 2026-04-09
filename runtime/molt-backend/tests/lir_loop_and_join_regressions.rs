@@ -12,6 +12,32 @@ fn op(kind: &str) -> OpIR {
     }
 }
 
+fn roundtrip_compile(func: FunctionIR) -> Vec<u8> {
+    let mut typed = lower_to_tir(&func);
+    refine_types(&mut typed);
+    let _stats = run_pipeline(&mut typed);
+    refine_types(&mut typed);
+    verify_function(&typed).expect("typed TIR must verify");
+    let type_map = extract_type_map(&typed);
+    eprintln!("TYPED_TIR_DEBUG: {typed:#?}");
+    let lir_debug = molt_backend::tir::lower_to_lir::lower_function_to_lir(&typed);
+    eprintln!("LIR_DEBUG: {lir_debug:#?}");
+    let round_tripped = lower_to_simple_ir(&typed, &type_map);
+    eprintln!("ROUNDTRIPPED_SIMPLE_DEBUG: {round_tripped:#?}");
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: func.name,
+            params: func.params,
+            ops: round_tripped,
+            param_types: func.param_types,
+            source_file: func.source_file,
+            is_extern: func.is_extern,
+        }],
+        profile: None,
+    };
+    SimpleBackend::new().compile(ir)
+}
+
 #[test]
 fn nested_loop_carried_values_with_inner_if_phi_compile() {
     let mut ops: Vec<OpIR> = Vec::new();
@@ -254,6 +280,98 @@ fn loop_body_if_join_then_continue_compiles() {
     };
 
     let bytes = SimpleBackend::new().compile(ir);
+    assert!(!bytes.is_empty());
+}
+
+#[test]
+fn tir_roundtrip_loop_body_if_return_then_continue_compiles() {
+    let mut ops: Vec<OpIR> = Vec::new();
+
+    let mut zero = op("const");
+    zero.value = Some(0);
+    zero.out = Some("zero".to_string());
+    ops.push(zero);
+
+    let mut one = op("const");
+    one.value = Some(1);
+    one.out = Some("one".to_string());
+    ops.push(one);
+
+    let mut stop = op("const");
+    stop.value = Some(3);
+    stop.out = Some("stop".to_string());
+    ops.push(stop);
+
+    let mut true_val = op("const_bool");
+    true_val.value = Some(1);
+    true_val.out = Some("true_val".to_string());
+    ops.push(true_val);
+
+    let mut false_val = op("const_bool");
+    false_val.value = Some(0);
+    false_val.out = Some("false_val".to_string());
+    ops.push(false_val);
+
+    ops.push(op("loop_start"));
+
+    let mut idx = op("loop_index_start");
+    idx.args = Some(vec!["zero".to_string()]);
+    idx.out = Some("idx".to_string());
+    ops.push(idx);
+
+    let mut cond = op("lt");
+    cond.args = Some(vec!["idx".to_string(), "stop".to_string()]);
+    cond.out = Some("keep_going".to_string());
+    ops.push(cond);
+
+    let mut break_if = op("loop_break_if_false");
+    break_if.args = Some(vec!["keep_going".to_string()]);
+    ops.push(break_if);
+
+    let mut hit = op("eq");
+    hit.args = Some(vec!["idx".to_string(), "one".to_string()]);
+    hit.out = Some("hit".to_string());
+    ops.push(hit);
+
+    let mut if_op = op("if");
+    if_op.args = Some(vec!["hit".to_string()]);
+    ops.push(if_op);
+
+    let mut ret_true = op("ret");
+    ret_true.var = Some("true_val".to_string());
+    ret_true.args = Some(vec!["true_val".to_string()]);
+    ops.push(ret_true);
+
+    ops.push(op("end_if"));
+
+    let mut next_idx = op("add");
+    next_idx.args = Some(vec!["idx".to_string(), "one".to_string()]);
+    next_idx.out = Some("idx_next".to_string());
+    ops.push(next_idx);
+
+    let mut loop_index_next = op("loop_index_next");
+    loop_index_next.args = Some(vec!["idx_next".to_string()]);
+    loop_index_next.out = Some("idx_next".to_string());
+    ops.push(loop_index_next);
+
+    ops.push(op("loop_continue"));
+    ops.push(op("loop_end"));
+
+    let mut ret_false = op("ret");
+    ret_false.var = Some("false_val".to_string());
+    ret_false.args = Some(vec!["false_val".to_string()]);
+    ops.push(ret_false);
+
+    let func = FunctionIR {
+        name: "loop_if_return_continue_roundtrip".to_string(),
+        params: Vec::new(),
+        ops,
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+    };
+
+    let bytes = roundtrip_compile(func);
     assert!(!bytes.is_empty());
 }
 

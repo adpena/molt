@@ -3095,7 +3095,10 @@ impl LuauBackend {
                     self.emit_line(&format!("setmetatable({obj}, {class})"));
                 }
             }
-            "class_set_layout_version" | "class_apply_set_name" | "class_layout_version" => {
+            "class_set_layout_version"
+            | "class_apply_set_name"
+            | "class_layout_version"
+            | "class_merge_layout" => {
                 self.emit_line(&format!("-- [class op: {}]", op.kind));
             }
             "module_import" | "module_cache_get" | "module_cache_set" | "module_cache_del"

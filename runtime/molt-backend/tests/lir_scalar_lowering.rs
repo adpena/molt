@@ -39,6 +39,7 @@ fn single_block_func(ops: Vec<TirOp>, return_type: TirType, next_value: u32) -> 
         loop_roles: HashMap::new(),
         loop_pairs: HashMap::new(),
         loop_break_kinds: HashMap::new(),
+        loop_cond_blocks: HashMap::new(),
     }
 }
 
@@ -194,6 +195,7 @@ fn lower_dynbox_add_to_dynbox_repr() {
         loop_roles: HashMap::new(),
         loop_pairs: HashMap::new(),
         loop_break_kinds: HashMap::new(),
+        loop_cond_blocks: HashMap::new(),
     };
 
     let lir = lower_function_to_lir(&func);
@@ -299,6 +301,7 @@ fn lower_box_and_unbox_align_with_verifier_contract() {
         loop_roles: HashMap::new(),
         loop_pairs: HashMap::new(),
         loop_break_kinds: HashMap::new(),
+        loop_cond_blocks: HashMap::new(),
     };
 
     let lir = lower_function_to_lir(&func);
@@ -375,6 +378,7 @@ fn lower_truthy_condition_materializes_bool1_before_branch() {
         loop_roles: HashMap::new(),
         loop_pairs: HashMap::new(),
         loop_break_kinds: HashMap::new(),
+        loop_cond_blocks: HashMap::new(),
     };
 
     let lir = lower_function_to_lir(&func);

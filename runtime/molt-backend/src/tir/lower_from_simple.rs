@@ -339,6 +339,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
 
     // Detect loop structural roles from the original SimpleIR ops.
     let (loop_roles, loop_pairs, loop_break_kinds) = detect_loop_structure(ir, cfg, &block_map);
+    let loop_cond_blocks = detect_loop_cond_blocks(ir, cfg);
 
     TirFunction {
         name: ir.name.clone(),
@@ -364,6 +365,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         loop_roles,
         loop_pairs,
         loop_break_kinds,
+        loop_cond_blocks,
     }
 }
 
@@ -441,6 +443,40 @@ fn detect_loop_structure(
         }
     }
     (roles, loop_pairs, loop_break_kinds)
+}
+
+fn detect_loop_cond_blocks(ir: &FunctionIR, cfg: &CFG) -> HashMap<BlockId, BlockId> {
+    let mut loop_cond_blocks = HashMap::new();
+    let block_containing = |op_idx: usize| -> Option<BlockId> {
+        cfg.blocks
+            .iter()
+            .position(|bb| bb.start_op <= op_idx && op_idx < bb.end_op)
+            .map(|bid| BlockId(bid as u32))
+    };
+    let mut loop_stack: Vec<(usize, BlockId)> = Vec::new();
+    for (op_idx, op) in ir.ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "loop_start" => {
+                if let Some(header_bid) = block_containing(op_idx) {
+                    loop_stack.push((op_idx, header_bid));
+                }
+            }
+            "loop_end" => {
+                loop_stack.pop();
+            }
+            "loop_break_if_true" | "loop_break_if_false" => {
+                let Some((_, header_bid)) = loop_stack.last().copied() else {
+                    continue;
+                };
+                let Some(cond_bid) = block_containing(op_idx) else {
+                    continue;
+                };
+                loop_cond_blocks.entry(header_bid).or_insert(cond_bid);
+            }
+            _ => {}
+        }
+    }
+    loop_cond_blocks
 }
 
 /// Forward type propagation for arithmetic and comparison ops.

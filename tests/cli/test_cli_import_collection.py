@@ -1912,6 +1912,18 @@ def test_cargo_target_root_is_cached(
     assert info.currsize >= 1
 
 
+def test_cargo_target_root_uses_canonical_session_subdir_when_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
+
+    target_root = cli._cargo_target_root(tmp_path)
+
+    assert target_root == tmp_path / "target" / "sessions" / "alpha_session_beta"
+
+
 def test_build_state_root_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1928,6 +1940,21 @@ def test_build_state_root_is_cached(
     assert first == second == expected
     assert info.hits >= 1
     assert info.currsize >= 1
+
+
+def test_build_state_root_uses_canonical_session_target_when_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli._build_state_root_cached.cache_clear()
+    cli._cargo_target_root_cached.cache_clear()
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
+
+    state_root = cli._build_state_root(tmp_path)
+
+    assert state_root == (
+        tmp_path / "target" / "sessions" / "alpha_session_beta" / ".molt_state"
+    )
 
 
 def test_build_state_root_uses_override_relative_to_project_root(
@@ -1949,16 +1976,116 @@ def test_lock_check_cache_path_is_cached(
 ) -> None:
     cli._lock_check_cache_path_cached.cache_clear()
     monkeypatch.setenv("CARGO_TARGET_DIR", "external-target")
+    monkeypatch.chdir(tmp_path)
 
     first = cli._lock_check_cache_path(tmp_path, "cargo")
     second = cli._lock_check_cache_path(tmp_path, "cargo")
 
     info = cli._lock_check_cache_path_cached.cache_info()
-    assert (
-        first == second == (tmp_path / "external-target" / "lock_checks" / "cargo.json")
-    )
+    expected = Path.cwd() / "external-target" / "lock_checks" / "cargo.json"
+    assert first == second == expected
     assert info.hits >= 1
     assert info.currsize >= 1
+
+
+def test_backend_daemon_binary_is_newer_prefers_explicit_cargo_target_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "Cargo.toml").write_text("[workspace]\n")
+    backend_bin = project_root / "target" / "debug" / "molt-backend"
+    backend_bin.parent.mkdir(parents=True)
+    backend_bin.write_text("backend")
+    pid_path = tmp_path / "daemon.pid"
+    pid_path.write_text("1234")
+    explicit_runtime = tmp_path / "explicit-target" / "release" / "libmolt_runtime.a"
+    explicit_runtime.parent.mkdir(parents=True)
+    explicit_runtime.write_text("runtime")
+
+    monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "explicit-target"))
+    os.utime(backend_bin, (1, 1))
+    os.utime(pid_path, (2, 2))
+    os.utime(explicit_runtime, (3, 3))
+
+    assert cli._backend_daemon_binary_is_newer(backend_bin, pid_path) is True
+
+
+def test_invalidate_stale_stdlib_cache_prefers_explicit_cargo_target_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "Cargo.toml").write_text("[workspace]\n")
+    stdlib_object = tmp_path / "stdlib_shared.o"
+    stdlib_object.write_text("stdlib")
+    explicit_runtime = tmp_path / "explicit-target" / "release" / "libmolt_runtime.a"
+    explicit_runtime.parent.mkdir(parents=True)
+    explicit_runtime.write_text("runtime")
+    removed: list[Path] = []
+
+    monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "explicit-target"))
+    monkeypatch.setattr(
+        cli,
+        "_remove_shared_stdlib_cache_artifacts",
+        lambda path: removed.append(path),
+    )
+    os.utime(stdlib_object, (2, 2))
+    os.utime(explicit_runtime, (3, 3))
+
+    cli._invalidate_stale_stdlib_cache(stdlib_object, project_root)
+
+    assert removed == [stdlib_object]
+
+
+def test_clean_repo_artifacts_removes_repo_local_cache_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for relative in ("tmp", ".uv-cache", ".molt_cache", ".molt_cache-typing"):
+        path = tmp_path / relative
+        path.mkdir(parents=True)
+        (path / "stamp").write_text(relative)
+
+    monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(
+        cli,
+        "_require_molt_root",
+        lambda _root, _json_output, _command: None,
+    )
+
+    exit_code = cli.clean(cache=False, artifacts=False, repo_artifacts=True)
+
+    assert exit_code == 0
+    assert not (tmp_path / "tmp").exists()
+    assert not (tmp_path / ".uv-cache").exists()
+    assert not (tmp_path / ".molt_cache").exists()
+    assert not (tmp_path / ".molt_cache-typing").exists()
+
+
+def test_clean_cargo_target_removes_legacy_session_target_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    canonical_target = tmp_path / "target"
+    legacy_target = tmp_path / "target-alpha_session_beta"
+    canonical_target.mkdir()
+    legacy_target.mkdir()
+    (canonical_target / "stamp").write_text("canonical")
+    (legacy_target / "stamp").write_text("legacy")
+
+    monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(
+        cli,
+        "_require_molt_root",
+        lambda _root, _json_output, _command: None,
+    )
+
+    exit_code = cli.clean(cache=False, artifacts=False, cargo_target=True)
+
+    assert exit_code == 0
+    assert not canonical_target.exists()
+    assert not legacy_target.exists()
 
 
 def test_verify_cargo_lock_uses_workspace_member_manifests_only(
@@ -5817,6 +5944,67 @@ def test_start_backend_daemon_leaves_warming_process_running(
     assert pid_path.read_text().strip() == "4321"
     assert terminated == []
     assert removed == []
+
+
+def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import shutil
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    backend_bin = project_root / "target" / "debug" / "molt-backend"
+    backend_bin.parent.mkdir(parents=True)
+    backend_bin.write_text("backend")
+    socket_path = tmp_path / "daemon.sock"
+    pid_path = tmp_path / "daemon.pid"
+    pid_path.write_text("1234")
+    log_path = tmp_path / "daemon.log"
+    explicit_target = tmp_path / "explicit-target"
+    captured_env: dict[str, str] = {}
+
+    class _FakePopen:
+        pid = 4321
+
+    monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(explicit_target))
+    monkeypatch.setattr(cli, "_backend_daemon_pid_path", lambda *args, **kwargs: pid_path)
+    monkeypatch.setattr(cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path)
+    monkeypatch.setattr(cli, "_read_backend_daemon_pid", lambda *args, **kwargs: 1234)
+    monkeypatch.setattr(cli, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        cli, "_backend_daemon_binary_is_newer", lambda *args, **kwargs: True
+    )
+    monkeypatch.setattr(cli, "_terminate_backend_daemon_pid", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_remove_backend_daemon_pid", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli, "_backend_daemon_wait_until_ready", lambda *args, **kwargs: (True, None)
+    )
+    monkeypatch.setattr(cli, "_build_slot", lambda: contextlib.nullcontext(0))
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/cargo")
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        env = cast(dict[str, str] | None, kwargs.get("env"))
+        captured_env.update(env or {})
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: _FakePopen())
+
+    assert (
+        cli._start_backend_daemon(
+            backend_bin,
+            socket_path,
+            cargo_profile="dev-fast",
+            project_root=project_root,
+            startup_timeout=2.0,
+            json_output=True,
+            warnings=[],
+        )
+        is True
+    )
+    assert captured_env["CARGO_TARGET_DIR"] == str(explicit_target)
 
 
 def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_hit(

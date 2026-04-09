@@ -48,6 +48,10 @@ pub struct TirFunction {
     pub loop_pairs: HashMap<BlockId, BlockId>,
     /// Mapping from loop header block -> original loop-break polarity.
     pub loop_break_kinds: HashMap<BlockId, LoopBreakKind>,
+    /// Mapping from loop header block -> CFG block that owns the original
+    /// `loop_break_if_*` test in SimpleIR. This lets later lowering reuse the
+    /// real loop condition block instead of rediscovering it heuristically.
+    pub loop_cond_blocks: HashMap<BlockId, BlockId>,
 }
 
 impl TirFunction {
@@ -98,6 +102,7 @@ impl TirFunction {
             loop_roles: HashMap::new(),
             loop_pairs: HashMap::new(),
             loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
         }
     }
 
