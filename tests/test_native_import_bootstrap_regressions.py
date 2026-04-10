@@ -202,6 +202,49 @@ def test_native_tensor_linear_f32_contiguous_fast_path(tmp_path: Path) -> None:
     ]
 
 
+def test_native_tensor_broadcast_f32_contiguous_fast_path(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor\n"
+            "a = Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))\n"
+            "b = Tensor(to_device(array('f', [10.0, 20.0])), shape=(1, 2))\n"
+            "out = a + b\n"
+            "print(out._buf.format_char)\n"
+            "print(out.to_list())\n"
+        ),
+        "tensor_broadcast_f32_contiguous",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "[[11.0, 22.0], [13.0, 24.0]]",
+    ]
+
+
+def test_native_tensor_permute_f32_contiguous_fast_path(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor\n"
+            "t = Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0])), shape=(1, 2, 1, 2))\n"
+            "out = t.permute(0, 2, 1, 3)\n"
+            "print(out._buf.format_char)\n"
+            "print(out.to_list())\n"
+        ),
+        "tensor_permute_f32_contiguous",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "[[[[1.0, 2.0], [3.0, 4.0]]]]",
+    ]
+
+
 def test_native_import_typing_optional_is_clean(tmp_path: Path) -> None:
     run = _build_and_run_with_env(
         tmp_path,
@@ -212,6 +255,39 @@ def test_native_import_typing_optional_is_clean(tmp_path: Path) -> None:
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "ok"
+
+
+def test_native_collections_abc_runtime_types_does_not_poison_next_abc_class(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+            "from abc import ABCMeta, abstractmethod\n"
+            "class H(metaclass=ABCMeta):\n"
+            "    __slots__ = ()\n"
+            "    @abstractmethod\n"
+            "    def __hash__(self):\n"
+            "        return 0\n"
+            "    @classmethod\n"
+            "    def __subclasshook__(cls, C):\n"
+            "        return NotImplemented\n"
+            "_payload = _require_intrinsic('molt_collections_abc_runtime_types')()\n"
+            "class K(metaclass=ABCMeta):\n"
+            "    __slots__ = ()\n"
+            "    @abstractmethod\n"
+            "    def __hash__(self):\n"
+            "        return 0\n"
+            "    @classmethod\n"
+            "    def __subclasshook__(cls, C):\n"
+            "        return NotImplemented\n"
+            "print(type(K).__name__)\n"
+        ),
+        "collections_abc_runtime_types_no_poison",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "ABCMeta"
 
 
 def test_native_metaclass_subclass_of_base_metaclass_is_allowed(
