@@ -11,6 +11,8 @@ pub mod runtime_imports;
 pub mod types;
 
 #[cfg(feature = "llvm")]
+use std::collections::BTreeMap;
+#[cfg(feature = "llvm")]
 use inkwell::OptimizationLevel;
 #[cfg(feature = "llvm")]
 use inkwell::builder::Builder;
@@ -22,10 +24,14 @@ use inkwell::module::Module;
 use inkwell::targets::TargetMachine;
 
 #[cfg(feature = "llvm")]
+use crate::tir::types::TirType;
+#[cfg(feature = "llvm")]
 pub struct LlvmBackend<'ctx> {
     pub context: &'ctx Context,
     pub module: Module<'ctx>,
     pub builder: Builder<'ctx>,
+    pub function_param_types: BTreeMap<String, Vec<TirType>>,
+    pub function_return_types: BTreeMap<String, TirType>,
 }
 
 #[cfg(feature = "llvm")]
@@ -40,6 +46,8 @@ impl<'ctx> LlvmBackend<'ctx> {
             context,
             module,
             builder,
+            function_param_types: BTreeMap::new(),
+            function_return_types: BTreeMap::new(),
         }
     }
 
