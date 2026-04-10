@@ -2,8 +2,8 @@ use crate::PyToken;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use super::RuntimeState;
-use crate::{MoltObject, alloc_string, init_atomic_bits};
 use crate::object::{HEADER_FLAG_INTERNED, header_from_obj_ptr, obj_from_bits};
+use crate::{MoltObject, alloc_string, init_atomic_bits};
 
 pub(crate) struct InternedNames {
     pub(crate) bases_name: AtomicU64,

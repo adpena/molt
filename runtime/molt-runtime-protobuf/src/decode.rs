@@ -11,10 +11,7 @@ pub enum MessageDecodeError {
     /// A field number was encountered that does not appear in the schema.
     UnknownField { number: u32 },
     /// The wire type on the wire did not match the schema's expected wire type.
-    WireTypeMismatch {
-        field: String,
-        expected: WireType,
-    },
+    WireTypeMismatch { field: String, expected: WireType },
     /// A varint could not be decoded.
     Varint(DecodeError),
 }
@@ -108,9 +105,7 @@ pub fn decode_message(
     Ok(results
         .into_iter()
         .enumerate()
-        .map(|(i, opt)| {
-            opt.unwrap_or_else(|| default_value(schema.fields[i].wire_type))
-        })
+        .map(|(i, opt)| opt.unwrap_or_else(|| default_value(schema.fields[i].wire_type)))
         .collect())
 }
 

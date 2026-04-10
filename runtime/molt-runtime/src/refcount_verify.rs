@@ -61,15 +61,16 @@ pub fn track_inc_ref(bits: u64, location: &'static str) {
 pub fn track_dec_ref(bits: u64) {
     let mut map_guard = REFCOUNT_MAP.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref mut map) = *map_guard
-        && let Some(entry) = map.get_mut(&bits) {
-            entry.refcount -= 1;
-            if entry.refcount < 0 {
-                panic!(
-                    "REFCOUNT UNDERFLOW: object {:#x} refcount went to {} (created at {})",
-                    bits, entry.refcount, entry.creation_location
-                );
-            }
+        && let Some(entry) = map.get_mut(&bits)
+    {
+        entry.refcount -= 1;
+        if entry.refcount < 0 {
+            panic!(
+                "REFCOUNT UNDERFLOW: object {:#x} refcount went to {} (created at {})",
+                bits, entry.refcount, entry.creation_location
+            );
         }
+    }
 }
 
 /// Verify that all tracked objects have been freed (refcount == 0).

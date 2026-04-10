@@ -1,9 +1,9 @@
 // Regex engine implementation (re module support).
 // Extracted from functions.rs for compilation-unit size reduction and tree shaking.
 
+use super::functions::*;
 use crate::*;
 use molt_obj_model::MoltObject;
-use super::functions::*;
 
 const THIS_ENCODED: &str = concat!(
     "Gur Mra bs Clguba, ol Gvz Crgref\n\n",
@@ -29,7 +29,6 @@ const THIS_ENCODED: &str = concat!(
 );
 
 pub(crate) type CharClassParse = (Vec<char>, Vec<(char, char)>, bool, usize);
-
 
 pub(crate) fn this_rot13_char(ch: char) -> char {
     match ch {
@@ -295,7 +294,13 @@ pub(crate) fn re_anchor_matches_impl(
     false
 }
 
-pub(crate) fn re_backref_advance_impl(text: &str, pos: i64, end: i64, start_ref: i64, end_ref: i64) -> i64 {
+pub(crate) fn re_backref_advance_impl(
+    text: &str,
+    pos: i64,
+    end: i64,
+    start_ref: i64,
+    end_ref: i64,
+) -> i64 {
     let chars: Vec<char> = text.chars().collect();
     let text_len = i64::try_from(chars.len()).unwrap_or(i64::MAX);
     if pos < 0 || end < 0 || start_ref < 0 || end_ref < start_ref {
@@ -511,7 +516,10 @@ pub(crate) fn re_group_values_from_sequence(
     Ok(out)
 }
 
-pub(crate) fn re_expand_replacement_impl(repl: &str, group_values: &[Option<String>]) -> Result<String, ()> {
+pub(crate) fn re_expand_replacement_impl(
+    repl: &str,
+    group_values: &[Option<String>],
+) -> Result<String, ()> {
     let mut out = String::new();
     let chars: Vec<char> = repl.chars().collect();
     let mut i = 0usize;
@@ -674,7 +682,10 @@ pub(crate) fn re_slice_char_bounds(index: i64, text_len: i64) -> i64 {
     }
 }
 
-pub(crate) fn re_group_values_from_spans(text: &str, spans: &[Option<(i64, i64)>]) -> Vec<Option<String>> {
+pub(crate) fn re_group_values_from_spans(
+    text: &str,
+    spans: &[Option<(i64, i64)>],
+) -> Vec<Option<String>> {
     let text_chars: Vec<char> = text.chars().collect();
     let text_len = i64::try_from(text_chars.len()).unwrap_or(i64::MAX);
     let mut out: Vec<Option<String>> = Vec::with_capacity(spans.len());
@@ -697,7 +708,10 @@ pub(crate) fn re_group_values_from_spans(text: &str, spans: &[Option<(i64, i64)>
     out
 }
 
-pub(crate) fn re_alloc_group_values(_py: &crate::PyToken<'_>, values: &[Option<String>]) -> Result<u64, u64> {
+pub(crate) fn re_alloc_group_values(
+    _py: &crate::PyToken<'_>,
+    values: &[Option<String>],
+) -> Result<u64, u64> {
     let mut elem_bits: Vec<u64> = Vec::with_capacity(values.len());
     let mut owned_bits: Vec<u64> = Vec::new();
     for value in values {
@@ -727,7 +741,13 @@ pub(crate) fn re_alloc_group_values(_py: &crate::PyToken<'_>, values: &[Option<S
     }
 }
 
-pub(crate) fn re_literal_advance_impl(text: &str, pos: i64, end: i64, literal: &str, flags: i64) -> i64 {
+pub(crate) fn re_literal_advance_impl(
+    text: &str,
+    pos: i64,
+    end: i64,
+    literal: &str,
+    flags: i64,
+) -> i64 {
     let text_chars: Vec<char> = text.chars().collect();
     let literal_chars: Vec<char> = literal.chars().collect();
     let text_len = i64::try_from(text_chars.len()).unwrap_or(i64::MAX);

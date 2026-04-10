@@ -118,7 +118,10 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let ok = unsafe { __molt_math_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
         let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                out_ptr as *mut u8,
+                out_len,
+            ))
         };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
@@ -132,7 +135,10 @@ pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
     let ok = unsafe { __molt_math_type_name(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                out_ptr as *mut u8,
+                out_len,
+            ))
         };
         Cow::Owned(String::from_utf8_lossy(&boxed).into_owned())
     } else {
@@ -293,7 +299,10 @@ pub fn to_bigint(obj: MoltObject) -> Option<num_bigint::BigInt> {
         return Some(BigInt::from(0));
     }
     let bytes = unsafe {
-        Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            out_ptr as *mut u8,
+            out_len,
+        ))
     };
     Some(BigInt::from_bytes_be(sign, &bytes))
 }
@@ -338,7 +347,10 @@ pub unsafe fn bigint_ref(ptr: *mut u8) -> num_bigint::BigInt {
         _ => Sign::Plus,
     };
     let bytes = unsafe {
-        Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            out_ptr as *mut u8,
+            out_len,
+        ))
     };
     BigInt::from_bytes_be(sign, &bytes)
 }
@@ -360,7 +372,10 @@ pub fn bigint_from_f64_trunc(val: f64) -> num_bigint::BigInt {
         _ => Sign::Plus,
     };
     let bytes = unsafe {
-        Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            out_ptr as *mut u8,
+            out_len,
+        ))
     };
     BigInt::from_bytes_be(sign, &bytes)
 }
@@ -422,7 +437,10 @@ pub fn index_bigint_from_obj(
         return Some(BigInt::from(0));
     }
     let bytes = unsafe {
-        Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            out_ptr as *mut u8,
+            out_len,
+        ))
     };
     Some(BigInt::from_bytes_be(sign, &bytes))
 }
@@ -479,7 +497,10 @@ pub fn class_name_for_error(type_bits: u64) -> String {
     let ok = unsafe { __molt_math_class_name_for_error(type_bits, &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                out_ptr as *mut u8,
+                out_len,
+            ))
         };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
@@ -506,7 +527,10 @@ pub fn format_obj(_py: &PyToken, obj: MoltObject) -> String {
     let ok = unsafe { __molt_math_format_obj(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                out_ptr as *mut u8,
+                out_len,
+            ))
         };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {
@@ -520,7 +544,10 @@ pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> String {
     let ok = unsafe { __molt_math_format_obj_str(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                out_ptr as *mut u8,
+                out_len,
+            ))
         };
         String::from_utf8_lossy(&boxed).into_owned()
     } else {

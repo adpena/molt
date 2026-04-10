@@ -409,12 +409,12 @@ fn collect_branch_edges(block: &TirBlock) -> Vec<(BlockId, Vec<ValueId>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::f64::consts::PI;
     use crate::tir::blocks::{BlockId, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
     use crate::tir::values::{TirValue, ValueId};
+    use std::f64::consts::PI;
 
     /// Helper: build a simple function with one block containing the given ops.
     fn single_block_func(ops: Vec<TirOp>, next_value: u32) -> TirFunction {
@@ -485,12 +485,7 @@ mod tests {
     fn constants_resolve_to_concrete_types() {
         let ops = vec![
             make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(42)),
-            make_op(
-                OpCode::ConstFloat,
-                vec![],
-                vec![ValueId(1)],
-                float_attr(PI),
-            ),
+            make_op(OpCode::ConstFloat, vec![], vec![ValueId(1)], float_attr(PI)),
             make_op(
                 OpCode::ConstStr,
                 vec![],

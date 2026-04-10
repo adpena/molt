@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn encode_simple_message() {
-        use crate::encode::{encode_message, FieldValue};
+        use crate::encode::{FieldValue, encode_message};
         let schema = MessageSchema {
             name: "test.Person".into(),
             fields: vec![
@@ -275,10 +275,7 @@ mod tests {
                 },
             ],
         };
-        let values = vec![
-            FieldValue::Bytes(b"Alice".to_vec()),
-            FieldValue::Uint64(30),
-        ];
+        let values = vec![FieldValue::Bytes(b"Alice".to_vec()), FieldValue::Uint64(30)];
         let bytes = encode_message(&schema, &values).unwrap();
         assert!(!bytes.is_empty());
         assert_eq!(bytes[0], 0x0A); // Field 1, wire type 2
@@ -291,7 +288,7 @@ mod tests {
     #[test]
     fn decode_simple_message() {
         use crate::decode::decode_message;
-        use crate::encode::{encode_message, FieldValue};
+        use crate::encode::{FieldValue, encode_message};
         let schema = MessageSchema {
             name: "test.Person".into(),
             fields: vec![
@@ -311,10 +308,7 @@ mod tests {
                 },
             ],
         };
-        let values = vec![
-            FieldValue::Bytes(b"Alice".to_vec()),
-            FieldValue::Uint64(30),
-        ];
+        let values = vec![FieldValue::Bytes(b"Alice".to_vec()), FieldValue::Uint64(30)];
         let encoded = encode_message(&schema, &values).unwrap();
         let decoded = decode_message(&schema, &encoded).unwrap();
         assert_eq!(decoded.len(), 2);
@@ -338,7 +332,7 @@ mod tests {
     #[test]
     fn roundtrip_all_wire_types() {
         use crate::decode::decode_message;
-        use crate::encode::{encode_message, FieldValue};
+        use crate::encode::{FieldValue, encode_message};
         let schema = MessageSchema {
             name: "test.AllTypes".into(),
             fields: vec![

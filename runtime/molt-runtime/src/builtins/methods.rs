@@ -2179,7 +2179,11 @@ pub(crate) fn object_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
                                 bits,
                                 function_fn_ptr(ptr),
                                 crate::object::layout::function_call_target_ptr(ptr) as usize,
-                                crate::builtins::functions::runtime_callable_target_ptr(function_fn_ptr(ptr)).unwrap_or(std::ptr::null()) as usize,
+                                crate::builtins::functions::runtime_callable_target_ptr(
+                                    function_fn_ptr(ptr)
+                                )
+                                .unwrap_or(std::ptr::null())
+                                    as usize,
                                 function_arity(ptr),
                             );
                         }

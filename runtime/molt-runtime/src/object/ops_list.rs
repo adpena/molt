@@ -356,7 +356,11 @@ pub extern "C" fn molt_list_init_method(list_bits: u64, iterable_bits: u64) -> u
                     let val_type = crate::builtins::type_ops::type_of_bits(_py, list_bits);
                     let list_type = crate::builtins::classes::builtin_classes(_py).list;
                     if !crate::builtins::type_ops::issubclass_bits(val_type, list_type) {
-                        return raise_exception::<_>(_py, "TypeError", "list.__init__ expects list");
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "list.__init__ expects list",
+                        );
                     }
                 } else {
                     return raise_exception::<_>(_py, "TypeError", "list.__init__ expects list");

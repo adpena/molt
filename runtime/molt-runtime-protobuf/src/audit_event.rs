@@ -7,8 +7,8 @@
 //!   4: decision (uint64, 0=Allowed, 1=Denied, 2=ResourceExceeded)
 //!   5: module (string)
 
-use crate::decode::{decode_message, MessageDecodeError};
-use crate::encode::{encode_message, FieldValue};
+use crate::decode::{MessageDecodeError, decode_message};
+use crate::encode::{FieldValue, encode_message};
 use crate::{FieldDef, MessageSchema, WireType};
 
 /// Returns the canonical `MessageSchema` for an `AuditEvent` message.

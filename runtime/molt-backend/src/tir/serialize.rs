@@ -88,8 +88,8 @@ pub fn deserialize_ops(bytes: &[u8]) -> Option<Vec<crate::ir::OpIR>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-use crate::ir::OpIR;
-use std::f64::consts::PI;
+    use crate::ir::OpIR;
+    use std::f64::consts::PI;
 
     fn sample_ops() -> Vec<OpIR> {
         vec![

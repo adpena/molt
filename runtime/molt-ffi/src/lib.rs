@@ -475,7 +475,10 @@ mod tests {
         let result = molt_ffi_math_sqrt(neg.bits());
         let obj = molt_obj_model::MoltObject::from_bits(result);
         // sqrt(-1) is NaN; from_float canonicalizes NaN
-        assert!(obj.as_float().unwrap().is_nan() || obj.bits() == molt_obj_model::MoltObject::from_float(f64::NAN).bits());
+        assert!(
+            obj.as_float().unwrap().is_nan()
+                || obj.bits() == molt_obj_model::MoltObject::from_float(f64::NAN).bits()
+        );
     }
 
     #[test]

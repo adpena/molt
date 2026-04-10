@@ -68,7 +68,9 @@ fn structured_if_phi_merges_compile() {
         functions: vec![FunctionIR {
             name: "structured_if_phi_regression".to_string(),
             params: Vec::new(),
-            ops: vec![cond, if_op, then_val, else_op, else_val, end_if, phi, ret_joined],
+            ops: vec![
+                cond, if_op, then_val, else_op, else_val, end_if, phi, ret_joined,
+            ],
             param_types: None,
             source_file: None,
             is_extern: false,

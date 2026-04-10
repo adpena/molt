@@ -11,7 +11,7 @@ const NURSERY_WORDS: usize = NURSERY_SIZE / std::mem::size_of::<u64>();
 
 pub struct Nursery {
     data: Vec<u64>, // 8-byte-aligned backing storage (heap-allocated, reusable)
-    cursor: usize, // next allocation offset
+    cursor: usize,  // next allocation offset
 }
 
 impl Nursery {

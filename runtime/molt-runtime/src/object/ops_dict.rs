@@ -512,14 +512,14 @@ pub extern "C" fn molt_dict_str_int_inc(dict_bits: u64, key_bits: u64, delta_bit
 /// When default is MISSING, equivalent to pop(key) without a default
 /// (raises KeyError if key is absent).  Otherwise, pop(key, default).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_pop_method(
-    dict_bits: u64,
-    key_bits: u64,
-    default_bits: u64,
-) -> u64 {
+pub extern "C" fn molt_dict_pop_method(dict_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let has_default = !crate::builtins::methods::is_missing_bits(_py, default_bits);
-        let actual_default = if has_default { default_bits } else { MoltObject::none().bits() };
+        let actual_default = if has_default {
+            default_bits
+        } else {
+            MoltObject::none().bits()
+        };
         let flag = MoltObject::from_int(has_default as i64).bits();
         molt_dict_pop(dict_bits, key_bits, actual_default, flag)
     })

@@ -3,11 +3,10 @@ use crate::{
     MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_DATACLASS, TYPE_ID_FUNCTION,
     TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_TYPE, bound_method_func_bits,
     call_builtin_type_if_needed, call_function_obj0, call_function_obj1, call_function_obj2,
-    call_function_obj3, class_attr_lookup_raw_mro, class_name_for_error, function_arity,
-    generic_alias_origin_bits, intern_static_name, lookup_call_attr, molt_call_bind,
-    molt_callargs_new, molt_callargs_push_pos,
-    obj_from_bits, object_type_id, raise_exception, raise_not_callable, runtime_state,
-    try_call_generator, exception_pending,
+    call_function_obj3, class_attr_lookup_raw_mro, class_name_for_error, exception_pending,
+    function_arity, generic_alias_origin_bits, intern_static_name, lookup_call_attr,
+    molt_call_bind, molt_callargs_new, molt_callargs_push_pos, obj_from_bits, object_type_id,
+    raise_exception, raise_not_callable, runtime_state, try_call_generator,
 };
 
 unsafe fn call_type_via_bind(_py: &PyToken<'_>, call_bits: u64, args: &[u64]) -> u64 {
