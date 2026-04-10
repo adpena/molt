@@ -292,6 +292,88 @@ def test_append_table_ref_elements_tolerates_malformed_name_utf8() -> None:
     assert result is None or isinstance(result, bytes)
 
 
+def test_append_table_ref_elements_uses_export_names_without_name_section() -> None:
+    write_varuint = wasm_link._write_varuint
+
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = write_varuint(1) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    table_payload = bytearray()
+    table_payload.extend(write_varuint(1))
+    table_payload.append(0x70)
+    table_payload.extend(write_varuint(0))
+    table_payload.extend(write_varuint(1))
+    sections.append((4, bytes(table_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(1))
+    export_payload.extend(wasm_link._write_string("__molt_table_ref_0"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(2))
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    data = wasm_link._build_sections(sections)
+    updated = wasm_link._append_table_ref_elements(data)
+    assert updated is not None
+    ok, err = wasm_link._validate_elements(updated)
+    assert ok, err
+
+
+def test_strip_internal_exports_keeps_table_ref_exports() -> None:
+    write_varuint = wasm_link._write_varuint
+
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = write_varuint(1) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(2))
+    export_payload.extend(wasm_link._write_string("__molt_table_ref_7"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    export_payload.extend(wasm_link._write_string("molt_main"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(2))
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    data = wasm_link._build_sections(sections)
+    updated = wasm_link._strip_internal_exports(data)
+    exports = wasm_link._collect_function_exports(updated or data)
+    assert "__molt_table_ref_7" in exports
+    assert "molt_main" in exports
+
+
 def test_neutralize_dead_element_entries_skips_modules_with_call_indirect() -> None:
     write_varuint = wasm_link._write_varuint
     sections = []

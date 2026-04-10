@@ -761,22 +761,24 @@ def _declare_ref_func_elements(data: bytes) -> bytes | None:
 
 
 def _append_table_ref_elements(data: bytes) -> bytes | None:
-    names = _collect_func_names(data)
-    table_refs: list[int] = []
-    for func_idx, name in names.items():
+    table_refs: set[int] = set()
+    for func_idx, name in _collect_func_names(data).items():
         if name.startswith("__molt_table_ref_"):
-            table_refs.append(func_idx)
+            table_refs.add(func_idx)
+    for name, func_idx in _collect_function_exports(data).items():
+        if name.startswith("__molt_table_ref_"):
+            table_refs.add(func_idx)
     if not table_refs:
         return None
-    table_refs.sort()
+    sorted_table_refs = sorted(table_refs)
     sections = _parse_sections(data)
     new_sections: list[tuple[int, bytes]] = []
     modified = False
     new_segment = bytearray()
     new_segment.append(0x01)
     new_segment.append(0x00)
-    new_segment.extend(_write_varuint(len(table_refs)))
-    for func_idx in table_refs:
+    new_segment.extend(_write_varuint(len(sorted_table_refs)))
+    for func_idx in sorted_table_refs:
         new_segment.extend(_write_varuint(func_idx))
     for section_id, payload in sections:
         if section_id != 9:
@@ -1492,6 +1494,13 @@ def _tree_shake_runtime(
     )
 
     stripped_data = _build_sections(new_sections)
+    optimized_baseline = _post_link_optimize(stripped_data)
+    if len(optimized_baseline) != len(stripped_data):
+        print(
+            f"Runtime post-link optimize: {len(stripped_data):,} -> {len(optimized_baseline):,} bytes "
+            f"({len(stripped_data) - len(optimized_baseline):,} bytes eliminated)",
+            file=sys.stderr,
+        )
 
     # Use wasm-opt to eliminate dead code (functions no longer reachable
     # from the reduced export set).
@@ -1502,12 +1511,12 @@ def _tree_shake_runtime(
             "(export stripping only)",
             file=sys.stderr,
         )
-        return stripped_data
+        return optimized_baseline
 
     with tempfile.TemporaryDirectory(prefix="molt-treeshake-") as tmp:
         input_path = Path(tmp) / "runtime_stripped.wasm"
         output_path = Path(tmp) / "runtime_shaken.wasm"
-        input_path.write_bytes(stripped_data)
+        input_path.write_bytes(optimized_baseline)
 
         # Feature flags matching wasm_optimize.py defaults -- avoid
         # --all-features which enables custom-descriptors (rejected by V8).
@@ -1537,7 +1546,14 @@ def _tree_shake_runtime(
             "--vacuum",
         ] + feature_flags
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            print(
+                "wasm-opt tree-shake timed out (non-fatal); keeping post-link-optimized runtime",
+                file=sys.stderr,
+            )
+            return optimized_baseline
 
         if result.returncode != 0:
             # wasm-opt may fail on some modules (e.g. unsupported features).
@@ -1547,17 +1563,55 @@ def _tree_shake_runtime(
                 f"wasm-opt tree-shake failed (non-fatal): {err}",
                 file=sys.stderr,
             )
-            return stripped_data
+            return optimized_baseline
 
         shaken_data = output_path.read_bytes()
-        savings = len(stripped_data) - len(shaken_data)
+        savings = len(optimized_baseline) - len(shaken_data)
         print(
             f"wasm-opt tree-shake: {len(runtime_data):,} -> {len(shaken_data):,} bytes "
             f"({savings:,} bytes eliminated, "
             f"{savings / len(runtime_data) * 100:.1f}% reduction)",
             file=sys.stderr,
         )
+
+        final_path = Path(tmp) / "runtime_final.wasm"
+        final_path.write_bytes(shaken_data)
+        if _run_wasm_opt_via_optimize(final_path, level="Oz"):
+            final_data = final_path.read_bytes()
+            print(
+                f"Runtime final optimize: {len(runtime_data):,} -> {len(final_data):,} bytes "
+                f"({len(runtime_data) - len(final_data):,} bytes eliminated, "
+                f"{(len(runtime_data) - len(final_data)) / len(runtime_data) * 100:.1f}% reduction)",
+                file=sys.stderr,
+            )
+            return final_data
         return shaken_data
+
+
+def _optimize_split_app_module(
+    app_data: bytes,
+    *,
+    reference_data: bytes | None,
+    optimize: bool,
+    optimize_level: str,
+) -> bytes:
+    """Deforest the split-runtime app artifact without collapsing its imports.
+
+    The split app module must remain unlinked so it can continue importing the
+    deploy runtime, but it still benefits from the same post-link cleanup passes
+    as the fully linked artifact. Apply those cleanup passes first, then run
+    wasm-opt when requested.
+    """
+    optimized = _post_link_optimize(app_data, reference_data=reference_data)
+    if not optimize:
+        return optimized
+
+    with tempfile.TemporaryDirectory(prefix="molt-split-app-opt-") as tmp:
+        app_path = Path(tmp) / "app_split_preopt.wasm"
+        app_path.write_bytes(optimized)
+        if not _run_wasm_opt_via_optimize(app_path, level=optimize_level):
+            return optimized
+        return app_path.read_bytes()
 
 
 def _build_runtime_stub(runtime_data: bytes) -> bytes:
@@ -1796,7 +1850,7 @@ def _strip_internal_exports(data: bytes) -> bytes | None:
             offset += 1
             _, offset = _read_varuint(payload, offset)
             entry_bytes = payload[entry_start:offset]
-            if name not in _ESSENTIAL_EXPORTS:
+            if name not in _ESSENTIAL_EXPORTS and not name.startswith("__molt_table_ref_"):
                 modified = True
                 continue
             entries.append(entry_bytes)
@@ -3319,7 +3373,14 @@ def _run_wasm_ld(
             # stale unprefixed runtime imports that do not match the deploy
             # runtime's export ABI.  The correct artifact is the rewritten,
             # still-unlinked module.
-            shutil.copy2(str(rewritten_path), str(app_wasm))
+            rewritten_data = rewritten_path.read_bytes()
+            optimized_app = _optimize_split_app_module(
+                rewritten_data,
+                reference_data=output.read_bytes(),
+                optimize=optimize,
+                optimize_level=optimize_level,
+            )
+            app_wasm.write_bytes(optimized_app)
 
             # Resolve the deploy-ready (non-relocatable) runtime.
             deploy_runtime = runtime
