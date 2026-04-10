@@ -46,8 +46,15 @@ class BundleFs {
             offset += 512; // skip header
 
             if (typeFlag === 48 || typeFlag === 0) { // regular file ('0' or null)
-                if (name && size > 0) {
-                    files.set(name, new Uint8Array(tarBytes.buffer, tarBytes.byteOffset + offset, size));
+                if (name) {
+                    files.set(
+                        name,
+                        new Uint8Array(
+                            tarBytes.buffer,
+                            tarBytes.byteOffset + offset,
+                            size,
+                        ),
+                    );
                 }
             }
 
