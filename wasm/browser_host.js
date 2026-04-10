@@ -497,6 +497,27 @@ const installTableRefs = (instance, table) => {
   }
 };
 
+const ensureTableCapacityForExportedRefs = (instance, table) => {
+  if (!instance || !table) {
+    return;
+  }
+  let maxIndex = -1;
+  for (const name of Object.keys(instance.exports)) {
+    const match = /^__molt_table_ref_(\d+)$/.exec(name);
+    if (!match) {
+      continue;
+    }
+    const idx = Number(match[1]);
+    if (Number.isInteger(idx) && idx > maxIndex) {
+      maxIndex = idx;
+    }
+  }
+  if (maxIndex < 0 || maxIndex < table.length) {
+    return;
+  }
+  table.grow(maxIndex + 1 - table.length);
+};
+
 const UTF8_DECODER = new TextDecoder('utf-8');
 const UTF8_ENCODER = new TextEncoder();
 
@@ -3378,6 +3399,8 @@ export const loadMoltWasm = async (options = {}) => {
       }
       linkedCallIndirectFns[name] = fn;
     }
+    const linkedTable = instance.exports.molt_table || env.__indirect_function_table || null;
+    ensureTableCapacityForExportedRefs(instance, linkedTable);
     if (typeof instance.exports.molt_table_init === 'function') {
       instance.exports.molt_table_init();
     }
@@ -3388,7 +3411,7 @@ export const loadMoltWasm = async (options = {}) => {
     return {
       instance,
       memory: memoryExport || memory || env.memory || null,
-      table: instance.exports.molt_table || env.__indirect_function_table || null,
+      table: linkedTable,
       linked: true,
       run: () => {
         if (typeof instance.exports.molt_main !== 'function') {
@@ -3475,6 +3498,7 @@ export const loadMoltWasm = async (options = {}) => {
     },
   });
   outputInstance = outputModule.instance;
+  ensureTableCapacityForExportedRefs(outputInstance, table);
   if (typeof outputModule.instance.exports.molt_table_init === 'function') {
     outputModule.instance.exports.molt_table_init();
   }
