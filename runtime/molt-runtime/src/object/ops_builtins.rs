@@ -683,7 +683,13 @@ pub extern "C" fn molt_call_func_dispatch(
             return molt_call_func_via_callargs(func_bits, effective_args);
         }
         if has_trampoline {
-            return unsafe { call_function_obj_vec(_py, effective_func, effective_args) };
+            return unsafe {
+                crate::call::function::call_function_obj_trampoline(
+                    _py,
+                    effective_func,
+                    effective_args,
+                )
+            };
         }
 
         // --- Step 4: Direct call fast path ---
@@ -704,6 +710,21 @@ pub extern "C" fn molt_call_func_dispatch(
             eprintln!(
                 "[molt dispatch] call_func_dispatch name={name} fn_ptr={fn_ptr_val} has_trampoline={has_trampoline} has_closure={has_closure} arity={func_arity} nargs={eff_nargs}"
             );
+            if matches!(
+                std::env::var("MOLT_TRACE_CALL_DISPATCH_ARGS")
+                    .ok()
+                    .as_deref(),
+                Some("1")
+            ) {
+                for (idx, &arg_bits) in effective_args.iter().enumerate() {
+                    let arg_obj = obj_from_bits(arg_bits);
+                    eprintln!(
+                        "  [molt dispatch arg] idx={idx} type={} bits=0x{:x}",
+                        crate::type_name(_py, arg_obj),
+                        arg_bits
+                    );
+                }
+            }
         }
 
         if func_arity == eff_nargs {
@@ -1132,7 +1153,8 @@ pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
             let kind_bits = molt_exception_kind(exc_bits);
             let kind =
                 string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| "<exc>".into());
-            eprintln!("MOLT_TRACE_LINE_PENDING {} {}", line, kind);
+            let detail = format_obj_str(_py, obj_from_bits(exc_bits));
+            eprintln!("MOLT_TRACE_LINE_PENDING {} {} {}", line, kind, detail);
         }
         frame_stack_set_line(line);
         MoltObject::none().bits()

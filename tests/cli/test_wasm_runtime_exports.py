@@ -37,6 +37,27 @@ def test_wasm_runtime_export_link_args_keeps_host_runtime_exports_in_minimal_mod
     assert " -C link-arg=--export-if-defined=molt_set_wasm_table_base" in flags
 
 
+def test_wasm_runtime_export_link_args_expands_browser_runtime_fallback_exports() -> None:
+    flags = wasm_runtime_export_link_args(
+        {
+            "dict_getitem",
+            "dict_setitem",
+            "tuple_getitem",
+            "fast_dict_get",
+            "fast_list_append",
+            "fast_str_join",
+            "resource_on_allocate",
+            "resource_on_free",
+        }
+    )
+    assert " -C link-arg=--export-if-defined=molt_dict_getitem_borrowed" in flags
+    assert " -C link-arg=--export-if-defined=molt_dict_set" in flags
+    assert " -C link-arg=--export-if-defined=molt_tuple_getitem_borrowed" in flags
+    assert " -C link-arg=--export-if-defined=molt_call_bind_ic" in flags
+    assert " -C link-arg=--export-if-defined=molt_callargs_new" in flags
+    assert " -C link-arg=--export-if-defined=molt_callargs_push_pos" in flags
+
+
 def test_wasm_runtime_required_import_names_reads_stdlib_intrinsics() -> None:
     names = set(wasm_runtime_required_import_names({"os", "ssl"}))
     assert "os_name" in names

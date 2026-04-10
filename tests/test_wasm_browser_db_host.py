@@ -173,6 +173,202 @@ host.run();
         server.shutdown()
 
 
+def test_browser_host_direct_mode_import_stat_constants(tmp_path: Path) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser host direct-mode isolate test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser host direct-mode isolate test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_host_stat.py"
+    src.write_text(
+        "import stat\n"
+        "print(type(stat._constants).__name__)\n"
+        "print(len(stat._constants))\n"
+        "print(stat.S_IFDIR)\n"
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    class _DirectHostHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/output.wasm":
+                payload = output_wasm.read_bytes()
+            elif self.path == "/molt_runtime.wasm":
+                payload = runtime_wasm.read_bytes()
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("content-type", "application/wasm")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _DirectHostHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        browser_host_uri = (root / "wasm" / "browser_host.js").as_uri()
+        script = tmp_path / "run_browser_direct_stat.mjs"
+        script.write_text(
+            f"""
+import {{ loadMoltWasm }} from '{browser_host_uri}';
+
+const baseUrl = {base_url!r};
+const host = await loadMoltWasm({{
+  wasmUrl: `${{baseUrl}}/output.wasm`,
+  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  preferLinked: false,
+}});
+host.run();
+""".lstrip()
+        )
+        run = subprocess.run(
+            ["node", str(script)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        assert run.returncode == 0, run.stderr
+        assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == [
+            "tuple",
+            "71",
+            "16384",
+        ]
+    finally:
+        server.shutdown()
+
+
+def test_browser_host_direct_mode_import_asyncio_iov_max(tmp_path: Path) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser host direct-mode isolate test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser host direct-mode isolate test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_host_asyncio_iov.py"
+    src.write_text(
+        "import asyncio\n"
+        "print(asyncio.selector_events.SC_IOV_MAX)\n"
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    class _DirectHostHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/output.wasm":
+                payload = output_wasm.read_bytes()
+            elif self.path == "/molt_runtime.wasm":
+                payload = runtime_wasm.read_bytes()
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("content-type", "application/wasm")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _DirectHostHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        browser_host_uri = (root / "wasm" / "browser_host.js").as_uri()
+        script = tmp_path / "run_browser_direct_asyncio_iov.mjs"
+        script.write_text(
+            f"""
+import {{ loadMoltWasm }} from '{browser_host_uri}';
+
+const baseUrl = {base_url!r};
+const host = await loadMoltWasm({{
+  wasmUrl: `${{baseUrl}}/output.wasm`,
+  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  preferLinked: false,
+}});
+host.run();
+""".lstrip()
+        )
+        run = subprocess.run(
+            ["node", str(script)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        assert run.returncode == 0, run.stderr
+        assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == ["1024"]
+    finally:
+        server.shutdown()
+
+
 def test_browser_direct_run_wasm_import_os_name(tmp_path: Path) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for browser direct-mode os.name test")
@@ -295,6 +491,458 @@ def test_browser_direct_run_wasm_bool_or_call_result(tmp_path: Path) -> None:
         "False",
         "True",
     ]
+
+
+def test_browser_direct_run_wasm_namedtuple_replace(tmp_path: Path) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser direct-mode namedtuple test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser direct-mode namedtuple test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_direct_namedtuple.py"
+    src.write_text(
+        "from collections import namedtuple\n"
+        "\n"
+        "T = namedtuple('T', ['a', 'b'])\n"
+        "print(T(1, 2)._replace(a=3))\n"
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "0"
+    run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
+    run = subprocess.run(
+        ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
+        cwd=root,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert run.returncode == 0, run.stderr
+    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == [
+        "T(a=3, b=2)"
+    ]
+
+
+def test_browser_direct_run_wasm_slots_function_field_roundtrip(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser direct-mode slots test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser direct-mode slots test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_direct_slots_fn.py"
+    src.write_text(
+        "class Box:\n"
+        "    __slots__ = ('value',)\n"
+        "\n"
+        "    def __init__(self):\n"
+        "        self.value = None\n"
+        "\n"
+        "def ident(x):\n"
+        "    return x\n"
+        "\n"
+        "box = Box()\n"
+        "box.value = ident\n"
+        "print(box.value is ident)\n"
+        "print(box.value(7))\n"
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "0"
+    run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
+    run = subprocess.run(
+        ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
+        cwd=root,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert run.returncode == 0, run.stderr
+    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == [
+        "True",
+        "7",
+    ]
+
+
+def test_browser_direct_run_wasm_enumerate_tuple(tmp_path: Path) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser direct-mode enumerate test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser direct-mode enumerate test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_direct_enumerate.py"
+    src.write_text(
+        "print(list(enumerate(('a', 'b'))))\n"
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "0"
+    run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
+    run = subprocess.run(
+        ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
+        cwd=root,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert run.returncode == 0, run.stderr
+    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == [
+        "[(0, 'a'), (1, 'b')]"
+    ]
+
+
+def test_browser_direct_run_wasm_dict_get_default(tmp_path: Path) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser direct-mode dict.get test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser direct-mode dict.get test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_direct_dict_get.py"
+    src.write_text(
+        "d = {'a': 3}\n"
+        "print(d.get('a', 2))\n"
+        "print(d.get('b', 2))\n"
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "0"
+    run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
+    run = subprocess.run(
+        ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
+        cwd=root,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert run.returncode == 0, run.stderr
+    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == [
+        "3",
+        "2",
+    ]
+
+
+def test_browser_direct_run_wasm_tuple_subclass_custom_repr(tmp_path: Path) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser direct-mode tuple repr test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser direct-mode tuple repr test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_direct_tuple_repr.py"
+    src.write_text(
+        "class T(tuple):\n"
+        "    def __new__(cls, *args):\n"
+        "        return tuple.__new__(cls, args)\n"
+        "    def __repr__(self):\n"
+        "        return f'T({self[0]}, {self[1]})'\n"
+        "print(repr(T(1, 2)))\n"
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "0"
+    run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
+    run = subprocess.run(
+        ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
+        cwd=root,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert run.returncode == 0, run.stderr
+    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == ["T(1, 2)"]
+
+
+def test_browser_direct_run_wasm_try_except_clears_typeerror(tmp_path: Path) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser direct-mode try/except test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser direct-mode try/except test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_direct_try_except.py"
+    src.write_text(
+        "fn = None\n"
+        "try:\n"
+        "    fn()\n"
+        "except Exception:\n"
+        "    pass\n"
+        "print('ok')\n"
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "0"
+    run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
+    run = subprocess.run(
+        ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
+        cwd=root,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert run.returncode == 0, run.stderr
+    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == ["ok"]
+
+
+def test_browser_direct_run_wasm_try_bare_except_clears_typeerror(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser direct-mode bare except test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser direct-mode bare except test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_direct_bare_except.py"
+    src.write_text(
+        "fn = None\n"
+        "try:\n"
+        "    fn()\n"
+        "except:\n"
+        "    pass\n"
+        "print('ok')\n"
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "0"
+    run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
+    run = subprocess.run(
+        ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
+        cwd=root,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert run.returncode == 0, run.stderr
+    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == ["ok"]
 
 
 def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:

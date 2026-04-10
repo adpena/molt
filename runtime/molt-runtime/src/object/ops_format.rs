@@ -530,6 +530,27 @@ pub(crate) fn format_obj_str(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
                 return String::from_utf8_lossy(bytes).into_owned();
             }
+            let subclass_str_override = match type_id {
+                TYPE_ID_LIST => {
+                    try_subclass_str_or_repr_override(_py, ptr, builtin_classes(_py).list)
+                }
+                TYPE_ID_TUPLE => {
+                    try_subclass_str_or_repr_override(_py, ptr, builtin_classes(_py).tuple)
+                }
+                TYPE_ID_DICT => {
+                    try_subclass_str_or_repr_override(_py, ptr, builtin_classes(_py).dict)
+                }
+                TYPE_ID_SET => {
+                    try_subclass_str_or_repr_override(_py, ptr, builtin_classes(_py).set)
+                }
+                TYPE_ID_FROZENSET => {
+                    try_subclass_str_or_repr_override(_py, ptr, builtin_classes(_py).frozenset)
+                }
+                _ => None,
+            };
+            if let Some(rendered) = subclass_str_override {
+                return rendered;
+            }
             if type_id == TYPE_ID_EXCEPTION {
                 // Check for a custom __str__ on the exception class before
                 // falling back to the default format_exception_message path.
@@ -585,6 +606,80 @@ pub(crate) fn format_obj_str(_py: &PyToken<'_>, obj: MoltObject) -> String {
         }
     }
     format_obj(_py, obj)
+}
+
+unsafe fn try_subclass_repr_override(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    builtin_class_bits: u64,
+) -> Option<String> {
+    unsafe {
+        let class_bits = object_class_bits(ptr);
+        if class_bits == 0 || class_bits == builtin_class_bits {
+            return None;
+        }
+        let repr_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.repr_name, b"__repr__");
+        let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, repr_name_bits)?;
+        if call_bits_is_default_object_repr(call_bits) {
+            dec_ref_bits(_py, call_bits);
+            return Some(format_default_object_repr(_py, ptr));
+        }
+        let res_bits = call_callable0(_py, call_bits);
+        dec_ref_bits(_py, call_bits);
+        let rendered = string_obj_to_owned(obj_from_bits(res_bits));
+        dec_ref_bits(_py, res_bits);
+        rendered
+    }
+}
+
+unsafe fn try_subclass_str_or_repr_override(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    builtin_class_bits: u64,
+) -> Option<String> {
+    unsafe {
+        let class_bits = object_class_bits(ptr);
+        if class_bits == 0 || class_bits == builtin_class_bits {
+            return None;
+        }
+        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+            return None;
+        };
+        let Some(base_ptr) = obj_from_bits(builtin_class_bits).as_ptr() else {
+            return None;
+        };
+        if object_type_id(class_ptr) != TYPE_ID_TYPE || object_type_id(base_ptr) != TYPE_ID_TYPE {
+            return None;
+        }
+
+        let str_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.str_name, b"__str__");
+        let raw_str = class_attr_lookup_raw_mro(_py, class_ptr, str_name_bits);
+        let base_str = class_attr_lookup_raw_mro(_py, base_ptr, str_name_bits);
+        if raw_str.is_some() && raw_str != base_str {
+            let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, str_name_bits)?;
+            let res_bits = call_callable0(_py, call_bits);
+            dec_ref_bits(_py, call_bits);
+            let rendered = string_obj_to_owned(obj_from_bits(res_bits));
+            dec_ref_bits(_py, res_bits);
+            return rendered;
+        }
+
+        let repr_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.repr_name, b"__repr__");
+        let raw_repr = class_attr_lookup_raw_mro(_py, class_ptr, repr_name_bits);
+        let base_repr = class_attr_lookup_raw_mro(_py, base_ptr, repr_name_bits);
+        if raw_repr.is_some() && raw_repr != base_repr {
+            let call_bits = attr_lookup_ptr_allow_missing(_py, ptr, repr_name_bits)?;
+            let res_bits = call_callable0(_py, call_bits);
+            dec_ref_bits(_py, call_bits);
+            let rendered = string_obj_to_owned(obj_from_bits(res_bits));
+            dec_ref_bits(_py, res_bits);
+            return rendered;
+        }
+        None
+    }
 }
 
 pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
@@ -811,6 +906,11 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return out;
             }
             if type_id == TYPE_ID_LIST {
+                if let Some(rendered) =
+                    try_subclass_repr_override(_py, ptr, builtin_classes(_py).list)
+                {
+                    return rendered;
+                }
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
                     return "[...]".to_string();
@@ -849,6 +949,11 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return "[]".to_string();
             }
             if type_id == TYPE_ID_TUPLE {
+                if let Some(rendered) =
+                    try_subclass_repr_override(_py, ptr, builtin_classes(_py).tuple)
+                {
+                    return rendered;
+                }
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
                     return "(...)".to_string();
@@ -868,6 +973,11 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return out;
             }
             if type_id == TYPE_ID_DICT {
+                if let Some(rendered) =
+                    try_subclass_repr_override(_py, ptr, builtin_classes(_py).dict)
+                {
+                    return rendered;
+                }
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
                     return "{...}".to_string();
@@ -890,6 +1000,11 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return out;
             }
             if type_id == TYPE_ID_SET {
+                if let Some(rendered) =
+                    try_subclass_repr_override(_py, ptr, builtin_classes(_py).set)
+                {
+                    return rendered;
+                }
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
                     return "{...}".to_string();
@@ -916,6 +1031,11 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 return out;
             }
             if type_id == TYPE_ID_FROZENSET {
+                if let Some(rendered) =
+                    try_subclass_repr_override(_py, ptr, builtin_classes(_py).frozenset)
+                {
+                    return rendered;
+                }
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
                     return "frozenset({...})".to_string();
@@ -1027,7 +1147,9 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
 mod tests {
     use super::format_obj_str;
     use crate::builtins::attr::attr_name_bits_from_bytes;
-    use crate::{alloc_module_obj, alloc_string, dict_set_in_place, module_dict_bits, obj_from_bits};
+    use crate::{
+        alloc_module_obj, alloc_string, dict_set_in_place, module_dict_bits, obj_from_bits,
+    };
     use molt_obj_model::MoltObject;
 
     #[test]
