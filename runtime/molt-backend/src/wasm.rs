@@ -1510,6 +1510,48 @@ impl WasmBackend {
                     required.insert(import_name.to_string());
                 }
 
+                // Some ops lower to specialized runtime imports selected from
+                // container_type/type_hint at codegen time. Mirror that logic
+                // here so Auto mode keeps the same import lane that compile_func
+                // will actually emit.
+                let specialized_import = match kind {
+                    "contains" => match op.container_type.as_deref() {
+                        Some("set") | Some("frozenset") => Some("set_contains"),
+                        Some("dict") => Some("dict_contains"),
+                        Some("list") => Some("list_contains"),
+                        Some("str") => Some("str_contains"),
+                        _ => None,
+                    },
+                    "len" => match op.container_type.as_deref() {
+                        Some("list") | Some("list_int") => Some("len_list"),
+                        Some("str") => Some("len_str"),
+                        Some("dict") => Some("len_dict"),
+                        Some("tuple") => Some("len_tuple"),
+                        Some("set") | Some("frozenset") => Some("len_set"),
+                        _ => match op.type_hint.as_deref() {
+                            Some("str") => Some("len_str"),
+                            Some("dict") => Some("len_dict"),
+                            Some("set") | Some("frozenset") => Some("len_set"),
+                            _ => None,
+                        },
+                    },
+                    "index" => match op.container_type.as_deref() {
+                        Some("list_int") => Some("list_int_getitem"),
+                        Some("dict") => Some("dict_getitem"),
+                        Some("tuple") => Some("tuple_getitem"),
+                        _ => None,
+                    },
+                    "store_index" => match op.container_type.as_deref() {
+                        Some("list_int") => Some("list_int_setitem"),
+                        Some("dict") => Some("dict_setitem"),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(import_name) = specialized_import {
+                    required.insert(import_name.to_string());
+                }
+
                 // Prefix-based discovery for stdlib groups.
                 // If the op kind starts with a known stdlib prefix, include it.
                 // Group expansions (e.g., ws_ → all websocket imports) are handled
@@ -6742,7 +6784,9 @@ impl WasmBackend {
                             Some("str") => "str_contains",
                             _ => "contains",
                         };
-                        emit_call(func, reloc_enabled, import_ids[import_key]);
+                        let import_id =
+                            selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
+                        emit_call(func, reloc_enabled, import_id);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
@@ -6996,7 +7040,9 @@ impl WasmBackend {
                                 _ => "len",
                             },
                         };
-                        emit_call(func, reloc_enabled, import_ids[import_key]);
+                        let import_id =
+                            selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
+                        emit_call(func, reloc_enabled, import_id);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
@@ -8051,7 +8097,9 @@ impl WasmBackend {
                             Some("tuple") => "tuple_getitem",
                             _ => "index",
                         };
-                        emit_call(func, reloc_enabled, import_ids[import_key]);
+                        let import_id =
+                            selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
+                        emit_call(func, reloc_enabled, import_id);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
@@ -8073,7 +8121,9 @@ impl WasmBackend {
                             Some("dict") => "dict_setitem",
                             _ => "store_index",
                         };
-                        emit_call(func, reloc_enabled, import_ids[import_key]);
+                        let import_id =
+                            selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
+                        emit_call(func, reloc_enabled, import_id);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
@@ -13601,6 +13651,21 @@ fn emit_call(func: &mut Function, reloc_enabled: bool, func_index: u32) {
     } else {
         func.instruction(&Instruction::Call(func_index));
     }
+}
+
+fn selected_import_id(
+    import_ids: &TrackedImportIds,
+    import_key: &str,
+    func_name: &str,
+    op_kind: &str,
+) -> u32 {
+    let import_id = import_ids[import_key];
+    assert_ne!(
+        import_id,
+        u32::MAX,
+        "wasm auto import pruning removed required import '{import_key}' for op '{op_kind}' in {func_name}"
+    );
+    import_id
 }
 
 /// Emit a simple N-arg import call: push args, call, store result.

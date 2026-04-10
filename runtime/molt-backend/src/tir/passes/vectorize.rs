@@ -102,6 +102,7 @@ fn is_memory_store(opcode: OpCode) -> bool {
             | OpCode::StoreIndex
             | OpCode::DelAttr
             | OpCode::DelIndex
+            | OpCode::ClosureStore
             | OpCode::Free
             | OpCode::IncRef
             | OpCode::DecRef
@@ -117,6 +118,13 @@ fn is_disqualifying(opcode: OpCode) -> bool {
             opcode,
             OpCode::Yield
                 | OpCode::YieldFrom
+                | OpCode::StateSwitch
+                | OpCode::StateTransition
+                | OpCode::StateYield
+                | OpCode::ChanSendYield
+                | OpCode::ChanRecvYield
+                | OpCode::ClosureLoad
+                | OpCode::ClosureStore
                 | OpCode::Raise
                 | OpCode::CheckException
                 | OpCode::Import

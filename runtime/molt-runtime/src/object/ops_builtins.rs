@@ -1123,6 +1123,17 @@ pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
         } else {
             line_bits as i64
         };
+        if std::env::var("MOLT_TRACE_LINE").as_deref() == Ok("1") {
+            eprintln!("MOLT_TRACE_LINE {}", line);
+        }
+        if std::env::var("MOLT_TRACE_LINE_PENDING").as_deref() == Ok("1") && exception_pending(_py)
+        {
+            let exc_bits = molt_exception_last();
+            let kind_bits = molt_exception_kind(exc_bits);
+            let kind =
+                string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| "<exc>".into());
+            eprintln!("MOLT_TRACE_LINE_PENDING {} {}", line, kind);
+        }
         frame_stack_set_line(line);
         MoltObject::none().bits()
     })

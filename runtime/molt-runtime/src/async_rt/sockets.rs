@@ -296,7 +296,7 @@ fn socket_set_timeout(socket_ptr: *mut u8, timeout: Option<Duration>) {
 
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone)]
-struct WasmSocketMeta {
+pub(crate) struct WasmSocketMeta {
     family: i32,
     sock_type: i32,
     proto: i32,

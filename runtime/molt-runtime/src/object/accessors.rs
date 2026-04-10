@@ -13,9 +13,8 @@ use crate::{
     attr_name_bits_from_bytes, class_dict_bits, class_field_offset, class_layout_version_bits,
     dec_ref_bits, dict_get_in_place, dict_order, dict_set_in_place, exception_pending,
     global_type_version, header_from_obj_ptr, inc_ref_bits, instance_dict_bits, intern_static_name,
-    is_missing_bits, obj_from_bits, object_class_bits, object_mark_has_ptrs,
-    object_payload_size, object_type_id, profile_hit, raise_exception, runtime_state, to_i64,
-    usize_from_bits,
+    is_missing_bits, obj_from_bits, object_class_bits, object_mark_has_ptrs, object_payload_size,
+    object_type_id, profile_hit, raise_exception, runtime_state, to_i64, usize_from_bits,
 };
 
 fn debug_field_bounds_enabled() -> bool {
@@ -34,58 +33,60 @@ unsafe fn sync_materialized_instance_dict_for_field_offset(
     offset: usize,
     val_bits: u64,
 ) {
-    let dict_bits = instance_dict_bits(obj_ptr);
-    if dict_bits == 0 {
-        return;
-    }
-    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        return;
-    };
-    if object_type_id(dict_ptr) != TYPE_ID_DICT {
-        return;
-    }
-    let class_bits = object_class_bits(obj_ptr);
-    if class_bits == 0 {
-        return;
-    }
-    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-        return;
-    };
-    if object_type_id(class_ptr) != TYPE_ID_TYPE {
-        return;
-    }
-    let fields_key = intern_static_name(
-        _py,
-        &runtime_state(_py).interned.field_offsets_name,
-        b"__molt_field_offsets__",
-    );
-    let cls_dict_bits = class_dict_bits(class_ptr);
-    let Some(cls_dict_ptr) = obj_from_bits(cls_dict_bits).as_ptr() else {
-        return;
-    };
-    if object_type_id(cls_dict_ptr) != TYPE_ID_DICT {
-        return;
-    }
-    let Some(offsets_bits) = dict_get_in_place(_py, cls_dict_ptr, fields_key) else {
-        return;
-    };
-    let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
-        return;
-    };
-    if object_type_id(offsets_ptr) != TYPE_ID_DICT {
-        return;
-    }
-    let pairs = dict_order(offsets_ptr).clone();
-    let target_offset = offset as i64;
-    let mut index = 0usize;
-    while index + 1 < pairs.len() {
-        let key_bits = pairs[index];
-        let offset_bits = pairs[index + 1];
-        if obj_from_bits(offset_bits).as_int() == Some(target_offset) {
-            dict_set_in_place(_py, dict_ptr, key_bits, val_bits);
-            break;
+    unsafe {
+        let dict_bits = instance_dict_bits(obj_ptr);
+        if dict_bits == 0 {
+            return;
         }
-        index += 2;
+        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            return;
+        };
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return;
+        }
+        let class_bits = object_class_bits(obj_ptr);
+        if class_bits == 0 {
+            return;
+        }
+        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+            return;
+        };
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return;
+        }
+        let fields_key = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.field_offsets_name,
+            b"__molt_field_offsets__",
+        );
+        let cls_dict_bits = class_dict_bits(class_ptr);
+        let Some(cls_dict_ptr) = obj_from_bits(cls_dict_bits).as_ptr() else {
+            return;
+        };
+        if object_type_id(cls_dict_ptr) != TYPE_ID_DICT {
+            return;
+        }
+        let Some(offsets_bits) = dict_get_in_place(_py, cls_dict_ptr, fields_key) else {
+            return;
+        };
+        let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
+            return;
+        };
+        if object_type_id(offsets_ptr) != TYPE_ID_DICT {
+            return;
+        }
+        let pairs = dict_order(offsets_ptr).clone();
+        let target_offset = offset as i64;
+        let mut index = 0usize;
+        while index + 1 < pairs.len() {
+            let key_bits = pairs[index];
+            let offset_bits = pairs[index + 1];
+            if obj_from_bits(offset_bits).as_int() == Some(target_offset) {
+                dict_set_in_place(_py, dict_ptr, key_bits, val_bits);
+                break;
+            }
+            index += 2;
+        }
     }
 }
 

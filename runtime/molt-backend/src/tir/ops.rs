@@ -92,6 +92,14 @@ pub enum OpCode {
     IterNextUnboxed,
     ForIter,
     // Generator
+    AllocTask,
+    StateSwitch,
+    StateTransition,
+    StateYield,
+    ChanSendYield,
+    ChanRecvYield,
+    ClosureLoad,
+    ClosureStore,
     Yield,
     YieldFrom,
     // Exception

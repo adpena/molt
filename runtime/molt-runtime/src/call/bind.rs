@@ -1590,26 +1590,28 @@ unsafe fn call_bind_ic_entry_for_call(
         let call_ptr = call_obj.as_ptr()?;
         unsafe fn function_requires_full_binding(_py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
             let attr = |name_bytes: &'static [u8]| {
-                function_attr_bits(
-                    _py,
-                    func_ptr,
-                    intern_static_name(
+                unsafe {
+                    function_attr_bits(
                         _py,
-                        match name_bytes {
-                            b"__molt_bind_kind__" => &runtime_state(_py).interned.molt_bind_kind,
-                            b"__molt_vararg__" => &runtime_state(_py).interned.molt_vararg,
-                            b"__molt_varkw__" => &runtime_state(_py).interned.molt_varkw,
-                            b"__molt_kwonly_names__" => {
-                                &runtime_state(_py).interned.molt_kwonly_names
-                            }
-                            b"__defaults__" => &runtime_state(_py).interned.defaults_name,
-                            b"__kwdefaults__" => &runtime_state(_py).interned.kwdefaults_name,
-                            _ => unreachable!("unknown binding metadata attr"),
-                        },
-                        name_bytes,
-                    ),
-                )
-                .unwrap_or_else(|| MoltObject::none().bits())
+                        func_ptr,
+                        intern_static_name(
+                            _py,
+                            match name_bytes {
+                                b"__molt_bind_kind__" => &runtime_state(_py).interned.molt_bind_kind,
+                                b"__molt_vararg__" => &runtime_state(_py).interned.molt_vararg,
+                                b"__molt_varkw__" => &runtime_state(_py).interned.molt_varkw,
+                                b"__molt_kwonly_names__" => {
+                                    &runtime_state(_py).interned.molt_kwonly_names
+                                }
+                                b"__defaults__" => &runtime_state(_py).interned.defaults_name,
+                                b"__kwdefaults__" => &runtime_state(_py).interned.kwdefaults_name,
+                                _ => unreachable!("unknown binding metadata attr"),
+                            },
+                            name_bytes,
+                        ),
+                    )
+                    .unwrap_or_else(|| MoltObject::none().bits())
+                }
             };
 
             for name in [
@@ -1627,7 +1629,9 @@ unsafe fn call_bind_ic_entry_for_call(
                 let Some(ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
                     return true;
                 };
-                if object_type_id(ptr) != TYPE_ID_TUPLE || !seq_vec_ref(ptr).is_empty() {
+                if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE
+                    || !unsafe { seq_vec_ref(ptr) }.is_empty()
+                {
                     return true;
                 }
             }
@@ -1637,7 +1641,9 @@ unsafe fn call_bind_ic_entry_for_call(
                 let Some(ptr) = obj_from_bits(defaults_bits).as_ptr() else {
                     return true;
                 };
-                if object_type_id(ptr) != TYPE_ID_TUPLE || !seq_vec_ref(ptr).is_empty() {
+                if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE
+                    || !unsafe { seq_vec_ref(ptr) }.is_empty()
+                {
                     return true;
                 }
             }
@@ -1647,7 +1653,9 @@ unsafe fn call_bind_ic_entry_for_call(
                 let Some(ptr) = obj_from_bits(kwdefaults_bits).as_ptr() else {
                     return true;
                 };
-                if object_type_id(ptr) != TYPE_ID_DICT || !dict_order(ptr).is_empty() {
+                if unsafe { object_type_id(ptr) } != TYPE_ID_DICT
+                    || !unsafe { dict_order(ptr) }.is_empty()
+                {
                     return true;
                 }
             }
@@ -1845,6 +1853,21 @@ unsafe fn call_bind_ic_dispatch(
         }
 
         profile_hit_unchecked(&CALL_BIND_IC_MISS_COUNT);
+        if trace_call_bind_ic_enabled() {
+            let call_type = type_name(_py, obj_from_bits(call_bits));
+            let (pos_len, kw_len) = if !builder_ptr.is_null() {
+                match require_callargs_ptr(_py, builder_ptr) {
+                    Ok(args_ptr) => ((*args_ptr).pos.len(), (*args_ptr).kw_names.len()),
+                    Err(_) => (0, 0),
+                }
+            } else {
+                (0, 0)
+            };
+            eprintln!(
+                "[molt call_bind_ic] miss site={} callee_type={} pos_len={} kw_len={}",
+                site_id, call_type, pos_len, kw_len
+            );
+        }
         builder_guard.release();
         let res = molt_call_bind(call_bits, builder_bits);
         if let Some(entry) = call_bind_ic_entry_for_call(_py, call_bits) {
@@ -1924,10 +1947,31 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             let builder_ptr = ptr_from_bits(builder_bits);
             let mut builder_guard = PtrDropGuard::new(builder_ptr);
             let call_obj = obj_from_bits(call_bits);
-            let trace = matches!(
-                std::env::var("MOLT_TRACE_CALL_BIND").ok().as_deref(),
-                Some("1")
-            );
+            let trace_mode = std::env::var("MOLT_TRACE_CALL_BIND").ok();
+            let trace = matches!(trace_mode.as_deref(), Some("1" | "all" | "verbose"));
+            let trace_verbose = matches!(trace_mode.as_deref(), Some("all" | "verbose"));
+            if trace_verbose {
+                let callee_type = type_name(_py, call_obj);
+                let (pos_len, kw_len, first_pos) = if !builder_ptr.is_null() {
+                    match require_callargs_ptr(_py, builder_ptr) {
+                        Ok(args_ptr) => (
+                            (*args_ptr).pos.len(),
+                            (*args_ptr).kw_names.len(),
+                            (*args_ptr).pos.first().copied(),
+                        ),
+                        Err(_) => (0, 0, None),
+                    }
+                } else {
+                    (0, 0, None)
+                };
+                let first_pos_type = first_pos
+                    .map(|bits| type_name(_py, obj_from_bits(bits)))
+                    .unwrap_or_else(|| std::borrow::Cow::Borrowed("<none>"));
+                eprintln!(
+                    "molt call_bind enter callee_bits=0x{call_bits:x} callee_type={} pos_len={} kw_len={} first_pos_type={}",
+                    callee_type, pos_len, kw_len, first_pos_type
+                );
+            }
             let Some(call_ptr) = call_obj.as_ptr() else {
                 if trace {
                     if let Some(frame) = FRAME_STACK.with(|stack| stack.borrow().last().copied())

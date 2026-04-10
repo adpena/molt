@@ -879,7 +879,7 @@ def build_runtime_wasm(
         )
         base_flags = (
             "-C link-arg=--import-memory -C link-arg=--import-table"
-            " -C link-arg=--growable-table"
+            " -C link-arg=--growable-table -C link-arg=--export-dynamic"
             + _set_exports
         )
     _append_rustflags(env, base_flags)

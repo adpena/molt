@@ -19405,55 +19405,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 res = MoltValue(self.next_var(), type_hint="Future")
                 self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=res))
                 return res
-            if func_id == "next":
-                if len(node.args) not in (1, 2):
-                    raise NotImplementedError("next expects 1 or 2 arguments")
-                iter_obj = self.visit(node.args[0])
-                if iter_obj is None:
-                    raise NotImplementedError("Unsupported iterator in next()")
-                pair = self._emit_iter_next_checked(iter_obj)
-                none_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                is_none = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="IS", args=[pair, none_val], result=is_none))
-                self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
-                err_val = self._emit_exception_new(
-                    "TypeError", "object is not an iterator"
-                )
-                self.emit(
-                    MoltOp(kind="RAISE", args=[err_val], result=MoltValue("none"))
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                zero = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-                one = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[1], result=one))
-                val = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=val))
-                done = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
-                res_cell = MoltValue(self.next_var(), type_hint="list")
-                if len(node.args) == 2:
-                    default_val = self.visit(node.args[1])
-                else:
-                    default_val = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=default_val))
-                self.emit(MoltOp(kind="LIST_NEW", args=[default_val], result=res_cell))
-                self.emit(MoltOp(kind="IF", args=[done], result=MoltValue("none")))
-                if len(node.args) == 1:
-                    self._emit_stop_iteration_from_value(val)
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[res_cell, zero, val],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="INDEX", args=[res_cell, zero], result=res))
-                return res
             if func_id in {"any", "all"}:
                 # Inline any(genexpr)/all(genexpr) as a short-circuiting loop.
                 is_any = func_id == "any"

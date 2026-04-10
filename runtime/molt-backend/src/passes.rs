@@ -1545,6 +1545,17 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
         }
     }
 
+    if let Ok(raw) = std::env::var("MOLT_STDLIB_MODULE_SYMBOLS")
+        && let Ok(module_symbols) = serde_json::from_str::<Vec<String>>(&raw)
+    {
+        for module_symbol in module_symbols {
+            let init_name = format!("molt_init_{module_symbol}");
+            if defined.contains(init_name.as_str()) {
+                seed(init_name, &mut reachable, &mut queue);
+            }
+        }
+    }
+
     while let Some(current) = queue.pop_front() {
         if let Some(refs) = references.get(&current) {
             for target in refs {
@@ -1937,6 +1948,11 @@ pub fn split_large_function(
         stub_ops.push(OpIR {
             kind: "ret".to_string(),
             var: Some("__chunk_ret".to_string()),
+            ..OpIR::default()
+        });
+    } else {
+        stub_ops.push(OpIR {
+            kind: "ret_void".to_string(),
             ..OpIR::default()
         });
     }
@@ -2468,6 +2484,69 @@ mod tests {
     }
 
     #[test]
+    fn eliminate_dead_functions_keeps_env_seeded_stdlib_init_roots() {
+        let prior = std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").ok();
+        unsafe {
+            std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]");
+        }
+
+        let mut ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "entry".to_string(),
+                    params: vec![],
+                    ops: vec![make_op("ret_void")],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_init_sys".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "call".to_string(),
+                        s_value: Some("sys__helper".to_string()),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "sys__helper".to_string(),
+                    params: vec![],
+                    ops: vec![make_op("ret_void")],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_init_json".to_string(),
+                    params: vec![],
+                    ops: vec![make_op("ret_void")],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            profile: None,
+        };
+
+        eliminate_dead_functions(&mut ir);
+
+        match prior {
+            Some(value) => unsafe { std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", value) },
+            None => unsafe { std::env::remove_var("MOLT_STDLIB_MODULE_SYMBOLS") },
+        }
+
+        let retained: BTreeSet<&str> = ir.functions.iter().map(|func| func.name.as_str()).collect();
+        assert!(retained.contains("molt_init_sys"));
+        assert!(retained.contains("sys__helper"));
+        assert!(!retained.contains("molt_init_json"));
+    }
+
+    #[test]
     fn split_large_function_preserves_protected_runtime_import_entrypoint() {
         let func = FunctionIR {
             name: "molt_isolate_import".to_string(),
@@ -2748,10 +2827,48 @@ mod tests {
                         "chunk `{}` retains external control-flow target {}",
                         chunk.name,
                         target
-                    );
-                }
+                );
             }
         }
+    }
+
+    #[test]
+    fn split_large_function_void_only_stub_returns_none() {
+        let func = FunctionIR {
+            name: "void_only".to_string(),
+            params: vec!["p0".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "line".to_string(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "line".to_string(),
+                    value: Some(2),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "line".to_string(),
+                    value: Some(3),
+                    ..OpIR::default()
+                },
+                make_op("ret_void"),
+            ],
+        };
+
+        let (stub, chunks) = split_large_function(func, 2).expect("expected split");
+
+        assert!(!chunks.is_empty());
+        assert_eq!(
+            stub.ops.last().map(|op| op.kind.as_str()),
+            Some("ret_void"),
+            "void-only split stubs must terminate explicitly with ret_void",
+        );
+    }
     }
 
     #[test]

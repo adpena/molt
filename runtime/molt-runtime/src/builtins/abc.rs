@@ -728,20 +728,14 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
         dec_ref_bits(_py, empty_tuple_bits);
 
         let builtins = builtin_classes(_py);
-        let type_dict_bits = if let Some(type_ptr) = maybe_ptr_from_bits(builtins.type_obj) {
-            unsafe { class_dict_bits(type_ptr) }
-        } else {
-            MoltObject::none().bits()
-        };
-        if obj_from_bits(type_dict_bits).is_none() {
+        let mappingproxy = crate::builtins::types::mappingproxy_class_bits(_py);
+        if obj_from_bits(mappingproxy).is_none() || !is_type_object(mappingproxy) {
             return raise_exception::<_>(
                 _py,
                 "RuntimeError",
-                "type.__dict__ is unavailable while lowering collections.abc",
+                "mappingproxy type is unavailable while lowering collections.abc",
             );
         }
-        let mappingproxy = type_of_bits(_py, type_dict_bits);
-        dec_ref_bits(_py, type_dict_bits);
 
         let frame_bits = crate::molt_getframe(int_bits_from_i64(_py, 0));
         if exception_pending(_py) {
@@ -1584,4 +1578,5 @@ mod tests {
             "type-object attr lookup should honor inherited class attrs",
         );
     }
+
 }

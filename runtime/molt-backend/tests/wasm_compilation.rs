@@ -689,6 +689,136 @@ fn guard_tag_compiles_using_guard_type_import() {
     );
 }
 
+#[test]
+fn list_from_intrinsic_list_survives_tir_roundtrip() {
+    let mut require_intrinsic = op("builtin_func");
+    require_intrinsic.s_value = Some("molt_getargv".to_string());
+    require_intrinsic.value = Some(0);
+    require_intrinsic.out = Some("v0".to_string());
+
+    let mut callargs_new = op("callargs_new");
+    callargs_new.out = Some("v1".to_string());
+
+    let mut call_indirect = op("call_indirect");
+    call_indirect.args = Some(vec!["v0".to_string(), "v1".to_string()]);
+    call_indirect.out = Some("v2".to_string());
+
+    let mut list_new = op("list_new");
+    list_new.args = Some(vec![]);
+    list_new.out = Some("v3".to_string());
+    list_new.type_hint = Some("list".to_string());
+
+    let mut iter = op("iter");
+    iter.args = Some(vec!["v2".to_string()]);
+    iter.out = Some("v4".to_string());
+    iter.type_hint = Some("iter".to_string());
+
+    let mut none_a = op("const_none");
+    none_a.out = Some("v5".to_string());
+    let mut none_b = op("const_none");
+    none_b.out = Some("v6".to_string());
+
+    let mut is_op = op("is");
+    is_op.args = Some(vec!["v4".to_string(), "v6".to_string()]);
+    is_op.out = Some("v7".to_string());
+
+    let mut if_op = op("if");
+    if_op.args = Some(vec!["v7".to_string()]);
+    if_op.type_hint = Some("bool".to_string());
+
+    let mut err_msg = op("const_str");
+    err_msg.s_value = Some("object is not iterable".to_string());
+    err_msg.out = Some("v8".to_string());
+
+    let mut err_type = op("const_str");
+    err_type.s_value = Some("TypeError".to_string());
+    err_type.out = Some("v9".to_string());
+
+    let mut err_args = op("tuple_new");
+    err_args.args = Some(vec!["v8".to_string()]);
+    err_args.out = Some("v10".to_string());
+    err_args.type_hint = Some("tuple".to_string());
+
+    let mut err_obj = op("exception_new");
+    err_obj.args = Some(vec!["v9".to_string(), "v10".to_string()]);
+    err_obj.out = Some("v11".to_string());
+
+    let mut raise_op = op("raise");
+    raise_op.args = Some(vec!["v11".to_string()]);
+    raise_op.out = Some("none".to_string());
+
+    let mut zero = op("const");
+    zero.value = Some(0);
+    zero.out = Some("v12".to_string());
+
+    let mut one = op("const");
+    one.value = Some(1);
+    one.out = Some("v13".to_string());
+
+    let mut iter_next = op("iter_next");
+    iter_next.args = Some(vec!["v4".to_string()]);
+    iter_next.out = Some("v14".to_string());
+
+    let mut done_index = op("index");
+    done_index.args = Some(vec!["v14".to_string(), "v13".to_string()]);
+    done_index.out = Some("v15".to_string());
+
+    let mut loop_break = op("loop_break_if_true");
+    loop_break.args = Some(vec!["v15".to_string()]);
+    loop_break.type_hint = Some("bool".to_string());
+
+    let mut value_index = op("index");
+    value_index.args = Some(vec!["v14".to_string(), "v12".to_string()]);
+    value_index.out = Some("v16".to_string());
+
+    let mut list_append = op("list_append");
+    list_append.args = Some(vec!["v3".to_string(), "v16".to_string()]);
+    list_append.out = Some("none".to_string());
+    list_append.type_hint = Some("list".to_string());
+
+    let wasm = compile_single_function(
+        vec![
+            require_intrinsic,
+            op("check_exception"),
+            callargs_new,
+            call_indirect,
+            op("check_exception"),
+            list_new,
+            iter,
+            op("check_exception"),
+            none_a,
+            none_b,
+            is_op,
+            if_op,
+            err_msg,
+            err_type,
+            err_args,
+            err_obj,
+            op("check_exception"),
+            raise_op,
+            op("check_exception"),
+            op("end_if"),
+            zero,
+            one,
+            op("loop_start"),
+            iter_next,
+            op("check_exception"),
+            done_index,
+            op("check_exception"),
+            loop_break,
+            value_index,
+            op("check_exception"),
+            list_append,
+            op("check_exception"),
+            op("loop_continue"),
+            op("loop_end"),
+            ret_value("v3"),
+        ],
+        &[],
+    );
+    validate_wasm(&wasm).expect("list(raw) shape should survive TIR roundtrip on wasm");
+}
+
 // -----------------------------------------------------------------------
 // Comparison operations
 // -----------------------------------------------------------------------

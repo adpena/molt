@@ -15,7 +15,9 @@ use std::fs::File;
 use std::io::BufRead;
 use std::io::Write;
 use std::io::{self, Read};
-use std::path::Path;
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -447,6 +449,89 @@ fn stdlib_cache_key_sidecar_path(stdlib_path: &Path) -> std::path::PathBuf {
 }
 
 #[cfg(feature = "native-backend")]
+fn stdlib_cache_publish_lock_path(stdlib_path: &Path) -> PathBuf {
+    stdlib_path.with_file_name(format!(
+        "{}.publish.lock",
+        stdlib_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("stdlib_shared")
+    ))
+}
+
+#[cfg(feature = "native-backend")]
+fn stdlib_cache_temp_publish_path(stdlib_path: &Path, label: &str) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    stdlib_path.with_file_name(format!(
+        ".{}.{}.{}.{}.tmp",
+        stdlib_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("stdlib_shared"),
+        std::process::id(),
+        stamp,
+        label,
+    ))
+}
+
+#[cfg(feature = "native-backend")]
+fn atomic_replace_file(temp_path: &Path, final_path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    if final_path.exists() {
+        let _ = std::fs::remove_file(final_path);
+    }
+    std::fs::rename(temp_path, final_path)
+}
+
+#[cfg(feature = "native-backend")]
+fn write_atomic_text_file(path: &Path, contents: &str) -> io::Result<()> {
+    ensure_output_parent_dir(path.to_str().unwrap_or_default())?;
+    let temp_path = stdlib_cache_temp_publish_path(path, "text");
+    std::fs::write(&temp_path, contents)?;
+    if let Err(err) = atomic_replace_file(&temp_path, path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(err);
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "native-backend", unix))]
+fn with_shared_stdlib_cache_publish_lock<T>(
+    stdlib_path: &Path,
+    body: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    ensure_output_parent_dir(stdlib_path.to_str().unwrap_or_default())?;
+    let lock_path = stdlib_cache_publish_lock_path(stdlib_path);
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    let lock_rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if lock_rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let result = body();
+    let unlock_rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if unlock_rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    result
+}
+
+#[cfg(any(not(feature = "native-backend"), not(unix)))]
+fn with_shared_stdlib_cache_publish_lock<T>(
+    _stdlib_path: &Path,
+    body: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    body()
+}
+
+#[cfg(feature = "native-backend")]
 fn read_stdlib_cache_key(stdlib_path: &Path) -> Option<String> {
     std::fs::read_to_string(stdlib_cache_key_sidecar_path(stdlib_path))
         .ok()
@@ -467,16 +552,43 @@ fn write_shared_stdlib_cache_sidecars(
     stdlib_path: &Path,
     stdlib_count: usize,
     cache_key: Option<&str>,
-) {
+) -> io::Result<()> {
     let count_path = stdlib_cache_count_sidecar_path(stdlib_path);
-    let _ = std::fs::write(&count_path, stdlib_count.to_string());
+    write_atomic_text_file(&count_path, &stdlib_count.to_string())?;
 
     let key_path = stdlib_cache_key_sidecar_path(stdlib_path);
     if let Some(cache_key) = cache_key.filter(|key| !key.is_empty()) {
-        let _ = std::fs::write(&key_path, cache_key);
+        write_atomic_text_file(&key_path, cache_key)?;
     } else {
-        let _ = std::fs::remove_file(&key_path);
+        match std::fs::remove_file(&key_path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
     }
+    Ok(())
+}
+
+#[cfg(feature = "native-backend")]
+fn publish_shared_stdlib_cache_object(
+    stdlib_path: &Path,
+    temp_object_path: &Path,
+    stdlib_count: usize,
+    cache_key: Option<&str>,
+) -> io::Result<()> {
+    let result = with_shared_stdlib_cache_publish_lock(stdlib_path, || {
+        write_shared_stdlib_cache_sidecars(stdlib_path, stdlib_count, cache_key)?;
+        if let Err(err) = atomic_replace_file(temp_object_path, stdlib_path) {
+            let _ = std::fs::remove_file(stdlib_cache_count_sidecar_path(stdlib_path));
+            let _ = std::fs::remove_file(stdlib_cache_key_sidecar_path(stdlib_path));
+            return Err(err);
+        }
+        Ok(())
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp_object_path);
+    }
+    result
 }
 
 #[derive(Debug)]
@@ -1055,13 +1167,16 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                                 stdlib_count,
                                 stdlib_path.display()
                             );
+                            let temp_stdlib_path =
+                                stdlib_cache_temp_publish_path(stdlib_path, "object");
                             if let Err(err) = compile_stdlib_cache_object(
-                                stdlib_path,
+                                &temp_stdlib_path,
                                 std::mem::take(&mut stdlib_funcs),
                                 ir.profile.clone(),
                                 target_triple,
                                 "MOLT_BACKEND(daemon)",
                             ) {
+                                let _ = std::fs::remove_file(&temp_stdlib_path);
                                 return DaemonJobResponse {
                                     id: job.id,
                                     ok: false,
@@ -1074,12 +1189,25 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                                     )),
                                 };
                             }
-
-                            write_shared_stdlib_cache_sidecars(
+                            if let Err(err) = publish_shared_stdlib_cache_object(
                                 stdlib_path,
+                                &temp_stdlib_path,
                                 stdlib_count,
                                 expected_stdlib_cache_key.as_deref(),
-                            );
+                            ) {
+                                let _ = std::fs::remove_file(&temp_stdlib_path);
+                                return DaemonJobResponse {
+                                    id: job.id,
+                                    ok: false,
+                                    cached: false,
+                                    cache_tier: None,
+                                    output_written: false,
+                                    needs_ir: false,
+                                    message: Some(format!(
+                                        "failed to publish shared stdlib cache: {err}"
+                                    )),
+                                };
+                            }
                         }
 
                         ir.functions = std::mem::take(&mut user_remaining);
@@ -1866,19 +1994,20 @@ fn main() -> io::Result<()> {
                         stdlib_path.display()
                     );
                     let stdlib_count = stdlib_funcs.len();
-
+                    let temp_stdlib_path = stdlib_cache_temp_publish_path(stdlib_path, "object");
                     compile_stdlib_cache_object(
-                        stdlib_path,
+                        &temp_stdlib_path,
                         std::mem::take(&mut stdlib_funcs),
                         ir.profile.clone(),
                         target_triple,
                         "MOLT_BACKEND",
                     )?;
-                    write_shared_stdlib_cache_sidecars(
+                    publish_shared_stdlib_cache_object(
                         stdlib_path,
+                        &temp_stdlib_path,
                         stdlib_count,
                         expected_stdlib_cache_key.as_deref(),
-                    );
+                    )?;
                     // Now compile user functions only
                     ir.functions = std::mem::take(&mut user_remaining);
                     eprintln!(
@@ -2334,10 +2463,33 @@ mod tests {
         let stdlib_path = tmp_dir.join("stdlib.o");
         std::fs::write(&stdlib_path, b"placeholder").expect("write stdlib object");
 
-        write_shared_stdlib_cache_sidecars(&stdlib_path, 7, Some("abc123"));
+        write_shared_stdlib_cache_sidecars(&stdlib_path, 7, Some("abc123"))
+            .expect("write sidecars");
         assert!(shared_stdlib_cache_matches(&stdlib_path, Some("abc123")));
         assert!(!shared_stdlib_cache_matches(&stdlib_path, Some("def456")));
         assert!(!shared_stdlib_cache_matches(&stdlib_path, None));
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn shared_stdlib_cache_sidecar_write_failures_propagate() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "molt-stdlib-cache-key-error-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let blocking = tmp_dir.join("not-a-dir");
+        std::fs::write(&blocking, b"x").expect("write blocking file");
+        let stdlib_path = blocking.join("stdlib.o");
+
+        let err = write_shared_stdlib_cache_sidecars(&stdlib_path, 7, Some("abc123"))
+            .expect_err("sidecar writes should fail when parent is not a directory");
+        assert!(!err.to_string().is_empty());
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -2920,7 +3072,7 @@ mod tests {
             ],
             profile: None,
         };
-        let stdlib_modules = std::collections::BTreeSet::new();
+        let stdlib_modules = std::collections::BTreeSet::from(["sys".to_string()]);
         let (user_remaining, stdlib_funcs) =
             prune_and_partition_native_stdlib(&mut partition_ir, "demo", Some(&stdlib_modules));
         let user_names: Vec<_> = user_remaining.iter().map(|func| func.name.as_str()).collect();
@@ -2929,7 +3081,7 @@ mod tests {
             user_names,
             vec!["molt_main", "demo__module", "molt_isolate_bootstrap", "molt_isolate_import"]
         );
-        assert!(stdlib_names.is_empty());
+        assert_eq!(stdlib_names, vec!["molt_init_sys"]);
         let mut cache = DaemonCache::new(None);
         let result = compile_single_job(job, &mut cache);
 

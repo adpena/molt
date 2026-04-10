@@ -261,9 +261,10 @@ pub struct MoltHeader {
     pub ref_count: MoltRefCount, // 4 bytes
     pub flags: u32,              // 4 bytes (bits 0-16 used)
     pub size_class: u16,         // 2 bytes — index into SIZE_CLASS_TABLE
-    pub cold_idx: u16,           // 2 bytes — index into COLD_HEADER_SLAB (0 = none)
+    pub cold_idx: u32,           // 4 bytes — index into COLD_HEADER_SLAB (0 = none)
+    pub reserved: u32,           // 4 bytes — keeps payload 8-byte aligned
 }
-// Total: 16 bytes (down from 40). poll_fn, state, extended_size live in MoltColdHeader.
+// Total: 24 bytes. poll_fn, state, extended_size live in MoltColdHeader.
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PtrSlot(pub(crate) *mut u8);
@@ -442,14 +443,14 @@ pub(crate) struct MoltColdHeader {
 }
 
 /// Slab allocator for cold headers.  Entries are stored in a contiguous `Vec`
-/// and referenced by a `u16` index stored in `MoltHeader::cold_idx`.
+/// and referenced by a `u32` index stored in `MoltHeader::cold_idx`.
 /// Index 0 is reserved as "no cold header".  This gives O(1) alloc, access,
 /// and free — no hashing, no hash collisions, better cache locality.
 struct ColdHeaderSlab {
     /// Slot 0 is unused (sentinel). Valid indices start at 1.
     entries: Vec<MoltColdHeader>,
     /// Free-list of previously freed indices (LIFO reuse).
-    free_list: Vec<u16>,
+    free_list: Vec<u32>,
 }
 
 impl ColdHeaderSlab {
@@ -461,9 +462,9 @@ impl ColdHeaderSlab {
         }
     }
 
-    /// Allocate a slot, returning its u16 index (always >= 1).
-    /// Returns 0 if the slab is full (65535 live cold headers).
-    fn alloc(&mut self, cold: MoltColdHeader) -> u16 {
+    /// Allocate a slot, returning its u32 index (always >= 1).
+    /// Returns 0 if the slab is full (`u32::MAX` live cold headers).
+    fn alloc(&mut self, cold: MoltColdHeader) -> u32 {
         if let Some(idx) = self.free_list.pop() {
             // Belt-and-suspenders: verify the recycled index is in bounds.
             // This defends against any residual free-list corruption.
@@ -474,24 +475,24 @@ impl ColdHeaderSlab {
             // Index was stale/corrupted — discard and fall through to push.
         }
         let idx = self.entries.len();
-        if idx > u16::MAX as usize {
-            // Slab full — 65535 live oversized/generator objects.
+        if idx > u32::MAX as usize {
+            // Slab full — too many live cold-header users.
             // Panic instead of returning 0, which would silently corrupt
             // object state (cold_idx=0 is the "no header" sentinel).
             panic!(
                 "cold header slab exhausted ({} entries) — too many live \
-                 oversized objects or generators",
+                 cold-header users",
                 self.entries.len()
             );
         }
         self.entries.push(cold);
-        idx as u16
+        idx as u32
     }
 
     /// Get a reference to the cold header at `idx`.
     /// Returns `None` for index 0 (no cold header).
     #[inline]
-    fn get(&self, idx: u16) -> Option<&MoltColdHeader> {
+    fn get(&self, idx: u32) -> Option<&MoltColdHeader> {
         if idx == 0 {
             None
         } else {
@@ -502,7 +503,7 @@ impl ColdHeaderSlab {
     /// Get a mutable reference to the cold header at `idx`.
     /// Returns `None` for index 0 (no cold header).
     #[inline]
-    fn get_mut(&mut self, idx: u16) -> Option<&mut MoltColdHeader> {
+    fn get_mut(&mut self, idx: u32) -> Option<&mut MoltColdHeader> {
         if idx == 0 {
             None
         } else {
@@ -512,7 +513,7 @@ impl ColdHeaderSlab {
 
     /// Free the slot at `idx`, returning it to the free list.
     /// No-op for index 0.
-    fn free(&mut self, idx: u16) {
+    fn free(&mut self, idx: u32) {
         if idx == 0 {
             return;
         }
@@ -535,7 +536,7 @@ fn cold_header_slab() -> &'static Mutex<ColdHeaderSlab> {
 
 /// Allocate a cold header, returning its slab index.
 /// The caller must store this index in `MoltHeader::cold_idx`.
-pub(crate) fn alloc_cold_header(cold: MoltColdHeader) -> u16 {
+pub(crate) fn alloc_cold_header(cold: MoltColdHeader) -> u32 {
     let mut slab = cold_header_slab().lock().unwrap();
     slab.alloc(cold)
 }
@@ -543,7 +544,7 @@ pub(crate) fn alloc_cold_header(cold: MoltColdHeader) -> u16 {
 /// Retrieve a **copy** of the cold header at `idx`.
 /// Returns `None` if idx == 0.
 #[inline]
-pub(crate) fn get_cold_header(idx: u16) -> Option<MoltColdHeader> {
+pub(crate) fn get_cold_header(idx: u32) -> Option<MoltColdHeader> {
     if idx == 0 {
         return None;
     }
@@ -553,7 +554,7 @@ pub(crate) fn get_cold_header(idx: u16) -> Option<MoltColdHeader> {
 
 /// Free the cold header at `idx`, returning the slot to the free list.
 /// No-op if idx == 0.
-pub(crate) fn free_cold_header(idx: u16) {
+pub(crate) fn free_cold_header(idx: u32) {
     if idx == 0 {
         return;
     }
@@ -565,7 +566,7 @@ pub(crate) fn free_cold_header(idx: u16) {
 /// For oversized objects (size_class == 0) the exact size is stored in
 /// the cold header's `extended_size`.
 #[inline]
-pub(crate) fn total_size_from_header_fields(size_class: u16, cold_idx: u16) -> usize {
+pub(crate) fn total_size_from_header_fields(size_class: u16, cold_idx: u32) -> usize {
     let sc = size_class as usize;
     if sc != 0 && sc < SIZE_CLASS_TABLE.len() {
         SIZE_CLASS_TABLE[sc]
@@ -1443,7 +1444,12 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
         // Debug: trace bigint refcount increments
         if type_id == TYPE_ID_BIGINT && std::env::var("MOLT_DEBUG_BIGINT_RC").is_ok() {
             let old = (*header_ptr).ref_count.load(AtomicOrdering::Relaxed);
-            eprintln!("BIGINT_RC_INC ptr=0x{:x} count={} → {}", ptr as usize, old, old + 1);
+            eprintln!(
+                "BIGINT_RC_INC ptr=0x{:x} count={} → {}",
+                ptr as usize,
+                old,
+                old + 1
+            );
         }
         let new_count = (*header_ptr)
             .ref_count
@@ -1504,10 +1510,7 @@ pub(crate) unsafe fn inc_ref_n_ptr(_py: &PyToken<'_>, ptr: *mut u8, count: u32) 
 
 /// # Safety
 /// Caller must pass a valid object pointer and matching header.
-unsafe fn maybe_run_object_finalizer(
-    py: &PyToken<'_>,
-    ptr: *mut u8,
-) -> bool {
+unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     let header_ptr = unsafe { header_from_obj_ptr(ptr) };
     if unsafe { (*header_ptr).type_id } != TYPE_ID_OBJECT {
         return false;
@@ -1516,7 +1519,9 @@ unsafe fn maybe_run_object_finalizer(
         return false;
     }
     let cold_idx = unsafe { (*header_ptr).cold_idx };
-    let class_state = get_cold_header(cold_idx).map(|cold| cold.state).unwrap_or(0);
+    let class_state = get_cold_header(cold_idx)
+        .map(|cold| cold.state)
+        .unwrap_or(0);
     let class_bits = unsafe { object_class_bits_from_state(class_state) };
     if class_bits == 0 || obj_from_bits(class_bits).is_none() {
         return false;
@@ -1607,14 +1612,21 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
             if prev == 1 {
                 eprintln!("[OBJECT DEC→0 FREE] ptr=0x{:x}", ptr as usize);
             } else {
-                eprintln!("[OBJECT DEC {}→{}] ptr=0x{:x}", prev, prev.saturating_sub(1), ptr as usize);
+                eprintln!(
+                    "[OBJECT DEC {}→{}] ptr=0x{:x}",
+                    prev,
+                    prev.saturating_sub(1),
+                    ptr as usize
+                );
             }
         }
         // Debug: trace bigint refcount decrements
         if type_id == TYPE_ID_BIGINT && std::env::var("MOLT_DEBUG_BIGINT_RC").is_ok() {
             eprintln!(
                 "BIGINT_RC_DEC ptr=0x{:x} count={} → {}",
-                ptr as usize, prev, prev.saturating_sub(1)
+                ptr as usize,
+                prev,
+                prev.saturating_sub(1)
             );
             if prev == 1 {
                 eprintln!("  BIGINT FREED at ptr=0x{:x}", ptr as usize);
@@ -2399,6 +2411,27 @@ mod tests {
         assert_eq!(slab.free_list.len(), free_list_len_before + 1);
         let idx4 = slab.alloc(MoltColdHeader::default());
         assert_eq!(idx4, idx1); // Recycled the freed slot.
+    }
+
+    #[test]
+    fn cold_header_slab_supports_more_than_65535_live_entries() {
+        use super::{ColdHeaderSlab, MoltColdHeader};
+
+        let result = std::panic::catch_unwind(|| {
+            let mut slab = ColdHeaderSlab::new();
+            for _ in 0..70_000 {
+                let _ = slab.alloc(MoltColdHeader::default());
+            }
+            slab.entries.len()
+        });
+
+        match result {
+            Ok(len) => assert!(
+                len > 65_536,
+                "expected slab to hold more than 65,536 entries, got {len}"
+            ),
+            Err(_) => panic!("cold header slab should scale beyond 65,535 live entries"),
+        }
     }
 
     #[test]

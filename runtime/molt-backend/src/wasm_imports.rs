@@ -1109,6 +1109,13 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("abs_builtin", &["abs_builtin"]),
     ("round", &["round"]),
     ("trunc", &["trunc"]),
+    // Length ops
+    ("len", &["len"]),
+    ("len_dict", &["len_dict"]),
+    ("len_list", &["len_list"]),
+    ("len_set", &["len_set"]),
+    ("len_str", &["len_str"]),
+    ("len_tuple", &["len_tuple"]),
     // Attribute access ops
     ("get_attr_generic", &["get_attr_generic"]),
     ("get_attr_name", &["get_attr_name"]),

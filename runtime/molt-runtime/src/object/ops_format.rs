@@ -717,6 +717,18 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
                 if name.is_empty() {
                     return "<module>".to_string();
                 }
+                if !exception_pending(_py) {
+                    let dict_bits = module_dict_bits(ptr);
+                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                        && object_type_id(dict_ptr) == TYPE_ID_DICT
+                        && let Some(file_key) = attr_name_bits_from_bytes(_py, b"__file__")
+                        && let Some(file_bits) = dict_get_in_place(_py, dict_ptr, file_key)
+                        && let Some(file_name) = string_obj_to_owned(obj_from_bits(file_bits))
+                        && !file_name.is_empty()
+                    {
+                        return format!("<module '{name}' from '{file_name}'>");
+                    }
+                }
                 return format!("<module '{name}'>");
             }
             if type_id == TYPE_ID_TYPE {
@@ -1009,6 +1021,37 @@ pub(crate) fn format_obj(_py: &PyToken<'_>, obj: MoltObject) -> String {
         }
     }
     "<object>".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_obj_str;
+    use crate::builtins::attr::attr_name_bits_from_bytes;
+    use crate::{alloc_module_obj, alloc_string, dict_set_in_place, module_dict_bits, obj_from_bits};
+    use molt_obj_model::MoltObject;
+
+    #[test]
+    fn module_repr_includes_file_when_present() {
+        crate::with_gil_entry!(_py, {
+            let name_ptr = alloc_string(_py, b"pathlib");
+            assert!(!name_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let module_ptr = alloc_module_obj(_py, name_bits);
+            assert!(!module_ptr.is_null());
+            let module_bits = MoltObject::from_ptr(module_ptr).bits();
+
+            let dict_bits = unsafe { module_dict_bits(module_ptr) };
+            let dict_ptr = obj_from_bits(dict_bits).as_ptr().expect("module dict");
+            let file_key = attr_name_bits_from_bytes(_py, b"__file__").expect("__file__ key");
+            let file_ptr = alloc_string(_py, b"/tmp/pathlib.py");
+            assert!(!file_ptr.is_null());
+            let file_bits = MoltObject::from_ptr(file_ptr).bits();
+            unsafe { dict_set_in_place(_py, dict_ptr, file_key, file_bits) };
+
+            let rendered = format_obj_str(_py, obj_from_bits(module_bits));
+            assert_eq!(rendered, "<module 'pathlib' from '/tmp/pathlib.py'>");
+        });
+    }
 }
 
 fn format_bytes(bytes: &[u8]) -> String {

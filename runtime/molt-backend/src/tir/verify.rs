@@ -276,7 +276,9 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 | OpCode::BuildSet
                 | OpCode::BuildSlice
                 | OpCode::Import
-                | OpCode::ImportFrom => Some(1),
+                | OpCode::ImportFrom
+                | OpCode::ClosureLoad => Some(1),
+                OpCode::IterNextUnboxed => Some(2),
                 // These produce zero results (side-effecting only).
                 OpCode::IncRef
                 | OpCode::DecRef
@@ -286,10 +288,16 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 | OpCode::DelIndex
                 | OpCode::Free
                 | OpCode::Raise
-                | OpCode::Deopt => Some(0),
+                | OpCode::Deopt
+                | OpCode::StateSwitch
+                | OpCode::StateYield => Some(0),
                 // CheckException may optionally produce a result (exc flag).
                 // Allow both 0 and 1 results.
-                OpCode::CheckException => None,
+                OpCode::CheckException
+                | OpCode::StateTransition
+                | OpCode::ChanSendYield
+                | OpCode::ChanRecvYield
+                | OpCode::ClosureStore => None,
                 // Variable/unknown result count.
                 _ => None,
             };

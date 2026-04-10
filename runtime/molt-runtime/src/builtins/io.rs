@@ -1291,7 +1291,6 @@ fn stdio_isatty(fd: i64) -> bool {
 // Path, glob, and filesystem utilities extracted to io_path_utils.rs.
 pub(crate) use super::io_path_utils::*;
 
-
 fn open_arg_path(_py: &PyToken<'_>, file_bits: u64) -> Result<(std::path::PathBuf, u64), String> {
     let obj = obj_from_bits(file_bits);
     if let Some(text) = string_obj_to_owned(obj) {
@@ -1597,201 +1596,202 @@ fn open_impl(
             // from the in-memory backend rather than the real filesystem.
             let path_str = path.to_string_lossy();
             if let Some(vfs) = runtime_state(_py).get_vfs()
-                && let Some((mount_prefix, backend, rel_path)) = vfs.resolve(&path_str) {
-                    let is_write = mode_info.writable;
-                    // Capability check
-                    let cap_result = crate::vfs::caps::check_mount_capability(
-                        &mount_prefix,
-                        is_write,
-                        &|cap_name| has_capability(_py, cap_name),
-                    );
-                    if let Err(vfs_err) = cap_result {
-                        let msg = format!("{vfs_err}: '{path_str}'");
-                        return raise_exception::<_>(_py, "PermissionError", &msg);
-                    }
-                    // ── VFS read / write dispatch ──────────────────────
-                    // For reads: load existing file content into a bytearray.
-                    // For writes: start with empty (truncate) or existing
-                    //   (append) content, and register a writeback entry so
-                    //   molt_file_close flushes the final bytearray content
-                    //   back to the VFS backend.
-                    let data: Vec<u8> = if is_write && !mode_info.append {
-                        // Write-truncate: start empty.
-                        Vec::new()
-                    } else if is_write && mode_info.append {
-                        // Append: seed with existing content (if any).
-                        backend.open_read(&rel_path).unwrap_or_default()
-                    } else {
-                        // Read-only: load the full file.
-                        match backend.open_read(&rel_path) {
-                            Ok(bytes) => bytes,
-                            Err(vfs_err) => {
-                                let msg = format!("{vfs_err}: '{path_str}'");
-                                return match vfs_err {
-                                    crate::vfs::VfsError::NotFound => {
-                                        raise_exception::<_>(_py, "FileNotFoundError", &msg)
-                                    }
-                                    crate::vfs::VfsError::PermissionDenied
-                                    | crate::vfs::VfsError::ReadOnly
-                                    | crate::vfs::VfsError::CapabilityDenied(_) => {
-                                        raise_exception::<_>(_py, "PermissionError", &msg)
-                                    }
-                                    crate::vfs::VfsError::IsDirectory => {
-                                        raise_exception::<_>(_py, "IsADirectoryError", &msg)
-                                    }
-                                    _ => raise_exception::<_>(_py, "OSError", &msg),
-                                };
-                            }
+                && let Some((mount_prefix, backend, rel_path)) = vfs.resolve(&path_str)
+            {
+                let is_write = mode_info.writable;
+                // Capability check
+                let cap_result = crate::vfs::caps::check_mount_capability(
+                    &mount_prefix,
+                    is_write,
+                    &|cap_name| has_capability(_py, cap_name),
+                );
+                if let Err(vfs_err) = cap_result {
+                    let msg = format!("{vfs_err}: '{path_str}'");
+                    return raise_exception::<_>(_py, "PermissionError", &msg);
+                }
+                // ── VFS read / write dispatch ──────────────────────
+                // For reads: load existing file content into a bytearray.
+                // For writes: start with empty (truncate) or existing
+                //   (append) content, and register a writeback entry so
+                //   molt_file_close flushes the final bytearray content
+                //   back to the VFS backend.
+                let data: Vec<u8> = if is_write && !mode_info.append {
+                    // Write-truncate: start empty.
+                    Vec::new()
+                } else if is_write && mode_info.append {
+                    // Append: seed with existing content (if any).
+                    backend.open_read(&rel_path).unwrap_or_default()
+                } else {
+                    // Read-only: load the full file.
+                    match backend.open_read(&rel_path) {
+                        Ok(bytes) => bytes,
+                        Err(vfs_err) => {
+                            let msg = format!("{vfs_err}: '{path_str}'");
+                            return match vfs_err {
+                                crate::vfs::VfsError::NotFound => {
+                                    raise_exception::<_>(_py, "FileNotFoundError", &msg)
+                                }
+                                crate::vfs::VfsError::PermissionDenied
+                                | crate::vfs::VfsError::ReadOnly
+                                | crate::vfs::VfsError::CapabilityDenied(_) => {
+                                    raise_exception::<_>(_py, "PermissionError", &msg)
+                                }
+                                crate::vfs::VfsError::IsDirectory => {
+                                    raise_exception::<_>(_py, "IsADirectoryError", &msg)
+                                }
+                                _ => raise_exception::<_>(_py, "OSError", &msg),
+                            };
                         }
-                    };
-
-                    // Clone the Arc before dropping the VFS lock so we can
-                    // register it in the writeback map for writable handles.
-                    let vfs_backend_arc = if is_write {
-                        Some((Arc::clone(&backend), rel_path.clone()))
-                    } else {
-                        None
-                    };
-
-                    // Build an in-memory file handle (like BytesIO) backed
-                    // by the VFS data so the rest of the runtime sees a
-                    // normal file object.
-                    let initial_pos = if mode_info.append { data.len() } else { 0 };
-                    let bytearray_ptr = alloc_bytearray(_py, &data);
-                    if bytearray_ptr.is_null() {
-                        return raise_exception::<_>(_py, "OSError", "open failed");
                     }
-                    let mem_bits = MoltObject::from_ptr(bytearray_ptr).bits();
-                    let vfs_state = Arc::new(MoltFileState {
-                        backend: Mutex::new(Some(MoltFileBackend::Memory(MoltMemoryBackend {
-                            pos: initial_pos,
-                        }))),
-                        #[cfg(windows)]
-                        crt_fd: Mutex::new(None),
-                    });
+                };
 
-                    // Register VFS writeback so molt_file_close can flush
-                    // the bytearray content back to the VFS backend.
-                    if let Some(entry) = vfs_backend_arc {
-                        vfs_writeback_register(&vfs_state, entry);
-                    }
+                // Clone the Arc before dropping the VFS lock so we can
+                // register it in the writeback map for writable handles.
+                let vfs_backend_arc = if is_write {
+                    Some((Arc::clone(&backend), rel_path.clone()))
+                } else {
+                    None
+                };
 
-                    // Reuse the same encoding / errors / newline resolution
-                    // that the normal path uses.
-                    let enc = if mode_info.text {
-                        let e = encoding.unwrap_or_else(|| "utf-8".to_string());
-                        let (label, _kind) = match normalize_text_encoding(&e) {
-                            Ok(val) => val,
-                            Err(msg) => {
-                                dec_ref_bits(_py, mem_bits);
-                                return raise_exception::<_>(_py, "LookupError", &msg);
-                            }
-                        };
-                        Some(label)
-                    } else {
-                        None
-                    };
-                    let enc_original = enc.clone();
-                    let errs = if mode_info.text {
-                        Some(errors.unwrap_or_else(|| "strict".to_string()))
-                    } else {
-                        None
-                    };
+                // Build an in-memory file handle (like BytesIO) backed
+                // by the VFS data so the rest of the runtime sees a
+                // normal file object.
+                let initial_pos = if mode_info.append { data.len() } else { 0 };
+                let bytearray_ptr = alloc_bytearray(_py, &data);
+                if bytearray_ptr.is_null() {
+                    return raise_exception::<_>(_py, "OSError", "open failed");
+                }
+                let mem_bits = MoltObject::from_ptr(bytearray_ptr).bits();
+                let vfs_state = Arc::new(MoltFileState {
+                    backend: Mutex::new(Some(MoltFileBackend::Memory(MoltMemoryBackend {
+                        pos: initial_pos,
+                    }))),
+                    #[cfg(windows)]
+                    crt_fd: Mutex::new(None),
+                });
 
-                    let vfs_readable = mode_info.readable || mode_info.append;
-                    let vfs_writable = is_write;
+                // Register VFS writeback so molt_file_close can flush
+                // the bytearray content back to the VFS backend.
+                if let Some(entry) = vfs_backend_arc {
+                    vfs_writeback_register(&vfs_state, entry);
+                }
 
-                    let builtins = builtin_classes(_py);
-                    let buffered_class_bits = if vfs_readable && vfs_writable {
-                        builtins.buffered_random
-                    } else if vfs_writable {
-                        builtins.buffered_writer
-                    } else {
-                        builtins.buffered_reader
-                    };
-                    let binary_class_bits = if buffering == 0 {
-                        builtins.file_io
-                    } else {
-                        buffered_class_bits
-                    };
-                    let handle_class_bits = if mode_info.text {
-                        builtins.text_io_wrapper
-                    } else {
-                        binary_class_bits
-                    };
-                    let buffer_class_bits = if mode_info.text {
-                        buffered_class_bits
-                    } else {
-                        0
-                    };
-                    let buf_size = if buffering == 0 {
-                        0
-                    } else if line_buffering || buffering < 0 {
-                        DEFAULT_BUFFER_SIZE
-                    } else {
-                        buffering
-                    };
-                    let buffer_bits = if mode_info.text {
-                        let buffer_ptr = alloc_file_handle_with_state(
-                            _py,
-                            Arc::clone(&vfs_state),
-                            vfs_readable,
-                            vfs_writable,
-                            false, // text
-                            false, // closefd
-                            true,  // owns_fd
-                            false, // line_buffering
-                            false, // write_through
-                            buf_size,
-                            buffer_class_bits,
-                            path_name_bits,
-                            mode.clone(),
-                            None,
-                            None,
-                            None,
-                            None,
-                            0,
-                            mem_bits,
-                        );
-                        if buffer_ptr.is_null() {
+                // Reuse the same encoding / errors / newline resolution
+                // that the normal path uses.
+                let enc = if mode_info.text {
+                    let e = encoding.unwrap_or_else(|| "utf-8".to_string());
+                    let (label, _kind) = match normalize_text_encoding(&e) {
+                        Ok(val) => val,
+                        Err(msg) => {
                             dec_ref_bits(_py, mem_bits);
-                            return MoltObject::none().bits();
+                            return raise_exception::<_>(_py, "LookupError", &msg);
                         }
-                        MoltObject::from_ptr(buffer_ptr).bits()
-                    } else {
-                        0
                     };
-                    let ptr = alloc_file_handle_with_state(
+                    Some(label)
+                } else {
+                    None
+                };
+                let enc_original = enc.clone();
+                let errs = if mode_info.text {
+                    Some(errors.unwrap_or_else(|| "strict".to_string()))
+                } else {
+                    None
+                };
+
+                let vfs_readable = mode_info.readable || mode_info.append;
+                let vfs_writable = is_write;
+
+                let builtins = builtin_classes(_py);
+                let buffered_class_bits = if vfs_readable && vfs_writable {
+                    builtins.buffered_random
+                } else if vfs_writable {
+                    builtins.buffered_writer
+                } else {
+                    builtins.buffered_reader
+                };
+                let binary_class_bits = if buffering == 0 {
+                    builtins.file_io
+                } else {
+                    buffered_class_bits
+                };
+                let handle_class_bits = if mode_info.text {
+                    builtins.text_io_wrapper
+                } else {
+                    binary_class_bits
+                };
+                let buffer_class_bits = if mode_info.text {
+                    buffered_class_bits
+                } else {
+                    0
+                };
+                let buf_size = if buffering == 0 {
+                    0
+                } else if line_buffering || buffering < 0 {
+                    DEFAULT_BUFFER_SIZE
+                } else {
+                    buffering
+                };
+                let buffer_bits = if mode_info.text {
+                    let buffer_ptr = alloc_file_handle_with_state(
                         _py,
-                        vfs_state,
+                        Arc::clone(&vfs_state),
                         vfs_readable,
                         vfs_writable,
-                        mode_info.text,
-                        true, // closefd
-                        true, // owns_fd
-                        line_buffering,
+                        false, // text
+                        false, // closefd
+                        true,  // owns_fd
+                        false, // line_buffering
                         false, // write_through
                         buf_size,
-                        handle_class_bits,
+                        buffer_class_bits,
                         path_name_bits,
                         mode.clone(),
-                        enc,
-                        enc_original,
-                        errs,
-                        newline,
-                        buffer_bits,
-                        if mode_info.text { 0 } else { mem_bits },
+                        None,
+                        None,
+                        None,
+                        None,
+                        0,
+                        mem_bits,
                     );
-                    dec_ref_bits(_py, mem_bits);
-                    if buffer_bits != 0 {
-                        dec_ref_bits(_py, buffer_bits);
+                    if buffer_ptr.is_null() {
+                        dec_ref_bits(_py, mem_bits);
+                        return MoltObject::none().bits();
                     }
-                    return if ptr.is_null() {
-                        MoltObject::none().bits()
-                    } else {
-                        MoltObject::from_ptr(ptr).bits()
-                    };
+                    MoltObject::from_ptr(buffer_ptr).bits()
+                } else {
+                    0
+                };
+                let ptr = alloc_file_handle_with_state(
+                    _py,
+                    vfs_state,
+                    vfs_readable,
+                    vfs_writable,
+                    mode_info.text,
+                    true, // closefd
+                    true, // owns_fd
+                    line_buffering,
+                    false, // write_through
+                    buf_size,
+                    handle_class_bits,
+                    path_name_bits,
+                    mode.clone(),
+                    enc,
+                    enc_original,
+                    errs,
+                    newline,
+                    buffer_bits,
+                    if mode_info.text { 0 } else { mem_bits },
+                );
+                dec_ref_bits(_py, mem_bits);
+                if buffer_bits != 0 {
+                    dec_ref_bits(_py, buffer_bits);
                 }
+                return if ptr.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(ptr).bits()
+                };
+            }
             // ── End VFS dispatch ────────────────────────────────────────
             file = match mode_info.options.open(&path) {
                 Ok(file) => Some(file),
@@ -1988,6 +1988,7 @@ fn alloc_stdio_handle(
     errors: &str,
     write_through: bool,
 ) -> u64 {
+    let trace_stdio = std::env::var("MOLT_TRACE_STDIO_BUILD").as_deref() == Ok("1");
     let effective_fd = if cfg!(target_arch = "wasm32") {
         fd
     } else {
@@ -2080,6 +2081,13 @@ fn alloc_stdio_handle(
             dec_ref_bits(_py, name_bits);
             return MoltObject::none().bits();
         }
+        if trace_stdio && exception_pending(_py) {
+            let exc_bits = molt_exception_last();
+            let kind_bits = molt_exception_kind(exc_bits);
+            let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+                .unwrap_or_else(|| "<exc>".to_string());
+            eprintln!("stdio build pending after buffer alloc fd={fd}: {kind}");
+        }
         MoltObject::from_ptr(buffer_ptr).bits()
     } else {
         0
@@ -2108,6 +2116,13 @@ fn alloc_stdio_handle(
     if buffer_bits != 0 {
         dec_ref_bits(_py, buffer_bits);
     }
+    if trace_stdio && exception_pending(_py) {
+        let exc_bits = molt_exception_last();
+        let kind_bits = molt_exception_kind(exc_bits);
+        let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+            .unwrap_or_else(|| "<exc>".to_string());
+        eprintln!("stdio build pending after wrapper alloc fd={fd}: {kind}");
+    }
     dec_ref_bits(_py, name_bits);
     if ptr.is_null() {
         MoltObject::none().bits()
@@ -2121,6 +2136,7 @@ fn cached_stdio_handle(
     slot: &AtomicU64,
     make_handle: impl FnOnce() -> u64,
 ) -> u64 {
+    let trace_stdio = std::env::var("MOLT_TRACE_STDIO_BUILD").as_deref() == Ok("1");
     let cached_bits = slot.load(Ordering::Acquire);
     if cached_bits != 0 && !obj_from_bits(cached_bits).is_none() {
         inc_ref_bits(_py, cached_bits);
@@ -2130,6 +2146,13 @@ fn cached_stdio_handle(
     let handle_bits = make_handle();
     if obj_from_bits(handle_bits).is_none() {
         return handle_bits;
+    }
+    if trace_stdio && exception_pending(_py) {
+        let exc_bits = molt_exception_last();
+        let kind_bits = molt_exception_kind(exc_bits);
+        let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+            .unwrap_or_else(|| "<exc>".to_string());
+        eprintln!("stdio build pending after make_handle: {kind}");
     }
 
     // Keep one pinned reference so repeated sys stdio lookups share the same
@@ -2650,7 +2673,6 @@ pub extern "C" fn molt_open_builtin(
         )
     })
 }
-
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -3376,7 +3398,6 @@ fn translate_write_newlines_str(text: &str, newline: Option<&str>) -> String {
     }
     text.replace('\n', target)
 }
-
 
 unsafe fn text_backend_read(
     _py: &PyToken<'_>,
@@ -5209,7 +5230,7 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
             return raise_exception::<_>(_py, "OSError", &msg);
         }
         let mut export = BufferExport {
-            ptr: 0,
+            ptr: std::ptr::null_mut(),
             len: 0,
             readonly: 0,
             stride: 0,
@@ -5227,7 +5248,7 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
         if len == 0 {
             return MoltObject::from_int(0).bits();
         }
-        let buf = std::slice::from_raw_parts_mut(export.ptr as *mut u8, len);
+        let buf = std::slice::from_raw_parts_mut(export.ptr, len);
         let backend_state = Arc::clone(&handle.state);
         let mut guard = backend_state.backend.lock().unwrap();
         let Some(backend) = guard.as_mut() else {
@@ -6641,31 +6662,35 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
                     let mem = handle.mem_bits;
                     if mem != 0
                         && let Some(mem_ptr) = obj_from_bits(mem).as_ptr()
-                            && object_type_id(mem_ptr) == TYPE_ID_BYTEARRAY {
-                                let vec_ptr = bytearray_vec_ptr(mem_ptr);
-                                if !vec_ptr.is_null() {
-                                    let data = &*vec_ptr;
-                                    let _ = vfs_backend.open_write(&vfs_path, data);
-                                }
-                            }
+                        && object_type_id(mem_ptr) == TYPE_ID_BYTEARRAY
+                    {
+                        let vec_ptr = bytearray_vec_ptr(mem_ptr);
+                        if !vec_ptr.is_null() {
+                            let data = &*vec_ptr;
+                            let _ = vfs_backend.open_write(&vfs_path, data);
+                        }
+                    }
                     // For text-mode handles, the buffer layer holds the
                     // bytearray, not the outer handle. Walk through the
                     // buffer handle's mem_bits instead.
-                    if mem == 0 && handle.buffer_bits != 0
+                    if mem == 0
+                        && handle.buffer_bits != 0
                         && let Some(buf_ptr) = obj_from_bits(handle.buffer_bits).as_ptr()
-                            && object_type_id(buf_ptr) == TYPE_ID_FILE_HANDLE {
-                                let buf_handle = &*file_handle_ptr(buf_ptr);
-                                let buf_mem = buf_handle.mem_bits;
-                                if buf_mem != 0
-                                    && let Some(mem_ptr) = obj_from_bits(buf_mem).as_ptr()
-                                        && object_type_id(mem_ptr) == TYPE_ID_BYTEARRAY {
-                                            let vec_ptr = bytearray_vec_ptr(mem_ptr);
-                                            if !vec_ptr.is_null() {
-                                                let data = &*vec_ptr;
-                                                let _ = vfs_backend.open_write(&vfs_path, data);
-                                            }
-                                        }
+                        && object_type_id(buf_ptr) == TYPE_ID_FILE_HANDLE
+                    {
+                        let buf_handle = &*file_handle_ptr(buf_ptr);
+                        let buf_mem = buf_handle.mem_bits;
+                        if buf_mem != 0
+                            && let Some(mem_ptr) = obj_from_bits(buf_mem).as_ptr()
+                            && object_type_id(mem_ptr) == TYPE_ID_BYTEARRAY
+                        {
+                            let vec_ptr = bytearray_vec_ptr(mem_ptr);
+                            if !vec_ptr.is_null() {
+                                let data = &*vec_ptr;
+                                let _ = vfs_backend.open_write(&vfs_path, data);
                             }
+                        }
+                    }
                 }
             }
         }

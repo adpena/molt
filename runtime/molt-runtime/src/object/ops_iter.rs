@@ -565,6 +565,30 @@ pub(crate) unsafe fn enumerate_new_impl(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        if matches!(
+            std::env::var("MOLT_TRACE_ITER_ARG").ok().as_deref(),
+            Some("1")
+        ) {
+            let (frame_name, frame_line) = crate::state::tls::FRAME_STACK.with(|stack| {
+                let stack = stack.borrow();
+                if let Some(frame) = stack.last()
+                    && let Some(code_ptr) = maybe_ptr_from_bits(frame.code_bits)
+                {
+                    let name_bits = unsafe { code_name_bits(code_ptr) };
+                    let name = string_obj_to_owned(obj_from_bits(name_bits))
+                        .unwrap_or_else(|| "<code>".to_string());
+                    return (name, frame.line);
+                }
+                ("<no-frame>".to_string(), -1)
+            });
+            eprintln!(
+                "[molt iter arg] frame={} line={} type={} bits=0x{:x}",
+                frame_name,
+                frame_line,
+                type_name(_py, obj_from_bits(iter_bits)),
+                iter_bits
+            );
+        }
         if let Some(ptr) = maybe_ptr_from_bits(iter_bits) {
             unsafe {
                 let type_id = object_type_id(ptr);
@@ -612,21 +636,22 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
                 if type_id == TYPE_ID_GENERIC_ALIAS {
                     let args_bits = generic_alias_args_bits(ptr);
                     if let Some(args_ptr) = obj_from_bits(args_bits).as_ptr()
-                        && object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                            let total = std::mem::size_of::<MoltHeader>()
-                                + std::mem::size_of::<u64>()
-                                + std::mem::size_of::<usize>()
-                                + std::mem::size_of::<*mut u8>();
-                            let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
-                            if iter_ptr.is_null() {
-                                return MoltObject::none().bits();
-                            }
-                            inc_ref_bits(_py, args_bits);
-                            *(iter_ptr as *mut u64) = args_bits;
-                            iter_set_index(iter_ptr, 0);
-                            iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
-                            return MoltObject::from_ptr(iter_ptr).bits();
+                        && object_type_id(args_ptr) == TYPE_ID_TUPLE
+                    {
+                        let total = std::mem::size_of::<MoltHeader>()
+                            + std::mem::size_of::<u64>()
+                            + std::mem::size_of::<usize>()
+                            + std::mem::size_of::<*mut u8>();
+                        let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
+                        if iter_ptr.is_null() {
+                            return MoltObject::none().bits();
                         }
+                        inc_ref_bits(_py, args_bits);
+                        *(iter_ptr as *mut u64) = args_bits;
+                        iter_set_index(iter_ptr, 0);
+                        iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
+                        return MoltObject::from_ptr(iter_ptr).bits();
+                    }
                 }
                 if type_id == TYPE_ID_LIST
                     || type_id == TYPE_ID_LIST_INT
@@ -1193,7 +1218,11 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                             if idx == 0 {
                                 (0, None, false)
                             } else {
-                                (idx - 1, Some(MoltObject::from_int(elems[idx - 1]).bits()), false)
+                                (
+                                    idx - 1,
+                                    Some(MoltObject::from_int(elems[idx - 1]).bits()),
+                                    false,
+                                )
                             }
                         } else if target_type == TYPE_ID_RANGE {
                             let Some((start, stop, step)) = range_components_bigint(target_ptr)
@@ -1742,25 +1771,25 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut 
                     if target_type == TYPE_ID_RANGE
                         && let Some((start_i64, stop_i64, step_i64)) =
                             range_components_i64(target_ptr)
-                        {
-                            if idx == ITER_EXHAUSTED {
-                                return done_true;
-                            }
-                            if let Some(value) =
-                                range_value_at_index_i64(start_i64, stop_i64, step_i64, idx as i128)
-                            {
-                                let val_bits = MoltObject::from_int(value).bits();
-                                *value_out = val_bits;
-                                let next_idx = idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
-                                iter_set_index(ptr, next_idx);
-                                return done_false;
-                            }
-                            let len = range_len_i128(start_i64, stop_i64, step_i64);
-                            let len_usize = usize::try_from(len).unwrap_or(ITER_EXHAUSTED);
-                            iter_set_index(ptr, len_usize);
+                    {
+                        if idx == ITER_EXHAUSTED {
                             return done_true;
                         }
-                        // BigInt range — fall through to slow path.
+                        if let Some(value) =
+                            range_value_at_index_i64(start_i64, stop_i64, step_i64, idx as i128)
+                        {
+                            let val_bits = MoltObject::from_int(value).bits();
+                            *value_out = val_bits;
+                            let next_idx = idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
+                            iter_set_index(ptr, next_idx);
+                            return done_false;
+                        }
+                        let len = range_len_i128(start_i64, stop_i64, step_i64);
+                        let len_usize = usize::try_from(len).unwrap_or(ITER_EXHAUSTED);
+                        iter_set_index(ptr, len_usize);
+                        return done_true;
+                    }
+                    // BigInt range — fall through to slow path.
                 }
             }
 
