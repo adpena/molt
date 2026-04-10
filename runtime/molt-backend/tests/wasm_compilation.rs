@@ -676,6 +676,19 @@ fn iter_next_unboxed_compiles_using_iter_next_and_index_imports() {
     );
 }
 
+#[test]
+fn guard_tag_compiles_using_guard_type_import() {
+    let mut guard = op("guard_tag");
+    guard.args = Some(vec!["p0".to_string(), "p1".to_string()]);
+
+    let wasm = compile_single_function(vec![guard, op("ret_void")], &["p0", "p1"]);
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "guard_type") > 0,
+        "guard_tag should lower through guard_type on wasm"
+    );
+}
+
 // -----------------------------------------------------------------------
 // Comparison operations
 // -----------------------------------------------------------------------

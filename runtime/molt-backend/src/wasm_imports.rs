@@ -1128,6 +1128,7 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("iter_sentinel", &["iter_sentinel"]),
     ("contains", &["contains"]),
     // Comparison/identity ops
+    ("guard_tag", &["guard_type"]),
     ("isinstance", &["isinstance"]),
     ("issubclass", &["issubclass"]),
     ("is_bound_method", &["is_bound_method"]),
