@@ -909,7 +909,6 @@ def _init_metadata():
     g["copyright"] = "Copyright (c) Molt contributors."
     g["stdlib_module_names"] = frozenset()
     g["builtin_module_names"] = ()
-
 _init_metadata()
 
 
