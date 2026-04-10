@@ -207,7 +207,10 @@ pub mod ffi_bridge {
 
 #[allow(unused_imports)]
 pub(crate) use crate::async_rt::*;
+pub use crate::builtins::gpu::molt_gpu_broadcast_binary_contiguous;
 pub use crate::builtins::gpu::molt_gpu_linear_contiguous;
+pub use crate::builtins::gpu::molt_gpu_permute_contiguous;
+pub use crate::builtins::gpu::molt_gpu_rope_apply_contiguous;
 pub use crate::builtins::strings::molt_string_from_bytes;
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{
