@@ -1,9 +1,9 @@
 // Textwrap implementation (textwrap module support).
 // Extracted from functions.rs for compilation-unit size reduction and tree shaking.
 
+use super::functions::*;
 use crate::*;
 use molt_obj_model::MoltObject;
-use super::functions::*;
 
 pub(crate) struct TextWrapOptions {
     width: i64,
@@ -19,7 +19,6 @@ pub(crate) struct TextWrapOptions {
     max_lines: Option<i64>,
     placeholder: String,
 }
-
 
 pub(crate) fn textwrap_default_options(width: i64) -> TextWrapOptions {
     TextWrapOptions {
@@ -458,7 +457,10 @@ pub(crate) fn textwrap_wrap_chunks(
     Ok(lines)
 }
 
-pub(crate) fn textwrap_wrap_impl(text: &str, options: &TextWrapOptions) -> Result<Vec<String>, String> {
+pub(crate) fn textwrap_wrap_impl(
+    text: &str,
+    options: &TextWrapOptions,
+) -> Result<Vec<String>, String> {
     let munged = textwrap_munge_whitespace(text, options);
     let mut chunks = textwrap_split_chunks(&munged, options.break_on_hyphens);
     if options.fix_sentence_endings {

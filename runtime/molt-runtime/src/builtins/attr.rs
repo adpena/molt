@@ -1722,25 +1722,21 @@ pub(crate) unsafe fn object_attr_lookup_raw(
             if let Some(name_bytes) = attr_name_slice
                 && let Some(offset) =
                     field_offset_ic_lookup(class_bits, name_bytes, current_type_version)
-                {
-                    profile_hit_unchecked(&FIELD_OFFSET_IC_HIT_COUNT);
-                    field_offset_resolved = Some(offset);
-                }
+            {
+                profile_hit_unchecked(&FIELD_OFFSET_IC_HIT_COUNT);
+                field_offset_resolved = Some(offset);
+            }
 
             if field_offset_resolved.is_none()
-                && let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
-                    profile_hit_unchecked(&FIELD_OFFSET_IC_MISS_COUNT);
-                    field_offset_resolved = Some(offset);
-                    // Populate IC for next time.
-                    if let Some(name_bytes) = attr_name_slice {
-                        field_offset_ic_insert(
-                            class_bits,
-                            name_bytes,
-                            current_type_version,
-                            offset,
-                        );
-                    }
+                && let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
+            {
+                profile_hit_unchecked(&FIELD_OFFSET_IC_MISS_COUNT);
+                field_offset_resolved = Some(offset);
+                // Populate IC for next time.
+                if let Some(name_bytes) = attr_name_slice {
+                    field_offset_ic_insert(class_bits, name_bytes, current_type_version, offset);
                 }
+            }
 
             if let Some(offset) = field_offset_resolved {
                 let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);

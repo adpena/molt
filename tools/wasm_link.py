@@ -290,11 +290,87 @@ def _parse_symbol_flags(flags_text: str) -> int:
     return flags
 
 
+def _parse_indexed_symbol(
+    payload: bytes, offset: int, flags: int
+) -> tuple[int, str, int]:
+    index, offset = _read_varuint(payload, offset)
+    name = ""
+    if (flags & FLAG_UNDEFINED) == 0 or (flags & FLAG_EXPLICIT_NAME):
+        name, offset = _read_string(payload, offset)
+    return index, name, offset
+
+
+def _skip_data_symbol(payload: bytes, offset: int, flags: int) -> int:
+    _, offset = _read_string(payload, offset)
+    if not (flags & FLAG_UNDEFINED):
+        _, offset = _read_varuint(payload, offset)
+        _, offset = _read_varuint(payload, offset)
+        _, offset = _read_varuint(payload, offset)
+    return offset
+
+
+def _collect_linking_function_symbols(data: bytes) -> list[tuple[int, int, str, str]]:
+    symbols: list[tuple[int, int, str, str]] = []
+    for section_id, payload in _parse_sections(data):
+        if section_id != 0:
+            continue
+        name, custom_payload = _parse_custom_section(payload)
+        if name != "linking":
+            continue
+        _, subsections = _parse_linking_payload(custom_payload)
+        for sub_id, sub_payload in subsections:
+            if sub_id != SYMTAB_SUBSECTION_ID:
+                continue
+            count, offset = _read_varuint(sub_payload, 0)
+            for _ in range(count):
+                if offset >= len(sub_payload):
+                    raise ValueError("Unexpected EOF while reading linking symbols")
+                kind = sub_payload[offset]
+                offset += 1
+                flags, offset = _read_varuint(sub_payload, offset)
+                if kind == SYMBOL_KIND_FUNCTION:
+                    index, symbol_name, offset = _parse_indexed_symbol(
+                        sub_payload, offset, flags
+                    )
+                    symbols.append((flags, index, symbol_name, ""))
+                    continue
+                if kind in (2, 4, 5):
+                    _, _, offset = _parse_indexed_symbol(sub_payload, offset, flags)
+                    continue
+                if kind == 1:
+                    offset = _skip_data_symbol(sub_payload, offset, flags)
+                    continue
+                if kind == 3:
+                    _, offset = _read_varuint(sub_payload, offset)
+                    continue
+                raise ValueError(f"Unknown linking symbol kind: {kind}")
+            return symbols
+    return symbols
+
+
 def _dump_symbols(path: Path, wasm_tools: str) -> list[tuple[int, int, str, str]]:
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        print(f"Failed to read wasm symbols from {path}: {exc}", file=sys.stderr)
+        return []
+    try:
+        parsed = _collect_linking_function_symbols(data)
+    except ValueError as exc:
+        print(
+            f"Failed to parse linking symbol table from {path}: {exc}",
+            file=sys.stderr,
+        )
+        parsed = []
+    if parsed:
+        return parsed
+    if not wasm_tools:
+        return []
     res = subprocess.run(
         [wasm_tools, "dump", str(path)],
         capture_output=True,
         text=True,
+        timeout=120,
     )
     if res.returncode != 0:
         err = res.stderr.strip() or res.stdout.strip()
@@ -726,12 +802,6 @@ def _append_table_ref_elements(data: bytes) -> bytes | None:
 
 def _find_call_indirect_mangled(runtime: Path) -> dict[str, str]:
     wasm_tools = _find_tool(["wasm-tools"])
-    if not wasm_tools:
-        print(
-            "wasm-tools not found; cannot extract call_indirect symbol name.",
-            file=sys.stderr,
-        )
-        return {}
     names: dict[str, str] = {}
     for flags, _, name, _ in _dump_symbols(runtime, wasm_tools):
         if not (flags & FLAG_UNDEFINED):
@@ -745,6 +815,11 @@ def _find_call_indirect_mangled(runtime: Path) -> dict[str, str]:
         if mangled_match:
             idx = mangled_match.group(1)
             names[f"molt_call_indirect{idx}"] = name
+    if not names and not wasm_tools:
+        print(
+            "wasm-tools not found; cannot extract call_indirect symbol name.",
+            file=sys.stderr,
+        )
     if not names:
         print("Unable to locate runtime call_indirect symbol names.", file=sys.stderr)
     return names
@@ -752,15 +827,14 @@ def _find_call_indirect_mangled(runtime: Path) -> dict[str, str]:
 
 def _find_output_call_indirect_symbol(output: Path) -> dict[str, tuple[int, int]]:
     wasm_tools = _find_tool(["wasm-tools"])
-    if not wasm_tools:
-        print(
-            "wasm-tools not found; cannot extract output symbol info.", file=sys.stderr
-        )
-        return {}
     symbols: dict[str, tuple[int, int]] = {}
     for flags, index, name, _ in _dump_symbols(output, wasm_tools):
         if CALL_INDIRECT_RE.fullmatch(name):
             symbols[name] = (index, flags)
+    if not symbols and not wasm_tools:
+        print(
+            "wasm-tools not found; cannot extract output symbol info.", file=sys.stderr
+        )
     if not symbols:
         print("Unable to locate output call_indirect symbols.", file=sys.stderr)
     return symbols

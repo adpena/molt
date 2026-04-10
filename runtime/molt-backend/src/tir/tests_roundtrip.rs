@@ -243,7 +243,10 @@ mod tests {
         let result = lower_to_simple_ir(&tir, &type_map);
 
         let ret_count = result.iter().filter(|op| op.kind == "ret").count();
-        assert_eq!(ret_count, 2, "both return paths must survive roundtrip: {result:?}");
+        assert_eq!(
+            ret_count, 2,
+            "both return paths must survive roundtrip: {result:?}"
+        );
         assert!(
             result.iter().any(|op| op.kind == "loop_end"),
             "loop must keep its loop_end marker: {result:?}"

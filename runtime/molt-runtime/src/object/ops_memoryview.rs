@@ -626,7 +626,7 @@ pub extern "C" fn molt_memoryview_toreadonly(bits: u64) -> u64 {
 
 #[repr(C)]
 pub struct BufferExport {
-    pub ptr: u64,
+    pub ptr: *mut u8,
     pub len: u64,
     pub readonly: u64,
     pub stride: i64,
@@ -649,7 +649,7 @@ pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut BufferE
             };
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                let data_ptr = bytes_data(ptr) as u64;
+                let data_ptr = bytes_data(ptr) as *mut u8;
                 let len = bytes_len(ptr) as u64;
                 let readonly = if type_id == TYPE_ID_BYTES { 1 } else { 0 };
                 *out_ptr = BufferExport {
@@ -680,7 +680,7 @@ pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut BufferE
                 if offset > base.len() {
                     return 1;
                 }
-                let data_ptr = base.as_ptr().add(offset) as u64;
+                let data_ptr = base.as_ptr().add(offset) as *mut u8;
                 let len = memoryview_len(ptr) as u64;
                 let readonly = if memoryview_readonly(ptr) { 1 } else { 0 };
                 let stride = memoryview_stride(ptr) as i64;

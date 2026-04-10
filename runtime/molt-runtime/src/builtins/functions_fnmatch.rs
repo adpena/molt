@@ -127,7 +127,10 @@ pub(crate) fn fnmatch_match_impl(name: &str, pat: &str) -> bool {
 
 type FnmatchByteCharClass = (Vec<u8>, Vec<(u8, u8)>, bool, usize);
 
-pub(crate) fn fnmatch_parse_char_class_bytes(pat: &[u8], mut idx: usize) -> Option<FnmatchByteCharClass> {
+pub(crate) fn fnmatch_parse_char_class_bytes(
+    pat: &[u8],
+    mut idx: usize,
+) -> Option<FnmatchByteCharClass> {
     if idx >= pat.len() || pat[idx] != b'[' {
         return None;
     }
@@ -172,7 +175,12 @@ pub(crate) fn fnmatch_parse_char_class_bytes(pat: &[u8], mut idx: usize) -> Opti
     Some((singles, ranges, negate, idx + 1))
 }
 
-pub(crate) fn fnmatch_char_class_hit_bytes(ch: u8, singles: &[u8], ranges: &[(u8, u8)], negate: bool) -> bool {
+pub(crate) fn fnmatch_char_class_hit_bytes(
+    ch: u8,
+    singles: &[u8],
+    ranges: &[(u8, u8)],
+    negate: bool,
+) -> bool {
     let mut hit = singles.contains(&ch);
     if !hit {
         hit = ranges.iter().any(|(start, end)| *start <= ch && ch <= *end);

@@ -398,35 +398,54 @@ fn db_cancel_untrack(state: &mut HostState, req_id: u64) {
 }
 
 fn resolve_wasm_path(arg: Option<String>) -> Result<PathBuf> {
-    let env_path = env::var("MOLT_WASM_PATH").ok();
-    let local = PathBuf::from("output.wasm");
-    let temp = env::temp_dir().join("output.wasm");
-    let candidates = [arg, env_path]
-        .into_iter()
-        .flatten()
-        .map(PathBuf::from)
-        .collect::<Vec<_>>();
+    let env_path = env::var("MOLT_WASM_PATH").ok().map(PathBuf::from);
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let candidates = wasm_path_candidates(arg.map(PathBuf::from), env_path, &cwd);
 
     for candidate in candidates {
         if candidate.exists() {
             return Ok(candidate);
         }
     }
-    if local.exists() {
-        return Ok(local);
-    }
-    if temp.exists() {
-        return Ok(temp);
-    }
-    bail!("WASM path not found (arg, MOLT_WASM_PATH, ./output.wasm, or temp output.wasm)");
+    bail!("WASM path not found (arg, MOLT_WASM_PATH, or ./dist/output.wasm)");
 }
 
 fn resolve_linked_path(wasm_path: &Path) -> Option<PathBuf> {
-    if let Ok(path) = env::var("MOLT_WASM_LINKED_PATH") {
-        let path = PathBuf::from(path);
-        if path.exists() {
-            return Some(path);
+    let env_path = env::var("MOLT_WASM_LINKED_PATH").ok().map(PathBuf::from);
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    for candidate in linked_path_candidates(wasm_path, env_path, &cwd) {
+        if candidate.exists() {
+            return Some(candidate);
         }
+    }
+    None
+}
+
+fn wasm_path_candidates(arg: Option<PathBuf>, env_path: Option<PathBuf>, cwd: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = arg {
+        candidates.push(path);
+    }
+    if let Some(path) = env_path {
+        if !candidates.iter().any(|candidate| candidate == &path) {
+            candidates.push(path);
+        }
+    }
+    let canonical = cwd.join("dist").join("output.wasm");
+    if !candidates.iter().any(|candidate| candidate == &canonical) {
+        candidates.push(canonical);
+    }
+    candidates
+}
+
+fn linked_path_candidates(
+    wasm_path: &Path,
+    env_path: Option<PathBuf>,
+    cwd: &Path,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = env_path {
+        candidates.push(path);
     }
     if let Some(stem) = wasm_path.file_stem().and_then(|s| s.to_str()) {
         let ext = wasm_path
@@ -434,15 +453,15 @@ fn resolve_linked_path(wasm_path: &Path) -> Option<PathBuf> {
             .and_then(|s| s.to_str())
             .unwrap_or("wasm");
         let sibling = wasm_path.with_file_name(format!("{stem}_linked.{ext}"));
-        if sibling.exists() {
-            return Some(sibling);
+        if !candidates.iter().any(|candidate| candidate == &sibling) {
+            candidates.push(sibling);
         }
     }
-    let default_linked = PathBuf::from("output_linked.wasm");
-    if default_linked.exists() {
-        return Some(default_linked);
+    let canonical = cwd.join("dist").join("output_linked.wasm");
+    if !candidates.iter().any(|candidate| candidate == &canonical) {
+        candidates.push(canonical);
     }
-    None
+    candidates
 }
 
 fn prefer_linked() -> bool {
@@ -454,6 +473,57 @@ fn prefer_linked() -> bool {
 
 fn force_linked() -> bool {
     matches!(env::var("MOLT_WASM_LINKED").as_deref(), Ok("1"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{linked_path_candidates, wasm_path_candidates};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn wasm_path_candidates_prefer_explicit_then_canonical_dist() {
+        let cwd = Path::new("/repo");
+        let candidates = wasm_path_candidates(
+            Some(PathBuf::from("/tmp/app.wasm")),
+            Some(PathBuf::from("/env/app.wasm")),
+            cwd,
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from("/tmp/app.wasm"),
+                PathBuf::from("/env/app.wasm"),
+                PathBuf::from("/repo/dist/output.wasm"),
+            ]
+        );
+    }
+
+    #[test]
+    fn linked_path_candidates_prefer_env_then_sibling_then_canonical_dist() {
+        let cwd = Path::new("/repo");
+        let wasm_path = Path::new("/artifacts/output.wasm");
+        let candidates = linked_path_candidates(
+            wasm_path,
+            Some(PathBuf::from("/env/output_linked.wasm")),
+            cwd,
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from("/env/output_linked.wasm"),
+                PathBuf::from("/artifacts/output_linked.wasm"),
+                PathBuf::from("/repo/dist/output_linked.wasm"),
+            ]
+        );
+    }
+
+    #[test]
+    fn linked_path_candidates_deduplicate_canonical_sibling() {
+        let cwd = Path::new("/repo");
+        let wasm_path = Path::new("/repo/dist/output.wasm");
+        let candidates = linked_path_candidates(wasm_path, None, cwd);
+        assert_eq!(candidates, vec![PathBuf::from("/repo/dist/output_linked.wasm")]);
+    }
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -4317,15 +4387,20 @@ fn define_resource_host(
     let on_allocate = Func::wrap(&mut *store, |size: i32| -> i32 {
         use molt_runtime::resource;
         match resource::with_tracker(|t| t.on_allocate(size as usize)) {
-            Ok(()) => 0,  // allocation permitted
-            Err(_) => 1,  // allocation denied
+            Ok(()) => 0, // allocation permitted
+            Err(_) => 1, // allocation denied
         }
     });
     let on_free = Func::wrap(&mut *store, |size: i32| {
         use molt_runtime::resource;
         resource::with_tracker(|t| t.on_free(size as usize));
     });
-    linker.define(&mut *store, "env", "molt_resource_on_allocate_host", on_allocate)?;
+    linker.define(
+        &mut *store,
+        "env",
+        "molt_resource_on_allocate_host",
+        on_allocate,
+    )?;
     linker.define(&mut *store, "env", "molt_resource_on_free_host", on_free)?;
     Ok(())
 }
@@ -4376,7 +4451,10 @@ fn alloc_results(ty: &FuncType) -> Result<Vec<Val>> {
 fn compute_module_hash(path: &Path) -> Result<String> {
     let bytes = std::fs::read(path)?;
     let hash = Sha256::digest(&bytes);
-    let hex = hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let hex = hash
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     Ok(format!("sha256:{hex}"))
 }
 

@@ -411,35 +411,35 @@ fn load_tcl_api() -> Result<&'static TclApi, String> {
                     leaked.get::<*const ()>(symbol).ok().map(|sym| *sym)
                 };
                 let api = TclApi {
-                    find_executable: std::mem::transmute::<*const (), TclFindExecutableFn>(
-                        load(b"Tcl_FindExecutable\0")?,
-                    ),
-                    create_interp: std::mem::transmute::<*const (), TclCreateInterpFn>(
-                        load(b"Tcl_CreateInterp\0")?,
-                    ),
-                    delete_interp: std::mem::transmute::<*const (), TclDeleteInterpFn>(
-                        load(b"Tcl_DeleteInterp\0")?,
-                    ),
+                    find_executable: std::mem::transmute::<*const (), TclFindExecutableFn>(load(
+                        b"Tcl_FindExecutable\0",
+                    )?),
+                    create_interp: std::mem::transmute::<*const (), TclCreateInterpFn>(load(
+                        b"Tcl_CreateInterp\0",
+                    )?),
+                    delete_interp: std::mem::transmute::<*const (), TclDeleteInterpFn>(load(
+                        b"Tcl_DeleteInterp\0",
+                    )?),
                     init: std::mem::transmute::<*const (), TclInitFn>(load(b"Tcl_Init\0")?),
-                    eval_ex: std::mem::transmute::<*const (), TclEvalExFn>(
-                        load(b"Tcl_EvalEx\0")?,
-                    ),
-                    eval_objv: std::mem::transmute::<*const (), TclEvalObjvFn>(
-                        load(b"Tcl_EvalObjv\0")?,
-                    ),
+                    eval_ex: std::mem::transmute::<*const (), TclEvalExFn>(load(b"Tcl_EvalEx\0")?),
+                    eval_objv: std::mem::transmute::<*const (), TclEvalObjvFn>(load(
+                        b"Tcl_EvalObjv\0",
+                    )?),
                     get_string_result: std::mem::transmute::<*const (), TclGetStringResultFn>(
                         load(b"Tcl_GetStringResult\0")?,
                     ),
-                    new_string_obj: std::mem::transmute::<*const (), TclNewStringObjFn>(
-                        load(b"Tcl_NewStringObj\0")?,
-                    ),
-                    new_list_obj: std::mem::transmute::<*const (), TclNewListObjFn>(
-                        load(b"Tcl_NewListObj\0")?,
-                    ),
-                    list_obj_append_element:
-                        std::mem::transmute::<*const (), TclListObjAppendElementFn>(
-                            load(b"Tcl_ListObjAppendElement\0")?,
-                        ),
+                    new_string_obj: std::mem::transmute::<*const (), TclNewStringObjFn>(load(
+                        b"Tcl_NewStringObj\0",
+                    )?),
+                    new_list_obj: std::mem::transmute::<*const (), TclNewListObjFn>(load(
+                        b"Tcl_NewListObj\0",
+                    )?),
+                    list_obj_append_element: std::mem::transmute::<
+                        *const (),
+                        TclListObjAppendElementFn,
+                    >(load(
+                        b"Tcl_ListObjAppendElement\0",
+                    )?),
                     incr_ref_count: load_optional(b"Tcl_IncrRefCount\0")
                         .map(|sym| std::mem::transmute::<*const (), TclIncrRefCountFn>(sym)),
                     decr_ref_count: load_optional(b"Tcl_DecrRefCount\0")
@@ -448,12 +448,12 @@ fn load_tcl_api() -> Result<&'static TclApi, String> {
                         .map(|sym| std::mem::transmute::<*const (), TclDbIncrRefCountFn>(sym)),
                     db_decr_ref_count: load_optional(b"Tcl_DbDecrRefCount\0")
                         .map(|sym| std::mem::transmute::<*const (), TclDbDecrRefCountFn>(sym)),
-                    do_one_event: std::mem::transmute::<*const (), TclDoOneEventFn>(
-                        load(b"Tcl_DoOneEvent\0")?,
-                    ),
-                    split_list: std::mem::transmute::<*const (), TclSplitListFn>(
-                        load(b"Tcl_SplitList\0")?,
-                    ),
+                    do_one_event: std::mem::transmute::<*const (), TclDoOneEventFn>(load(
+                        b"Tcl_DoOneEvent\0",
+                    )?),
+                    split_list: std::mem::transmute::<*const (), TclSplitListFn>(load(
+                        b"Tcl_SplitList\0",
+                    )?),
                     merge: std::mem::transmute::<*const (), TclMergeFn>(load(b"Tcl_Merge\0")?),
                     free: std::mem::transmute::<*const (), TclFreeFn>(load(b"Tcl_Free\0")?),
                 };

@@ -7,13 +7,14 @@ use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 
-use crate::{
-    INLINE_INT_MAX_I128, INLINE_INT_MIN_I128, MoltHeader, TYPE_ID_BIGINT, TYPE_ID_COMPLEX, TYPE_ID_OBJECT, alloc_object, attr_lookup_ptr_allow_missing, call_callable0,
-    class_mro_vec, class_name_for_error, dec_ref_bits, exception_pending, intern_static_name,
-    maybe_ptr_from_bits, obj_from_bits, object_class_bits, object_type_id, raise_exception,
-    runtime_state, runtime_state_for_gil, type_of_bits,
-};
 use crate::object::ops::{as_float_extended, is_float_extended};
+use crate::{
+    INLINE_INT_MAX_I128, INLINE_INT_MIN_I128, MoltHeader, TYPE_ID_BIGINT, TYPE_ID_COMPLEX,
+    TYPE_ID_OBJECT, alloc_object, attr_lookup_ptr_allow_missing, call_callable0, class_mro_vec,
+    class_name_for_error, dec_ref_bits, exception_pending, intern_static_name, maybe_ptr_from_bits,
+    obj_from_bits, object_class_bits, object_type_id, raise_exception, runtime_state,
+    runtime_state_for_gil, type_of_bits,
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -69,9 +70,11 @@ pub(crate) fn to_i64(obj: MoltObject) -> Option<i64> {
     // Handles both inline floats and heap-allocated NaN floats
     // (NaN never passes the fract/abs checks, so this is a no-op for NaN).
     if let Some(f) = as_float_extended(obj)
-        && f.fract() == 0.0 && f.abs() < (1i64 << 53) as f64 {
-            return Some(f as i64);
-        }
+        && f.fract() == 0.0
+        && f.abs() < (1i64 << 53) as f64
+    {
+        return Some(f as i64);
+    }
     if let Some(bits) = int_subclass_value_bits_raw(obj.bits()) {
         let val_obj = obj_from_bits(bits);
         if let Some(i) = val_obj.as_int() {
@@ -251,10 +254,19 @@ pub(crate) fn bigint_bits(_py: &PyToken<'_>, value: BigInt) -> u64 {
     {
         use std::io::Write;
         let header = unsafe { &*(ptr.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader) };
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/bigint_trace.log") {
-            let _ = writeln!(f, "BIGINT_ALLOC ptr=0x{:x} bits=0x{:x} type_id={} rc={}",
-                ptr as usize, bits, header.type_id,
-                header.ref_count.load(std::sync::atomic::Ordering::Relaxed));
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/bigint_trace.log")
+        {
+            let _ = writeln!(
+                f,
+                "BIGINT_ALLOC ptr=0x{:x} bits=0x{:x} type_id={} rc={}",
+                ptr as usize,
+                bits,
+                header.type_id,
+                header.ref_count.load(std::sync::atomic::Ordering::Relaxed)
+            );
         }
     }
     bits
@@ -265,13 +277,21 @@ pub(crate) fn int_bits_from_i128(_py: &PyToken<'_>, val: i128) -> u64 {
     if let Some(i) = inline_int_from_i128(val) {
         // Debug trace: log when a value near the boundary is inlined
         if val.abs() > (1_i128 << 44)
-            && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/bigint_trace.log") {
-                use std::io::Write;
-                let _ = writeln!(f, "INT_BITS_I128_INLINE val={} inlined_as={}", val, i);
-            }
+            && let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/bigint_trace.log")
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "INT_BITS_I128_INLINE val={} inlined_as={}", val, i);
+        }
         MoltObject::from_int(i).bits()
     } else {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/bigint_trace.log") {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/bigint_trace.log")
+        {
             use std::io::Write;
             let _ = writeln!(f, "INT_BITS_I128_BIGINT val={}", val);
         }

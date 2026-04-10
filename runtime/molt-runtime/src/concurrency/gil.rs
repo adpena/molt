@@ -458,11 +458,11 @@ pub(crate) fn gil_assert() {
 mod tests {
     use super::{GilGuard, gil_held};
     use crate::GIL_DEPTH;
+    use std::sync::mpsc;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
-    use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     fn reset_gil_test_state() {

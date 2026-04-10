@@ -1,7 +1,5 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-use molt_snapshot::{
-    ExecutionSnapshot, PendingExternalCall, ProgramCounter, ResourceSnapshot,
-};
+use criterion::{Criterion, criterion_group, criterion_main};
+use molt_snapshot::{ExecutionSnapshot, PendingExternalCall, ProgramCounter, ResourceSnapshot};
 use std::hint::black_box;
 
 fn sample_snapshot(memory_size: usize) -> ExecutionSnapshot {
@@ -32,7 +30,10 @@ fn bench_hand_rolled(c: &mut Criterion) {
     let snap = sample_snapshot(65536); // 64KB memory
     let serialized = snap.serialize();
 
-    println!("\n[format_comparison] hand-rolled size for 64KB snapshot: {} bytes", serialized.len());
+    println!(
+        "\n[format_comparison] hand-rolled size for 64KB snapshot: {} bytes",
+        serialized.len()
+    );
 
     c.bench_function("hand_rolled_serialize_64kb", |b| {
         b.iter(|| {

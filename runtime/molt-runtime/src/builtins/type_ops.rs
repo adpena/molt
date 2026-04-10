@@ -359,10 +359,10 @@ unsafe fn issubclass_walk_bases(sub_ptr: *mut u8, class_bits: u64) -> bool {
             let base_obj = obj_from_bits(base_bits);
             if let Some(base_ptr) = base_obj.as_ptr()
                 && object_type_id(base_ptr) == TYPE_ID_TYPE
-                    && issubclass_walk_bases(base_ptr, class_bits)
-                {
-                    return true;
-                }
+                && issubclass_walk_bases(base_ptr, class_bits)
+            {
+                return true;
+            }
         }
         false
     }
@@ -433,37 +433,37 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
     // clauses use).
     if let Some(val_ptr) = obj_from_bits(val_bits).as_ptr()
         && unsafe { object_type_id(val_ptr) } == TYPE_ID_EXCEPTION
-            && let Some(cls_ptr) = obj_from_bits(class_bits).as_ptr() {
-                let cls_tid = unsafe { object_type_id(cls_ptr) };
-                if cls_tid == TYPE_ID_TYPE {
-                    let builtins = builtin_classes(_py);
-                    if issubclass_bits(class_bits, builtins.base_exception) {
-                        let val_type = type_of_bits(_py, val_bits);
-                        return issubclass_bits(val_type, class_bits);
-                    }
-                } else if cls_tid == TYPE_ID_TUPLE {
-                    // isinstance(exc, (TypeError, ValueError)) — check if all
-                    // tuple elements are exception types; if so, use the fast
-                    // path for each.
-                    let items = unsafe { seq_vec_ref(cls_ptr) };
-                    let builtins = builtin_classes(_py);
-                    let all_exc = items.iter().all(|&item_bits| {
-                        if let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() {
-                            let is_type =
-                                unsafe { object_type_id(item_ptr) } == TYPE_ID_TYPE;
-                            is_type && issubclass_bits(item_bits, builtins.base_exception)
-                        } else {
-                            false
-                        }
-                    });
-                    if all_exc {
-                        let val_type = type_of_bits(_py, val_bits);
-                        return items
-                            .iter()
-                            .any(|&item_bits| issubclass_bits(val_type, item_bits));
-                    }
-                }
+        && let Some(cls_ptr) = obj_from_bits(class_bits).as_ptr()
+    {
+        let cls_tid = unsafe { object_type_id(cls_ptr) };
+        if cls_tid == TYPE_ID_TYPE {
+            let builtins = builtin_classes(_py);
+            if issubclass_bits(class_bits, builtins.base_exception) {
+                let val_type = type_of_bits(_py, val_bits);
+                return issubclass_bits(val_type, class_bits);
             }
+        } else if cls_tid == TYPE_ID_TUPLE {
+            // isinstance(exc, (TypeError, ValueError)) — check if all
+            // tuple elements are exception types; if so, use the fast
+            // path for each.
+            let items = unsafe { seq_vec_ref(cls_ptr) };
+            let builtins = builtin_classes(_py);
+            let all_exc = items.iter().all(|&item_bits| {
+                if let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() {
+                    let is_type = unsafe { object_type_id(item_ptr) } == TYPE_ID_TYPE;
+                    is_type && issubclass_bits(item_bits, builtins.base_exception)
+                } else {
+                    false
+                }
+            });
+            if all_exc {
+                let val_type = type_of_bits(_py, val_bits);
+                return items
+                    .iter()
+                    .any(|&item_bits| issubclass_bits(val_type, item_bits));
+            }
+        }
+    }
 
     // Fast-path for builtin types: resolve the value's type via type_of_bits and
     // check with issubclass_bits directly.  This avoids the metaclass
@@ -486,8 +486,7 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
                 // (e.g. typing._ProtocolMeta) may define __instancecheck__
                 // that performs structural checks.
                 let meta_bits = unsafe { object_class_bits(class_ptr) };
-                let plain_type = meta_bits == 0
-                    || meta_bits == builtin_classes(_py).type_obj;
+                let plain_type = meta_bits == 0 || meta_bits == builtin_classes(_py).type_obj;
                 if plain_type {
                     return false;
                 }
@@ -513,7 +512,10 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
                         }
                     });
                     if all_plain_meta {
-                        if items.iter().any(|&item_bits| issubclass_bits(val_type, item_bits)) {
+                        if items
+                            .iter()
+                            .any(|&item_bits| issubclass_bits(val_type, item_bits))
+                        {
                             return true;
                         }
                         return false;

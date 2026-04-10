@@ -311,8 +311,7 @@ impl Drop for PtrDropGuard {
                     let args_ptr = crate::call::bind::callargs_ptr(self.ptr);
                     eprintln!(
                         "[molt callargs] guard_drop builder_ptr=0x{:x} args_ptr=0x{:x}",
-                        self.ptr as usize,
-                        args_ptr as usize,
+                        self.ptr as usize, args_ptr as usize,
                     );
                 }
                 molt_dec_ref(self.ptr);
@@ -1077,9 +1076,8 @@ static EMPTY_STRING_PTR: std::sync::atomic::AtomicPtr<u8> =
 /// Interned single-character ASCII strings (0x00..0x7F).  Lazily populated on first access.
 /// Each entry stores the raw object pointer (`null` = not yet initialised).
 /// Using atomics avoids a mutex on the hot lookup path.
-static ASCII_CHARS: [std::sync::atomic::AtomicPtr<u8>; 128] = {
-    [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; 128]
-};
+static ASCII_CHARS: [std::sync::atomic::AtomicPtr<u8>; 128] =
+    { [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; 128] };
 
 /// Lazily initialise every slot in `ASCII_CHARS` that is still zero.  Called once (guarded
 /// by `OnceLock`) on the first single-ASCII-char allocation.
@@ -1312,22 +1310,16 @@ pub(crate) fn clear_builder_singletons(_py: &PyToken<'_>) {
         }
     };
 
-    let empty_tuple = EMPTY_TUPLE_PTR.swap(
-        std::ptr::null_mut(),
-        std::sync::atomic::Ordering::AcqRel,
-    );
+    let empty_tuple =
+        EMPTY_TUPLE_PTR.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
     release_once(empty_tuple);
 
-    let empty_string = EMPTY_STRING_PTR.swap(
-        std::ptr::null_mut(),
-        std::sync::atomic::Ordering::AcqRel,
-    );
+    let empty_string =
+        EMPTY_STRING_PTR.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
     release_once(empty_string);
 
-    let empty_bytes = EMPTY_BYTES_PTR.swap(
-        std::ptr::null_mut(),
-        std::sync::atomic::Ordering::AcqRel,
-    );
+    let empty_bytes =
+        EMPTY_BYTES_PTR.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
     release_once(empty_bytes);
 
     for slot in &ASCII_CHARS {

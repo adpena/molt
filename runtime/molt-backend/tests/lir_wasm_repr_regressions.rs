@@ -90,11 +90,17 @@ fn wasm_lir_truthiness_materialization_uses_bool_local_and_br_if() {
 
     assert!(output.locals.contains(&ValType::I32));
     assert!(
-        output.instructions.iter().any(|i| matches!(i, Instruction::Call(_))),
+        output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(_))),
         "DynBox truthiness must lower through runtime truthiness"
     );
     assert!(
-        output.instructions.iter().any(|i| matches!(i, Instruction::BrIf(_))),
+        output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::BrIf(_))),
         "expected br_if from Bool1 condition"
     );
 }
@@ -186,7 +192,12 @@ fn wasm_lir_checked_i64_add_does_not_emit_plain_i64_add() {
             ops: vec![
                 make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], attrs.clone()),
                 make_op(OpCode::ConstInt, vec![], vec![ValueId(1)], attrs),
-                make_op(OpCode::Add, vec![ValueId(0), ValueId(1)], vec![ValueId(2)], AttrDict::new()),
+                make_op(
+                    OpCode::Add,
+                    vec![ValueId(0), ValueId(1)],
+                    vec![ValueId(2)],
+                    AttrDict::new(),
+                ),
             ],
             terminator: Terminator::Return {
                 values: vec![ValueId(2)],
@@ -215,15 +226,24 @@ fn wasm_lir_checked_i64_add_does_not_emit_plain_i64_add() {
     let output = lower_lir_to_wasm(&lir);
 
     assert!(
-        output.instructions.iter().any(|i| matches!(i, Instruction::Call(_))),
+        output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(_))),
         "checked arithmetic should materialize an overflow slow path call"
     );
     assert!(
-        output.instructions.iter().any(|i| matches!(i, Instruction::I64Add)),
+        output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::I64Add)),
         "checked arithmetic should still compute the fast i64 sum"
     );
     assert!(
-        output.instructions.iter().any(|i| matches!(i, Instruction::If(_))),
+        output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::If(_))),
         "checked arithmetic should branch on inline-overflow state"
     );
 }

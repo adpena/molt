@@ -216,47 +216,40 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                     {
                         let rhs_obj = obj_from_bits(b);
                         if let Some(r_ptr) = rhs_obj.as_ptr()
-                            && object_type_id(r_ptr) == TYPE_ID_STRING {
-                                let l_len = string_len(ptr);
-                                let r_len = string_len(r_ptr);
-                                if let Some(content_len) = l_len.checked_add(r_len) {
-                                    let needed = std::mem::size_of::<MoltHeader>()
-                                        + std::mem::size_of::<usize>()
-                                        + content_len;
-                                    let total_sz = super::total_size_from_header(header, ptr);
-                                    if total_sz >= needed {
-                                        // Fast: spare capacity — append in place, zero alloc
-                                        let l_data = string_bytes(ptr) as *mut u8;
-                                        let r_data = string_bytes(r_ptr);
-                                        std::ptr::copy_nonoverlapping(
-                                            r_data,
-                                            l_data.add(l_len),
-                                            r_len,
-                                        );
-                                        *(ptr as *mut usize) = l_len + r_len;
-                                        super::object_set_state(ptr, 0); // invalidate hash
-                                        inc_ref_bits(_py, a);
-                                        return a;
-                                    }
-                                    // Slow: allocate 2x, amortised growth
-                                    let new_cap = std::cmp::max(total_sz * 2, needed + 64);
-                                    let new_ptr = alloc_object(_py, new_cap, TYPE_ID_STRING);
-                                    if !new_ptr.is_null() {
-                                        let l_data = string_bytes(ptr);
-                                        let r_data = string_bytes(r_ptr);
-                                        let n_data = string_bytes(new_ptr) as *mut u8;
-                                        std::ptr::copy_nonoverlapping(l_data, n_data, l_len);
-                                        std::ptr::copy_nonoverlapping(
-                                            r_data,
-                                            n_data.add(l_len),
-                                            r_len,
-                                        );
-                                        *(new_ptr as *mut usize) = l_len + r_len;
-                                        // Caller dec-refs old LHS after storing result.
-                                        return MoltObject::from_ptr(new_ptr).bits();
-                                    }
-                                } // if let Some(content_len) — overflow falls through
-                            }
+                            && object_type_id(r_ptr) == TYPE_ID_STRING
+                        {
+                            let l_len = string_len(ptr);
+                            let r_len = string_len(r_ptr);
+                            if let Some(content_len) = l_len.checked_add(r_len) {
+                                let needed = std::mem::size_of::<MoltHeader>()
+                                    + std::mem::size_of::<usize>()
+                                    + content_len;
+                                let total_sz = super::total_size_from_header(header, ptr);
+                                if total_sz >= needed {
+                                    // Fast: spare capacity — append in place, zero alloc
+                                    let l_data = string_bytes(ptr) as *mut u8;
+                                    let r_data = string_bytes(r_ptr);
+                                    std::ptr::copy_nonoverlapping(r_data, l_data.add(l_len), r_len);
+                                    *(ptr as *mut usize) = l_len + r_len;
+                                    super::object_set_state(ptr, 0); // invalidate hash
+                                    inc_ref_bits(_py, a);
+                                    return a;
+                                }
+                                // Slow: allocate 2x, amortised growth
+                                let new_cap = std::cmp::max(total_sz * 2, needed + 64);
+                                let new_ptr = alloc_object(_py, new_cap, TYPE_ID_STRING);
+                                if !new_ptr.is_null() {
+                                    let l_data = string_bytes(ptr);
+                                    let r_data = string_bytes(r_ptr);
+                                    let n_data = string_bytes(new_ptr) as *mut u8;
+                                    std::ptr::copy_nonoverlapping(l_data, n_data, l_len);
+                                    std::ptr::copy_nonoverlapping(r_data, n_data.add(l_len), r_len);
+                                    *(new_ptr as *mut usize) = l_len + r_len;
+                                    // Caller dec-refs old LHS after storing result.
+                                    return MoltObject::from_ptr(new_ptr).bits();
+                                }
+                            } // if let Some(content_len) — overflow falls through
+                        }
                     }
                     // Fall through to regular add (concat)
                 }
@@ -1993,16 +1986,10 @@ pub extern "C" fn molt_mod(a: u64, b: u64) -> u64 {
             return float_result_bits(_py, rem);
         }
         unsafe {
-            let mod_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.mod_name,
-                b"__mod__",
-            );
-            let rmod_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.rmod_name,
-                b"__rmod__",
-            );
+            let mod_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.mod_name, b"__mod__");
+            let rmod_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.rmod_name, b"__rmod__");
             if let Some(res_bits) = call_binary_dunder(_py, a, b, mod_name_bits, rmod_name_bits) {
                 return res_bits;
             }
@@ -2258,16 +2245,10 @@ pub extern "C" fn molt_pow(a: u64, b: u64) -> u64 {
             return float_result_bits(_py, out);
         }
         unsafe {
-            let pow_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.pow_name,
-                b"__pow__",
-            );
-            let rpow_name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.rpow_name,
-                b"__rpow__",
-            );
+            let pow_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.pow_name, b"__pow__");
+            let rpow_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.rpow_name, b"__rpow__");
             if let Some(res_bits) = call_binary_dunder(_py, a, b, pow_name_bits, rpow_name_bits) {
                 return res_bits;
             }

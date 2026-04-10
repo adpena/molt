@@ -2,8 +2,8 @@ use crate::PyToken;
 use crate::builtins::attr::clear_attr_tls_caches;
 use crate::builtins::attributes::{clear_attr_site_name_cache, clear_property_docs};
 use crate::builtins::strings::clear_const_str_cache;
-use crate::object::builders::clear_builder_singletons;
 use crate::call::bind::clear_call_bind_ic_cache;
+use crate::object::builders::clear_builder_singletons;
 use crate::object::utf8_cache::{
     UTF8_CACHE_MAX_ENTRIES, UTF8_COUNT_CACHE_SHARDS, Utf8CacheStore, Utf8CountCacheStore,
     clear_utf8_count_tls,
