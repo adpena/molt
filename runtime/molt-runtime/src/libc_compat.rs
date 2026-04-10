@@ -106,3 +106,12 @@ pub const EWOULDBLOCK: i32 = 11;
 pub const EAI_NONAME: i32 = 8;
 
 pub const ESHUTDOWN: i32 = 108;
+
+// Deterministic sysconf identifiers used by the wasm-side `os.sysconf` subset.
+// Match the canonical values exposed through `os.sysconf_names` in the current
+// host/runtime contract.
+pub const _SC_PAGE_SIZE: c_int = 29;
+pub const _SC_PAGESIZE: c_int = 29;
+pub const _SC_IOV_MAX: c_int = 56;
+pub const _SC_NPROCESSORS_CONF: c_int = 57;
+pub const _SC_NPROCESSORS_ONLN: c_int = 58;

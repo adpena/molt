@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import warnings
+from collections import Counter
 from pathlib import Path
 
 
@@ -51,11 +52,20 @@ CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA
 # any runtime whose hash does not match.  Update this dict when cutting a
 # release or after rebuilding the runtime (run: shasum -a 256 molt_runtime.wasm).
 RUNTIME_EXPECTED_HASHES: dict[str, str] = {
-    "molt_runtime.wasm": "7b4934916082053de410200114efbcc3e19c6d7d04c76dc8c6aeb200f1e25353",
+    "molt_runtime.wasm": "ed92be1505a4865c1b458db5944032b34d53fa0d8e0b98fcfc50ca935687f12a",
 }
 _OUTPUT_RUNTIME_EXPORT_ALIASES = (
     "molt_isolate_bootstrap",
     "molt_isolate_import",
+)
+_OUTPUT_EXPORT_ALIAS_PREFIX = "__molt_export_alias__"
+_INTERNAL_OUTPUT_EXPORT_PREFIXES = (
+    "molt_module_chunk_",
+    "genexpr_",
+    "listcomp_",
+    "dictcomp_",
+    "setcomp_",
+    "lambda_",
 )
 
 
@@ -90,6 +100,23 @@ def _is_wasm_binary(data: bytes) -> bool:
     return len(data) >= 8 and data[:4] == WASM_MAGIC and data[4:8] == WASM_VERSION
 
 
+def _runtime_integrity_sidecar_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.sha256")
+
+
+def _read_runtime_integrity_sidecar(path: Path) -> str | None:
+    sidecar = _runtime_integrity_sidecar_path(path)
+    if not sidecar.exists():
+        return None
+    raw = sidecar.read_text(encoding="utf-8").strip()
+    match = re.search(r"\b([0-9a-fA-F]{64})\b", raw)
+    if match is None:
+        raise SystemExit(
+            f"Runtime integrity sidecar is malformed: {sidecar}"
+        )
+    return match.group(1).lower()
+
+
 def _verify_runtime_integrity(path: Path) -> None:
     """Verify SHA-256 integrity of the runtime binary.
 
@@ -110,6 +137,16 @@ def _verify_runtime_integrity(path: Path) -> None:
     data = path.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     filename = path.name
+    sidecar_expected = _read_runtime_integrity_sidecar(path)
+    if sidecar_expected is not None:
+        if digest != sidecar_expected:
+            raise SystemExit(
+                f"Runtime integrity check failed for {path}\n"
+                f"  source: sidecar { _runtime_integrity_sidecar_path(path) }\n"
+                f"  expected SHA-256: {sidecar_expected}\n"
+                f"  actual   SHA-256: {digest}\n"
+            )
+        return
 
     if not RUNTIME_EXPECTED_HASHES:
         warnings.warn(
@@ -346,6 +383,90 @@ def _collect_linking_function_symbols(data: bytes) -> list[tuple[int, int, str, 
                 raise ValueError(f"Unknown linking symbol kind: {kind}")
             return symbols
     return symbols
+
+
+def _encode_function_symbol_entry(*, flags: int, index: int, name: str) -> bytes:
+    entry = bytearray()
+    entry.append(SYMBOL_KIND_FUNCTION)
+    entry.extend(_write_varuint(flags))
+    entry.extend(_write_varuint(index))
+    if (flags & FLAG_UNDEFINED) == 0 or (flags & FLAG_EXPLICIT_NAME):
+        entry.extend(_write_string(name))
+    return bytes(entry)
+
+
+def _append_linking_function_symbols(
+    data: bytes, entries: list[tuple[str, int, int]]
+) -> bytes | None:
+    if not entries:
+        return None
+    existing_names = {name for _, _, name, _ in _collect_linking_function_symbols(data)}
+    pending = [
+        _encode_function_symbol_entry(flags=flags, index=index, name=name)
+        for name, index, flags in entries
+        if name not in existing_names
+    ]
+    if not pending:
+        return None
+
+    sections = _parse_sections(data)
+    new_sections: list[tuple[int, bytes]] = []
+    modified = False
+    linking_found = False
+    for section_id, payload in sections:
+        if section_id != 0:
+            new_sections.append((section_id, payload))
+            continue
+        name, custom_payload = _parse_custom_section(payload)
+        if name != "linking":
+            new_sections.append((section_id, payload))
+            continue
+        linking_found = True
+        version, subsections = _parse_linking_payload(custom_payload)
+        new_subsections: list[tuple[int, bytes]] = []
+        symtab_found = False
+        for sub_id, sub_payload in subsections:
+            if sub_id != SYMTAB_SUBSECTION_ID:
+                new_subsections.append((sub_id, sub_payload))
+                continue
+            symtab_found = True
+            count, offset = _read_varuint(sub_payload, 0)
+            updated_payload = bytearray()
+            updated_payload.extend(_write_varuint(count + len(pending)))
+            updated_payload.extend(sub_payload[offset:])
+            for entry in pending:
+                updated_payload.extend(entry)
+            new_subsections.append((sub_id, bytes(updated_payload)))
+            modified = True
+        if not symtab_found:
+            payload_bytes = bytearray()
+            payload_bytes.extend(_write_varuint(len(pending)))
+            for entry in pending:
+                payload_bytes.extend(entry)
+            new_subsections.append((SYMTAB_SUBSECTION_ID, bytes(payload_bytes)))
+            modified = True
+        new_sections.append(
+            (section_id, _build_custom_section(name, _build_linking_payload(version, new_subsections)))
+        )
+    if not linking_found:
+        payload_bytes = bytearray()
+        payload_bytes.extend(_write_varuint(len(pending)))
+        for entry in pending:
+            payload_bytes.extend(entry)
+        new_sections = list(sections)
+        new_sections.append(
+            (
+                0,
+                _build_custom_section(
+                    "linking",
+                    _build_linking_payload(2, [(SYMTAB_SUBSECTION_ID, bytes(payload_bytes))]),
+                ),
+            )
+        )
+        modified = True
+    if not modified:
+        return None
+    return _build_sections(new_sections)
 
 
 def _dump_symbols(path: Path, wasm_tools: str) -> list[tuple[int, int, str, str]]:
@@ -843,7 +964,12 @@ def _find_output_call_indirect_symbol(output: Path) -> dict[str, tuple[int, int]
 
 
 def _add_symtab_alias(
-    data: bytes, alias_name: str, alias_index: int, alias_flags: int
+    data: bytes,
+    alias_name: str,
+    alias_index: int,
+    alias_flags: int,
+    *,
+    preserve_export: bool = False,
 ) -> bytes | None:
     sections = _parse_sections(data)
     modified = False
@@ -866,8 +992,11 @@ def _add_symtab_alias(
             entries = sub_payload[offset:]
             alias_entry = bytearray()
             alias_entry.append(SYMBOL_KIND_FUNCTION)
+            entry_flags = alias_flags
+            if not preserve_export:
+                entry_flags &= ~FLAG_EXPORTED
             alias_entry.extend(
-                _write_varuint((alias_flags & ~FLAG_EXPORTED) | FLAG_EXPLICIT_NAME)
+                _write_varuint(entry_flags | FLAG_EXPLICIT_NAME)
             )
             alias_entry.extend(_write_varuint(alias_index))
             alias_entry.extend(_write_string(alias_name))
@@ -913,31 +1042,411 @@ def _inject_call_indirect_alias(
 def _inject_output_export_aliases(
     output: Path, temp_dir: tempfile.TemporaryDirectory
 ) -> Path:
-    try:
-        export_indices = _collect_function_exports(output.read_bytes())
-    except ValueError as exc:
-        print(f"Failed to parse output exports: {exc}", file=sys.stderr)
+    data = output.read_bytes()
+    wrapper_specs = _collect_output_wrapper_specs(data)
+    if not wrapper_specs:
         return output
-    updated = output.read_bytes()
+    try:
+        sections = _parse_sections(data)
+    except ValueError as exc:
+        print(f"Failed to parse output module for export aliasing: {exc}", file=sys.stderr)
+        return output
+    types = _parse_type_section(sections)
+    if not types:
+        return output
+    func_section_idx, func_type_indices = _parse_func_type_indices(sections)
+    if func_section_idx < 0:
+        return output
+    import_count = _count_func_imports(sections)
+    original_func_count = len(func_type_indices)
+
+    new_sections: list[tuple[int, bytes]] = []
+    wrapper_symbol_entries: list[tuple[str, int, int]] = []
+    wrapper_index_by_name: dict[str, int] = {}
     modified = False
-    for name in _OUTPUT_RUNTIME_EXPORT_ALIASES:
-        func_index = export_indices.get(name)
-        if func_index is None:
+    for section_id, payload in sections:
+        if section_id == 3:
+            offset = 0
+            count, offset = _read_varuint(payload, offset)
+            updated_payload = bytearray()
+            updated_payload.extend(_write_varuint(count + len(wrapper_specs)))
+            updated_payload.extend(payload[offset:])
+            for _name, _alias_name, type_idx, _target_idx in wrapper_specs:
+                updated_payload.extend(_write_varuint(type_idx))
+            new_sections.append((section_id, bytes(updated_payload)))
+            modified = True
+            continue
+        if section_id == 7:
+            offset = 0
+            count, offset = _read_varuint(payload, offset)
+            updated_payload = bytearray()
+            updated_payload.extend(_write_varuint(count + len(wrapper_specs)))
+            updated_payload.extend(payload[offset:])
+            for i, (_name, alias_name, _type_idx, _target_idx) in enumerate(wrapper_specs):
+                wrapper_func_index = import_count + original_func_count + i
+                wrapper_index_by_name[alias_name] = wrapper_func_index
+                updated_payload.extend(_write_string(alias_name))
+                updated_payload.append(0)
+                updated_payload.extend(_write_varuint(wrapper_func_index))
+                wrapper_symbol_entries.append(
+                    (
+                        alias_name,
+                        wrapper_func_index,
+                        FLAG_BINDING_GLOBAL | FLAG_EXPLICIT_NAME | FLAG_EXPORTED | FLAG_NO_STRIP,
+                    )
+                )
+                if _name in _OUTPUT_RUNTIME_EXPORT_ALIASES:
+                    wrapper_symbol_entries.append(
+                        (
+                            _name,
+                            wrapper_func_index,
+                            FLAG_BINDING_GLOBAL | FLAG_EXPLICIT_NAME | FLAG_NO_STRIP,
+                        )
+                    )
+            new_sections.append((section_id, bytes(updated_payload)))
+            modified = True
+            continue
+        if section_id == 10:
+            offset = 0
+            count, offset = _read_varuint(payload, offset)
+            updated_payload = bytearray()
+            updated_payload.extend(_write_varuint(count + len(wrapper_specs)))
+            updated_payload.extend(payload[offset:])
+            for name, alias_name, type_idx, target_idx in wrapper_specs:
+                params, _results = types[type_idx]
+                body = bytearray()
+                body.extend(_write_varuint(0))
+                for param_index in range(len(params)):
+                    body.append(0x20)
+                    body.extend(_write_varuint(param_index))
+                body.append(0x10)
+                body.extend(_write_varuint(target_idx))
+                body.append(0x0B)
+                updated_payload.extend(_write_varuint(len(body)))
+                updated_payload.extend(body)
+            new_sections.append((section_id, bytes(updated_payload)))
+            modified = True
+            continue
+        new_sections.append((section_id, payload))
+    if not modified:
+        return output
+
+    updated = _build_sections(new_sections)
+    next_data = _append_linking_function_symbols(updated, wrapper_symbol_entries)
+    if next_data is not None:
+        updated = next_data
+    alias_path = Path(temp_dir.name) / "output_exports_alias.wasm"
+    alias_path.write_bytes(updated)
+    return alias_path
+
+
+def _collect_output_wrapper_specs(data: bytes) -> list[tuple[str, str, int, int]]:
+    export_indices = _collect_function_exports(data)
+    sections = _parse_sections(data)
+    types = _parse_type_section(sections)
+    if not types:
+        return []
+    func_section_idx, func_type_indices = _parse_func_type_indices(sections)
+    if func_section_idx < 0:
+        return []
+    import_count = _count_func_imports(sections)
+    original_func_count = len(func_type_indices)
+    primary_prefix = _entry_module_prefix_from_main_init(data, export_indices)
+    if primary_prefix is None:
+        primary_prefix = _dominant_output_module_prefix(export_indices)
+
+    wrapper_specs: list[tuple[str, str, int, int]] = []
+    for name, func_index in export_indices.items():
+        if name.startswith("__molt_table_ref_"):
+            continue
+        if name == "molt_main":
+            continue
+        local_index = func_index - import_count
+        if local_index < 0 or local_index >= original_func_count:
+            continue
+        type_idx = func_type_indices[local_index]
+        _params, results = types[type_idx]
+        if name in _OUTPUT_RUNTIME_EXPORT_ALIASES:
+            wrapper_specs.append(
+                (name, f"{_OUTPUT_EXPORT_ALIAS_PREFIX}{name}", type_idx, func_index)
+            )
+            continue
+        if name.startswith("molt_"):
+            continue
+        if not results:
+            continue
+        if not _is_public_output_export_name(name, primary_prefix):
+            continue
+        wrapper_specs.append(
+            (name, f"{_OUTPUT_EXPORT_ALIAS_PREFIX}{name}", type_idx, func_index)
+        )
+    return wrapper_specs
+
+
+def _collect_preserved_output_export_names(data: bytes) -> list[str]:
+    return [name for name, _alias, _type_idx, _func_idx in _collect_output_wrapper_specs(data)]
+
+
+def _collect_output_export_symbol_map(data: bytes) -> dict[str, str]:
+    export_indices = _collect_function_exports(data)
+    by_index: dict[int, list[str]] = {}
+    for _flags, index, name, _kind in _collect_linking_function_symbols(data):
+        if name:
+            by_index.setdefault(index, []).append(name)
+    mapping: dict[str, str] = {}
+    for public_name, index in export_indices.items():
+        candidates = by_index.get(index, [])
+        preferred = next((name for name in candidates if name == public_name), None)
+        if preferred is None:
+            preferred = next(
+                (name for name in candidates if name.startswith("__molt_output_export_")),
+                None,
+            )
+        if preferred is None and candidates:
+            preferred = candidates[0]
+        if preferred is not None:
+            mapping[public_name] = preferred
+    return mapping
+
+
+def _inject_output_runtime_entrypoint_aliases(
+    output: Path, temp_dir: tempfile.TemporaryDirectory
+) -> Path:
+    data = output.read_bytes()
+    export_indices = _collect_function_exports(data)
+    symbol_map = _collect_output_export_symbol_map(data)
+    updated = data
+    modified = False
+    for public_name in _OUTPUT_RUNTIME_EXPORT_ALIASES:
+        target_symbol = symbol_map.get(public_name)
+        func_index = export_indices.get(public_name)
+        if target_symbol is None or func_index is None or target_symbol == public_name:
             continue
         next_data = _add_symtab_alias(
             updated,
-            name,
+            public_name,
             func_index,
-            FLAG_BINDING_GLOBAL | FLAG_EXPLICIT_NAME | FLAG_EXPORTED,
+            FLAG_BINDING_GLOBAL | FLAG_EXPLICIT_NAME | FLAG_NO_STRIP,
+            preserve_export=False,
         )
         if next_data is not None:
             updated = next_data
             modified = True
     if not modified:
         return output
-    alias_path = Path(temp_dir.name) / "output_exports_alias.wasm"
+    alias_path = Path(temp_dir.name) / "output_runtime_aliases.wasm"
     alias_path.write_bytes(updated)
     return alias_path
+
+
+def _rename_export_names(data: bytes, rename_map: dict[str, str]) -> bytes | None:
+    if not rename_map:
+        return None
+    sections = _parse_sections(data)
+    modified = False
+    new_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id != 7:
+            new_sections.append((section_id, payload))
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        exports: list[tuple[str, int, int]] = []
+        for _ in range(count):
+            name, offset = _read_string(payload, offset)
+            kind = payload[offset]
+            offset += 1
+            index, offset = _read_varuint(payload, offset)
+            exports.append((name, kind, index))
+        rebuilt = bytearray()
+        seen_names: set[str] = set()
+        kept: list[tuple[str, int, int]] = []
+        for name, kind, index in exports:
+            renamed = rename_map.get(name, name)
+            if renamed != name:
+                modified = True
+            if renamed in seen_names:
+                modified = True
+                continue
+            seen_names.add(renamed)
+            kept.append((renamed, kind, index))
+        rebuilt.extend(_write_varuint(len(kept)))
+        for name, kind, index in kept:
+            rebuilt.extend(_write_string(name))
+            rebuilt.append(kind)
+            rebuilt.extend(_write_varuint(index))
+        new_sections.append((section_id, bytes(rebuilt)))
+    if not modified:
+        return None
+    return _build_sections(new_sections)
+
+
+def _ensure_function_exports_by_symbol_names(
+    data: bytes, public_to_symbol: dict[str, str]
+) -> bytes | None:
+    if not public_to_symbol:
+        return None
+    symbol_indices = {
+        name: index
+        for _flags, index, name, _kind in _collect_linking_function_symbols(data)
+        if name
+    }
+    existing_exports = _collect_function_exports(data)
+    additions: list[tuple[str, int]] = []
+    for public_name, symbol_name in public_to_symbol.items():
+        if public_name in existing_exports:
+            continue
+        symbol_index = symbol_indices.get(symbol_name)
+        if symbol_index is None:
+            continue
+        additions.append((public_name, symbol_index))
+    if not additions:
+        return None
+
+    sections = _parse_sections(data)
+    new_sections: list[tuple[int, bytes]] = []
+    modified = False
+    inserted = False
+    for section_id, payload in sections:
+        if section_id == 7:
+            offset = 0
+            count, offset = _read_varuint(payload, offset)
+            updated_payload = bytearray()
+            updated_payload.extend(_write_varuint(count + len(additions)))
+            updated_payload.extend(payload[offset:])
+            for public_name, symbol_index in additions:
+                updated_payload.extend(_write_string(public_name))
+                updated_payload.append(0)
+                updated_payload.extend(_write_varuint(symbol_index))
+            new_sections.append((section_id, bytes(updated_payload)))
+            modified = True
+            inserted = True
+            continue
+        if not inserted and section_id > 7:
+            export_payload = bytearray()
+            export_payload.extend(_write_varuint(len(additions)))
+            for public_name, symbol_index in additions:
+                export_payload.extend(_write_string(public_name))
+                export_payload.append(0)
+                export_payload.extend(_write_varuint(symbol_index))
+            new_sections.append((7, bytes(export_payload)))
+            modified = True
+            inserted = True
+        new_sections.append((section_id, payload))
+    if not inserted:
+        export_payload = bytearray()
+        export_payload.extend(_write_varuint(len(additions)))
+        for public_name, symbol_index in additions:
+            export_payload.extend(_write_string(public_name))
+            export_payload.append(0)
+            export_payload.extend(_write_varuint(symbol_index))
+        new_sections.append((7, bytes(export_payload)))
+        modified = True
+    if not modified:
+        return None
+    return _build_sections(new_sections)
+
+
+def _dominant_output_module_prefix(export_indices: dict[str, int]) -> str | None:
+    counts: Counter[str] = Counter()
+    for name in export_indices:
+        if name.startswith("molt_"):
+            continue
+        if not name or not name[0].isalnum():
+            continue
+        if "__" not in name:
+            continue
+        prefix, _rest = name.split("__", 1)
+        if prefix:
+            counts[prefix] += 1
+    if not counts:
+        return None
+    return counts.most_common(1)[0][0]
+
+
+def _entry_module_prefix_from_main_init(
+    data: bytes, export_indices: dict[str, int]
+) -> str | None:
+    main_init_index = export_indices.get("molt_init___main__")
+    if main_init_index is None:
+        return None
+    sections = _parse_sections(data)
+    code_payload = next((payload for sid, payload in sections if sid == 10), None)
+    if code_payload is None:
+        return None
+    import_count = _count_func_imports(sections)
+    call_graph = _build_call_graph(code_payload, import_count)
+    inverse_exports = {index: name for name, index in export_indices.items()}
+    for callee in call_graph.get(main_init_index, ()):
+        target_name = inverse_exports.get(callee)
+        if (
+            target_name
+            and target_name.startswith("molt_init_")
+            and target_name != "molt_init___main__"
+        ):
+            return target_name.removeprefix("molt_init_")
+    return None
+
+
+def _is_public_output_export_name(name: str, primary_prefix: str | None) -> bool:
+    if primary_prefix is not None:
+        marker = f"{primary_prefix}__"
+        if not name.startswith(marker):
+            return False
+        remainder = name[len(marker) :]
+    else:
+        if not name or not name[0].isalnum() or "__" not in name:
+            return False
+        _prefix, remainder = name.split("__", 1)
+    if not remainder:
+        return False
+    if remainder.startswith("__"):
+        return False
+    if remainder.startswith(_INTERNAL_OUTPUT_EXPORT_PREFIXES):
+        return False
+    if "___" in remainder:
+        return False
+    return True
+
+
+def _restore_output_export_aliases(data: bytes) -> bytes | None:
+    sections = _parse_sections(data)
+    modified = False
+    new_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id != 7:
+            new_sections.append((section_id, payload))
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        exports: list[tuple[str, int, int]] = []
+        for _ in range(count):
+            name, offset = _read_string(payload, offset)
+            kind = payload[offset]
+            offset += 1
+            index, offset = _read_varuint(payload, offset)
+            exports.append((name, kind, index))
+        rebuilt = bytearray()
+        seen_names: set[str] = set()
+        kept: list[tuple[str, int, int]] = []
+        for name, kind, index in exports:
+            if kind == 0 and name.startswith(_OUTPUT_EXPORT_ALIAS_PREFIX):
+                name = name.removeprefix(_OUTPUT_EXPORT_ALIAS_PREFIX)
+                modified = True
+            if name in seen_names:
+                modified = True
+                continue
+            seen_names.add(name)
+            kept.append((name, kind, index))
+        rebuilt.extend(_write_varuint(len(kept)))
+        for name, kind, index in kept:
+            rebuilt.extend(_write_string(name))
+            rebuilt.append(kind)
+            rebuilt.extend(_write_varuint(index))
+        new_sections.append((section_id, bytes(rebuilt)))
+    if not modified:
+        return None
+    return _build_sections(new_sections)
 
 
 def _parse_limits(data: bytes, offset: int) -> int:
@@ -1468,6 +1977,19 @@ def _tree_shake_runtime(
     # large live runtime dependency surface.
     normalized_required_exports = set(required_exports)
     normalized_required_exports.update(f"molt_{name}" for name in required_exports)
+    # Preserve the minimal exception-inspection surface used by the direct
+    # runner to turn pending runtime exceptions into actionable diagnostics.
+    normalized_required_exports.update(
+        {
+            "molt_alloc",
+            "molt_string_as_ptr",
+            "molt_exception_last",
+            "molt_exception_kind",
+            "molt_exception_message",
+            "molt_object_repr",
+            "molt_dec_ref_obj",
+        }
+    )
 
     # Rewrite export section: keep memory/table/global exports and only
     # function exports that are in the required set.
@@ -1517,7 +2039,10 @@ def _tree_shake_runtime(
     )
 
     stripped_data = _build_sections(new_sections)
-    optimized_baseline = _post_link_optimize(stripped_data)
+    optimized_baseline = _post_link_optimize(
+        stripped_data,
+        preserve_exports=normalized_required_exports,
+    )
     if len(optimized_baseline) != len(stripped_data):
         print(
             f"Runtime post-link optimize: {len(stripped_data):,} -> {len(optimized_baseline):,} bytes "
@@ -1842,7 +2367,9 @@ _ESSENTIAL_EXPORTS = frozenset({
 })
 
 
-def _strip_internal_exports(data: bytes) -> bytes | None:
+def _strip_internal_exports(
+    data: bytes, *, preserve_exports: set[str] | None = None
+) -> bytes | None:
     """Remove exports that only exist for internal ABI wiring or relocatable linking.
 
     After linking, these exports serve no purpose but each one marks its
@@ -1856,6 +2383,10 @@ def _strip_internal_exports(data: bytes) -> bytes | None:
     sections = _parse_sections(data)
     new_sections: list[tuple[int, bytes]] = []
     modified = False
+    keep_exports = set(_ESSENTIAL_EXPORTS)
+    if preserve_exports:
+        keep_exports.update(preserve_exports)
+    seen_exports: set[str] = set()
     for section_id, payload in sections:
         if section_id != 7:
             new_sections.append((section_id, payload))
@@ -1873,9 +2404,13 @@ def _strip_internal_exports(data: bytes) -> bytes | None:
             offset += 1
             _, offset = _read_varuint(payload, offset)
             entry_bytes = payload[entry_start:offset]
-            if name not in _ESSENTIAL_EXPORTS and not name.startswith("__molt_table_ref_"):
+            if name not in keep_exports and not name.startswith("__molt_table_ref_"):
                 modified = True
                 continue
+            if name in seen_exports:
+                modified = True
+                continue
+            seen_exports.add(name)
             entries.append(entry_bytes)
             new_count += 1
         rebuilt = bytearray(_write_varuint(new_count))
@@ -2012,6 +2547,53 @@ def _code_section_has_call_indirect(sections: list[tuple[int, bytes]]) -> bool:
     return False
 
 
+def _module_imports_host_call_indirect(sections: list[tuple[int, bytes]]) -> bool:
+    """Return True when the module imports host `molt_call_indirect*` shims.
+
+    Split-runtime/direct mode routes dynamic indirect dispatch through JS host
+    imports named `env::molt_call_indirectN` instead of raw wasm
+    `call_indirect` opcodes in the module body. Treat those imports as
+    evidence of dynamic table dispatch so element-entry neutralization does not
+    clear live trampoline slots.
+    """
+    for sid, payload in sections:
+        if sid != 2:
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        for _ in range(count):
+            module_name, offset = _read_string(payload, offset)
+            field_name, offset = _read_string(payload, offset)
+            if offset >= len(payload):
+                break
+            kind = payload[offset]
+            offset += 1
+            if kind == 0:  # function
+                _, offset = _read_varuint(payload, offset)
+            elif kind == 1:  # table
+                offset += 1
+                flags, offset = _read_varuint(payload, offset)
+                _, offset = _read_varuint(payload, offset)
+                if flags & 0x1:
+                    _, offset = _read_varuint(payload, offset)
+            elif kind == 2:  # memory
+                flags, offset = _read_varuint(payload, offset)
+                _, offset = _read_varuint(payload, offset)
+                if flags & 0x1:
+                    _, offset = _read_varuint(payload, offset)
+            elif kind == 3:  # global
+                offset += 2
+            else:
+                raise ValueError(f"Unknown import kind {kind}")
+            if (
+                kind == 0
+                and module_name == "env"
+                and CALL_INDIRECT_RE.fullmatch(field_name) is not None
+            ):
+                return True
+    return False
+
+
 def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
     """Replace indirect-call table entries for dead functions with the sentinel.
 
@@ -2037,7 +2619,7 @@ def _neutralize_dead_element_entries(data: bytes) -> bytes | None:
     # indices. Those targets are not statically attributable to direct call
     # edges, so element neutralization is unsound when any call_indirect
     # remains in the module.
-    if _code_section_has_call_indirect(sections):
+    if _code_section_has_call_indirect(sections) or _module_imports_host_call_indirect(sections):
         return None
 
     code_called = _collect_code_referenced_funcs(sections)
@@ -2375,10 +2957,14 @@ def _stub_dead_functions(data: bytes) -> bytes | None:
     if not call_graph:
         return None
 
-    # Collect roots: exports + element-section entries
+    # Collect roots: start function + exports + element-section entries
     roots: set[int] = set()
     for sid, payload in sections:
-        if sid == 7:  # export section
+        if sid == 8:  # start section
+            offset = 0
+            idx, _ = _read_varuint(payload, offset)
+            roots.add(idx)
+        elif sid == 7:  # export section
             offset = 0
             count, offset = _read_varuint(payload, offset)
             while offset < len(payload):
@@ -2740,7 +3326,10 @@ def _fixup_func_type_indices(data: bytes, reference_data: bytes | None = None, r
 
 
 def _post_link_optimize(
-    data: bytes, *, reference_data: bytes | None = None
+    data: bytes,
+    *,
+    reference_data: bytes | None = None,
+    preserve_exports: set[str] | None = None,
 ) -> bytes:
     """Apply post-link optimizations to reduce V8 compilation memory pressure.
 
@@ -2760,11 +3349,19 @@ def _post_link_optimize(
     if updated is not None:
         data = updated
 
+    preserved_export_names = set(preserve_exports or ())
+    if reference_data is not None:
+        preserved_export_names.update(
+            name
+            for name in _collect_function_exports(reference_data)
+            if not name.startswith("__molt_table_ref_")
+        )
+
     updated = _strip_debug_sections(data)
     if updated is not None:
         data = updated
 
-    updated = _strip_internal_exports(data)
+    updated = _strip_internal_exports(data, preserve_exports=preserved_export_names)
     if updated is not None:
         data = updated
 
@@ -3135,12 +3732,20 @@ def _run_wasm_ld(
     if not runtime_exports:
         print("Runtime exports unavailable for linking.", file=sys.stderr)
         return 1
+    output_data = output.read_bytes()
+    preserved_output_exports = _collect_preserved_output_export_names(output_data)
+    export_symbol_map = _collect_output_export_symbol_map(output_data)
+    user_export_symbol_names = [
+        export_symbol_map[name]
+        for name in preserved_output_exports
+        if name in export_symbol_map
+    ]
     rewritten = _rewrite_output_imports(output, runtime_exports)
     if rewritten is None:
         return 1
     rewritten_path, temp_dir, force_exports = rewritten
     rewritten_path = _inject_call_indirect_alias(rewritten_path, runtime, temp_dir)
-    rewritten_path = _inject_output_export_aliases(rewritten_path, temp_dir)
+    rewritten_path = _inject_output_runtime_entrypoint_aliases(rewritten_path, temp_dir)
     if allowlist_override is not None:
         allowlist = allowlist_override
     else:
@@ -3221,7 +3826,7 @@ def _run_wasm_ld(
         wasm_ld,
         "--no-entry",
         "--gc-sections",
-        "--strip-all",
+        "--export-all",
         f"--allow-undefined-file={str(allowlist)}",
         "--import-table",
         # Place the stack before data segments in linear memory so that the
@@ -3245,6 +3850,8 @@ def _run_wasm_ld(
     # and wasm-ld needs to know to keep them in the linked output.
     for sym in force_exports:
         cmd.append(f"--export-if-defined={sym}")
+    for sym in user_export_symbol_names:
+        cmd.append(f"--export={sym}")
     cmd += [
         "-o",
         str(linked),
@@ -3272,6 +3879,30 @@ def _run_wasm_ld(
                 file=sys.stderr,
             )
             return 1
+        public_export_map = {
+            name: export_symbol_map[name]
+            for name in preserved_output_exports
+            if name in export_symbol_map
+        }
+        updated = _ensure_function_exports_by_symbol_names(
+            linked_bytes, public_export_map
+        )
+        if updated is not None:
+            linked.write_bytes(updated)
+            linked_bytes = updated
+        rename_map = {
+            export_symbol_map[name]: name
+            for name in preserved_output_exports
+            if name in export_symbol_map and export_symbol_map[name] != name
+        }
+        updated = _rename_export_names(linked_bytes, rename_map)
+        if updated is not None:
+            linked.write_bytes(updated)
+            linked_bytes = updated
+        updated = _restore_output_export_aliases(linked_bytes)
+        if updated is not None:
+            linked.write_bytes(updated)
+            linked_bytes = updated
 
         # MOL-183/MOL-186: Post-link optimization to reduce V8 OOM risk.
         # Strip debug sections, internal exports, and report data duplicates.

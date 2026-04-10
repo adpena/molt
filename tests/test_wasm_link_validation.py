@@ -1,5 +1,9 @@
+import hashlib
 import importlib.util
+import tempfile
 from pathlib import Path
+
+import pytest
 
 
 def _load_wasm_link():
@@ -38,6 +42,41 @@ def test_wasm_link_default_artifact_paths_follow_external_root(
     )
 
 
+def test_verify_runtime_integrity_accepts_matching_sidecar_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "molt_runtime.wasm"
+    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
+    sidecar = runtime.with_name(f"{runtime.name}.sha256")
+    sidecar.write_text(hashlib.sha256(runtime.read_bytes()).hexdigest() + "\n")
+    monkeypatch.setattr(
+        wasm_link,
+        "RUNTIME_EXPECTED_HASHES",
+        {"molt_runtime.wasm": "0" * 64},
+        raising=True,
+    )
+
+    wasm_link._verify_runtime_integrity(runtime)
+
+
+def test_verify_runtime_integrity_rejects_mismatched_sidecar_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "molt_runtime.wasm"
+    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
+    sidecar = runtime.with_name(f"{runtime.name}.sha256")
+    sidecar.write_text("0" * 64 + "\n")
+    monkeypatch.setattr(
+        wasm_link,
+        "RUNTIME_EXPECTED_HASHES",
+        {"molt_runtime.wasm": hashlib.sha256(runtime.read_bytes()).hexdigest()},
+        raising=True,
+    )
+
+    with pytest.raises(SystemExit, match="sidecar"):
+        wasm_link._verify_runtime_integrity(runtime)
+
+
 def _build_minimal_module(element_payload: bytes) -> bytes:
     write_varuint = wasm_link._write_varuint
     sections = []
@@ -47,7 +86,8 @@ def _build_minimal_module(element_payload: bytes) -> bytes:
     type_payload.extend(write_varuint(1))
     type_payload.append(0x60)
     type_payload.extend(write_varuint(0))
-    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
     sections.append((1, bytes(type_payload)))
 
     # Function section: one function of type 0.
@@ -72,6 +112,137 @@ def _build_minimal_module(element_payload: bytes) -> bytes:
 
     # Element section.
     sections.append((9, element_payload))
+
+    return wasm_link._build_sections(sections)
+
+
+def _build_start_root_module() -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = bytearray()
+    func_payload.extend(write_varuint(2))
+    func_payload.extend(write_varuint(0))
+    func_payload.extend(write_varuint(0))
+    sections.append((3, bytes(func_payload)))
+
+    sections.append((8, write_varuint(0)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(2))
+    code_payload.extend(write_varuint(4))
+    code_payload.append(0x00)  # local decl count
+    code_payload.append(0x10)  # call
+    code_payload.extend(write_varuint(1))
+    code_payload.append(0x0B)  # end
+    code_payload.extend(write_varuint(3))
+    code_payload.append(0x00)  # local decl count
+    code_payload.append(0x01)  # nop
+    code_payload.append(0x0B)  # end
+    sections.append((10, bytes(code_payload)))
+
+    return wasm_link._build_sections(sections)
+
+
+def _build_exported_runtime_module(export_name: str) -> bytes:
+    return _build_exported_runtime_module_many([export_name])
+
+
+def _build_exported_runtime_module_many(export_names: list[str]) -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = bytearray()
+    func_payload.extend(write_varuint(len(export_names)))
+    for _ in export_names:
+        func_payload.extend(write_varuint(0))
+    sections.append((3, func_payload))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(len(export_names)))
+    for index, export_name in enumerate(export_names):
+        export_payload.extend(wasm_link._write_string(export_name))
+        export_payload.append(0x00)
+        export_payload.extend(write_varuint(index))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(len(export_names)))
+    for _ in export_names:
+        code_payload.extend(write_varuint(2))
+        code_payload.append(0x00)
+        code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    return wasm_link._build_sections(sections)
+
+
+def _build_host_call_indirect_module() -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(2))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(3))
+    type_payload.extend(b"\x7e\x7e\x7e")
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    import_payload = bytearray()
+    import_payload.extend(write_varuint(1))
+    import_payload.extend(wasm_link._write_string("env"))
+    import_payload.extend(wasm_link._write_string("molt_call_indirect3"))
+    import_payload.append(0x00)
+    import_payload.extend(write_varuint(0))
+    sections.append((2, bytes(import_payload)))
+
+    func_payload = bytearray()
+    func_payload.extend(write_varuint(1))
+    func_payload.extend(write_varuint(1))
+    sections.append((3, bytes(func_payload)))
+
+    table_payload = bytearray()
+    table_payload.extend(write_varuint(1))
+    table_payload.append(0x70)
+    table_payload.extend(write_varuint(0))
+    table_payload.extend(write_varuint(1))
+    sections.append((4, bytes(table_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(2))
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    element_payload = bytearray()
+    element_payload.extend(write_varuint(1))
+    element_payload.extend(write_varuint(0))
+    element_payload.extend(b"\x41\x00\x0b")
+    element_payload.extend(write_varuint(1))
+    element_payload.extend(write_varuint(1))
+    sections.append((9, bytes(element_payload)))
 
     return wasm_link._build_sections(sections)
 
@@ -166,6 +337,45 @@ def test_wasm_link_allows_ref_func_element_expr() -> None:
     assert ok, err
 
 
+def test_stub_dead_functions_preserves_start_root_reachability() -> None:
+    module = _build_start_root_module()
+    assert wasm_link._stub_dead_functions(module) is None
+
+
+def test_tree_shake_runtime_preserves_required_function_exports() -> None:
+    module = _build_exported_runtime_module("molt_exception_pending")
+    shaken = wasm_link._tree_shake_runtime(module, {"exception_pending"})
+    exports = wasm_link._collect_function_exports(shaken)
+    assert "molt_exception_pending" in exports
+
+
+def test_tree_shake_runtime_preserves_direct_runner_exception_debug_exports() -> None:
+    module = _build_exported_runtime_module_many(
+        [
+            "molt_exception_pending",
+            "molt_alloc",
+            "molt_string_as_ptr",
+            "molt_exception_kind",
+            "molt_exception_message",
+            "molt_exception_last",
+            "molt_dec_ref_obj",
+        ]
+    )
+    shaken = wasm_link._tree_shake_runtime(module, {"exception_pending"})
+    exports = wasm_link._collect_function_exports(shaken)
+    assert "molt_alloc" in exports
+    assert "molt_string_as_ptr" in exports
+    assert "molt_exception_kind" in exports
+    assert "molt_exception_message" in exports
+    assert "molt_exception_last" in exports
+    assert "molt_dec_ref_obj" in exports
+
+
+def test_neutralize_dead_element_entries_preserves_host_call_indirect_modules() -> None:
+    module = _build_host_call_indirect_module()
+    assert wasm_link._neutralize_dead_element_entries(module) is None
+
+
 def test_collect_linking_function_symbols_parses_defined_and_undefined_entries() -> None:
     data = _module_with_linking_symbols(
         [
@@ -203,6 +413,550 @@ def test_collect_linking_function_symbols_parses_defined_and_undefined_entries()
             "molt_call_indirect13",
         ),
     ]
+
+
+def test_inject_output_export_aliases_preserves_export_flag_for_user_exports(
+    tmp_path: Path,
+) -> None:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = write_varuint(1) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(1))
+    export_payload.extend(wasm_link._write_string("main_molt__ocr_tokens"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(2))
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    linking_payload = wasm_link._build_linking_payload(
+        2,
+        [
+            (
+                wasm_link.SYMTAB_SUBSECTION_ID,
+                _build_symbol_subsection(
+                    [
+                        _function_symbol_entry(
+                            flags=wasm_link.FLAG_BINDING_GLOBAL,
+                            index=0,
+                            name="func0",
+                        )
+                    ]
+                ),
+            )
+        ],
+    )
+    sections.append((0, wasm_link._build_custom_section("linking", linking_payload)))
+    module = wasm_link._build_sections(sections)
+    output = tmp_path / "output.wasm"
+    output.write_bytes(module)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        temp_dir = tempfile.TemporaryDirectory(dir=tmp)
+        updated = wasm_link._inject_output_export_aliases(output, temp_dir)
+        symbols = wasm_link._collect_linking_function_symbols(updated.read_bytes())
+        assert any(
+            name == f"{wasm_link._OUTPUT_EXPORT_ALIAS_PREFIX}main_molt__ocr_tokens"
+            and (flags & wasm_link.FLAG_EXPORTED)
+            for flags, _, name, _ in symbols
+        ), symbols
+        temp_dir.cleanup()
+
+
+def test_restore_output_export_aliases_renames_user_exports() -> None:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = write_varuint(1) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(1))
+    export_payload.extend(
+        wasm_link._write_string(
+            f"{wasm_link._OUTPUT_EXPORT_ALIAS_PREFIX}main_molt__ocr_tokens"
+        )
+    )
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(2))
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    restored = wasm_link._restore_output_export_aliases(
+        wasm_link._build_sections(sections)
+    )
+    assert restored is not None
+    exports = wasm_link._collect_exports(restored)
+    assert "main_molt__ocr_tokens" in exports
+    assert (
+        f"{wasm_link._OUTPUT_EXPORT_ALIAS_PREFIX}main_molt__ocr_tokens" not in exports
+    )
+
+
+def test_inject_output_export_aliases_adds_runtime_entrypoint_symbols(
+    tmp_path: Path,
+) -> None:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = write_varuint(1) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(1))
+    export_payload.extend(wasm_link._write_string("molt_isolate_import"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(4))
+    code_payload.append(0x00)
+    code_payload.append(0x20)
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    linking_payload = wasm_link._build_linking_payload(
+        2,
+        [
+            (
+                wasm_link.SYMTAB_SUBSECTION_ID,
+                _build_symbol_subsection(
+                    [
+                        _function_symbol_entry(
+                            flags=wasm_link.FLAG_BINDING_GLOBAL,
+                            index=0,
+                            name="func0",
+                        )
+                    ]
+                ),
+            )
+        ],
+    )
+    sections.append((0, wasm_link._build_custom_section("linking", linking_payload)))
+    module = wasm_link._build_sections(sections)
+    output = tmp_path / "output.wasm"
+    output.write_bytes(module)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        temp_dir = tempfile.TemporaryDirectory(dir=tmp)
+        updated = wasm_link._inject_output_export_aliases(output, temp_dir)
+        symbols = wasm_link._collect_linking_function_symbols(updated.read_bytes())
+        assert any(
+            name == "molt_isolate_import"
+            and (flags & wasm_link.FLAG_BINDING_GLOBAL)
+            for flags, _, name, _ in symbols
+        ), symbols
+        assert any(
+            name == f"{wasm_link._OUTPUT_EXPORT_ALIAS_PREFIX}molt_isolate_import"
+            and (flags & wasm_link.FLAG_EXPORTED)
+            for flags, _, name, _ in symbols
+        ), symbols
+        temp_dir.cleanup()
+
+
+def test_inject_output_export_aliases_skips_void_user_exports(
+    tmp_path: Path,
+) -> None:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    import_payload = bytearray()
+    import_payload.extend(write_varuint(2))
+    for i in range(2):
+        import_payload.extend(wasm_link._write_string("env"))
+        import_payload.extend(wasm_link._write_string(f"imp{i}"))
+        import_payload.append(0x00)
+        import_payload.extend(write_varuint(0))
+    sections.append((2, bytes(import_payload)))
+
+    func_payload = write_varuint(3) + write_varuint(0) + write_varuint(0) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(3))
+    for name, index in (
+        ("main_molt__init", 2),
+        ("main_molt__ocr_tokens", 3),
+        ("molt_main", 4),
+    ):
+        export_payload.extend(wasm_link._write_string(name))
+        export_payload.append(0x00)
+        export_payload.extend(write_varuint(index))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(3))
+    for _ in range(3):
+        code_payload.extend(write_varuint(2))
+        code_payload.append(0x00)
+        code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    linking_payload = wasm_link._build_linking_payload(
+        2,
+        [
+            (
+                wasm_link.SYMTAB_SUBSECTION_ID,
+                _build_symbol_subsection(
+                    [
+                        _function_symbol_entry(
+                            flags=wasm_link.FLAG_BINDING_GLOBAL
+                            | wasm_link.FLAG_EXPLICIT_NAME,
+                            index=2,
+                            name="__molt_output_export_2",
+                        ),
+                        _function_symbol_entry(
+                            flags=wasm_link.FLAG_BINDING_GLOBAL
+                            | wasm_link.FLAG_EXPLICIT_NAME,
+                            index=3,
+                            name="__molt_output_export_3",
+                        ),
+                        _function_symbol_entry(
+                            flags=wasm_link.FLAG_BINDING_GLOBAL
+                            | wasm_link.FLAG_EXPLICIT_NAME
+                            | wasm_link.FLAG_EXPORTED
+                            | wasm_link.FLAG_NO_STRIP,
+                            index=4,
+                            name="molt_main",
+                        ),
+                    ]
+                ),
+            )
+        ],
+    )
+    sections.append((0, wasm_link._build_custom_section("linking", linking_payload)))
+
+    output = tmp_path / "output.wasm"
+    output.write_bytes(wasm_link._build_sections(sections))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        temp_dir = tempfile.TemporaryDirectory(dir=tmp)
+        updated = wasm_link._inject_output_export_aliases(output, temp_dir)
+        assert updated == output
+        temp_dir.cleanup()
+
+
+def test_collect_output_wrapper_specs_skips_internal_module_helpers() -> None:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = bytearray()
+    func_payload.extend(write_varuint(4))
+    for _ in range(4):
+        func_payload.extend(write_varuint(0))
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(4))
+    for name, index in (
+        ("main_molt__init", 0),
+        ("main_molt__molt_module_chunk_1", 1),
+        ("__future_____Feature___init__", 2),
+        ("molt_isolate_import", 3),
+    ):
+        export_payload.extend(wasm_link._write_string(name))
+        export_payload.append(0x00)
+        export_payload.extend(write_varuint(index))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(4))
+    for _ in range(4):
+        code_payload.extend(write_varuint(2))
+        code_payload.append(0x00)
+        code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    specs = wasm_link._collect_output_wrapper_specs(wasm_link._build_sections(sections))
+    kept = {name for name, _alias, _type_idx, _func_idx in specs}
+    assert "main_molt__init" in kept
+    assert "molt_isolate_import" in kept
+    assert "main_molt__molt_module_chunk_1" not in kept
+    assert "__future_____Feature___init__" not in kept
+
+
+def test_entry_module_prefix_from_main_init_prefers_main_module() -> None:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = bytearray()
+    func_payload.extend(write_varuint(2))
+    func_payload.extend(write_varuint(0))
+    func_payload.extend(write_varuint(0))
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(2))
+    for name, index in (
+        ("molt_init_main_molt", 0),
+        ("molt_init___main__", 1),
+    ):
+        export_payload.extend(wasm_link._write_string(name))
+        export_payload.append(0x00)
+        export_payload.extend(write_varuint(index))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(2))
+    code_payload.extend(write_varuint(2))
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    body = bytearray()
+    body.append(0x00)
+    body.append(0x10)
+    body.extend(write_varuint(0))
+    body.append(0x0B)
+    code_payload.extend(write_varuint(len(body)))
+    code_payload.extend(body)
+    sections.append((10, bytes(code_payload)))
+
+    module = wasm_link._build_sections(sections)
+    exports = wasm_link._collect_function_exports(module)
+    assert wasm_link._entry_module_prefix_from_main_init(module, exports) == "main_molt"
+
+
+def test_ensure_function_exports_by_symbol_names_adds_public_exports() -> None:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = bytearray()
+    func_payload.extend(write_varuint(2))
+    func_payload.extend(write_varuint(0))
+    func_payload.extend(write_varuint(0))
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(1))
+    export_payload.extend(wasm_link._write_string("molt_main"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(1))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(2))
+    for _ in range(2):
+        code_payload.extend(write_varuint(2))
+        code_payload.append(0x00)
+        code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    linking_payload = wasm_link._build_linking_payload(
+        2,
+        [
+            (
+                wasm_link.SYMTAB_SUBSECTION_ID,
+                _build_symbol_subsection(
+                    [
+                        _function_symbol_entry(
+                            flags=wasm_link.FLAG_BINDING_GLOBAL
+                            | wasm_link.FLAG_EXPLICIT_NAME
+                            | wasm_link.FLAG_EXPORTED
+                            | wasm_link.FLAG_NO_STRIP,
+                            index=0,
+                            name="__molt_output_export_0",
+                        ),
+                        _function_symbol_entry(
+                            flags=wasm_link.FLAG_BINDING_GLOBAL
+                            | wasm_link.FLAG_EXPLICIT_NAME
+                            | wasm_link.FLAG_EXPORTED
+                            | wasm_link.FLAG_NO_STRIP,
+                            index=1,
+                            name="molt_main",
+                        ),
+                    ]
+                ),
+            )
+        ],
+    )
+    sections.append((0, wasm_link._build_custom_section("linking", linking_payload)))
+
+    updated = wasm_link._ensure_function_exports_by_symbol_names(
+        wasm_link._build_sections(sections),
+        {"main_molt__init": "__molt_output_export_0"},
+    )
+    assert updated is not None
+    exports = wasm_link._collect_exports(updated)
+    assert "main_molt__init" in exports
+    assert "molt_main" in exports
+
+
+def test_run_wasm_ld_force_exports_user_module_exports(
+    tmp_path: Path, monkeypatch
+) -> None:
+    write_varuint = wasm_link._write_varuint
+
+    sections: list[tuple[int, bytes]] = []
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    sections.append((1, bytes(type_payload)))
+    func_payload = write_varuint(3) + write_varuint(0) + write_varuint(0) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(3))
+    for name, index in (
+        ("main_molt__init", 0),
+        ("main_molt__ocr_tokens", 1),
+        ("molt_main", 2),
+    ):
+        export_payload.extend(wasm_link._write_string(name))
+        export_payload.append(0x00)
+        export_payload.extend(write_varuint(index))
+    sections.append((7, bytes(export_payload)))
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(3))
+    for _ in range(3):
+        code_payload.extend(write_varuint(2))
+        code_payload.append(0x00)
+        code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+    linking_payload = wasm_link._build_linking_payload(
+        2,
+        [
+            (
+                wasm_link.SYMTAB_SUBSECTION_ID,
+                _build_symbol_subsection(
+                    [
+                        _function_symbol_entry(
+                            flags=wasm_link.FLAG_BINDING_GLOBAL
+                            | wasm_link.FLAG_EXPLICIT_NAME
+                            | wasm_link.FLAG_EXPORTED
+                            | wasm_link.FLAG_NO_STRIP,
+                            index=0,
+                            name="__molt_output_export_0",
+                        ),
+                        _function_symbol_entry(
+                            flags=wasm_link.FLAG_BINDING_GLOBAL
+                            | wasm_link.FLAG_EXPLICIT_NAME
+                            | wasm_link.FLAG_EXPORTED
+                            | wasm_link.FLAG_NO_STRIP,
+                            index=1,
+                            name="__molt_output_export_1",
+                        ),
+                        _function_symbol_entry(
+                            flags=wasm_link.FLAG_BINDING_GLOBAL
+                            | wasm_link.FLAG_EXPLICIT_NAME
+                            | wasm_link.FLAG_EXPORTED
+                            | wasm_link.FLAG_NO_STRIP,
+                            index=2,
+                            name="molt_main",
+                        ),
+                    ]
+                ),
+            )
+        ],
+    )
+    sections.append((0, wasm_link._build_custom_section("linking", linking_payload)))
+    output_bytes = wasm_link._build_sections(sections)
+
+    runtime = tmp_path / "runtime.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    runtime.write_bytes(output_bytes)
+    output.write_bytes(output_bytes)
+
+    captured_cmds: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        captured_cmds.append(list(cmd))
+        linked.write_bytes(output_bytes)
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+        return Result()
+
+    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
+    monkeypatch.setattr(wasm_link, "_append_table_ref_elements", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda data: (True, None))
+
+    rc = wasm_link._run_wasm_ld(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+    )
+    assert rc == 0
+    cmd = next(cmd for cmd in captured_cmds if cmd and cmd[0] == "wasm-ld")
+    assert "--export=__molt_output_export_0" in cmd
+    assert "--export=__molt_output_export_1" in cmd
 
 
 def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
@@ -372,6 +1126,97 @@ def test_strip_internal_exports_keeps_table_ref_exports() -> None:
     exports = wasm_link._collect_function_exports(updated or data)
     assert "__molt_table_ref_7" in exports
     assert "molt_main" in exports
+
+
+def test_strip_internal_exports_preserves_user_module_exports() -> None:
+    write_varuint = wasm_link._write_varuint
+
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = write_varuint(2) + write_varuint(0) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(3))
+    export_payload.extend(wasm_link._write_string("__molt_table_ref_7"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    export_payload.extend(wasm_link._write_string("molt_main"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    export_payload.extend(wasm_link._write_string("main_molt__ocr_tokens"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(1))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(2))
+    for _ in range(2):
+        code_payload.extend(write_varuint(2))
+        code_payload.append(0x00)
+        code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    data = wasm_link._build_sections(sections)
+    updated = wasm_link._strip_internal_exports(
+        data, preserve_exports={"main_molt__ocr_tokens"}
+    )
+    exports = wasm_link._collect_function_exports(updated or data)
+    assert "__molt_table_ref_7" in exports
+    assert "molt_main" in exports
+    assert "main_molt__ocr_tokens" in exports
+
+
+def test_strip_internal_exports_dedupes_duplicate_export_names() -> None:
+    write_varuint = wasm_link._write_varuint
+
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = write_varuint(2) + write_varuint(0) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(4))
+    for name, index in (
+        ("__molt_table_ref_7", 0),
+        ("__molt_table_ref_7", 1),
+        ("molt_main", 0),
+        ("molt_main", 1),
+    ):
+        export_payload.extend(wasm_link._write_string(name))
+        export_payload.append(0x00)
+        export_payload.extend(write_varuint(index))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(2))
+    for _ in range(2):
+        code_payload.extend(write_varuint(2))
+        code_payload.append(0x00)
+        code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    data = wasm_link._build_sections(sections)
+    updated = wasm_link._strip_internal_exports(data)
+    exports = wasm_link._collect_function_exports(updated or data)
+    assert list(name for name in exports if name == "__molt_table_ref_7") == [
+        "__molt_table_ref_7"
+    ]
+    assert list(name for name in exports if name == "molt_main") == ["molt_main"]
 
 
 def test_required_linked_table_min_respects_exported_table_refs() -> None:
