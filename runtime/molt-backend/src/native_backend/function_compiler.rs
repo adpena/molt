@@ -2164,15 +2164,27 @@ impl SimpleBackend {
             if !is_block_filled
                 && let Some(stride) = trace_stride
                 && op_idx % stride == 0
-                && let (Some(name_var), Some(len_var), Some(trace_fn)) =
-                    (trace_name_var, trace_len_var, trace_func)
             {
-                let name_bits = builder.use_var(name_var);
-                let len_bits = builder.use_var(len_var);
-                let idx_bits = builder.ins().iconst(types::I64, op_idx as i64);
-                builder
-                    .ins()
-                    .call(trace_fn, &[name_bits, len_bits, idx_bits]);
+                if std::env::var("MOLT_TRACE_OP_PROGRESS_STDERR").as_deref() == Ok("1") {
+                    eprintln!(
+                        "[molt-native-op] func={} op={} kind={} block={:?} filled={}",
+                        func_ir.name,
+                        op_idx,
+                        op.kind,
+                        builder.current_block(),
+                        is_block_filled
+                    );
+                }
+                if let (Some(name_var), Some(len_var), Some(trace_fn)) =
+                    (trace_name_var, trace_len_var, trace_func)
+                {
+                    let name_bits = builder.use_var(name_var);
+                    let len_bits = builder.use_var(len_var);
+                    let idx_bits = builder.ins().iconst(types::I64, op_idx as i64);
+                    builder
+                        .ins()
+                        .call(trace_fn, &[name_bits, len_bits, idx_bits]);
+                }
             }
             // `store_var` defines the target slot just like `out`-producing ops
             // define their result name. Treat the destination variable as the
@@ -15461,6 +15473,16 @@ impl SimpleBackend {
                     // clear or retain entries; the name→Variable mapping is static.
                     // Value-tier raw shadows are block-local snapshots and must
                     // not leak across branch boundaries.
+                    if builder.current_block().is_none()
+                        || builder
+                            .current_block()
+                            .is_some_and(|block| crate::block_has_terminator(&builder, block))
+                    {
+                        let dead = builder.create_block();
+                        switch_to_block_materialized(&mut builder, dead);
+                        seal_block_once(&mut builder, &mut sealed_blocks, dead);
+                        is_block_filled = false;
+                    }
                     raw_int_shadow_vals.clear();
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let cond = var_get(&mut builder, &vars, &args[0]).expect("Cond not found");
@@ -15612,27 +15634,6 @@ impl SimpleBackend {
                     if else_block.is_none() {
                         reachable_blocks.insert(merge_block);
                     }
-                    builder
-                        .ins()
-                        .brif(cond_bool, then_block, &[], false_block, &[]);
-
-                    // Seal blocks now that their predecessor sets are complete.
-                    // Structured `if` creates exactly one predecessor for each of then/else.
-                    //
-                    // Note: we deliberately do not seal `origin_block` here because it may have
-                    // been sealed earlier (for example the function entry block is sealed up-front).
-                    if exception_label_ids.is_empty() && sealed_blocks.insert(then_block) {
-                        maybe_debug_seal("if_then", op_idx, then_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, then_block);
-                    }
-                    if let Some(else_block) = else_block
-                        && exception_label_ids.is_empty()
-                        && sealed_blocks.insert(else_block)
-                    {
-                        maybe_debug_seal("if_else", op_idx, else_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, else_block);
-                    }
-
                     let mut phi_ops: Vec<(String, String, String)> = Vec::new();
                     let mut merge_rebind_names: Vec<String> = Vec::new();
                     if let Some(end_if_idx) = if_to_end_if.get(&op_idx).copied() {
@@ -15679,6 +15680,18 @@ impl SimpleBackend {
                     let merge_rebind_params: Vec<Value> = (0..merge_rebind_names.len())
                         .map(|_| builder.append_block_param(merge_block, types::I64))
                         .collect();
+                    if std::env::var("MOLT_DEBUG_IF_MERGE_SLOTS").as_deref()
+                        == Ok(func_ir.name.as_str())
+                    {
+                        let current_block = builder.current_block();
+                        let current_filled = current_block
+                            .map(|block| crate::block_has_terminator(&builder, block))
+                            .unwrap_or(false);
+                        eprintln!(
+                            "IF_MERGE_SLOTS func={} op={} block={:?} block_filled={} names={:?}",
+                            func_ir.name, op_idx, current_block, current_filled, merge_rebind_names
+                        );
+                    }
                     let merge_rebind_slots = merge_rebind_names
                         .iter()
                         .map(|name| {
@@ -15687,9 +15700,25 @@ impl SimpleBackend {
                                 8,
                                 3,
                             ));
-                            let init = var_get(&mut builder, &vars, name)
-                                .map(|v| *v)
-                                .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                            let has_reaching_def = first_defined_at
+                                .get(name)
+                                .copied()
+                                .is_some_and(|first| first <= op_idx);
+                            if std::env::var("MOLT_DEBUG_IF_MERGE_SLOTS").as_deref()
+                                == Ok(func_ir.name.as_str())
+                            {
+                                eprintln!(
+                                    "IF_MERGE_INIT func={} op={} name={} reaching_def={}",
+                                    func_ir.name, op_idx, name, has_reaching_def
+                                );
+                            }
+                            let init = if has_reaching_def {
+                                var_get(&mut builder, &vars, name)
+                                    .map(|v| *v)
+                                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0))
+                            } else {
+                                builder.ins().iconst(types::I64, 0)
+                            };
                             builder.ins().stack_store(init, slot, 0);
                             slot
                         })
@@ -15703,6 +15732,27 @@ impl SimpleBackend {
                                 func_ir.name, merge_rebind_names
                             ),
                         );
+                    }
+
+                    builder
+                        .ins()
+                        .brif(cond_bool, then_block, &[], false_block, &[]);
+
+                    // Seal blocks now that their predecessor sets are complete.
+                    // Structured `if` creates exactly one predecessor for each of then/else.
+                    //
+                    // Note: we deliberately do not seal `origin_block` here because it may have
+                    // been sealed earlier (for example the function entry block is sealed up-front).
+                    if exception_label_ids.is_empty() && sealed_blocks.insert(then_block) {
+                        maybe_debug_seal("if_then", op_idx, then_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, then_block);
+                    }
+                    if let Some(else_block) = else_block
+                        && exception_label_ids.is_empty()
+                        && sealed_blocks.insert(else_block)
+                    {
+                        maybe_debug_seal("if_else", op_idx, else_block);
+                        seal_block_once(&mut builder, &mut sealed_blocks, else_block);
                     }
 
                     let branch_rebind_vars = live_rebind_vars_for_op(op_idx);
@@ -16236,6 +16286,10 @@ impl SimpleBackend {
                                 &raw_int_shadow,
                                 &int_store_target_names,
                             );
+                            if is_block_filled {
+                                frame.else_terminal = true;
+                                continue;
+                            }
                             let mut phi_args: Vec<Value> = Vec::new();
                             let mut merge_rebind_args: Vec<Value> = Vec::new();
                             if !frame.phi_ops.is_empty() {
