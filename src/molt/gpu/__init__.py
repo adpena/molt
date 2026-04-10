@@ -135,7 +135,7 @@ def alloc(size: int, dtype: type = float, *, format_char: str | None = None) -> 
     """Allocate an empty GPU buffer."""
     resolved_format = format_char or _default_format_char(dtype)
     elem_size = _format_itemsize(resolved_format)
-    return Buffer(bytes(size * elem_size), dtype, size, format_char=resolved_format)
+    return Buffer(bytearray(size * elem_size), dtype, size, format_char=resolved_format)
 
 
 def thread_id() -> int:

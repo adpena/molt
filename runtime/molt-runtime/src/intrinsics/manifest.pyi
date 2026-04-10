@@ -189,6 +189,36 @@ def molt_gpu_linear_contiguous(
     out_features: int,
     out_format: str,
 ) -> bytes: ...
+def molt_gpu_broadcast_binary_contiguous(
+    a_data: Any,
+    a_format: str,
+    a_shape: Any,
+    b_data: Any,
+    b_format: str,
+    b_shape: Any,
+    op_code: int,
+    out_format: str,
+) -> bytes: ...
+def molt_gpu_rope_apply_contiguous(
+    x_data: Any,
+    x_format: str,
+    cos_data: Any,
+    sin_data: Any,
+    freq_dim: int,
+    batch: int,
+    seq: int,
+    heads: int,
+    dim: int,
+    seq_len: int,
+    out_format: str,
+) -> bytes: ...
+def molt_gpu_permute_contiguous(
+    x_data: Any,
+    x_format: str,
+    shape: Any,
+    dims: Any,
+    out_format: str,
+) -> bytes: ...
 def molt_argparse_parse(spec_json: str, argv: Any) -> str: ...
 def molt_enum_init_member(member: Any, name: Any, value: Any) -> None: ...
 def molt_re_literal_matches(segment: str, literal: str, flags: int) -> bool: ...

@@ -217,6 +217,57 @@ def test_tensor_take_rows_preserves_values_and_f32_buffer_layout():
     assert out._buf.itemsize == 4
 
 
+def test_tensor_split_last_dim_preserves_values_and_f32_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor(
+        to_device(array.array("f", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])),
+        shape=(1, 6),
+    )
+
+    a, b, c = t.split_last_dim((2, 2, 2))
+
+    assert a.to_list() == [[1.0, 2.0]]
+    assert b.to_list() == [[3.0, 4.0]]
+    assert c.to_list() == [[5.0, 6.0]]
+    assert a._buf.format_char == "f"
+    assert b._buf.format_char == "f"
+    assert c._buf.format_char == "f"
+
+
+def test_tensor_split_last_dim_rejects_non_integral_sizes():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor(
+        to_device(array.array("f", [1.0, 2.0, 3.0, 4.0, 5.0])),
+        shape=(1, 5),
+    )
+
+    with pytest.raises(TypeError, match="split sizes must be integers"):
+        t.split_last_dim((1.9, 3.1))
+
+
+def test_tensor_repeat_axis_preserves_values_and_f32_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor(
+        to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])),
+        shape=(1, 2, 2),
+    )
+
+    out = t.repeat_axis(1, 3)
+
+    assert out.shape == (1, 6, 2)
+    assert out.to_list() == [[[1.0, 2.0], [1.0, 2.0], [1.0, 2.0], [3.0, 4.0], [3.0, 4.0], [3.0, 4.0]]]
+    assert out._buf.format_char == "f"
+
+
 def test_tensor_indexing_preserves_subtensor_buffer_layout():
     import array
     from molt.gpu import to_device
@@ -275,6 +326,53 @@ def test_tensor_broadcast_leading_singletons():
             [[15.0, 26.0], [17.0, 28.0]],
         ]
     ]
+
+
+def test_tensor_broadcast_preserves_f32_output_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    a = Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))
+    b = Tensor(to_device(array.array("f", [10.0, 20.0])), shape=(1, 2))
+
+    out = a + b
+
+    assert out.shape == (2, 2)
+    assert out.to_list() == [[11.0, 22.0], [13.0, 24.0]]
+    assert out._buf.format_char == "f"
+    assert out._buf.itemsize == 4
+
+
+def test_tensor_broadcast_promotes_mixed_int_and_float_to_float():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    ints = Tensor(to_device(array.array("q", [1, 2])), dtype=int)
+    floats = Tensor([0.5, 1.5])
+
+    left = ints + floats
+    right = floats + ints
+
+    assert left.to_list() == [1.5, 3.5]
+    assert right.to_list() == [1.5, 3.5]
+    assert left._buf.format_char == "d"
+    assert right._buf.format_char == "d"
+
+
+def test_tensor_broadcast_promotes_int_tensor_with_float_scalar_tensor():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    ints = Tensor(to_device(array.array("q", [1, 2])), dtype=int)
+    scalar = Tensor([0.5], shape=(1,))
+
+    out = ints + scalar
+
+    assert out.to_list() == [1.5, 2.5]
+    assert out._buf.format_char == "d"
 
 
 def test_tensor_reshape():

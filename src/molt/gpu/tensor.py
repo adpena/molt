@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import math
+import operator
 import struct
 import _intrinsics as _molt_intrinsics
 from . import Buffer, alloc, to_device, from_device
@@ -42,6 +43,15 @@ def _runtime_intrinsics_active() -> bool:
 
 
 _MOLT_GPU_LINEAR_CONTIGUOUS = _load_optional_intrinsic("molt_gpu_linear_contiguous")
+_MOLT_GPU_BROADCAST_BINARY_CONTIGUOUS = _load_optional_intrinsic(
+    "molt_gpu_broadcast_binary_contiguous"
+)
+_MOLT_GPU_PERMUTE_CONTIGUOUS = _load_optional_intrinsic("molt_gpu_permute_contiguous")
+
+_OP_ADD = 0
+_OP_SUB = 1
+_OP_MUL = 2
+_OP_DIV = 3
 
 
 def _product(seq):
@@ -70,6 +80,30 @@ def _preferred_float_format(*tensors: "Tensor") -> str:
     if formats and all(fmt == "f" for fmt in formats):
         return "f"
     return "d"
+
+
+def _binary_result_dtype_and_format(lhs: "Tensor", rhs) -> tuple[type, str]:
+    if isinstance(rhs, Tensor):
+        if lhs._dtype is float or rhs._dtype is float:
+            float_tensors = tuple(
+                tensor
+                for tensor in (lhs, rhs)
+                if tensor._dtype is float and tensor._buf.element_type is float
+            )
+            result_format = (
+                _preferred_float_format(*float_tensors) if float_tensors else "d"
+            )
+            return float, result_format
+        return lhs._dtype, lhs._buf.format_char
+    if isinstance(rhs, float):
+        if lhs._dtype is float:
+            return float, _preferred_float_format(lhs)
+        return float, "d"
+    if isinstance(rhs, int):
+        if lhs._dtype is float:
+            return float, _preferred_float_format(lhs)
+        return lhs._dtype, lhs._buf.format_char
+    raise TypeError(f"Unsupported binary operand type: {type(rhs)!r}")
 
 
 def _flatten_nested(data):
@@ -259,6 +293,21 @@ class Tensor:
 
         old_shape = self._shape
         new_shape = tuple(old_shape[dim] for dim in normalized)
+        if _MOLT_GPU_PERMUTE_CONTIGUOUS is not None:
+            out_bits = _MOLT_GPU_PERMUTE_CONTIGUOUS(
+                self._buf._data,
+                self._buf.format_char,
+                old_shape,
+                normalized,
+                self._buf.format_char,
+            )
+            out_buf = Buffer(
+                out_bits,
+                self._buf.element_type,
+                self.size,
+                format_char=self._buf.format_char,
+            )
+            return Tensor(out_buf, shape=new_shape, dtype=self._dtype)
         data = self._data_list()
         result = [0.0] * len(data)
 
@@ -302,31 +351,103 @@ class Tensor:
 
     # ── Elementwise arithmetic ────────────────────────────────────────
 
-    def _broadcast_op(self, other, op):
+    def _apply_binary_op(self, a: float, b: float, op_code: int) -> float:
+        if op_code == _OP_ADD:
+            return a + b
+        if op_code == _OP_SUB:
+            return a - b
+        if op_code == _OP_MUL:
+            return a * b
+        if op_code == _OP_DIV:
+            try:
+                return a / b
+            except ZeroDivisionError:
+                if a > 0:
+                    return float("inf")
+                if a < 0:
+                    return float("-inf")
+                return float("nan")
+        raise ValueError(f"Unsupported binary op code {op_code!r}")
+
+    def _broadcast_op(
+        self,
+        other,
+        op_code: int,
+        _fast=_MOLT_GPU_BROADCAST_BINARY_CONTIGUOUS,
+    ):
         """Apply a binary op with scalar or tensor broadcasting."""
         if isinstance(other, (int, float)):
-            data = self._data_list()
-            return self._from_flat([op(x, float(other)) for x in data], self._shape)
+            scalar = float(other)
+            result_dtype, result_format = _binary_result_dtype_and_format(self, other)
+            result_buf = alloc(self.size, result_dtype, format_char=result_format)
+            src_buf = self._buf
+            apply = self._apply_binary_op
+            for i in range(self.size):
+                result_buf[i] = apply(src_buf[i], scalar, op_code)
+            return Tensor(result_buf, shape=self._shape, dtype=result_dtype)
         if not isinstance(other, Tensor):
             return NotImplemented
 
-        a_data = self._data_list()
-        b_data = other._data_list()
+        a_buf = self._buf
+        b_buf = other._buf
+        apply = self._apply_binary_op
+
+        result_dtype, result_format = _binary_result_dtype_and_format(self, other)
+
+        if _fast is not None:
+            out_bits = _fast(
+                a_buf._data,
+                a_buf.format_char,
+                self._shape,
+                b_buf._data,
+                b_buf.format_char,
+                other._shape,
+                op_code,
+                result_format,
+            )
+            out_ndim = max(self.ndim, other.ndim)
+            a_shape = (1,) * (out_ndim - self.ndim) + self._shape
+            b_shape = (1,) * (out_ndim - other.ndim) + other._shape
+            out_shape = []
+            for a_dim, b_dim in zip(a_shape, b_shape):
+                if a_dim == b_dim:
+                    out_shape.append(a_dim)
+                elif a_dim == 1:
+                    out_shape.append(b_dim)
+                elif b_dim == 1:
+                    out_shape.append(a_dim)
+                else:
+                    raise ValueError(
+                f"Cannot broadcast shapes {self._shape} and {other._shape}"
+                    )
+            out_buf = Buffer(
+                out_bits,
+                result_dtype,
+                _product(out_shape),
+                format_char=result_format,
+            )
+            return Tensor(out_buf, shape=tuple(out_shape), dtype=result_dtype)
 
         # Same shape — elementwise
         if self._shape == other._shape:
-            return self._from_flat(
-                [op(a_data[i], b_data[i]) for i in range(len(a_data))],
-                self._shape,
-            )
+            result_buf = alloc(self.size, result_dtype, format_char=result_format)
+            for i in range(self.size):
+                result_buf[i] = apply(a_buf[i], b_buf[i], op_code)
+            return Tensor(result_buf, shape=self._shape, dtype=result_dtype)
 
         # Broadcast: one of them is a scalar
         if other.size == 1:
-            s = b_data[0]
-            return self._from_flat([op(x, s) for x in a_data], self._shape)
+            scalar = b_buf[0]
+            result_buf = alloc(self.size, result_dtype, format_char=result_format)
+            for i in range(self.size):
+                result_buf[i] = apply(a_buf[i], scalar, op_code)
+            return Tensor(result_buf, shape=self._shape, dtype=result_dtype)
         if self.size == 1:
-            s = a_data[0]
-            return other._from_flat([op(s, x) for x in b_data], other._shape)
+            scalar = a_buf[0]
+            result_buf = alloc(other.size, result_dtype, format_char=result_format)
+            for i in range(other.size):
+                result_buf[i] = apply(scalar, b_buf[i], op_code)
+            return Tensor(result_buf, shape=other._shape, dtype=result_dtype)
 
         out_ndim = max(self.ndim, other.ndim)
         a_shape = (1,) * (out_ndim - self.ndim) + self._shape
@@ -347,9 +468,14 @@ class Tensor:
         a_strides = _strides(a_shape)
         b_strides = _strides(b_shape)
         out_strides = _strides(tuple(out_shape))
-        result = [0.0] * _product(out_shape)
+        result_shape = tuple(out_shape)
+        result_buf = alloc(
+            _product(out_shape),
+            result_dtype,
+            format_char=result_format,
+        )
 
-        for out_index in range(len(result)):
+        for out_index in range(result_buf.size):
             rem = out_index
             a_index = 0
             b_index = 0
@@ -360,18 +486,18 @@ class Tensor:
                     a_index += coord * a_strides[axis]
                 if b_shape[axis] != 1:
                     b_index += coord * b_strides[axis]
-            result[out_index] = op(a_data[a_index], b_data[b_index])
+            result_buf[out_index] = apply(a_buf[a_index], b_buf[b_index], op_code)
 
-        return self._from_flat(result, tuple(out_shape))
+        return Tensor(result_buf, shape=result_shape, dtype=result_dtype)
 
     def __add__(self, other) -> 'Tensor':
-        return self._broadcast_op(other, lambda a, b: a + b)
+        return self._broadcast_op(other, _OP_ADD)
 
     def __radd__(self, other) -> 'Tensor':
-        return self._broadcast_op(other, lambda a, b: a + b)
+        return self._broadcast_op(other, _OP_ADD)
 
     def __sub__(self, other) -> 'Tensor':
-        return self._broadcast_op(other, lambda a, b: a - b)
+        return self._broadcast_op(other, _OP_SUB)
 
     def __rsub__(self, other) -> 'Tensor':
         if isinstance(other, (int, float)):
@@ -382,23 +508,13 @@ class Tensor:
         return NotImplemented
 
     def __mul__(self, other) -> 'Tensor':
-        return self._broadcast_op(other, lambda a, b: a * b)
+        return self._broadcast_op(other, _OP_MUL)
 
     def __rmul__(self, other) -> 'Tensor':
-        return self._broadcast_op(other, lambda a, b: a * b)
+        return self._broadcast_op(other, _OP_MUL)
 
     def __truediv__(self, other) -> 'Tensor':
-        def _safe_div(a, b):
-            try:
-                return a / b
-            except ZeroDivisionError:
-                if a > 0:
-                    return float('inf')
-                elif a < 0:
-                    return float('-inf')
-                else:
-                    return float('nan')
-        return self._broadcast_op(other, _safe_div)
+        return self._broadcast_op(other, _OP_DIV)
 
     def __rtruediv__(self, other) -> 'Tensor':
         if isinstance(other, (int, float)):
@@ -586,6 +702,111 @@ class Tensor:
         out_shape = self._shape[:-1] + (out_features,)
         if not out_shape:
             out_shape = (out_features,)
+        return Tensor(out_buf, shape=out_shape, dtype=self._dtype)
+
+    def split_last_dim(self, sizes) -> tuple['Tensor', ...]:
+        """Split the last dimension into contiguous views copied into new buffers."""
+        if self.ndim == 0:
+            raise ValueError("split_last_dim requires a tensor with at least 1 dimension")
+        normalized_sizes = []
+        for size in sizes:
+            if isinstance(size, bool):
+                raise TypeError("split sizes must be integers")
+            try:
+                normalized_sizes.append(operator.index(size))
+            except TypeError as exc:
+                raise TypeError("split sizes must be integers") from exc
+        sizes = tuple(normalized_sizes)
+        if any(size < 0 for size in sizes):
+            raise ValueError("split sizes must be non-negative")
+        if sum(sizes) != self._shape[-1]:
+            raise ValueError(
+                f"split sizes {sizes} do not match last dimension {self._shape[-1]}"
+            )
+
+        outer = _product(self._shape[:-1]) if self.ndim > 1 else 1
+        itemsize = self._buf.itemsize
+        row_width = self._shape[-1] * itemsize
+        result_shape_prefix = self._shape[:-1]
+        outputs = []
+        for size in sizes:
+            out_buf = Buffer(
+                bytearray(outer * size * itemsize),
+                self._buf.element_type,
+                outer * size,
+                format_char=self._buf.format_char,
+            )
+            outputs.append((size, out_buf))
+
+        src = self._buf._data
+        for row in range(outer):
+            row_base = row * row_width
+            offset = 0
+            for size, out_buf in outputs:
+                span = size * itemsize
+                dst_base = row * span
+                out_buf._data[dst_base:dst_base + span] = src[
+                    row_base + offset:row_base + offset + span
+                ]
+                offset += span
+
+        return tuple(
+            Tensor(out_buf, shape=result_shape_prefix + (size,), dtype=self._dtype)
+            for size, out_buf in outputs
+        )
+
+    def repeat_axis(self, axis: int, repeats: int) -> 'Tensor':
+        """Repeat contiguous slices along an axis."""
+        if repeats < 0:
+            raise ValueError("repeats must be non-negative")
+        if self.ndim == 0:
+            raise ValueError("repeat_axis requires a tensor with at least 1 dimension")
+        if axis < 0:
+            axis += self.ndim
+        if axis < 0 or axis >= self.ndim:
+            raise ValueError(f"Invalid axis {axis} for tensor with {self.ndim} dims")
+        if repeats == 1:
+            return Tensor(self._buf, shape=self._shape, dtype=self._dtype)
+        if repeats == 0:
+            out_shape = self._shape[:axis] + (0,) + self._shape[axis + 1:]
+            return Tensor(
+                Buffer(
+                    bytearray(0),
+                    self._buf.element_type,
+                    0,
+                    format_char=self._buf.format_char,
+                ),
+                shape=out_shape,
+                dtype=self._dtype,
+            )
+
+        outer = _product(self._shape[:axis]) if axis > 0 else 1
+        axis_len = self._shape[axis]
+        inner = _product(self._shape[axis + 1:]) if axis + 1 < self.ndim else 1
+        chunk_bytes = inner * self._buf.itemsize
+        src_axis_bytes = axis_len * chunk_bytes
+        out_axis_len = axis_len * repeats
+        out = bytearray(outer * out_axis_len * chunk_bytes)
+        src = self._buf._data
+
+        for outer_idx in range(outer):
+            src_outer = outer_idx * src_axis_bytes
+            dst_outer = outer_idx * out_axis_len * chunk_bytes
+            for axis_idx in range(axis_len):
+                src_base = src_outer + axis_idx * chunk_bytes
+                chunk = src[src_base:src_base + chunk_bytes]
+                dst_base = dst_outer + axis_idx * repeats * chunk_bytes
+                for rep in range(repeats):
+                    rep_base = dst_base + rep * chunk_bytes
+                    out[rep_base:rep_base + chunk_bytes] = chunk
+
+        out_shape = self._shape[:axis] + (out_axis_len,) + self._shape[axis + 1:]
+        out_buf = Buffer(
+            out,
+            self._buf.element_type,
+            outer * out_axis_len * inner,
+            format_char=self._buf.format_char,
+        )
         return Tensor(out_buf, shape=out_shape, dtype=self._dtype)
 
     def take_rows(self, indices, *, allow_negative: bool = True) -> 'Tensor':
