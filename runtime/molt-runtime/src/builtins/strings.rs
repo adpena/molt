@@ -1955,6 +1955,13 @@ pub fn clear_const_str_cache(_py: &crate::PyToken<'_>) {
     });
 }
 
+#[inline]
+unsafe fn write_bits_out(out: *mut u64, bits: u64) {
+    unsafe {
+        std::ptr::write_unaligned(out, bits);
+    }
+}
+
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
 #[unsafe(no_mangle)]
@@ -1979,7 +1986,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                 if obj_ptr.is_null() {
                     return 2;
                 }
-                *out = MoltObject::from_ptr(obj_ptr).bits();
+                write_bits_out(out, MoltObject::from_ptr(obj_ptr).bits());
                 return 0;
             }
 
@@ -1989,7 +1996,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
             let data_key = ptr as usize;
             if let Some(bits) = CONST_STR_TLS.with(|cell| cell.borrow().lookup(data_key, len)) {
                 inc_ref_bits(_py, bits);
-                *out = bits;
+                write_bits_out(out, bits);
                 return 0;
             }
 
@@ -2014,7 +2021,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                 cell.borrow_mut().insert(_py, data_key, len, bits);
             });
 
-            *out = bits;
+            write_bits_out(out, bits);
             0
         })
     }
@@ -2042,7 +2049,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
                 if obj_ptr.is_null() {
                     return 2;
                 }
-                *out = MoltObject::from_ptr(obj_ptr).bits();
+                write_bits_out(out, MoltObject::from_ptr(obj_ptr).bits());
                 return 0;
             }
             let slice = std::slice::from_raw_parts(ptr, len);
@@ -2050,7 +2057,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
             if obj_ptr.is_null() {
                 return 2;
             }
-            *out = MoltObject::from_ptr(obj_ptr).bits();
+            write_bits_out(out, MoltObject::from_ptr(obj_ptr).bits());
             0
         })
     }

@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use molt_obj_model::MoltObject;
 
 use crate::concurrency::GilGuard;
+#[cfg(target_arch = "wasm32")]
+use crate::libc_compat as libc;
 use crate::object::HEADER_FLAG_COROUTINE;
 use crate::object::accessors::resolve_obj_ptr;
 use crate::*;

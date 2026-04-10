@@ -4206,6 +4206,7 @@ const extractWasmTableBase = (buffer) => {
     }
     return null;
   };
+  const exportedBase = inferFromExports();
   try {
     const readConstExprI32 = (bytes, offset) => {
       if (offset >= bytes.length) {
@@ -4304,7 +4305,11 @@ const extractWasmTableBase = (buffer) => {
             } else if (flags === 6 || flags === 7 || flags === 5) {
               offset += 1;
             }
-            if (Number.isFinite(tableBase) && tableBase > 0) {
+            if (
+              Number.isFinite(tableBase) &&
+              tableBase > 0 &&
+              (!Number.isFinite(exportedBase) || tableBase >= exportedBase)
+            ) {
               return tableBase;
             }
           } else if (flags === 1 || flags === 3 || flags === 5 || flags === 7) {
@@ -4345,7 +4350,7 @@ const extractWasmTableBase = (buffer) => {
     }
 
     if (tableInitFuncIndex === null || !codeBodies) {
-      return null;
+      return exportedBase;
     }
     const definedIndex = tableInitFuncIndex - importFuncCount;
     if (definedIndex < 0 || definedIndex >= codeBodies.length) {
@@ -4368,11 +4373,14 @@ const extractWasmTableBase = (buffer) => {
     pos += 1;
     const [tableBase] = readVarInt32(bytes, pos);
     if (!Number.isFinite(tableBase) || tableBase <= 0) {
-      return inferFromExports();
+      return exportedBase;
+    }
+    if (Number.isFinite(exportedBase) && exportedBase > 0 && tableBase < exportedBase) {
+      return exportedBase;
     }
     return tableBase;
   } catch {
-    return inferFromExports();
+    return exportedBase;
   }
 };
 
