@@ -285,7 +285,7 @@ pub fn rewrite_annotate_stubs(ir: &mut SimpleIR) {
     }
 }
 
-#[cfg(feature = "native-backend")]
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
 mod native_backend_consts {
     pub(super) const QNAN: u64 = 0x7ff8_0000_0000_0000;
     pub(super) const CANONICAL_NAN_BITS: u64 = 0x7ff0_0000_0000_0001;
@@ -317,13 +317,15 @@ mod native_backend_consts {
     pub(super) const FUNC_DEFAULT_DICT_POP: i64 = 2;
     #[allow(dead_code)]
     pub(super) const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
-    pub(super) const HEADER_SIZE_BYTES: i32 = 16;
-    // MoltHeader layout (16 bytes total):
+    pub(super) const HEADER_SIZE_BYTES: i32 = 24;
+    // MoltHeader layout (24 bytes total):
     //   offset  0: type_id    (u32)
     //   offset  4: ref_count  (u32 / AtomicU32)
     //   offset  8: flags      (u32)
-    //   offset 12: size_class (u16) + cold_idx (u16)
-    // Data pointer = header_ptr + 16, so offsets from data_ptr are negative.
+    //   offset 12: size_class (u16)
+    //   offset 16: cold_idx   (u32)
+    //   offset 20: reserved   (u32)
+    // Data pointer = header_ptr + 24, so offsets from data_ptr are negative.
     // NOTE: HEADER_STATE_OFFSET removed — state lives in cold header now;
     // the native JIT uses molt_obj_get_state/molt_obj_set_state C API calls.
     pub(super) const HEADER_REFCOUNT_OFFSET: i32 = -(HEADER_SIZE_BYTES - 4);
@@ -331,7 +333,7 @@ mod native_backend_consts {
     pub(super) const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
 }
 
-#[cfg(feature = "native-backend")]
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
 use native_backend_consts::*;
 
 /// Pre-computed NaN-box tag mask constants hoisted to the function entry block.
@@ -797,7 +799,7 @@ fn box_float(val: f64) -> i64 {
     }
 }
 
-#[cfg(feature = "native-backend")]
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
 fn pending_bits() -> i64 {
     (QNAN | TAG_PENDING) as i64
 }
@@ -813,8 +815,8 @@ fn box_bool(val: i64) -> i64 {
     (QNAN | TAG_BOOL | bit) as i64
 }
 
-#[cfg(feature = "native-backend")]
-fn stable_ic_site_id(func_name: &str, op_idx: usize, lane: &str) -> i64 {
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+pub(crate) fn stable_ic_site_id(func_name: &str, op_idx: usize, lane: &str) -> i64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = FNV_OFFSET;
@@ -1486,10 +1488,9 @@ fn seal_block_once(
     sealed: &mut std::collections::BTreeSet<Block>,
     block: Block,
 ) {
-    if sealed.insert(block)
-        && builder.func.layout.is_block_inserted(block) {
-            builder.seal_block(block);
-        }
+    if sealed.insert(block) && builder.func.layout.is_block_inserted(block) {
+        builder.seal_block(block);
+    }
 }
 
 #[cfg(feature = "native-backend")]
@@ -2869,11 +2870,11 @@ impl SimpleBackend {
                 // previous build with the same content hash, reuse them.
                 if let Some(cached_bytes) = tir_cache.get(&content_hash)
                     && let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
-                    {
-                        func_ir.ops = cached_ops;
-                        tir_optimized_names.insert(func_ir.name.clone());
-                        continue;
-                    }
+                {
+                    func_ir.ops = cached_ops;
+                    tir_optimized_names.insert(func_ir.name.clone());
+                    continue;
+                }
                 work_items.push(TirWorkItem {
                     index: i,
                     content_hash,
@@ -3055,7 +3056,7 @@ impl SimpleBackend {
             use crate::tir::lower_from_simple::lower_to_tir;
 
             let context = inkwell::context::Context::create();
-            let llvm = LlvmBackend::new(&context, "molt_module");
+            let mut llvm = LlvmBackend::new(&context, "molt_module");
 
             // Declare all runtime functions that lowered code may call into.
             crate::llvm_backend::runtime_imports::declare_runtime_functions(
@@ -3071,6 +3072,14 @@ impl SimpleBackend {
             let codegen_start = std::time::Instant::now();
 
             let tir_funcs: Vec<_> = ir.functions.iter().map(lower_to_tir).collect();
+            llvm.function_param_types = tir_funcs
+                .iter()
+                .map(|func| (func.name.clone(), func.param_types.clone()))
+                .collect();
+            llvm.function_return_types = tir_funcs
+                .iter()
+                .map(|func| (func.name.clone(), func.return_type.clone()))
+                .collect();
 
             for tir_func in &tir_funcs {
                 crate::llvm_backend::lowering::declare_tir_function(tir_func, &llvm);
@@ -3129,11 +3138,17 @@ impl SimpleBackend {
             }
 
             let tmp_obj =
-                crate::debug_artifacts::prepare_debug_artifact_path("llvm/molt_llvm_output.o")
+                crate::debug_artifacts::prepare_unique_debug_artifact_path("llvm/molt_llvm_output.o")
                     .expect("failed to prepare LLVM object path");
             llvm.emit_object(&tmp_obj, MoltOptLevel::Aggressive)
                 .expect("LLVM object emission failed");
-            let bytes = std::fs::read(&tmp_obj).expect("failed to read LLVM object file");
+            let bytes = std::fs::read(&tmp_obj).unwrap_or_else(|err| {
+                panic!(
+                    "failed to read LLVM object file at {}: {}",
+                    tmp_obj.display(),
+                    err
+                )
+            });
             let _ = std::fs::remove_file(&tmp_obj);
 
             if timing {

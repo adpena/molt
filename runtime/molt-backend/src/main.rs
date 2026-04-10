@@ -328,26 +328,63 @@ fn compile_stdlib_cache_object(
 }
 
 #[cfg(feature = "native-backend")]
-fn is_user_owned_symbol(name: &str, entry_module: &str) -> bool {
+fn emitted_module_symbol(name: &str) -> Option<&str> {
+    name.strip_prefix("molt_init_")
+}
+
+#[cfg(feature = "native-backend")]
+fn emitted_name_matches_module_symbol(name: &str, module_symbol: &str) -> bool {
+    if let Some(rest) = name.strip_prefix("molt_init_") {
+        return rest == module_symbol;
+    }
+    name.starts_with(&format!("{module_symbol}__"))
+}
+
+#[cfg(feature = "native-backend")]
+fn explicit_stdlib_module_symbols_from_env() -> Option<std::collections::BTreeSet<String>> {
+    let raw = std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").ok()?;
+    let parsed: Vec<String> = serde_json::from_str(&raw).ok()?;
+    Some(parsed.into_iter().collect())
+}
+
+#[cfg(feature = "native-backend")]
+fn is_user_owned_symbol(
+    name: &str,
+    entry_module: &str,
+    stdlib_module_symbols: Option<&std::collections::BTreeSet<String>>,
+) -> bool {
     let entry_init = format!("molt_init_{entry_module}");
-    name == "molt_main"
+    if name == "molt_main"
         || name.starts_with(&format!("{entry_module}__"))
         || name == entry_init
         || name == "molt_init___main__"
         || name == "molt_isolate_import"
         || name == "molt_isolate_bootstrap"
+    {
+        return true;
+    }
+    if let Some(stdlib_module_symbols) = stdlib_module_symbols {
+        if let Some(module_symbol) = emitted_module_symbol(name) {
+            return !stdlib_module_symbols.contains(module_symbol);
+        }
+        return !stdlib_module_symbols
+            .iter()
+            .any(|module_symbol| emitted_name_matches_module_symbol(name, module_symbol));
+    }
+    false
 }
 
 #[cfg(feature = "native-backend")]
 fn prune_and_partition_native_stdlib(
     ir: &mut SimpleIR,
     entry_module: &str,
+    stdlib_module_symbols: Option<&std::collections::BTreeSet<String>>,
 ) -> (Vec<molt_backend::FunctionIR>, Vec<molt_backend::FunctionIR>) {
     molt_backend::eliminate_dead_functions(ir);
     let user_func_set: std::collections::BTreeSet<String> = ir
         .functions
         .iter()
-        .filter(|f| is_user_owned_symbol(&f.name, entry_module))
+        .filter(|f| is_user_owned_symbol(&f.name, entry_module, stdlib_module_symbols))
         .map(|f| f.name.clone())
         .collect();
     let all_funcs: Vec<_> = ir.functions.drain(..).collect();
@@ -893,10 +930,15 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 let entry_module =
                     std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
                 let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
+                let explicit_stdlib_module_symbols = explicit_stdlib_module_symbols_from_env();
 
                 if let Some(ref stdlib_path_str) = stdlib_obj_path {
                     let (mut user_remaining, mut stdlib_funcs) =
-                        prune_and_partition_native_stdlib(&mut ir, &entry_module);
+                        prune_and_partition_native_stdlib(
+                            &mut ir,
+                            &entry_module,
+                            explicit_stdlib_module_symbols.as_ref(),
+                        );
                     let stdlib_path = std::path::Path::new(stdlib_path_str);
                     ensure_output_parent_dir(stdlib_path.to_str().unwrap_or("")).unwrap_or_else(
                         |e| {
@@ -1692,10 +1734,15 @@ fn main() -> io::Result<()> {
             let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
             let entry_module =
                 std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
+            let explicit_stdlib_module_symbols = explicit_stdlib_module_symbols_from_env();
 
             if let Some(ref stdlib_path) = stdlib_obj_path {
                 let (mut user_remaining, mut stdlib_funcs) =
-                    prune_and_partition_native_stdlib(&mut ir, &entry_module);
+                    prune_and_partition_native_stdlib(
+                        &mut ir,
+                        &entry_module,
+                        explicit_stdlib_module_symbols.as_ref(),
+                    );
                 let stdlib_path = std::path::Path::new(stdlib_path);
                 // Ensure parent directory exists for stdlib cache path —
                 // --rebuild may have cleared the build directory tree.
@@ -2112,17 +2159,61 @@ mod tests {
     }
 
     #[test]
-    fn user_owned_symbol_whitelist_keeps_only_entry_roots() {
-        assert!(is_user_owned_symbol("molt_main", "app"));
-        assert!(is_user_owned_symbol("app__module", "app"));
-        assert!(is_user_owned_symbol("molt_init_app", "app"));
-        assert!(is_user_owned_symbol("molt_init___main__", "app"));
-        assert!(is_user_owned_symbol("molt_isolate_import", "app"));
-        assert!(is_user_owned_symbol("molt_isolate_bootstrap", "app"));
+    fn user_owned_symbol_partition_uses_explicit_stdlib_modules() {
+        let stdlib_modules =
+            std::collections::BTreeSet::from(["sys".to_string(), "json".to_string()]);
 
-        assert!(!is_user_owned_symbol("molt_init_sys", "app"));
-        assert!(!is_user_owned_symbol("molt_init_json", "app"));
-        assert!(!is_user_owned_symbol("molt_init_app_helper", "app"));
+        assert!(is_user_owned_symbol(
+            "molt_main",
+            "app",
+            Some(&stdlib_modules)
+        ));
+        assert!(is_user_owned_symbol(
+            "app__module",
+            "app",
+            Some(&stdlib_modules)
+        ));
+        assert!(is_user_owned_symbol(
+            "molt_init_app",
+            "app",
+            Some(&stdlib_modules)
+        ));
+        assert!(is_user_owned_symbol(
+            "molt_init___main__",
+            "app",
+            Some(&stdlib_modules)
+        ));
+        assert!(is_user_owned_symbol(
+            "molt_isolate_import",
+            "app",
+            Some(&stdlib_modules)
+        ));
+        assert!(is_user_owned_symbol(
+            "molt_isolate_bootstrap",
+            "app",
+            Some(&stdlib_modules)
+        ));
+        assert!(is_user_owned_symbol(
+            "molt_init_main_molt",
+            "app",
+            Some(&stdlib_modules)
+        ));
+        assert!(is_user_owned_symbol(
+            "main_molt__helper",
+            "app",
+            Some(&stdlib_modules)
+        ));
+
+        assert!(!is_user_owned_symbol(
+            "molt_init_sys",
+            "app",
+            Some(&stdlib_modules)
+        ));
+        assert!(!is_user_owned_symbol(
+            "molt_init_json",
+            "app",
+            Some(&stdlib_modules)
+        ));
     }
 
     #[test]
@@ -2478,7 +2569,9 @@ mod tests {
             profile: None,
         };
 
-        let (user_remaining, stdlib_funcs) = prune_and_partition_native_stdlib(&mut ir, "app");
+        let stdlib_modules = std::collections::BTreeSet::from(["sys".to_string()]);
+        let (user_remaining, stdlib_funcs) =
+            prune_and_partition_native_stdlib(&mut ir, "app", Some(&stdlib_modules));
         let user_names: Vec<_> = user_remaining.iter().map(|func| func.name.as_str()).collect();
         let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
 
@@ -2487,7 +2580,7 @@ mod tests {
     }
 
     #[test]
-    fn prune_and_partition_native_stdlib_misclassifies_non_entry_user_module() {
+    fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partition() {
         let mut ir = SimpleIR {
             functions: vec![
                 FunctionIR {
@@ -2528,13 +2621,14 @@ mod tests {
             profile: None,
         };
 
+        let stdlib_modules = std::collections::BTreeSet::new();
         let (user_remaining, stdlib_funcs) =
-            prune_and_partition_native_stdlib(&mut ir, "__main__");
+            prune_and_partition_native_stdlib(&mut ir, "__main__", Some(&stdlib_modules));
         let user_names: Vec<_> = user_remaining.iter().map(|func| func.name.as_str()).collect();
         let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
 
-        assert_eq!(user_names, vec!["molt_main", "molt_isolate_import"]);
-        assert_eq!(stdlib_names, vec!["demo__module"]);
+        assert_eq!(user_names, vec!["molt_main", "demo__module", "molt_isolate_import"]);
+        assert!(stdlib_names.is_empty());
     }
 
     #[test]
@@ -2638,6 +2732,7 @@ mod tests {
                 "MOLT_ENTRY_MODULE": "demo",
                 "MOLT_STDLIB_OBJ": stdlib.to_string_lossy(),
                 "MOLT_STDLIB_CACHE_KEY": "daemon-stdlib-key",
+                "MOLT_STDLIB_MODULE_SYMBOLS": "[\"sys\"]",
             },
             "jobs": [{
                 "id": "job0",
@@ -2673,6 +2768,10 @@ mod tests {
                 .ok()
                 .as_deref(),
             Some(stdlib.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").ok().as_deref(),
+            Some("[\"sys\"]")
         );
         let job = request.jobs.expect("jobs").into_iter().next().expect("job");
         let mut partition_ir = SimpleIR {
@@ -2737,8 +2836,9 @@ mod tests {
             ],
             profile: None,
         };
+        let stdlib_modules = std::collections::BTreeSet::new();
         let (user_remaining, stdlib_funcs) =
-            prune_and_partition_native_stdlib(&mut partition_ir, "demo");
+            prune_and_partition_native_stdlib(&mut partition_ir, "demo", Some(&stdlib_modules));
         let user_names: Vec<_> = user_remaining.iter().map(|func| func.name.as_str()).collect();
         let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
         assert_eq!(
