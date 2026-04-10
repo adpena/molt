@@ -261,6 +261,7 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 | OpCode::And
                 | OpCode::Or
                 | OpCode::Not
+                | OpCode::Bool
                 | OpCode::BoxVal
                 | OpCode::UnboxVal
                 | OpCode::TypeGuard

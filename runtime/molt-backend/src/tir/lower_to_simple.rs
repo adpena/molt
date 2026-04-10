@@ -741,38 +741,38 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             // block args via load_var when emitted later.
             let join_arg_stores: Vec<(String, String, String)> =
                 if let Some(join_bid) = pattern.join_bid {
-                let join_blk = func.blocks.get(&join_bid);
-                let join_param_count = join_blk.map(|b| b.args.len()).unwrap_or(0);
-                let join_param_vars = block_param_vars.get(&join_bid);
-                let then_branch_args = match &then_blk.terminator {
-                    Terminator::Branch { args, .. } => args.as_slice(),
-                    _ => &[],
+                    let join_blk = func.blocks.get(&join_bid);
+                    let join_param_count = join_blk.map(|b| b.args.len()).unwrap_or(0);
+                    let join_param_vars = block_param_vars.get(&join_bid);
+                    let then_branch_args = match &then_blk.terminator {
+                        Terminator::Branch { args, .. } => args.as_slice(),
+                        _ => &[],
+                    };
+                    let else_branch_args = match &else_blk.terminator {
+                        Terminator::Branch { args, .. } => args.as_slice(),
+                        _ => &[],
+                    };
+                    (0..join_param_count)
+                        .filter_map(|i| {
+                            let join_param_var =
+                                join_param_vars.and_then(|vars| vars.get(i)).cloned()?;
+                            let join_value_name = join_blk
+                                .and_then(|b| b.args.get(i))
+                                .map(|a| value_var(a.id))?;
+                            let then_val = then_branch_args
+                                .get(i)
+                                .map(|v| value_var(*v))
+                                .unwrap_or_else(|| join_value_name.clone());
+                            let else_val = else_branch_args
+                                .get(i)
+                                .map(|v| value_var(*v))
+                                .unwrap_or_else(|| join_value_name.clone());
+                            Some((join_param_var, then_val, else_val))
+                        })
+                        .collect()
+                } else {
+                    vec![]
                 };
-                let else_branch_args = match &else_blk.terminator {
-                    Terminator::Branch { args, .. } => args.as_slice(),
-                    _ => &[],
-                };
-                (0..join_param_count)
-                    .filter_map(|i| {
-                        let join_param_var =
-                            join_param_vars.and_then(|vars| vars.get(i)).cloned()?;
-                        let join_value_name = join_blk
-                            .and_then(|b| b.args.get(i))
-                            .map(|a| value_var(a.id))?;
-                        let then_val = then_branch_args
-                            .get(i)
-                            .map(|v| value_var(*v))
-                            .unwrap_or_else(|| join_value_name.clone());
-                        let else_val = else_branch_args
-                            .get(i)
-                            .map(|v| value_var(*v))
-                            .unwrap_or_else(|| join_value_name.clone());
-                        Some((join_param_var, then_val, else_val))
-                    })
-                    .collect()
-            } else {
-                vec![]
-            };
 
             // Emit: if cond
             out.push(OpIR {
@@ -1194,6 +1194,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::And => Some(binary_op("and", op, out_var)),
         OpCode::Or => Some(binary_op("or", op, out_var)),
         OpCode::Not => Some(unary_op("not", op, out_var)),
+        OpCode::Bool => Some(unary_op("bool", op, out_var)),
 
         // Memory.
         OpCode::LoadAttr => {
@@ -2289,7 +2290,9 @@ fn emit_guard_raise_path(
         // Keep materializing that chain so any handler labels it owns survive.
         let has_raise = blk.ops.iter().any(|op| op.opcode == OpCode::Raise);
         match &blk.terminator {
-            Terminator::Branch { target, .. } if has_raise && raise_path_blocks.contains(target) => {
+            Terminator::Branch { target, .. }
+                if has_raise && raise_path_blocks.contains(target) =>
+            {
                 emit_terminator(
                     blk,
                     block_param_vars,
@@ -3332,7 +3335,10 @@ mod tests {
             ops.iter().any(|op| {
                 op.kind == "store_var"
                     && op.var.as_deref() == Some(handler_param.as_str())
-                    && op.args.as_ref().is_some_and(|args| args == &vec![entry_value.clone()])
+                    && op
+                        .args
+                        .as_ref()
+                        .is_some_and(|args| args == &vec![entry_value.clone()])
             }),
             "check_exception lowering must materialize handler arg stores before the handler label: {ops:?}"
         );
@@ -4451,7 +4457,11 @@ mod tests {
                 },
                 OpIR {
                     kind: "module_set_attr".into(),
-                    args: Some(vec!["__molt_module_obj__".into(), "v74".into(), "v73".into()]),
+                    args: Some(vec![
+                        "__molt_module_obj__".into(),
+                        "v74".into(),
+                        "v73".into(),
+                    ]),
                     out: Some("none".into()),
                     ..OpIR::default()
                 },
@@ -4727,7 +4737,11 @@ mod tests {
                 },
                 OpIR {
                     kind: "module_set_attr".into(),
-                    args: Some(vec!["__molt_module_obj__".into(), "v98".into(), "v75".into()]),
+                    args: Some(vec![
+                        "__molt_module_obj__".into(),
+                        "v98".into(),
+                        "v75".into(),
+                    ]),
                     out: Some("none".into()),
                     ..OpIR::default()
                 },
@@ -4784,7 +4798,11 @@ mod tests {
                 },
                 OpIR {
                     kind: "module_set_attr".into(),
-                    args: Some(vec!["__molt_module_obj__".into(), "v105".into(), "v104".into()]),
+                    args: Some(vec![
+                        "__molt_module_obj__".into(),
+                        "v105".into(),
+                        "v104".into(),
+                    ]),
                     out: Some("none".into()),
                     ..OpIR::default()
                 },
@@ -4928,7 +4946,10 @@ mod tests {
                     .iter()
                     .find(|op| op.kind == "call" && op.s_value.as_deref() == Some("func_objarg__g"))
                     .expect("caller must preserve direct call to func_objarg__g");
-                let call_args = call.args.as_ref().expect("direct call must keep its argument");
+                let call_args = call
+                    .args
+                    .as_ref()
+                    .expect("direct call must keep its argument");
                 assert_eq!(call_args.len(), 1);
                 let arg_op = producer_by_out
                     .get(&call_args[0])
@@ -5193,11 +5214,14 @@ mod tests {
             },
         );
 
-        let block_param_vars = HashMap::from([(raise_block, Vec::new()), (cleanup_block, Vec::new())]);
+        let block_param_vars =
+            HashMap::from([(raise_block, Vec::new()), (cleanup_block, Vec::new())]);
         let mut out = Vec::new();
         let labels = HashMap::from([(raise_block, 99_i64), (cleanup_block, 100_i64)]);
-        let original_label_to_block = HashMap::from([(99_i64, raise_block), (100_i64, cleanup_block)]);
-        let block_label_id = |bid: &BlockId| -> i64 { *labels.get(bid).expect("missing test label") };
+        let original_label_to_block =
+            HashMap::from([(99_i64, raise_block), (100_i64, cleanup_block)]);
+        let block_label_id =
+            |bid: &BlockId| -> i64 { *labels.get(bid).expect("missing test label") };
 
         emit_guard_raise_path(
             raise_block,
