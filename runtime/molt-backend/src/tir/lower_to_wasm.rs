@@ -580,21 +580,23 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         }
         OpCode::Shl => {
             if tir_op.operands.len() >= 2
-                && let Some(result) = op.result_values.first() {
-                    ctx.emit_get(tir_op.operands[0]);
-                    ctx.emit_get(tir_op.operands[1]);
-                    ctx.instructions.push(Instruction::I64Shl);
-                    ctx.emit_set(result.id);
-                }
+                && let Some(result) = op.result_values.first()
+            {
+                ctx.emit_get(tir_op.operands[0]);
+                ctx.emit_get(tir_op.operands[1]);
+                ctx.instructions.push(Instruction::I64Shl);
+                ctx.emit_set(result.id);
+            }
         }
         OpCode::Shr => {
             if tir_op.operands.len() >= 2
-                && let Some(result) = op.result_values.first() {
-                    ctx.emit_get(tir_op.operands[0]);
-                    ctx.emit_get(tir_op.operands[1]);
-                    ctx.instructions.push(Instruction::I64ShrS);
-                    ctx.emit_set(result.id);
-                }
+                && let Some(result) = op.result_values.first()
+            {
+                ctx.emit_get(tir_op.operands[0]);
+                ctx.emit_get(tir_op.operands[1]);
+                ctx.instructions.push(Instruction::I64ShrS);
+                ctx.emit_set(result.id);
+            }
         }
         OpCode::Not => {
             if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
@@ -606,16 +608,17 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         }
         OpCode::And | OpCode::Or => {
             if tir_op.operands.len() >= 2
-                && let Some(result) = op.result_values.first() {
-                    ctx.emit_get(tir_op.operands[0]);
-                    ctx.emit_get(tir_op.operands[1]);
-                    ctx.instructions.push(if tir_op.opcode == OpCode::And {
-                        Instruction::I32And
-                    } else {
-                        Instruction::I32Or
-                    });
-                    ctx.emit_set(result.id);
-                }
+                && let Some(result) = op.result_values.first()
+            {
+                ctx.emit_get(tir_op.operands[0]);
+                ctx.emit_get(tir_op.operands[1]);
+                ctx.instructions.push(if tir_op.opcode == OpCode::And {
+                    Instruction::I32And
+                } else {
+                    Instruction::I32Or
+                });
+                ctx.emit_set(result.id);
+            }
         }
         OpCode::CallBuiltin
             if matches!(
@@ -671,6 +674,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::NotIn
         | OpCode::Raise
         | OpCode::CheckException
+        | OpCode::AllocTask
         | OpCode::Yield
         | OpCode::YieldFrom
         | OpCode::ScfIf
@@ -1286,5 +1290,36 @@ mod tests {
             .iter()
             .any(|i| matches!(i, Instruction::I64Add));
         assert!(!has_i64_add, "should NOT emit i64.add for DynBox operands");
+    }
+
+    #[test]
+    fn alloc_task_falls_back_to_runtime_call() {
+        let mut func = TirFunction::new("alloc_task".into(), vec![TirType::DynBox], TirType::DynBox);
+        let result_id = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::AllocTask,
+            operands: vec![ValueId(0)],
+            results: vec![result_id],
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert("s_value".into(), AttrValue::Str("task_poll".into()));
+                m.insert("task_kind".into(), AttrValue::Str("future".into()));
+                m
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func);
+
+        let has_call = output
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(_)));
+        assert!(has_call, "expected runtime call for alloc_task");
     }
 }
