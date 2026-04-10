@@ -290,6 +290,7 @@ const extractWasmTableBase = (buffer) => {
     }
     return null;
   };
+  const exportedBase = inferFromExports();
   try {
     const readConstExprI32 = (view, offset) => {
       if (offset >= view.length) {
@@ -391,7 +392,11 @@ const extractWasmTableBase = (buffer) => {
             } else if (flags === 6 || flags === 7 || flags === 5) {
               offset += 1;
             }
-            if (Number.isFinite(expr.value) && expr.value > 0) {
+            if (
+              Number.isFinite(expr.value) &&
+              expr.value > 0 &&
+              (!Number.isFinite(exportedBase) || expr.value >= exportedBase)
+            ) {
               return expr.value;
             }
           } else if (flags === 1 || flags === 3 || flags === 5 || flags === 7) {
@@ -432,7 +437,7 @@ const extractWasmTableBase = (buffer) => {
     }
 
     if (tableInitFuncIndex === null || !codeBodies) {
-      return null;
+      return exportedBase;
     }
     const definedIndex = tableInitFuncIndex - importFuncCount;
     if (definedIndex < 0 || definedIndex >= codeBodies.length) {
@@ -456,11 +461,14 @@ const extractWasmTableBase = (buffer) => {
     const tableBaseRes = readVarInt32(bytes, pos);
     const tableBase = tableBaseRes.value;
     if (!Number.isFinite(tableBase) || tableBase <= 0) {
-      return inferFromExports();
+      return exportedBase;
+    }
+    if (Number.isFinite(exportedBase) && exportedBase > 0 && tableBase < exportedBase) {
+      return exportedBase;
     }
     return tableBase;
   } catch {
-    return inferFromExports();
+    return exportedBase;
   }
 };
 
@@ -536,6 +544,17 @@ const writeU64ToMemory = (memory, ptr, value) => {
   return true;
 };
 
+const runtimeHeaderSize = (runtime) => {
+  if (runtime && typeof runtime.exports?.molt_header_size === 'function') {
+    const raw = runtime.exports.molt_header_size();
+    const size = typeof raw === 'bigint' ? Number(raw) : Number(raw);
+    if (Number.isFinite(size) && size > 0) {
+      return size;
+    }
+  }
+  return 40;
+};
+
 const allocRuntimeTempBytes = (runtime, memory, bytes) => {
   if (!runtime || !memory || typeof runtime.exports?.molt_alloc !== 'function') {
     throw new Error('molt runtime allocation is unavailable');
@@ -545,7 +564,8 @@ const allocRuntimeTempBytes = (runtime, memory, bytes) => {
   if (!ptr || ptr === 0n) {
     throw new Error('molt_alloc failed');
   }
-  const payloadPtr = ptr + BigInt(getHeaderSize());
+  const basePtr = typeof ptr === 'bigint' ? ptr : BigInt(ptr);
+  const payloadPtr = basePtr + BigInt(runtimeHeaderSize(runtime));
   new Uint8Array(memory.buffer, Number(payloadPtr), bytes.length).set(bytes);
   return { allocBits, payloadPtr };
 };
@@ -1287,14 +1307,7 @@ const createBrowserDbHost = (state, options) => {
 
   const getHeaderSize = () => {
     if (headerSize !== null) return headerSize;
-    const runtime = getRuntime();
-    if (runtime && typeof runtime.exports.molt_header_size === 'function') {
-      const raw = runtime.exports.molt_header_size();
-      const size = typeof raw === 'bigint' ? Number(raw) : Number(raw);
-      headerSize = Number.isFinite(size) && size > 0 ? size : 40;
-      return headerSize;
-    }
-    headerSize = 40;
+    headerSize = runtimeHeaderSize(getRuntime());
     return headerSize;
   };
 
@@ -2666,10 +2679,21 @@ const buildWasiStub = (state, logFn) => {
     state.wasiNextFd = 6;
   }
   const wasiEnvEntries = [];
+  const capabilityTier =
+    typeof process !== 'undefined' &&
+    process.env &&
+    typeof process.env.MOLT_CAPABILITY_TIER === 'string' &&
+    process.env.MOLT_CAPABILITY_TIER
+      ? process.env.MOLT_CAPABILITY_TIER
+      : 'full';
+  wasiEnvEntries.push(`MOLT_CAPABILITY_TIER=${capabilityTier}`);
   if (Number.isFinite(state.wasmTableBase) && state.wasmTableBase > 0) {
     wasiEnvEntries.push(`MOLT_WASM_TABLE_BASE=${state.wasmTableBase}`);
   }
   const wasiEnvBytes = wasiEnvEntries.map((entry) => UTF8_ENCODER.encode(`${entry}\0`));
+  if (traceBrowserWasi) {
+    console.error(`[molt browser wasi] env=${JSON.stringify(wasiEnvEntries)}`);
+  }
   const toNumber = (value) => (typeof value === 'bigint' ? Number(value) : Number(value >>> 0));
   const writeWasiU32 = (ptr, value) => {
     const memory = state.memory;
@@ -3403,11 +3427,19 @@ export const loadMoltWasm = async (options = {}) => {
     .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
     .map((imp) => imp.name);
   const callIndirect = {};
+  const traceCallIndirect =
+    typeof process !== 'undefined' &&
+    process?.env?.MOLT_WASM_CALL_INDIRECT_DEBUG === '1';
   for (const name of callIndirectNames) {
     callIndirect[name] = (...args) => {
       const rawIdx = args[0];
       const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
       const fn = table ? table.get(idx) : null;
+      if (traceCallIndirect) {
+        console.error(
+          `[molt wasm] ${name} idx=${idx} argc=${Math.max(0, args.length - 1)} entry=${typeof fn === 'function' ? 'set' : 'missing'}`
+        );
+      }
       if (typeof fn !== 'function') {
         throw new Error(`${name} missing table entry at ${idx}`);
       }
