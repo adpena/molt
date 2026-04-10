@@ -1,4 +1,4 @@
-use std::sync::atomic::AtomicU64;
+use std::sync::{OnceLock, atomic::AtomicU64};
 
 // Keep in sync with MOLT_BIND_KIND_OPEN in src/molt/frontend/__init__.py.
 pub(crate) const BIND_KIND_OPEN: i64 = 1;
@@ -11,9 +11,25 @@ pub(crate) const WASM_TABLE_BASE_FALLBACK: u64 = 256;
 static WASM_TABLE_BASE_RUNTIME: AtomicU64 = AtomicU64::new(WASM_TABLE_BASE_FALLBACK);
 
 #[cfg(target_arch = "wasm32")]
+fn wasm_table_base_from_env() -> Option<u64> {
+    static ENV_BASE: OnceLock<Option<u64>> = OnceLock::new();
+    *ENV_BASE.get_or_init(|| {
+        std::env::var("MOLT_WASM_TABLE_BASE")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .filter(|base| *base > 0)
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn wasm_table_base() -> u64 {
     let base = WASM_TABLE_BASE_RUNTIME.load(std::sync::atomic::Ordering::Relaxed);
-    if base > 0 {
+    if base > 0 && base != WASM_TABLE_BASE_FALLBACK {
+        base
+    } else if let Some(env_base) = wasm_table_base_from_env() {
+        WASM_TABLE_BASE_RUNTIME.store(env_base, std::sync::atomic::Ordering::Relaxed);
+        env_base
+    } else if base > 0 {
         base
     } else {
         WASM_TABLE_BASE_FALLBACK
@@ -39,7 +55,6 @@ pub(crate) const INLINE_INT_MIN_I128: i128 = -(1_i128 << 46);
 pub(crate) const INLINE_INT_MAX_I128: i128 = (1_i128 << 46) - 1;
 pub(crate) const MAX_SMALL_LIST: usize = 16;
 pub(crate) const ITER_EXHAUSTED: usize = usize::MAX;
-
 
 pub(crate) const GEN_SEND_OFFSET: usize = 0;
 pub(crate) const GEN_THROW_OFFSET: usize = 8;

@@ -189,6 +189,18 @@ pub(crate) fn reserved_wasm_runtime_callable_ptr(fn_ptr: u64) -> Option<u64> {
         .map(|(idx, _sym, _import, _arity)| base + RESERVED_WASM_RUNTIME_CALLABLE_BASE + idx)
 }
 
+#[inline]
+pub(crate) fn normalize_runtime_callable_ptr(fn_ptr: u64) -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return reserved_wasm_runtime_callable_ptr(fn_ptr).unwrap_or(fn_ptr);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        fn_ptr
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn reserved_wasm_runtime_callable_arity(fn_ptr: u64) -> Option<usize> {
     reserved_wasm_runtime_callable_info(fn_ptr).map(|(_idx, _sym, _import, arity)| arity)
@@ -212,7 +224,7 @@ const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =
     RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
 
 #[cfg(target_arch = "wasm32")]
-fn reserved_wasm_runtime_trampoline_ptr(fn_ptr: u64) -> Option<u64> {
+pub(crate) fn reserved_wasm_runtime_trampoline_ptr(fn_ptr: u64) -> Option<u64> {
     let base = crate::wasm_table_base();
     macro_rules! entry_list {
         ($(($idx:expr, $sym:ident, $import:literal, $arity:expr))+) => {
@@ -233,9 +245,21 @@ fn reserved_wasm_runtime_trampoline_ptr(fn_ptr: u64) -> Option<u64> {
 }
 
 #[inline]
+pub(crate) fn normalize_runtime_trampoline_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return reserved_wasm_runtime_trampoline_ptr(fn_ptr).unwrap_or(tramp_ptr);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        tramp_ptr
+    }
+}
+
+#[inline]
 pub(crate) fn runtime_callable_represents_symbol(
     fn_ptr: u64,
-    _tramp_ptr: u64,
+    tramp_ptr: u64,
     symbol_fn_ptr: u64,
 ) -> bool {
     if fn_ptr == symbol_fn_ptr {
@@ -243,10 +267,13 @@ pub(crate) fn runtime_callable_represents_symbol(
     }
     #[cfg(target_arch = "wasm32")]
     {
-        if reserved_wasm_runtime_callable_ptr(symbol_fn_ptr) == Some(fn_ptr) {
+        if normalize_runtime_callable_ptr(fn_ptr) == normalize_runtime_callable_ptr(symbol_fn_ptr) {
             return true;
         }
-        if reserved_wasm_runtime_trampoline_ptr(symbol_fn_ptr) == Some(_tramp_ptr) {
+        let expected_tramp_ptr = normalize_runtime_trampoline_ptr(symbol_fn_ptr, 0);
+        if expected_tramp_ptr != 0
+            && normalize_runtime_trampoline_ptr(fn_ptr, tramp_ptr) == expected_tramp_ptr
+        {
             return true;
         }
     }
@@ -4485,44 +4512,90 @@ pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) ->
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_func_new_builtin(fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let fn_key = canonicalize_runtime_callable_key(fn_ptr);
+        molt_func_new_builtin_raw_impl(_py, fn_ptr, trampoline_ptr, arity)
+    })
+}
+
+fn molt_func_new_builtin_raw_impl(
+    _py: &crate::PyToken<'_>,
+    fn_ptr: u64,
+    trampoline_ptr: u64,
+    arity: u64,
+) -> u64 {
+    let fn_key = canonicalize_runtime_callable_key(fn_ptr);
+    if fn_key == fn_ptr && fn_ptr != 0 {
+        let raw_target = fn_ptr as usize as *const ();
+        let mut guard = native_callable_targets().lock().unwrap();
+        guard
+            .entry(fn_key)
+            .or_insert(NativeCallableTarget(raw_target));
+    }
+    let trace = matches!(
+        std::env::var("MOLT_TRACE_BUILTIN_FUNC").ok().as_deref(),
+        Some("1")
+    );
+    let trace_enter_ptr = fn_addr!(molt_trace_enter_slot);
+    if trace {
+        eprintln!(
+            "molt builtin_func new: fn_ptr=0x{fn_ptr:x} tramp_ptr=0x{trampoline_ptr:x} arity={arity}"
+        );
+    }
+    if fn_ptr == 0 || trampoline_ptr == 0 {
+        let msg = format!(
+            "builtin func pointer missing: fn=0x{fn_ptr:x} tramp=0x{trampoline_ptr:x} arity={arity}"
+        );
+        return raise_exception::<_>(_py, "RuntimeError", &msg);
+    }
+    let ptr = alloc_function_obj(_py, fn_key, arity);
+    if ptr.is_null() {
+        return raise_exception::<_>(_py, "RuntimeError", "builtin func alloc failed");
+    }
+    unsafe {
+        if let Some(call_target) = runtime_callable_target_ptr(fn_key) {
+            function_set_call_target_ptr(ptr, call_target);
+        }
+        function_set_trampoline_ptr(ptr, trampoline_ptr);
+        let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+        object_set_class_bits(_py, ptr, builtin_bits);
+        inc_ref_bits(_py, builtin_bits);
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    if trace && fn_ptr == trace_enter_ptr {
+        eprintln!(
+            "molt builtin_func trace_enter_slot bits=0x{bits:x} ptr=0x{:x}",
+            ptr as usize
+        );
+    }
+    bits
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_func_new_builtin_named(
+    name_bits: u64,
+    fn_ptr: u64,
+    trampoline_ptr: u64,
+    arity: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
         let trace = matches!(
             std::env::var("MOLT_TRACE_BUILTIN_FUNC").ok().as_deref(),
             Some("1")
         );
-        let trace_enter_ptr = fn_addr!(molt_trace_enter_slot);
-        if trace {
-            eprintln!(
-                "molt builtin_func new: fn_ptr=0x{fn_ptr:x} tramp_ptr=0x{trampoline_ptr:x} arity={arity}"
-            );
-        }
-        if fn_ptr == 0 || trampoline_ptr == 0 {
-            let msg = format!(
-                "builtin func pointer missing: fn=0x{fn_ptr:x} tramp=0x{trampoline_ptr:x} arity={arity}"
-            );
-            return raise_exception::<_>(_py, "RuntimeError", &msg);
-        }
-        let ptr = alloc_function_obj(_py, fn_key, arity);
-        if ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "builtin func alloc failed");
-        }
-        unsafe {
-            if let Some(call_target) = runtime_callable_target_ptr(fn_key) {
-                function_set_call_target_ptr(ptr, call_target);
+        if let Some(name) = string_obj_to_owned(obj_from_bits(name_bits))
+            && let Some(func_bits) =
+                crate::intrinsics::registry::try_resolve_intrinsic_func(_py, &name, false)
+        {
+            if trace {
+                eprintln!("molt builtin_func named: resolved {}", name);
             }
-            function_set_trampoline_ptr(ptr, trampoline_ptr);
-            let builtin_bits = builtin_classes(_py).builtin_function_or_method;
-            object_set_class_bits(_py, ptr, builtin_bits);
-            inc_ref_bits(_py, builtin_bits);
+            return func_bits;
         }
-        let bits = MoltObject::from_ptr(ptr).bits();
-        if trace && fn_ptr == trace_enter_ptr {
-            eprintln!(
-                "molt builtin_func trace_enter_slot bits=0x{bits:x} ptr=0x{:x}",
-                ptr as usize
-            );
+        if trace {
+            let name = string_obj_to_owned(obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<non-str>".to_string());
+            eprintln!("molt builtin_func named: fallback {}", name);
         }
-        bits
+        molt_func_new_builtin_raw_impl(_py, fn_ptr, trampoline_ptr, arity)
     })
 }
 

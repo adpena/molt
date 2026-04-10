@@ -186,6 +186,16 @@ def molt_gpu_linear_contiguous(
     out_features: int,
     out_format: str,
 ) -> bytes: ...
+def molt_gpu_linear_split_last_dim_contiguous(
+    x_data: Any,
+    x_format: str,
+    weight_data: Any,
+    weight_format: str,
+    outer: int,
+    in_features: int,
+    split_sizes: Any,
+    out_format: str,
+) -> tuple[Any, ...]: ...
 def molt_gpu_broadcast_binary_contiguous(
     a_data: Any,
     a_format: str,
@@ -194,6 +204,15 @@ def molt_gpu_broadcast_binary_contiguous(
     b_format: str,
     b_shape: Any,
     op_code: int,
+    out_format: str,
+) -> bytes: ...
+def molt_gpu_matmul_contiguous(
+    a_data: Any,
+    a_format: str,
+    a_shape: Any,
+    b_data: Any,
+    b_format: str,
+    b_shape: Any,
     out_format: str,
 ) -> bytes: ...
 def molt_gpu_rope_apply_contiguous(
@@ -214,6 +233,25 @@ def molt_gpu_permute_contiguous(
     x_format: str,
     shape: Any,
     dims: Any,
+    out_format: str,
+) -> bytes: ...
+def molt_gpu_softmax_last_axis_contiguous(
+    x_data: Any,
+    x_format: str,
+    shape: Any,
+    out_format: str,
+) -> bytes: ...
+def molt_gpu_rms_norm_last_axis_contiguous(
+    x_data: Any,
+    x_format: str,
+    shape: Any,
+    eps: float,
+    out_format: str,
+) -> bytes: ...
+def molt_gpu_squared_relu_gate_interleaved_contiguous(
+    x_data: Any,
+    x_format: str,
+    shape: Any,
     out_format: str,
 ) -> bytes: ...
 def molt_argparse_parse(spec_json: str, argv: Any) -> str: ...

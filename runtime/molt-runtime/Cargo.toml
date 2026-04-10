@@ -25,7 +25,6 @@ stdlib_full = [
     "stdlib_signal", "stdlib_select", "stdlib_text", "stdlib_itertools", "stdlib_difflib", "stdlib_logging_ext", "stdlib_http", "stdlib_stringprep", "stdlib_xml", "stdlib_ipaddress", "stdlib_zoneinfo",
     "builtin_set", "builtin_complex", "builtin_memoryview",
     "builtin_contextvars", "builtin_fcntl",
-    "cext_loader",
 ]
 stdlib_unicode_names = ["dep:unicode_names2", "molt-runtime-text?/stdlib_unicode_names"]
 
@@ -148,7 +147,6 @@ molt-runtime-stringprep = { path = "../molt-runtime-stringprep", optional = true
 molt-runtime-xml = { path = "../molt-runtime-xml", optional = true }
 molt-runtime-ipaddress = { path = "../molt-runtime-ipaddress", optional = true }
 molt-runtime-zoneinfo = { path = "../molt-runtime-zoneinfo", optional = true }
-molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", optional = true, features = ["extension-loader"] }
 serde_json = "1.0"
 crossbeam-deque = "0.8"
 crossbeam-channel = "0.5"
@@ -215,6 +213,7 @@ webpki-roots = { version = "1.0", optional = true }
 tungstenite = { version = "0.29", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"], optional = true }
 os_pipe = "1.2"
 libloading = { version = "0.9.0", optional = true }
+molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", optional = true, features = ["extension-loader"] }
 
 [dev-dependencies]
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }

@@ -9,6 +9,7 @@ use crate::{
     function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy,
     molt_exception_clear, obj_from_bits, object_type_id, profile_hit, raise_exception,
     recursion_guard_enter, recursion_guard_exit, runtime_state, seq_vec_ref,
+    type_name,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -24,7 +25,7 @@ use crate::{
 #[cfg(target_arch = "wasm32")]
 #[inline]
 fn wasm_direct_call_table_idx(fn_ptr: u64) -> u64 {
-    crate::builtins::functions::reserved_wasm_runtime_callable_ptr(fn_ptr).unwrap_or(fn_ptr)
+    crate::builtins::functions::normalize_runtime_callable_ptr(fn_ptr)
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -205,7 +206,11 @@ unsafe fn maybe_call_function_obj_trampoline(
     }
     #[cfg(target_arch = "wasm32")]
     unsafe {
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let fn_ptr = function_fn_ptr(func_ptr);
+        let tramp_ptr = crate::builtins::functions::normalize_runtime_trampoline_ptr(
+            fn_ptr,
+            function_trampoline_ptr(func_ptr),
+        );
         let force_trampoline = should_force_trampoline_for_fixed_arity_call(
             tramp_ptr,
             function_needs_task_trampoline(_py, func_bits),
@@ -216,7 +221,6 @@ unsafe fn maybe_call_function_obj_trampoline(
                 .as_deref(),
             Some("1")
         ) {
-            let fn_ptr = function_fn_ptr(func_ptr);
             let reserved_info =
                 crate::builtins::functions::reserved_wasm_runtime_callable_info(fn_ptr);
             eprintln!(
@@ -523,6 +527,24 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj0");
+        if matches!(
+            std::env::var("MOLT_TRACE_CALL_RETURN").ok().as_deref(),
+            Some("1")
+        ) {
+            let name_bits = function_name_bits(_py, func_ptr);
+            let name = if name_bits != 0 {
+                string_obj_to_owned(obj_from_bits(name_bits))
+                    .unwrap_or_else(|| "<unnamed>".to_string())
+            } else {
+                "<unnamed>".to_string()
+            };
+            eprintln!(
+                "[molt call_return0] name={} type={} bits=0x{:x}",
+                name,
+                type_name(_py, obj_from_bits(res)),
+                res
+            );
+        }
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj8");
         frame_stack_pop(_py);
         recursion_guard_exit();
@@ -2192,7 +2214,11 @@ unsafe fn call_function_obj_trampoline(_py: &PyToken<'_>, func_bits: u64, args: 
             // the CallArgs path which is entered from a different call site.
             return raise_call_arity_mismatch(_py, func_ptr, a as u64, n as u64);
         }
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let fn_ptr = function_fn_ptr(func_ptr);
+        let tramp_ptr = crate::builtins::functions::normalize_runtime_trampoline_ptr(
+            fn_ptr,
+            function_trampoline_ptr(func_ptr),
+        );
         if tramp_ptr == 0 {
             return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
         }

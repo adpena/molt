@@ -67,6 +67,12 @@ fn may_throw(opcode: OpCode) -> bool {
             | OpCode::IterNext
             | OpCode::IterNextUnboxed
             | OpCode::ForIter
+            | OpCode::StateTransition
+            | OpCode::StateYield
+            | OpCode::ChanSendYield
+            | OpCode::ChanRecvYield
+            | OpCode::ClosureLoad
+            | OpCode::ClosureStore
     )
 }
 

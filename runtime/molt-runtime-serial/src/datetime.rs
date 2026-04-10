@@ -31,6 +31,7 @@ type Ordinal = i64;
 type DateTimeParts = (i32, i32, i32, i32, i32, i32, i32, Option<i64>);
 
 /// Local time components: (year, month, day, hour, minute, second, utc_offset_secs).
+#[cfg(not(target_arch = "wasm32"))]
 type LocalTimeParts = (i32, i32, i32, i32, i32, i32, i64);
 
 /// Datetime fields passed to `strftime_impl`.

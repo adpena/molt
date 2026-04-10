@@ -98,6 +98,13 @@ fn is_impure(opcode: OpCode) -> bool {
             | OpCode::StoreIndex
             | OpCode::DelAttr
             | OpCode::DelIndex
+            | OpCode::StateSwitch
+            | OpCode::StateTransition
+            | OpCode::StateYield
+            | OpCode::ChanSendYield
+            | OpCode::ChanRecvYield
+            | OpCode::ClosureLoad
+            | OpCode::ClosureStore
             | OpCode::Raise
             | OpCode::Yield
             | OpCode::YieldFrom

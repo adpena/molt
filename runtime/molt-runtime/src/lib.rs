@@ -212,9 +212,13 @@ pub mod ffi_bridge {
 pub(crate) use crate::async_rt::*;
 pub use crate::builtins::gpu::molt_gpu_broadcast_binary_contiguous;
 pub use crate::builtins::gpu::molt_gpu_linear_contiguous;
+pub use crate::builtins::gpu::molt_gpu_linear_split_last_dim_contiguous;
 pub use crate::builtins::gpu::molt_gpu_matmul_contiguous;
 pub use crate::builtins::gpu::molt_gpu_permute_contiguous;
+pub use crate::builtins::gpu::molt_gpu_rms_norm_last_axis_contiguous;
 pub use crate::builtins::gpu::molt_gpu_rope_apply_contiguous;
+pub use crate::builtins::gpu::molt_gpu_softmax_last_axis_contiguous;
+pub use crate::builtins::gpu::molt_gpu_squared_relu_gate_interleaved_contiguous;
 pub use crate::builtins::strings::molt_string_from_bytes;
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{

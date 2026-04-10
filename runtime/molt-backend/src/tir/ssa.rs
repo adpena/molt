@@ -41,13 +41,22 @@ pub struct SsaOutput {
 /// All values are typed as [`TirType::DynBox`] since type refinement is a
 /// later pass.
 pub fn convert_to_ssa(cfg: &CFG, ops: &[OpIR]) -> SsaOutput {
-    convert_to_ssa_with_params(cfg, ops, &[])
+    convert_to_ssa_with_name_and_params("<unknown>", cfg, ops, &[])
 }
 
 /// SSA conversion with explicit function parameter names.
 /// Parameters are treated as implicit definitions in the entry block.
 pub fn convert_to_ssa_with_params(cfg: &CFG, ops: &[OpIR], params: &[String]) -> SsaOutput {
-    let mut ctx = SsaContext::new(cfg, ops, params);
+    convert_to_ssa_with_name_and_params("<unknown>", cfg, ops, params)
+}
+
+pub fn convert_to_ssa_with_name_and_params(
+    func_name: &str,
+    cfg: &CFG,
+    ops: &[OpIR],
+    params: &[String],
+) -> SsaOutput {
+    let mut ctx = SsaContext::new(func_name, cfg, ops, params);
     ctx.run();
     ctx.into_output()
 }
@@ -68,6 +77,7 @@ struct BlockInfo {
 }
 
 struct SsaContext<'a> {
+    func_name: String,
     cfg: &'a CFG,
     ops: &'a [OpIR],
     /// Fresh value counter.
@@ -100,9 +110,10 @@ struct SsaContext<'a> {
 }
 
 impl<'a> SsaContext<'a> {
-    fn new(cfg: &'a CFG, ops: &'a [OpIR], params: &[String]) -> Self {
+    fn new(func_name: &str, cfg: &'a CFG, ops: &'a [OpIR], params: &[String]) -> Self {
         let n = cfg.blocks.len();
         Self {
+            func_name: func_name.to_string(),
             cfg,
             ops,
             next_value: 0,
@@ -818,6 +829,7 @@ impl<'a> SsaContext<'a> {
                 | "store_index"
                 | "index_set"
                 | "del_attr"
+                | "del_attr_name"
                 | "del_attr_generic_ptr"
                 | "del_attr_generic_obj"
                 | "del_index"
@@ -844,6 +856,20 @@ impl<'a> SsaContext<'a> {
                         .collect()
                 })
                 .unwrap_or_default();
+        }
+        if op.kind == "iter_next_unboxed" {
+            let mut out = Vec::new();
+            if let Some(var) = &op.var
+                && is_variable(var)
+            {
+                out.push(var.clone());
+            }
+            if let Some(done) = &op.out
+                && is_variable(done)
+            {
+                out.push(done.clone());
+            }
+            return out;
         }
         self.get_def_var(op).into_iter().collect()
     }
@@ -1023,6 +1049,15 @@ impl<'a> SsaContext<'a> {
         }
 
         let opcode = kind_to_opcode(&op.kind);
+
+        if std::env::var("MOLT_TRACE_SSA_IMPORT").as_deref() == Ok("1")
+            && opcode == OpCode::Import
+        {
+            eprintln!(
+                "SSA import trace: func={} kind={} args={:?} var={:?} out={:?} operands={:?}",
+                self.func_name, op.kind, op.args, op.var, op.out, operands
+            );
+        }
 
         // Opcode-specific attr key aliases: the lowering reads s_value under
         // different keys depending on the opcode (e.g., "module" for Import,
@@ -1374,7 +1409,7 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "pow" => OpCode::Pow,
         "neg" => OpCode::Neg,
         "pos" => OpCode::Pos,
-        "eq" => OpCode::Eq,
+        "eq" | "string_eq" => OpCode::Eq,
         "ne" => OpCode::Ne,
         "lt" => OpCode::Lt,
         "le" => OpCode::Le,
@@ -1412,7 +1447,9 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         | "guarded_field_set_init"
         | "store"
         | "store_init" => OpCode::StoreAttr,
-        "del_attr" | "del_attr_generic_ptr" | "del_attr_generic_obj" => OpCode::DelAttr,
+        "del_attr" | "del_attr_name" | "del_attr_generic_ptr" | "del_attr_generic_obj" => {
+            OpCode::DelAttr
+        }
         "index" => OpCode::Index,
         "store_index" | "index_set" => OpCode::StoreIndex,
         "del_index" => OpCode::DelIndex,
@@ -1433,6 +1470,14 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "get_iter" => OpCode::GetIter,
         "iter_next" => OpCode::IterNext,
         "for_iter" => OpCode::ForIter,
+        "state_switch" => OpCode::StateSwitch,
+        "state_transition" => OpCode::StateTransition,
+        "state_yield" => OpCode::StateYield,
+        "chan_send_yield" => OpCode::ChanSendYield,
+        "chan_recv_yield" => OpCode::ChanRecvYield,
+        "closure_load" => OpCode::ClosureLoad,
+        "closure_store" => OpCode::ClosureStore,
+        "alloc_task" => OpCode::AllocTask,
         "yield" => OpCode::Yield,
         "yield_from" => OpCode::YieldFrom,
         "raise" => OpCode::Raise,
@@ -1448,7 +1493,7 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "const_none" => OpCode::ConstNone,
         "const_bytes" => OpCode::ConstBytes,
         "copy" | "store_var" | "load_var" => OpCode::Copy,
-        "import" => OpCode::Import,
+        "import" | "import_name" | "module_import" => OpCode::Import,
         "import_from" => OpCode::ImportFrom,
         "warn_stderr" => OpCode::WarnStderr,
         // Fallback for unknown ops.
@@ -1571,6 +1616,110 @@ mod tests {
                 id
             );
         }
+    }
+
+    #[test]
+    fn import_name_lowers_to_import_opcode_instead_of_copy_fallback() {
+        let ops = vec![
+            op_args_out("import_name", &["pathlib"], "mod"),
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+        let entry = &output.blocks[0];
+        assert!(
+            entry.ops.iter().any(|op| op.opcode == OpCode::Import),
+            "expected import_name to lower to OpCode::Import, got {:?}",
+            entry.ops.iter().map(|op| op.opcode).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn module_import_lowers_to_import_opcode_instead_of_copy_fallback() {
+        let ops = vec![
+            op_args_out("module_import", &["pathlib"], "mod"),
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+        let entry = &output.blocks[0];
+        assert!(
+            entry.ops.iter().any(|op| op.opcode == OpCode::Import),
+            "expected module_import to lower to OpCode::Import, got {:?}",
+            entry.ops.iter().map(|op| op.opcode).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn module_import_preserves_variable_operand_through_ssa() {
+        let ops = vec![
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("builtins".to_string()),
+                out: Some("v62".to_string()),
+                ..OpIR::default()
+            },
+            op_args_out("module_import", &["v62"], "v63"),
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+        let entry = &output.blocks[0];
+        let import_op = entry
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::Import)
+            .expect("expected import op");
+        assert_eq!(import_op.operands.len(), 1, "{:?}", import_op.operands);
+    }
+
+    #[test]
+    fn module_import_preserves_operand_with_module_obj_param_and_checks() {
+        let ops = vec![
+            OpIR {
+                kind: "line".to_string(),
+                value: Some(7),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("builtins".to_string()),
+                out: Some("v62".to_string()),
+                ..OpIR::default()
+            },
+            op_args_out("module_import", &["v62"], "v63"),
+            OpIR {
+                kind: "check_exception".to_string(),
+                value: Some(3),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("_builtins".to_string()),
+                out: Some("v64".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_set_attr".to_string(),
+                args: Some(vec![
+                    "__molt_module_obj__".to_string(),
+                    "v64".to_string(),
+                    "v63".to_string(),
+                ]),
+                out: Some("none".to_string()),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa_with_params(&cfg, &ops, &["__molt_module_obj__".into()]);
+        let import_op = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| op.opcode == OpCode::Import)
+            .expect("expected import op");
+        assert_eq!(import_op.operands.len(), 1, "{:?}", import_op.operands);
     }
 
     // =======================================================================
@@ -2110,6 +2259,76 @@ mod tests {
         assert!(
             has_undef_branch_arg,
             "missing branch edge must pass the explicit undef None value"
+        );
+    }
+
+    #[test]
+    fn post_if_store_var_reaches_following_load() {
+        let ops = vec![
+            OpIR {
+                kind: "missing".to_string(),
+                out: Some("seed".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("v".to_string()),
+                args: Some(vec!["seed".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_none".to_string(),
+                out: Some("cond".to_string()),
+                ..OpIR::default()
+            },
+            op_args("if", &["cond"]),
+            op("else"),
+            op_val_out("const", 1, "one"),
+            op_args_out("or", &["cond", "one"], "picked"),
+            op("end_if"),
+            op_args_out("phi", &["cond", "picked"], "joined"),
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("v".to_string()),
+                args: Some(vec!["joined".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "load_var".to_string(),
+                var: Some("v".to_string()),
+                out: Some("loaded".to_string()),
+                ..OpIR::default()
+            },
+            op_args("ret", &["loaded"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let seed_values: HashSet<ValueId> = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| {
+                op.opcode == OpCode::ConstNone
+                    || matches!(
+                        op.attrs.get("_original_kind"),
+                        Some(AttrValue::Str(kind)) if kind == "missing"
+                    )
+            })
+            .flat_map(|op| op.results.iter().copied())
+            .collect();
+        let returned = output
+            .blocks
+            .iter()
+            .find_map(|block| match &block.terminator {
+                Terminator::Return { values } if !values.is_empty() => values.first().copied(),
+                _ => None,
+            })
+            .expect("expected return value");
+
+        assert!(
+            !seed_values.contains(&returned),
+            "load_var after the if/join must not collapse back to any seed missing/None value"
         );
     }
 

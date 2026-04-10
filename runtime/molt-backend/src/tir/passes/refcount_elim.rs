@@ -114,6 +114,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         OpCode::Call
                         | OpCode::CallMethod
                         | OpCode::CallBuiltin
+                        | OpCode::StateSwitch
+                        | OpCode::StateTransition
+                        | OpCode::StateYield
+                        | OpCode::ChanSendYield
+                        | OpCode::ChanRecvYield
+                        | OpCode::ClosureLoad
+                        | OpCode::ClosureStore
                         | OpCode::StoreAttr
                         | OpCode::StoreIndex => {
                             break; // barrier — cannot pair across this
