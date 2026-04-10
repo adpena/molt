@@ -6801,6 +6801,83 @@ def test_ensure_runtime_wasm_verified_key_tracks_micro_builtin_feature_shape(
     assert "stdlib_net" in verification_calls[1]
 
 
+def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
+    built_src = tmp_path / "target" / "wasm32-wasip1" / "dev-fast" / "deps" / "molt_runtime-test.wasm"
+    built_src.parent.mkdir(parents=True, exist_ok=True)
+    built_src.write_bytes(b"\0asm\x01\0\0\0runtime")
+
+    monkeypatch.setattr(cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"})
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
+    monkeypatch.setattr(
+        cli,
+        "_run_runtime_wasm_cargo_build",
+        lambda **kwargs: (subprocess.CompletedProcess(kwargs["cmd"], 0, "", ""), built_src),
+    )
+    monkeypatch.setattr(cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None)
+
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+        project_root=tmp_path,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules=None,
+        required_exports=None,
+    )
+
+    sidecar = runtime_wasm.with_name(f"{runtime_wasm.name}.sha256")
+    assert runtime_wasm.read_bytes() == built_src.read_bytes()
+    assert sidecar.exists()
+    assert sidecar.read_text(encoding="utf-8").strip() == cli._sha256_file(runtime_wasm)
+
+
+def test_ensure_runtime_wasm_writes_integrity_sidecar_when_reusing_valid_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+
+    monkeypatch.setattr(cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "same"})
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
+    monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
+    monkeypatch.setattr(cli, "_runtime_wasm_exports_satisfy", lambda path, required: True)
+    monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
+    monkeypatch.setattr(
+        cli,
+        "_resolve_built_runtime_wasm_artifact",
+        lambda target_root, profile_dir: runtime_wasm,
+    )
+
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+        project_root=tmp_path,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules=None,
+        required_exports=None,
+    )
+
+    sidecar = runtime_wasm.with_name(f"{runtime_wasm.name}.sha256")
+    assert sidecar.exists()
+    assert sidecar.read_text(encoding="utf-8").strip() == cli._sha256_file(runtime_wasm)
+
+
 def test_prepare_non_native_build_result_stages_runtime_wasm_sidecar(
     tmp_path: Path,
 ) -> None:
@@ -6885,6 +6962,186 @@ def test_prepare_non_native_build_result_skips_runtime_wasm_sidecar_for_linked_w
     assert not staged.exists()
     assert prepared.artifacts is not None
     assert "runtime_wasm" not in prepared.artifacts
+
+
+def test_prepare_non_native_build_result_rebuilds_shared_runtime_with_linked_import_surface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_wasm = tmp_path / "out" / "output.wasm"
+    output_wasm.parent.mkdir(parents=True, exist_ok=True)
+    output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    linked_wasm = tmp_path / "out" / "output_linked.wasm"
+    runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
+    runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+    shared_required: list[frozenset[str]] = []
+
+    def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        linked_wasm.write_bytes(b"\0asm\x01\0\0\0linked")
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        cli,
+        "_collect_wasm_module_import_names",
+        lambda path, module_name: {"alloc", "molt_fast_list_append"},
+    )
+
+    prepared, err = cli._prepare_non_native_build_result(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        is_wasm_freestanding=False,
+        linked=True,
+        require_linked=False,
+        linked_output_path=linked_wasm,
+        output_artifact=output_wasm,
+        json_output=True,
+        runtime_wasm=runtime_wasm,
+        runtime_reloc_wasm=runtime_reloc_wasm,
+        ensure_runtime_wasm_shared=lambda required=None: shared_required.append(
+            frozenset(required or set())
+        )
+        or True,
+        ensure_runtime_wasm_reloc=lambda: True,
+        molt_root=tmp_path,
+        split_runtime=False,
+        precompile=False,
+    )
+
+    assert err is None
+    assert prepared is not None
+    assert shared_required == [frozenset({"alloc", "molt_fast_list_append"})]
+
+
+def test_runtime_wasm_exports_satisfy_required_surface(tmp_path: Path) -> None:
+    wasm = tmp_path / "runtime.wasm"
+    payload = bytearray()
+    payload.extend(b"\x02")  # export count
+    for name, index in (
+        ("molt_fast_list_append", 0),
+        ("molt_resource_on_free", 1),
+    ):
+        encoded = name.encode("utf-8")
+        payload.append(len(encoded))
+        payload.extend(encoded)
+        payload.append(0x00)  # func export
+        payload.append(index)
+    wasm.write_bytes(
+        b"\0asm\x01\0\0\0"
+        + b"\x07"
+        + bytes([len(payload)])
+        + payload
+    )
+    assert cli._runtime_wasm_exports_satisfy(
+        wasm, {"molt_fast_list_append", "molt_resource_on_free"}
+    )
+    assert not cli._runtime_wasm_exports_satisfy(
+        wasm, {"molt_fast_list_append", "molt_dict_getitem"}
+    )
+
+
+def test_runtime_wasm_exports_satisfy_browser_runtime_fallback_surface(
+    tmp_path: Path,
+) -> None:
+    def _encode_varuint(value: int) -> bytes:
+        out = bytearray()
+        while True:
+            byte = value & 0x7F
+            value >>= 7
+            if value:
+                out.append(byte | 0x80)
+            else:
+                out.append(byte)
+                return bytes(out)
+
+    wasm = tmp_path / "runtime_fallbacks.wasm"
+    payload = bytearray()
+    exports = (
+        "molt_call_bind_ic",
+        "molt_callargs_new",
+        "molt_callargs_push_pos",
+        "molt_dict_getitem_borrowed",
+        "molt_dict_set",
+        "molt_tuple_getitem_borrowed",
+    )
+    payload.append(len(exports))
+    for index, name in enumerate(exports):
+        encoded = name.encode("utf-8")
+        payload.append(len(encoded))
+        payload.extend(encoded)
+        payload.append(0x00)  # func export
+        payload.append(index)
+    wasm.write_bytes(
+        b"\0asm\x01\0\0\0"
+        + b"\x07"
+        + _encode_varuint(len(payload))
+        + payload
+    )
+
+    required = {
+        "molt_fast_dict_get",
+        "molt_fast_list_append",
+        "molt_fast_str_join",
+        "molt_dict_getitem",
+        "molt_dict_setitem",
+        "molt_tuple_getitem",
+        "molt_resource_on_allocate",
+        "molt_resource_on_free",
+    }
+    assert cli._runtime_wasm_exports_satisfy(wasm, required)
+    assert cli._runtime_wasm_missing_exports(wasm, required) == set()
+
+
+def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfied_build_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "molt_runtime.wasm"
+    current_src = tmp_path / "target" / "wasm32-wasip1" / "release-fast" / "molt_runtime.wasm"
+    current_src.parent.mkdir(parents=True, exist_ok=True)
+    runtime.write_bytes(b"\0asm\x01\0\0\0")
+    current_src.write_bytes(b"\0asm\x01\0\0\0")
+
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: {"hash": "ok"})
+    monkeypatch.setattr(cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "ok"})
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
+    monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
+    monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
+    monkeypatch.setattr(cli, "_resolve_built_runtime_wasm_artifact", lambda *args: current_src)
+    monkeypatch.setattr(
+        cli,
+        "_runtime_wasm_exports_satisfy",
+        lambda path, required: path == runtime,
+    )
+
+    copied: list[tuple[Path, Path]] = []
+
+    def fake_copy2(src: Path | str, dst: Path | str, *args, **kwargs):
+        copied.append((Path(src), Path(dst)))
+        return dst
+
+    monkeypatch.setattr(cli.shutil, "copy2", fake_copy2)
+
+    ok = cli._ensure_runtime_wasm(
+        runtime,
+        reloc=False,
+        json_output=True,
+        cargo_profile="release-fast",
+        cargo_timeout=None,
+        project_root=tmp_path,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules=None,
+        required_exports={"molt_fast_list_append"},
+    )
+
+    assert ok is True
+    assert copied == []
 
 
 def test_ensure_runtime_lib_verified_key_tracks_micro_feature_shape(
