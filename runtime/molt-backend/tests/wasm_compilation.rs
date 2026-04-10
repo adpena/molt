@@ -397,8 +397,7 @@ fn call_indirect_without_output_compiles() {
     call.args = Some(vec!["p0".to_string(), "p1".to_string()]);
 
     let wasm = compile_single_function(vec![call, op("ret_void")], &["p0", "p1"]);
-    validate_wasm(&wasm)
-        .expect("output-less call_indirect should still produce valid wasm");
+    validate_wasm(&wasm).expect("output-less call_indirect should still produce valid wasm");
 }
 
 #[test]
@@ -687,6 +686,76 @@ fn guard_tag_compiles_using_guard_type_import() {
         count_import(&calls, "guard_type") > 0,
         "guard_tag should lower through guard_type on wasm"
     );
+}
+
+#[test]
+fn alloc_task_generator_keeps_task_new_import() {
+    let mut alloc_task = op("alloc_task");
+    alloc_task.s_value = Some("__main_____f_poll".to_string());
+    alloc_task.value = Some(48);
+    alloc_task.task_kind = Some("generator".to_string());
+    alloc_task.args = Some(vec![]);
+    alloc_task.out = Some("task".to_string());
+
+    let wasm = compile_ir(SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_test_func".to_string(),
+                params: vec![],
+                ops: vec![alloc_task, ret_value("task")],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+            FunctionIR {
+                name: "__main_____f_poll".to_string(),
+                params: vec!["self".to_string()],
+                ops: vec![op("ret_void")],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+        ],
+        profile: None,
+    });
+    let calls = import_call_counts(&wasm);
+    assert!(
+        count_import(&calls, "task_new") > 0,
+        "generator alloc_task must retain task_new import on wasm"
+    );
+}
+
+#[test]
+fn alloc_task_future_without_args_compiles_without_resolve_local() {
+    let mut alloc_task = op("alloc_task");
+    alloc_task.s_value = Some("__main_____future_poll".to_string());
+    alloc_task.value = Some(0);
+    alloc_task.task_kind = Some("future".to_string());
+    alloc_task.args = Some(vec![]);
+    alloc_task.out = Some("task".to_string());
+
+    let wasm = compile_ir(SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_test_func".to_string(),
+                params: vec![],
+                ops: vec![alloc_task, ret_value("task")],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+            FunctionIR {
+                name: "__main_____future_poll".to_string(),
+                params: vec!["self".to_string()],
+                ops: vec![op("ret_void")],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            },
+        ],
+        profile: None,
+    });
+    validate_wasm(&wasm).expect("future alloc_task without args should compile");
 }
 
 #[test]
