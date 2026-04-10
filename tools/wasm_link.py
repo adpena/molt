@@ -1291,6 +1291,9 @@ def _ensure_function_exports_by_symbol_names(
         for _flags, index, name, _kind in _collect_linking_function_symbols(data)
         if name
     }
+    if not set(public_to_symbol.values()).issubset(symbol_indices):
+        for index, name in _collect_func_names(data).items():
+            symbol_indices.setdefault(name, index)
     existing_exports = _collect_function_exports(data)
     additions: list[tuple[str, int]] = []
     for public_name, symbol_name in public_to_symbol.items():
@@ -1376,15 +1379,25 @@ def _entry_module_prefix_from_main_init(
         return None
     import_count = _count_func_imports(sections)
     call_graph = _build_call_graph(code_payload, import_count)
-    inverse_exports = {index: name for name, index in export_indices.items()}
+    inverse_exports: dict[int, list[str]] = {}
+    for name, index in export_indices.items():
+        inverse_exports.setdefault(index, []).append(name)
     for callee in call_graph.get(main_init_index, ()):
-        target_name = inverse_exports.get(callee)
-        if (
-            target_name
-            and target_name.startswith("molt_init_")
-            and target_name != "molt_init___main__"
-        ):
-            return target_name.removeprefix("molt_init_")
+        candidates = inverse_exports.get(callee, ())
+        preferred = sorted(
+            candidates,
+            key=lambda name: (name.startswith("__molt_table_ref_"), not name.startswith("molt_init_"), name),
+        )
+        for target_name in preferred:
+            if (
+                target_name.startswith("molt_init_")
+                and target_name != "molt_init___main__"
+            ):
+                return target_name.removeprefix("molt_init_")
+            if target_name.endswith("__init") and "__" in target_name:
+                prefix, _rest = target_name.rsplit("__", 1)
+                if prefix:
+                    return prefix
     return None
 
 
