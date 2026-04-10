@@ -74,6 +74,35 @@ fn count_types(wasm: &[u8]) -> u32 {
     count
 }
 
+fn ir_with_direct_runtime_call(target: &str, arity: usize) -> SimpleIR {
+    let params: Vec<String> = (0..arity).map(|idx| format!("p{idx}")).collect();
+    let args = params.clone();
+    SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params,
+            ops: vec![
+                OpIR {
+                    kind: "call".to_string(),
+                    s_value: Some(target.to_string()),
+                    args: Some(args),
+                    out: Some("out".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("out".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    }
+}
+
 // -----------------------------------------------------------------------
 // Registry integrity tests
 // -----------------------------------------------------------------------
@@ -216,5 +245,21 @@ fn full_profile_has_more_imports_than_auto_for_empty_ir() {
         "Full ({}) should have >= imports than Auto ({})",
         full.len(),
         auto.len()
+    );
+}
+
+#[test]
+fn auto_profile_registers_direct_runtime_call_targets_as_imports() {
+    let wasm = compile_with_profile(
+        ir_with_direct_runtime_call("molt_gpu_rope_apply_contiguous", 8),
+        WasmProfile::Auto,
+    );
+    let import_names: BTreeSet<String> = extract_func_imports(&wasm)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        import_names.contains("gpu_rope_apply_contiguous"),
+        "direct runtime call targets must be imported into wasm modules"
     );
 }
