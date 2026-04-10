@@ -18080,12 +18080,8 @@ def _prepare_native_link(
     stdlib_object_cache_key: str | None = None,
 ) -> tuple[_PreparedNativeLink | None, dict[str, Any] | None]:
     output_obj = output_artifact
+    link_stdlib_obj = stdlib_obj_path
     if stdlib_obj_path is not None:
-        _invalidate_stale_stdlib_cache(
-            stdlib_obj_path,
-            project_root,
-            stdlib_object_cache_key,
-        )
         if stdlib_obj_path.exists() and not _shared_stdlib_cache_matches_key(
             stdlib_obj_path, stdlib_object_cache_key
         ):
@@ -18094,6 +18090,17 @@ def _prepare_native_link(
                 json_output,
                 command="build",
             )
+        if stdlib_obj_path.exists():
+            staged_stdlib_obj = artifacts_root / stdlib_obj_path.name
+            try:
+                _atomic_link_or_copy_file(stdlib_obj_path, staged_stdlib_obj)
+            except OSError as exc:
+                return None, _fail(
+                    f"Failed to stage shared stdlib object for native link: {exc}",
+                    json_output,
+                    command="build",
+                )
+            link_stdlib_obj = staged_stdlib_obj
     main_c_content = _render_native_main_stub(
         trusted=trusted,
         capabilities_list=capabilities_list,
@@ -18121,7 +18128,7 @@ def _prepare_native_link(
             target_triple=target_triple,
             sysroot_path=sysroot_path,
             profile=profile,
-            stdlib_obj_path=stdlib_obj_path,
+            stdlib_obj_path=link_stdlib_obj,
         )
     except RuntimeError as exc:
         return None, _fail(str(exc), json_output, command="build")
@@ -18145,8 +18152,8 @@ def _prepare_native_link(
             output_obj,
             resolved_runtime_lib,
             *(
-                [stdlib_obj_path]
-                if stdlib_obj_path is not None and stdlib_obj_path.exists()
+                [link_stdlib_obj]
+                if link_stdlib_obj is not None and link_stdlib_obj.exists()
                 else []
             ),
         ],
