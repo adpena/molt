@@ -9,6 +9,9 @@
 //! - Avoid blocking host I/O while holding the GIL; release or schedule work instead.
 #![cfg_attr(target_arch = "wasm32", allow(unused))]
 
+#[cfg(all(target_arch = "wasm32", feature = "cext_loader"))]
+compile_error!("feature `cext_loader` is unsupported on wasm32 targets");
+
 macro_rules! fn_addr {
     ($func:path) => {
         $crate::builtins::functions::runtime_fn_addr(stringify!($func), $func as *const ())
@@ -209,6 +212,7 @@ pub mod ffi_bridge {
 pub(crate) use crate::async_rt::*;
 pub use crate::builtins::gpu::molt_gpu_broadcast_binary_contiguous;
 pub use crate::builtins::gpu::molt_gpu_linear_contiguous;
+pub use crate::builtins::gpu::molt_gpu_matmul_contiguous;
 pub use crate::builtins::gpu::molt_gpu_permute_contiguous;
 pub use crate::builtins::gpu::molt_gpu_rope_apply_contiguous;
 pub use crate::builtins::strings::molt_string_from_bytes;
@@ -374,7 +378,7 @@ pub(crate) use crate::builtins::contextlib::{
     contextlib_asyncgen_enter_task_drop, contextlib_asyncgen_exit_task_drop,
 };
 pub use crate::builtins::copy_mod::*;
-#[cfg(not(feature = "stdlib_csv"))]
+#[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::csv::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::datetime::*;
