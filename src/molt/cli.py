@@ -57,7 +57,10 @@ from typing import (
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
 from molt.compat import CompatibilityError
-from molt._wasm_runtime_exports import wasm_runtime_export_link_args
+from molt._wasm_runtime_exports import (
+    wasm_runtime_export_link_args,
+    wasm_runtime_required_import_names,
+)
 from molt.debug import (
     DebugFailureClass,
     DebugStatus,
@@ -156,7 +159,7 @@ _LOCK_CHECK_CACHE_VERSION = 1
 _HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"
 _HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"
 _BACKEND_DAEMON_PROTOCOL_VERSION = 1
-_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 2
+_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 3
 _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 1
 _BACKEND_REQUEST_ENV_KNOBS = (
     "MOLT_TIR_OPT",
@@ -190,8 +193,10 @@ _NATIVE_CODEGEN_ENV_KNOBS = _BACKEND_REQUEST_ENV_KNOBS + (
 )
 _WASM_CODEGEN_ENV_KNOBS = (
     "MOLT_WASM_DATA_BASE",
+    "MOLT_WASM_EXTRA_REQUIRED_IMPORTS",
     "MOLT_WASM_MIN_PAGES",
     "MOLT_WASM_LINK",
+    "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN",
     "MOLT_WASM_TABLE_BASE",
 )
 CAPABILITY_PROFILES: dict[str, list[str]] = {
@@ -7376,11 +7381,16 @@ def _stored_fingerprint_matches_source_metadata(
     *,
     inputs_digest: str | None,
     rustc: str | None,
+    meta_digest: str | None,
 ) -> bool:
     if stored_fingerprint is None or not inputs_digest:
         return False
     if stored_fingerprint.get("inputs_digest") != inputs_digest:
         return False
+    if meta_digest is not None:
+        stored_meta = stored_fingerprint.get("meta_digest")
+        if stored_meta is None or stored_meta != meta_digest:
+            return False
     if rustc:
         stored_rustc = stored_fingerprint.get("rustc")
         if stored_rustc is None or stored_rustc != rustc:
@@ -7404,6 +7414,7 @@ def _runtime_fingerprint(
     meta += "build-schema:wasm-runtime-rustflags-v2\n"
     meta += f"rustflags:{rustflags}\n"
     meta += f"features:{','.join(feature_list)}\n"
+    meta_digest = hashlib.sha256(meta.encode("utf-8")).hexdigest()
     source_paths = _runtime_source_paths(project_root)
     rustc_info = _rustc_version()
     inputs_meta = _hash_source_tree_metadata(source_paths, project_root)
@@ -7412,11 +7423,13 @@ def _runtime_fingerprint(
         stored_fingerprint,
         inputs_digest=inputs_digest,
         rustc=rustc_info,
+        meta_digest=meta_digest,
     ):
         return {
             "hash": cast(str, stored_fingerprint.get("hash")),
             "rustc": rustc_info,
             "inputs_digest": inputs_digest,
+            "meta_digest": meta_digest,
         }
 
     hasher = hashlib.sha256()
@@ -7435,6 +7448,7 @@ def _runtime_fingerprint(
         "hash": hasher.hexdigest(),
         "rustc": rustc_info,
         "inputs_digest": inputs_digest,
+        "meta_digest": meta_digest,
     }
 
 
@@ -7713,23 +7727,34 @@ def _read_runtime_fingerprint(path: Path) -> dict[str, Any] | None:
         return None
     rustc_value = data.get("rustc")
     inputs_digest = data.get("inputs_digest")
+    meta_digest = data.get("meta_digest")
     if (rustc_value is None or isinstance(rustc_value, str)) and (
         inputs_digest is None or isinstance(inputs_digest, str)
+    ) and (
+        meta_digest is None or isinstance(meta_digest, str)
     ):
         return data
     if rustc_value is not None and not isinstance(rustc_value, str):
         rustc_value = None
     if inputs_digest is not None and not isinstance(inputs_digest, str):
         inputs_digest = None
-    return {"hash": hash_value, "rustc": rustc_value, "inputs_digest": inputs_digest}
+    if meta_digest is not None and not isinstance(meta_digest, str):
+        meta_digest = None
+    return {
+        "hash": hash_value,
+        "rustc": rustc_value,
+        "inputs_digest": inputs_digest,
+        "meta_digest": meta_digest,
+    }
 
 
 def _write_runtime_fingerprint(path: Path, fingerprint: dict[str, str | None]) -> None:
     payload = {
-        "version": 1,
+        "version": 2,
         "hash": fingerprint.get("hash"),
         "rustc": fingerprint.get("rustc"),
         "inputs_digest": fingerprint.get("inputs_digest"),
+        "meta_digest": fingerprint.get("meta_digest"),
     }
     _write_cached_json_object(path, payload)
 
@@ -16510,6 +16535,7 @@ def _prepare_backend_dispatch(
     backend_daemon_config_digest: str | None,
     ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
     ensure_runtime_wasm_reloc: Callable[[], bool],
+    resolved_modules: set[str] | frozenset[str] | None,
     warnings: list[str],
 ) -> tuple[_PreparedBackendDispatch | None, dict[str, Any] | None]:
     backend_env = os.environ.copy() if is_wasm else None
@@ -16535,6 +16561,11 @@ def _prepare_backend_dispatch(
     runtime_wasm = runtime_state.runtime_wasm
     runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
     if is_wasm and backend_env is not None:
+        extra_required_imports = wasm_runtime_required_import_names(resolved_modules)
+        if extra_required_imports:
+            backend_env["MOLT_WASM_EXTRA_REQUIRED_IMPORTS"] = ",".join(
+                extra_required_imports
+            )
         if "MOLT_WASM_DATA_BASE" not in backend_env:
             if not ensure_runtime_wasm_shared():
                 return None, _fail(
@@ -17120,6 +17151,7 @@ def _prepare_backend_compile(
     backend_timeout: float | None,
     backend_daemon_config_digest: str | None,
     entry_module: str,
+    resolved_modules: frozenset[str],
     ensure_runtime_wasm_shared: Callable[[], bool],
     ensure_runtime_wasm_reloc: Callable[[], bool],
     artifacts_root: Path,
@@ -17193,6 +17225,7 @@ def _prepare_backend_compile(
                     backend_daemon_config_digest=backend_daemon_config_digest,
                     ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
                     ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
+                    resolved_modules=resolved_modules,
                     warnings=warnings,
                 )
             )
@@ -17519,6 +17552,7 @@ def _run_backend_pipeline(
         backend_timeout=prepared_build_config.backend_timeout,
         backend_daemon_config_digest=prepared_build_preamble.backend_daemon_config_digest,
         entry_module=resolved_build_entry.entry_module,
+        resolved_modules=resolved_modules,
         ensure_runtime_wasm_shared=prepared_backend_runtime_context.ensure_runtime_wasm_shared,
         ensure_runtime_wasm_reloc=prepared_backend_runtime_context.ensure_runtime_wasm_reloc,
         artifacts_root=artifacts_root,
@@ -17862,6 +17896,28 @@ def _prepare_non_native_build_result(
                 resolved_linked_output = output_wasm.with_name("output_linked.wasm")
             if resolved_linked_output.parent != Path("."):
                 resolved_linked_output.parent.mkdir(parents=True, exist_ok=True)
+            required_runtime_exports = _collect_wasm_module_import_names(
+                output_wasm, "molt_runtime"
+            )
+            if _split_runtime and not is_wasm_freestanding:
+                if runtime_wasm is None:
+                    return None, _fail(
+                        "Runtime wasm build failed",
+                        json_output,
+                        command="build",
+                    )
+                if not ensure_runtime_wasm_shared(required_runtime_exports):
+                    return None, _fail(
+                        "Runtime wasm build failed",
+                        json_output,
+                        command="build",
+                    )
+                if not runtime_wasm.exists():
+                    return None, _fail(
+                        "Runtime wasm build failed",
+                        json_output,
+                        command="build",
+                    )
             tool = molt_root / "tools" / "wasm_link.py"
             link_cmd = [
                 sys.executable,
@@ -20610,15 +20666,18 @@ def _link_fingerprint(
 ) -> dict[str, str | None] | None:
     inputs_meta = _hash_source_tree_metadata(inputs, project_root)
     inputs_digest = inputs_meta[0] if inputs_meta is not None else None
+    meta_digest = hashlib.sha256("\0".join(link_cmd).encode("utf-8")).hexdigest()
     if _stored_fingerprint_matches_source_metadata(
         stored_fingerprint,
         inputs_digest=inputs_digest,
         rustc=None,
+        meta_digest=meta_digest,
     ):
         return {
             "hash": cast(str, stored_fingerprint.get("hash")),
             "rustc": None,
             "inputs_digest": inputs_digest,
+            "meta_digest": meta_digest,
         }
     hasher = hashlib.sha256()
     hasher.update("\0".join(link_cmd).encode("utf-8"))
@@ -20632,6 +20691,7 @@ def _link_fingerprint(
         "hash": hasher.hexdigest(),
         "rustc": None,
         "inputs_digest": inputs_digest,
+        "meta_digest": meta_digest,
     }
 
 
@@ -20646,6 +20706,7 @@ def _backend_fingerprint(
     meta = f"profile:{cargo_profile}\n"
     meta += f"rustflags:{rustflags}\n"
     meta += f"features:{','.join(backend_features)}\n"
+    meta_digest = hashlib.sha256(meta.encode("utf-8")).hexdigest()
     source_paths = _backend_source_paths(project_root, backend_features)
     rustc_info = _rustc_version()
     inputs_meta = _hash_source_tree_metadata(source_paths, project_root)
@@ -20654,11 +20715,13 @@ def _backend_fingerprint(
         stored_fingerprint,
         inputs_digest=inputs_digest,
         rustc=rustc_info,
+        meta_digest=meta_digest,
     ):
         return {
             "hash": cast(str, stored_fingerprint.get("hash")),
             "rustc": rustc_info,
             "inputs_digest": inputs_digest,
+            "meta_digest": meta_digest,
         }
 
     hasher = hashlib.sha256()
@@ -20677,6 +20740,7 @@ def _backend_fingerprint(
         "hash": hasher.hexdigest(),
         "rustc": rustc_info,
         "inputs_digest": inputs_digest,
+        "meta_digest": meta_digest,
     }
 
 
@@ -22105,6 +22169,38 @@ def _collect_wasm_module_import_names(path: Path, module_name: str) -> set[str]:
     except ValueError:
         return set()
     return result
+
+
+_DEPLOY_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
+    "cloudflare": {
+        "wasm_opt_level": "Oz",
+        "wasm_profile": "pure",
+        "precompile": True,
+        "tmp_quota_mb": 32,
+        "stdlib_profile": "micro",
+    },
+    "browser": {
+        "wasm_opt_level": "Oz",
+        "wasm_profile": "full",
+        "precompile": False,
+        "tmp_quota_mb": 64,
+        "stdlib_profile": "micro",
+    },
+    "wasi": {
+        "wasm_opt_level": "O3",
+        "wasm_profile": "full",
+        "precompile": False,
+        "tmp_quota_mb": 256,
+        "stdlib_profile": "full",
+    },
+    "fastly": {
+        "wasm_opt_level": "Oz",
+        "wasm_profile": "pure",
+        "precompile": True,
+        "tmp_quota_mb": 64,
+        "stdlib_profile": "micro",
+    },
+}
 
 
 @functools.lru_cache(maxsize=64)
@@ -23581,8 +23677,10 @@ def build(
     # --split-runtime: signal to the non-native build result handler.
     if split_runtime:
         os.environ["MOLT_SPLIT_RUNTIME"] = "1"
-    # --wasm-profile: pass to backend via environment variable.
-    if wasm_profile and wasm_profile != "full":
+    # --wasm-profile: pass the effective profile to the backend explicitly.
+    # The backend defaults to WasmProfile::Auto when the env var is absent,
+    # so omitting the "full" case silently changes semantics.
+    if target in {"wasm", "wasm-freestanding"} and wasm_profile:
         os.environ["MOLT_WASM_PROFILE"] = wasm_profile
     # --stdlib-profile: propagate to module graph construction so that the
     # micro profile can exclude heavy core modules from the dependency closure.
@@ -32550,38 +32648,6 @@ def main() -> int:
             )
         if not args.file and not args.module:
             return _fail("Missing entry file or module.", args.json, command="build")
-
-        # --- Deployment profile defaults ---
-        _DEPLOY_PROFILE_DEFAULTS = {
-            "cloudflare": {
-                "wasm_opt_level": "Oz",
-                "wasm_profile": "pure",
-                "precompile": True,
-                "tmp_quota_mb": 32,
-                "stdlib_profile": "micro",
-            },
-            "browser": {
-                "wasm_opt_level": "Oz",
-                "wasm_profile": "pure",
-                "precompile": False,
-                "tmp_quota_mb": 64,
-                "stdlib_profile": "micro",
-            },
-            "wasi": {
-                "wasm_opt_level": "O3",
-                "wasm_profile": "full",
-                "precompile": False,
-                "tmp_quota_mb": 256,
-                "stdlib_profile": "full",
-            },
-            "fastly": {
-                "wasm_opt_level": "Oz",
-                "wasm_profile": "pure",
-                "precompile": True,
-                "tmp_quota_mb": 64,
-                "stdlib_profile": "micro",
-            },
-        }
 
         deploy_profile = getattr(args, "profile", None)
         wasm_opt_level = getattr(args, "wasm_opt_level", "Oz")
