@@ -1,6 +1,7 @@
 // Call dispatch, builtin wrappers, and type constructor builtins.
 // Split from ops.rs for compilation-unit size reduction.
 
+use crate::builtins::functions::runtime_callable_target_ptr;
 use crate::object::ops_string::utf8_char_to_byte_index_cached;
 use crate::*;
 use molt_obj_model::MoltObject;
@@ -871,9 +872,7 @@ pub extern "C" fn molt_call_func_dispatch(
                                         padded.extend_from_slice(effective_args);
                                         if pos_missing > 0 {
                                             let start = pos_def_vec.len() - pos_missing;
-                                            padded.extend(
-                                                pos_def_vec.iter().skip(start).copied(),
-                                            );
+                                            padded.extend(pos_def_vec.iter().skip(start).copied());
                                         }
                                         padded.extend_from_slice(&kw_vals);
                                         return molt_call_func_direct(
@@ -904,9 +903,7 @@ fn molt_call_func_direct(
     if !recursion_guard_enter() {
         return raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded");
     }
-    if code_id != 0
-        && let Some(func_ptr) = obj_from_bits(callable_bits).as_ptr()
-    {
+    if let Some(func_ptr) = obj_from_bits(callable_bits).as_ptr() {
         unsafe {
             let code_bits = match object_type_id(func_ptr) {
                 TYPE_ID_FUNCTION => ensure_function_code_bits(_py, func_ptr),
@@ -928,7 +925,7 @@ fn molt_call_func_direct(
         }
     }
     let result = unsafe { molt_guarded_call_dispatch(fn_ptr, args.as_ptr(), args.len()) };
-    if code_id != 0 {
+    if obj_from_bits(callable_bits).as_ptr().is_some() {
         frame_stack_pop(_py);
     }
     recursion_guard_exit();
@@ -1031,97 +1028,78 @@ unsafe fn probe_simple_func(func_bits: u64, expected_arity: usize) -> Option<u64
 /// Fast 0-argument function call. No args — minimal dispatch.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
-    unsafe {
-        if let Some(fn_ptr) = probe_simple_func(func_bits, 0) {
-            if !recursion_guard_enter() {
-                return crate::with_gil_entry!(_py, {
-                    raise_exception::<u64>(
+    crate::with_gil_entry!(_py, {
+        unsafe {
+            if let Some(fn_ptr) = probe_simple_func(func_bits, 0) {
+                if !recursion_guard_enter() {
+                    return raise_exception::<u64>(
                         _py,
                         "RecursionError",
                         "maximum recursion depth exceeded",
-                    )
-                });
+                    );
+                }
+                let result = direct_call_0(fn_ptr);
+                recursion_guard_exit();
+                return result;
             }
-            let result = direct_call_0(fn_ptr);
-            recursion_guard_exit();
-            return result;
+            let args: [u64; 0] = [];
+            molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 0, 0)
         }
-    }
-    // Slow path
-    let args: [u64; 0] = [];
-    molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 0, 0)
+    })
 }
 
 /// Fast 1-argument function call. Args passed in registers — no stack spill.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_call_func_fast1(func_bits: u64, a0: u64) -> u64 {
-    unsafe {
-        if let Some(fn_ptr) = probe_simple_func(func_bits, 1) {
-            if !recursion_guard_enter() {
-                return crate::with_gil_entry!(_py, {
-                    raise_exception::<u64>(
-                        _py,
-                        "RecursionError",
-                        "maximum recursion depth exceeded",
-                    )
-                });
+    crate::with_gil_entry!(_py, {
+        unsafe {
+            if let Some(fn_ptr) = probe_simple_func(func_bits, 1) {
+                if runtime_callable_target_ptr(fn_ptr).is_some() {
+                    return crate::call::function::call_function_obj1(_py, func_bits, a0);
+                }
+                let args = [a0];
+                return molt_call_func_direct(_py, fn_ptr, &args, 0, func_bits);
             }
-            let result = direct_call_1(fn_ptr, a0);
-            recursion_guard_exit();
-            return result;
+            let args = [a0];
+            molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 1, 0)
         }
-    }
-    // Slow path
-    let args = [a0];
-    molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 1, 0)
+    })
 }
 
 /// Fast 2-argument function call. Args passed in registers — no stack spill.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_call_func_fast2(func_bits: u64, a0: u64, a1: u64) -> u64 {
-    unsafe {
-        if let Some(fn_ptr) = probe_simple_func(func_bits, 2) {
-            if !recursion_guard_enter() {
-                return crate::with_gil_entry!(_py, {
-                    raise_exception::<u64>(
-                        _py,
-                        "RecursionError",
-                        "maximum recursion depth exceeded",
-                    )
-                });
+    crate::with_gil_entry!(_py, {
+        unsafe {
+            if let Some(fn_ptr) = probe_simple_func(func_bits, 2) {
+                if runtime_callable_target_ptr(fn_ptr).is_some() {
+                    return crate::call::function::call_function_obj2(_py, func_bits, a0, a1);
+                }
+                let args = [a0, a1];
+                return molt_call_func_direct(_py, fn_ptr, &args, 0, func_bits);
             }
-            let result = direct_call_2(fn_ptr, a0, a1);
-            recursion_guard_exit();
-            return result;
+            let args = [a0, a1];
+            molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 2, 0)
         }
-    }
-    // Slow path
-    let args = [a0, a1];
-    molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 2, 0)
+    })
 }
 
 /// Fast 3-argument function call. Args passed in registers — no stack spill.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_call_func_fast3(func_bits: u64, a0: u64, a1: u64, a2: u64) -> u64 {
-    unsafe {
-        if let Some(fn_ptr) = probe_simple_func(func_bits, 3) {
-            if !recursion_guard_enter() {
-                return crate::with_gil_entry!(_py, {
-                    raise_exception::<u64>(
-                        _py,
-                        "RecursionError",
-                        "maximum recursion depth exceeded",
-                    )
-                });
+    crate::with_gil_entry!(_py, {
+        unsafe {
+            if let Some(fn_ptr) = probe_simple_func(func_bits, 3) {
+                if runtime_callable_target_ptr(fn_ptr).is_some() {
+                    return crate::call::function::call_function_obj3(_py, func_bits, a0, a1, a2);
+                }
+                let args = [a0, a1, a2];
+                return molt_call_func_direct(_py, fn_ptr, &args, 0, func_bits);
             }
-            let result = direct_call_3(fn_ptr, a0, a1, a2);
-            recursion_guard_exit();
-            return result;
+            let args = [a0, a1, a2];
+            molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 3, 0)
         }
-    }
-    // Slow path
-    let args = [a0, a1, a2];
-    molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 3, 0)
+    })
 }
 
 /// Fallback: build a CallArgs and dispatch through `molt_call_bind`.
