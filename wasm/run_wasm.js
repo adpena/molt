@@ -62,6 +62,7 @@ const traceWasiIoStack = process.env.MOLT_WASM_TRACE_WASI_IO_STACK === '1';
 const traceSocketHost = process.env.MOLT_WASM_TRACE_SOCKET_HOST === '1';
 const installTableRefsEnabled = process.env.MOLT_WASM_INSTALL_TABLE_REFS === '1';
 const verifyTableRefsEnabled = process.env.MOLT_WASM_VERIFY_TABLE_REFS === '1';
+const traceTableSlotRaw = process.env.MOLT_WASM_TRACE_TABLE_SLOT || null;
 const formatTraceError = (err) => {
   if (err instanceof Error) {
     return err.stack || err.message || String(err);
@@ -4651,7 +4652,12 @@ const buildRuntimeImportDirect = (runtimeInst) => {
     if (typeof fn !== 'function') {
       throw new Error(`molt_runtime.${entry.name} missing export ${exportName}`);
     }
-    runtimeImports[entry.name] = (...args) => fn(...args);
+    runtimeImports[entry.name] = (...args) => {
+      if (traceRun) {
+        console.error(`[molt wasm] direct runtime import ${entry.name} argc=${args.length}`);
+      }
+      return fn(...args);
+    };
   }
   return runtimeImports;
 };
@@ -4682,6 +4688,23 @@ const installTableRefs = (instance, table, label) => {
   if (traceRun) {
     console.error(`[molt wasm] installed ${refs.length} ${label} table refs`);
   }
+};
+
+const traceTableSlot = (table, label) => {
+  if (!traceRun || !traceTableSlotRaw || !table) {
+    return;
+  }
+  const slot = Number.parseInt(traceTableSlotRaw, 10);
+  if (!Number.isFinite(slot) || slot < 0) {
+    return;
+  }
+  const entry = slot < table.length ? table.get(slot) : null;
+  const state = entry ? 'set' : 'null';
+  const entryName = entry && entry.name ? entry.name : 'unknown';
+  const entryLen = entry && typeof entry.length === 'number' ? entry.length : 'unknown';
+  console.error(
+    `[molt wasm] table-slot ${label} slot=${slot} state=${state} name=${entryName} len=${entryLen}`
+  );
 };
 
 const verifyTableRefs = (instance, table, label) => {
@@ -4850,12 +4873,18 @@ const runDirectLink = async () => {
     };
   }
 
+  if (traceRun) {
+    console.error('[molt wasm] direct: instantiate runtime');
+  }
   const runtimeModule = await WebAssembly.instantiate(runtimeBuffer, {
     env,
     wasi_snapshot_preview1: wasiImport,
   });
   const runtimeInst = runtimeModule.instance;
   runtimeInstance = runtimeInst;
+  if (traceRun) {
+    console.error('[molt wasm] direct: runtime instantiated');
+  }
   if (detectedWasmTableBase !== null) {
     const setTableBase = runtimeInst.exports.molt_set_wasm_table_base;
     if (typeof setTableBase === 'function') {
@@ -4865,9 +4894,13 @@ const runDirectLink = async () => {
   if (installTableRefsEnabled) {
     installTableRefs(runtimeInst, table, 'runtime');
   }
+  traceTableSlot(table, 'after-runtime-instantiate');
   const outputImportsDirect = traceImports
     ? buildRuntimeImportWrappers()
     : buildRuntimeImportDirect(runtimeInst);
+  if (traceRun) {
+    console.error('[molt wasm] direct: instantiate output');
+  }
   const outputModule = await WebAssembly.instantiate(wasmBuffer, {
     molt_runtime: outputImportsDirect,
     env: {
@@ -4877,13 +4910,23 @@ const runDirectLink = async () => {
     },
   });
   outputInstance = outputModule.instance;
+  if (traceRun) {
+    console.error('[molt wasm] direct: output instantiated');
+  }
 
   const { molt_main, molt_memory, molt_table, molt_table_init } =
     outputInstance.exports;
   ensureTableCapacityForExportedRefs(outputInstance, table, 'output');
   if (typeof molt_table_init === 'function' && process.env.MOLT_WASM_SKIP_TABLE_INIT !== '1') {
+    if (traceRun) {
+      console.error('[molt wasm] direct: call molt_table_init');
+    }
     molt_table_init();
+    if (traceRun) {
+      console.error('[molt wasm] direct: molt_table_init returned');
+    }
   }
+  traceTableSlot(table, 'after-output-table-init');
   if (installTableRefsEnabled) {
     installTableRefs(outputInstance, table, 'output');
   }
@@ -4898,6 +4941,9 @@ const runDirectLink = async () => {
     console.error(`[molt wasm] call_indirect2 smoke result=${res}`);
   }
   initializeWasiForInstance(runtimeInst, memory);
+  if (traceRun) {
+    console.error('[molt wasm] direct: call molt_main');
+  }
   runMainWithWasiExit(() => {
     molt_main();
   });
