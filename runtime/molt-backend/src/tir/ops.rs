@@ -56,6 +56,7 @@ pub enum OpCode {
     And,
     Or,
     Not,
+    Bool,
     // Memory
     Alloc,
     StackAlloc,

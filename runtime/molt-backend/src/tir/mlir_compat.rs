@@ -242,6 +242,7 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::And => "and",
         OpCode::Or => "or",
         OpCode::Not => "not",
+        OpCode::Bool => "bool",
         OpCode::Alloc => "alloc",
         OpCode::StackAlloc => "stack_alloc",
         OpCode::Free => "free",

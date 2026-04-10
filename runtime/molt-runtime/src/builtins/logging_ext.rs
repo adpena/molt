@@ -1048,7 +1048,11 @@ pub extern "C" fn molt_logging_handler_drop(handler_bits: u64) -> u64 {
 // ── StreamHandler intrinsics ─────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_stream_handler_new(stream_bits: u64, level_bits: u64) -> u64 {
+pub extern "C" fn molt_logging_stream_handler_new(
+    stream_bits: u64,
+    _mode_bits: u64,
+    level_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
         let stream_target = if obj_from_bits(stream_bits).is_none() {

@@ -1050,8 +1050,7 @@ impl<'a> SsaContext<'a> {
 
         let opcode = kind_to_opcode(&op.kind);
 
-        if std::env::var("MOLT_TRACE_SSA_IMPORT").as_deref() == Ok("1")
-            && opcode == OpCode::Import
+        if std::env::var("MOLT_TRACE_SSA_IMPORT").as_deref() == Ok("1") && opcode == OpCode::Import
         {
             eprintln!(
                 "SSA import trace: func={} kind={} args={:?} var={:?} out={:?} operands={:?}",
@@ -1428,6 +1427,7 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "and" => OpCode::And,
         "or" => OpCode::Or,
         "not" => OpCode::Not,
+        "bool" | "cast_bool" | "builtin_bool" => OpCode::Bool,
         "alloc" => OpCode::Alloc,
         "stack_alloc" => OpCode::StackAlloc,
         "free" => OpCode::Free,
