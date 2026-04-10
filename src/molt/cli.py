@@ -11389,6 +11389,24 @@ def _stdlib_object_key_sidecar_path(stdlib_object_path: Path) -> Path:
     return stdlib_object_path.with_suffix(".key")
 
 
+def _stage_shared_stdlib_object_for_link(
+    stdlib_object_path: Path,
+    *,
+    stdlib_object_cache_key: str | None,
+    artifacts_root: Path,
+) -> Path:
+    staged_stdlib_obj = artifacts_root / stdlib_object_path.name
+    _atomic_link_or_copy_file(stdlib_object_path, staged_stdlib_obj)
+    staged_key_path = _stdlib_object_key_sidecar_path(staged_stdlib_obj)
+    if stdlib_object_cache_key:
+        staged_key_path.write_text(stdlib_object_cache_key, encoding="utf-8")
+    else:
+        source_key_path = _stdlib_object_key_sidecar_path(stdlib_object_path)
+        if source_key_path.exists():
+            _atomic_link_or_copy_file(source_key_path, staged_key_path)
+    return staged_stdlib_obj
+
+
 def _remove_shared_stdlib_cache_artifacts(stdlib_object_path: Path) -> None:
     with contextlib.suppress(OSError):
         stdlib_object_path.unlink()
@@ -17629,6 +17647,22 @@ def _run_backend_pipeline(
             success_messages=[f"Successfully built {prepared_object_output}"],
         )
 
+    stdlib_link_obj_path = prepared_backend_setup.cache_setup.stdlib_object_path
+    if stdlib_link_obj_path is not None and stdlib_link_obj_path.exists():
+        try:
+            staged_stdlib_obj = _stage_shared_stdlib_object_for_link(
+                stdlib_link_obj_path,
+                stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
+                artifacts_root=artifacts_root,
+            )
+        except OSError as exc:
+            return _fail(
+                f"Failed to stage shared stdlib object before native link: {exc}",
+                json_output,
+                command="build",
+            )
+        stdlib_link_obj_path = staged_stdlib_obj
+
     if not _ensure_native_runtime_lib_ready_before_link(
         prepared_backend_runtime_context.runtime_state,
         target_triple=output_layout.target_triple,
@@ -17662,7 +17696,7 @@ def _run_backend_pipeline(
         phase_starts=prepared_build_preamble.phase_starts,
         link_timeout=prepared_build_config.link_timeout,
         warnings=prepared_build_preamble.warnings,
-        stdlib_obj_path=prepared_backend_setup.cache_setup.stdlib_object_path,
+        stdlib_obj_path=stdlib_link_obj_path,
         stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
     )
     if prepared_native_link_error is not None:
@@ -17704,7 +17738,7 @@ def _run_backend_pipeline(
         pgo_profile_payload=prepared_build_config.pgo_profile_payload,
         runtime_feedback_payload=prepared_build_config.runtime_feedback_payload,
         emit_ir_path=output_layout.emit_ir_path,
-        stdlib_obj_path=prepared_backend_setup.cache_setup.stdlib_object_path,
+        stdlib_obj_path=stdlib_link_obj_path,
         warnings=prepared_build_preamble.warnings,
         json_output=json_output,
         resolved_diagnostics_verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
@@ -18090,16 +18124,19 @@ def _prepare_native_link(
                 json_output,
                 command="build",
             )
-        if stdlib_obj_path.exists():
-            staged_stdlib_obj = artifacts_root / stdlib_obj_path.name
+        if stdlib_obj_path.exists() and stdlib_obj_path.parent != artifacts_root:
             try:
-                _atomic_link_or_copy_file(stdlib_obj_path, staged_stdlib_obj)
+                staged_stdlib_obj = _stage_shared_stdlib_object_for_link(
+                    stdlib_obj_path,
+                    stdlib_object_cache_key=stdlib_object_cache_key,
+                    artifacts_root=artifacts_root,
+                )
             except OSError as exc:
                 return None, _fail(
                     f"Failed to stage shared stdlib object for native link: {exc}",
                     json_output,
                     command="build",
-                )
+            )
             link_stdlib_obj = staged_stdlib_obj
     main_c_content = _render_native_main_stub(
         trusted=trusted,
