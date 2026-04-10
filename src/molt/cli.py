@@ -9211,6 +9211,7 @@ def _generate_split_worker_js(
     """
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
+import "./molt_vfs_browser.js";
 import runtimeModule from "./molt_runtime.wasm";
 import appModule from "./app.wasm";
 
@@ -9228,7 +9229,39 @@ export default {
     const stderrDecoder = new TextDecoder();
     const encoder = new TextEncoder();
     const wasmMemory = new WebAssembly.Memory({ initial: __MOLT_SHARED_MEMORY_PAGES__ });
+    const vfs = new globalThis.MoltVfs();
     let appInstance = null;
+
+    const assetBytes = async (name) => {
+      if (!env.__STATIC_CONTENT || typeof env.__STATIC_CONTENT.get !== "function") {
+        return null;
+      }
+      const asset = await env.__STATIC_CONTENT.get(name);
+      if (!asset) return null;
+      if (asset instanceof Uint8Array) return asset;
+      if (asset instanceof ArrayBuffer) return new Uint8Array(asset);
+      if (typeof asset.arrayBuffer === "function") {
+        return new Uint8Array(await asset.arrayBuffer());
+      }
+      if (typeof asset.bytes === "function") {
+        return new Uint8Array(await asset.bytes());
+      }
+      return null;
+    };
+
+    const readPathUtf8 = (pathPtr, pathLen) =>
+      encoder.decode
+        ? UTF8_DECODER.decode(new Uint8Array(wasmMemory.buffer, pathPtr >>> 0, pathLen >>> 0))
+        : UTF8_DECODER.decode(new Uint8Array(wasmMemory.buffer, pathPtr >>> 0, pathLen >>> 0));
+
+    const writeErrno = (err, fallback) => {
+      if (err && typeof err.message === "string") {
+        if (err.message.startsWith("ENOENT")) return ENOENT;
+        if (err.message.startsWith("ENOSPC")) return 28;
+        if (err.message.startsWith("EINVAL")) return EINVAL;
+      }
+      return fallback;
+    };
 
     const wasiArgs = ["molt", urlPath, queryString];
     const argsEncoded = wasiArgs.map(a => encoder.encode(a + "\\0"));
@@ -9356,6 +9389,62 @@ export default {
 
     const hostEnv = {
       memory: wasmMemory,
+      molt_vfs_read(pathPtr, pathLen, outPtr, outCapacity, outLenPtr) {
+        if (!wasmMemory) return -ENOSYS;
+        const path = readPathUtf8(pathPtr, pathLen);
+        const resolved = vfs.resolve(path);
+        if (!resolved || !resolved.mount || typeof resolved.mount.read !== "function") {
+          return -ENOENT;
+        }
+        try {
+          const data = resolved.mount.read(resolved.rel);
+          const cap = outCapacity >>> 0;
+          if (data.byteLength > cap) return -EINVAL;
+          new Uint8Array(wasmMemory.buffer, outPtr >>> 0, data.byteLength).set(data);
+          new DataView(wasmMemory.buffer).setUint32(outLenPtr >>> 0, data.byteLength, true);
+          return 0;
+        } catch (err) {
+          return writeErrno(err, ENOENT) * -1;
+        }
+      },
+      molt_vfs_write(pathPtr, pathLen, dataPtr, dataLen) {
+        if (!wasmMemory) return -ENOSYS;
+        const path = readPathUtf8(pathPtr, pathLen);
+        const resolved = vfs.resolve(path);
+        if (!resolved || !resolved.mount || typeof resolved.mount.write !== "function") {
+          return -EINVAL;
+        }
+        const bytes = new Uint8Array(wasmMemory.buffer, dataPtr >>> 0, dataLen >>> 0);
+        try {
+          resolved.mount.write(resolved.rel, bytes);
+          return 0;
+        } catch (err) {
+          return writeErrno(err, EINVAL) * -1;
+        }
+      },
+      molt_vfs_exists(pathPtr, pathLen) {
+        if (!wasmMemory) return 0;
+        const path = readPathUtf8(pathPtr, pathLen);
+        const resolved = vfs.resolve(path);
+        if (!resolved || !resolved.mount || typeof resolved.mount.exists !== "function") {
+          return 0;
+        }
+        return resolved.mount.exists(resolved.rel) ? 1 : 0;
+      },
+      molt_vfs_unlink(pathPtr, pathLen) {
+        if (!wasmMemory) return -ENOSYS;
+        const path = readPathUtf8(pathPtr, pathLen);
+        const resolved = vfs.resolve(path);
+        if (!resolved || !resolved.mount || typeof resolved.mount.unlink !== "function") {
+          return -EINVAL;
+        }
+        try {
+          resolved.mount.unlink(resolved.rel);
+          return 0;
+        } catch (err) {
+          return writeErrno(err, EINVAL) * -1;
+        }
+      },
       molt_isolate_import(...args) {
         if (!appInstance || !appInstance.exports.molt_isolate_import) {
           throw new Error("molt_isolate_import called before app instantiation");
@@ -9436,6 +9525,10 @@ export default {
     let pendingError = null;
     let procExit = null;
     try {
+      const bundleBytes = await assetBytes("bundle.tar");
+      if (bundleBytes) {
+        vfs.loadBundleFromTar(bundleBytes);
+      }
       // 1. Instantiate the runtime module first.
       //    The runtime imports host-owned shared memory/table plus host bridges.
       const rtImports = {
@@ -9476,6 +9569,7 @@ export default {
           if (!pendingError) pendingError = shutdownErr;
         }
       }
+      vfs.clear();
     }
 
     const stdoutTail = stdoutDecoder.decode();
@@ -9963,10 +10057,47 @@ def _session_target_dir(project_root: Path) -> Path | None:
     return project_root / "target" / "sessions" / _session_artifact_component(sid)
 
 
+_BACKEND_DAEMON_SOCKET_BASENAME = "moltbd.ffffffffffffffff.sock"
+_UNIX_SOCKET_PATH_MAX_BYTES = 104
+
+
+def _unix_socket_path_exceeds_limit(path: Path) -> bool:
+    if os.name == "nt":
+        return False
+    return len(os.fsencode(os.fspath(path))) >= _UNIX_SOCKET_PATH_MAX_BYTES
+
+
+def _short_backend_daemon_socket_dir(default_dir: Path) -> Path:
+    if os.name == "nt":
+        return default_dir
+    probe = default_dir / _BACKEND_DAEMON_SOCKET_BASENAME
+    if not _unix_socket_path_exceeds_limit(probe):
+        return default_dir
+    for root in (Path("/tmp"), Path("/private/tmp")):
+        candidate = root / "molt-backend-daemon"
+        if not _unix_socket_path_exceeds_limit(
+            candidate / _BACKEND_DAEMON_SOCKET_BASENAME
+        ):
+            return candidate
+    return default_dir
+
+
+def _backend_daemon_socket_path_error(socket_path: Path) -> str:
+    path_len = len(os.fsencode(os.fspath(socket_path)))
+    return (
+        "Backend daemon unix socket path is too long "
+        f"({path_len} bytes; limit {_UNIX_SOCKET_PATH_MAX_BYTES - 1}). "
+        "Use a shorter path or set MOLT_BACKEND_DAEMON_SOCKET_DIR to a short local "
+        "directory such as /tmp/molt-backend-daemon."
+    )
+
+
 def _backend_daemon_socket_dir(project_root: Path) -> Path:
     # Unix sockets can fail on some external/shared volumes (e.g. exFAT).
     # Keep sockets on a local socket-capable path by default.
-    default_dir = Path(tempfile.gettempdir()) / "molt-backend-daemon"
+    default_dir = _short_backend_daemon_socket_dir(
+        Path(tempfile.gettempdir()) / "molt-backend-daemon"
+    )
     socket_dir = _resolve_env_path("MOLT_BACKEND_DAEMON_SOCKET_DIR", default_dir)
     socket_dir.mkdir(parents=True, exist_ok=True)
     return socket_dir
@@ -10000,7 +10131,9 @@ def _backend_daemon_paths_cached(
         ).hexdigest()[:16]
         sidecar_label = ""
     else:
-        default_dir = Path(tempdir_str) / "molt-backend-daemon"
+        default_dir = _short_backend_daemon_socket_dir(
+            Path(tempdir_str) / "molt-backend-daemon"
+        )
         if socket_dir_override:
             socket_dir = Path(socket_dir_override).expanduser()
             if not socket_dir.is_absolute():
@@ -10860,6 +10993,9 @@ def _start_backend_daemon(
     startup_wait = startup_timeout if startup_timeout is not None else None
     pid_path = _backend_daemon_pid_path(project_root, cargo_profile)
     log_path = _backend_daemon_log_path(project_root, cargo_profile)
+    if _unix_socket_path_exceeds_limit(socket_path):
+        _report_daemon_issue(_backend_daemon_socket_path_error(socket_path))
+        return False
     existing_pid = _read_backend_daemon_pid(pid_path)
     if existing_pid is not None:
         if _pid_alive(existing_pid):
@@ -13750,6 +13886,7 @@ def _prepare_backend_ir(
     *,
     entry_module: str,
     module_graph: Mapping[str, Path],
+    explicit_imports: Collection[str],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -13821,8 +13958,13 @@ def _prepare_backend_ir(
 
     entry_init_name = "__main__" if entry_module != "__main__" else entry_module
     entry_init = SimpleTIRGenerator.module_init_symbol(entry_init_name)
-    version_ops = _build_version_info_ops(
-        register_global_code_id=register_global_code_id
+    needs_sys_version_bootstrap = any(
+        name == "sys" or name.startswith("sys.") for name in explicit_imports
+    )
+    version_ops = (
+        _build_version_info_ops(register_global_code_id=register_global_code_id)
+        if needs_sys_version_bootstrap
+        else []
     )
     entry_ops = _build_entry_main_ops(
         entry_init=entry_init,
@@ -17383,6 +17525,7 @@ def _run_backend_pipeline(
         _PreparedFrontendRunTicket,
         dict[str, Path],
         set[str],
+        set[str],
         bool,
         _BuildOutputLayout,
         set[str],
@@ -17419,8 +17562,9 @@ def _run_backend_pipeline(
     stdlib_profile: str | None = "micro",
 ) -> int:
     (
-        _prepared_frontend_run_ticket,
+        prepared_frontend_run_ticket,
         module_graph,
+        explicit_imports,
         stdlib_allowlist,
         spawn_enabled,
         output_layout,
@@ -17442,6 +17586,7 @@ def _run_backend_pipeline(
     prepared_backend_ir, prepared_backend_ir_error = _prepare_backend_ir(
         entry_module=resolved_build_entry.entry_module,
         module_graph=module_graph,
+        explicit_imports=explicit_imports,
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         fallback_policy=fallback_policy,
@@ -17504,7 +17649,7 @@ def _run_backend_pipeline(
         cache=cache,
         ir=ir,
         entry_module=resolved_build_entry.entry_module,
-        module_graph_metadata=_prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata,
+        module_graph_metadata=prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata,
         resolved_modules=resolved_modules,
     )
     if prepared_backend_setup_error is not None:
@@ -18116,6 +18261,16 @@ def _prepare_non_native_build_result(
                     shared_table_base=wasm_table_base,
                 )
             )
+            vfs_support_src = molt_root / "wasm" / "molt_vfs_browser.js"
+            vfs_support_dst = split_dir / "molt_vfs_browser.js"
+            try:
+                shutil.copy2(vfs_support_src, vfs_support_dst)
+            except OSError as exc:
+                return None, _fail(
+                    f"Failed to stage split-runtime VFS support: {exc}",
+                    json_output,
+                    command="build",
+                )
 
             # Generate wrangler.jsonc for Cloudflare Workers deployment.
             # JSONC is the modern Wrangler config shape and matches the
@@ -18826,6 +18981,7 @@ def _prepare_frontend_pipeline(
         _PreparedFrontendRunTicket,
         dict[str, Path],
         set[str],
+        set[str],
         bool,
         _BuildOutputLayout,
         set[str],
@@ -19007,6 +19163,7 @@ def _prepare_frontend_pipeline(
         (
             prepared_frontend_run_ticket,
             prepared_module_graph.module_graph,
+            prepared_module_graph.explicit_imports,
             prepared_module_graph.stdlib_allowlist,
             prepared_module_graph.spawn_enabled,
             prepared_build_outputs.output_layout,

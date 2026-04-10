@@ -11,6 +11,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import time
 import types
 from typing import cast
 
@@ -423,6 +424,35 @@ def test_write_namespace_module_avoids_rewriting_identical_content(
     cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
 
     assert writes == 1
+
+
+def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
+    tmp_path: Path,
+) -> None:
+    sleeper = tmp_path / "sleeper.py"
+    sleeper.write_text(
+        "import time\n"
+        "time.sleep(2.0)\n",
+        encoding="utf-8",
+    )
+    parent = tmp_path / "parent.py"
+    parent.write_text(
+        "import subprocess, sys\n"
+        f"subprocess.Popen([sys.executable, {str(sleeper)!r}], stdout=sys.stdout, stderr=sys.stderr)\n"
+        "print('parent-done', flush=True)\n",
+        encoding="utf-8",
+    )
+
+    start = time.perf_counter()
+    result = cli._run_subprocess_captured_to_tempfiles(
+        [sys.executable, str(parent)],
+        timeout=0.5,
+    )
+    elapsed = time.perf_counter() - start
+
+    assert result.returncode == 0
+    assert "parent-done" in cli._subprocess_output_text(result.stdout)
+    assert elapsed < 1.0
 
 
 def test_build_module_lowering_metadata_precomputes_module_flags(
@@ -3473,6 +3503,46 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults() -> No
     assert "beta" not in payload["known_func_defaults"]
 
 
+def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kwargs = dict(
+        module_name="main",
+        module_path=Path("/tmp/main.py"),
+        logical_source_path="/tmp/main.py",
+        entry_override=None,
+        known_classes_snapshot={},
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules={"main"},
+        stdlib_allowlist=set(),
+        known_func_defaults={},
+        module_deps={"main": set()},
+        module_is_namespace=False,
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
+    )
+
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
+    payload_a = cli._module_lowering_context_payload(**kwargs)
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-b")
+    payload_b = cli._module_lowering_context_payload(**kwargs)
+
+    assert payload_a is not None
+    assert payload_b is not None
+    assert payload_a["compiler_fingerprint"] == "tool-a"
+    assert payload_b["compiler_fingerprint"] == "tool-b"
+    assert cli._module_lowering_context_digest(payload_a) != cli._module_lowering_context_digest(
+        payload_b
+    )
+
+
 def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions() -> (
     None
 ):
@@ -6135,16 +6205,12 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import tempfile
+
     backend_bin = tmp_path / "molt-backend"
     backend_bin.write_text("backend")
-    socket_dir = tmp_path / "sockets"
-    socket_dir.mkdir()
-    socket_path = socket_dir / "moltbd.current.sock"
     build_state_root = tmp_path / "target" / ".molt_state"
     wait_timeouts: list[float | None] = []
-
-    for idx in range(3):
-        (socket_dir / f"moltbd.foreign{idx}.sock").write_text("")
 
     pid_path = build_state_root / "backend_daemon" / "molt-backend.dev-fast.pid"
     log_path = build_state_root / "backend_daemon" / "molt-backend.dev-fast.log"
@@ -6175,26 +6241,33 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
     monkeypatch.setattr(cli, "_backend_daemon_wait_until_ready", fake_wait_until_ready)
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
 
-    assert (
-        cli._start_backend_daemon(
-            backend_bin,
-            socket_path,
-            cargo_profile="dev-fast",
-            project_root=tmp_path,
-            startup_timeout=2.0,
-            json_output=True,
-            warnings=[],
-        )
-        is True
-    )
+    with tempfile.TemporaryDirectory(prefix="moltbd-test-", dir=tempfile.gettempdir()) as sockdir:
+        socket_dir = Path(sockdir)
+        socket_path = socket_dir / "moltbd.current.sock"
 
-    assert spawn_calls == [
-        [str(backend_bin), "--daemon", "--socket", str(socket_path)]
-    ]
-    assert wait_timeouts == [0.25]
-    assert not socket_path.with_suffix(".redirect").exists()
-    for idx in range(3):
-        assert (socket_dir / f"moltbd.foreign{idx}.sock").exists()
+        for idx in range(3):
+            (socket_dir / f"moltbd.foreign{idx}.sock").write_text("")
+
+        assert (
+            cli._start_backend_daemon(
+                backend_bin,
+                socket_path,
+                cargo_profile="dev-fast",
+                project_root=tmp_path,
+                startup_timeout=2.0,
+                json_output=True,
+                warnings=[],
+            )
+            is True
+        )
+
+        assert spawn_calls == [
+            [str(backend_bin), "--daemon", "--socket", str(socket_path)]
+        ]
+        assert wait_timeouts == [0.25]
+        assert not socket_path.with_suffix(".redirect").exists()
+        for idx in range(3):
+            assert (socket_dir / f"moltbd.foreign{idx}.sock").exists()
 
 
 def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
@@ -6750,7 +6823,7 @@ def test_prepare_non_native_build_result_stages_runtime_wasm_sidecar(
         json_output=True,
         runtime_wasm=runtime_wasm,
         runtime_reloc_wasm=None,
-        ensure_runtime_wasm_shared=lambda: True,
+        ensure_runtime_wasm_shared=lambda *_args, **_kwargs: True,
         ensure_runtime_wasm_reloc=lambda: True,
         molt_root=tmp_path,
         split_runtime=False,
@@ -6764,6 +6837,54 @@ def test_prepare_non_native_build_result_stages_runtime_wasm_sidecar(
     assert staged.read_bytes() == runtime_wasm.read_bytes()
     assert prepared.artifacts is not None
     assert prepared.artifacts["runtime_wasm"] == str(staged)
+
+
+def test_prepare_non_native_build_result_skips_runtime_wasm_sidecar_for_linked_wasm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_wasm = tmp_path / "out" / "output.wasm"
+    output_wasm.parent.mkdir(parents=True, exist_ok=True)
+    output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    linked_wasm = tmp_path / "out" / "output_linked.wasm"
+    runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
+    runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+
+    def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        linked_wasm.write_bytes(b"\0asm\x01\0\0\0linked")
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    prepared, err = cli._prepare_non_native_build_result(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        is_wasm_freestanding=False,
+        linked=True,
+        require_linked=False,
+        linked_output_path=linked_wasm,
+        output_artifact=output_wasm,
+        json_output=True,
+        runtime_wasm=runtime_wasm,
+        runtime_reloc_wasm=runtime_reloc_wasm,
+        ensure_runtime_wasm_shared=lambda *_args, **_kwargs: True,
+        ensure_runtime_wasm_reloc=lambda: True,
+        molt_root=tmp_path,
+        split_runtime=False,
+        precompile=False,
+    )
+
+    assert err is None
+    assert prepared is not None
+    staged = output_wasm.parent / "molt_runtime.wasm"
+    assert not staged.exists()
+    assert prepared.artifacts is not None
+    assert "runtime_wasm" not in prepared.artifacts
 
 
 def test_ensure_runtime_lib_verified_key_tracks_micro_feature_shape(
@@ -7389,6 +7510,10 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
             "rust-backend",
         ]
     ]
+
+
+def test_browser_deploy_profile_defaults_to_full_wasm_profile() -> None:
+    assert cli._DEPLOY_PROFILE_DEFAULTS["browser"]["wasm_profile"] == "full"
 
 
 def test_run_uses_build_profile_flag_for_nested_build(
@@ -9000,6 +9125,64 @@ def test_backend_daemon_paths_allow_missing_session_id(tmp_path: Path) -> None:
     assert log_path.suffix == ".log"
     assert pid_path.name.startswith("molt-backend.dev-fast.")
     assert pid_path.suffix == ".pid"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="daemon sockets use unix paths")
+def test_backend_daemon_paths_fallback_to_short_socket_dir_for_deep_temp_roots(
+    tmp_path: Path,
+) -> None:
+    cli._backend_daemon_paths_cached.cache_clear()
+    deep_tempdir = tmp_path / ("deep-" + "a" * 160)
+
+    socket_path, _log_path, _pid_path = cli._backend_daemon_paths_cached(
+        os.fspath(tmp_path),
+        "dev-fast",
+        "digest123",
+        "",
+        None,
+        os.fspath(tmp_path / "build-state"),
+        os.fspath(deep_tempdir),
+        session_id="alpha-session",
+    )
+
+    assert socket_path.name.startswith("moltbd.")
+    assert socket_path.suffix == ".sock"
+    assert not os.fspath(socket_path).startswith(os.fspath(deep_tempdir))
+    assert len(os.fsencode(socket_path)) < 104
+
+
+@pytest.mark.skipif(os.name == "nt", reason="daemon sockets use unix paths")
+def test_start_backend_daemon_rejects_overlong_unix_socket_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_bin = tmp_path / "molt-backend"
+    backend_bin.write_text("backend")
+    socket_path = tmp_path / ("sock-" + "a" * 140)
+    warnings: list[str] = []
+    popen_called = False
+
+    def fake_popen(*args: object, **kwargs: object) -> object:
+        nonlocal popen_called
+        popen_called = True
+        raise AssertionError("daemon should not spawn for an overlong unix socket path")
+
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+
+    ok = cli._start_backend_daemon(
+        backend_bin,
+        socket_path,
+        cargo_profile="dev-fast",
+        project_root=tmp_path,
+        startup_timeout=2.0,
+        json_output=True,
+        warnings=warnings,
+    )
+
+    assert ok is False
+    assert popen_called is False
+    assert warnings
+    assert "unix socket path" in warnings[0].lower()
 
 
 def test_function_cache_key_tracks_top_level_ir_extras() -> None:
