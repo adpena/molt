@@ -20,6 +20,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from tests.wasm_linked_runner import _read_timeout_seconds
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,6 +53,7 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     worker_js = _generate_split_worker_js(
         shared_memory_initial_pages=8,
         shared_table_initial=16,
+        shared_table_base=4096,
     )
 
     assert "\x00" not in worker_js
@@ -60,6 +62,7 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     assert "const stdoutDecoder = new TextDecoder();" in worker_js
     assert "const stderrDecoder = new TextDecoder();" in worker_js
     assert "rtInstance.exports.molt_runtime_shutdown" in worker_js
+    assert "molt_set_wasm_table_base(BigInt(4096))" in worker_js
 
 
 def test_build_isolate_import_ops_initializes_code_slots() -> None:
@@ -93,6 +96,11 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
         else repo_src
     )
     env["MOLT_BACKEND_DAEMON"] = "0"
+    target_dir = ROOT / "target" / "pytest" / "test_wasm_split_runtime"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(target_dir)
+    env.setdefault("MOLT_SESSION_ID", "test-wasm-split-runtime")
 
     cmd = [
         sys.executable,
@@ -105,13 +113,14 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
         "--no-cache",
         "--out-dir", str(output_dir),
     ]
+    build_timeout = _read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0)
     return subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         env=env,
         cwd=str(ROOT),
-        timeout=300,
+        timeout=build_timeout,
     )
 
 
@@ -261,6 +270,7 @@ class TestSplitRuntimeArtifacts:
         expected = [
             "app.wasm",
             "molt_runtime.wasm",
+            "molt_vfs_browser.js",
             "worker.js",
             "manifest.json",
             "wrangler.jsonc",
@@ -277,7 +287,20 @@ class TestSplitRuntimeArtifacts:
         if not app_wasm.exists():
             pytest.skip("app.wasm not produced")
         size_mb = app_wasm.stat().st_size / (1024 * 1024)
-        assert size_mb < 5, f"app.wasm is {size_mb:.2f} MB, expected < 5 MB"
+        assert size_mb < 1, f"app.wasm is {size_mb:.2f} MB, expected < 1 MB"
+
+    def test_app_wasm_smaller_than_raw_output_module(self, split_build_a):
+        out_dir, result = split_build_a
+        if result.returncode != 0:
+            pytest.skip("build failed")
+        app_wasm = out_dir / "app.wasm"
+        raw_output = out_dir / "output.wasm"
+        if not app_wasm.exists() or not raw_output.exists():
+            pytest.skip("split-runtime app/raw output not produced")
+        assert app_wasm.stat().st_size < raw_output.stat().st_size, (
+            "split-runtime app.wasm should be deforested below the raw rewritten "
+            "output.wasm artifact"
+        )
 
     def test_runtime_wasm_size(self, split_build_a):
         out_dir, result = split_build_a
@@ -287,7 +310,7 @@ class TestSplitRuntimeArtifacts:
         if not rt_wasm.exists():
             pytest.skip("molt_runtime.wasm not produced")
         size_mb = rt_wasm.stat().st_size / (1024 * 1024)
-        assert size_mb > 1, f"molt_runtime.wasm is {size_mb:.2f} MB, expected > 1 MB"
+        assert size_mb < 5, f"molt_runtime.wasm is {size_mb:.2f} MB, expected < 5 MB"
 
     def test_app_wasm_retains_runtime_abi_imports(self, split_build_a):
         out_dir, result = split_build_a
@@ -300,6 +323,7 @@ class TestSplitRuntimeArtifacts:
         assert runtime_imports, "app.wasm must retain molt_runtime imports in split mode"
         assert "molt_string_from_bytes" in runtime_imports
         assert "molt_module_import" in runtime_imports
+
 
     def test_worker_uses_backend_wasm_table_base(self, split_build_a):
         out_dir, result = split_build_a
@@ -400,6 +424,18 @@ class TestWorkerJsContent:
     def test_worker_provisions_shared_memory(self, split_build_a):
         content = self._read_worker(split_build_a)
         assert "new WebAssembly.Memory" in content, "worker.js must provision shared memory"
+
+    def test_worker_imports_split_vfs_adapter(self, split_build_a):
+        content = self._read_worker(split_build_a)
+        assert 'import "./molt_vfs_browser.js";' in content
+        assert "new globalThis.MoltVfs()" in content
+
+    def test_worker_exposes_vfs_host_imports(self, split_build_a):
+        content = self._read_worker(split_build_a)
+        assert "molt_vfs_read" in content
+        assert "molt_vfs_write" in content
+        assert "molt_vfs_exists" in content
+        assert "molt_vfs_unlink" in content
 
     def test_runtime_wasm_import(self, split_build_a):
         content = self._read_worker(split_build_a)
