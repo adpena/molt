@@ -530,6 +530,34 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
         }
       }
     }
+    if (
+      typeof exports.molt_exception_kind === 'function' &&
+      typeof exports.molt_exception_message === 'function'
+    ) {
+      const kindBits = exports.molt_exception_kind(excBits);
+      const messageBits = exports.molt_exception_message(excBits);
+      try {
+        const kind = kindBits ? readRuntimeStringBits(instance, kindBits) : null;
+        const message = messageBits ? readRuntimeStringBits(instance, messageBits) : null;
+        if (kind && message) {
+          return `Unhandled Molt exception: ${kind}: ${message}`;
+        }
+        if (kind) {
+          return `Unhandled Molt exception: ${kind}`;
+        }
+      } finally {
+        if (kindBits && kindBits !== 0n && typeof exports.molt_dec_ref_obj === 'function') {
+          exports.molt_dec_ref_obj(kindBits);
+        }
+        if (
+          messageBits &&
+          messageBits !== 0n &&
+          typeof exports.molt_dec_ref_obj === 'function'
+        ) {
+          exports.molt_dec_ref_obj(messageBits);
+        }
+      }
+    }
     return 'Unhandled Molt exception';
   } finally {
     if (
