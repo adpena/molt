@@ -16,9 +16,10 @@ SRC_DIR = ROOT / "src"
 def _compile_and_run(source: str, profile: str, *, backend: str | None = None) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        src_path = tmp_path / "loop_join_semantics.py"
+        module_stem = f"loop_join_semantics_{tmp_path.name}"
+        src_path = tmp_path / f"{module_stem}.py"
         src_path.write_text(source)
-        binary_path = tmp_path / "loop_join_semantics_molt"
+        binary_path = tmp_path / f"{module_stem}_molt"
 
         env = {
             **os.environ,
@@ -365,3 +366,195 @@ def test_native_release_llvm_exception_loop_matches_cpython() -> None:
     ).stdout.strip()
 
     assert _compile_and_run(source, "release", backend="llvm") == expected
+
+
+@pytest.mark.skipif(
+    not _llvm_backend_available(),
+    reason="LLVM backend toolchain is unavailable",
+)
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_llvm_generator_expression_list_matches_cpython(profile: str) -> None:
+    source = textwrap.dedent(
+        """
+        print(list(x for x in [1]))
+        """
+    )
+    expected = subprocess.run(
+        [sys.executable, "-c", source],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout.strip()
+
+    assert _compile_and_run(source, profile, backend="llvm") == expected
+
+
+@pytest.mark.skipif(
+    not _llvm_backend_available(),
+    reason="LLVM backend toolchain is unavailable",
+)
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_llvm_generator_expression_next_matches_cpython(profile: str) -> None:
+    source = textwrap.dedent(
+        """
+        g = (x for x in [1])
+        print(next(g))
+        """
+    )
+    expected = subprocess.run(
+        [sys.executable, "-c", source],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout.strip()
+
+    assert _compile_and_run(source, profile, backend="llvm") == expected
+
+
+@pytest.mark.skipif(
+    not _llvm_backend_available(),
+    reason="LLVM backend toolchain is unavailable",
+)
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_llvm_call_result_or_tuple_fallback_matches_cpython(profile: str) -> None:
+    source = textwrap.dedent(
+        """
+        class T(tuple):
+            __slots__ = ()
+
+            def __new__(cls, values):
+                return tuple.__new__(cls, values)
+
+        _T = T
+
+        def g():
+            return None
+
+        def f():
+            values = g() or (1, 2)
+            print(type(values).__name__)
+            print(_T(values))
+
+        f()
+        """
+    )
+    expected = subprocess.run(
+        [sys.executable, "-c", source],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout.strip()
+
+    assert _compile_and_run(source, profile, backend="llvm") == expected
+
+
+@pytest.mark.skipif(
+    not _llvm_backend_available(),
+    reason="LLVM backend toolchain is unavailable",
+)
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_llvm_dynamic_getattr_matches_cpython(profile: str) -> None:
+    source = textwrap.dedent(
+        """
+        class P:
+            def __init__(self):
+                self.foo = 7
+
+        p = P()
+        name = "foo"
+        print(getattr(p, name))
+        """
+    )
+    expected = subprocess.run(
+        [sys.executable, "-c", source],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout.strip()
+
+    assert _compile_and_run(source, profile, backend="llvm") == expected
+
+
+@pytest.mark.skipif(
+    not _llvm_backend_available(),
+    reason="LLVM backend toolchain is unavailable",
+)
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_llvm_dynamic_hasattr_matches_cpython(profile: str) -> None:
+    source = textwrap.dedent(
+        """
+        class P:
+            pass
+
+        p = P()
+        print(hasattr(p, "foo"))
+        setattr(p, "foo", 7)
+        print(hasattr(p, "foo"))
+        """
+    )
+    expected = subprocess.run(
+        [sys.executable, "-c", source],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout.strip()
+
+    assert _compile_and_run(source, profile, backend="llvm") == expected
+
+
+@pytest.mark.skipif(
+    not _llvm_backend_available(),
+    reason="LLVM backend toolchain is unavailable",
+)
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_llvm_import_pathlib_matches_cpython(profile: str) -> None:
+    source = textwrap.dedent(
+        """
+        import pathlib
+        print(type(pathlib).__name__)
+        print(pathlib)
+        """
+    )
+    expected = subprocess.run(
+        [sys.executable, "-c", source],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout.strip()
+    expected_lines = expected.splitlines()
+    actual = _compile_and_run(source, profile, backend="llvm")
+    actual_lines = actual.splitlines()
+
+    assert actual_lines[0] == expected_lines[0] == "module"
+    assert actual_lines[1].startswith("<module 'pathlib'"), actual
+    assert " from '" in actual_lines[1], actual
+
+
+@pytest.mark.skipif(
+    not _llvm_backend_available(),
+    reason="LLVM backend toolchain is unavailable",
+)
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_native_llvm_bool_or_matches_cpython(profile: str) -> None:
+    source = textwrap.dedent(
+        """
+        print(None or 1)
+        print(0 or 2)
+        print(3 or 4)
+        """
+    )
+    expected = subprocess.run(
+        [sys.executable, "-c", source],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout.strip()
+
+    assert _compile_and_run(source, profile, backend="llvm") == expected

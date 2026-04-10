@@ -170,6 +170,43 @@ def test_tensor_matmul():
     assert c.to_list() == [[19.0, 22.0], [43.0, 50.0]]
 
 
+def test_tensor_matmul_preserves_f32_output_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    a = Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))
+    b = Tensor(to_device(array.array("f", [5.0, 6.0, 7.0, 8.0])), shape=(2, 2))
+
+    out = a @ b
+
+    assert out.shape == (2, 2)
+    assert out.to_list() == [[19.0, 22.0], [43.0, 50.0]]
+    assert out._buf.format_char == "f"
+    assert out._buf.itemsize == 4
+
+
+def test_tensor_linear_split_last_dim_preserves_f32_output_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))
+    w = Tensor(
+        to_device(array.array("f", [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0, 0.0, 2.0])),
+        shape=(5, 2),
+    )
+
+    left, right = x.linear_split_last_dim(w, (2, 3))
+
+    assert left.shape == (2, 2)
+    assert right.shape == (2, 3)
+    assert left.to_list() == [[1.0, 2.0], [3.0, 4.0]]
+    assert right.to_list() == [[3.0, 2.0, 4.0], [7.0, 6.0, 8.0]]
+    assert left._buf.format_char == "f"
+    assert right._buf.format_char == "f"
+
+
 def test_tensor_linear_weight_layout_matches_transposed_matmul():
     from molt.gpu.tensor import Tensor
 
@@ -473,6 +510,56 @@ def test_tensor_activations():
     assert sig[1] == 0.5          # sigmoid(0) = 0.5
     sm = t.softmax().to_list()
     assert abs(sum(sm) - 1.0) < 1e-6  # softmax sums to 1
+
+
+def test_tensor_softmax_preserves_f32_output_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))
+    out = t.softmax(axis=-1)
+
+    rows = out.to_list()
+    assert out.shape == (2, 2)
+    assert out._buf.format_char == "f"
+    assert out._buf.itemsize == 4
+
+
+def test_tensor_rms_norm_preserves_f32_output_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor(to_device(array.array("f", [3.0, 4.0, 0.0, 5.0])), shape=(2, 2))
+
+    out = t.rms_norm(0.0)
+
+    assert out.shape == (2, 2)
+    assert [[round(v, 6) for v in row] for row in out.to_list()] == [
+        [0.848528, 1.131371],
+        [0.0, 1.414214],
+    ]
+    assert out._buf.format_char == "f"
+    assert out._buf.itemsize == 4
+
+
+def test_tensor_squared_relu_gate_interleaved_preserves_f32_output_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor(
+        to_device(array.array("f", [1.0, 10.0, -2.0, 20.0, 3.0, 30.0, 4.0, 40.0])),
+        shape=(1, 8),
+    )
+
+    out = t.squared_relu_gate_interleaved()
+
+    assert out.shape == (1, 4)
+    assert out.to_list() == [[10.0, 0.0, 270.0, 640.0]]
+    assert out._buf.format_char == "f"
+    assert out._buf.itemsize == 4
 
 
 def test_tensor_constructors():

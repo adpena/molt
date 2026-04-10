@@ -547,7 +547,12 @@ const readRuntimeStringBits = (runtime, memory, stringBits) => {
   }
   const temp = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
   try {
-    const ptr = runtime.exports.molt_string_as_ptr(stringBits, temp.payloadPtr);
+    let ptr;
+    try {
+      ptr = runtime.exports.molt_string_as_ptr(stringBits, temp.payloadPtr);
+    } catch {
+      return null;
+    }
     if (!ptr || ptr === 0n) {
       return null;
     }
@@ -564,10 +569,17 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
   }
   let excBits = 0n;
   let shouldDecRefFetched = false;
-  if (
+  const errPending =
     typeof runtime.exports?.molt_err_pending === 'function' &&
-    Number(runtime.exports.molt_err_pending()) !== 0
-  ) {
+    Number(runtime.exports.molt_err_pending()) !== 0;
+  const exceptionPending =
+    typeof runtime.exports?.molt_exception_pending === 'function' &&
+    Number(runtime.exports.molt_exception_pending()) !== 0;
+  const exceptionPendingFast =
+    typeof runtime.exports?.molt_exception_pending_fast === 'function' &&
+    Number(runtime.exports.molt_exception_pending_fast()) !== 0;
+  const hasPendingException = errPending || exceptionPending || exceptionPendingFast;
+  if (errPending) {
     const fetched =
       typeof runtime.exports.molt_err_fetch === 'function'
         ? runtime.exports.molt_err_fetch.bind(runtime.exports)
@@ -578,7 +590,7 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
         : null;
     excBits = fetched ? fetched() : peeked ? peeked() : 0n;
     shouldDecRefFetched = Boolean(fetched);
-  } else if (typeof runtime.exports?.molt_exception_last === 'function') {
+  } else if (hasPendingException && typeof runtime.exports?.molt_exception_last === 'function') {
     excBits = runtime.exports.molt_exception_last();
     shouldDecRefFetched = true;
   }

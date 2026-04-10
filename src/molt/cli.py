@@ -11389,6 +11389,32 @@ def _stdlib_object_key_sidecar_path(stdlib_object_path: Path) -> Path:
     return stdlib_object_path.with_suffix(".key")
 
 
+def _shared_stdlib_publish_lock_path(stdlib_object_path: Path) -> Path:
+    return stdlib_object_path.with_name(f"{stdlib_object_path.name}.publish.lock")
+
+
+@contextmanager
+def _shared_stdlib_cache_lock(stdlib_object_path: Path) -> Iterator[None]:
+    if os.name != "posix":
+        yield
+        return
+    try:
+        import fcntl  # type: ignore
+    except Exception:
+        yield
+        return
+    lock_path = _shared_stdlib_publish_lock_path(stdlib_object_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def _stage_shared_stdlib_object_for_link(
     stdlib_object_path: Path,
     *,
@@ -11396,14 +11422,38 @@ def _stage_shared_stdlib_object_for_link(
     artifacts_root: Path,
 ) -> Path:
     staged_stdlib_obj = artifacts_root / stdlib_object_path.name
-    _atomic_link_or_copy_file(stdlib_object_path, staged_stdlib_obj)
     staged_key_path = _stdlib_object_key_sidecar_path(staged_stdlib_obj)
-    if stdlib_object_cache_key:
-        staged_key_path.write_text(stdlib_object_cache_key, encoding="utf-8")
-    else:
-        source_key_path = _stdlib_object_key_sidecar_path(stdlib_object_path)
-        if source_key_path.exists():
-            _atomic_link_or_copy_file(source_key_path, staged_key_path)
+    staged_count_path = _stdlib_object_count_sidecar_path(staged_stdlib_obj)
+    source_key_path = _stdlib_object_key_sidecar_path(stdlib_object_path)
+    source_count_path = _stdlib_object_count_sidecar_path(stdlib_object_path)
+    try:
+        with _shared_stdlib_cache_lock(stdlib_object_path):
+            if stdlib_object_cache_key and not _shared_stdlib_cache_matches_key(
+                stdlib_object_path, stdlib_object_cache_key
+            ):
+                raise OSError(
+                    "Shared stdlib cache key mismatch during staging: "
+                    + _shared_stdlib_cache_mismatch_detail(
+                        stdlib_object_path, stdlib_object_cache_key
+                    )
+                )
+            _atomic_link_or_copy_file(stdlib_object_path, staged_stdlib_obj)
+            if source_key_path.exists():
+                _atomic_link_or_copy_file(source_key_path, staged_key_path)
+            elif stdlib_object_cache_key:
+                raise OSError(
+                    "Shared stdlib cache key mismatch during staging: "
+                    f"missing key sidecar for {stdlib_object_path}"
+                )
+            elif staged_key_path.exists():
+                staged_key_path.unlink()
+            if source_count_path.exists():
+                _atomic_link_or_copy_file(source_count_path, staged_count_path)
+            elif staged_count_path.exists():
+                staged_count_path.unlink()
+    except OSError:
+        _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
+        raise
     return staged_stdlib_obj
 
 
@@ -14210,14 +14260,6 @@ def _invalidate_stale_stdlib_cache(
     mirrors the mtime logic in ``_backend_daemon_binary_is_newer`` but
     compares against the cached stdlib file instead of the daemon PID.
     """
-    if expected_key is not None:
-        with contextlib.suppress(OSError):
-            for sibling in stdlib_object_path.parent.glob("stdlib_shared_*.o"):
-                if sibling == stdlib_object_path:
-                    continue
-                if not _shared_stdlib_cache_matches_key(sibling, expected_key):
-                    _remove_shared_stdlib_cache_artifacts(sibling)
-
     if not stdlib_object_path.exists():
         return
     try:
@@ -18169,6 +18211,20 @@ def _prepare_native_link(
         )
     except RuntimeError as exc:
         return None, _fail(str(exc), json_output, command="build")
+    if os.environ.get("MOLT_TRACE_NATIVE_LINK") == "1":
+        stdlib_exists = (
+            link_stdlib_obj.exists() if link_stdlib_obj is not None else False
+        )
+        print(
+            "native-link trace: "
+            f"output_obj={output_obj} "
+            f"stdlib_obj={link_stdlib_obj} "
+            f"stdlib_exists={stdlib_exists} "
+            f"runtime_lib={resolved_runtime_lib} "
+            f"output_binary={output_binary}",
+            file=sys.stderr,
+        )
+        print(f"native-link cmd: {link_cmd}", file=sys.stderr)
     if (
         normalized_target is not None
         and target_triple is not None

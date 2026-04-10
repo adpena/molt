@@ -414,8 +414,7 @@ fn coerce_real(_py: &PyToken, val_bits: u64) -> Option<RealValue> {
     }
     if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
         let float_name_bits = intern_static_name(_py, b"__float__");
-        if let Some(call_bits) =
-            unsafe { attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) }
+        if let Some(call_bits) = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) }
         {
             let res_bits = call_callable0(_py, call_bits);
             dec_ref_bits(_py, call_bits);
@@ -438,8 +437,7 @@ fn coerce_real(_py: &PyToken, val_bits: u64) -> Option<RealValue> {
             return None;
         }
         let index_name_bits = intern_static_name(_py, b"__index__");
-        if let Some(call_bits) =
-            unsafe { attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) }
+        if let Some(call_bits) = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) }
         {
             let res_bits = call_callable0(_py, call_bits);
             dec_ref_bits(_py, call_bits);
@@ -487,8 +485,7 @@ fn coerce_real_named(_py: &PyToken, val_bits: u64, name: &str) -> Option<RealVal
     }
     if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
         let float_name_bits = intern_static_name(_py, b"__float__");
-        if let Some(call_bits) =
-            unsafe { attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) }
+        if let Some(call_bits) = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) }
         {
             let res_bits = call_callable0(_py, call_bits);
             dec_ref_bits(_py, call_bits);
@@ -511,8 +508,7 @@ fn coerce_real_named(_py: &PyToken, val_bits: u64, name: &str) -> Option<RealVal
             return None;
         }
         let index_name_bits = intern_static_name(_py, b"__index__");
-        if let Some(call_bits) =
-            unsafe { attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) }
+        if let Some(call_bits) = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) }
         {
             let res_bits = call_callable0(_py, call_bits);
             dec_ref_bits(_py, call_bits);
@@ -2451,17 +2447,14 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
             #[cfg(target_arch = "wasm32")]
             {
                 if n >= 2 {
-                    unsafe {
-                        use std::arch::wasm32::*;
-                        let mut vec_sum = f64x2_splat(0.0);
-                        while i + 2 <= n {
-                            let v = v128_load(vals.as_ptr().add(i) as *const v128);
-                            vec_sum = f64x2_add(vec_sum, f64x2_mul(v, v));
-                            i += 2;
-                        }
-                        sum_sq =
-                            f64x2_extract_lane::<0>(vec_sum) + f64x2_extract_lane::<1>(vec_sum);
+                    use std::arch::wasm32::*;
+                    let mut vec_sum = f64x2_splat(0.0);
+                    while i + 2 <= n {
+                        let v = v128_load(vals.as_ptr().add(i) as *const v128);
+                        vec_sum = f64x2_add(vec_sum, f64x2_mul(v, v));
+                        i += 2;
                     }
+                    sum_sq = f64x2_extract_lane::<0>(vec_sum) + f64x2_extract_lane::<1>(vec_sum);
                 }
             }
             for &val in vals.iter().take(n).skip(i) {

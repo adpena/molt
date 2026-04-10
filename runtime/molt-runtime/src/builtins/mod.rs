@@ -40,7 +40,7 @@ pub(crate) mod context;
 pub(crate) mod contextlib;
 pub(crate) mod contextvars;
 pub(crate) mod copy_mod;
-#[cfg(not(feature = "stdlib_csv"))]
+#[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod csv;
 #[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod datetime;

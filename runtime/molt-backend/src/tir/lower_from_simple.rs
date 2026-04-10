@@ -10,7 +10,7 @@ use crate::ir::FunctionIR;
 use super::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
 use super::cfg::CFG;
 use super::function::TirFunction;
-use super::ssa::{SsaOutput, convert_to_ssa_with_params};
+use super::ssa::{SsaOutput, convert_to_ssa_with_name_and_params};
 use super::types::TirType;
 use super::values::ValueId;
 
@@ -22,6 +22,16 @@ use super::values::ValueId;
 /// parameter types plus canonical propagation over the SSA graph. Transport
 /// compatibility metadata on SimpleIR is intentionally ignored here.
 pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
+    if std::env::var("MOLT_TRACE_SIMPLE_IMPORT").as_deref() == Ok("1") {
+        for op in &ir.ops {
+            if op.kind.contains("import") {
+                eprintln!(
+                    "Simple import trace: func={} kind={} args={:?} var={:?} out={:?} s_value={:?}",
+                    ir.name, op.kind, op.args, op.var, op.out, op.s_value
+                );
+            }
+        }
+    }
     // 0. Memory SSA: rewrite cell-based local variables (store_index/index on
     //    the locals list) into store_var/load_var. This enables the SSA pass
     //    to track local variable mutations through loop iterations — the key
@@ -65,7 +75,7 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     // 2. Convert to SSA with block arguments (pass params for implicit entry defs).
     // No catch_unwind — panics propagate cleanly through rayon. Using
     // AssertUnwindSafe on borrowed state violates Rust's unwind safety contract.
-    let ssa = convert_to_ssa_with_params(&cfg, ops, &ir.params);
+    let ssa = convert_to_ssa_with_name_and_params(&ir.name, &cfg, ops, &ir.params);
 
     // 3. Assemble the TirFunction from the SSA output.
     assemble_function(ir_ref, &cfg, ssa)
@@ -652,21 +662,25 @@ fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> bool {
     let mut missing_outputs: HashSet<String> = HashSet::new();
     for op in ops.iter() {
         if op.kind == "missing"
-            && let Some(out) = &op.out {
-                missing_outputs.insert(out.clone());
-            }
+            && let Some(out) = &op.out
+        {
+            missing_outputs.insert(out.clone());
+        }
     }
     let mut cell_list_var: Option<String> = None;
     for op in ops.iter() {
         if op.kind == "list_new"
-            && let Some(out) = &op.out {
-                // A cell list_new has exactly one arg that is a missing sentinel.
-                if let Some(args) = &op.args
-                    && args.len() == 1 && missing_outputs.contains(&args[0]) {
-                        cell_list_var = Some(out.clone());
-                        break;
-                    }
+            && let Some(out) = &op.out
+        {
+            // A cell list_new has exactly one arg that is a missing sentinel.
+            if let Some(args) = &op.args
+                && args.len() == 1
+                && missing_outputs.contains(&args[0])
+            {
+                cell_list_var = Some(out.clone());
+                break;
             }
+        }
     }
     let Some(cell_var) = cell_list_var else {
         return false; // No cell list — nothing to rewrite.
@@ -681,9 +695,10 @@ fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> bool {
     let mut const_values: HashMap<String, i64> = HashMap::new();
     for op in ops.iter() {
         if op.kind == "const"
-            && let (Some(out), Some(val)) = (&op.out, op.value) {
-                const_values.insert(out.clone(), val);
-            }
+            && let (Some(out), Some(val)) = (&op.out, op.value)
+        {
+            const_values.insert(out.clone(), val);
+        }
     }
 
     // Step 2b: identify which slots hold non-scalar values (lists, dicts, etc.)
@@ -719,14 +734,17 @@ fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> bool {
         for op in ops.iter() {
             if op.kind == "store_index"
                 && let Some(args) = &op.args
-                    && args.len() == 3 && args[0] == cell_var
-                        && let Some(&slot_val) = const_values.get(&args[1]) {
-                            let value_var = &args[2];
-                            if let Some(producer) = var_producers.get(value_var)
-                                && heap_ops.contains(producer.as_str()) {
-                                    heap_slots.insert(slot_val);
-                                }
-                        }
+                && args.len() == 3
+                && args[0] == cell_var
+                && let Some(&slot_val) = const_values.get(&args[1])
+            {
+                let value_var = &args[2];
+                if let Some(producer) = var_producers.get(value_var)
+                    && heap_ops.contains(producer.as_str())
+                {
+                    heap_slots.insert(slot_val);
+                }
+            }
         }
     }
 
@@ -753,24 +771,27 @@ fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> bool {
                         },
                     ));
                 }
-            } else if op.kind == "index" && args.len() == 2 && args[0] == cell_var
-                && let Some(&slot_val) = const_values.get(&args[1]) {
-                    if heap_slots.contains(&slot_val) {
-                        continue; // Skip heap slots.
-                    }
-                    if let Some(out) = &op.out {
-                        let var_name = format!("_cell_{}", slot_val);
-                        replacements.push((
-                            i,
-                            OpIR {
-                                kind: "load_var".to_string(),
-                                var: Some(var_name),
-                                out: Some(out.clone()),
-                                ..OpIR::default()
-                            },
-                        ));
-                    }
+            } else if op.kind == "index"
+                && args.len() == 2
+                && args[0] == cell_var
+                && let Some(&slot_val) = const_values.get(&args[1])
+            {
+                if heap_slots.contains(&slot_val) {
+                    continue; // Skip heap slots.
                 }
+                if let Some(out) = &op.out {
+                    let var_name = format!("_cell_{}", slot_val);
+                    replacements.push((
+                        i,
+                        OpIR {
+                            kind: "load_var".to_string(),
+                            var: Some(var_name),
+                            out: Some(out.clone()),
+                            ..OpIR::default()
+                        },
+                    ));
+                }
+            }
         }
     }
 
@@ -948,6 +969,59 @@ mod tests {
             has_cond_branch,
             "should have a block with CondBranch terminator"
         );
+    }
+
+    #[test]
+    fn module_import_preserves_operand_through_lower_to_tir() {
+        let func_ir = make_func(
+            "module_import_shape",
+            &["__molt_module_obj__"],
+            vec![
+                OpIR {
+                    kind: "line".to_string(),
+                    value: Some(7),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".to_string(),
+                    s_value: Some("builtins".to_string()),
+                    out: Some("v62".to_string()),
+                    ..OpIR::default()
+                },
+                op_args_out("module_import", &["v62"], "v63"),
+                OpIR {
+                    kind: "check_exception".to_string(),
+                    value: Some(3),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".to_string(),
+                    s_value: Some("_builtins".to_string()),
+                    out: Some("v64".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_set_attr".to_string(),
+                    args: Some(vec![
+                        "__molt_module_obj__".to_string(),
+                        "v64".to_string(),
+                        "v63".to_string(),
+                    ]),
+                    out: Some("none".to_string()),
+                    ..OpIR::default()
+                },
+                op("ret_void"),
+            ],
+        );
+
+        let tir = lower_to_tir(&func_ir);
+        let import_op = tir
+            .blocks
+            .values()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| op.opcode == crate::tir::ops::OpCode::Import)
+            .expect("expected import op");
+        assert_eq!(import_op.operands.len(), 1, "{:?}", import_op.operands);
     }
 
     // =======================================================================

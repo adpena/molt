@@ -219,6 +219,8 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::IterNext
                 | OpCode::IterNextUnboxed
                 | OpCode::ForIter
+                | OpCode::StateSwitch
+                | OpCode::ClosureLoad
                 | OpCode::CheckException
                 | OpCode::Deopt
                 | OpCode::WarnStderr
@@ -234,7 +236,8 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::BuildDict
                 | OpCode::BuildTuple
                 | OpCode::BuildSet
-                | OpCode::BuildSlice => {
+                | OpCode::BuildSlice
+                | OpCode::AllocTask => {
                     escapes.insert(val, EscapeState::GlobalEscape);
                 }
                 // Constants, imports, alloc, free, stack alloc — shouldn't
@@ -250,6 +253,11 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::ConstBytes
                 | OpCode::Import
                 | OpCode::ImportFrom
+                | OpCode::StateTransition
+                | OpCode::StateYield
+                | OpCode::ChanSendYield
+                | OpCode::ChanRecvYield
+                | OpCode::ClosureStore
                 | OpCode::ScfIf
                 | OpCode::ScfFor
                 | OpCode::ScfWhile

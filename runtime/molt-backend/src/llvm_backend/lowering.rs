@@ -160,6 +160,8 @@ mod nanbox {
     pub const TAG_INT: u64 = 0x0001_0000_0000_0000;
     pub const TAG_BOOL: u64 = 0x0002_0000_0000_0000;
     pub const TAG_NONE: u64 = 0x0003_0000_0000_0000;
+    pub const TAG_PTR: u64 = 0x0004_0000_0000_0000;
+    pub const POINTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
     pub const INT_SIGN_BIT: u64 = 1 << 46;
     pub const INT_MASK: u64 = (1u64 << 47) - 1;
 }
@@ -510,10 +512,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // Lower each operation.
         for op in &block.ops {
             self.lower_op(op);
+            let terminated = self
+                .backend
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_terminator())
+                .is_some();
+            if terminated {
+                break;
+            }
         }
 
         // Lower terminator.
-        self.lower_terminator(&block.terminator);
+        let current_terminated = self
+            .backend
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_terminator())
+            .is_some();
+        if !current_terminated {
+            self.lower_terminator(&block.terminator);
+        }
         let exit_bb = self.backend.builder.get_insert_block().unwrap_or(bb);
         self.exit_block_map.insert(block_id, exit_bb);
     }
@@ -773,17 +792,56 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // ── Boolean ──
             OpCode::And | OpCode::Or => {
-                // Short-circuit boolean ops: in SSA these are already lowered
-                // to branches, but if they appear as ops, use runtime dispatch.
+                // Frontend BoolOp lowering uses And/Or ops to produce the
+                // selected operand value inside already-structured control flow.
+                // At this stage we must preserve Python operand-selection
+                // semantics, not bitwise semantics.
                 let result_id = op.results[0];
                 let lhs = self.resolve(op.operands[0]);
                 let rhs = self.resolve(op.operands[1]);
-                let rt_name = if op.opcode == OpCode::And {
-                    "molt_bit_and"
+                let lhs_ty = self
+                    .value_types
+                    .get(&op.operands[0])
+                    .cloned()
+                    .unwrap_or(TirType::DynBox);
+                let rhs_ty = self
+                    .value_types
+                    .get(&op.operands[1])
+                    .cloned()
+                    .unwrap_or(TirType::DynBox);
+                let lhs_i64 = self.ensure_i64(lhs);
+                let truthy_fn = self.backend.module.get_function("molt_is_truthy").unwrap();
+                let truthy = self
+                    .backend
+                    .builder
+                    .build_call(truthy_fn, &[lhs_i64.into()], "truthy")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+                    .into_int_value();
+                let cond_i1 = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        truthy,
+                        self.backend.context.i64_type().const_zero(),
+                        "boolop_cond",
+                    )
+                    .unwrap();
+                let lhs_bits = self.materialize_dynbox_bits(lhs, &lhs_ty);
+                let rhs_bits = self.materialize_dynbox_bits(rhs, &rhs_ty);
+                let val = if op.opcode == OpCode::And {
+                    self.backend
+                        .builder
+                        .build_select(cond_i1, rhs_bits, lhs_bits, "bool_and")
+                        .unwrap()
                 } else {
-                    "molt_bit_or"
+                    self.backend
+                        .builder
+                        .build_select(cond_i1, lhs_bits, rhs_bits, "bool_or")
+                        .unwrap()
                 };
-                let val = self.call_runtime_2(rt_name, lhs, rhs);
                 self.values.insert(result_id, val);
                 self.value_types.insert(result_id, TirType::DynBox);
             }
@@ -847,6 +905,115 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // ── Memory / Attribute / Index ──
             OpCode::LoadAttr => {
                 let result_id = op.results[0];
+                let original_kind = op.attrs.get("_original_kind").and_then(|v| match v {
+                    AttrValue::Str(s) => Some(s.as_str()),
+                    _ => None,
+                });
+                if matches!(original_kind, Some("get_attr_name")) && op.operands.len() >= 2 {
+                    let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                    let name_bits = self.materialize_dynbox_operand(op.operands[1]);
+                    let get_fn = self.ensure_runtime_i64_fn("molt_get_attr_name", 2);
+                    let val = self
+                        .backend
+                        .builder
+                        .build_call(
+                            get_fn,
+                            &[obj_bits.into(), name_bits.into()],
+                            "get_attr_name_dyn",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+                    self.values.insert(result_id, val);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                    return;
+                }
+                if matches!(original_kind, Some("load")) && !op.operands.is_empty() {
+                    let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                    let offset = op
+                        .attrs
+                        .get("value")
+                        .and_then(|v| match v {
+                            AttrValue::Int(v) => Some(*v),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
+                    let get_fn = self.ensure_runtime_i64_fn("molt_object_field_load", 2);
+                    let val = self
+                        .backend
+                        .builder
+                        .build_call(
+                            get_fn,
+                            &[
+                                obj_ptr_bits.into(),
+                                self.backend
+                                    .context
+                                    .i64_type()
+                                    .const_int(offset as u64, true)
+                                    .into(),
+                            ],
+                            "field_load",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+                    self.values.insert(result_id, val);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                    return;
+                }
+                if matches!(original_kind, Some("guarded_field_get")) && op.operands.len() >= 3 {
+                    let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                    let class_bits = self.materialize_dynbox_operand(op.operands[1]);
+                    let expected_version = self.materialize_dynbox_operand(op.operands[2]);
+                    let attr_name = op
+                        .attrs
+                        .get("name")
+                        .and_then(|v| {
+                            if let AttrValue::Str(s) = v {
+                                Some(s.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or("<unknown>");
+                    let offset = op
+                        .attrs
+                        .get("value")
+                        .and_then(|v| match v {
+                            AttrValue::Int(v) => Some(*v),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
+                    let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(attr_name);
+                    let get_fn = self.ensure_runtime_i64_fn("molt_guarded_field_get_ptr", 6);
+                    let val = self
+                        .backend
+                        .builder
+                        .build_call(
+                            get_fn,
+                            &[
+                                obj_ptr_bits.into(),
+                                class_bits.into(),
+                                expected_version.into(),
+                                self.backend
+                                    .context
+                                    .i64_type()
+                                    .const_int(offset as u64, true)
+                                    .into(),
+                                attr_ptr_bits.into(),
+                                attr_len_bits.into(),
+                            ],
+                            "guarded_field_get",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+                    self.values.insert(result_id, val);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                    return;
+                }
                 let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
                 // Attribute name is stored in attrs["name"], not as a second operand.
                 let attr_name = op
@@ -878,6 +1045,140 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.value_types.insert(result_id, TirType::DynBox);
             }
             OpCode::StoreAttr => {
+                let original_kind = op.attrs.get("_original_kind").and_then(|v| match v {
+                    AttrValue::Str(s) => Some(s.as_str()),
+                    _ => None,
+                });
+                if matches!(original_kind, Some("set_attr_name")) && op.operands.len() >= 3 {
+                    let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                    let name_bits = self.materialize_dynbox_operand(op.operands[1]);
+                    let val_bits = self.materialize_dynbox_operand(op.operands[2]);
+                    let set_fn = self.ensure_runtime_i64_fn("molt_set_attr_name", 3);
+                    let result = self
+                        .backend
+                        .builder
+                        .build_call(
+                            set_fn,
+                            &[obj_bits.into(), name_bits.into(), val_bits.into()],
+                            "set_attr_name_dyn",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+                    if !op.results.is_empty() {
+                        self.values.insert(op.results[0], result);
+                        self.value_types.insert(op.results[0], TirType::DynBox);
+                    }
+                    return;
+                }
+                if matches!(original_kind, Some("store") | Some("store_init")) && op.operands.len() >= 2 {
+                    let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                    let val_bits = self.materialize_dynbox_operand(op.operands[1]);
+                    let offset = op
+                        .attrs
+                        .get("value")
+                        .and_then(|v| match v {
+                            AttrValue::Int(v) => Some(*v),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
+                    let rt_name = if matches!(original_kind, Some("store_init")) {
+                        "molt_object_field_init_ptr"
+                    } else {
+                        "molt_object_field_set_ptr"
+                    };
+                    let set_fn = self.ensure_runtime_i64_fn(rt_name, 3);
+                    let result = self
+                        .backend
+                        .builder
+                        .build_call(
+                            set_fn,
+                            &[
+                                obj_ptr_bits.into(),
+                                self.backend
+                                    .context
+                                    .i64_type()
+                                    .const_int(offset as u64, true)
+                                    .into(),
+                                val_bits.into(),
+                            ],
+                            "field_store",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+                    if !op.results.is_empty() {
+                        self.values.insert(op.results[0], result);
+                        self.value_types.insert(op.results[0], TirType::DynBox);
+                    }
+                    return;
+                }
+                if matches!(
+                    original_kind,
+                    Some("guarded_field_set") | Some("guarded_field_set_init")
+                ) && op.operands.len() >= 4
+                {
+                    let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                    let class_bits = self.materialize_dynbox_operand(op.operands[1]);
+                    let expected_version = self.materialize_dynbox_operand(op.operands[2]);
+                    let val_bits = self.materialize_dynbox_operand(op.operands[3]);
+                    let attr_name = op
+                        .attrs
+                        .get("name")
+                        .and_then(|v| {
+                            if let AttrValue::Str(s) = v {
+                                Some(s.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or("<unknown>");
+                    let offset = op
+                        .attrs
+                        .get("value")
+                        .and_then(|v| match v {
+                            AttrValue::Int(v) => Some(*v),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
+                    let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(attr_name);
+                    let rt_name = if matches!(original_kind, Some("guarded_field_set_init")) {
+                        "molt_guarded_field_init_ptr"
+                    } else {
+                        "molt_guarded_field_set_ptr"
+                    };
+                    let set_fn = self.ensure_runtime_i64_fn(rt_name, 7);
+                    let result = self
+                        .backend
+                        .builder
+                        .build_call(
+                            set_fn,
+                            &[
+                                obj_ptr_bits.into(),
+                                class_bits.into(),
+                                expected_version.into(),
+                                self.backend
+                                    .context
+                                    .i64_type()
+                                    .const_int(offset as u64, true)
+                                    .into(),
+                                val_bits.into(),
+                                attr_ptr_bits.into(),
+                                attr_len_bits.into(),
+                            ],
+                            "guarded_field_set",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+                    if !op.results.is_empty() {
+                        self.values.insert(op.results[0], result);
+                        self.value_types.insert(op.results[0], TirType::DynBox);
+                    }
+                    return;
+                }
                 let obj = self.resolve(op.operands[0]);
                 let attr_name = op
                     .attrs
@@ -931,6 +1232,31 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
             OpCode::DelAttr => {
+                let original_kind = op.attrs.get("_original_kind").and_then(|v| match v {
+                    AttrValue::Str(s) => Some(s.as_str()),
+                    _ => None,
+                });
+                if matches!(original_kind, Some("del_attr_name")) && op.operands.len() >= 2 {
+                    let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                    let name_bits = self.materialize_dynbox_operand(op.operands[1]);
+                    let del_fn = self.ensure_runtime_i64_fn("molt_del_attr_name", 2);
+                    let val = self
+                        .backend
+                        .builder
+                        .build_call(
+                            del_fn,
+                            &[obj_bits.into(), name_bits.into()],
+                            "del_attr_name_dyn",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+                    if !op.results.is_empty() {
+                        self.values.insert(op.results[0], val);
+                        self.value_types.insert(op.results[0], TirType::DynBox);
+                    }
+                    return;
+                }
                 let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
                 let attr_name = op
                     .attrs
@@ -4457,6 +4783,59 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .add_function(name, fn_ty, Some(inkwell::module::Linkage::External))
     }
 
+    fn unbox_ptr_bits(&self, bits: inkwell::values::IntValue<'ctx>) -> inkwell::values::IntValue<'ctx> {
+        let i64_ty = self.backend.context.i64_type();
+        let masked = self
+            .backend
+            .builder
+            .build_and(bits, i64_ty.const_int(nanbox::POINTER_MASK, false), "ptr_masked")
+            .unwrap();
+        let shifted = self
+            .backend
+            .builder
+            .build_left_shift(masked, i64_ty.const_int(16, false), "ptr_shifted")
+            .unwrap();
+        self.backend
+            .builder
+            .build_right_shift(shifted, i64_ty.const_int(16, false), true, "ptr_signext")
+            .unwrap()
+    }
+
+    fn raw_string_const_ptr_len(
+        &mut self,
+        s: &str,
+    ) -> (
+        inkwell::values::IntValue<'ctx>,
+        inkwell::values::IntValue<'ctx>,
+    ) {
+        let i64_ty = self.backend.context.i64_type();
+        let name_bytes = s.as_bytes();
+        let global = self.backend.module.add_global(
+            self.backend
+                .context
+                .i8_type()
+                .array_type(name_bytes.len() as u32),
+            None,
+            &format!(
+                "__guard_attr_str_{}_{}",
+                self.const_str_counter,
+                s.replace(|c: char| !c.is_alphanumeric(), "_")
+            ),
+        );
+        self.const_str_counter += 1;
+        global.set_linkage(inkwell::module::Linkage::Private);
+        global.set_initializer(&self.backend.context.const_string(name_bytes, false));
+        global.set_constant(true);
+        global.set_unnamed_addr(true);
+        let ptr_bits = self
+            .backend
+            .builder
+            .build_ptr_to_int(global.as_pointer_value(), i64_ty, "guard_attr_ptr")
+            .unwrap();
+        let len_bits = i64_ty.const_int(name_bytes.len() as u64, false);
+        (ptr_bits, len_bits)
+    }
+
     fn ensure_function_symbol(
         &self,
         name: &str,
@@ -5235,6 +5614,30 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "list_extend" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let func = self.ensure_runtime_i64_fn("molt_list_extend", 2);
+                let list_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let other_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        func,
+                        &[list_bits.into(), other_bits.into()],
+                        "list_extend",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "dict_new" => {
                 let dict_new_fn = self.ensure_runtime_i64_fn("molt_dict_builder_new", 1);
                 let builder = self
@@ -5481,6 +5884,89 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         &[dict_bits.into(), key_bits.into()],
                         "dict_setdefault_empty_list",
                     )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "aiter" => {
+                if op.operands.len() != 1 {
+                    return false;
+                }
+                let func = self.ensure_runtime_i64_fn("molt_aiter", 1);
+                let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(func, &[obj_bits.into()], "aiter")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "gen_send" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let func = self.ensure_runtime_i64_fn("molt_generator_send", 2);
+                let gen_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let value_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(func, &[gen_bits.into(), value_bits.into()], "gen_send")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "context_exit" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let func = self.ensure_runtime_i64_fn("molt_context_exit", 2);
+                let ctx_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let exc_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        func,
+                        &[ctx_bits.into(), exc_bits.into()],
+                        "context_exit",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "super_new" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let func = self.ensure_runtime_i64_fn("molt_super_new", 2);
+                let type_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let obj_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(func, &[type_bits.into(), obj_bits.into()], "super_new")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -6403,6 +6889,30 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "has_attr_name" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let has_attr_fn = self.ensure_runtime_i64_fn("molt_has_attr_name", 2);
+                let obj_bits = self.ensure_i64(self.resolve(op.operands[0]));
+                let name_bits = self.ensure_i64(self.resolve(op.operands[1]));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        has_attr_fn,
+                        &[obj_bits.into(), name_bits.into()],
+                        "has_attr_name",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "type_of" => {
                 let Some(&obj_id) = op.operands.first() else {
                     return false;
@@ -6681,21 +7191,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
         for state_id in resume_ids {
-            let existing = self
-                .func
-                .label_id_map
-                .iter()
-                .find_map(|(bid, label)| {
-                    (*label == state_id).then(|| self.block_map[&BlockId(*bid)])
-                });
-            let bb = existing.unwrap_or_else(|| {
-                let bb = self.backend.context.append_basic_block(
-                    self.llvm_fn,
-                    &format!("state_resume_{}", state_id),
-                );
-                self.all_llvm_blocks.push(bb);
-                bb
-            });
+            let bb = self.backend.context.append_basic_block(
+                self.llvm_fn,
+                &format!("state_resume_{}", state_id),
+            );
+            self.all_llvm_blocks.push(bb);
             self.state_resume_blocks.insert(state_id, bb);
         }
     }
@@ -7364,6 +7864,274 @@ mod tests {
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
         assert!(ir.contains("molt_set_add"), "{ir}");
+    }
+
+    #[test]
+    fn lower_preserved_list_extend_calls_runtime() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("list_extend_preserved".into(), vec![], TirType::DynBox);
+        let list_bits = func.fresh_value();
+        let other_bits = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![list_bits, other_bits],
+            results: vec![],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("_original_kind".into(), AttrValue::Str("list_extend".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_list_extend"), "{ir}");
+    }
+
+    #[test]
+    fn lower_preserved_aiter_calls_runtime() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("aiter_preserved".into(), vec![], TirType::DynBox);
+        let obj_bits = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![obj_bits],
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("_original_kind".into(), AttrValue::Str("aiter".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![result] };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_aiter"), "{ir}");
+    }
+
+    #[test]
+    fn lower_preserved_gen_send_calls_runtime() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("gen_send_preserved".into(), vec![], TirType::DynBox);
+        let gen_bits = func.fresh_value();
+        let send_bits = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![gen_bits, send_bits],
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("_original_kind".into(), AttrValue::Str("gen_send".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![result] };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_generator_send"), "{ir}");
+    }
+
+    #[test]
+    fn lower_preserved_context_exit_calls_runtime() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("context_exit_preserved".into(), vec![], TirType::DynBox);
+        let ctx_bits = func.fresh_value();
+        let exc_bits = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![ctx_bits, exc_bits],
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("context_exit".into()),
+                );
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![result] };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_context_exit"), "{ir}");
+    }
+
+    #[test]
+    fn lower_preserved_super_new_calls_runtime() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("super_new_preserved".into(), vec![], TirType::DynBox);
+        let type_bits = func.fresh_value();
+        let obj_bits = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![type_bits, obj_bits],
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("_original_kind".into(), AttrValue::Str("super_new".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![result] };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_super_new"), "{ir}");
+    }
+
+    #[test]
+    fn lower_dynamic_get_attr_name_uses_operand_name() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            "dynamic_get_attr_name".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::LoadAttr,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("_original_kind".into(), AttrValue::Str("get_attr_name".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_get_attr_name"), "{ir}");
+        assert!(ir.contains("i64 %0, i64 %1"), "{ir}");
+    }
+
+    #[test]
+    fn lower_dynamic_set_attr_name_uses_operand_name() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            "dynamic_set_attr_name".into(),
+            vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::StoreAttr,
+            operands: vec![ValueId(0), ValueId(1), ValueId(2)],
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("_original_kind".into(), AttrValue::Str("set_attr_name".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_set_attr_name"), "{ir}");
+        assert!(ir.contains("i64 %0, i64 %1, i64 %2"), "{ir}");
+    }
+
+    #[test]
+    fn lower_dynamic_del_attr_name_uses_operand_name() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            "dynamic_del_attr_name".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::DelAttr,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("_original_kind".into(), AttrValue::Str("del_attr_name".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_del_attr_name"), "{ir}");
+        assert!(ir.contains("i64 %0, i64 %1"), "{ir}");
+    }
+
+    #[test]
+    fn lower_preserved_has_attr_name_calls_runtime() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("has_attr_name_preserved".into(), vec![], TirType::DynBox);
+        let obj_bits = func.fresh_value();
+        let name_bits = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![obj_bits, name_bits],
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("_original_kind".into(), AttrValue::Str("has_attr_name".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![result] };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_has_attr_name"), "{ir}");
     }
 
     #[test]

@@ -567,29 +567,27 @@ fn simd_hex_decode(input: &[u8]) -> Option<Vec<u8>> {
 #[cfg(target_arch = "wasm32")]
 #[inline(always)]
 unsafe fn hex_chars_to_nibbles_wasm32(chars: std::arch::wasm32::v128) -> std::arch::wasm32::v128 {
-    unsafe {
-        use std::arch::wasm32::*;
-        let zero = u8x16_splat(b'0');
-        let nine = u8x16_splat(b'9');
-        let a_lower = u8x16_splat(b'a');
-        let f_lower = u8x16_splat(b'f');
-        let a_upper = u8x16_splat(b'A');
-        let f_upper = u8x16_splat(b'F');
-        let invalid = u8x16_splat(0xFF);
+    use std::arch::wasm32::*;
+    let zero = u8x16_splat(b'0');
+    let nine = u8x16_splat(b'9');
+    let a_lower = u8x16_splat(b'a');
+    let f_lower = u8x16_splat(b'f');
+    let a_upper = u8x16_splat(b'A');
+    let f_upper = u8x16_splat(b'F');
+    let invalid = u8x16_splat(0xFF);
 
-        let is_digit = v128_and(u8x16_ge(chars, zero), u8x16_le(chars, nine));
-        let digit_val = u8x16_sub(chars, zero);
+    let is_digit = v128_and(u8x16_ge(chars, zero), u8x16_le(chars, nine));
+    let digit_val = u8x16_sub(chars, zero);
 
-        let is_lower = v128_and(u8x16_ge(chars, a_lower), u8x16_le(chars, f_lower));
-        let lower_val = u8x16_add(u8x16_sub(chars, a_lower), u8x16_splat(10));
+    let is_lower = v128_and(u8x16_ge(chars, a_lower), u8x16_le(chars, f_lower));
+    let lower_val = u8x16_add(u8x16_sub(chars, a_lower), u8x16_splat(10));
 
-        let is_upper = v128_and(u8x16_ge(chars, a_upper), u8x16_le(chars, f_upper));
-        let upper_val = u8x16_add(u8x16_sub(chars, a_upper), u8x16_splat(10));
+    let is_upper = v128_and(u8x16_ge(chars, a_upper), u8x16_le(chars, f_upper));
+    let upper_val = u8x16_add(u8x16_sub(chars, a_upper), u8x16_splat(10));
 
-        let result = v128_bitselect(digit_val, invalid, is_digit);
-        let result = v128_bitselect(lower_val, result, is_lower);
-        v128_bitselect(upper_val, result, is_upper)
-    }
+    let result = v128_bitselect(digit_val, invalid, is_digit);
+    let result = v128_bitselect(lower_val, result, is_lower);
+    v128_bitselect(upper_val, result, is_upper)
 }
 
 /// NEON helper: convert hex ASCII chars to nibble values (0-15),

@@ -60,6 +60,12 @@ fn is_side_effecting(opcode: OpCode) -> bool {
         | OpCode::TryEnd
         | OpCode::StateBlockStart
         | OpCode::StateBlockEnd
+        | OpCode::StateSwitch
+        | OpCode::StateTransition
+        | OpCode::StateYield
+        | OpCode::ChanSendYield
+        | OpCode::ChanRecvYield
+        | OpCode::ClosureStore
         // Generator protocol.
         | OpCode::Yield
         | OpCode::YieldFrom
@@ -103,7 +109,13 @@ fn is_potentially_throwing(opcode: OpCode) -> bool {
             | OpCode::Mod
             | OpCode::GetIter
             | OpCode::IterNext
+            | OpCode::IterNextUnboxed
             | OpCode::ForIter
+            | OpCode::StateTransition
+            | OpCode::ChanSendYield
+            | OpCode::ChanRecvYield
+            | OpCode::ClosureLoad
+            | OpCode::ClosureStore
     )
 }
 

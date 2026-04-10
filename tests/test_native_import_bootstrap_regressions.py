@@ -245,6 +245,121 @@ def test_native_tensor_permute_f32_contiguous_fast_path(tmp_path: Path) -> None:
     ]
 
 
+def test_native_tensor_matmul_f32_contiguous_fast_path(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor\n"
+            "a = Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))\n"
+            "b = Tensor(to_device(array('f', [5.0, 6.0, 7.0, 8.0])), shape=(2, 2))\n"
+            "out = a @ b\n"
+            "print(out._buf.format_char)\n"
+            "print(out.to_list())\n"
+        ),
+        "tensor_matmul_f32_contiguous",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "[[19.0, 22.0], [43.0, 50.0]]",
+    ]
+
+
+def test_native_tensor_linear_split_last_dim_f32_contiguous_fast_path(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor\n"
+            "x = Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))\n"
+            "w = Tensor(to_device(array('f', [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0, 0.0, 2.0])), shape=(5, 2))\n"
+            "left, right = x.linear_split_last_dim(w, (2, 3))\n"
+            "print(left._buf.format_char)\n"
+            "print(right._buf.format_char)\n"
+            "print(left.to_list())\n"
+            "print(right.to_list())\n"
+        ),
+        "tensor_linear_split_last_dim_f32_contiguous",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "f",
+        "[[1.0, 2.0], [3.0, 4.0]]",
+        "[[3.0, 2.0, 4.0], [7.0, 6.0, 8.0]]",
+    ]
+
+
+def test_native_tensor_softmax_f32_contiguous_fast_path(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor\n"
+            "t = Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))\n"
+            "out = t.softmax(axis=-1)\n"
+            "print(out._buf.format_char)\n"
+            "print(out.shape)\n"
+            "print(out.to_list())\n"
+        ),
+        "tensor_softmax_f32_contiguous",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    lines = run.stdout.strip().splitlines()
+    assert lines[0] == "f"
+    assert lines[1] == "(2, 2)"
+
+
+def test_native_tensor_rms_norm_f32_contiguous_fast_path(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor\n"
+            "t = Tensor(to_device(array('f', [3.0, 4.0, 0.0, 5.0])), shape=(2, 2))\n"
+            "out = t.rms_norm(0.0)\n"
+            "print(out._buf.format_char)\n"
+            "print([[round(v, 6) for v in row] for row in out.to_list()])\n"
+        ),
+        "tensor_rms_norm_f32_contiguous",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "[[0.848528, 1.131371], [0.0, 1.414214]]",
+    ]
+
+
+def test_native_tensor_squared_relu_gate_interleaved_f32_contiguous_fast_path(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor\n"
+            "t = Tensor(to_device(array('f', [1.0, 10.0, -2.0, 20.0, 3.0, 30.0, 4.0, 40.0])), shape=(1, 8))\n"
+            "out = t.squared_relu_gate_interleaved()\n"
+            "print(out._buf.format_char)\n"
+            "print(out.to_list())\n"
+        ),
+        "tensor_squared_relu_gate_interleaved_f32_contiguous",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "[[10.0, 0.0, 270.0, 640.0]]",
+    ]
+
+
 def test_native_import_typing_optional_is_clean(tmp_path: Path) -> None:
     run = _build_and_run_with_env(
         tmp_path,

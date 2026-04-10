@@ -319,12 +319,24 @@ fn build_edges(
             // Structured `if`: two successors — then-block (fall-through) and
             // else-block or end_if-block.
             "if" => {
-                // Fall-through = then block (next block).
-                if bid + 1 < n {
-                    add_edge(&mut successors, &mut predecessors, bid, bid + 1);
-                }
-                // False branch = else or end_if.
                 if let Some(&(else_idx, end_if_idx)) = if_else_map.get(&last_op_idx) {
+                    // True branch normally falls through into the then block.
+                    // If the next block is `else`, the then branch is empty and
+                    // the true edge must skip directly to the join block.
+                    if bid + 1 < n {
+                        let next_start = blocks[bid + 1].start_op;
+                        let true_target = if ops[next_start].kind == "else" {
+                            end_if_idx
+                        } else {
+                            next_start
+                        };
+                        if let Some(target_bid) = block_containing(blocks, true_target) {
+                            add_edge(&mut successors, &mut predecessors, bid, target_bid);
+                        }
+                    }
+
+                    // False branch enters the else block when present, otherwise
+                    // it skips directly to the join block.
                     let false_target = else_idx.unwrap_or(end_if_idx);
                     if let Some(target_bid) = block_containing(blocks, false_target) {
                         add_edge(&mut successors, &mut predecessors, bid, target_bid);
@@ -942,6 +954,37 @@ mod tests {
                 assert!(found_entry, "block {bid} must be dominated by entry");
             }
         }
+    }
+
+    #[test]
+    fn if_with_empty_then_keeps_distinct_true_and_false_edges() {
+        let ops = vec![
+            op("const"),            // 0
+            op_args("if", &["v0"]), // 1
+            op("else"),             // 2
+            op("const"),            // 3 else body
+            op("end_if"),           // 4 join
+            op("ret_void"),         // 5
+        ];
+        let cfg = CFG::build(&ops);
+
+        let if_bid = block_containing(&cfg.blocks, 1).expect("if block");
+        let else_bid = block_containing(&cfg.blocks, 2).expect("else block");
+        let join_bid = block_containing(&cfg.blocks, 4).expect("join block");
+
+        assert_eq!(
+            cfg.successors[if_bid].len(),
+            2,
+            "empty-then if must still keep two successors"
+        );
+        assert!(
+            cfg.successors[if_bid].contains(&else_bid),
+            "false edge must enter else block"
+        );
+        assert!(
+            cfg.successors[if_bid].contains(&join_bid),
+            "true edge must skip empty then to the join block"
+        );
     }
 
     // -----------------------------------------------------------------------

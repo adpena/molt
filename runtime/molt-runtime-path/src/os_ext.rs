@@ -1503,6 +1503,7 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
         }
         #[cfg(target_arch = "wasm32")]
         {
+            let _ = (pos, how);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "lseek")
         }
         #[cfg(not(target_arch = "wasm32"))]

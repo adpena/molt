@@ -137,6 +137,9 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
     };
     let block_label_id =
         |bid: &BlockId| -> i64 { label_id_for_block.get(bid).copied().unwrap_or(bid.0 as i64) };
+    if debug_loop_if_return {
+        eprintln!("LOWER_DEBUG_LABEL_MAP: {:?}", label_id_for_block);
+    }
 
     // Build a mapping from ORIGINAL label IDs to NEW label IDs.
     // check_exception, try_start, and try_end ops carry original label IDs
@@ -566,6 +569,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             continue;
         }
         if let Some(join) = join_bid {
+            let join_role = func
+                .loop_roles
+                .get(&join)
+                .cloned()
+                .unwrap_or(super::blocks::LoopRole::None);
+            if join_role != super::blocks::LoopRole::None {
+                continue;
+            }
             let join_predecessors = predecessors.get(&join).cloned().unwrap_or_default();
             if join_predecessors
                 .iter()
@@ -582,6 +593,12 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 join_bid,
             },
         );
+        if debug_loop_if_return {
+            eprintln!(
+                "LOWER_DEBUG_IF_PATTERN bid={:?} then={:?} else={:?} join={:?}",
+                bid, then_bid, else_bid, join_bid
+            );
+        }
         if_inlined_blocks.insert(then_bid);
         if_inlined_blocks.insert(else_bid);
     }
@@ -634,6 +651,7 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 &if_inlined_blocks,
                 types,
                 &original_to_new_label,
+                &original_label_to_block,
                 &mut out,
                 &mut loop_consumed,
             );
@@ -650,6 +668,11 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         // (no CondBranch terminator) fall through to emit loop_start + label.
         if *bid != func.entry_block {
             if loop_role == super::blocks::LoopRole::LoopHeader {
+                out.push(OpIR {
+                    kind: "label".to_string(),
+                    value: Some(block_label_id(bid)),
+                    ..OpIR::default()
+                });
                 out.push(OpIR {
                     kind: "loop_start".to_string(),
                     ..OpIR::default()
@@ -679,7 +702,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
 
         // Helper: emit a block's ops with type annotation.
         let emit_block_ops = |block: &TirBlock, out: &mut Vec<OpIR>| {
-            emit_block_ops_inner(block, types, &original_to_new_label, out);
+            emit_block_ops_inner(
+                block,
+                types,
+                &original_to_new_label,
+                &original_label_to_block,
+                &block_param_vars,
+                out,
+            );
         };
 
         if let Some(pattern) = if_patterns.get(bid) {
@@ -706,10 +736,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 .map(|v| matches!(v, super::ops::AttrValue::Bool(true)))
                 .unwrap_or(false);
 
-            // Build phi ops for the join block's block arguments.
-            let phi_ops: Vec<(String, String, String)> = if let Some(join_bid) = pattern.join_bid {
+            // Materialize join block arguments as explicit store_var writes on
+            // the then/else edges. The join block itself already re-loads its
+            // block args via load_var when emitted later.
+            let join_arg_stores: Vec<(String, String, String)> =
+                if let Some(join_bid) = pattern.join_bid {
                 let join_blk = func.blocks.get(&join_bid);
                 let join_param_count = join_blk.map(|b| b.args.len()).unwrap_or(0);
+                let join_param_vars = block_param_vars.get(&join_bid);
                 let then_branch_args = match &then_blk.terminator {
                     Terminator::Branch { args, .. } => args.as_slice(),
                     _ => &[],
@@ -720,18 +754,20 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 };
                 (0..join_param_count)
                     .filter_map(|i| {
-                        let join_arg_name = join_blk
+                        let join_param_var =
+                            join_param_vars.and_then(|vars| vars.get(i)).cloned()?;
+                        let join_value_name = join_blk
                             .and_then(|b| b.args.get(i))
                             .map(|a| value_var(a.id))?;
                         let then_val = then_branch_args
                             .get(i)
                             .map(|v| value_var(*v))
-                            .unwrap_or_else(|| join_arg_name.clone());
+                            .unwrap_or_else(|| join_value_name.clone());
                         let else_val = else_branch_args
                             .get(i)
                             .map(|v| value_var(*v))
-                            .unwrap_or_else(|| join_arg_name.clone());
-                        Some((join_arg_name, then_val, else_val))
+                            .unwrap_or_else(|| join_value_name.clone());
+                        Some((join_param_var, then_val, else_val))
                     })
                     .collect()
             } else {
@@ -765,6 +801,15 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 emit_return_ops(values, original_has_ret, &mut out);
             }
 
+            for (join_param_var, then_val, _) in &join_arg_stores {
+                out.push(OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some(join_param_var.clone()),
+                    args: Some(vec![then_val.clone()]),
+                    ..OpIR::default()
+                });
+            }
+
             // Emit: else
             out.push(OpIR {
                 kind: "else".to_string(),
@@ -791,21 +836,20 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 emit_return_ops(values, original_has_ret, &mut out);
             }
 
+            for (join_param_var, _, else_val) in &join_arg_stores {
+                out.push(OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some(join_param_var.clone()),
+                    args: Some(vec![else_val.clone()]),
+                    ..OpIR::default()
+                });
+            }
+
             // Emit: end_if
             out.push(OpIR {
                 kind: "end_if".to_string(),
                 ..OpIR::default()
             });
-
-            // Emit phi ops immediately after end_if for the join block's args.
-            for (join_arg_name, then_val, else_val) in &phi_ops {
-                out.push(OpIR {
-                    kind: "phi".to_string(),
-                    out: Some(join_arg_name.clone()),
-                    args: Some(vec![then_val.clone(), else_val.clone()]),
-                    ..OpIR::default()
-                });
-            }
         } else {
             // Non-loop, non-if-pattern block: emit ops and terminator normally.
             emit_block_ops(block, &mut out);
@@ -1352,6 +1396,61 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
 
         // Generator.
+        OpCode::AllocTask => Some(OpIR {
+            kind: "alloc_task".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            s_value: attr_str(&op.attrs, "s_value"),
+            value: attr_int(&op.attrs, "value"),
+            task_kind: attr_str(&op.attrs, "task_kind"),
+            ..OpIR::default()
+        }),
+        OpCode::StateSwitch => Some(OpIR {
+            kind: "state_switch".to_string(),
+            ..OpIR::default()
+        }),
+        OpCode::StateTransition => Some(OpIR {
+            kind: "state_transition".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
+        OpCode::StateYield => Some(OpIR {
+            kind: "state_yield".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
+        OpCode::ChanSendYield => Some(OpIR {
+            kind: "chan_send_yield".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
+        OpCode::ChanRecvYield => Some(OpIR {
+            kind: "chan_recv_yield".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
+        OpCode::ClosureLoad => Some(OpIR {
+            kind: "closure_load".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
+        OpCode::ClosureStore => Some(OpIR {
+            kind: "closure_store".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
         OpCode::Yield => Some(OpIR {
             kind: "yield".to_string(),
             args: Some(operand_args(op)),
@@ -1406,12 +1505,24 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
 
         // Import.
-        OpCode::Import => Some(OpIR {
-            kind: "import".to_string(),
-            s_value: attr_str(&op.attrs, "module"),
-            out: out_var,
-            ..OpIR::default()
-        }),
+        OpCode::Import => {
+            let args = operand_args(op);
+            if args.is_empty() {
+                Some(OpIR {
+                    kind: "import".to_string(),
+                    s_value: attr_str(&op.attrs, "module"),
+                    out: out_var,
+                    ..OpIR::default()
+                })
+            } else {
+                Some(OpIR {
+                    kind: "module_import".to_string(),
+                    args: Some(args),
+                    out: out_var,
+                    ..OpIR::default()
+                })
+            }
+        }
         OpCode::ImportFrom => Some(OpIR {
             kind: "import_from".to_string(),
             s_value: attr_str(&op.attrs, "name"),
@@ -1510,6 +1621,7 @@ fn emit_structured_loop_region(
     if_inlined_blocks: &HashSet<BlockId>,
     types: &HashMap<ValueId, TirType>,
     original_to_new_label: &HashMap<i64, i64>,
+    label_to_block: &HashMap<i64, BlockId>,
     out: &mut Vec<OpIR>,
     _loop_consumed: &mut HashSet<BlockId>,
 ) {
@@ -1625,7 +1737,14 @@ fn emit_structured_loop_region(
                 continue;
             };
             // Emit ops for this block.
-            emit_block_ops_inner(region_block, types, original_to_new_label, out);
+            emit_block_ops_inner(
+                region_block,
+                types,
+                original_to_new_label,
+                label_to_block,
+                block_param_vars,
+                out,
+            );
 
             // Handle terminator based on type.
             if region_idx + 1 < header_region.len() {
@@ -1746,6 +1865,7 @@ fn emit_structured_loop_region(
                                 if_inlined_blocks,
                                 types,
                                 original_to_new_label,
+                                label_to_block,
                                 out,
                             );
                             // Emit label for the continuation (br_if target).
@@ -1858,6 +1978,7 @@ fn emit_structured_loop_region(
                 if_inlined_blocks,
                 types,
                 original_to_new_label,
+                label_to_block,
                 out,
                 _loop_consumed,
             );
@@ -1957,7 +2078,14 @@ fn emit_structured_loop_region(
         }
 
         // Emit ops.
-        emit_block_ops_inner(body_block, types, original_to_new_label, out);
+        emit_block_ops_inner(
+            body_block,
+            types,
+            original_to_new_label,
+            label_to_block,
+            block_param_vars,
+            out,
+        );
 
         // Emit terminator — replace back-edges with loop_continue,
         // exit jumps with loop_break, and other terminators normally.
@@ -2010,6 +2138,7 @@ fn emit_structured_loop_region(
             &loop_inline_blocks,
             types,
             original_to_new_label,
+            label_to_block,
             out,
         );
     }
@@ -2068,7 +2197,14 @@ fn emit_structured_loop_region(
                 }
             }
         }
-        emit_block_ops_inner(body_block, types, original_to_new_label, out);
+        emit_block_ops_inner(
+            body_block,
+            types,
+            original_to_new_label,
+            label_to_block,
+            block_param_vars,
+            out,
+        );
         emit_terminator(
             body_block,
             block_param_vars,
@@ -2098,6 +2234,7 @@ fn emit_guard_raise_path(
     if_inlined_blocks: &HashSet<BlockId>,
     types: &HashMap<ValueId, TirType>,
     original_to_new_label: &HashMap<i64, i64>,
+    label_to_block: &HashMap<i64, BlockId>,
     out: &mut Vec<OpIR>,
 ) {
     let original_has_ret = func
@@ -2138,7 +2275,14 @@ fn emit_guard_raise_path(
         }
 
         // Emit ops.
-        emit_block_ops_inner(blk, types, original_to_new_label, out);
+        emit_block_ops_inner(
+            blk,
+            types,
+            original_to_new_label,
+            label_to_block,
+            block_param_vars,
+            out,
+        );
 
         // Emit terminator and follow chain. A raise block can still branch
         // into a cleanup block that belongs to the same deferred raise path.
@@ -2202,9 +2346,17 @@ fn emit_block_ops_inner(
     block: &TirBlock,
     types: &HashMap<ValueId, TirType>,
     original_to_new_label: &HashMap<i64, i64>,
+    original_label_to_block: &HashMap<i64, BlockId>,
+    block_param_vars: &HashMap<BlockId, Vec<String>>,
     out: &mut Vec<OpIR>,
 ) {
     for op in &block.ops {
+        if op.opcode == OpCode::CheckException
+            && let Some(orig_id) = attr_int(&op.attrs, "value")
+            && let Some(&handler_block) = original_label_to_block.get(&orig_id)
+        {
+            emit_block_arg_stores(handler_block, &op.operands, block_param_vars, out);
+        }
         if let Some(mut opir) = lower_op(op) {
             annotate_type_flags(&mut opir, op, types);
             if matches!(
@@ -2302,11 +2454,6 @@ fn emit_terminator(
         }
 
         Terminator::Branch { target, args } => {
-            let last_op_is_check_exception = block
-                .ops
-                .last()
-                .map(|op| op.opcode == OpCode::CheckException)
-                .unwrap_or(false);
             emit_block_arg_stores(*target, args, block_param_vars, out);
 
             // If target is a LoopHeader, this is a back-edge → loop_continue.
@@ -2321,17 +2468,13 @@ fn emit_terminator(
                     kind: "loop_continue".to_string(),
                     ..OpIR::default()
                 });
-            } else if last_op_is_check_exception && if_inlined_blocks.contains(target) {
+            } else if if_inlined_blocks.contains(target) {
                 // The target block is emitted inline without its own label, so
                 // the normal edge is a real fallthrough. Emitting a jump here
                 // would reference an unlabeled block and break TIR roundtrip
-                // validation for larger structured regions.
+                // validation. This applies regardless of whether the current
+                // block ends in a check_exception or a plain branch.
             } else {
-                // A preceding `check_exception` only guards the exceptional
-                // edge; it does not replace the block's normal branch target.
-                // Dropping this jump lets the false/continue path fall through
-                // into whatever label is laid out next, which is exactly how a
-                // false-guarded raise can execute after the merge path.
                 out.push(OpIR {
                     kind: "jump".to_string(),
                     value: Some(block_label_id(target)),
@@ -2634,7 +2777,7 @@ mod tests {
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
-    use crate::tir::values::ValueId;
+    use crate::tir::values::{TirValue, ValueId};
 
     fn add_function() -> TirFunction {
         let mut func =
@@ -2673,6 +2816,47 @@ mod tests {
         let ops = lower_to_simple_ir(&func, &HashMap::new());
         let has_ret = ops.iter().any(|o| o.kind == "ret" || o.kind == "ret_void");
         assert!(has_ret, "expected a return op, got: {:?}", ops);
+    }
+
+    #[test]
+    fn lower_import_with_operand_roundtrips_as_module_import() {
+        let mut func = TirFunction::new("import_roundtrip".into(), vec![], TirType::DynBox);
+        let name = ValueId(func.next_value);
+        func.next_value += 1;
+        let imported = ValueId(func.next_value);
+        func.next_value += 1;
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstStr,
+            operands: vec![],
+            results: vec![name],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("s_value".into(), AttrValue::Str("builtins".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Import,
+            operands: vec![name],
+            results: vec![imported],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![imported],
+        };
+
+        let type_map = HashMap::from([(name, TirType::Str), (imported, TirType::DynBox)]);
+        let ops = lower_to_simple_ir(&func, &type_map);
+        let import_op = ops
+            .iter()
+            .find(|op| op.kind == "module_import")
+            .expect("expected module_import op");
+        assert_eq!(import_op.args.as_ref().map(Vec::len), Some(1));
     }
 
     #[test]
@@ -2972,6 +3156,197 @@ mod tests {
     }
 
     #[test]
+    fn structured_if_emits_join_arg_store_load_without_phi() {
+        let mut func = TirFunction::new(
+            "branch_with_join_arg".into(),
+            vec![TirType::Bool],
+            TirType::I64,
+        );
+
+        let then_blk = func.fresh_block();
+        let else_blk = func.fresh_block();
+        let join_blk = func.fresh_block();
+        let then_val = func.fresh_value();
+        let else_val = func.fresh_value();
+        let join_arg = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.terminator = Terminator::CondBranch {
+            cond: ValueId(0),
+            then_block: then_blk,
+            then_args: vec![],
+            else_block: else_blk,
+            else_args: vec![],
+        };
+
+        let mut then_attrs = AttrDict::new();
+        then_attrs.insert("value".into(), AttrValue::Int(1));
+        func.blocks.insert(
+            then_blk,
+            TirBlock {
+                id: then_blk,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![then_val],
+                    attrs: then_attrs,
+                    source_span: None,
+                }],
+                terminator: Terminator::Branch {
+                    target: join_blk,
+                    args: vec![then_val],
+                },
+            },
+        );
+
+        let mut else_attrs = AttrDict::new();
+        else_attrs.insert("value".into(), AttrValue::Int(2));
+        func.blocks.insert(
+            else_blk,
+            TirBlock {
+                id: else_blk,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![else_val],
+                    attrs: else_attrs,
+                    source_span: None,
+                }],
+                terminator: Terminator::Branch {
+                    target: join_blk,
+                    args: vec![else_val],
+                },
+            },
+        );
+
+        func.blocks.insert(
+            join_blk,
+            TirBlock {
+                id: join_blk,
+                args: vec![TirValue {
+                    id: join_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![join_arg],
+                },
+            },
+        );
+
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let kinds: Vec<&str> = ops.iter().map(|op| op.kind.as_str()).collect();
+
+        assert!(kinds.contains(&"if"), "{ops:?}");
+        assert!(kinds.contains(&"else"), "{ops:?}");
+        assert!(kinds.contains(&"end_if"), "{ops:?}");
+        assert!(
+            !kinds.contains(&"phi"),
+            "structured if join args must round-trip as store/load, not phi: {ops:?}"
+        );
+        assert!(
+            ops.iter().filter(|op| op.kind == "store_var").count() >= 2,
+            "structured if join args must emit branch-site stores: {ops:?}"
+        );
+        assert!(
+            ops.iter().any(|op| op.kind == "load_var"),
+            "structured if join args must reload the merged value after end_if: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn check_exception_materializes_handler_arg_stores() {
+        let mut func =
+            TirFunction::new("check_exception_handler_args".into(), vec![], TirType::I64);
+
+        let value = func.fresh_value();
+        let exit_block = func.fresh_block();
+        let handler_block = func.fresh_block();
+        let handler_arg = func.fresh_value();
+
+        let mut const_attrs = AttrDict::new();
+        const_attrs.insert("value".into(), AttrValue::Int(7));
+        let mut handler_attrs = AttrDict::new();
+        handler_attrs.insert("value".into(), AttrValue::Int(100));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![value],
+            attrs: const_attrs,
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![value],
+            results: vec![],
+            attrs: handler_attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Branch {
+            target: exit_block,
+            args: vec![],
+        };
+
+        func.blocks.insert(
+            exit_block,
+            TirBlock {
+                id: exit_block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        func.blocks.insert(
+            handler_block,
+            TirBlock {
+                id: handler_block,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![handler_arg],
+                },
+            },
+        );
+
+        func.has_exception_handling = true;
+        func.label_id_map.insert(handler_block.0, 100);
+
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        let handler_param = format!("_bb{}_arg0", handler_block.0);
+        let handler_value = value_var(handler_arg);
+        let entry_value = value_var(value);
+
+        assert!(
+            ops.iter().any(|op| {
+                op.kind == "store_var"
+                    && op.var.as_deref() == Some(handler_param.as_str())
+                    && op.args.as_ref().is_some_and(|args| args == &vec![entry_value.clone()])
+            }),
+            "check_exception lowering must materialize handler arg stores before the handler label: {ops:?}"
+        );
+        assert!(
+            ops.iter().any(|op| {
+                op.kind == "load_var"
+                    && op.var.as_deref() == Some(handler_param.as_str())
+                    && op.out.as_deref() == Some(handler_value.as_str())
+            }),
+            "handler block must still reload its synthesized arg slot: {ops:?}"
+        );
+    }
+
+    #[test]
     fn structured_if_skips_one_return_one_continue_shape() {
         let mut func = TirFunction::new(
             "branch_with_fallthrough_join".into(),
@@ -3106,6 +3481,75 @@ mod tests {
             !ops.iter()
                 .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
             "successors containing nested SCF must stay label-based instead of inlining to structured if/else: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn structured_if_skips_join_that_is_loop_header() {
+        let mut func = TirFunction::new(
+            "branch_with_loop_header_join".into(),
+            vec![TirType::Bool],
+            TirType::None,
+        );
+
+        let then_blk = func.fresh_block();
+        let else_blk = func.fresh_block();
+        let join_blk = func.fresh_block();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.terminator = Terminator::CondBranch {
+            cond: ValueId(0),
+            then_block: then_blk,
+            then_args: vec![],
+            else_block: else_blk,
+            else_args: vec![],
+        };
+
+        func.blocks.insert(
+            then_blk,
+            TirBlock {
+                id: then_blk,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: join_blk,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            else_blk,
+            TirBlock {
+                id: else_blk,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: join_blk,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            join_blk,
+            TirBlock {
+                id: join_blk,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles
+            .insert(join_blk, crate::tir::blocks::LoopRole::LoopHeader);
+
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        assert!(
+            validate_labels(&ops),
+            "loop-header join lowering must keep valid labels after lower_to_simple: {ops:?}"
+        );
+        assert!(
+            !ops.iter()
+                .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
+            "join blocks that are loop headers must stay label-based instead of inlining to structured if/else: {ops:?}"
         );
     }
 
@@ -4752,6 +5196,7 @@ mod tests {
         let block_param_vars = HashMap::from([(raise_block, Vec::new()), (cleanup_block, Vec::new())]);
         let mut out = Vec::new();
         let labels = HashMap::from([(raise_block, 99_i64), (cleanup_block, 100_i64)]);
+        let original_label_to_block = HashMap::from([(99_i64, raise_block), (100_i64, cleanup_block)]);
         let block_label_id = |bid: &BlockId| -> i64 { *labels.get(bid).expect("missing test label") };
 
         emit_guard_raise_path(
@@ -4764,6 +5209,7 @@ mod tests {
             &HashSet::new(),
             &HashMap::new(),
             &HashMap::new(),
+            &original_label_to_block,
             &mut out,
         );
 

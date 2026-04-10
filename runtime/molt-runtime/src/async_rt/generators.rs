@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use molt_obj_model::MoltObject;
 
 use super::generators_async::{cancel_future_task, molt_future_new};
-use crate::object::HEADER_FLAG_COROUTINE;
+use crate::object::{HEADER_FLAG_COROUTINE, object_state};
 use crate::object::accessors::resolve_obj_ptr;
 use crate::{
     ACTIVE_EXCEPTION_STACK, ASYNCGEN_CONTROL_SIZE, ASYNCGEN_FIRSTITER_OFFSET, ASYNCGEN_GEN_OFFSET,
@@ -28,7 +28,8 @@ use crate::{
     molt_is_callable, molt_raise, molt_str_from_obj, obj_from_bits, object_mark_has_ptrs,
     object_type_id, pending_bits_i64, ptr_from_bits, raise_exception, register_task_token,
     resolve_task_ptr, runtime_state, seq_vec_ref, set_generator_raise, string_obj_to_owned,
-    task_mark_done, task_waiting_on, to_i64, token_id_from_bits, type_name,
+    type_name,
+    task_mark_done, task_waiting_on, to_i64, token_id_from_bits,
 };
 
 use crate::state::runtime_state::{AsyncGenLocalsEntry, GenLocalsEntry};
@@ -365,6 +366,10 @@ pub extern "C" fn molt_is_generator(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let trace = matches!(
+            std::env::var("MOLT_TRACE_GENERATOR_STATE").ok().as_deref(),
+            Some("1")
+        );
         let Some(ptr) = maybe_ptr_from_bits(gen_bits) else {
             return raise_exception::<_>(_py, "TypeError", "expected generator");
         };
@@ -416,9 +421,20 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
             set_generator_raise(true);
             generator_set_started(_py, ptr);
             generator_set_running(_py, ptr, true);
+            let state_before = object_state(ptr);
             let res = call_poll_fn(_py, poll_fn_addr, ptr);
+            let state_after = object_state(ptr);
             generator_set_running(_py, ptr, false);
             set_generator_raise(prev_raise);
+            if trace {
+                eprintln!(
+                    "[molt generator_send] state_before={} state_after={} result_type={} result_bits=0x{:x}",
+                    state_before,
+                    state_after,
+                    type_name(_py, obj_from_bits(res as u64)),
+                    res
+                );
+            }
             let pending = exception_pending(_py);
             let exc_bits = if pending {
                 let bits = molt_exception_last();
