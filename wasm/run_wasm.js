@@ -4716,6 +4716,33 @@ const verifyTableRefs = (instance, table, label) => {
   }
 };
 
+const ensureTableCapacityForExportedRefs = (instance, table, label) => {
+  if (!instance || !table) {
+    return;
+  }
+  let maxIndex = -1;
+  for (const name of Object.keys(instance.exports)) {
+    const match = /^__molt_table_ref_(\d+)$/.exec(name);
+    if (!match) {
+      continue;
+    }
+    const idx = Number(match[1]);
+    if (Number.isInteger(idx) && idx > maxIndex) {
+      maxIndex = idx;
+    }
+  }
+  if (maxIndex < 0 || maxIndex < table.length) {
+    return;
+  }
+  const growBy = maxIndex + 1 - table.length;
+  table.grow(growBy);
+  if (traceRun) {
+    console.error(
+      `[molt wasm] grew ${label} table by ${growBy} slots to ${table.length} for exported refs`
+    );
+  }
+};
+
 const runDirectLink = async () => {
   if (!runtimeBuffer) {
     throw new Error(
@@ -4853,6 +4880,7 @@ const runDirectLink = async () => {
 
   const { molt_main, molt_memory, molt_table, molt_table_init } =
     outputInstance.exports;
+  ensureTableCapacityForExportedRefs(outputInstance, table, 'output');
   if (typeof molt_table_init === 'function' && process.env.MOLT_WASM_SKIP_TABLE_INIT !== '1') {
     molt_table_init();
   }
@@ -4980,6 +5008,7 @@ const runLinked = async () => {
     linkedModule.instance.exports.molt_table ||
     (importObject.env && importObject.env.__indirect_function_table) ||
     null;
+  ensureTableCapacityForExportedRefs(linkedModule.instance, linkedTable, 'linked');
   if (typeof molt_table_init === 'function') {
     molt_table_init();
   }

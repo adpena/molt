@@ -374,6 +374,56 @@ def test_strip_internal_exports_keeps_table_ref_exports() -> None:
     assert "molt_main" in exports
 
 
+def test_required_linked_table_min_respects_exported_table_refs() -> None:
+    write_varuint = wasm_link._write_varuint
+
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    import_payload = bytearray()
+    import_payload.extend(write_varuint(1))
+    import_payload.extend(wasm_link._write_string("env"))
+    import_payload.extend(wasm_link._write_string("__indirect_function_table"))
+    import_payload.append(0x01)
+    import_payload.append(0x70)
+    import_payload.extend(write_varuint(0))
+    import_payload.extend(write_varuint(10))
+    sections.append((2, bytes(import_payload)))
+
+    func_payload = write_varuint(1) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(1))
+    export_payload.extend(wasm_link._write_string("__molt_table_ref_20"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(2))
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    data = wasm_link._build_sections(sections)
+
+    assert wasm_link._table_import_min(data) == 10
+    assert wasm_link._required_linked_table_min(data, 5) == 21
+    updated = wasm_link._rewrite_table_import_min(
+        data, wasm_link._required_linked_table_min(data, 5)
+    )
+    assert updated is not None
+    assert wasm_link._table_import_min(updated) == 21
+
+
 def test_neutralize_dead_element_entries_skips_modules_with_call_indirect() -> None:
     write_varuint = wasm_link._write_varuint
     sections = []
