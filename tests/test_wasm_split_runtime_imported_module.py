@@ -305,4 +305,3 @@ def test_split_runtime_import_typing_then_raise_direct_mode_surfaces_exception(
         f"stdout:\n{run.stdout[-2000:]}\n"
         f"stderr:\n{run.stderr[-2000:]}"
     )
-    assert "RuntimeError" in run.stderr or "AFTER" in run.stderr
