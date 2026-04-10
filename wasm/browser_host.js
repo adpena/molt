@@ -520,6 +520,104 @@ const writeU64ToMemory = (memory, ptr, value) => {
   return true;
 };
 
+const allocRuntimeTempBytes = (runtime, memory, bytes) => {
+  if (!runtime || !memory || typeof runtime.exports?.molt_alloc !== 'function') {
+    throw new Error('molt runtime allocation is unavailable');
+  }
+  const allocBits = runtime.exports.molt_alloc(BigInt(bytes.length));
+  const ptr = runtime.exports.molt_handle_resolve(allocBits);
+  if (!ptr || ptr === 0n) {
+    throw new Error('molt_alloc failed');
+  }
+  const payloadPtr = ptr + BigInt(getHeaderSize());
+  new Uint8Array(memory.buffer, Number(payloadPtr), bytes.length).set(bytes);
+  return { allocBits, payloadPtr };
+};
+
+const readRuntimeStringBits = (runtime, memory, stringBits) => {
+  if (
+    !runtime ||
+    !memory ||
+    !stringBits ||
+    stringBits === 0n ||
+    typeof runtime.exports?.molt_string_as_ptr !== 'function' ||
+    typeof runtime.exports?.molt_dec_ref_obj !== 'function'
+  ) {
+    return null;
+  }
+  const temp = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
+  try {
+    const ptr = runtime.exports.molt_string_as_ptr(stringBits, temp.payloadPtr);
+    if (!ptr || ptr === 0n) {
+      return null;
+    }
+    const len = new DataView(memory.buffer).getBigUint64(Number(temp.payloadPtr), true);
+    return readStringFromMemory(memory, ptr, len);
+  } finally {
+    runtime.exports.molt_dec_ref_obj(temp.allocBits);
+  }
+};
+
+const pendingRuntimeExceptionMessage = (runtime, memory) => {
+  if (!runtime) {
+    return null;
+  }
+  let excBits = 0n;
+  let shouldDecRefFetched = false;
+  if (
+    typeof runtime.exports?.molt_err_pending === 'function' &&
+    Number(runtime.exports.molt_err_pending()) !== 0
+  ) {
+    const fetched =
+      typeof runtime.exports.molt_err_fetch === 'function'
+        ? runtime.exports.molt_err_fetch.bind(runtime.exports)
+        : null;
+    const peeked =
+      typeof runtime.exports.molt_err_peek === 'function'
+        ? runtime.exports.molt_err_peek.bind(runtime.exports)
+        : null;
+    excBits = fetched ? fetched() : peeked ? peeked() : 0n;
+    shouldDecRefFetched = Boolean(fetched);
+  } else if (typeof runtime.exports?.molt_exception_last === 'function') {
+    excBits = runtime.exports.molt_exception_last();
+    shouldDecRefFetched = true;
+  }
+  try {
+    if (!excBits || excBits === 0n) {
+      return null;
+    }
+    if (
+      typeof runtime.exports.molt_object_repr === 'function' &&
+      typeof runtime.exports.molt_dec_ref_obj === 'function'
+    ) {
+      const reprBits = runtime.exports.molt_object_repr(excBits);
+      if (reprBits && reprBits !== 0n) {
+        try {
+          const repr = readRuntimeStringBits(runtime, memory, reprBits);
+          if (repr) {
+            if (repr === 'None') {
+              return null;
+            }
+            return `Unhandled Molt exception: ${repr}`;
+          }
+        } finally {
+          runtime.exports.molt_dec_ref_obj(reprBits);
+        }
+      }
+    }
+    return 'Unhandled Molt exception';
+  } finally {
+    if (
+      shouldDecRefFetched &&
+      excBits &&
+      excBits !== 0n &&
+      typeof runtime.exports.molt_dec_ref_obj === 'function'
+    ) {
+      runtime.exports.molt_dec_ref_obj(excBits);
+    }
+  }
+};
+
 const parseIPv4 = (text) => {
   if (typeof text !== 'string') return null;
   const parts = text.split('.');
@@ -2485,6 +2583,7 @@ export const createBrowserWebSocketHost = (state, options) => {
 
 const buildWasiStub = (state, logFn) => {
   const stdio = createStdIoEmitter(logFn);
+  state.stdio = stdio;
   const WASI_ERRNO_BADF = 8;
   const WASI_ERRNO_INVAL = 28;
   const WASI_ERRNO_ISDIR = 31;
@@ -2506,6 +2605,11 @@ const buildWasiStub = (state, logFn) => {
   if (typeof state.wasiNextFd !== 'number') {
     state.wasiNextFd = 6;
   }
+  const wasiEnvEntries = [];
+  if (Number.isFinite(state.wasmTableBase) && state.wasmTableBase > 0) {
+    wasiEnvEntries.push(`MOLT_WASM_TABLE_BASE=${state.wasmTableBase}`);
+  }
+  const wasiEnvBytes = wasiEnvEntries.map((entry) => UTF8_ENCODER.encode(`${entry}\0`));
   const toNumber = (value) => (typeof value === 'bigint' ? Number(value) : Number(value >>> 0));
   const writeWasiU32 = (ptr, value) => {
     const memory = state.memory;
@@ -2675,11 +2779,25 @@ const buildWasiStub = (state, logFn) => {
     },
     args_get: () => 0,
     environ_sizes_get: (countPtr, bufSizePtr) => {
-      if (!writeWasiU32(countPtr, 0)) return WASI_ERRNO_NOSYS;
-      if (!writeWasiU32(bufSizePtr, 0)) return WASI_ERRNO_NOSYS;
+      if (!writeWasiU32(countPtr, wasiEnvEntries.length)) return WASI_ERRNO_NOSYS;
+      const totalSize = wasiEnvBytes.reduce((sum, bytes) => sum + bytes.length, 0);
+      if (!writeWasiU32(bufSizePtr, totalSize)) return WASI_ERRNO_NOSYS;
       return 0;
     },
-    environ_get: () => 0,
+    environ_get: (environPtr, bufPtr) => {
+      const memory = state.memory;
+      if (!memory) return WASI_ERRNO_NOSYS;
+      const view = new DataView(memory.buffer);
+      let entryPtr = Number(environPtr);
+      let dataPtr = Number(bufPtr);
+      for (const bytes of wasiEnvBytes) {
+        view.setUint32(entryPtr, dataPtr >>> 0, true);
+        new Uint8Array(memory.buffer, dataPtr, bytes.length).set(bytes);
+        entryPtr += 4;
+        dataPtr += bytes.length;
+      }
+      return 0;
+    },
     fd_write: (fd, iovsPtr, iovsLen, outWrittenPtr) => {
       const memory = state.memory;
       if (!memory) return WASI_ERRNO_NOSYS;
@@ -3162,6 +3280,11 @@ export const loadMoltWasm = async (options = {}) => {
           throw new Error('molt_main export missing');
         }
         instance.exports.molt_main();
+        state.stdio?.flushAll();
+        const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
+        if (pendingException) {
+          throw new Error(pendingException);
+        }
       },
     };
   }
@@ -3177,13 +3300,13 @@ export const loadMoltWasm = async (options = {}) => {
   const outputImports = parseWasmImports(wasmBytes);
   const runtimeImports = parseWasmImports(runtimeBytes);
   const detectedWasmTableBase = extractWasmTableBase(wasmBytes);
+  state.wasmTableBase = detectedWasmTableBase;
   if (!outputImports.memory || !runtimeImports.memory) {
     throw new Error('Direct-link wasm requires shared memory imports');
   }
   const memory = makeMemory(mergeLimits(outputImports.memory, runtimeImports.memory, 'memory'));
   const table = makeTable(mergeLimits(outputImports.table, runtimeImports.table, 'table'));
   state.memory = memory;
-  const callIndirectFns = {};
   let outputInstance = null;
   const callIndirectNames = runtimeImports.funcImports
     .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
@@ -3191,11 +3314,13 @@ export const loadMoltWasm = async (options = {}) => {
   const callIndirect = {};
   for (const name of callIndirectNames) {
     callIndirect[name] = (...args) => {
-      const fn = callIndirectFns[name];
-      if (!fn) {
-        throw new Error(`${name} called before output instantiation`);
+      const rawIdx = args[0];
+      const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
+      const fn = table ? table.get(idx) : null;
+      if (typeof fn !== 'function') {
+        throw new Error(`${name} missing table entry at ${idx}`);
       }
-      return fn(...args);
+      return fn(...args.slice(1));
     };
   }
   const env = buildEnv(memory, table, callIndirect, logFn, overrides);
@@ -3231,22 +3356,6 @@ export const loadMoltWasm = async (options = {}) => {
     outputModule.instance.exports.molt_table_init();
   }
   installTableRefs(outputInstance, table);
-  for (const name of callIndirectNames) {
-    let fn = outputModule.instance.exports[name];
-    if (typeof fn !== 'function') {
-      const mangledMatch = name.match(/^molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E$)/);
-      const plainMatch = name.match(/^molt_call_indirect(\d+)$/);
-      const arityRaw = (mangledMatch && mangledMatch[1]) || (plainMatch && plainMatch[1]);
-      if (arityRaw) {
-        const arity = Number.parseInt(arityRaw, 10);
-        fn = outputModule.instance.exports[`molt_call_indirect${arity}`];
-      }
-    }
-    if (typeof fn !== 'function') {
-      throw new Error(`WASM output missing export ${name}`);
-    }
-    callIndirectFns[name] = fn;
-  }
   return {
     instance: outputModule.instance,
     memory,
@@ -3257,6 +3366,11 @@ export const loadMoltWasm = async (options = {}) => {
         throw new Error('molt_main export missing');
       }
       outputModule.instance.exports.molt_main();
+      state.stdio?.flushAll();
+      const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
+      if (pendingException) {
+        throw new Error(pendingException);
+      }
     },
   };
 };

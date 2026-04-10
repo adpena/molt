@@ -447,13 +447,100 @@ const allocTempBytes = (bytes) => {
     throw new Error('molt_runtime not initialized');
   }
   const allocBits = runtimeInstance.exports.molt_alloc(BigInt(bytes.length));
-  const ptr = runtimeInstance.exports.molt_handle_resolve(allocBits);
+  const ptr = BigInt(runtimeInstance.exports.molt_handle_resolve(allocBits));
   if (!ptr || ptr === 0n) {
     throw new Error('molt_alloc failed');
   }
   const payloadPtr = ptr + BigInt(getHeaderSize());
   new Uint8Array(wasmMemory.buffer, Number(payloadPtr), bytes.length).set(bytes);
   return { allocBits, payloadPtr };
+};
+
+const readU64 = (addr) => {
+  const view = new DataView(wasmMemory.buffer);
+  return view.getBigUint64(Number(addr), true);
+};
+
+const readRuntimeStringBits = (instance, stringBits) => {
+  const exports = instance && instance.exports ? instance.exports : null;
+  if (
+    !exports ||
+    !stringBits ||
+    stringBits === 0n ||
+    typeof exports.molt_string_as_ptr !== 'function' ||
+    typeof exports.molt_dec_ref_obj !== 'function'
+  ) {
+    return null;
+  }
+  const temp = allocTempBytes(Buffer.alloc(8));
+  try {
+    const ptr = exports.molt_string_as_ptr(stringBits, temp.payloadPtr);
+    if (!ptr || ptr === 0n) {
+      return null;
+    }
+    return readUtf8(ptr, Number(readU64(temp.payloadPtr)));
+  } finally {
+    exports.molt_dec_ref_obj(temp.allocBits);
+  }
+};
+
+const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
+  const exports = instance && instance.exports ? instance.exports : null;
+  if (!exports) {
+    return null;
+  }
+  let excBits = 0n;
+  let fetched = null;
+  let shouldDecRefFetched = false;
+  if (typeof exports.molt_err_pending === 'function' && Number(exports.molt_err_pending()) !== 0) {
+    fetched =
+      typeof exports.molt_err_fetch === 'function'
+        ? exports.molt_err_fetch.bind(exports)
+        : null;
+    const peeked =
+      typeof exports.molt_err_peek === 'function'
+        ? exports.molt_err_peek.bind(exports)
+        : null;
+    excBits = fetched ? fetched() : peeked ? peeked() : 0n;
+    shouldDecRefFetched = Boolean(fetched);
+  } else if (typeof exports.molt_exception_last === 'function') {
+    excBits = exports.molt_exception_last();
+    shouldDecRefFetched = true;
+  }
+  try {
+    if (!excBits || excBits === 0n) {
+      return null;
+    }
+    if (
+      typeof exports.molt_object_repr === 'function' &&
+      typeof exports.molt_dec_ref_obj === 'function'
+    ) {
+      const reprBits = exports.molt_object_repr(excBits);
+      if (reprBits && reprBits !== 0n) {
+        try {
+          const repr = readRuntimeStringBits(instance, reprBits);
+          if (repr) {
+            if (repr === 'None') {
+              return null;
+            }
+            return `Unhandled Molt exception: ${repr}`;
+          }
+        } finally {
+          exports.molt_dec_ref_obj(reprBits);
+        }
+      }
+    }
+    return 'Unhandled Molt exception';
+  } finally {
+    if (
+      shouldDecRefFetched &&
+      excBits &&
+      excBits !== 0n &&
+      typeof exports.molt_dec_ref_obj === 'function'
+    ) {
+      exports.molt_dec_ref_obj(excBits);
+    }
+  }
 };
 
 const sendStreamFrame = (streamHandle, bytes) => {
@@ -4566,7 +4653,6 @@ const runDirectLink = async () => {
   const tableLimits = mergeLimits(outputImports.table, runtimeImportsDesc.table, 'table');
   const memory = makeMemory(memoryLimits);
   const table = makeTable(tableLimits);
-  const callIndirectFns = {};
   let outputInstance = null;
   setWasmMemory(memory);
 
@@ -4646,11 +4732,13 @@ const runDirectLink = async () => {
           `[molt wasm] ${name} idx=${idx} entry=${state} name=${entryName} len=${entryLen} env_get=${isEnvGet}`
         );
       }
-      const fn = callIndirectFns[name];
-      if (!fn) {
-        throw new Error(`${name} used before output instantiation`);
+      const rawIdx = args[0];
+      const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
+      const fn = table ? table.get(idx) : null;
+      if (typeof fn !== 'function') {
+        throw new Error(`${name} missing table entry at ${idx}`);
       }
-      return fn(...args);
+      return fn(...args.slice(1));
     };
   }
 
@@ -4686,22 +4774,6 @@ const runDirectLink = async () => {
     outputInstance.exports;
   if (typeof molt_table_init === 'function' && process.env.MOLT_WASM_SKIP_TABLE_INIT !== '1') {
     molt_table_init();
-  }
-  for (const name of runtimeCallIndirectNames) {
-    let fn = outputInstance.exports[name];
-    if (typeof fn !== 'function') {
-      const mangledMatch = name.match(/^molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E$)/);
-      const plainMatch = name.match(/^molt_call_indirect(\d+)$/);
-      const arityRaw = (mangledMatch && mangledMatch[1]) || (plainMatch && plainMatch[1]);
-      if (arityRaw) {
-        const arity = Number.parseInt(arityRaw, 10);
-        fn = outputInstance.exports[`molt_call_indirect${arity}`];
-      }
-    }
-    if (typeof fn !== 'function') {
-      throw new Error(`${wasmPath} missing ${name} export`);
-    }
-    callIndirectFns[name] = fn;
   }
   if (installTableRefsEnabled) {
     installTableRefs(outputInstance, table, 'output');
@@ -4842,6 +4914,7 @@ const runLinked = async () => {
     linkedModule.instance.exports.molt_memory ||
     linkedModule.instance.exports.memory ||
     (importObject.env && importObject.env.memory);
+  runtimeInstance = linkedModule.instance;
   if (linkedMemory) {
     initializeWasiForInstance(linkedModule.instance, linkedMemory);
     setWasmMemory(linkedMemory);
@@ -4920,6 +4993,11 @@ const runMain = async () => {
     traceMark('runMain:runner_completed');
     if (traceRun) {
       console.error('[molt wasm] runner completed');
+    }
+    const pendingException = pendingRuntimeExceptionMessage(runtimeInstance);
+    if (pendingException) {
+      traceMark(`runMain:pending_exception:${pendingException.replaceAll('\n', '\\n')}`);
+      throw new Error(pendingException);
     }
     if (wasiExitCode !== null && wasiExitCode !== 0) {
       traceMark(`runMain:exit_wasi:${wasiExitCode}`);
