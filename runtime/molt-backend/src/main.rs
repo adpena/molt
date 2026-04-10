@@ -122,6 +122,21 @@ fn ensure_output_parent_dir(output_file: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn create_backend_output_file(output_file: &str) -> io::Result<File> {
+    ensure_output_parent_dir(output_file)?;
+    match File::create(output_file) {
+        Ok(file) => Ok(file),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            // Shared cache/build roots may be pruned between early setup and
+            // final artifact emission. Recreate the parent at the point of
+            // use and retry once so output emission is authoritative.
+            ensure_output_parent_dir(output_file)?;
+            File::create(output_file)
+        }
+        Err(err) => Err(err),
+    }
+}
+
 fn default_backend_output_path(kind: BackendOutputKind) -> &'static str {
     match kind {
         BackendOutputKind::Luau => "dist/output.luau",
@@ -1691,7 +1706,7 @@ fn main() -> io::Result<()> {
     if is_luau {
         #[cfg(feature = "luau-backend")]
         {
-            let mut file = File::create(output_file).map_err(|err| {
+            let mut file = create_backend_output_file(output_file).map_err(|err| {
                 io::Error::new(
                     err.kind(),
                     format!("failed to create backend output '{}': {}", output_file, err),
@@ -1723,7 +1738,7 @@ fn main() -> io::Result<()> {
     } else if is_rust {
         #[cfg(feature = "rust-backend")]
         {
-            let mut file = File::create(output_file).map_err(|err| {
+            let mut file = create_backend_output_file(output_file).map_err(|err| {
                 io::Error::new(
                     err.kind(),
                     format!("failed to create backend output '{}': {}", output_file, err),
@@ -1744,7 +1759,7 @@ fn main() -> io::Result<()> {
     } else if is_wasm {
         #[cfg(feature = "wasm-backend")]
         {
-            let mut file = File::create(output_file).map_err(|err| {
+            let mut file = create_backend_output_file(output_file).map_err(|err| {
                 io::Error::new(
                     err.kind(),
                     format!("failed to create backend output '{}': {}", output_file, err),
@@ -1896,7 +1911,7 @@ fn main() -> io::Result<()> {
                 // Small IR (or user-only mode): compile in one shot
                 let backend = SimpleBackend::new_with_target(target_triple);
                 let obj_bytes = backend.compile(ir);
-                let mut file = File::create(output_file).map_err(|err| {
+                let mut file = create_backend_output_file(output_file).map_err(|err| {
                     io::Error::new(
                         err.kind(),
                         format!("failed to create backend output '{}': {}", output_file, err),
@@ -1982,7 +1997,8 @@ mod tests {
     use super::{
         BACKEND_DAEMON_PROTOCOL_VERSION, BackendOutputKind, DEFAULT_BACKEND_BATCH_SIZE,
         DEFAULT_STDLIB_BATCH_SIZE, DaemonCache, DaemonJobRequest, DaemonRequest,
-        DaemonResponse, GIB, compile_single_job, daemon_response_payload,
+        DaemonResponse, GIB, compile_single_job, create_backend_output_file,
+        daemon_response_payload,
         default_backend_max_rss_gb_from_physical_mem_bytes, default_backend_output_path,
         ensure_output_parent_dir, is_user_owned_symbol, merge_relocatable_objects,
         partition_functions_for_batches, prune_and_partition_native_stdlib,
@@ -1991,6 +2007,7 @@ mod tests {
         write_shared_stdlib_cache_sidecars,
     };
     use molt_backend::{FunctionIR, OpIR, SimpleIR};
+    use std::io::Write;
     use std::io::Cursor;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2104,6 +2121,27 @@ mod tests {
         ensure_output_parent_dir(output.to_str().expect("utf8 path")).expect("parent dir creation");
 
         assert!(output.parent().expect("parent exists").is_dir());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_backend_output_file_recreates_missing_parent() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("molt-backend-create-{nonce}"));
+        let output = root.join("nested").join("cache").join("artifact.o");
+
+        ensure_output_parent_dir(output.to_str().expect("utf8 path")).expect("prime parent");
+        std::fs::remove_dir_all(root.join("nested")).expect("remove parent tree");
+
+        let mut file =
+            create_backend_output_file(output.to_str().expect("utf8 path")).expect("create file");
+        file.write_all(b"artifact").expect("write artifact");
+        drop(file);
+
+        assert_eq!(std::fs::read(&output).expect("read artifact"), b"artifact");
         let _ = std::fs::remove_dir_all(root);
     }
 
