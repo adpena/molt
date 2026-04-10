@@ -8,8 +8,7 @@ use crate::{
     function_arity, function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
     function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy,
     molt_exception_clear, obj_from_bits, object_type_id, profile_hit, raise_exception,
-    recursion_guard_enter, recursion_guard_exit, runtime_state, seq_vec_ref,
-    type_name,
+    recursion_guard_enter, recursion_guard_exit, runtime_state, seq_vec_ref, type_name,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -211,18 +210,17 @@ unsafe fn maybe_call_function_obj_trampoline(
             fn_ptr,
             function_trampoline_ptr(func_ptr),
         );
+        let reserved_info = crate::builtins::functions::reserved_wasm_runtime_callable_info(fn_ptr);
         let force_trampoline = should_force_trampoline_for_fixed_arity_call(
             tramp_ptr,
             function_needs_task_trampoline(_py, func_bits),
-        );
+        ) || reserved_info.is_some();
         if matches!(
             std::env::var("MOLT_TRACE_TRAMPOLINE_POLICY")
                 .ok()
                 .as_deref(),
             Some("1")
         ) {
-            let reserved_info =
-                crate::builtins::functions::reserved_wasm_runtime_callable_info(fn_ptr);
             eprintln!(
                 "[molt trampoline policy] fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} nargs={} reserved_info={reserved_info:?} force_trampoline={}",
                 args.len(),
@@ -470,6 +468,24 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
+                    if matches!(
+                        std::env::var("MOLT_TRACE_CALL_FUNCTION_OBJ0")
+                            .ok()
+                            .as_deref(),
+                        Some("1")
+                    ) {
+                        let name_bits = function_name_bits(_py, func_ptr);
+                        let name = if name_bits != 0 {
+                            string_obj_to_owned(obj_from_bits(name_bits))
+                                .unwrap_or_else(|| "<unnamed>".to_string())
+                        } else {
+                            "<unnamed>".to_string()
+                        };
+                        let target = fixed_arity_call_target_ptr(fn_ptr, tramp_ptr);
+                        eprintln!(
+                            "[molt call_function_obj0] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} target={target} closure_bits={closure_bits}"
+                        );
+                    }
                     molt_call_indirect1(
                         fixed_arity_call_target_ptr(fn_ptr, tramp_ptr),
                         closure_bits,
@@ -499,6 +515,24 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
+                    if matches!(
+                        std::env::var("MOLT_TRACE_CALL_FUNCTION_OBJ0")
+                            .ok()
+                            .as_deref(),
+                        Some("1")
+                    ) {
+                        let name_bits = function_name_bits(_py, func_ptr);
+                        let name = if name_bits != 0 {
+                            string_obj_to_owned(obj_from_bits(name_bits))
+                                .unwrap_or_else(|| "<unnamed>".to_string())
+                        } else {
+                            "<unnamed>".to_string()
+                        };
+                        let target = fixed_arity_call_target_ptr(fn_ptr, tramp_ptr);
+                        eprintln!(
+                            "[molt call_function_obj0] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} target={target} closure_bits={closure_bits}"
+                        );
+                    }
                     molt_call_indirect0(fixed_arity_call_target_ptr(fn_ptr, tramp_ptr)) as u64
                 } else {
                     // SAFETY: `fn_ptr` is a valid extern "C" function pointer from
@@ -2228,15 +2262,207 @@ unsafe fn call_function_obj_trampoline(_py: &PyToken<'_>, func_bits: u64, args: 
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
         frame_stack_push(_py, code_bits);
+        #[cfg(target_arch = "wasm32")]
+        if matches!(
+            std::env::var("MOLT_TRACE_CALL_FUNCTION_TRAMPOLINE")
+                .ok()
+                .as_deref(),
+            Some("1")
+        ) {
+            let name_bits = function_name_bits(_py, func_ptr);
+            let name = if name_bits != 0 {
+                string_obj_to_owned(obj_from_bits(name_bits))
+                    .unwrap_or_else(|| "<unnamed>".to_string())
+            } else {
+                "<unnamed>".to_string()
+            };
+            eprintln!(
+                "[molt call trampoline] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} closure_bits={closure_bits} nargs={} task_trampoline={}",
+                args.len(),
+                function_needs_task_trampoline(_py, func_bits),
+            );
+        }
+        #[cfg(target_arch = "wasm32")]
+        let use_fixed_arity_trampoline = !function_needs_task_trampoline(_py, func_bits);
         let res = {
             #[cfg(target_arch = "wasm32")]
             {
-                molt_call_indirect3(
-                    tramp_ptr,
-                    closure_bits,
-                    args.as_ptr() as u64,
-                    args.len() as u64,
-                ) as u64
+                if use_fixed_arity_trampoline {
+                    let target = fixed_arity_call_target_ptr(fn_ptr, tramp_ptr);
+                    match (closure_bits != 0, args.len()) {
+                        (false, 0) => molt_call_indirect0(target) as u64,
+                        (false, 1) => molt_call_indirect1(target, args[0]) as u64,
+                        (false, 2) => molt_call_indirect2(target, args[0], args[1]) as u64,
+                        (false, 3) => molt_call_indirect3(target, args[0], args[1], args[2]) as u64,
+                        (false, 4) => {
+                            molt_call_indirect4(target, args[0], args[1], args[2], args[3]) as u64
+                        }
+                        (false, 5) => {
+                            molt_call_indirect5(target, args[0], args[1], args[2], args[3], args[4])
+                                as u64
+                        }
+                        (false, 6) => molt_call_indirect6(
+                            target, args[0], args[1], args[2], args[3], args[4], args[5],
+                        ) as u64,
+                        (false, 7) => molt_call_indirect7(
+                            target, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                        ) as u64,
+                        (false, 8) => molt_call_indirect8(
+                            target, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                            args[7],
+                        ) as u64,
+                        (false, 9) => molt_call_indirect9(
+                            target, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                            args[7], args[8],
+                        ) as u64,
+                        (false, 10) => molt_call_indirect10(
+                            target, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                            args[7], args[8], args[9],
+                        ) as u64,
+                        (false, 11) => molt_call_indirect11(
+                            target, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                            args[7], args[8], args[9], args[10],
+                        ) as u64,
+                        (false, 12) => molt_call_indirect12(
+                            target, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                            args[7], args[8], args[9], args[10], args[11],
+                        ) as u64,
+                        (false, 13) => molt_call_indirect13(
+                            target, args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                            args[7], args[8], args[9], args[10], args[11], args[12],
+                        ) as u64,
+                        (true, 0) => molt_call_indirect1(target, closure_bits) as u64,
+                        (true, 1) => molt_call_indirect2(target, closure_bits, args[0]) as u64,
+                        (true, 2) => {
+                            molt_call_indirect3(target, closure_bits, args[0], args[1]) as u64
+                        }
+                        (true, 3) => {
+                            molt_call_indirect4(target, closure_bits, args[0], args[1], args[2])
+                                as u64
+                        }
+                        (true, 4) => molt_call_indirect5(
+                            target,
+                            closure_bits,
+                            args[0],
+                            args[1],
+                            args[2],
+                            args[3],
+                        ) as u64,
+                        (true, 5) => molt_call_indirect6(
+                            target,
+                            closure_bits,
+                            args[0],
+                            args[1],
+                            args[2],
+                            args[3],
+                            args[4],
+                        ) as u64,
+                        (true, 6) => molt_call_indirect7(
+                            target,
+                            closure_bits,
+                            args[0],
+                            args[1],
+                            args[2],
+                            args[3],
+                            args[4],
+                            args[5],
+                        ) as u64,
+                        (true, 7) => molt_call_indirect8(
+                            target,
+                            closure_bits,
+                            args[0],
+                            args[1],
+                            args[2],
+                            args[3],
+                            args[4],
+                            args[5],
+                            args[6],
+                        ) as u64,
+                        (true, 8) => molt_call_indirect9(
+                            target,
+                            closure_bits,
+                            args[0],
+                            args[1],
+                            args[2],
+                            args[3],
+                            args[4],
+                            args[5],
+                            args[6],
+                            args[7],
+                        ) as u64,
+                        (true, 9) => molt_call_indirect10(
+                            target,
+                            closure_bits,
+                            args[0],
+                            args[1],
+                            args[2],
+                            args[3],
+                            args[4],
+                            args[5],
+                            args[6],
+                            args[7],
+                            args[8],
+                        ) as u64,
+                        (true, 10) => molt_call_indirect11(
+                            target,
+                            closure_bits,
+                            args[0],
+                            args[1],
+                            args[2],
+                            args[3],
+                            args[4],
+                            args[5],
+                            args[6],
+                            args[7],
+                            args[8],
+                            args[9],
+                        ) as u64,
+                        (true, 11) => molt_call_indirect12(
+                            target,
+                            closure_bits,
+                            args[0],
+                            args[1],
+                            args[2],
+                            args[3],
+                            args[4],
+                            args[5],
+                            args[6],
+                            args[7],
+                            args[8],
+                            args[9],
+                            args[10],
+                        ) as u64,
+                        (true, 12) => molt_call_indirect13(
+                            target,
+                            closure_bits,
+                            args[0],
+                            args[1],
+                            args[2],
+                            args[3],
+                            args[4],
+                            args[5],
+                            args[6],
+                            args[7],
+                            args[8],
+                            args[9],
+                            args[10],
+                            args[11],
+                        ) as u64,
+                        _ => molt_call_indirect3(
+                            tramp_ptr,
+                            closure_bits,
+                            args.as_ptr() as u64,
+                            args.len() as u64,
+                        ) as u64,
+                    }
+                } else {
+                    molt_call_indirect3(
+                        tramp_ptr,
+                        closure_bits,
+                        args.as_ptr() as u64,
+                        args.len() as u64,
+                    ) as u64
+                }
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -2260,8 +2486,13 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
             && object_type_id(func_ptr) == TYPE_ID_FUNCTION
         {
             trace_function_vec_call(_py, func_ptr, args, "vec");
-            let tramp_ptr = function_trampoline_ptr(func_ptr);
-            if tramp_ptr != 0 {
+            if let Some(res) = maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, args) {
+                return res;
+            }
+            let arity = function_arity(func_ptr);
+            if function_trampoline_ptr(func_ptr) != 0
+                && (args.len() > 12 || arity != args.len() as u64)
+            {
                 return call_function_obj_trampoline(_py, func_bits, args);
             }
         }

@@ -274,6 +274,22 @@ const makeTable = (limits) => {
 
 const extractWasmTableBase = (buffer) => {
   if (!buffer) return null;
+  const inferFromExports = () => {
+    try {
+      const mod = new WebAssembly.Module(buffer);
+      const refs = WebAssembly.Module.exports(mod)
+        .map((entry) => entry.name)
+        .filter((name) => name.startsWith('__molt_table_ref_'))
+        .map((name) => Number.parseInt(name.slice('__molt_table_ref_'.length), 10))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      if (refs.length > 0) {
+        return Math.min(...refs);
+      }
+    } catch {
+      // Fall through to null below.
+    }
+    return null;
+  };
   try {
     const readConstExprI32 = (view, offset) => {
       if (offset >= view.length) {
@@ -440,11 +456,11 @@ const extractWasmTableBase = (buffer) => {
     const tableBaseRes = readVarInt32(bytes, pos);
     const tableBase = tableBaseRes.value;
     if (!Number.isFinite(tableBase) || tableBase <= 0) {
-      return null;
+      return inferFromExports();
     }
     return tableBase;
   } catch {
-    return null;
+    return inferFromExports();
   }
 };
 
@@ -2808,13 +2824,20 @@ const buildWasiStub = (state, logFn) => {
     view.setBigUint64(base + 16, WASI_RIGHTS_ALL, true);
     return 0;
   };
-  return {
+  const wasiImports = {
     proc_exit: (code) => {
       if (traceBrowserWasi) {
         console.error(`[molt browser wasi] proc_exit(${code})`);
       }
       stdio.flushAll();
       throw new Error(`WASM proc_exit ${code}`);
+    },
+    proc_raise: (sig) => {
+      if (traceBrowserWasi) {
+        console.error(`[molt browser wasi] proc_raise(${sig})`);
+      }
+      stdio.flushAll();
+      throw new Error(`WASM proc_raise ${sig}`);
     },
     args_sizes_get: (argcPtr, argvBufSizePtr) => {
       if (!writeWasiU32(argcPtr, 0)) return WASI_ERRNO_NOSYS;
@@ -3141,6 +3164,30 @@ const buildWasiStub = (state, logFn) => {
       return 0;
     },
   };
+  for (const name of [
+    'clock_res_get',
+    'fd_advise',
+    'fd_allocate',
+    'fd_datasync',
+    'fd_fdstat_set_rights',
+    'fd_filestat_set_times',
+    'fd_pread',
+    'fd_pwrite',
+    'fd_renumber',
+    'fd_sync',
+    'path_filestat_set_times',
+    'path_link',
+    'path_symlink',
+    'sock_accept',
+    'sock_recv',
+    'sock_send',
+    'sock_shutdown',
+  ]) {
+    if (!(name in wasiImports)) {
+      wasiImports[name] = wasiUnsupported;
+    }
+  }
+  return wasiImports;
 };
 
 const tryFetch = async (url) => {

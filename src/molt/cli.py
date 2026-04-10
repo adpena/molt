@@ -57,6 +57,7 @@ from typing import (
 from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
 from molt.compat import CompatibilityError
+from molt._wasm_runtime_exports import wasm_runtime_export_link_args
 from molt.debug import (
     DebugFailureClass,
     DebugStatus,
@@ -13278,11 +13279,10 @@ def _build_entry_main_ops(
             "value": register_global_code_id("molt_runtime_init"),
         },
         *version_ops,
-        # Clear any stale exception flag left by version_ops (code_new /
-        # code_slot_set).  Without this, the first check_exception inside
-        # the entry init function sees the leftover flag and jumps straight
-        # to the error handler, skipping module_cache_set and leaving the
-        # module unavailable at runtime.
+        # Clear any stale exception flag left by startup helpers. Without
+        # this, the first check_exception inside the entry init function
+        # sees the leftover flag and jumps straight to the error handler,
+        # skipping module_cache_set and leaving the module unavailable.
         {"kind": "exception_clear"},
         {
             "kind": "call",
@@ -16440,7 +16440,9 @@ def _prepare_backend_runtime_context(
 ) -> _PreparedBackendRuntimeContext:
     runtime_state = prepared_backend_setup.runtime_state
 
-    def ensure_runtime_wasm_shared() -> bool:
+    def ensure_runtime_wasm_shared(
+        required_exports: set[str] | frozenset[str] | None = None,
+    ) -> bool:
         return _ensure_runtime_wasm_artifact(
             runtime_state,
             reloc=False,
@@ -16452,6 +16454,7 @@ def _prepare_backend_runtime_context(
             freestanding=is_wasm_freestanding,
             stdlib_profile=stdlib_profile,
             resolved_modules=resolved_modules,
+            required_exports=required_exports,
         )
 
     def ensure_runtime_wasm_reloc() -> bool:
@@ -16505,7 +16508,7 @@ def _prepare_backend_dispatch(
     phase_starts: dict[str, float],
     json_output: bool,
     backend_daemon_config_digest: str | None,
-    ensure_runtime_wasm_shared: Callable[[], bool],
+    ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
     ensure_runtime_wasm_reloc: Callable[[], bool],
     warnings: list[str],
 ) -> tuple[_PreparedBackendDispatch | None, dict[str, Any] | None]:
@@ -16964,17 +16967,15 @@ def _execute_backend_compile(
 
                     if backend_env is not None:
                         backend_env.setdefault("MOLT_BACKEND_BATCH_SIZE", "0")
-                    backend_process = subprocess.run(
+                    backend_process = _run_subprocess_captured_to_tempfiles(
                         cmd_with_output,
-                        capture_output=True,
                         env=backend_env,
                         timeout=backend_timeout,
                     )
                 else:
-                    backend_process = subprocess.run(
+                    backend_process = _run_subprocess_captured_to_tempfiles(
                         cmd_with_output,
                         input=ir_bytes,
-                        capture_output=True,
                         env=backend_env,
                         timeout=backend_timeout,
                     )
@@ -17907,14 +17908,23 @@ def _prepare_non_native_build_result(
                             json_output,
                             command="build",
                         )
-        if not is_wasm_freestanding and not _split_runtime:
-            if not ensure_runtime_wasm_shared():
+        if not is_wasm_freestanding and not _split_runtime and not linked:
+            if runtime_wasm is None:
                 return None, _fail(
                     "Runtime wasm build failed",
                     json_output,
                     command="build",
                 )
-            if runtime_wasm is None or not runtime_wasm.exists():
+            required_runtime_exports = _collect_wasm_module_import_names(
+                output_wasm, "molt_runtime"
+            )
+            if not ensure_runtime_wasm_shared(required_runtime_exports):
+                return None, _fail(
+                    "Runtime wasm build failed",
+                    json_output,
+                    command="build",
+                )
+            if not runtime_wasm.exists():
                 return None, _fail(
                     "Runtime wasm build failed",
                     json_output,
@@ -19310,6 +19320,7 @@ def _ensure_runtime_wasm_artifact(
     freestanding: bool,
     stdlib_profile: str | None = "micro",
     resolved_modules: set[str] | frozenset[str] | None = None,
+    required_exports: set[str] | frozenset[str] | None = None,
 ) -> bool:
     runtime_path = (
         runtime_state.runtime_reloc_wasm if reloc else runtime_state.runtime_wasm
@@ -19319,7 +19330,9 @@ def _ensure_runtime_wasm_artifact(
         if reloc
         else runtime_state.runtime_wasm_ready
     )
-    if runtime_path is None or ready:
+    if runtime_path is None:
+        return True
+    if ready and required_exports is None:
         return True
     if not _ensure_runtime_wasm(
         runtime_path,
@@ -19332,6 +19345,7 @@ def _ensure_runtime_wasm_artifact(
         freestanding=freestanding,
         stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
+        required_exports=required_exports,
     ):
         return False
     if reloc:
@@ -20060,6 +20074,7 @@ def _module_lowering_context_payload(
         "is_package": is_package,
         "module_is_namespace": module_is_namespace,
         "entry_module": entry_override,
+        "compiler_fingerprint": _cache_tooling_fingerprint(),
         "size": path_stat.st_size,
         "mtime_ns": path_stat.st_mtime_ns,
         "parse_codec": parse_codec,
@@ -21320,13 +21335,17 @@ def _run_runtime_wasm_cargo_build(
             pass
         except OSError:
             pass
-    build = subprocess.run(
+    build_raw = _run_subprocess_captured_to_tempfiles(
         cmd,
         cwd=root,
         env=build_env,
         timeout=cargo_timeout,
-        check=False,
-        text=True,
+    )
+    build = subprocess.CompletedProcess(
+        build_raw.args,
+        build_raw.returncode,
+        build_raw.stdout.decode("utf-8", errors="replace"),
+        build_raw.stderr.decode("utf-8", errors="replace"),
     )
     wrapper = build_env.get("RUSTC_WRAPPER", "")
     if build.returncode != 0 and wrapper and Path(wrapper).name == "sccache":
@@ -21337,13 +21356,17 @@ def _run_runtime_wasm_cargo_build(
                 "Runtime wasm build: sccache wrapper failure detected; retrying without sccache.",
                 file=sys.stderr,
             )
-        build = subprocess.run(
+        build_raw = _run_subprocess_captured_to_tempfiles(
             cmd,
             cwd=root,
             env=retry_env,
             timeout=cargo_timeout,
-            check=False,
-            text=True,
+        )
+        build = subprocess.CompletedProcess(
+            build_raw.args,
+            build_raw.returncode,
+            build_raw.stdout.decode("utf-8", errors="replace"),
+            build_raw.stderr.decode("utf-8", errors="replace"),
         )
     if artifact_kind == "staticlib":
         return build, _wasm_runtime_staticlib_path(target_root, profile_dir)
@@ -21420,7 +21443,19 @@ def _ensure_runtime_wasm(
     freestanding: bool = False,
     stdlib_profile: str | None = "micro",
     resolved_modules: set[str] | frozenset[str] | None = None,
+    required_exports: set[str] | frozenset[str] | None = None,
 ) -> bool:
+    def _runtime_wasm_build_error_detail(
+        build: subprocess.CompletedProcess[str],
+    ) -> str | None:
+        stderr = (build.stderr or "").strip()
+        if stderr:
+            return stderr
+        stdout = (build.stdout or "").strip()
+        if stdout:
+            return stdout
+        return None
+
     root = project_root or Path(__file__).resolve().parents[2]
     # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
@@ -21428,25 +21463,21 @@ def _ensure_runtime_wasm(
             return True
     requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
+    profile_dir = _cargo_profile_dir(cargo_profile)
     env = os.environ.copy()
     use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
     if reloc:
         flags = ""
     else:
-        set_exports = (
-            " -C link-arg=--export=molt_frozenset_add"
-            " -C link-arg=--export=molt_set_remove"
-            " -C link-arg=--export=molt_set_pop"
-            " -C link-arg=--export=molt_set_update"
-            " -C link-arg=--export=molt_set_intersection_update"
-            " -C link-arg=--export=molt_set_difference_update"
-            " -C link-arg=--export=molt_set_symdiff_update"
+        runtime_exports = wasm_runtime_export_link_args(
+            required_runtime_imports=required_exports,
+            resolved_modules=resolved_modules,
         )
         shared_flags = (
             "-C link-arg=--import-memory -C link-arg=--import-table"
             " -C link-arg=--growable-table -C link-arg=--export-dynamic"
         )
-        flags = shared_flags if use_legacy_wasm_flags else shared_flags + set_exports
+        flags = shared_flags if use_legacy_wasm_flags else shared_flags + runtime_exports
     rustflags = env.get("RUSTFLAGS", "").strip()
     if flags:
         rustflags = f"{rustflags} {flags}".strip()
@@ -21484,6 +21515,7 @@ def _ensure_runtime_wasm(
     fingerprint_path = _runtime_fingerprint_path(
         root, runtime_wasm, cargo_profile, "wasm32-wasip1"
     )
+    target_root = _cargo_target_root(root)
     stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
     fingerprint = _runtime_fingerprint(
         root,
@@ -21502,6 +21534,11 @@ def _ensure_runtime_wasm(
             runtime_wasm, fingerprint, stored_fingerprint
         )
         if not needs_rebuild and _is_valid_runtime_wasm_artifact(runtime_wasm):
+            if not reloc:
+                current_src = _resolve_built_runtime_wasm_artifact(target_root, profile_dir)
+                if current_src != runtime_wasm and _inspect_wasm_binary(current_src) == "valid":
+                    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(current_src, runtime_wasm)
             return True
         if not needs_rebuild and not json_output:
             print(
@@ -21526,17 +21563,17 @@ def _ensure_runtime_wasm(
             _maybe_enable_sccache(env)
         else:
             env.pop("RUSTC_WRAPPER", None)
-        profile_dir = _cargo_profile_dir(cargo_profile)
         if reloc:
             cmd = [
                 "cargo",
-                "build",
+                "rustc",
                 "--package",
                 "molt-runtime",
                 "--profile",
                 cargo_profile,
                 "--target",
                 "wasm32-wasip1",
+                "--lib",
             ]
         else:
             cmd = [
@@ -21575,7 +21612,9 @@ def _ensure_runtime_wasm(
                 "builtin_fcntl",
             ]
             cmd.extend(["--features", ",".join(wasm_features)])
-        if not reloc:
+        if reloc:
+            cmd.extend(["--", "--crate-type=staticlib"])
+        else:
             cmd.extend(["--", "--crate-type=cdylib"])
         try:
             build, src = _run_runtime_wasm_cargo_build(
@@ -21598,7 +21637,11 @@ def _ensure_runtime_wasm(
             return False
         if build.returncode != 0:
             if not json_output:
-                print("Runtime wasm build failed", file=sys.stderr)
+                detail = _runtime_wasm_build_error_detail(build)
+                msg = "Runtime wasm build failed"
+                if detail:
+                    msg = f"{msg}: {detail}"
+                print(msg, file=sys.stderr)
             return False
         if reloc:
             if not src.exists():
@@ -21656,7 +21699,11 @@ def _ensure_runtime_wasm(
                 return False
             if build.returncode != 0:
                 if not json_output:
-                    print("Runtime wasm recovery build failed", file=sys.stderr)
+                    detail = _runtime_wasm_build_error_detail(build)
+                    msg = "Runtime wasm recovery build failed"
+                    if detail:
+                        msg = f"{msg}: {detail}"
+                    print(msg, file=sys.stderr)
                 return False
             recovery_state = _inspect_wasm_binary(recovery_src)
             if recovery_state == "missing":
@@ -21716,7 +21763,11 @@ def _ensure_runtime_wasm(
                     return False
                 if build.returncode != 0:
                     if not json_output:
-                        print("Runtime wasm fallback build failed", file=sys.stderr)
+                        detail = _runtime_wasm_build_error_detail(build)
+                        msg = "Runtime wasm fallback build failed"
+                        if detail:
+                            msg = f"{msg}: {detail}"
+                        print(msg, file=sys.stderr)
                     return False
                 fallback_state = _inspect_wasm_binary(fallback_src)
                 if fallback_state == "missing":
@@ -21992,6 +22043,68 @@ def _read_wasm_memory_min_bytes(path: Path) -> int | None:
     if memory_pages is None:
         return None
     return memory_pages * 65536
+
+
+def _collect_wasm_module_import_names(path: Path, module_name: str) -> set[str]:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return set()
+    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
+        return set()
+    offset = 8
+    result: set[str] = set()
+    try:
+        while offset < len(data):
+            section_id = data[offset]
+            offset += 1
+            size, offset = _read_wasm_varuint(data, offset)
+            end = offset + size
+            if end > len(data):
+                raise ValueError("Unexpected EOF while reading section")
+            payload = data[offset:end]
+            offset = end
+            if section_id != 2:
+                continue
+            cursor = 0
+            count, cursor = _read_wasm_varuint(payload, cursor)
+            for _ in range(count):
+                module, cursor = _read_wasm_string(payload, cursor)
+                name, cursor = _read_wasm_string(payload, cursor)
+                if cursor >= len(payload):
+                    raise ValueError("Unexpected EOF while reading import")
+                kind = payload[cursor]
+                cursor += 1
+                if kind == 0:
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 1:
+                    if cursor >= len(payload):
+                        raise ValueError("Unexpected EOF while reading table type")
+                    cursor += 1
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 2:
+                    flags, cursor = _read_wasm_varuint(payload, cursor)
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                    if flags & 0x1:
+                        _, cursor = _read_wasm_varuint(payload, cursor)
+                elif kind == 3:
+                    if cursor + 2 > len(payload):
+                        raise ValueError("Unexpected EOF while reading global type")
+                    cursor += 2
+                elif kind == 4:
+                    cursor += 1
+                    _, cursor = _read_wasm_varuint(payload, cursor)
+                else:
+                    raise ValueError(f"Unknown import kind {kind}")
+                if module == module_name:
+                    result.add(name)
+            break
+    except ValueError:
+        return set()
+    return result
 
 
 @functools.lru_cache(maxsize=64)
@@ -23086,6 +23199,36 @@ def _subprocess_output_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
+
+
+def _run_subprocess_captured_to_tempfiles(
+    cmd: Sequence[str],
+    *,
+    input: bytes | None = None,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a subprocess while capturing stdout/stderr via temporary files.
+
+    This avoids pipe-inheritance hangs from descendants that keep stdout/stderr
+    open after the direct child has already exited.
+    """
+    with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+        result = subprocess.run(
+            list(cmd),
+            input=input,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            cwd=cwd,
+            env=dict(env) if env is not None else None,
+            timeout=timeout,
+        )
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        stdout = stdout_file.read()
+        stderr = stderr_file.read()
+    return subprocess.CompletedProcess(result.args, result.returncode, stdout, stderr)
 
 
 def _function_cache_key(
@@ -30771,10 +30914,9 @@ def main() -> int:
         help=(
             "Produce separate runtime and app WASM modules instead of a single "
             "linked binary. The runtime is tree-shaken to include only the "
-            "builtins your program uses, then optimized with wasm-opt. "
-            "Outputs app.wasm (~50-100KB) + molt_runtime.wasm (~1-2MB) "
-            "+ worker.js + manifest.json. Typically reduces total size from "
-            "~3MB gzip to ~1.2MB gzip."
+            "builtins and runtime exports your program uses, then both split "
+            "artifacts are deforested with post-link cleanup and wasm-opt. "
+            "Outputs app.wasm + molt_runtime.wasm + worker.js + manifest.json."
         ),
     )
     build_parser.add_argument(

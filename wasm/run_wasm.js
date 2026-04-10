@@ -207,7 +207,22 @@ const initWasmAssets = () => {
   } else if (linkedPath && fs.existsSync(linkedPath)) {
     linkedBuffer = fs.readFileSync(linkedPath);
   }
-  const tableBaseProbe = linkedBuffer || wasmBuffer;
+  const preferLinkedEnv = process.env.MOLT_WASM_PREFER_LINKED;
+  const preferLinked =
+    preferLinkedEnv === undefined ||
+    !['0', 'false', 'no', 'off'].includes(preferLinkedEnv.toLowerCase());
+  const forceLinked = process.env.MOLT_WASM_LINKED === '1';
+  const directLinkEnv = process.env.MOLT_WASM_DIRECT_LINK;
+  const directLinkRequestedByEnv =
+    directLinkEnv !== undefined &&
+    ['1', 'true', 'yes', 'on'].includes(directLinkEnv.toLowerCase());
+  const directLinkRequestedByLegacyPrefer = !forceLinked && !preferLinked;
+  const directLinkRequested = directLinkRequestedByEnv || directLinkRequestedByLegacyPrefer;
+  const useLinkedProbe = forceLinked || !directLinkRequested;
+  const tableBaseProbe =
+    useLinkedProbe && linkedBuffer
+      ? linkedBuffer
+      : wasmBuffer;
   detectedWasmTableBase = extractWasmTableBase(tableBaseProbe);
   runtimePath = resolved.runtimePath;
   runtimeBuffer = null;
@@ -4175,6 +4190,22 @@ const skipImportDesc = (bytes, offset, kind) => {
 
 const extractWasmTableBase = (buffer) => {
   if (!buffer) return null;
+  const inferFromExports = () => {
+    try {
+      const mod = new WebAssembly.Module(buffer);
+      const refs = WebAssembly.Module.exports(mod)
+        .map((entry) => entry.name)
+        .filter((name) => name.startsWith('__molt_table_ref_'))
+        .map((name) => Number.parseInt(name.slice('__molt_table_ref_'.length), 10))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      if (refs.length > 0) {
+        return Math.min(...refs);
+      }
+    } catch {
+      // Fall through to null below.
+    }
+    return null;
+  };
   try {
     const readConstExprI32 = (bytes, offset) => {
       if (offset >= bytes.length) {
@@ -4337,11 +4368,11 @@ const extractWasmTableBase = (buffer) => {
     pos += 1;
     const [tableBase] = readVarInt32(bytes, pos);
     if (!Number.isFinite(tableBase) || tableBase <= 0) {
-      return null;
+      return inferFromExports();
     }
     return tableBase;
   } catch {
-    return null;
+    return inferFromExports();
   }
 };
 
