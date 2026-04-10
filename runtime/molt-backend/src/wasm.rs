@@ -1490,9 +1490,29 @@ impl WasmBackend {
         for func_ir in &ir.functions {
             for op in &func_ir.ops {
                 let kind = op.kind.as_str();
+                if matches!(
+                    std::env::var("MOLT_DEBUG_WASM_IMPORTS").ok().as_deref(),
+                    Some("1")
+                ) && op.s_value.as_deref() == Some("__main_____f_poll")
+                {
+                    eprintln!(
+                        "WASM_IMPORTS saw_op kind={} s_value={:?} task_kind={:?} args={:?} func={}",
+                        kind, op.s_value, op.task_kind, op.args, func_ir.name
+                    );
+                }
 
                 // Check explicit dependency table first.
                 if let Some(deps) = deps_map.get(kind) {
+                    if matches!(
+                        std::env::var("MOLT_DEBUG_WASM_IMPORTS").ok().as_deref(),
+                        Some("1")
+                    ) && kind == "alloc_task"
+                    {
+                        eprintln!(
+                            "WASM_IMPORTS alloc_task deps={deps:?} func={}",
+                            func_ir.name
+                        );
+                    }
                     for &dep in *deps {
                         required.insert(dep.to_string());
                     }
@@ -1508,6 +1528,35 @@ impl WasmBackend {
                 {
                     let import_name = name.strip_prefix("molt_").unwrap_or(name.as_str());
                     required.insert(import_name.to_string());
+                }
+
+                // Task allocation semantics are keyed off task_kind metadata in
+                // practice; keep the required runtime imports even if an
+                // intermediate op kind rewrite obscures the original alloc_task
+                // key before import collection runs.
+                if let Some(task_kind) = op.task_kind.as_deref() {
+                    if matches!(
+                        std::env::var("MOLT_DEBUG_WASM_IMPORTS").ok().as_deref(),
+                        Some("1")
+                    ) {
+                        eprintln!(
+                            "WASM_IMPORTS task_meta kind={} task_kind={} args={} func={}",
+                            kind,
+                            task_kind,
+                            op.args.as_ref().map(|a| a.len()).unwrap_or(0),
+                            func_ir.name
+                        );
+                    }
+                    required.insert("task_new".to_string());
+                    let has_args = op.args.as_ref().is_some_and(|args| !args.is_empty());
+                    if has_args {
+                        required.insert("handle_resolve".to_string());
+                        required.insert("inc_ref_obj".to_string());
+                    }
+                    if matches!(task_kind, "future" | "coroutine") {
+                        required.insert("cancel_token_get_current".to_string());
+                        required.insert("task_register_token_owned".to_string());
+                    }
                 }
 
                 // Some ops lower to specialized runtime imports selected from
@@ -1654,7 +1703,7 @@ impl WasmBackend {
             let tir_dump = crate::env_setting("TIR_DUMP").as_deref() == Some("1");
             let tir_stats = crate::env_setting("TIR_OPT_STATS").as_deref() == Some("1");
             let mut tir_cache =
-                crate::tir::cache::CompilationCache::open(std::path::PathBuf::from(".molt_cache"));
+                crate::tir::cache::CompilationCache::open(crate::tir::cache::backend_cache_dir());
             for func_ir in &mut ir.functions {
                 // Compute a stable content hash from the function name + input ops.
                 let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
@@ -2122,6 +2171,33 @@ impl WasmBackend {
         // In Auto mode, scan the IR to determine which imports are actually used.
         let auto_required: Option<BTreeSet<String>> = if is_auto {
             let mut required = Self::collect_required_imports(&ir);
+            if !task_kinds.is_empty() {
+                required.insert("task_new".to_string());
+            }
+            if task_kinds.values().any(|kind| {
+                matches!(
+                    kind,
+                    TrampolineKind::Generator
+                        | TrampolineKind::Coroutine
+                        | TrampolineKind::AsyncGen
+                )
+            }) {
+                required.insert("handle_resolve".to_string());
+                required.insert("inc_ref_obj".to_string());
+            }
+            if task_kinds
+                .values()
+                .any(|kind| matches!(kind, TrampolineKind::Coroutine))
+            {
+                required.insert("cancel_token_get_current".to_string());
+                required.insert("task_register_token_owned".to_string());
+            }
+            if task_kinds
+                .values()
+                .any(|kind| matches!(kind, TrampolineKind::AsyncGen))
+            {
+                required.insert("asyncgen_new".to_string());
+            }
             // Linked/reloc wasm can materialize these constructor callables at
             // runtime via method caches even when no IR op mentions the imports
             // directly. If Auto prunes them here, wrapper emission degrades them
@@ -2223,6 +2299,19 @@ impl WasmBackend {
 
         let mut import_idx = 0;
         let mut add_import = |name: &str, ty: u32, ids: &mut TrackedImportIds| {
+            if matches!(
+                std::env::var("MOLT_DEBUG_WASM_IMPORTS").ok().as_deref(),
+                Some("1")
+            ) && name == "task_new"
+            {
+                eprintln!(
+                    "WASM_IMPORTS add_import name=task_new skipped_prefix={} auto_required_contains={}",
+                    is_skipped_import(name),
+                    auto_required
+                        .as_ref()
+                        .is_none_or(|required| required.contains(name))
+                );
+            }
             if is_skipped_import(name) {
                 // In pure mode, skip IO/ASYNC/TIME imports entirely.
                 // The import is not registered in the WASM module, so the
@@ -3610,6 +3699,31 @@ impl WasmBackend {
             table_indices.push(user_trampoline_start + i as u32);
         }
 
+        if let Ok(raw_slot) = std::env::var("MOLT_DEBUG_WASM_TABLE_SLOT")
+            && let Ok(target_slot) = raw_slot.parse::<u32>()
+        {
+            for (name, slot) in &func_to_table_idx {
+                if *slot == target_slot || table_base + *slot == target_slot {
+                    eprintln!(
+                        "[molt wasm table-slot] kind=function raw_slot={} table_index={} name={}",
+                        slot,
+                        table_base + *slot,
+                        name
+                    );
+                }
+            }
+            for (name, slot) in &func_to_trampoline_idx {
+                if *slot == target_slot || table_base + *slot == target_slot {
+                    eprintln!(
+                        "[molt wasm table-slot] kind=trampoline raw_slot={} table_index={} name={}",
+                        slot,
+                        table_base + *slot,
+                        name
+                    );
+                }
+            }
+        }
+
         let import_ids = self.import_ids.clone();
 
         // Build the set of functions whose WASM signature includes a leading
@@ -4082,17 +4196,10 @@ impl WasmBackend {
                     func.instruction(&Instruction::I64Const(TASK_KIND_GENERATOR));
                     emit_call(&mut func, reloc_enabled, self.import_ids["task_new"]);
                     func.instruction(&Instruction::LocalSet(task_local));
-                    // Zero-initialize the generator control block using
-                    // bulk memory.fill instead of N i64.const 0 / i64.store
-                    // sequences (WASM_OPTIMIZATION_PLAN Section 3.3).
-                    func.instruction(&Instruction::LocalGet(task_local));
-                    emit_call(&mut func, reloc_enabled, self.import_ids["handle_resolve"]);
-                    func.instruction(&Instruction::LocalSet(base_local));
-                    func.instruction(&Instruction::LocalGet(base_local)); // dest
-                    func.instruction(&Instruction::I32Const(0)); // fill value
-                    func.instruction(&Instruction::I32Const(GEN_CONTROL_SIZE)); // byte count
-                    func.instruction(&Instruction::MemoryFill(0));
                     if payload_slots > 0 {
+                        func.instruction(&Instruction::LocalGet(task_local));
+                        emit_call(&mut func, reloc_enabled, self.import_ids["handle_resolve"]);
+                        func.instruction(&Instruction::LocalSet(base_local));
                         if arity > 0 {
                             func.instruction(&Instruction::LocalGet(1));
                             func.instruction(&Instruction::I32WrapI64);
@@ -4231,17 +4338,10 @@ impl WasmBackend {
                     func.instruction(&Instruction::I64Const(TASK_KIND_GENERATOR));
                     emit_call(&mut func, reloc_enabled, self.import_ids["task_new"]);
                     func.instruction(&Instruction::LocalSet(task_local));
-                    // Zero-initialize the async generator control block
-                    // using bulk memory.fill (WASM_OPTIMIZATION_PLAN
-                    // Section 3.3).
-                    func.instruction(&Instruction::LocalGet(task_local));
-                    emit_call(&mut func, reloc_enabled, self.import_ids["handle_resolve"]);
-                    func.instruction(&Instruction::LocalSet(base_local));
-                    func.instruction(&Instruction::LocalGet(base_local)); // dest
-                    func.instruction(&Instruction::I32Const(0)); // fill value
-                    func.instruction(&Instruction::I32Const(GEN_CONTROL_SIZE)); // byte count
-                    func.instruction(&Instruction::MemoryFill(0));
                     if payload_slots > 0 {
+                        func.instruction(&Instruction::LocalGet(task_local));
+                        emit_call(&mut func, reloc_enabled, self.import_ids["handle_resolve"]);
+                        func.instruction(&Instruction::LocalSet(base_local));
                         if arity > 0 {
                             func.instruction(&Instruction::LocalGet(1));
                             func.instruction(&Instruction::I32WrapI64);
@@ -4406,6 +4506,13 @@ impl WasmBackend {
     fn compile_func(&mut self, func_ir: &FunctionIR, type_idx: u32, ctx: &CompileFuncContext<'_>) {
         let func_index = self.func_count;
         let reloc_enabled = ctx.reloc_enabled;
+        if std::env::var("MOLT_DEBUG_WASM_SIG_FUNC").ok().as_deref() == Some(func_ir.name.as_str())
+        {
+            eprintln!(
+                "WASM_SIG_FUNC name={} type_idx={} params={:?} param_types={:?}",
+                func_ir.name, type_idx, func_ir.params, func_ir.param_types
+            );
+        }
         self.funcs.function(type_idx);
         if reloc_enabled && func_ir.name == "molt_main" {
             self.molt_main_index = Some(func_index);
@@ -4418,6 +4525,14 @@ impl WasmBackend {
             && !ctx.escaped_callable_targets.contains(&func_ir.name)
             && let Some(lir_output) = ctx.lir_fast_outputs.get(&func_ir.name)
         {
+            if std::env::var("MOLT_DEBUG_WASM_SIG_FUNC").ok().as_deref()
+                == Some(func_ir.name.as_str())
+            {
+                eprintln!(
+                    "WASM_SIG_FUNC fast_path name={} lir_param_types={:?} lir_result_types={:?}",
+                    func_ir.name, lir_output.param_types, lir_output.result_types
+                );
+            }
             let mut func = Function::new_with_locals_types(lir_output.locals.clone());
             for instruction in &lir_output.instructions {
                 func.instruction(instruction);
@@ -4683,6 +4798,7 @@ impl WasmBackend {
         for undef in used_vars.difference(&defined_vars) {
             if let Some(&local_idx) = locals.get(undef.as_str())
                 && local_idx != dead_sink_idx
+                && !param_set.contains(undef.as_str())
                 && !const_seed_seen.contains(undef)
             {
                 const_seed_seen.insert(undef.clone());
@@ -4855,6 +4971,28 @@ impl WasmBackend {
         } else {
             Vec::new()
         };
+        if std::env::var("MOLT_DEBUG_WASM_SEEDS_FUNC").ok().as_deref()
+            == Some(func_ir.name.as_str())
+        {
+            eprintln!(
+                "WASM_SEEDS_FUNC name={} seeds={:?}",
+                func_ir.name, const_seed_locals
+            );
+            for name in &func_ir.params {
+                if let Some(idx) = locals.get(name) {
+                    eprintln!("WASM_SEEDS_PARAM name={} slot={}", name, idx);
+                }
+            }
+            let mut slot_to_names: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+            for (name, &idx) in &locals {
+                slot_to_names.entry(idx).or_default().push(name.clone());
+            }
+            for (slot, _) in &const_seed_locals {
+                if let Some(names) = slot_to_names.get(slot) {
+                    eprintln!("WASM_SEEDS_SLOT slot={} names={:?}", slot, names);
+                }
+            }
+        }
 
         // --- Multi-value return optimization locals (Section 3.1) ---
         let multi_return_candidates = ctx.multi_return_candidates;
@@ -4936,6 +5074,33 @@ impl WasmBackend {
 
         let _ = local_count;
         let mut func = Function::new_with_locals_types(local_types);
+        if std::env::var("MOLT_DEBUG_WASM_LOCALS_FUNC").ok().as_deref()
+            == Some(func_ir.name.as_str())
+        {
+            eprintln!("WASM_DEBUG_FUNC {}", func_ir.name);
+            for (idx, op) in func_ir.ops.iter().enumerate() {
+                let mut mentioned: Vec<String> = Vec::new();
+                if let Some(args) = &op.args {
+                    mentioned.extend(args.iter().cloned());
+                }
+                if let Some(var) = &op.var {
+                    mentioned.push(var.clone());
+                }
+                if let Some(out) = &op.out {
+                    mentioned.push(out.clone());
+                }
+                mentioned.sort();
+                mentioned.dedup();
+                let mapped: Vec<String> = mentioned
+                    .into_iter()
+                    .filter_map(|name| locals.get(&name).map(|slot| format!("{name}->{slot}")))
+                    .collect();
+                eprintln!(
+                    "WASM_DEBUG_OP {} kind={} var={:?} out={:?} args={:?} locals={:?}",
+                    idx, op.kind, op.var, op.out, op.args, mapped
+                );
+            }
+        }
         #[derive(Clone, Copy)]
         enum ControlKind {
             Block,
@@ -6784,8 +6949,12 @@ impl WasmBackend {
                             Some("str") => "str_contains",
                             _ => "contains",
                         };
-                        let import_id =
-                            selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
+                        let import_id = selected_import_id(
+                            import_ids,
+                            import_key,
+                            &func_ir.name,
+                            op.kind.as_str(),
+                        );
                         emit_call(func, reloc_enabled, import_id);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
@@ -7040,8 +7209,12 @@ impl WasmBackend {
                                 _ => "len",
                             },
                         };
-                        let import_id =
-                            selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
+                        let import_id = selected_import_id(
+                            import_ids,
+                            import_key,
+                            &func_ir.name,
+                            op.kind.as_str(),
+                        );
                         emit_call(func, reloc_enabled, import_id);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
@@ -8097,8 +8270,12 @@ impl WasmBackend {
                             Some("tuple") => "tuple_getitem",
                             _ => "index",
                         };
-                        let import_id =
-                            selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
+                        let import_id = selected_import_id(
+                            import_ids,
+                            import_key,
+                            &func_ir.name,
+                            op.kind.as_str(),
+                        );
                         emit_call(func, reloc_enabled, import_id);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
@@ -8121,8 +8298,12 @@ impl WasmBackend {
                             Some("dict") => "dict_setitem",
                             _ => "store_index",
                         };
-                        let import_id =
-                            selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
+                        let import_id = selected_import_id(
+                            import_ids,
+                            import_key,
+                            &func_ir.name,
+                            op.kind.as_str(),
+                        );
                         emit_call(func, reloc_enabled, import_id);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
@@ -10596,6 +10777,12 @@ impl WasmBackend {
                         let src = locals[src_name];
                         if let Some(out_name) = op.out.as_ref() {
                             if out_name != "none" {
+                                // These ops create a second live alias of the
+                                // source object bits. Take a new ref for the
+                                // destination so later cleanup of the source
+                                // name cannot invalidate the alias.
+                                func.instruction(&Instruction::LocalGet(src));
+                                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                                 let out = locals[out_name];
                                 func.instruction(&Instruction::LocalGet(src));
                                 func.instruction(&Instruction::LocalSet(out));
@@ -11363,23 +11550,19 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                             0
                         };
-                        // Resolve the task handle pointer once and cache in a
-                        // local, mirroring the trampoline codepath pattern
-                        // (WASM_OPTIMIZATION_PLAN Section 3.3).
+                        // Resolve the task handle pointer once when we need to
+                        // materialize closure/argument payload slots after the
+                        // runtime-owned control block.
                         let has_args = op.args.as_ref().is_some_and(|a| !a.is_empty());
-                        if payload_base > 0 || has_args {
+                        if has_args {
                             let resolve_local = locals["__wasm_alloc_resolve"];
                             func.instruction(&Instruction::LocalGet(res));
                             emit_call(func, reloc_enabled, import_ids["handle_resolve"]);
                             func.instruction(&Instruction::LocalSet(resolve_local));
-                            if payload_base > 0 {
-                                func.instruction(&Instruction::LocalGet(resolve_local)); // dest
-                                func.instruction(&Instruction::I32Const(0)); // fill value
-                                func.instruction(&Instruction::I32Const(payload_base)); // byte count
-                                func.instruction(&Instruction::MemoryFill(0));
-                            }
                         }
-                        if let Some(args) = op.args.as_ref() {
+                        if let Some(args) = op.args.as_ref()
+                            && !args.is_empty()
+                        {
                             let resolve_local = locals["__wasm_alloc_resolve"];
                             for (i, name) in args.iter().enumerate() {
                                 let arg_local = locals[name];
