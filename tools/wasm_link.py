@@ -1191,6 +1191,29 @@ def _memory_import_min(data: bytes) -> int | None:
     return None
 
 
+def _highest_exported_table_ref_index(data: bytes) -> int | None:
+    refs = [
+        int(name.removeprefix("__molt_table_ref_"))
+        for name in _collect_function_exports(data)
+        if name.startswith("__molt_table_ref_")
+    ]
+    if not refs:
+        return None
+    return max(refs)
+
+
+def _required_linked_table_min(data: bytes, fallback_min: int | None) -> int | None:
+    required = fallback_min
+    highest_ref = _highest_exported_table_ref_index(data)
+    if highest_ref is not None:
+        ref_required = highest_ref + 1
+        required = ref_required if required is None else max(required, ref_required)
+    current_min = _table_import_min(data)
+    if current_min is not None:
+        required = current_min if required is None else max(required, current_min)
+    return required
+
+
 def _rewrite_table_import_min(data: bytes, required_min: int) -> bytes | None:
     sections = _parse_sections(data)
     changed = False
@@ -3280,9 +3303,10 @@ def _run_wasm_ld(
                 linked_bytes = linked.read_bytes()
 
         output_table_min = _table_import_min(output.read_bytes())
-        if output_table_min is not None:
+        required_table_min = _required_linked_table_min(linked_bytes, output_table_min)
+        if required_table_min is not None:
             try:
-                updated = _rewrite_table_import_min(linked_bytes, output_table_min)
+                updated = _rewrite_table_import_min(linked_bytes, required_table_min)
             except ValueError as exc:
                 print(f"Failed to rewrite linked table min: {exc}", file=sys.stderr)
                 return 1
