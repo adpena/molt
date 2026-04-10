@@ -582,6 +582,18 @@ def test_collect_imports_can_skip_nested_imports() -> None:
     assert "os" in top_level_only
 
 
+def test_discover_with_core_modules_includes_asyncio_ssl_dependency(
+    tmp_path: Path,
+) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("import asyncio\n")
+
+    module_graph = _discover_with_core_modules(entry)
+
+    assert "asyncio" in module_graph
+    assert "ssl" in module_graph
+
+
 def test_collect_imports_resolves_module_constant_via_helper_call() -> None:
     tree = ast.parse(
         "import importlib\n"
@@ -766,7 +778,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
 
     monkeypatch.setattr(cli, "_link_fingerprint", fake_link_fingerprint)
     monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
-    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
 
     prepared, error = cli._prepare_native_link(
         output_artifact=output_obj,
@@ -792,12 +804,14 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
 
     assert error is None
     assert prepared is not None
+    staged_stdlib = artifacts_root / stdlib_obj.name
     assert captured_inputs == [
         tmp_path / "artifacts" / "main_stub.c",
         output_obj,
         runtime_lib,
-        stdlib_obj,
+        staged_stdlib,
     ]
+    assert staged_stdlib.read_bytes() == b"stdlib"
 
 
 def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
@@ -815,7 +829,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     artifacts_root.mkdir()
 
     monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
-    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         cli,
         "_run_native_link_command",
@@ -873,6 +887,65 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     assert second_error is None
     assert second is not None
     assert first.link_fingerprint["hash"] != second.link_fingerprint["hash"]
+
+
+def test_prepare_native_link_stages_stdlib_object_for_link_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_obj = tmp_path / "output.o"
+    output_obj.write_bytes(b"\x7fELFobject")
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    runtime_lib.write_bytes(b"archive")
+    output_binary = tmp_path / "app"
+    stdlib_obj = tmp_path / "stdlib.o"
+    stdlib_obj.write_bytes(b"stdlib")
+    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text("stdlib-key\n")
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.mkdir()
+    captured_link_cmd: list[str] = []
+
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+
+    def fake_run_native_link_command(
+        *,
+        link_cmd: list[str],
+        json_output: bool,
+        link_timeout: float | None,
+    ) -> subprocess.CompletedProcess[str]:
+        del json_output, link_timeout
+        captured_link_cmd[:] = link_cmd
+        return subprocess.CompletedProcess(link_cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_run_native_link_command", fake_run_native_link_command)
+
+    prepared, error = cli._prepare_native_link(
+        output_artifact=output_obj,
+        trusted=False,
+        capabilities_list=None,
+        artifacts_root=artifacts_root,
+        json_output=False,
+        output_binary=output_binary,
+        runtime_lib=runtime_lib,
+        molt_root=tmp_path,
+        runtime_cargo_profile="dev-fast",
+        target_triple=None,
+        sysroot_path=None,
+        profile="dev",
+        project_root=tmp_path,
+        diagnostics_enabled=False,
+        phase_starts={},
+        link_timeout=None,
+        warnings=[],
+        stdlib_obj_path=stdlib_obj,
+        stdlib_object_cache_key="stdlib-key",
+    )
+
+    assert error is None
+    assert prepared is not None
+    staged_stdlib = artifacts_root / stdlib_obj.name
+    assert str(staged_stdlib) in captured_link_cmd
+    assert staged_stdlib.read_bytes() == b"stdlib"
 
 
 def test_build_native_link_command_does_not_read_ambient_stdlib_env(
@@ -8136,6 +8209,96 @@ def test_native_backend_compile_routes_stdlib_object_env(
     assert captured_envs[0]["MOLT_ENTRY_MODULE"] == entry_module
 
 
+def test_native_backend_compile_overrides_stale_ambient_partition_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    output_artifact = project_root / "build" / "main.o"
+    backend_bin = tmp_path / "backend-bin"
+    artifacts_root = tmp_path / "artifacts"
+    stdlib_object_path = project_root / "build" / "main.stdlib.o"
+    entry_module = "pkg.app"
+    captured_envs: list[dict[str, str] | None] = []
+
+    monkeypatch.setenv("MOLT_STDLIB_OBJ", str(tmp_path / "ambient.stdlib.o"))
+    monkeypatch.setenv("MOLT_STDLIB_CACHE_KEY", "ambient-key")
+    monkeypatch.setenv("MOLT_STDLIB_MODULE_SYMBOLS", '["ambient_mod"]')
+    monkeypatch.setenv("MOLT_ENTRY_MODULE", "ambient.entry")
+
+    def fake_subprocess_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        env = cast(dict[str, str] | None, kwargs.get("env"))
+        captured_envs.append(env)
+        assert env is not None
+        output_path = Path(cmd[cmd.index("--output") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"object")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+
+    result, error = cli._execute_backend_compile(
+        cache=False,
+        cache_path=None,
+        function_cache_path=None,
+        artifacts_root=artifacts_root,
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=False,
+        diagnostics_enabled=False,
+        phase_starts={},
+        daemon_ready=False,
+        daemon_socket=None,
+        project_root=project_root,
+        output_artifact=output_artifact,
+        cache_key=None,
+        function_cache_key=None,
+        cache_setup=cli._BackendCacheSetup(
+            cache_enabled=False,
+            cache_key=None,
+            function_cache_key=None,
+            cache_path=None,
+            function_cache_path=None,
+            stdlib_object_path=stdlib_object_path,
+            stdlib_object_cache_key="real-key",
+            cache_candidates=(),
+            cache_hit=False,
+            cache_hit_tier=None,
+            stdlib_module_symbols_json='["builtins","sys"]',
+        ),
+        target_triple=None,
+        backend_daemon_config_digest=None,
+        ir={"functions": []},
+        json_output=False,
+        warnings=[],
+        verbose=False,
+        backend_bin=backend_bin,
+        backend_env=None,
+        backend_timeout=None,
+        molt_root=project_root,
+        backend_cargo_profile="dev-fast",
+        entry_module=entry_module,
+        _ensure_backend_ir_bytes=lambda: b"{}",
+        _get_backend_ir_fmt=lambda: "json",
+        cache_hit=False,
+        backend_daemon_cached=None,
+        backend_daemon_cache_tier=None,
+        backend_daemon_health=None,
+    )
+
+    assert error is None
+    assert result is not None
+    assert captured_envs and captured_envs[0] is not None
+    env = captured_envs[0]
+    assert env["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
+    assert env["MOLT_STDLIB_CACHE_KEY"] == "real-key"
+    assert env["MOLT_STDLIB_MODULE_SYMBOLS"] == '["builtins","sys"]'
+    assert env["MOLT_ENTRY_MODULE"] == entry_module
+
+
 def test_backend_compile_stages_one_shot_output_into_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -10484,6 +10647,14 @@ def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
     }
 
     warnings: list[str] = []
+    module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module={"sys": True},
+    )
     common = dict(
         cache_enabled=True,
         ir=tiny_ir,
@@ -10498,6 +10669,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
         cache_dir=None,
         warnings=warnings,
         entry_module="__main__",
+        module_graph_metadata=module_graph_metadata,
     )
 
     setup_split = cli._prepare_backend_cache_setup(
