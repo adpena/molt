@@ -16833,19 +16833,21 @@ def _execute_backend_compile(
             if not is_wasm and not _is_transpile and stdlib_obj_path is not None:
                 stdlib_obj_path.parent.mkdir(parents=True, exist_ok=True)
                 if backend_env is not None:
-                    backend_env.setdefault("MOLT_STDLIB_OBJ", str(stdlib_obj_path))
+                    backend_env["MOLT_STDLIB_OBJ"] = str(stdlib_obj_path)
                     if cache_setup.stdlib_object_cache_key:
-                        backend_env.setdefault(
-                            "MOLT_STDLIB_CACHE_KEY",
-                            cache_setup.stdlib_object_cache_key,
+                        backend_env["MOLT_STDLIB_CACHE_KEY"] = (
+                            cache_setup.stdlib_object_cache_key
                         )
+                    else:
+                        backend_env.pop("MOLT_STDLIB_CACHE_KEY", None)
                     if cache_setup.stdlib_module_symbols_json:
-                        backend_env.setdefault(
-                            "MOLT_STDLIB_MODULE_SYMBOLS",
-                            cache_setup.stdlib_module_symbols_json,
+                        backend_env["MOLT_STDLIB_MODULE_SYMBOLS"] = (
+                            cache_setup.stdlib_module_symbols_json
                         )
+                    else:
+                        backend_env.pop("MOLT_STDLIB_MODULE_SYMBOLS", None)
             if not is_wasm and not _is_transpile and backend_env is not None:
-                backend_env.setdefault(ENTRY_OVERRIDE_ENV, entry_module)
+                backend_env[ENTRY_OVERRIDE_ENV] = entry_module
                 # Limit rayon threads to a fraction of available cores.
                 # The batched compilation pipeline may run multiple backend
                 # processes; each process's thread pool must share the CPU
