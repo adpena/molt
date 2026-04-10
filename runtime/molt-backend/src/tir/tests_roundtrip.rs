@@ -1057,6 +1057,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn roundtrip_alloc_task_preserves_task_metadata() {
+        let ops = vec![
+            OpIR {
+                kind: "alloc_task".to_string(),
+                out: Some("task".into()),
+                s_value: Some("__main_____f_poll".into()),
+                value: Some(48),
+                task_kind: Some("generator".into()),
+                args: Some(vec![]),
+                ..OpIR::default()
+            },
+            op_args("ret", &["task"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let alloc = result.iter().find(|o| o.kind == "alloc_task");
+        assert!(alloc.is_some(), "alloc_task must survive round-trip");
+        let alloc = alloc.unwrap();
+        assert_eq!(
+            alloc.task_kind.as_deref(),
+            Some("generator"),
+            "alloc_task.task_kind must be preserved"
+        );
+        assert_eq!(
+            alloc.s_value.as_deref(),
+            Some("__main_____f_poll"),
+            "alloc_task.s_value must be preserved"
+        );
+        assert_eq!(alloc.value, Some(48), "alloc_task.value must be preserved");
+    }
+
+    #[test]
+    fn pipeline_alloc_task_preserves_task_metadata() {
+        let ops = vec![
+            OpIR {
+                kind: "alloc_task".to_string(),
+                out: Some("task".into()),
+                s_value: Some("__main_____f_poll".into()),
+                value: Some(48),
+                task_kind: Some("generator".into()),
+                args: Some(vec![]),
+                ..OpIR::default()
+            },
+            op_args("ret", &["task"]),
+        ];
+        let result = roundtrip(ops);
+        let alloc = result.iter().find(|o| o.kind == "alloc_task");
+        assert!(
+            alloc.is_some(),
+            "alloc_task must survive optimized round-trip"
+        );
+        let alloc = alloc.unwrap();
+        assert_eq!(
+            alloc.task_kind.as_deref(),
+            Some("generator"),
+            "optimized alloc_task.task_kind must be preserved"
+        );
+        assert_eq!(
+            alloc.s_value.as_deref(),
+            Some("__main_____f_poll"),
+            "optimized alloc_task.s_value must be preserved"
+        );
+        assert_eq!(
+            alloc.value,
+            Some(48),
+            "optimized alloc_task.value must be preserved"
+        );
+    }
+
     // ---------------------------------------------------------------------------
     // Test 30: call_func variant preserves original kind
     // ---------------------------------------------------------------------------
