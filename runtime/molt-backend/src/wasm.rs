@@ -1480,6 +1480,16 @@ impl WasmBackend {
             }
         }
 
+        if let Ok(extra_required) = std::env::var("MOLT_WASM_EXTRA_REQUIRED_IMPORTS") {
+            for name in extra_required
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                required.insert(name.to_string());
+            }
+        }
+
         // Build the set of all known import names for auto-discovery.
         let known_imports: BTreeSet<&str> = crate::wasm_imports::IMPORT_REGISTRY
             .iter()
@@ -2198,17 +2208,15 @@ impl WasmBackend {
             {
                 required.insert("asyncgen_new".to_string());
             }
-            // Linked/reloc wasm can materialize these constructor callables at
-            // runtime via method caches even when no IR op mentions the imports
-            // directly. If Auto prunes them here, wrapper emission degrades them
-            // to sentinel traps and the linked table contract breaks.
-            if self.options.reloc_enabled {
-                required.extend(
-                    RESERVED_RUNTIME_CALLABLE_SPECS
-                        .iter()
-                        .map(|spec| spec.import_name.to_string()),
-                );
-            }
+            // Runtime method caches can materialize these constructor callables
+            // even when no IR op mentions the imports directly. If Auto prunes
+            // them, wrapper emission degrades the callable slots to sentinel
+            // traps in both direct and reloc/link wasm paths.
+            required.extend(
+                RESERVED_RUNTIME_CALLABLE_SPECS
+                    .iter()
+                    .map(|spec| spec.import_name.to_string()),
+            );
             Some(required)
         } else {
             None
@@ -2218,7 +2226,6 @@ impl WasmBackend {
                 // IO
                 "process_",
                 "socket",
-                "os_",
                 "db_",
                 "ws_",
                 "file_",
@@ -2658,6 +2665,9 @@ impl WasmBackend {
             ("molt_sys_set_version_info", "sys_set_version_info", 6),
             ("molt_env_get", "env_get", 2),
             ("molt_env_snapshot", "env_snapshot", 0),
+            ("molt_capabilities_trusted", "capabilities_trusted", 0),
+            ("molt_capabilities_has", "capabilities_has", 1),
+            ("molt_capabilities_require", "capabilities_require", 1),
             ("molt_os_name", "os_name", 0),
             ("molt_os_close", "os_close", 1),
             ("molt_os_dup", "os_dup", 1),

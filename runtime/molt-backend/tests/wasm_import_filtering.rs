@@ -56,6 +56,23 @@ fn ir_with_async_ops() -> SimpleIR {
     }
 }
 
+fn ir_with_os_name() -> SimpleIR {
+    let mut os_name = op("os_name");
+    os_name.out = Some("v0".to_string());
+
+    SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: vec![],
+            ops: vec![os_name, op("ret_void")],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    }
+}
+
 fn ir_with_escaped_call_guarded() -> SimpleIR {
     let mut func_new = op("func_new");
     func_new.s_value = Some("callee".to_string());
@@ -307,6 +324,29 @@ fn auto_call_guarded_keeps_escaped_dispatch_imports() {
     }
 }
 
+#[test]
+fn auto_profile_keeps_reserved_runtime_callable_imports() {
+    let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Auto);
+    let names = import_names(&wasm);
+
+    for name in [
+        "type_call",
+        "type_new",
+        "type_init",
+        "object_new_bound",
+        "object_init",
+        "object_init_subclass",
+        "exception_new_bound",
+        "exception_init",
+        "exceptiongroup_init",
+    ] {
+        assert!(
+            names.contains(name),
+            "Auto profile must retain reserved runtime callable import {name}; imports={names:?}"
+        );
+    }
+}
+
 // -----------------------------------------------------------------------
 // Pure profile tests
 // -----------------------------------------------------------------------
@@ -316,9 +356,7 @@ fn pure_profile_excludes_io_imports() {
     let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Pure);
     let names = import_names(&wasm);
 
-    let io_prefixes = [
-        "process_", "socket", "os_", "db_", "ws_", "file_", "stream_",
-    ];
+    let io_prefixes = ["process_", "socket", "db_", "ws_", "file_", "stream_"];
     for prefix in &io_prefixes {
         let matches: Vec<&String> = names.iter().filter(|n| n.starts_with(prefix)).collect();
         assert!(
@@ -327,6 +365,17 @@ fn pure_profile_excludes_io_imports() {
             matches
         );
     }
+}
+
+#[test]
+fn pure_profile_keeps_runtime_os_intrinsics() {
+    let wasm = compile_with_profile(ir_with_os_name(), WasmProfile::Pure);
+    let names = import_names(&wasm);
+
+    assert!(
+        names.contains("os_name"),
+        "Pure profile must retain runtime-safe os_ intrinsics; imports={names:?}"
+    );
 }
 
 #[test]
