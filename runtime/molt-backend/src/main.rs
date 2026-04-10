@@ -1688,16 +1688,15 @@ fn main() -> io::Result<()> {
             ),
         )
     })?;
-    let mut file = File::create(output_file).map_err(|err| {
-        io::Error::new(
-            err.kind(),
-            format!("failed to create backend output '{}': {}", output_file, err),
-        )
-    })?;
-
     if is_luau {
         #[cfg(feature = "luau-backend")]
         {
+            let mut file = File::create(output_file).map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("failed to create backend output '{}': {}", output_file, err),
+                )
+            })?;
             let mut backend = LuauBackend::new();
             let source = if use_ir_pipeline {
                 backend.compile_via_ir(&ir)
@@ -1724,6 +1723,12 @@ fn main() -> io::Result<()> {
     } else if is_rust {
         #[cfg(feature = "rust-backend")]
         {
+            let mut file = File::create(output_file).map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("failed to create backend output '{}': {}", output_file, err),
+                )
+            })?;
             let mut backend = RustBackend::new();
             let source = backend.compile(&ir);
             file.write_all(source.as_bytes())?;
@@ -1739,6 +1744,12 @@ fn main() -> io::Result<()> {
     } else if is_wasm {
         #[cfg(feature = "wasm-backend")]
         {
+            let mut file = File::create(output_file).map_err(|err| {
+                io::Error::new(
+                    err.kind(),
+                    format!("failed to create backend output '{}': {}", output_file, err),
+                )
+            })?;
             let backend = WasmBackend::with_options(WasmCompileOptions::default());
             let wasm_bytes = backend.compile(ir);
             file.write_all(&wasm_bytes)?;
@@ -1885,6 +1896,12 @@ fn main() -> io::Result<()> {
                 // Small IR (or user-only mode): compile in one shot
                 let backend = SimpleBackend::new_with_target(target_triple);
                 let obj_bytes = backend.compile(ir);
+                let mut file = File::create(output_file).map_err(|err| {
+                    io::Error::new(
+                        err.kind(),
+                        format!("failed to create backend output '{}': {}", output_file, err),
+                    )
+                })?;
                 file.write_all(&obj_bytes)?;
                 eprintln!("Successfully compiled to {output_file} ({func_count} functions)");
             } else {
@@ -1936,7 +1953,6 @@ fn main() -> io::Result<()> {
                 }
 
                 // Merge batch objects with ld -r (relocatable partial link)
-                drop(file); // close the output file handle
                 merge_relocatable_objects(Path::new(output_file), &batch_paths, None)?;
 
                 // Cleanup
