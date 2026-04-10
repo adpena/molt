@@ -1220,6 +1220,7 @@ class _BackendCacheSetup:
     cache_candidates: tuple[tuple[str, Path], ...]
     cache_hit: bool
     cache_hit_tier: str | None
+    stdlib_module_symbols_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -10319,6 +10320,18 @@ def _materialize_cached_backend_artifact(
         return False
 
 
+def _native_artifact_source_key(
+    base_key: str | None,
+    *,
+    stdlib_object_cache_key: str | None,
+    is_wasm: bool,
+) -> str:
+    key = base_key or ""
+    if is_wasm or not stdlib_object_cache_key:
+        return key
+    return f"{key}|stdlib:{stdlib_object_cache_key}"
+
+
 def _try_cached_backend_candidates(
     *,
     project_root: Path,
@@ -10366,9 +10379,11 @@ def _try_cached_backend_candidates(
             candidate,
             output_artifact,
             tier=tier,
-            source_key=cache_key
-            if tier == "module"
-            else (function_cache_key or cache_key or ""),
+            source_key=_native_artifact_source_key(
+                cache_key if tier == "module" else (function_cache_key or cache_key or ""),
+                stdlib_object_cache_key=stdlib_object_cache_key,
+                is_wasm=is_wasm,
+            ),
             cache_path=cache_path,
             module_cache_key=cache_key,
             warnings=warnings,
@@ -10407,7 +10422,11 @@ def _backend_daemon_skip_output_sync_flags(
             return False, False
     skip_module_output = bool(cache_key) and _artifact_sync_state_matches_stat(
         state,
-        source_key=cache_key or "",
+        source_key=_native_artifact_source_key(
+            cache_key,
+            stdlib_object_cache_key=stdlib_object_cache_key,
+            is_wasm=is_wasm_output,
+        ),
         tier="module",
         stat=output_stat,
     )
@@ -10415,7 +10434,11 @@ def _backend_daemon_skip_output_sync_flags(
         function_cache_key
     ) and _artifact_sync_state_matches_stat(
         state,
-        source_key=function_cache_key or "",
+        source_key=_native_artifact_source_key(
+            function_cache_key,
+            stdlib_object_cache_key=stdlib_object_cache_key,
+            is_wasm=is_wasm_output,
+        ),
         tier="function",
         stat=output_stat,
     )
@@ -10447,6 +10470,7 @@ def _stage_backend_output_and_caches(
     *,
     cache_path: Path | None,
     cache_key: str | None,
+    stdlib_object_cache_key: str | None,
     function_cache_path: Path | None,
     warnings: list[str],
     output_already_synced: bool | None = None,
@@ -10495,7 +10519,11 @@ def _stage_backend_output_and_caches(
             and (
                 _artifact_sync_state_matches_stat(
                     state,
-                    source_key=cache_key or "",
+                    source_key=_native_artifact_source_key(
+                        cache_key,
+                        stdlib_object_cache_key=stdlib_object_cache_key,
+                        is_wasm=is_wasm_output,
+                    ),
                     tier="module",
                     stat=output_stat,
                 )
@@ -10527,7 +10555,11 @@ def _stage_backend_output_and_caches(
             state_path.parent.mkdir(parents=True, exist_ok=True)
             _write_artifact_sync_state(
                 state_path,
-                source_key=cache_key,
+                source_key=_native_artifact_source_key(
+                    cache_key,
+                    stdlib_object_cache_key=stdlib_object_cache_key,
+                    is_wasm=is_wasm_output,
+                ),
                 tier="module",
                 artifact=output_artifact,
             )
@@ -10644,9 +10676,20 @@ def _backend_daemon_compile_request_bytes(
     entry_module: str | None = None,
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
+    stdlib_module_symbols_json: str | None = None,
     probe_cache_only: bool = False,
     include_health: bool = False,
 ) -> tuple[bytes | None, str | None]:
+    effective_cache_key = _native_artifact_source_key(
+        cache_key,
+        stdlib_object_cache_key=stdlib_object_cache_key,
+        is_wasm=is_wasm,
+    )
+    effective_function_cache_key = _native_artifact_source_key(
+        function_cache_key,
+        stdlib_object_cache_key=stdlib_object_cache_key,
+        is_wasm=is_wasm,
+    )
     job: dict[str, Any] = {
         "id": "job0",
         "is_wasm": is_wasm,
@@ -10655,8 +10698,8 @@ def _backend_daemon_compile_request_bytes(
         "wasm_data_base": wasm_data_base,
         "wasm_table_base": wasm_table_base,
         "output": str(backend_output),
-        "cache_key": cache_key or "",
-        "function_cache_key": function_cache_key or "",
+        "cache_key": effective_cache_key,
+        "function_cache_key": effective_function_cache_key,
         "skip_module_output_if_synced": skip_module_output_if_synced,
         "skip_function_output_if_synced": skip_function_output_if_synced,
     }
@@ -10687,6 +10730,8 @@ def _backend_daemon_compile_request_bytes(
         env_passthrough["MOLT_STDLIB_OBJ"] = str(stdlib_object_path)
     if stdlib_object_cache_key:
         env_passthrough["MOLT_STDLIB_CACHE_KEY"] = stdlib_object_cache_key
+    if stdlib_module_symbols_json:
+        env_passthrough["MOLT_STDLIB_MODULE_SYMBOLS"] = stdlib_module_symbols_json
     if env_passthrough:
         payload["env"] = env_passthrough
     return _backend_daemon_request_payload_bytes(payload)
@@ -11045,6 +11090,7 @@ def _compile_with_backend_daemon(
     entry_module: str | None = None,
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
+    stdlib_module_symbols_json: str | None = None,
     timeout: float | None,
     request_bytes: bytes | None = None,
     daemon_pid: int | None = None,
@@ -11068,6 +11114,7 @@ def _compile_with_backend_daemon(
             entry_module=entry_module,
             stdlib_object_path=stdlib_object_path,
             stdlib_object_cache_key=stdlib_object_cache_key,
+            stdlib_module_symbols_json=stdlib_module_symbols_json,
             probe_cache_only=True,
             include_health=False,
         )
@@ -11092,6 +11139,7 @@ def _compile_with_backend_daemon(
             entry_module=entry_module,
             stdlib_object_path=stdlib_object_path,
             stdlib_object_cache_key=stdlib_object_cache_key,
+            stdlib_module_symbols_json=stdlib_module_symbols_json,
             include_health=False,
         )
         if encode_err is not None:
@@ -11189,6 +11237,7 @@ def _compile_with_backend_daemon(
                 entry_module=entry_module,
                 stdlib_object_path=stdlib_object_path,
                 stdlib_object_cache_key=stdlib_object_cache_key,
+                stdlib_module_symbols_json=stdlib_module_symbols_json,
                 include_health=False,
             )
             if encode_err is not None:
@@ -13841,15 +13890,65 @@ def _native_stdlib_object_split_enabled(*, target: str, emit_mode: str) -> bool:
     return target == "native"
 
 
-def _is_user_owned_symbol(name: str, entry_module: str) -> bool:
+def _module_symbol_name(module_name: str) -> str:
+    init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
+    assert init_symbol.startswith("molt_init_")
+    return init_symbol[len("molt_init_"):]
+
+
+def _emitted_name_matches_module_symbol(name: str, module_symbol: str) -> bool:
+    if name.startswith("molt_init_"):
+        return name[len("molt_init_"):] == module_symbol
+    return name.startswith(f"{module_symbol}__")
+
+
+def _stdlib_module_symbols(module_graph_metadata: _ModuleGraphMetadata) -> frozenset[str]:
+    stdlib_like_by_module = module_graph_metadata.stdlib_like_by_module or {}
+    return frozenset(
+        _module_symbol_name(module_name)
+        for module_name, is_stdlib in sorted(stdlib_like_by_module.items())
+        if is_stdlib
+    )
+
+
+def _encode_stdlib_module_symbols(stdlib_module_symbols: Collection[str]) -> str:
+    return json.dumps(sorted(set(stdlib_module_symbols)), separators=(",", ":"))
+
+
+def _is_user_owned_symbol(
+    name: str,
+    entry_module: str,
+    *,
+    stdlib_module_symbols: Collection[str] | None = None,
+) -> bool:
     entry_init = f"molt_init_{entry_module}"
-    return (
+    if (
         name == "molt_main"
         or name.startswith(f"{entry_module}__")
         or name == entry_init
         or name == "molt_init___main__"
         or name == "molt_isolate_import"
         or name == "molt_isolate_bootstrap"
+    ):
+        return True
+    if stdlib_module_symbols is not None:
+        return not any(
+            _emitted_name_matches_module_symbol(name, module_symbol)
+            for module_symbol in stdlib_module_symbols
+        )
+    return False
+
+
+def _is_stdlib_owned_symbol(
+    name: str,
+    *,
+    stdlib_module_symbols: Collection[str],
+) -> bool:
+    if name in {"molt_main", "molt_init___main__", "molt_isolate_import", "molt_isolate_bootstrap"}:
+        return False
+    return any(
+        _emitted_name_matches_module_symbol(name, module_symbol)
+        for module_symbol in stdlib_module_symbols
     )
 
 
@@ -13933,6 +14032,11 @@ def _reachable_function_names_for_stdlib_cache(
         references[name] = refs
 
     roots: list[str] = []
+    first_function = functions[0]
+    if isinstance(first_function, Mapping):
+        first_name = first_function.get("name")
+        if isinstance(first_name, str) and first_name in defined:
+            roots.append(first_name)
     if "molt_main" in defined:
         roots.append("molt_main")
     roots.extend(sorted(name for name in defined if _is_protected_runtime_entrypoint(name)))
@@ -13958,6 +14062,7 @@ def _shared_stdlib_cache_payload(
     ir: Mapping[str, Any],
     *,
     entry_module: str,
+    stdlib_module_symbols: Collection[str],
     compiler_fingerprint: str | None = None,
 ) -> bytes:
     """Build a cache payload for the stdlib shared object.
@@ -13975,7 +14080,18 @@ def _shared_stdlib_cache_payload(
             if not isinstance(func, dict):
                 continue
             name = func.get("name")
-            if not isinstance(name, str) or _is_user_owned_symbol(name, entry_module):
+            if (
+                not isinstance(name, str)
+                or _is_user_owned_symbol(
+                    name,
+                    entry_module,
+                    stdlib_module_symbols=stdlib_module_symbols,
+                )
+                or not _is_stdlib_owned_symbol(
+                    name,
+                    stdlib_module_symbols=stdlib_module_symbols,
+                )
+            ):
                 continue
             if reachable and name not in reachable:
                 continue
@@ -13985,6 +14101,7 @@ def _shared_stdlib_cache_payload(
         compiler_fingerprint = _shared_stdlib_compiler_fingerprint()
     return json.dumps(
         {
+            "cache_schema": _SHARED_STDLIB_CACHE_SCHEMA_VERSION,
             "compiler_fingerprint": compiler_fingerprint,
             "functions": stdlib_functions,
             "profile": ir.get("profile"),
@@ -13999,6 +14116,7 @@ def _shared_stdlib_cache_key(
     ir: Mapping[str, Any],
     *,
     entry_module: str,
+    stdlib_module_symbols: Collection[str],
     target_triple: str | None,
     cache_variant: str,
     compiler_fingerprint: str | None = None,
@@ -14006,6 +14124,7 @@ def _shared_stdlib_cache_key(
     payload = _shared_stdlib_cache_payload(
         ir,
         entry_module=entry_module,
+        stdlib_module_symbols=stdlib_module_symbols,
         compiler_fingerprint=compiler_fingerprint,
     )
     return _cache_key(
@@ -14026,11 +14145,20 @@ def _shared_stdlib_compiler_fingerprint() -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _read_stdlib_cache_key(stdlib_path: Path) -> str | None:
+    try:
+        raw = _stdlib_object_key_sidecar_path(stdlib_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    key = raw.strip()
+    return key or None
+
+
 def _shared_stdlib_cache_mismatch_detail(
     stdlib_path: Path,
     expected_key: str | None,
 ) -> str:
-    actual_key = read_stdlib_cache_key(stdlib_path)
+    actual_key = _read_stdlib_cache_key(stdlib_path)
     if not expected_key:
         return f"{stdlib_path} (missing expected key)"
     if actual_key is None:
@@ -14055,6 +14183,7 @@ def _stdlib_object_cache_path(
 def _invalidate_stale_stdlib_cache(
     stdlib_object_path: Path,
     project_root: Path | None,
+    expected_key: str | None = None,
 ) -> None:
     """Delete the cached stdlib .o if the backend binary or runtime library is newer.
 
@@ -14063,6 +14192,14 @@ def _invalidate_stale_stdlib_cache(
     mirrors the mtime logic in ``_backend_daemon_binary_is_newer`` but
     compares against the cached stdlib file instead of the daemon PID.
     """
+    if expected_key is not None:
+        with contextlib.suppress(OSError):
+            for sibling in stdlib_object_path.parent.glob("stdlib_shared_*.o"):
+                if sibling == stdlib_object_path:
+                    continue
+                if not _shared_stdlib_cache_matches_key(sibling, expected_key):
+                    _remove_shared_stdlib_cache_artifacts(sibling)
+
     if not stdlib_object_path.exists():
         return
     try:
@@ -16175,6 +16312,7 @@ def _prepare_backend_setup(
     cache: bool,
     ir: Mapping[str, Any],
     entry_module: str,
+    module_graph_metadata: _ModuleGraphMetadata,
     resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> tuple[_PreparedBackendSetup | None, dict[str, Any] | None]:
     runtime_state = _initialize_runtime_artifact_state(
@@ -16201,6 +16339,7 @@ def _prepare_backend_setup(
         output_artifact=output_artifact,
         warnings=warnings,
         entry_module=entry_module,
+        module_graph_metadata=module_graph_metadata,
     )
     if emit_mode != "obj":
         _maybe_start_native_runtime_lib_ready_async(
@@ -16594,6 +16733,7 @@ def _execute_backend_compile(
                 entry_module=entry_module,
                 stdlib_object_path=cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
+                stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
                 timeout=None,
                 request_bytes=None,
                 daemon_pid=daemon_pid,
@@ -16648,6 +16788,7 @@ def _execute_backend_compile(
                         entry_module=entry_module,
                         stdlib_object_path=cache_setup.stdlib_object_path,
                         stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
+                        stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
                         timeout=None,
                         request_bytes=None,
                         daemon_pid=_read_backend_daemon_pid(daemon_pid_path)
@@ -16697,6 +16838,11 @@ def _execute_backend_compile(
                         backend_env.setdefault(
                             "MOLT_STDLIB_CACHE_KEY",
                             cache_setup.stdlib_object_cache_key,
+                        )
+                    if cache_setup.stdlib_module_symbols_json:
+                        backend_env.setdefault(
+                            "MOLT_STDLIB_MODULE_SYMBOLS",
+                            cache_setup.stdlib_module_symbols_json,
                         )
             if not is_wasm and not _is_transpile and backend_env is not None:
                 backend_env.setdefault(ENTRY_OVERRIDE_ENV, entry_module)
@@ -16855,6 +17001,9 @@ def _execute_backend_compile(
                 output_artifact,
                 cache_path=cache_path if cache else None,
                 cache_key=cache_key if cache else None,
+                stdlib_object_cache_key=(
+                    cache_setup.stdlib_object_cache_key if cache else None
+                ),
                 function_cache_path=function_cache_path if cache else None,
                 warnings=warnings,
                 output_already_synced=(
@@ -17259,6 +17408,7 @@ def _run_backend_pipeline(
         cache=cache,
         ir=ir,
         entry_module=resolved_build_entry.entry_module,
+        module_graph_metadata=_prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata,
         resolved_modules=resolved_modules,
     )
     if prepared_backend_setup_error is not None:
@@ -17929,7 +18079,11 @@ def _prepare_native_link(
 ) -> tuple[_PreparedNativeLink | None, dict[str, Any] | None]:
     output_obj = output_artifact
     if stdlib_obj_path is not None:
-        _invalidate_stale_stdlib_cache(stdlib_obj_path, project_root)
+        _invalidate_stale_stdlib_cache(
+            stdlib_obj_path,
+            project_root,
+            stdlib_object_cache_key,
+        )
         if stdlib_obj_path.exists() and not _shared_stdlib_cache_matches_key(
             stdlib_obj_path, stdlib_object_cache_key
         ):
@@ -18755,10 +18909,17 @@ def _prepare_backend_cache_setup(
     output_artifact: Path,
     warnings: list[str],
     entry_module: str,
+    module_graph_metadata: _ModuleGraphMetadata,
 ) -> _BackendCacheSetup:
     split_stdlib_object = _native_stdlib_object_split_enabled(
         target=target,
         emit_mode=emit_mode,
+    )
+    stdlib_module_symbols = _stdlib_module_symbols(module_graph_metadata)
+    stdlib_module_symbols_json = (
+        _encode_stdlib_module_symbols(stdlib_module_symbols)
+        if split_stdlib_object
+        else None
     )
     if not cache_enabled:
         # Even with cache disabled, compute stdlib_object_path so the
@@ -18771,6 +18932,7 @@ def _prepare_backend_cache_setup(
             _nocache_stdlib_key = _shared_stdlib_cache_key(
                 ir,
                 entry_module=entry_module,
+                stdlib_module_symbols=stdlib_module_symbols,
                 target_triple=target_triple,
                 cache_variant="",
             )
@@ -18784,7 +18946,11 @@ def _prepare_backend_cache_setup(
                 _nocache_stub_path, _nocache_stdlib_key
             )
             if _nocache_stdlib_path is not None:
-                _invalidate_stale_stdlib_cache(_nocache_stdlib_path, project_root)
+                _invalidate_stale_stdlib_cache(
+                    _nocache_stdlib_path,
+                    project_root,
+                    _nocache_stdlib_key,
+                )
         return _BackendCacheSetup(
             cache_enabled=False,
             cache_key=None,
@@ -18796,6 +18962,7 @@ def _prepare_backend_cache_setup(
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
+            stdlib_module_symbols_json=stdlib_module_symbols_json,
         )
     cache_variant = _build_cache_variant(
         profile=profile,
@@ -18837,6 +19004,7 @@ def _prepare_backend_cache_setup(
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
+            stdlib_module_symbols_json=stdlib_module_symbols_json,
         )
     ext = "wasm" if is_wasm else "o"
     cache_path = cache_root / f"{cache_key}.{ext}"
@@ -18849,6 +19017,7 @@ def _prepare_backend_cache_setup(
         stdlib_object_cache_key = _shared_stdlib_cache_key(
             ir,
             entry_module=entry_module,
+            stdlib_module_symbols=stdlib_module_symbols,
             target_triple=target_triple,
             cache_variant=cache_variant,
         )
@@ -18856,7 +19025,11 @@ def _prepare_backend_cache_setup(
             cache_path, stdlib_object_cache_key
         )
         if stdlib_object_path is not None:
-            _invalidate_stale_stdlib_cache(stdlib_object_path, project_root)
+            _invalidate_stale_stdlib_cache(
+                stdlib_object_path,
+                project_root,
+                stdlib_object_cache_key,
+            )
     cache_candidates: list[tuple[str, Path]] = []
     if cache_path is not None:
         cache_candidates.append(("module", cache_path))
@@ -18885,6 +19058,7 @@ def _prepare_backend_cache_setup(
         cache_candidates=tuple(cache_candidates),
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,
+        stdlib_module_symbols_json=stdlib_module_symbols_json,
     )
 
 
@@ -20417,17 +20591,20 @@ def _ensure_backend_binary(
     features_tag = "_".join(sorted(backend_features)) if backend_features else "default"
     lock_name = f"backend.{cargo_profile}.{features_tag}"
     with _build_lock(project_root, lock_name):
-
-        def _materialize_rebuilt_backend_binary() -> bool:
-            cargo_output = backend_bin.parent / backend_bin.name.split(".")[0]
+        def _canonical_cargo_backend_output() -> Path:
             exe_suffix = ".exe" if os.name == "nt" else ""
-            if exe_suffix:
-                cargo_output = cargo_output.with_suffix(exe_suffix)
-            if backend_features != _DEFAULT_BACKEND_FEATURES:
-                if cargo_output.exists() and cargo_output != backend_bin:
-                    shutil.copy2(cargo_output, backend_bin)
+            return backend_bin.parent / f"molt-backend{exe_suffix}"
+
+        def _materialize_backend_binary_from(source: Path) -> bool:
+            if not source.exists():
+                return False
+            if source != backend_bin:
+                shutil.copy2(source, backend_bin)
             _codesign_binary(backend_bin)
             return backend_bin.exists()
+
+        def _materialize_rebuilt_backend_binary() -> bool:
+            return _materialize_backend_binary_from(_canonical_cargo_backend_output())
 
         def _backend_probe_target() -> str:
             if "wasm-backend" in backend_features:
@@ -20438,7 +20615,11 @@ def _ensure_backend_binary(
                 return "rust"
             return "native"
 
-        def _probe_backend_binary_support(probe_target: str) -> tuple[bool, str]:
+        def _probe_backend_binary_support(
+            probe_target: str,
+            *,
+            binary_path: Path | None = None,
+        ) -> tuple[bool, str]:
             probe_ir = json.dumps(
                 {
                     "functions": [],
@@ -20461,7 +20642,7 @@ def _ensure_backend_binary(
             )
             probe_path = Path(probe_tmp.name)
             probe_tmp.close()
-            probe_cmd = [str(backend_bin), "--output", str(probe_path)]
+            probe_cmd = [str(binary_path or backend_bin), "--output", str(probe_path)]
             if probe_target == "wasm":
                 probe_cmd.extend(["--target", "wasm"])
             elif probe_target == "luau":
@@ -20486,6 +20667,29 @@ def _ensure_backend_binary(
             stdout = probe.stdout.decode(errors="replace")
             return probe.returncode == 0, (stderr or stdout).strip()
 
+        def _refresh_feature_tagged_backend_alias(probe_target: str) -> None:
+            if backend_features == _DEFAULT_BACKEND_FEATURES:
+                return
+            cargo_output = _canonical_cargo_backend_output()
+            if cargo_output == backend_bin or not cargo_output.exists():
+                return
+            try:
+                cargo_mtime = cargo_output.stat().st_mtime_ns
+            except OSError:
+                return
+            try:
+                alias_mtime = backend_bin.stat().st_mtime_ns
+            except OSError:
+                alias_mtime = -1
+            if alias_mtime >= cargo_mtime:
+                return
+            probe_ok, _probe_detail = _probe_backend_binary_support(
+                probe_target,
+                binary_path=cargo_output,
+            )
+            if probe_ok:
+                _materialize_backend_binary_from(cargo_output)
+
         if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         if not _artifact_needs_rebuild(backend_bin, fingerprint, stored_fingerprint):
@@ -20493,6 +20697,7 @@ def _ensure_backend_binary(
             # miss feature-lane poisoning because it never exercises output
             # emission for the requested target.
             _quick_target = _backend_probe_target()
+            _refresh_feature_tagged_backend_alias(_quick_target)
             _probe_ok, _probe_detail = _probe_backend_binary_support(_quick_target)
             if _probe_ok:
                 return True
@@ -20544,8 +20749,6 @@ def _ensure_backend_binary(
         # (~/Library/Caches/molt) — that also removes the build directory
         # structure (home/build/*) and other infrastructure that later build
         # steps depend on.  Only remove the specific artifact caches.
-        import shutil
-
         _cache_root = _default_molt_cache()
         for cache_dir in [
             project_root / ".molt_cache",
@@ -21139,7 +21342,7 @@ def _ensure_runtime_wasm(
         )
         shared_flags = (
             "-C link-arg=--import-memory -C link-arg=--import-table"
-            " -C link-arg=--growable-table"
+            " -C link-arg=--growable-table -C link-arg=--export-dynamic"
         )
         flags = shared_flags if use_legacy_wasm_flags else shared_flags + set_exports
     rustflags = env.get("RUSTFLAGS", "").strip()
@@ -22563,6 +22766,7 @@ _CACHE_FINGERPRINT: str | None = None
 _CACHE_TOOLING_FINGERPRINT: str | None = None
 _CACHE_KEY_SCHEMA_VERSION = "v3"
 _FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v2"
+_SHARED_STDLIB_CACHE_SCHEMA_VERSION = "stdlib-v2"
 
 
 def _cache_fingerprint() -> str:
