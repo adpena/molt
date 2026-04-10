@@ -7,9 +7,7 @@ use std::path::Path;
 
 /// Measure the size of a file in bytes. Returns 0 if the file does not exist.
 pub fn file_size_bytes(path: &Path) -> u64 {
-    std::fs::metadata(path)
-        .map(|m| m.len())
-        .unwrap_or(0)
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
 /// Measure sizes of all artifacts in a directory matching an extension.
@@ -19,7 +17,11 @@ pub fn artifact_sizes(dir: &Path, extension: &str) -> Vec<(String, u64)> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().is_some_and(|e| e == extension) {
-                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 let size = file_size_bytes(&path);
                 sizes.push((name, size));
             }

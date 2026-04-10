@@ -73,6 +73,106 @@ class _DbHostHandler(BaseHTTPRequestHandler):
             return None
 
 
+def test_browser_host_direct_mode_bridges_isolate_import(tmp_path: Path) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser host direct-mode isolate test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser host direct-mode isolate test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_host_direct.py"
+    src.write_text(
+        "import asyncio\n"
+        "\n"
+        "async def main():\n"
+        "    print('ok')\n"
+        "\n"
+        "asyncio.run(main())\n"
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    class _DirectHostHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/output.wasm":
+                payload = output_wasm.read_bytes()
+            elif self.path == "/molt_runtime.wasm":
+                payload = runtime_wasm.read_bytes()
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("content-type", "application/wasm")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _DirectHostHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        browser_host_uri = (root / "wasm" / "browser_host.js").as_uri()
+        script = tmp_path / "run_browser_direct.mjs"
+        script.write_text(
+            f"""
+import {{ loadMoltWasm }} from '{browser_host_uri}';
+
+const baseUrl = {base_url!r};
+const host = await loadMoltWasm({{
+  wasmUrl: `${{baseUrl}}/output.wasm`,
+  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  preferLinked: false,
+}});
+host.run();
+""".lstrip()
+        )
+        run = subprocess.run(
+            ["node", str(script)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        assert run.returncode == 0, run.stderr
+        lines = [line.strip() for line in run.stdout.splitlines() if line.strip()]
+        assert lines == ["ok"]
+    finally:
+        server.shutdown()
+
+
 def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for wasm browser DB host test")

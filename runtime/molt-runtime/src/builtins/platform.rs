@@ -3689,16 +3689,17 @@ fn cext_loader_dlopen(
         let module_dict_bits = unsafe { crate::object::layout::module_dict_bits(module_ptr) };
         let module_dict = obj_from_bits(module_dict_bits);
         if let Some(dict_ptr) = module_dict.as_ptr()
-            && unsafe { object_type_id(dict_ptr) == TYPE_ID_DICT } {
-                unsafe {
-                    crate::object::ops_dict::dict_update_apply(
-                        _py,
-                        MoltObject::from_ptr(namespace_ptr).bits(),
-                        crate::object::ops_dict::dict_update_set_in_place,
-                        module_dict_bits,
-                    );
-                }
+            && unsafe { object_type_id(dict_ptr) == TYPE_ID_DICT }
+        {
+            unsafe {
+                crate::object::ops_dict::dict_update_apply(
+                    _py,
+                    MoltObject::from_ptr(namespace_ptr).bits(),
+                    crate::object::ops_dict::dict_update_set_in_place,
+                    module_dict_bits,
+                );
             }
+        }
     }
 
     Ok(())
@@ -6975,18 +6976,17 @@ fn importlib_import_with_fallback(
     // If every import mechanism failed with ModuleNotFoundError, try loading a
     // native C extension (.so / .dylib) from sys.path before giving up.
     #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
-    if result.is_err()
-        && importlib_exception_should_fallback(_py) {
-            if let Some(module_bits) = importlib_try_cext_on_sys_path(_py, resolved, modules_ptr) {
-                return Ok(module_bits);
-            }
-            // Extension search failed too – restore the original error.
-            return Err(raise_exception::<_>(
-                _py,
-                "ModuleNotFoundError",
-                &format!("No module named '{resolved}'"),
-            ));
+    if result.is_err() && importlib_exception_should_fallback(_py) {
+        if let Some(module_bits) = importlib_try_cext_on_sys_path(_py, resolved, modules_ptr) {
+            return Ok(module_bits);
         }
+        // Extension search failed too – restore the original error.
+        return Err(raise_exception::<_>(
+            _py,
+            "ModuleNotFoundError",
+            &format!("No module named '{resolved}'"),
+        ));
+    }
 
     result
 }

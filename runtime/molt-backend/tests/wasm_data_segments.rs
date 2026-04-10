@@ -37,9 +37,10 @@ fn extract_data_segments(wasm: &[u8]) -> Vec<DataSegment> {
             for data in section.into_iter() {
                 let data = data.expect("valid data");
                 if let DataKind::Active {
-                        memory_index: 0,
-                        offset_expr,
-                    } = data.kind {
+                    memory_index: 0,
+                    offset_expr,
+                } = data.kind
+                {
                     // Parse the const expr to get the offset.
                     let mut reader = offset_expr.get_operators_reader();
                     let mut offset = 0u32;

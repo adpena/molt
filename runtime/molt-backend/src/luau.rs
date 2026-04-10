@@ -129,29 +129,32 @@ impl LuauBackend {
                 };
                 // call_internal: s_value is the callee name
                 if op.kind == "call_internal"
-                    && let Some(ref s_val) = op.s_value {
-                        check_ident(s_val);
-                    }
+                    && let Some(ref s_val) = op.s_value
+                {
+                    check_ident(s_val);
+                }
                 // func_new / func_new_closure / code_new: s_value is the
                 // function name emitted as a bare identifier reference.
                 if matches!(
                     op.kind.as_str(),
                     "func_new" | "func_new_closure" | "code_new"
-                )
-                    && let Some(ref s_val) = op.s_value {
-                        check_ident(s_val);
-                    }
+                ) && let Some(ref s_val) = op.s_value
+                {
+                    check_ident(s_val);
+                }
                 // load_local: var field may hold a function reference
                 if op.kind == "load_local"
-                    && let Some(ref var) = op.var {
-                        check_ident(var);
-                    }
+                    && let Some(ref var) = op.var
+                {
+                    check_ident(var);
+                }
                 // call_func: args[0] is the callee
                 if op.kind == "call_func"
                     && let Some(ref args) = op.args
-                        && let Some(callee) = args.first() {
-                            check_ident(callee);
-                        }
+                    && let Some(callee) = args.first()
+                {
+                    check_ident(callee);
+                }
             }
         }
 
@@ -708,9 +711,10 @@ impl LuauBackend {
         let mut loop_idx_vars = Vec::new();
         for op in &ops {
             if op.kind == "loop_index_start"
-                && let Some(ref out_name) = op.out {
-                    loop_idx_vars.push(sanitize_ident(out_name));
-                }
+                && let Some(ref out_name) = op.out
+            {
+                loop_idx_vars.push(sanitize_ident(out_name));
+            }
         }
         if !loop_idx_vars.is_empty() {
             for var in &loop_idx_vars {
@@ -726,12 +730,13 @@ impl LuauBackend {
             for op in &ops {
                 if (op.kind == "closure_store" || op.kind == "closure_load")
                     && let Some(ref args) = op.args
-                        && let Some(slot) = args.first() {
-                            let var_name = format!("__closure_{}", sanitize_ident(slot));
-                            if !closure_slots.contains(&var_name) {
-                                closure_slots.push(var_name);
-                            }
-                        }
+                    && let Some(slot) = args.first()
+                {
+                    let var_name = format!("__closure_{}", sanitize_ident(slot));
+                    if !closure_slots.contains(&var_name) {
+                        closure_slots.push(var_name);
+                    }
+                }
             }
             for var in &closure_slots {
                 self.emit_line(&format!("local {var}"));
@@ -743,9 +748,10 @@ impl LuauBackend {
             match op.kind.as_str() {
                 "const" | "const_int" => {
                     if let (Some(out_name), Some(v)) = (&op.out, op.value)
-                        && v >= 0 {
-                            self.nonneg_consts.insert(out_name.clone());
-                        }
+                        && v >= 0
+                    {
+                        self.nonneg_consts.insert(out_name.clone());
+                    }
                 }
                 _ => {}
             }
@@ -814,10 +820,12 @@ impl LuauBackend {
                 }
                 // Record first declaration site of each variable.
                 if let Some(ref out_name) = op.out
-                    && out_name != "none" && !op.kind.starts_with("nop") {
-                        let var = sanitize_ident(out_name);
-                        decl_scope.entry(var).or_insert((depth, block_id));
-                    }
+                    && out_name != "none"
+                    && !op.kind.starts_with("nop")
+                {
+                    let var = sanitize_ident(out_name);
+                    decl_scope.entry(var).or_insert((depth, block_id));
+                }
                 // Check if any referenced variable was declared at a deeper
                 // depth OR in a different block at the same depth.
                 let refs: Vec<&str> = op
@@ -902,54 +910,49 @@ impl LuauBackend {
                     }
                     "end_if" => {
                         if let Some((if_idx, else_idx)) = if_stack.pop()
-                            && let Some(phis) = phi_assignments.get(&idx) {
-                                for (phi_var, args) in phis {
-                                    if let Some(else_i) = else_idx {
-                                        // True branch value: inject before else.
-                                        let true_val = args
-                                            .first()
-                                            .cloned()
-                                            .unwrap_or_else(|| "nil".to_string());
-                                        phi_inject_before_else
-                                            .entry(else_i)
-                                            .or_default()
-                                            .push((phi_var.clone(), true_val));
-                                        // False branch value: inject before end_if.
-                                        let false_val = args
-                                            .get(1)
-                                            .cloned()
-                                            .unwrap_or_else(|| "nil".to_string());
-                                        phi_inject_before_end_if
-                                            .entry(idx)
-                                            .or_default()
-                                            .push((phi_var.clone(), false_val));
-                                    } else {
-                                        // No else branch — this is the `and` short-circuit
-                                        // pattern.  The true branch sets the phi from
-                                        // args[0].  When false, the phi should get the
-                                        // if-condition variable (the LHS of `and`).
-                                        let true_val = args
-                                            .first()
-                                            .cloned()
-                                            .unwrap_or_else(|| "nil".to_string());
-                                        phi_inject_before_end_if
-                                            .entry(idx)
-                                            .or_default()
-                                            .push((phi_var.clone(), true_val));
-                                        // Extract the condition variable from the `if` op.
-                                        let cond_var = ops[if_idx]
-                                            .args
-                                            .as_deref()
-                                            .and_then(|a| a.first())
-                                            .map(|s| sanitize_ident(s))
-                                            .unwrap_or_else(|| "nil".to_string());
-                                        phi_synthesize_else
-                                            .entry(idx)
-                                            .or_default()
-                                            .push((phi_var.clone(), cond_var));
-                                    }
+                            && let Some(phis) = phi_assignments.get(&idx)
+                        {
+                            for (phi_var, args) in phis {
+                                if let Some(else_i) = else_idx {
+                                    // True branch value: inject before else.
+                                    let true_val =
+                                        args.first().cloned().unwrap_or_else(|| "nil".to_string());
+                                    phi_inject_before_else
+                                        .entry(else_i)
+                                        .or_default()
+                                        .push((phi_var.clone(), true_val));
+                                    // False branch value: inject before end_if.
+                                    let false_val =
+                                        args.get(1).cloned().unwrap_or_else(|| "nil".to_string());
+                                    phi_inject_before_end_if
+                                        .entry(idx)
+                                        .or_default()
+                                        .push((phi_var.clone(), false_val));
+                                } else {
+                                    // No else branch — this is the `and` short-circuit
+                                    // pattern.  The true branch sets the phi from
+                                    // args[0].  When false, the phi should get the
+                                    // if-condition variable (the LHS of `and`).
+                                    let true_val =
+                                        args.first().cloned().unwrap_or_else(|| "nil".to_string());
+                                    phi_inject_before_end_if
+                                        .entry(idx)
+                                        .or_default()
+                                        .push((phi_var.clone(), true_val));
+                                    // Extract the condition variable from the `if` op.
+                                    let cond_var = ops[if_idx]
+                                        .args
+                                        .as_deref()
+                                        .and_then(|a| a.first())
+                                        .map(|s| sanitize_ident(s))
+                                        .unwrap_or_else(|| "nil".to_string());
+                                    phi_synthesize_else
+                                        .entry(idx)
+                                        .or_default()
+                                        .push((phi_var.clone(), cond_var));
                                 }
                             }
+                        }
                     }
                     _ => {}
                 }
@@ -974,14 +977,15 @@ impl LuauBackend {
             // Synthesize else branch for if-without-else + phi (and pattern).
             // This assigns the condition variable when the if body was skipped.
             if ops[i].kind == "end_if"
-                && let Some(synth) = phi_synthesize_else.get(&i) {
-                    self.pop_indent();
-                    self.emit_line("else");
-                    self.push_indent();
-                    for (var, cond_val) in synth {
-                        self.emit_line(&format!("{var} = {cond_val}"));
-                    }
+                && let Some(synth) = phi_synthesize_else.get(&i)
+            {
+                self.pop_indent();
+                self.emit_line("else");
+                self.push_indent();
+                for (var, cond_val) in synth {
+                    self.emit_line(&format!("{var} = {cond_val}"));
                 }
+            }
 
             if ops[i].kind == "loop_start"
                 && i + 1 < ops.len()
@@ -1191,20 +1195,23 @@ impl LuauBackend {
             "store_local" => {
                 let var = self.var_ref(op);
                 if let Some(ref args) = op.args
-                    && let Some(src) = args.first() {
-                        // Propagate tuple tracking: if the source is a known
-                        // tuple variable, the destination inherits that status.
-                        if self.tuple_vars.contains(src)
-                            && let Some(ref var_name) = op.var {
-                                self.tuple_vars.insert(var_name.clone());
-                            }
-                        // Propagate type hints through copies.
-                        if let Some(hint) = self.var_type_hints.get(src).cloned()
-                            && let Some(ref var_name) = op.var {
-                                self.var_type_hints.insert(var_name.clone(), hint);
-                            }
-                        self.emit_line(&format!("{var} = {}", sanitize_ident(src)));
+                    && let Some(src) = args.first()
+                {
+                    // Propagate tuple tracking: if the source is a known
+                    // tuple variable, the destination inherits that status.
+                    if self.tuple_vars.contains(src)
+                        && let Some(ref var_name) = op.var
+                    {
+                        self.tuple_vars.insert(var_name.clone());
                     }
+                    // Propagate type hints through copies.
+                    if let Some(hint) = self.var_type_hints.get(src).cloned()
+                        && let Some(ref var_name) = op.var
+                    {
+                        self.var_type_hints.insert(var_name.clone(), hint);
+                    }
+                    self.emit_line(&format!("{var} = {}", sanitize_ident(src)));
+                }
             }
             "store" | "store_init" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -1229,18 +1236,21 @@ impl LuauBackend {
             "identity_alias" => {
                 let out = self.out_var(op);
                 if let Some(ref args) = op.args
-                    && let Some(src) = args.first() {
-                        // Propagate tuple and type-hint tracking through aliases.
-                        if self.tuple_vars.contains(src)
-                            && let Some(ref out_name) = op.out {
-                                self.tuple_vars.insert(out_name.clone());
-                            }
-                        if let Some(hint) = self.var_type_hints.get(src).cloned()
-                            && let Some(ref out_name) = op.out {
-                                self.var_type_hints.insert(out_name.clone(), hint);
-                            }
-                        self.emit_line(&format!("local {out} = {}", sanitize_ident(src)));
+                    && let Some(src) = args.first()
+                {
+                    // Propagate tuple and type-hint tracking through aliases.
+                    if self.tuple_vars.contains(src)
+                        && let Some(ref out_name) = op.out
+                    {
+                        self.tuple_vars.insert(out_name.clone());
                     }
+                    if let Some(hint) = self.var_type_hints.get(src).cloned()
+                        && let Some(ref out_name) = op.out
+                    {
+                        self.var_type_hints.insert(out_name.clone(), hint);
+                    }
+                    self.emit_line(&format!("local {out} = {}", sanitize_ident(src)));
+                }
             }
 
             // ================================================================
@@ -2564,10 +2574,11 @@ impl LuauBackend {
                         // When the container has type_hint="list" on the op itself,
                         // propagate the hint to the output variable.
                         if (container_is_list || matches!(op.type_hint.as_deref(), Some("list")))
-                            && let Some(ref out_name) = op.out {
-                                self.var_type_hints
-                                    .insert(out_name.clone(), "list".to_string());
-                            }
+                            && let Some(ref out_name) = op.out
+                        {
+                            self.var_type_hints
+                                .insert(out_name.clone(), "list".to_string());
+                        }
                         if key_known_nonneg {
                             // Known non-negative: skip negative index ternary.
                             self.emit_line(&format!("local {out} = {container}[{key} + 1]"));
@@ -3284,9 +3295,10 @@ impl LuauBackend {
             "exception_clear" => {
                 // Clear the pcall error so subsequent exception_last returns nil.
                 if !self.inside_pcall_body
-                    && let Some(&n) = self.try_depth_counter.last() {
-                        self.emit_line(&format!("__err_{n} = nil"));
-                    }
+                    && let Some(&n) = self.try_depth_counter.last()
+                {
+                    self.emit_line(&format!("__err_{n} = nil"));
+                }
             }
             "exception_new" | "exception_new_from_class" => {
                 let out = self.out_var(op);
@@ -4185,7 +4197,8 @@ pub fn review_luau_perf(source: &str) -> Vec<(usize, &'static str, String)> {
             if i == 0
                 || source
                     .lines()
-                    .nth(i - 1).is_none_or(|prev| prev.trim() != "@native")
+                    .nth(i - 1)
+                    .is_none_or(|prev| prev.trim() != "@native")
             {
                 // Don't flag runtime helper definitions.
                 if !trimmed.contains("molt_range")
@@ -4467,14 +4480,17 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
             continue;
         }
         for (idx, op) in result.iter().enumerate() {
-            if idx > start && idx < end
+            if idx > start
+                && idx < end
                 && let Some(ref out_name) = op.out
-                    && out_name != "none" && !op.kind.starts_with("nop") {
-                        defined_in_pcall
-                            .entry(out_name.clone())
-                            .or_default()
-                            .push((start, end));
-                    }
+                && out_name != "none"
+                && !op.kind.starts_with("nop")
+            {
+                defined_in_pcall
+                    .entry(out_name.clone())
+                    .or_default()
+                    .push((start, end));
+            }
         }
     }
     for (idx, op) in result.iter().enumerate() {
@@ -4663,11 +4679,11 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                             | "const_bool"
                             | "const_float"
                             | "list_new"
-                    )
-                        && let Some(ref out) = ops[j].out
-                            && body_refs.contains(out) {
-                                result.push(ops[j].clone());
-                            }
+                    ) && let Some(ref out) = ops[j].out
+                        && body_refs.contains(out)
+                    {
+                        result.push(ops[j].clone());
+                    }
                 }
 
                 // Emit for_iter op.
@@ -4833,93 +4849,91 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
 
     for i in 0..ops.len() {
         if ops[i].kind == "label"
-            && let Some(label_id) = ops[i].value {
-                // Scan forward past exception boilerplate for index → ret.
-                // The exit label may contain an exception re-raise block:
-                //   exception_stack_set_depth, exception_stack_exit,
-                //   exception_last, const_none, is, not,
-                //   if → raise → [const_none, ret] → end_if
-                // followed by the actual index → ret.
-                let mut j = i + 1;
-                while j < ops.len() {
-                    let k = ops[j].kind.as_str();
-                    if matches!(
-                        k,
-                        "exception_stack_set_depth"
-                            | "exception_stack_exit"
-                            | "exception_stack_enter"
-                            | "check_exception"
-                            | "exception_last"
-                            | "const_none"
-                            | "is"
-                            | "not"
-                            | "if"
-                            | "raise"
-                            | "end_if"
-                            | "ret_void"
-                            | "nop"
-                            | "line"
-                    ) {
+            && let Some(label_id) = ops[i].value
+        {
+            // Scan forward past exception boilerplate for index → ret.
+            // The exit label may contain an exception re-raise block:
+            //   exception_stack_set_depth, exception_stack_exit,
+            //   exception_last, const_none, is, not,
+            //   if → raise → [const_none, ret] → end_if
+            // followed by the actual index → ret.
+            let mut j = i + 1;
+            while j < ops.len() {
+                let k = ops[j].kind.as_str();
+                if matches!(
+                    k,
+                    "exception_stack_set_depth"
+                        | "exception_stack_exit"
+                        | "exception_stack_enter"
+                        | "check_exception"
+                        | "exception_last"
+                        | "const_none"
+                        | "is"
+                        | "not"
+                        | "if"
+                        | "raise"
+                        | "end_if"
+                        | "ret_void"
+                        | "nop"
+                        | "line"
+                ) {
+                    j += 1;
+                    continue;
+                }
+                // Skip bare `ret` ops inside the exception re-raise
+                // block (no var, no args, followed by a nearby end_if).
+                if k == "ret"
+                    && ops[j].var.is_none()
+                    && ops[j].args.as_ref().is_none_or(|a| a.is_empty())
+                {
+                    let has_end_if = (j + 1..ops.len()).take(5).any(|m| ops[m].kind == "end_if");
+                    if has_end_if {
                         j += 1;
                         continue;
                     }
-                    // Skip bare `ret` ops inside the exception re-raise
-                    // block (no var, no args, followed by a nearby end_if).
-                    if k == "ret"
-                        && ops[j].var.is_none()
-                        && ops[j].args.as_ref().is_none_or(|a| a.is_empty())
-                    {
-                        let has_end_if =
-                            (j + 1..ops.len()).take(5).any(|m| ops[m].kind == "end_if");
-                        if has_end_if {
-                            j += 1;
+                }
+                if k == "index"
+                    && let (Some(out), Some(args)) = (&ops[j].out, &ops[j].args)
+                    && args.len() >= 2
+                {
+                    let slot = &args[0];
+                    // Look for ret following this index
+                    let mut m = j + 1;
+                    while m < ops.len() {
+                        let mk = ops[m].kind.as_str();
+                        if matches!(
+                            mk,
+                            "check_exception"
+                                | "exception_stack_set_depth"
+                                | "exception_stack_exit"
+                                | "nop"
+                                | "line"
+                        ) {
+                            m += 1;
                             continue;
                         }
-                    }
-                    if k == "index"
-                        && let (Some(out), Some(args)) = (&ops[j].out, &ops[j].args)
-                            && args.len() >= 2 {
-                                let slot = &args[0];
-                                // Look for ret following this index
-                                let mut m = j + 1;
-                                while m < ops.len() {
-                                    let mk = ops[m].kind.as_str();
-                                    if matches!(
-                                        mk,
-                                        "check_exception"
-                                            | "exception_stack_set_depth"
-                                            | "exception_stack_exit"
-                                            | "nop"
-                                            | "line"
-                                    ) {
-                                        m += 1;
-                                        continue;
-                                    }
-                                    if mk == "ret" {
-                                        // Match ret with explicit var reference.
-                                        if let Some(ref ret_var) = ops[m].var
-                                            && ret_var == out {
-                                                return_labels.insert(
-                                                    label_id,
-                                                    (slot.clone(), args[1].clone()),
-                                                );
-                                            }
-                                        // Also match bare ret (no var/args) that
-                                        // follows index — the index already read
-                                        // the return value into scope.
-                                        if ops[m].var.is_none()
-                                            && ops[m].args.as_ref().is_none_or(|a| a.is_empty())
-                                        {
-                                            return_labels
-                                                .insert(label_id, (slot.clone(), args[1].clone()));
-                                        }
-                                    }
-                                    break;
-                                }
+                        if mk == "ret" {
+                            // Match ret with explicit var reference.
+                            if let Some(ref ret_var) = ops[m].var
+                                && ret_var == out
+                            {
+                                return_labels.insert(label_id, (slot.clone(), args[1].clone()));
                             }
-                    break;
+                            // Also match bare ret (no var/args) that
+                            // follows index — the index already read
+                            // the return value into scope.
+                            if ops[m].var.is_none()
+                                && ops[m].args.as_ref().is_none_or(|a| a.is_empty())
+                            {
+                                return_labels.insert(label_id, (slot.clone(), args[1].clone()));
+                            }
+                        }
+                        break;
+                    }
                 }
+                break;
             }
+        }
     }
 
     if return_labels.is_empty() {
@@ -4933,158 +4947,161 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
     'outer: while i < ops.len() {
         if ops[i].kind == "store_index"
             && let Some(ref args) = ops[i].args
-                && args.len() >= 3 {
-                    let slot = &args[0];
-                    let idx = &args[1];
-                    let value = &args[2];
+            && args.len() >= 3
+        {
+            let slot = &args[0];
+            let idx = &args[1];
+            let value = &args[2];
 
-                    // Look ahead past exception boilerplate for a jump to a return label.
-                    let mut j = i + 1;
-                    while j < ops.len() {
-                        let k = ops[j].kind.as_str();
-                        if matches!(
-                            k,
-                            "check_exception"
-                                | "exception_stack_set_depth"
-                                | "exception_stack_exit"
-                                | "exception_last"
-                                | "const_none"
-                                | "is"
-                                | "not"
-                                | "if"
-                                | "raise"
-                                | "end_if"
-                                | "nop"
-                                | "line"
-                        ) {
-                            j += 1;
-                            continue;
-                        }
-                        if (k == "jump" || k == "label")
-                            && let Some(target_label) = ops[j].value
-                                && let Some((ret_slot, ret_idx)) = return_labels.get(&target_label)
-                                    && slot == ret_slot && idx == ret_idx {
-                                        // Match! Replace store_index + boilerplate with ret.
-                                        result.push(OpIR {
-                                            kind: "ret".to_string(),
-                                            out: None,
-                                            args: None,
-                                            var: Some(value.clone()),
-                                            value: None,
-                                            f_value: None,
-                                            s_value: None,
-                                            bytes: None,
-                                            fast_int: None,
-                                            task_kind: None,
-                                            container_type: None,
-                                            stack_eligible: None,
-                                            fast_float: None,
-                                            type_hint: None,
-                                            ic_index: None,
-                                            col_offset: None,
-                                            end_col_offset: None,
-                                        });
-                                        if k == "jump" {
-                                            i = j + 1;
-                                        } else {
-                                            // label fall-through: keep the label
-                                            i = j;
-                                        }
-                                        continue 'outer;
-                                    }
-                        break;
-                    }
+            // Look ahead past exception boilerplate for a jump to a return label.
+            let mut j = i + 1;
+            while j < ops.len() {
+                let k = ops[j].kind.as_str();
+                if matches!(
+                    k,
+                    "check_exception"
+                        | "exception_stack_set_depth"
+                        | "exception_stack_exit"
+                        | "exception_last"
+                        | "const_none"
+                        | "is"
+                        | "not"
+                        | "if"
+                        | "raise"
+                        | "end_if"
+                        | "nop"
+                        | "line"
+                ) {
+                    j += 1;
+                    continue;
                 }
+                if (k == "jump" || k == "label")
+                    && let Some(target_label) = ops[j].value
+                    && let Some((ret_slot, ret_idx)) = return_labels.get(&target_label)
+                    && slot == ret_slot
+                    && idx == ret_idx
+                {
+                    // Match! Replace store_index + boilerplate with ret.
+                    result.push(OpIR {
+                        kind: "ret".to_string(),
+                        out: None,
+                        args: None,
+                        var: Some(value.clone()),
+                        value: None,
+                        f_value: None,
+                        s_value: None,
+                        bytes: None,
+                        fast_int: None,
+                        task_kind: None,
+                        container_type: None,
+                        stack_eligible: None,
+                        fast_float: None,
+                        type_hint: None,
+                        ic_index: None,
+                        col_offset: None,
+                        end_col_offset: None,
+                    });
+                    if k == "jump" {
+                        i = j + 1;
+                    } else {
+                        // label fall-through: keep the label
+                        i = j;
+                    }
+                    continue 'outer;
+                }
+                break;
+            }
+        }
         // Phase 3: Handle direct store_index → [boilerplate] → index → ret
         // without any jump/label. This pattern appears when a function has
         // exactly one code path (no early returns).
         if ops[i].kind == "store_index"
             && let Some(ref args) = ops[i].args
-                && args.len() >= 3 {
-                    let slot = &args[0];
-                    let idx = &args[1];
-                    let value = &args[2];
+            && args.len() >= 3
+        {
+            let slot = &args[0];
+            let idx = &args[1];
+            let value = &args[2];
 
-                    // Scan forward for index(out, slot, idx) → ret
-                    let mut j = i + 1;
-                    let mut found_index_out = None;
-                    while j < ops.len() {
-                        let k = ops[j].kind.as_str();
-                        if matches!(
-                            k,
-                            "check_exception"
-                                | "exception_stack_set_depth"
-                                | "exception_stack_exit"
-                                | "exception_stack_enter"
-                                | "exception_last"
-                                | "const_none"
-                                | "is"
-                                | "not"
-                                | "if"
-                                | "raise"
-                                | "end_if"
-                                | "ret_void"
-                                | "nop"
-                                | "line"
-                        ) {
-                            j += 1;
-                            continue;
-                        }
-                        // Skip bare ret inside exception re-raise blocks.
-                        if k == "ret"
-                            && ops[j].var.is_none()
-                            && ops[j].args.as_ref().is_none_or(|a| a.is_empty())
-                        {
-                            let has_end_if =
-                                (j + 1..ops.len()).take(5).any(|m| ops[m].kind == "end_if");
-                            if has_end_if {
-                                j += 1;
-                                continue;
-                            }
-                        }
-                        if k == "index"
-                            && let Some(ref idx_args) = ops[j].args
-                                && idx_args.len() >= 2
-                                    && &idx_args[0] == slot
-                                    && &idx_args[1] == idx
-                                {
-                                    found_index_out = ops[j].out.clone();
-                                    j += 1;
-                                    continue;
-                                }
-                        // Found a bare ret after the index — replace the
-                        // whole sequence with ret(value).
-                        if k == "ret" && found_index_out.is_some() {
-                            let bare = ops[j].var.is_none()
-                                && ops[j].args.as_ref().is_none_or(|a| a.is_empty());
-                            let refs_index = ops[j].var.as_ref() == found_index_out.as_ref();
-                            if bare || refs_index {
-                                result.push(OpIR {
-                                    kind: "ret".to_string(),
-                                    out: None,
-                                    args: None,
-                                    var: Some(value.clone()),
-                                    value: None,
-                                    f_value: None,
-                                    s_value: None,
-                                    bytes: None,
-                                    fast_int: None,
-                                    task_kind: None,
-                                    container_type: None,
-                                    stack_eligible: None,
-                                    fast_float: None,
-                                    type_hint: None,
-                                    ic_index: None,
-                                    col_offset: None,
-                                    end_col_offset: None,
-                                });
-                                i = j + 1;
-                                continue 'outer;
-                            }
-                        }
-                        break;
+            // Scan forward for index(out, slot, idx) → ret
+            let mut j = i + 1;
+            let mut found_index_out = None;
+            while j < ops.len() {
+                let k = ops[j].kind.as_str();
+                if matches!(
+                    k,
+                    "check_exception"
+                        | "exception_stack_set_depth"
+                        | "exception_stack_exit"
+                        | "exception_stack_enter"
+                        | "exception_last"
+                        | "const_none"
+                        | "is"
+                        | "not"
+                        | "if"
+                        | "raise"
+                        | "end_if"
+                        | "ret_void"
+                        | "nop"
+                        | "line"
+                ) {
+                    j += 1;
+                    continue;
+                }
+                // Skip bare ret inside exception re-raise blocks.
+                if k == "ret"
+                    && ops[j].var.is_none()
+                    && ops[j].args.as_ref().is_none_or(|a| a.is_empty())
+                {
+                    let has_end_if = (j + 1..ops.len()).take(5).any(|m| ops[m].kind == "end_if");
+                    if has_end_if {
+                        j += 1;
+                        continue;
                     }
                 }
+                if k == "index"
+                    && let Some(ref idx_args) = ops[j].args
+                    && idx_args.len() >= 2
+                    && &idx_args[0] == slot
+                    && &idx_args[1] == idx
+                {
+                    found_index_out = ops[j].out.clone();
+                    j += 1;
+                    continue;
+                }
+                // Found a bare ret after the index — replace the
+                // whole sequence with ret(value).
+                if k == "ret" && found_index_out.is_some() {
+                    let bare =
+                        ops[j].var.is_none() && ops[j].args.as_ref().is_none_or(|a| a.is_empty());
+                    let refs_index = ops[j].var.as_ref() == found_index_out.as_ref();
+                    if bare || refs_index {
+                        result.push(OpIR {
+                            kind: "ret".to_string(),
+                            out: None,
+                            args: None,
+                            var: Some(value.clone()),
+                            value: None,
+                            f_value: None,
+                            s_value: None,
+                            bytes: None,
+                            fast_int: None,
+                            task_kind: None,
+                            container_type: None,
+                            stack_eligible: None,
+                            fast_float: None,
+                            type_hint: None,
+                            ic_index: None,
+                            col_offset: None,
+                            end_col_offset: None,
+                        });
+                        i = j + 1;
+                        continue 'outer;
+                    }
+                }
+                break;
+            }
+        }
 
         result.push(ops[i].clone());
         i += 1;
@@ -5128,9 +5145,10 @@ fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
             depth -= 1;
             // Closing a block may bring us back to a reachable state.
             if let Some(d) = dead_at_depth
-                && d > depth {
-                    dead_at_depth = None;
-                }
+                && d > depth
+            {
+                dead_at_depth = None;
+            }
             if dead_at_depth.is_none() {
                 result.push(op.clone());
             }
@@ -5229,19 +5247,20 @@ fn inline_single_use_constants(source: &mut String) {
 
         // Match "local vNNN = <literal>"
         if let Some(rest) = trimmed.strip_prefix("local v")
-            && let Some(eq_pos) = rest.find(" = ") {
-                let var_suffix = &rest[..eq_pos];
-                if var_suffix.chars().all(|c| c.is_ascii_digit()) {
-                    let var_name = format!("v{var_suffix}");
-                    let rhs = rest[eq_pos + 3..].to_string();
-                    // Only inline simple literals — variable copies are unsafe
-                    // because the source variable may be reassigned between
-                    // declaration and use (closure save/restore patterns).
-                    if is_simple_literal(&rhs) {
-                        const_decls.insert(var_name, (i, rhs));
-                    }
+            && let Some(eq_pos) = rest.find(" = ")
+        {
+            let var_suffix = &rest[..eq_pos];
+            if var_suffix.chars().all(|c| c.is_ascii_digit()) {
+                let var_name = format!("v{var_suffix}");
+                let rhs = rest[eq_pos + 3..].to_string();
+                // Only inline simple literals — variable copies are unsafe
+                // because the source variable may be reassigned between
+                // declaration and use (closure save/restore patterns).
+                if is_simple_literal(&rhs) {
+                    const_decls.insert(var_name, (i, rhs));
                 }
             }
+        }
 
         // Count all vNNN references in this line.
         let bytes = line.as_bytes();
@@ -5416,13 +5435,14 @@ fn eliminate_nil_missing_wrappers(source: &mut String) {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("local v")
             && let Some(suffix) = rest.strip_suffix(" = nil -- [missing]")
-                && suffix.chars().all(|c| c.is_ascii_digit()) {
-                    let var = format!("v{suffix}");
-                    if var_use_count.get(&var).copied().unwrap_or(0) == 2 {
-                        remove_lines.insert(i);
-                        nil_vars.insert(var);
-                    }
-                }
+            && suffix.chars().all(|c| c.is_ascii_digit())
+        {
+            let var = format!("v{suffix}");
+            if var_use_count.get(&var).copied().unwrap_or(0) == 2 {
+                remove_lines.insert(i);
+                nil_vars.insert(var);
+            }
+        }
     }
 
     if nil_vars.is_empty() {
@@ -5537,13 +5557,14 @@ fn strip_dead_locals_dict_stores(source: &mut String) {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("local v")
             && rest.ends_with(" = {}")
-                && let Some(eq_pos) = rest.find(" = {}") {
-                    let suffix = &rest[..eq_pos];
-                    if suffix.chars().all(|c| c.is_ascii_digit()) {
-                        let var = format!("v{suffix}");
-                        candidates.insert(var, i);
-                    }
-                }
+            && let Some(eq_pos) = rest.find(" = {}")
+        {
+            let suffix = &rest[..eq_pos];
+            if suffix.chars().all(|c| c.is_ascii_digit()) {
+                let var = format!("v{suffix}");
+                candidates.insert(var, i);
+            }
+        }
     }
 
     if candidates.is_empty() {
@@ -5703,64 +5724,65 @@ fn simplify_comparison_break(source: &mut String) {
 
         // Match: `local vN = vA < vB`
         if let Some(rest) = trimmed.strip_prefix("local v")
-            && let Some(eq_pos) = rest.find(" = ") {
-                let var_suffix = &rest[..eq_pos];
-                if !var_suffix.chars().all(|c| c.is_ascii_digit()) {
-                    continue;
-                }
-                let var_name = format!("v{var_suffix}");
-                let rhs = &rest[eq_pos + 3..];
-
-                // Check if next line is `if not vN then break end`
-                let expected_if = format!("if not {var_name} then break end");
-                if next_trimmed != expected_if {
-                    continue;
-                }
-
-                // Try to find comparison op in rhs
-                let (lhs, op, rhs_val) = if let Some(pos) = rhs.find(" < ") {
-                    (&rhs[..pos], ">=", &rhs[pos + 3..])
-                } else if let Some(pos) = rhs.find(" > ") {
-                    (&rhs[..pos], "<=", &rhs[pos + 3..])
-                } else if let Some(pos) = rhs.find(" <= ") {
-                    (&rhs[..pos], ">", &rhs[pos + 4..])
-                } else if let Some(pos) = rhs.find(" >= ") {
-                    (&rhs[..pos], "<", &rhs[pos + 4..])
-                } else if let Some(pos) = rhs.find(" == ") {
-                    (&rhs[..pos], "~=", &rhs[pos + 4..])
-                } else if let Some(pos) = rhs.find(" ~= ") {
-                    (&rhs[..pos], "==", &rhs[pos + 4..])
-                } else {
-                    continue;
-                };
-
-                // Verify var_name is only used on these 2 lines
-                let var_bytes = var_name.as_bytes();
-                let mut total_uses = 0;
-                for line in &lines {
-                    let bytes = line.as_bytes();
-                    let mut pos = 0;
-                    while pos + var_bytes.len() <= bytes.len() {
-                        if &bytes[pos..pos + var_bytes.len()] == var_bytes {
-                            let before_ok = pos == 0 || !is_ident_char(bytes[pos - 1]);
-                            let after_ok = pos + var_bytes.len() >= bytes.len()
-                                || !is_ident_char(bytes[pos + var_bytes.len()]);
-                            if before_ok && after_ok {
-                                total_uses += 1;
-                            }
-                        }
-                        pos += 1;
-                    }
-                }
-                // 1 in decl + 1 in if = 2
-                if total_uses != 2 {
-                    continue;
-                }
-
-                let indent = &lines[i][..lines[i].len() - trimmed.len()];
-                replacements.insert(i, format!("{indent}if {lhs} {op} {rhs_val} then break end"));
-                remove.insert(i + 1);
+            && let Some(eq_pos) = rest.find(" = ")
+        {
+            let var_suffix = &rest[..eq_pos];
+            if !var_suffix.chars().all(|c| c.is_ascii_digit()) {
+                continue;
             }
+            let var_name = format!("v{var_suffix}");
+            let rhs = &rest[eq_pos + 3..];
+
+            // Check if next line is `if not vN then break end`
+            let expected_if = format!("if not {var_name} then break end");
+            if next_trimmed != expected_if {
+                continue;
+            }
+
+            // Try to find comparison op in rhs
+            let (lhs, op, rhs_val) = if let Some(pos) = rhs.find(" < ") {
+                (&rhs[..pos], ">=", &rhs[pos + 3..])
+            } else if let Some(pos) = rhs.find(" > ") {
+                (&rhs[..pos], "<=", &rhs[pos + 3..])
+            } else if let Some(pos) = rhs.find(" <= ") {
+                (&rhs[..pos], ">", &rhs[pos + 4..])
+            } else if let Some(pos) = rhs.find(" >= ") {
+                (&rhs[..pos], "<", &rhs[pos + 4..])
+            } else if let Some(pos) = rhs.find(" == ") {
+                (&rhs[..pos], "~=", &rhs[pos + 4..])
+            } else if let Some(pos) = rhs.find(" ~= ") {
+                (&rhs[..pos], "==", &rhs[pos + 4..])
+            } else {
+                continue;
+            };
+
+            // Verify var_name is only used on these 2 lines
+            let var_bytes = var_name.as_bytes();
+            let mut total_uses = 0;
+            for line in &lines {
+                let bytes = line.as_bytes();
+                let mut pos = 0;
+                while pos + var_bytes.len() <= bytes.len() {
+                    if &bytes[pos..pos + var_bytes.len()] == var_bytes {
+                        let before_ok = pos == 0 || !is_ident_char(bytes[pos - 1]);
+                        let after_ok = pos + var_bytes.len() >= bytes.len()
+                            || !is_ident_char(bytes[pos + var_bytes.len()]);
+                        if before_ok && after_ok {
+                            total_uses += 1;
+                        }
+                    }
+                    pos += 1;
+                }
+            }
+            // 1 in decl + 1 in if = 2
+            if total_uses != 2 {
+                continue;
+            }
+
+            let indent = &lines[i][..lines[i].len() - trimmed.len()];
+            replacements.insert(i, format!("{indent}if {lhs} {op} {rhs_val} then break end"));
+            remove.insert(i + 1);
+        }
     }
 
     if remove.is_empty() && replacements.is_empty() {
@@ -5813,27 +5835,29 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
         }
         // `vN = ...` (assignment, not `local`)
         if trimmed.starts_with('v')
-            && let Some(eq_pos) = trimmed.find(" = ") {
-                let lhs = &trimmed[..eq_pos];
-                if lhs.starts_with('v') && lhs[1..].chars().all(|c| c.is_ascii_digit()) {
-                    defined_vars.insert(lhs.to_string());
-                }
+            && let Some(eq_pos) = trimmed.find(" = ")
+        {
+            let lhs = &trimmed[..eq_pos];
+            if lhs.starts_with('v') && lhs[1..].chars().all(|c| c.is_ascii_digit()) {
+                defined_vars.insert(lhs.to_string());
             }
+        }
     }
     // Function parameters are also defined.
     for line in &lines {
         let trimmed = line.trim();
         if trimmed.ends_with(')')
             && (trimmed.contains("= function(") || trimmed.contains("function "))
-            && let Some(paren_start) = trimmed.rfind('(') {
-                let params = &trimmed[paren_start + 1..trimmed.len() - 1];
-                for param in params.split(", ") {
-                    let p = param.trim();
-                    if !p.is_empty() {
-                        defined_vars.insert(p.to_string());
-                    }
+            && let Some(paren_start) = trimmed.rfind('(')
+        {
+            let params = &trimmed[paren_start + 1..trimmed.len() - 1];
+            for param in params.split(", ") {
+                let p = param.trim();
+                if !p.is_empty() {
+                    defined_vars.insert(p.to_string());
                 }
             }
+        }
         // For-loop iteration variables: `for _, vN in ...` or `for vN = ...`
         if let Some(rest) = trimmed.strip_prefix("for ") {
             // Split on " in " or " = " to get the variable list
@@ -5858,20 +5882,22 @@ fn strip_undefined_rhs_assignments(source: &mut String) {
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         // Match: `vN = vM` (bare assignment, not `local`)
-        if !trimmed.starts_with("local ") && trimmed.starts_with('v')
-            && let Some(eq_pos) = trimmed.find(" = ") {
-                let lhs = &trimmed[..eq_pos];
-                let rhs = trimmed[eq_pos + 3..].trim();
-                // Both sides must be simple variable names (vN pattern).
-                if lhs.starts_with('v')
-                    && lhs[1..].chars().all(|c| c.is_ascii_digit())
-                    && rhs.starts_with('v')
-                    && rhs[1..].chars().all(|c| c.is_ascii_digit())
-                    && !defined_vars.contains(rhs)
-                {
-                    remove.insert(i);
-                }
+        if !trimmed.starts_with("local ")
+            && trimmed.starts_with('v')
+            && let Some(eq_pos) = trimmed.find(" = ")
+        {
+            let lhs = &trimmed[..eq_pos];
+            let rhs = trimmed[eq_pos + 3..].trim();
+            // Both sides must be simple variable names (vN pattern).
+            if lhs.starts_with('v')
+                && lhs[1..].chars().all(|c| c.is_ascii_digit())
+                && rhs.starts_with('v')
+                && rhs[1..].chars().all(|c| c.is_ascii_digit())
+                && !defined_vars.contains(rhs)
+            {
+                remove.insert(i);
             }
+        }
     }
 
     if remove.is_empty() {
@@ -5922,16 +5948,17 @@ fn propagate_single_use_copies_once(source: &mut String) -> usize {
         let trimmed = line.trim();
 
         if let Some(rest) = trimmed.strip_prefix("local v")
-            && let Some(eq_pos) = rest.find(" = ") {
-                let var_suffix = &rest[..eq_pos];
-                if var_suffix.chars().all(|c| c.is_ascii_digit()) {
-                    let var_name = format!("v{var_suffix}");
-                    let rhs = rest[eq_pos + 3..].trim();
-                    if is_simple_var_ref(rhs) {
-                        copy_decls.insert(var_name, (i, rhs.to_string()));
-                    }
+            && let Some(eq_pos) = rest.find(" = ")
+        {
+            let var_suffix = &rest[..eq_pos];
+            if var_suffix.chars().all(|c| c.is_ascii_digit()) {
+                let var_name = format!("v{var_suffix}");
+                let rhs = rest[eq_pos + 3..].trim();
+                if is_simple_var_ref(rhs) {
+                    copy_decls.insert(var_name, (i, rhs.to_string()));
                 }
             }
+        }
 
         // Count all vNNN references in this line.
         let bytes = line.as_bytes();
@@ -6289,18 +6316,19 @@ fn eliminate_common_subexpressions(source: &mut String) {
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("local v")
-            && let Some(eq_pos) = rest.find(" = ") {
-                let suffix = &rest[..eq_pos];
-                if suffix.chars().all(|c| c.is_ascii_digit()) {
-                    let var = format!("v{suffix}");
-                    let rhs = rest[eq_pos + 3..].trim();
-                    if is_pure_expr(rhs) && rhs.len() > 3 {
-                        let indent = line.len() - trimmed.len();
-                        let key = format!("{}@{}", rhs, indent);
-                        expr_map.entry(key).or_default().push((i, var));
-                    }
+            && let Some(eq_pos) = rest.find(" = ")
+        {
+            let suffix = &rest[..eq_pos];
+            if suffix.chars().all(|c| c.is_ascii_digit()) {
+                let var = format!("v{suffix}");
+                let rhs = rest[eq_pos + 3..].trim();
+                if is_pure_expr(rhs) && rhs.len() > 3 {
+                    let indent = line.len() - trimmed.len();
+                    let key = format!("{}@{}", rhs, indent);
+                    expr_map.entry(key).or_default().push((i, var));
                 }
             }
+        }
     }
 
     // Phase 2: for expressions with 2+ occurrences, replace later ones.
@@ -6472,20 +6500,22 @@ fn hoist_loop_invariants(source: &mut String) {
             let t = lines[j].trim();
             // Bare assignment: `vN = ...`
             if t.starts_with('v')
-                && let Some(eq) = t.find(" = ") {
-                    let lhs = &t[..eq];
-                    if lhs.starts_with('v') && lhs[1..].chars().all(|c| c.is_ascii_digit()) {
-                        modified_in_loop.insert(lhs.to_string());
-                    }
+                && let Some(eq) = t.find(" = ")
+            {
+                let lhs = &t[..eq];
+                if lhs.starts_with('v') && lhs[1..].chars().all(|c| c.is_ascii_digit()) {
+                    modified_in_loop.insert(lhs.to_string());
                 }
+            }
             // `local vN = ...` also defines vN inside the loop.
             if let Some(rest) = t.strip_prefix("local v")
-                && let Some(eq) = rest.find(" = ") {
-                    let suffix = &rest[..eq];
-                    if suffix.chars().all(|c| c.is_ascii_digit()) {
-                        modified_in_loop.insert(format!("v{suffix}"));
-                    }
+                && let Some(eq) = rest.find(" = ")
+            {
+                let suffix = &rest[..eq];
+                if suffix.chars().all(|c| c.is_ascii_digit()) {
+                    modified_in_loop.insert(format!("v{suffix}"));
                 }
+            }
             // `for` iteration variables.
             if t.starts_with("for ") {
                 if let Some(in_pos) = t.find(" in ") {
@@ -6515,60 +6545,60 @@ fn hoist_loop_invariants(source: &mut String) {
             }
 
             if let Some(rest) = t.strip_prefix("local v")
-                && let Some(eq) = rest.find(" = ") {
-                    let suffix = &rest[..eq];
-                    if !suffix.chars().all(|c| c.is_ascii_digit()) {
-                        continue;
-                    }
-                    let var = format!("v{suffix}");
-                    let rhs = rest[eq + 3..].trim();
+                && let Some(eq) = rest.find(" = ")
+            {
+                let suffix = &rest[..eq];
+                if !suffix.chars().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                let var = format!("v{suffix}");
+                let rhs = rest[eq + 3..].trim();
 
-                    if !is_pure_expr(rhs) {
-                        continue;
-                    }
+                if !is_pure_expr(rhs) {
+                    continue;
+                }
 
-                    // The declared variable itself must not be modified in loop.
-                    if modified_in_loop.contains(&var) {
-                        continue;
-                    }
+                // The declared variable itself must not be modified in loop.
+                if modified_in_loop.contains(&var) {
+                    continue;
+                }
 
-                    // All vN references in the RHS must not be modified in loop.
-                    let mut all_invariant = true;
-                    let bytes = rhs.as_bytes();
-                    let mut pos = 0;
-                    while pos < bytes.len() {
-                        if bytes[pos] == b'v' && (pos == 0 || !is_ident_char(bytes[pos - 1])) {
-                            let start = pos;
-                            pos += 1;
-                            while pos < bytes.len() && bytes[pos].is_ascii_digit() {
-                                pos += 1;
-                            }
-                            if pos > start + 1 && (pos >= bytes.len() || !is_ident_char(bytes[pos]))
-                            {
-                                let ref_var = std::str::from_utf8(&bytes[start..pos]).unwrap_or("");
-                                if modified_in_loop.contains(ref_var) {
-                                    all_invariant = false;
-                                    break;
-                                }
-                            }
-                        } else {
+                // All vN references in the RHS must not be modified in loop.
+                let mut all_invariant = true;
+                let bytes = rhs.as_bytes();
+                let mut pos = 0;
+                while pos < bytes.len() {
+                    if bytes[pos] == b'v' && (pos == 0 || !is_ident_char(bytes[pos - 1])) {
+                        let start = pos;
+                        pos += 1;
+                        while pos < bytes.len() && bytes[pos].is_ascii_digit() {
                             pos += 1;
                         }
+                        if pos > start + 1 && (pos >= bytes.len() || !is_ident_char(bytes[pos])) {
+                            let ref_var = std::str::from_utf8(&bytes[start..pos]).unwrap_or("");
+                            if modified_in_loop.contains(ref_var) {
+                                all_invariant = false;
+                                break;
+                            }
+                        }
+                    } else {
+                        pos += 1;
                     }
-
-                    if !all_invariant {
-                        continue;
-                    }
-
-                    // Hoist: emit at the same indent as the loop header.
-                    let hoist_indent = &lines[loop_start][..loop_indent];
-                    insertions
-                        .entry(loop_start)
-                        .or_default()
-                        .push(format!("{hoist_indent}{t}"));
-                    hoisted_lines.insert(j);
-                    count += 1;
                 }
+
+                if !all_invariant {
+                    continue;
+                }
+
+                // Hoist: emit at the same indent as the loop header.
+                let hoist_indent = &lines[loop_start][..loop_indent];
+                insertions
+                    .entry(loop_start)
+                    .or_default()
+                    .push(format!("{hoist_indent}{t}"));
+                hoisted_lines.insert(j);
+                count += 1;
+            }
         }
 
         i += 1;
@@ -6632,21 +6662,22 @@ fn sink_single_use_locals_once(source: &mut String) -> usize {
         let trimmed = line.trim();
 
         if let Some(rest) = trimmed.strip_prefix("local v")
-            && let Some(eq_pos) = rest.find(" = ") {
-                let var_suffix = &rest[..eq_pos];
-                if var_suffix.chars().all(|c| c.is_ascii_digit()) {
-                    let var_name = format!("v{var_suffix}");
-                    let rhs = rest[eq_pos + 3..].trim().to_string();
-                    if rhs.len() <= 120
-                        && !rhs.contains('\n')
-                        && !rhs.contains("--")
-                        && !is_simple_literal(&rhs)
-                        && !is_simple_var_ref(&rhs)
-                    {
-                        local_decls.insert(var_name, (i, rhs));
-                    }
+            && let Some(eq_pos) = rest.find(" = ")
+        {
+            let var_suffix = &rest[..eq_pos];
+            if var_suffix.chars().all(|c| c.is_ascii_digit()) {
+                let var_name = format!("v{var_suffix}");
+                let rhs = rest[eq_pos + 3..].trim().to_string();
+                if rhs.len() <= 120
+                    && !rhs.contains('\n')
+                    && !rhs.contains("--")
+                    && !is_simple_literal(&rhs)
+                    && !is_simple_var_ref(&rhs)
+                {
+                    local_decls.insert(var_name, (i, rhs));
                 }
             }
+        }
 
         let bytes = line.as_bytes();
         let mut pos = 0;
@@ -6764,17 +6795,18 @@ fn simplify_numeric_type_guards(source: &mut String) {
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("local v")
-            && let Some(eq_pos) = rest.find(" = ") {
-                let suffix = &rest[..eq_pos];
-                if suffix.chars().all(|c| c.is_ascii_digit()) {
-                    let rhs = rest[eq_pos + 3..].trim();
-                    // Check if RHS is a simple integer (possibly negative).
-                    if let Ok(val) = rhs.parse::<i64>() {
-                        let var_name = format!("v{suffix}");
-                        int_consts.insert(var_name, (i, val));
-                    }
+            && let Some(eq_pos) = rest.find(" = ")
+        {
+            let suffix = &rest[..eq_pos];
+            if suffix.chars().all(|c| c.is_ascii_digit()) {
+                let rhs = rest[eq_pos + 3..].trim();
+                // Check if RHS is a simple integer (possibly negative).
+                if let Ok(val) = rhs.parse::<i64>() {
+                    let var_name = format!("v{suffix}");
+                    int_consts.insert(var_name, (i, val));
                 }
             }
+        }
     }
 
     // Phase 2: For each int const, check if the next line contains the
@@ -7009,24 +7041,24 @@ fn optimize_luau_perf(source: &mut String) {
                 if rhs.starts_with("if type(")
                     && rhs.contains("then tostring(")
                     && rhs.contains("else ")
-                    && let Some(else_pos) = rhs.rfind("else ") {
-                        let numeric_expr = &rhs[else_pos + 5..];
-                        if let Some(plus) = numeric_expr.find(" + ") {
-                            let lhs_var = numeric_expr[..plus].trim();
-                            let rhs_var = numeric_expr[plus + 3..].trim();
-                            if numeric_vars.contains(lhs_var) && numeric_vars.contains(rhs_var) {
-                                let indent = &line[..line.len() - trimmed.len()];
-                                if is_local {
-                                    optimized =
-                                        format!("{indent}local {var_name} = {numeric_expr}");
-                                } else {
-                                    optimized = format!("{indent}{var_name} = {numeric_expr}");
-                                }
-                                numeric_vars.insert(var_name);
-                                perf_count += 1;
+                    && let Some(else_pos) = rhs.rfind("else ")
+                {
+                    let numeric_expr = &rhs[else_pos + 5..];
+                    if let Some(plus) = numeric_expr.find(" + ") {
+                        let lhs_var = numeric_expr[..plus].trim();
+                        let rhs_var = numeric_expr[plus + 3..].trim();
+                        if numeric_vars.contains(lhs_var) && numeric_vars.contains(rhs_var) {
+                            let indent = &line[..line.len() - trimmed.len()];
+                            if is_local {
+                                optimized = format!("{indent}local {var_name} = {numeric_expr}");
+                            } else {
+                                optimized = format!("{indent}{var_name} = {numeric_expr}");
                             }
+                            numeric_vars.insert(var_name);
+                            perf_count += 1;
                         }
                     }
+                }
             }
         }
 
@@ -7439,13 +7471,14 @@ fn rehoist_escaped_locals(source: &mut String) {
                     let orig_line = lines[*decl_line];
                     let orig_trimmed = orig_line.trim();
                     if let Some(rest) = orig_trimmed.strip_prefix(&format!("local {var}"))
-                        && rest.starts_with(" = ") {
-                            let line_indent = &orig_line[..orig_line.len() - orig_trimmed.len()];
-                            let new_line = format!("{line_indent}{var}{rest}");
-                            removals.insert(*decl_line); // Will be replaced
-                            insertions.entry(*decl_line).or_default().push(new_line);
-                            total += 1;
-                        }
+                        && rest.starts_with(" = ")
+                    {
+                        let line_indent = &orig_line[..orig_line.len() - orig_trimmed.len()];
+                        let new_line = format!("{line_indent}{var}{rest}");
+                        removals.insert(*decl_line); // Will be replaced
+                        insertions.entry(*decl_line).or_default().push(new_line);
+                        total += 1;
+                    }
                 }
             }
         }
@@ -7513,29 +7546,30 @@ fn strip_dead_gotos_and_labels(source: &mut String) {
     for (i, line) in lines.iter().enumerate() {
         let t = line.trim();
         if let Some(target) = t.strip_prefix("goto ")
-            && !existing_labels.contains(target) {
-                remove.insert(i);
-                // Also remove surrounding if/end block if the goto was the only statement.
-                if i > 0 && i + 1 < lines.len() {
-                    let prev = lines[i - 1].trim();
-                    let next = lines[i + 1].trim();
-                    if prev.ends_with(" then") && next == "end" {
-                        // Check there's an error() before the goto too
-                        if i >= 2 && lines[i - 2].trim().starts_with("error(") {
-                            remove.insert(i - 2); // error()
-                        }
-                        remove.insert(i - 1); // if ... then
-                        remove.insert(i + 1); // end
-                        // Also remove the comparison setup before the if
-                        if i >= 3 {
-                            let comp = lines[i - 3].trim();
-                            if comp.starts_with("if not ") && comp.ends_with(" then") {
-                                // This is the outer pattern, already captured
-                            }
+            && !existing_labels.contains(target)
+        {
+            remove.insert(i);
+            // Also remove surrounding if/end block if the goto was the only statement.
+            if i > 0 && i + 1 < lines.len() {
+                let prev = lines[i - 1].trim();
+                let next = lines[i + 1].trim();
+                if prev.ends_with(" then") && next == "end" {
+                    // Check there's an error() before the goto too
+                    if i >= 2 && lines[i - 2].trim().starts_with("error(") {
+                        remove.insert(i - 2); // error()
+                    }
+                    remove.insert(i - 1); // if ... then
+                    remove.insert(i + 1); // end
+                    // Also remove the comparison setup before the if
+                    if i >= 3 {
+                        let comp = lines[i - 3].trim();
+                        if comp.starts_with("if not ") && comp.ends_with(" then") {
+                            // This is the outer pattern, already captured
                         }
                     }
                 }
             }
+        }
     }
 
     // Remove goto-to-immediately-next-label (dead jump pattern).
@@ -7783,7 +7817,7 @@ fn eliminate_goto_labels(source: &mut String) {
 
             let has_code = (wrap_start..wrap_end).any(|i| {
                 let t = lines[i].trim();
-            !(t.is_empty() || (t.starts_with("::") && t.ends_with("::")))
+                !(t.is_empty() || (t.starts_with("::") && t.ends_with("::")))
             });
 
             if has_code {

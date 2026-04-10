@@ -1,4 +1,4 @@
-use molt_backend::{validate_simple_ir, FunctionIR, OpIR, SimpleIR};
+use molt_backend::{FunctionIR, OpIR, SimpleIR, validate_simple_ir};
 
 fn op(kind: &str) -> OpIR {
     OpIR {
@@ -92,7 +92,10 @@ fn validate_simple_ir_accepts_fast_int_flags_on_arithmetic_ops() {
     add.fast_int = Some(true);
 
     let ir = SimpleIR {
-        functions: vec![test_func("molt_test_validate_fast_int", vec![lhs, rhs, add])],
+        functions: vec![test_func(
+            "molt_test_validate_fast_int",
+            vec![lhs, rhs, add],
+        )],
         profile: None,
     };
     assert!(validate_simple_ir(&ir).is_ok());

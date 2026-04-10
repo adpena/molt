@@ -478,23 +478,25 @@ pub extern "C" fn molt_module_capi_get_def(module_bits: MoltHandle) -> usize {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_module_capi_get_state(module_bits: MoltHandle) -> usize {
+pub extern "C" fn molt_module_capi_get_state(module_bits: MoltHandle) -> *mut u8 {
     crate::with_gil_entry!(_py, {
         let module_ptr = match require_module_handle(_py, module_bits) {
             Ok(ptr) => ptr,
-            Err(_) => return 0,
+            Err(_) => return std::ptr::null_mut(),
         };
         let module_key = module_ptr_key(module_ptr);
         let registry = c_api_module_metadata_registry();
-        let guard = registry
+        let mut guard = registry
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.get(&module_key).map_or(0, |entry| {
-            entry
-                .module_state
-                .as_ref()
-                .map_or(0, |state| state.as_ptr() as usize)
-        })
+        guard
+            .get_mut(&module_key)
+            .map_or(std::ptr::null_mut(), |entry| {
+                entry
+                    .module_state
+                    .as_mut()
+                    .map_or(std::ptr::null_mut(), |state| state.as_mut_ptr())
+            })
     })
 }
 
@@ -749,10 +751,11 @@ pub extern "C" fn molt_capi_method_dispatch(
     kwargs_bits: MoltHandle,
 ) -> MoltHandle {
     crate::with_gil_entry!(_py, {
-        let (self_bits, flags, fn_ptr) = match c_api_method_decode_closure(_py, closure_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
+        let (self_bits, flags, callback_target) =
+            match c_api_method_decode_closure(_py, closure_bits) {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
         let args_ptr = match c_api_method_require_tuple(_py, args_tuple_bits) {
             Ok(ptr) => ptr,
             Err(bits) => return bits,
@@ -803,7 +806,7 @@ pub extern "C" fn molt_capi_method_dispatch(
                     };
                     // SAFETY: `fn_ptr` is a C-API METH_VARARGS callback registered via the
                     // extension module. The method flags guarantee a (self, args) -> obj signature.
-                    let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr);
+                    let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(callback_target);
                     func(callback_self_bits, callback_args_bits)
                 }
                 C_API_METH_VARARGS_KEYWORDS => {
@@ -819,7 +822,8 @@ pub extern "C" fn molt_capi_method_dispatch(
                     };
                     // SAFETY: `fn_ptr` is a C-API METH_VARARGS|METH_KEYWORDS callback. The method
                     // flags guarantee a (self, args, kwargs) -> obj signature. UB if fn_ptr is invalid.
-                    let func: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fn_ptr);
+                    let func: extern "C" fn(u64, u64, u64) -> u64 =
+                        std::mem::transmute(callback_target);
                     func(callback_self_bits, callback_args_bits, kwargs_for_callback)
                 }
                 C_API_METH_NOARGS => {
@@ -840,7 +844,7 @@ pub extern "C" fn molt_capi_method_dispatch(
                     }
                     // SAFETY: `fn_ptr` is a C-API METH_NOARGS callback. The method flags guarantee
                     // a (self, null) -> obj signature. Arg count validated above. UB if fn_ptr is invalid.
-                    let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr);
+                    let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(callback_target);
                     func(callback_self_bits, 0)
                 }
                 C_API_METH_O => {
@@ -866,7 +870,7 @@ pub extern "C" fn molt_capi_method_dispatch(
                     };
                     // SAFETY: `fn_ptr` is a C-API METH_O callback. The method flags guarantee
                     // a (self, arg) -> obj signature. Arg count validated above. UB if fn_ptr is invalid.
-                    let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fn_ptr);
+                    let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(callback_target);
                     func(callback_self_bits, arg0_bits)
                 }
                 _ => {
@@ -903,12 +907,19 @@ pub unsafe extern "C" fn molt_cfunction_create_bytes(
     self_bits: MoltHandle,
     name_ptr: *const u8,
     name_len: u64,
-    method_ptr: usize,
+    method_ptr: Option<extern "C" fn(u64, u64) -> u64>,
     method_flags: u32,
     doc_ptr: *const u8,
     doc_len: u64,
 ) -> MoltHandle {
     crate::with_gil_entry!(_py, {
+        if method_flags == C_API_METH_VARARGS_KEYWORDS {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "METH_KEYWORDS callbacks must use molt_cfunction_create_keywords_bytes",
+            );
+        }
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_exception::<u64>(
                 _py,
@@ -932,7 +943,58 @@ pub unsafe extern "C" fn molt_cfunction_create_bytes(
             _py,
             self_bits,
             name_bytes,
-            method_ptr,
+            method_ptr.map_or(std::ptr::null(), |func| func as *const ()),
+            method_flags,
+            doc_bytes,
+        ) {
+            Ok(bits) => bits,
+            Err(_) => none_bits(),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_cfunction_create_keywords_bytes(
+    self_bits: MoltHandle,
+    name_ptr: *const u8,
+    name_len: u64,
+    method_ptr: Option<extern "C" fn(u64, u64, u64) -> u64>,
+    method_flags: u32,
+    doc_ptr: *const u8,
+    doc_len: u64,
+) -> MoltHandle {
+    crate::with_gil_entry!(_py, {
+        if method_flags != C_API_METH_VARARGS_KEYWORDS {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "keywords callback requires METH_VARARGS | METH_KEYWORDS",
+            );
+        }
+        let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "method name pointer cannot be null when len > 0",
+            );
+        };
+        let doc_bytes = if doc_ptr.is_null() && doc_len == 0 {
+            None
+        } else {
+            let Some(bytes) = (unsafe { bytes_slice_from_raw(doc_ptr, doc_len) }) else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "method doc pointer cannot be null when len > 0",
+                );
+            };
+            Some(bytes)
+        };
+        match c_api_method_build_function(
+            _py,
+            self_bits,
+            name_bytes,
+            method_ptr.map_or(std::ptr::null(), |func| func as *const ()),
             method_flags,
             doc_bytes,
         ) {
@@ -947,12 +1009,19 @@ pub unsafe extern "C" fn molt_module_add_cfunction_bytes(
     module_bits: MoltHandle,
     name_ptr: *const u8,
     name_len: u64,
-    method_ptr: usize,
+    method_ptr: Option<extern "C" fn(u64, u64) -> u64>,
     method_flags: u32,
     doc_ptr: *const u8,
     doc_len: u64,
 ) -> i32 {
     crate::with_gil_entry!(_py, {
+        if method_flags == C_API_METH_VARARGS_KEYWORDS {
+            return raise_i32(
+                _py,
+                "TypeError",
+                "METH_KEYWORDS callbacks must use molt_module_add_cfunction_keywords_bytes",
+            );
+        }
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_i32(
                 _py,
@@ -979,7 +1048,85 @@ pub unsafe extern "C" fn molt_module_add_cfunction_bytes(
             _py,
             module_bits,
             name_bytes,
-            method_ptr,
+            method_ptr.map_or(std::ptr::null(), |func| func as *const ()),
+            method_flags,
+            doc_bytes,
+        ) {
+            Ok(bits) => bits,
+            Err(code) => return code,
+        };
+        let name_ptr_obj = alloc_string(_py, name_bytes);
+        if name_ptr_obj.is_null() {
+            dec_ref_bits(_py, func_bits);
+            return -1;
+        }
+        let name_bits = MoltObject::from_ptr(name_ptr_obj).bits();
+        let module_name_bits = unsafe {
+            molt_object_getattr_bytes(module_bits, b"__name__".as_ptr(), b"__name__".len() as u64)
+        };
+        if !obj_from_bits(module_name_bits).is_none() && !exception_pending(_py) {
+            let _ = c_api_method_set_attr_bytes(_py, func_bits, b"__module__", module_name_bits);
+            dec_ref_bits(_py, module_name_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, func_bits);
+                dec_ref_bits(_py, name_bits);
+                return -1;
+            }
+        } else if exception_pending(_py) {
+            let _ = molt_exception_clear();
+        }
+        let rc = module_add_object_impl(_py, module_bits, name_bits, func_bits);
+        dec_ref_bits(_py, func_bits);
+        dec_ref_bits(_py, name_bits);
+        rc
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_module_add_cfunction_keywords_bytes(
+    module_bits: MoltHandle,
+    name_ptr: *const u8,
+    name_len: u64,
+    method_ptr: Option<extern "C" fn(u64, u64, u64) -> u64>,
+    method_flags: u32,
+    doc_ptr: *const u8,
+    doc_len: u64,
+) -> i32 {
+    crate::with_gil_entry!(_py, {
+        if method_flags != C_API_METH_VARARGS_KEYWORDS {
+            return raise_i32(
+                _py,
+                "TypeError",
+                "keywords callback requires METH_VARARGS | METH_KEYWORDS",
+            );
+        }
+        let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
+            return raise_i32(
+                _py,
+                "TypeError",
+                "method name pointer cannot be null when len > 0",
+            );
+        };
+        if require_module_handle(_py, module_bits).is_err() {
+            return -1;
+        }
+        let doc_bytes = if doc_ptr.is_null() && doc_len == 0 {
+            None
+        } else {
+            let Some(bytes) = (unsafe { bytes_slice_from_raw(doc_ptr, doc_len) }) else {
+                return raise_i32(
+                    _py,
+                    "TypeError",
+                    "method doc pointer cannot be null when len > 0",
+                );
+            };
+            Some(bytes)
+        };
+        let func_bits = match c_api_method_build_function(
+            _py,
+            module_bits,
+            name_bytes,
+            method_ptr.map_or(std::ptr::null(), |func| func as *const ()),
             method_flags,
             doc_bytes,
         ) {
@@ -1216,7 +1363,7 @@ pub unsafe extern "C" fn molt_buffer_acquire(
             return raise_i32(_py, "TypeError", "out_view cannot be null");
         }
         let mut export = BufferExport {
-            ptr: 0,
+            ptr: std::ptr::null_mut(),
             len: 0,
             readonly: 1,
             stride: 1,
@@ -1228,7 +1375,7 @@ pub unsafe extern "C" fn molt_buffer_acquire(
         inc_ref_bits(_py, obj_bits);
         unsafe {
             *out_view = MoltBufferView {
-                data: export.ptr as usize as *mut u8,
+                data: export.ptr,
                 len: export.len,
                 readonly: export.readonly as u32,
                 reserved: 0,

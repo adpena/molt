@@ -991,7 +991,8 @@ unsafe fn merge_class_layout_metadata(
                 dict_set_in_place(_py, target_offsets_ptr, pair[0], pair[1]);
             }
             merged_offsets_ptr = target_offsets_ptr;
-        } else if let Some(existing_offsets_bits) = dict_get_in_place(_py, dict_ptr, offsets_name_bits)
+        } else if let Some(existing_offsets_bits) =
+            dict_get_in_place(_py, dict_ptr, offsets_name_bits)
             && let Some(existing_offsets_ptr) = obj_from_bits(existing_offsets_bits).as_ptr()
             && object_type_id(existing_offsets_ptr) == TYPE_ID_DICT
         {
@@ -1023,8 +1024,8 @@ unsafe fn merge_class_layout_metadata(
         };
         layout_size = layout_size.max(hinted_size);
         if !merged_offsets_ptr.is_null() {
-            let required = max_slot_end_from_offsets_dict(merged_offsets_ptr)
-                .saturating_add(reserved_tail);
+            let required =
+                max_slot_end_from_offsets_dict(merged_offsets_ptr).saturating_add(reserved_tail);
             layout_size = layout_size.max(required);
         }
         if layout_size == 0 {
@@ -1040,7 +1041,11 @@ unsafe fn merge_class_layout_metadata(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_class_merge_layout(class_bits: u64, offsets_bits: u64, size_bits: u64) -> u64 {
+pub extern "C" fn molt_class_merge_layout(
+    class_bits: u64,
+    offsets_bits: u64,
+    size_bits: u64,
+) -> u64 {
     crate::with_gil_entry!(_py, {
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
@@ -1048,11 +1053,7 @@ pub extern "C" fn molt_class_merge_layout(class_bits: u64, offsets_bits: u64, si
         };
         unsafe {
             if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "class layout merge expects type",
-                );
+                return raise_exception::<_>(_py, "TypeError", "class layout merge expects type");
             }
             match merge_class_layout_metadata(_py, class_ptr, offsets_bits, size_bits) {
                 Ok(()) => MoltObject::none().bits(),
@@ -1132,7 +1133,11 @@ pub extern "C" fn molt_bootstrap_descriptor_types() -> u64 {
         let builtins = builtin_classes(_py);
         let tuple_ptr = alloc_tuple(
             _py,
-            &[builtins.classmethod, builtins.staticmethod, builtins.property],
+            &[
+                builtins.classmethod,
+                builtins.staticmethod,
+                builtins.property,
+            ],
         );
         if tuple_ptr.is_null() {
             MoltObject::none().bits()
@@ -5963,11 +5968,13 @@ pub extern "C" fn molt_dataclasses_is_initvar(obj_bits: u64) -> u64 {
         if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__name__") {
             let name_val = molt_getattr_builtin(cls_bits, name_bits, missing);
             dec_ref_bits(_py, name_bits);
-            if !exception_pending(_py) && name_val != missing
+            if !exception_pending(_py)
+                && name_val != missing
                 && let Some(name_str) = string_obj_to_owned(obj_from_bits(name_val))
-                    && name_str == "InitVar" {
-                        return MoltObject::from_bool(true).bits();
-                    }
+                && name_str == "InitVar"
+            {
+                return MoltObject::from_bool(true).bits();
+            }
             if exception_pending(_py) {
                 clear_exception(_py);
             }
@@ -6002,11 +6009,13 @@ pub extern "C" fn molt_dataclasses_is_kw_only_sentinel(obj_bits: u64) -> u64 {
         if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__name__") {
             let name_val = molt_getattr_builtin(cls_bits, name_bits, missing);
             dec_ref_bits(_py, name_bits);
-            if !exception_pending(_py) && name_val != missing
+            if !exception_pending(_py)
+                && name_val != missing
                 && let Some(name_str) = string_obj_to_owned(obj_from_bits(name_val))
-                    && (name_str == "KW_ONLY" || name_str == "_KW_ONLY_TYPE") {
-                        return MoltObject::from_bool(true).bits();
-                    }
+                && (name_str == "KW_ONLY" || name_str == "_KW_ONLY_TYPE")
+            {
+                return MoltObject::from_bool(true).bits();
+            }
             if exception_pending(_py) {
                 clear_exception(_py);
             }

@@ -36,7 +36,7 @@
 //! - Deoptimization path if type assumptions change
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Execution tier for a function.
@@ -122,8 +122,7 @@ impl FunctionState {
         let count = prev + 1;
         // Trigger tier-up exactly once: when count == threshold
         // and we're still in Interpreted state
-        count == threshold
-            && self.tier.load(Ordering::Acquire) == Tier::Interpreted as u8
+        count == threshold && self.tier.load(Ordering::Acquire) == Tier::Interpreted as u8
     }
 
     /// Atomically transition to Compiling state.

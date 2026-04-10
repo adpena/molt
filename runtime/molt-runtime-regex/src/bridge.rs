@@ -112,7 +112,10 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     let ok = unsafe { __molt_regex_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
         let boxed = unsafe {
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u8, out_len))
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                out_ptr as *mut u8,
+                out_len,
+            ))
         };
         Some(String::from_utf8_lossy(&boxed).into_owned())
     } else {
@@ -218,7 +221,10 @@ pub unsafe fn dict_order_clone(_py: &CoreGilToken, ptr: *mut u8) -> Vec<u64> {
         return Vec::new();
     }
     let boxed = unsafe {
-        Box::from_raw(std::ptr::slice_from_raw_parts_mut(out_ptr as *mut u64, out_len))
+        Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            out_ptr as *mut u64,
+            out_len,
+        ))
     };
     boxed.into_vec()
 }

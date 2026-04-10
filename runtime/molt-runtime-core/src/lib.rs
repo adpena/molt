@@ -452,7 +452,8 @@ pub mod ffi {
         pub fn molt_list_int_getitem_nogil(list_bits: u64, index_bits: u64) -> u64;
 
         /// GIL-free list[int] setitem (NaN-boxed interface).
-        pub fn molt_list_int_setitem_nogil(list_bits: u64, index_bits: u64, value_bits: u64) -> u64;
+        pub fn molt_list_int_setitem_nogil(list_bits: u64, index_bits: u64, value_bits: u64)
+            -> u64;
 
         /// Raw-register list[int] getitem: raw i64 index in, raw i64 value out.
         pub fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i64;

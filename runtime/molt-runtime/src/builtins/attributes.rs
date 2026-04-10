@@ -900,14 +900,11 @@ pub(crate) unsafe fn attr_lookup_ptr(
             }
             // Fall through to class-based resolution for inherited methods
             let builtins = builtin_classes(_py);
-            if let Some(func_bits) =
-                builtin_class_method_bits(_py, builtins.float, name.as_str())
-            {
+            if let Some(func_bits) = builtin_class_method_bits(_py, builtins.float, name.as_str()) {
                 let self_bits = MoltObject::from_ptr(obj_ptr).bits();
                 return Some(molt_bound_method_new(func_bits, self_bits));
             }
-            if let Some(func_bits) =
-                builtin_class_method_bits(_py, builtins.object, name.as_str())
+            if let Some(func_bits) = builtin_class_method_bits(_py, builtins.object, name.as_str())
             {
                 let self_bits = MoltObject::from_ptr(obj_ptr).bits();
                 return Some(molt_bound_method_new(func_bits, self_bits));
@@ -2710,32 +2707,32 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         && let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr()
                         && object_type_id(offsets_ptr) == TYPE_ID_DICT
                         && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                            && object_type_id(dict_ptr) == TYPE_ID_DICT
-                        {
-                            use crate::builtins::containers::dict_order;
-                            let pairs = dict_order(offsets_ptr).clone();
-                            let mut i = 0;
-                            while i + 1 < pairs.len() {
-                                let key_bits = pairs[i];
-                                let offset_bits = pairs[i + 1];
-                                if let Some(offset) = obj_from_bits(offset_bits).as_int()
-                                    && offset >= 0
+                        && object_type_id(dict_ptr) == TYPE_ID_DICT
+                    {
+                        use crate::builtins::containers::dict_order;
+                        let pairs = dict_order(offsets_ptr).clone();
+                        let mut i = 0;
+                        while i + 1 < pairs.len() {
+                            let key_bits = pairs[i];
+                            let offset_bits = pairs[i + 1];
+                            if let Some(offset) = obj_from_bits(offset_bits).as_int()
+                                && offset >= 0
+                            {
+                                let val = object_field_get_ptr_raw(_py, obj_ptr, offset as usize);
+                                if val != 0
+                                    && !obj_from_bits(val).is_none()
+                                    && !is_missing_bits(_py, val)
                                 {
-                                    let val = object_field_get_ptr_raw(_py, obj_ptr, offset as usize);
-                                    if val != 0
-                                        && !obj_from_bits(val).is_none()
-                                        && !is_missing_bits(_py, val)
-                                    {
-                                        // Only set if not already present (instance_dict
-                                        // wins over field slot for __setattr__ compat).
-                                        if dict_get_in_place(_py, dict_ptr, key_bits).is_none() {
-                                            dict_set_in_place(_py, dict_ptr, key_bits, val);
-                                        }
+                                    // Only set if not already present (instance_dict
+                                    // wins over field slot for __setattr__ compat).
+                                    if dict_get_in_place(_py, dict_ptr, key_bits).is_none() {
+                                        dict_set_in_place(_py, dict_ptr, key_bits, val);
                                     }
                                 }
-                                i += 2;
                             }
+                            i += 2;
                         }
+                    }
                 }
                 if dict_bits != 0 {
                     inc_ref_bits(_py, dict_bits);
@@ -4136,9 +4133,10 @@ pub(crate) unsafe fn del_attr_ptr(
                 let dict_bits = instance_dict_bits(obj_ptr);
                 if dict_bits != 0
                     && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                        && object_type_id(dict_ptr) == TYPE_ID_DICT {
-                            dict_del_in_place(_py, dict_ptr, attr_bits);
-                        }
+                    && object_type_id(dict_ptr) == TYPE_ID_DICT
+                {
+                    dict_del_in_place(_py, dict_ptr, attr_bits);
+                }
                 return MoltObject::none().bits() as i64;
             }
             let dict_bits = instance_dict_bits(obj_ptr);
@@ -4549,9 +4547,10 @@ pub(crate) unsafe fn object_delattr_raw(
             let dict_bits = instance_dict_bits(obj_ptr);
             if dict_bits != 0
                 && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-                    && object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        dict_del_in_place(_py, dict_ptr, attr_bits);
-                    }
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            {
+                dict_del_in_place(_py, dict_ptr, attr_bits);
+            }
             return MoltObject::none().bits() as i64;
         }
         let dict_bits = instance_dict_bits(obj_ptr);
@@ -4806,15 +4805,17 @@ pub unsafe extern "C" fn molt_get_attr_object(
                 return molt_get_attr_generic(ptr, attr_name_ptr, attr_name_len_bits);
             }
             if (obj.is_int() || obj.is_bool())
-                && let Some(func_bits) = int_method_bits(_py, attr_name) {
-                    let bound_bits = molt_bound_method_new(func_bits, obj_bits);
-                    return bound_bits as i64;
-                }
+                && let Some(func_bits) = int_method_bits(_py, attr_name)
+            {
+                let bound_bits = molt_bound_method_new(func_bits, obj_bits);
+                return bound_bits as i64;
+            }
             if obj.is_float()
-                && let Some(func_bits) = float_method_bits(_py, attr_name) {
-                    let bound_bits = molt_bound_method_new(func_bits, obj_bits);
-                    return bound_bits as i64;
-                }
+                && let Some(func_bits) = float_method_bits(_py, attr_name)
+            {
+                let bound_bits = molt_bound_method_new(func_bits, obj_bits);
+                return bound_bits as i64;
+            }
             // Inline int/float/bool: fall back to class-based resolution
             // so that inherited methods (e.g. object.__init__) are found.
             // Check the specific type first, then fall through to `object`.
@@ -4881,27 +4882,27 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                         .unwrap_or_else(|e| e.into_inner());
                     if let Some(entry) = cache.get(&site_id)
                         && entry.type_version == current_version
-                            && entry.obj_type_id == type_id
-                            && entry.class_bits == class_bits
-                            && entry.result_bits != 0
+                        && entry.obj_type_id == type_id
+                        && entry.class_bits == class_bits
+                        && entry.result_bits != 0
+                    {
+                        // Validate the cached name still matches the requested attr.
+                        if let Some(name_ptr) = obj_from_bits(entry.name_bits).as_ptr()
+                            && object_type_id(name_ptr) == TYPE_ID_STRING
                         {
-                            // Validate the cached name still matches the requested attr.
-                            if let Some(name_ptr) = obj_from_bits(entry.name_bits).as_ptr()
-                                && object_type_id(name_ptr) == TYPE_ID_STRING
-                            {
-                                let cached_name = std::slice::from_raw_parts(
-                                    string_bytes(name_ptr),
-                                    string_len(name_ptr),
-                                );
-                                if cached_name == slice {
-                                    profile_hit_unchecked(&ATTR_IC_RESULT_HIT_COUNT);
-                                    let result = entry.result_bits;
-                                    drop(cache);
-                                    inc_ref_bits(_py, result);
-                                    return result as i64;
-                                }
+                            let cached_name = std::slice::from_raw_parts(
+                                string_bytes(name_ptr),
+                                string_len(name_ptr),
+                            );
+                            if cached_name == slice {
+                                profile_hit_unchecked(&ATTR_IC_RESULT_HIT_COUNT);
+                                let result = entry.result_bits;
+                                drop(cache);
+                                inc_ref_bits(_py, result);
+                                return result as i64;
                             }
                         }
+                    }
                     drop(cache);
                 }
             }
@@ -4932,48 +4933,46 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                     };
                     if class_bits != 0
                         && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                            && object_type_id(class_ptr) == TYPE_ID_TYPE
-                                && let Some(mro_bits) =
-                                    class_attr_lookup_raw_mro(_py, class_ptr, name_bits)
-                                {
-                                    // SAFETY: Only cache results where descriptor binding
-                                    // did NOT produce an instance-specific value. If the
-                                    // raw MRO result equals the final result, no descriptor
-                                    // binding occurred (the value is a plain class variable,
-                                    // not a function/property/classmethod). Caching
-                                    // descriptor-bound results (bound methods, property
-                                    // getter results) would serve the wrong instance.
-                                    let cacheable =
-                                        out == mro_bits || (!obj_from_bits(mro_bits).is_ptr());
+                        && object_type_id(class_ptr) == TYPE_ID_TYPE
+                        && let Some(mro_bits) = class_attr_lookup_raw_mro(_py, class_ptr, name_bits)
+                    {
+                        // SAFETY: Only cache results where descriptor binding
+                        // did NOT produce an instance-specific value. If the
+                        // raw MRO result equals the final result, no descriptor
+                        // binding occurred (the value is a plain class variable,
+                        // not a function/property/classmethod). Caching
+                        // descriptor-bound results (bound methods, property
+                        // getter results) would serve the wrong instance.
+                        let cacheable = out == mro_bits || (!obj_from_bits(mro_bits).is_ptr());
 
-                                    if cacheable {
-                                        profile_hit_unchecked(&ATTR_IC_RESULT_MISS_COUNT);
-                                        let current_version = global_type_version();
-                                        inc_ref_bits(_py, name_bits);
-                                        inc_ref_bits(_py, out);
-                                        let mut cache = attr_ic_result_cache()
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner());
-                                        if let Some(old) = cache.insert(
-                                            site_id,
-                                            AttrICEntry {
-                                                name_bits,
-                                                result_bits: out,
-                                                type_version: current_version,
-                                                obj_type_id: type_id,
-                                                class_bits,
-                                            },
-                                        ) {
-                                            drop(cache);
-                                            if old.name_bits != 0 {
-                                                dec_ref_bits(_py, old.name_bits);
-                                            }
-                                            if old.result_bits != 0 {
-                                                dec_ref_bits(_py, old.result_bits);
-                                            }
-                                        }
-                                    }
+                        if cacheable {
+                            profile_hit_unchecked(&ATTR_IC_RESULT_MISS_COUNT);
+                            let current_version = global_type_version();
+                            inc_ref_bits(_py, name_bits);
+                            inc_ref_bits(_py, out);
+                            let mut cache = attr_ic_result_cache()
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            if let Some(old) = cache.insert(
+                                site_id,
+                                AttrICEntry {
+                                    name_bits,
+                                    result_bits: out,
+                                    type_version: current_version,
+                                    obj_type_id: type_id,
+                                    class_bits,
+                                },
+                            ) {
+                                drop(cache);
+                                if old.name_bits != 0 {
+                                    dec_ref_bits(_py, old.name_bits);
                                 }
+                                if old.result_bits != 0 {
+                                    dec_ref_bits(_py, old.result_bits);
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -5161,13 +5160,15 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
             }
             let obj = obj_from_bits(obj_bits);
             if (obj.is_int() || obj.is_bool())
-                && let Some(func_bits) = int_method_bits(_py, &attr_name) {
-                    return molt_bound_method_new(func_bits, obj_bits);
-                }
+                && let Some(func_bits) = int_method_bits(_py, &attr_name)
+            {
+                return molt_bound_method_new(func_bits, obj_bits);
+            }
             if obj.is_float()
-                && let Some(func_bits) = float_method_bits(_py, &attr_name) {
-                    return molt_bound_method_new(func_bits, obj_bits);
-                }
+                && let Some(func_bits) = float_method_bits(_py, &attr_name)
+            {
+                return molt_bound_method_new(func_bits, obj_bits);
+            }
             // Inline int/float/bool: fall back to class-based resolution
             // so that inherited methods (e.g. object.__init__) are found.
             {

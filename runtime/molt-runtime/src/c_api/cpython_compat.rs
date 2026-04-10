@@ -901,8 +901,11 @@ pub unsafe extern "C" fn PyMapping_GetItemString(o: u64, key: *const std::ffi::c
         // the 2MB debug-mode thread stack.
         let res = if let Some(obj_ptr) = obj_from_bits(o).as_ptr() {
             unsafe {
-                if crate::object::object_type_id(obj_ptr) == 204 /* TYPE_ID_DICT */ {
-                    if let Some(val) = crate::object::ops::dict_get_in_place(_py, obj_ptr, key_bits) {
+                if crate::object::object_type_id(obj_ptr) == 204
+                /* TYPE_ID_DICT */
+                {
+                    if let Some(val) = crate::object::ops::dict_get_in_place(_py, obj_ptr, key_bits)
+                    {
                         inc_ref_bits(_py, val);
                         val
                     } else {

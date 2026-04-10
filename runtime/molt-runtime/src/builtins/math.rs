@@ -3966,10 +3966,7 @@ pub extern "C" fn molt_statistics_normal_dist_new(mu_bits: u64, sigma_bits: u64)
         };
         let tuple_ptr = alloc_tuple(
             _py,
-            &[
-                float_result_bits(_py, mu),
-                float_result_bits(_py, sigma),
-            ],
+            &[float_result_bits(_py, mu), float_result_bits(_py, sigma)],
         );
         if tuple_ptr.is_null() {
             return MoltObject::none().bits();

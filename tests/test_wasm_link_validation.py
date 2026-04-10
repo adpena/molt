@@ -76,6 +76,52 @@ def _build_minimal_module(element_payload: bytes) -> bytes:
     return wasm_link._build_sections(sections)
 
 
+def _build_symbol_subsection(entries: list[bytes]) -> bytes:
+    return wasm_link._write_varuint(len(entries)) + b"".join(entries)
+
+
+def _function_symbol_entry(*, flags: int, index: int | None, name: str | None) -> bytes:
+    entry = bytearray()
+    entry.append(wasm_link.SYMBOL_KIND_FUNCTION)
+    entry.extend(wasm_link._write_varuint(flags))
+    assert index is not None
+    entry.extend(wasm_link._write_varuint(index))
+    if not (flags & wasm_link.FLAG_UNDEFINED) or (flags & wasm_link.FLAG_EXPLICIT_NAME):
+        assert name is not None
+        entry.extend(wasm_link._write_string(name))
+    return bytes(entry)
+
+
+def _data_symbol_entry(
+    *,
+    flags: int,
+    name: str | None,
+    segment_index: int = 0,
+    offset: int = 0,
+    size: int = 0,
+) -> bytes:
+    entry = bytearray()
+    entry.append(1)
+    entry.extend(wasm_link._write_varuint(flags))
+    if flags & (wasm_link.FLAG_EXPLICIT_NAME | wasm_link.FLAG_UNDEFINED):
+        assert name is not None
+        entry.extend(wasm_link._write_string(name))
+    if not (flags & wasm_link.FLAG_UNDEFINED):
+        entry.extend(wasm_link._write_varuint(segment_index))
+        entry.extend(wasm_link._write_varuint(offset))
+        entry.extend(wasm_link._write_varuint(size))
+    return bytes(entry)
+
+
+def _module_with_linking_symbols(entries: list[bytes]) -> bytes:
+    linking_payload = wasm_link._build_linking_payload(
+        2,
+        [(wasm_link.SYMTAB_SUBSECTION_ID, _build_symbol_subsection(entries))],
+    )
+    custom = wasm_link._build_custom_section("linking", linking_payload)
+    return wasm_link._build_sections([(0, custom)])
+
+
 def _parse_data_segments(data: bytes) -> list[bytes]:
     sections = wasm_link._parse_sections(data)
     for section_id, payload in sections:
@@ -118,6 +164,91 @@ def test_wasm_link_allows_ref_func_element_expr() -> None:
     data = _build_minimal_module(bytes(payload))
     ok, err = wasm_link._validate_elements(data)
     assert ok, err
+
+
+def test_collect_linking_function_symbols_parses_defined_and_undefined_entries() -> None:
+    data = _module_with_linking_symbols(
+        [
+            _data_symbol_entry(
+                flags=wasm_link.FLAG_EXPLICIT_NAME,
+                name="not_a_function",
+                segment_index=3,
+                offset=12,
+                size=8,
+            ),
+            _function_symbol_entry(
+                flags=wasm_link.FLAG_BINDING_GLOBAL | wasm_link.FLAG_EXPLICIT_NAME,
+                index=7,
+                name="molt_call_indirect0",
+            ),
+            _function_symbol_entry(
+                flags=wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
+                index=11,
+                name="molt_call_indirect13",
+            ),
+        ]
+    )
+
+    symbols = wasm_link._collect_linking_function_symbols(data)
+
+    assert [(flags, index, name) for flags, index, name, _ in symbols] == [
+        (
+            wasm_link.FLAG_BINDING_GLOBAL | wasm_link.FLAG_EXPLICIT_NAME,
+            7,
+            "molt_call_indirect0",
+        ),
+        (
+            wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
+            11,
+            "molt_call_indirect13",
+        ),
+    ]
+
+
+def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = tmp_path / "runtime_reloc.wasm"
+    runtime.write_bytes(
+        _module_with_linking_symbols(
+            [
+                _function_symbol_entry(
+                    flags=wasm_link.FLAG_UNDEFINED | wasm_link.FLAG_EXPLICIT_NAME,
+                    index=3,
+                    name="_ZN4molt19molt_call_indirect1317hfeedfaceE",
+                )
+            ]
+        )
+    )
+    output = tmp_path / "output.wasm"
+    output.write_bytes(
+        _module_with_linking_symbols(
+            [
+                _function_symbol_entry(
+                    flags=wasm_link.FLAG_BINDING_GLOBAL
+                    | wasm_link.FLAG_EXPLICIT_NAME
+                    | wasm_link.FLAG_EXPORTED,
+                    index=41,
+                    name="molt_call_indirect13",
+                )
+            ]
+        )
+    )
+    monkeypatch.setattr(wasm_link, "_find_tool", lambda _names: None)
+
+    mangled = wasm_link._find_call_indirect_mangled(runtime)
+    output_symbols = wasm_link._find_output_call_indirect_symbol(output)
+
+    assert mangled == {
+        "molt_call_indirect13": "_ZN4molt19molt_call_indirect1317hfeedfaceE"
+    }
+    assert output_symbols["molt_call_indirect13"] == (
+        41,
+        wasm_link.FLAG_BINDING_GLOBAL
+        | wasm_link.FLAG_EXPLICIT_NAME
+        | wasm_link.FLAG_EXPORTED,
+    )
 
 
 def test_wasm_link_allows_ref_null_element_expr() -> None:

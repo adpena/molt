@@ -296,7 +296,7 @@ pub(crate) fn raise_exception<T: ExceptionSentinel>(
     }
     let ptr = alloc_exception(_py, kind, message);
     if !ptr.is_null() {
-        record_exception(_py, ptr);
+        record_exception_owned(_py, ptr);
     }
     T::exception_sentinel()
 }
@@ -341,7 +341,7 @@ pub(crate) fn raise_unicode_decode_error<T: ExceptionSentinel>(
     let class_bits = exception_type_bits_from_name(_py, "UnicodeDecodeError");
     let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
     if !ptr.is_null() {
-        record_exception(_py, ptr);
+        record_exception_owned(_py, ptr);
     }
     dec_ref_bits(_py, encoding_bits);
     dec_ref_bits(_py, reason_bits);
@@ -388,7 +388,7 @@ pub(crate) fn raise_unicode_encode_error<T: ExceptionSentinel>(
     let class_bits = exception_type_bits_from_name(_py, "UnicodeEncodeError");
     let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
     if !ptr.is_null() {
-        record_exception(_py, ptr);
+        record_exception_owned(_py, ptr);
     }
     dec_ref_bits(_py, encoding_bits);
     dec_ref_bits(_py, reason_bits);
@@ -437,7 +437,7 @@ pub(crate) fn raise_key_error_with_key<T: ExceptionSentinel>(
         dec_ref_bits(_py, args_bits);
         return T::exception_sentinel();
     }
-    record_exception(_py, ptr);
+    record_exception_owned(_py, ptr);
     dec_ref_bits(_py, kind_bits);
     dec_ref_bits(_py, msg_bits);
     dec_ref_bits(_py, args_bits);
@@ -956,9 +956,19 @@ pub(crate) fn exception_stack_pop(_py: &PyToken<'_>) {
     crate::gil_assert();
     let trace = trace_exception_stack();
     let before_depth = if trace { exception_stack_depth() } else { 0 };
-    let underflow = EXCEPTION_STACK.with(|stack| stack.borrow_mut().pop().is_none());
-    if underflow {
-        if token_is_cancelled(_py, current_token_id()) {
+    // Respect the per-function baseline: a function may only pop handlers
+    // that it pushed above the baseline captured at function entry.  The
+    // frontend's codegen for try/except can emit redundant or stale
+    // EXCEPTION_POP ops on join/cleanup paths after a handled exception
+    // has already unwound the handler stack — e.g. the handler-entry pop
+    // plus a fallthrough cleanup pop after `except: pass` exits.  Treat
+    // any pop at or below the baseline as a no-op rather than raising
+    // "exception handler stack underflow", which would corrupt the
+    // pending-exception state during bootstrap/import and surface as a
+    // spurious RuntimeError in a downstream simple `try/except: pass`.
+    let (current_depth, baseline) = (exception_stack_depth(), exception_stack_baseline_get());
+    if current_depth <= baseline {
+        if current_depth == 0 && token_is_cancelled(_py, current_token_id()) {
             ACTIVE_EXCEPTION_STACK.with(|stack| {
                 let mut stack = stack.borrow_mut();
                 for bits in stack.drain(..) {
@@ -968,10 +978,27 @@ pub(crate) fn exception_stack_pop(_py: &PyToken<'_>) {
                 }
             });
             exception_context_align_depth(_py, 0);
-            return;
         }
-        raise_exception::<()>(_py, "RuntimeError", "exception handler stack underflow");
+        if trace {
+            let task = current_task_key().map(|slot| slot.0 as usize).unwrap_or(0);
+            let (code_bits, line) = FRAME_STACK
+                .with(|stack| {
+                    stack
+                        .borrow()
+                        .last()
+                        .map(|frame| (frame.code_bits, frame.line))
+                })
+                .unwrap_or((0, 0));
+            eprintln!(
+                "molt exc stack pop noop task=0x{:x} depth={} baseline={} frame=0x{:x} line={}",
+                task, before_depth, baseline, code_bits as usize, line
+            );
+        }
+        return;
     }
+    EXCEPTION_STACK.with(|stack| {
+        stack.borrow_mut().pop();
+    });
     ACTIVE_EXCEPTION_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         if let Some(bits) = stack.pop()
@@ -1412,10 +1439,6 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
             );
         }
     }
-    let new_bits = MoltObject::from_ptr(ptr).bits();
-    if !same_ptr {
-        inc_ref_bits(_py, new_bits);
-    }
     if debug_rc {
         let rc = unsafe {
             let header = header_from_obj_ptr(ptr);
@@ -1426,6 +1449,15 @@ pub(crate) fn record_exception(_py: &PyToken<'_>, ptr: *mut u8) {
             ptr as usize, rc, same_ptr, context_bits_owned
         );
     }
+}
+
+pub(crate) fn record_exception_owned(_py: &PyToken<'_>, ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    let bits = MoltObject::from_ptr(ptr).bits();
+    record_exception(_py, ptr);
+    dec_ref_bits(_py, bits);
 }
 
 pub(crate) fn clear_exception(_py: &PyToken<'_>) {
@@ -2838,7 +2870,7 @@ pub(crate) fn raise_os_error_errno<T: ExceptionSentinel>(
                 }
             }
         }
-        record_exception(_py, ptr);
+        record_exception_owned(_py, ptr);
     }
     T::exception_sentinel()
 }
@@ -5637,6 +5669,18 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {
     let Some(state) = crate::state::runtime_state::runtime_state_for_gil() else {
         return 0;
     };
+    // Mirror the suppression logic from exception_pending(): when an
+    // exception handler is active and has set an exception context, the
+    // exception is being *handled* — report it as not-pending so that
+    // check_exception sites inside the handler body do not re-trigger.
+    // Without this, the fast-path byte check + this validation function
+    // disagree with exception_pending(), causing handled exceptions to
+    // propagate into downstream calls (e.g. tuple.__new__ inside sys
+    // module init receives a stale pending flag from a prior intrinsic
+    // resolution failure).
+    if exception_handler_active() && exception_context_active_bits().is_some() {
+        return 0;
+    }
     if let Some(task_key) = current_task_key()
         && state
             .task_last_exception_pending

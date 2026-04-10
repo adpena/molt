@@ -1,8 +1,8 @@
 //! Schema-driven protobuf message encoding.
 
 use crate::{
-    encode_bytes_field, encode_tag, encode_uint64_field, encode_varint, FieldDef, MessageSchema,
-    WireType,
+    FieldDef, MessageSchema, WireType, encode_bytes_field, encode_tag, encode_uint64_field,
+    encode_varint,
 };
 
 /// Runtime value for a single protobuf field.

@@ -76,7 +76,7 @@ MoltHandle molt_module_get_dict(MoltHandle module_bits);
 int32_t molt_module_capi_register(MoltHandle module_bits, uintptr_t module_def_ptr,
                                   uint64_t module_state_size);
 uintptr_t molt_module_capi_get_def(MoltHandle module_bits);
-uintptr_t molt_module_capi_get_state(MoltHandle module_bits);
+uint8_t *molt_module_capi_get_state(MoltHandle module_bits);
 int32_t molt_module_state_add(MoltHandle module_bits, uintptr_t module_def_ptr);
 MoltHandle molt_module_state_find(uintptr_t module_def_ptr);
 int32_t molt_module_state_remove(uintptr_t module_def_ptr);
@@ -96,20 +96,37 @@ int32_t molt_module_add_string_constant(MoltHandle module_bits,
                                         MoltHandle name_bits,
                                         const uint8_t *value_ptr,
                                         uint64_t value_len);
+typedef MoltHandle (*MoltCFunction)(MoltHandle, MoltHandle);
+typedef MoltHandle (*MoltCFunctionWithKeywords)(MoltHandle, MoltHandle, MoltHandle);
 MoltHandle molt_cfunction_create_bytes(MoltHandle self_bits,
                                        const uint8_t *name_ptr,
                                        uint64_t name_len,
-                                       uintptr_t method_ptr,
+                                       MoltCFunction method_ptr,
                                        uint32_t method_flags,
                                        const uint8_t *doc_ptr,
                                        uint64_t doc_len);
+MoltHandle molt_cfunction_create_keywords_bytes(MoltHandle self_bits,
+                                                const uint8_t *name_ptr,
+                                                uint64_t name_len,
+                                                MoltCFunctionWithKeywords method_ptr,
+                                                uint32_t method_flags,
+                                                const uint8_t *doc_ptr,
+                                                uint64_t doc_len);
 int32_t molt_module_add_cfunction_bytes(MoltHandle module_bits,
                                         const uint8_t *name_ptr,
                                         uint64_t name_len,
-                                        uintptr_t method_ptr,
+                                        MoltCFunction method_ptr,
                                         uint32_t method_flags,
                                         const uint8_t *doc_ptr,
                                         uint64_t doc_len);
+int32_t molt_module_add_cfunction_keywords_bytes(
+    MoltHandle module_bits,
+    const uint8_t *name_ptr,
+    uint64_t name_len,
+    MoltCFunctionWithKeywords method_ptr,
+    uint32_t method_flags,
+    const uint8_t *doc_ptr,
+    uint64_t doc_len);
 
 MoltHandle molt_number_add(MoltHandle a_bits, MoltHandle b_bits);
 MoltHandle molt_number_sub(MoltHandle a_bits, MoltHandle b_bits);

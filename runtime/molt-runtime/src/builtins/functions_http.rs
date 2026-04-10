@@ -5752,7 +5752,7 @@ pub extern "C" fn molt_urllib_request_response_readinto(handle_bits: u64, buffer
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
         let mut export = crate::BufferExport {
-            ptr: 0,
+            ptr: std::ptr::null_mut(),
             len: 0,
             readonly: 0,
             stride: 0,
@@ -5773,7 +5773,7 @@ pub extern "C" fn molt_urllib_request_response_readinto(handle_bits: u64, buffer
         if out_len == 0 {
             return MoltObject::from_int(0).bits();
         }
-        let out_buf = unsafe { std::slice::from_raw_parts_mut(export.ptr as *mut u8, out_len) };
+        let out_buf = unsafe { std::slice::from_raw_parts_mut(export.ptr, out_len) };
         let Some(out) =
             urllib_response_with_mut(handle, |resp| urllib_response_readinto_len(resp, out_buf))
         else {

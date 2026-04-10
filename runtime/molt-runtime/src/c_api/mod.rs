@@ -9,8 +9,10 @@ mod molt_api;
 pub use cpython_compat::*;
 pub use molt_api::*;
 
+use self::molt_api::molt_capi_method_dispatch;
 use crate::builtins::exceptions::molt_exception_new_from_class;
 use crate::concurrency::gil::{gil_held, release_runtime_gil};
+use crate::object::layout::{function_call_target_ptr, function_set_call_target_ptr};
 use crate::state::runtime_state::{
     molt_runtime_ensure_gil, molt_runtime_init, molt_runtime_shutdown,
 };
@@ -395,11 +397,12 @@ fn c_api_method_build_function(
     _py: &PyToken<'_>,
     self_bits: u64,
     name_bytes: &[u8],
-    method_ptr: usize,
+    method_target: *const (),
     method_flags: u32,
     doc_bytes: Option<&[u8]>,
 ) -> Result<u64, i32> {
-    if method_ptr == 0 {
+    let _nursery_guard = crate::object::NurserySuspendGuard::new();
+    if method_target.is_null() {
         return Err(raise_i32(
             _py,
             "TypeError",
@@ -417,16 +420,17 @@ fn c_api_method_build_function(
         return Err(raise_i32(_py, "TypeError", "method name must not be empty"));
     }
 
-    let method_ptr_u64 = method_ptr as u64;
-    let ptr_bytes = method_ptr_u64.to_le_bytes();
-    let ptr_bytes_obj = alloc_bytes(_py, &ptr_bytes);
-    if ptr_bytes_obj.is_null() {
+    let callback_func_ptr = alloc_function_obj(_py, 0, 0);
+    if callback_func_ptr.is_null() {
         return Err(-1);
     }
-    let ptr_bytes_bits = MoltObject::from_ptr(ptr_bytes_obj).bits();
+    unsafe {
+        function_set_call_target_ptr(callback_func_ptr, method_target);
+    }
+    let callback_bits = MoltObject::from_ptr(callback_func_ptr).bits();
     let flags_bits = MoltObject::from_int(i64::from(method_flags)).bits();
-    let closure_ptr = alloc_tuple(_py, &[self_bits, flags_bits, ptr_bytes_bits]);
-    dec_ref_bits(_py, ptr_bytes_bits);
+    let closure_ptr = alloc_tuple(_py, &[self_bits, flags_bits, callback_bits]);
+    dec_ref_bits(_py, callback_bits);
     if closure_ptr.is_null() {
         return Err(-1);
     }
@@ -437,6 +441,7 @@ fn c_api_method_build_function(
         return Err(-1);
     }
     unsafe {
+        function_set_call_target_ptr(func_ptr, molt_capi_method_dispatch as *const ());
         function_set_closure_bits(_py, func_ptr, closure_bits);
     }
     dec_ref_bits(_py, closure_bits);
@@ -462,46 +467,35 @@ fn c_api_method_build_function(
 }
 
 #[inline]
-fn c_api_method_decode_ptr_from_bytes(
+fn c_api_method_decode_callback_target(
     _py: &PyToken<'_>,
-    ptr_bytes_bits: u64,
+    callback_bits: u64,
     label: &str,
-) -> Result<usize, u64> {
-    let Some(ptr_bytes_ptr) = obj_from_bits(ptr_bytes_bits).as_ptr() else {
+) -> Result<*const (), u64> {
+    let Some(callback_ptr) = obj_from_bits(callback_bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
             "RuntimeError",
-            &format!("invalid {label}: pointer payload is missing"),
+            &format!("invalid {label}: callback payload is missing"),
         ));
     };
     unsafe {
-        if object_type_id(ptr_bytes_ptr) != TYPE_ID_BYTES {
+        if object_type_id(callback_ptr) != TYPE_ID_FUNCTION {
             return Err(raise_exception::<u64>(
                 _py,
                 "RuntimeError",
-                &format!("invalid {label}: pointer payload must be bytes"),
+                &format!("invalid {label}: callback payload must be a function object"),
             ));
         }
-        let len = bytes_len(ptr_bytes_ptr);
-        if len != std::mem::size_of::<u64>() {
+        let target = function_call_target_ptr(callback_ptr);
+        if target.is_null() {
             return Err(raise_exception::<u64>(
                 _py,
                 "RuntimeError",
-                &format!("invalid {label}: pointer payload length mismatch"),
+                &format!("invalid {label}: callback target is missing"),
             ));
         }
-        let src = std::slice::from_raw_parts(bytes_data(ptr_bytes_ptr), len);
-        let mut raw = [0u8; 8];
-        raw.copy_from_slice(src);
-        let out = u64::from_le_bytes(raw) as usize;
-        if out == 0 {
-            return Err(raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                &format!("invalid {label}: null function pointer"),
-            ));
-        }
-        Ok(out)
+        Ok(target)
     }
 }
 
@@ -509,7 +503,7 @@ fn c_api_method_decode_ptr_from_bytes(
 fn c_api_method_decode_closure(
     _py: &PyToken<'_>,
     closure_bits: u64,
-) -> Result<(u64, u32, usize), u64> {
+) -> Result<(u64, u32, *const ()), u64> {
     let Some(closure_ptr) = obj_from_bits(closure_bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
@@ -555,8 +549,8 @@ fn c_api_method_decode_closure(
                 "invalid C-API method closure: unsupported method flags",
             ));
         }
-        let fn_ptr = c_api_method_decode_ptr_from_bytes(_py, slots[2], "method closure")?;
-        Ok((self_bits, flags, fn_ptr))
+        let callback_target = c_api_method_decode_callback_target(_py, slots[2], "method closure")?;
+        Ok((self_bits, flags, callback_target))
     }
 }
 

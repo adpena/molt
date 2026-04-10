@@ -226,7 +226,7 @@ fn should_suppress(action: &str, message: &str, category: &str, lineno: i64) -> 
 /// detect deprecated patterns (e.g. `~bool`).  Deduplicates by message
 /// so the same warning is only printed once per process.
 pub(crate) fn emit_deprecation_warning(_py: &crate::PyToken<'_>, message: &str) {
-    use std::sync::{Mutex, LazyLock};
+    use std::sync::{LazyLock, Mutex};
     static SEEN: LazyLock<Mutex<std::collections::HashSet<u64>>> =
         LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
     let hash = {
@@ -236,9 +236,10 @@ pub(crate) fn emit_deprecation_warning(_py: &crate::PyToken<'_>, message: &str) 
         hasher.finish()
     };
     if let Ok(mut seen) = SEEN.lock()
-        && !seen.insert(hash) {
-            return; // Already emitted
-        }
+        && !seen.insert(hash)
+    {
+        return; // Already emitted
+    }
     eprintln!("DeprecationWarning: {message}");
 }
 

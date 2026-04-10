@@ -1145,12 +1145,13 @@ impl RustBackend {
             let mut seen = Vec::new();
             for op in &ops {
                 if (op.kind == "closure_store" || op.kind == "closure_load")
-                    && let Some(slot) = op.args.as_ref().and_then(|a| a.first()) {
-                        let v = format!("__closure_{}", rust_ident(slot));
-                        if !seen.contains(&v) {
-                            seen.push(v);
-                        }
+                    && let Some(slot) = op.args.as_ref().and_then(|a| a.first())
+                {
+                    let v = format!("__closure_{}", rust_ident(slot));
+                    if !seen.contains(&v) {
+                        seen.push(v);
                     }
+                }
             }
             seen
         };
@@ -1234,11 +1235,12 @@ impl RustBackend {
                 "store_index" | "set_item" | "store_subscript" => {
                     // store_index(frame, slot, val) → need molt_get_item to recover
                     if let Some(args) = ops[i].args.as_deref()
-                        && args.len() >= 2 {
-                            let frame = rust_ident(&args[0]);
-                            let slot = rust_ident(&args[1]);
-                            last_jump_return = Some(format!("molt_get_item(&{frame}, &{slot})"));
-                        }
+                        && args.len() >= 2
+                    {
+                        let frame = rust_ident(&args[0]);
+                        let slot = rust_ident(&args[1]);
+                        last_jump_return = Some(format!("molt_get_item(&{frame}, &{slot})"));
+                    }
                 }
                 _ => {}
             }
@@ -1341,11 +1343,12 @@ impl RustBackend {
                         if rest.starts_with(": MoltValue =") || rest.starts_with("=") {
                             let indent_str = &line[..line.len() - trimmed.len()];
                             // Strip "let mut " and ": MoltValue" type annotation if present
-                            let assign_part = if let Some(stripped) = rest.strip_prefix(": MoltValue =") {
-                                format!("{var_name} ={stripped}")
-                            } else {
-                                format!("{var_name} {rest}")
-                            };
+                            let assign_part =
+                                if let Some(stripped) = rest.strip_prefix(": MoltValue =") {
+                                    format!("{var_name} ={stripped}")
+                                } else {
+                                    format!("{var_name} {rest}")
+                                };
                             patched.push_str(indent_str);
                             patched.push_str(&assign_part);
                             patched.push('\n');
@@ -1513,11 +1516,12 @@ impl RustBackend {
             }
             "closure_store" => {
                 if let Some(args) = &op.args
-                    && args.len() >= 2 {
-                        let slot = format!("__closure_{}", rust_ident(&args[0]));
-                        let src = rust_ident(&args[1]);
-                        self.emit_line(&format!("{slot} = {src}.clone();"));
-                    }
+                    && args.len() >= 2
+                {
+                    let slot = format!("__closure_{}", rust_ident(&args[0]));
+                    let src = rust_ident(&args[1]);
+                    self.emit_line(&format!("{slot} = {src}.clone();"));
+                }
             }
             "phi" => {
                 // Phi nodes are handled by the hoisting logic above; skip here.
@@ -2948,9 +2952,10 @@ fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
         if is_close {
             depth -= 1;
             if let Some(d) = dead_at_depth
-                && d > depth {
-                    dead_at_depth = None;
-                }
+                && d > depth
+            {
+                dead_at_depth = None;
+            }
             if dead_at_depth.is_none() {
                 result.push(op.clone());
             }
@@ -3050,37 +3055,38 @@ fn build_phi_injection_maps(
             }
             "end_if" => {
                 if let Some((_if_idx, else_idx)) = if_stack.pop()
-                    && let Some(phis) = phi_assignments.get(&idx) {
-                        for (phi_var, args) in phis {
-                            if let Some(else_i) = else_idx {
-                                let true_val = args
-                                    .first()
-                                    .cloned()
-                                    .unwrap_or_else(|| "MoltValue::None".to_string());
-                                before_else
-                                    .entry(else_i)
-                                    .or_default()
-                                    .push((phi_var.clone(), true_val));
-                                let false_val = args
-                                    .get(1)
-                                    .cloned()
-                                    .unwrap_or_else(|| "MoltValue::None".to_string());
-                                before_end_if
-                                    .entry(idx)
-                                    .or_default()
-                                    .push((phi_var.clone(), false_val));
-                            } else {
-                                let true_val = args
-                                    .first()
-                                    .cloned()
-                                    .unwrap_or_else(|| "MoltValue::None".to_string());
-                                before_end_if
-                                    .entry(idx)
-                                    .or_default()
-                                    .push((phi_var.clone(), true_val));
-                            }
+                    && let Some(phis) = phi_assignments.get(&idx)
+                {
+                    for (phi_var, args) in phis {
+                        if let Some(else_i) = else_idx {
+                            let true_val = args
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| "MoltValue::None".to_string());
+                            before_else
+                                .entry(else_i)
+                                .or_default()
+                                .push((phi_var.clone(), true_val));
+                            let false_val = args
+                                .get(1)
+                                .cloned()
+                                .unwrap_or_else(|| "MoltValue::None".to_string());
+                            before_end_if
+                                .entry(idx)
+                                .or_default()
+                                .push((phi_var.clone(), false_val));
+                        } else {
+                            let true_val = args
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| "MoltValue::None".to_string());
+                            before_end_if
+                                .entry(idx)
+                                .or_default()
+                                .push((phi_var.clone(), true_val));
                         }
                     }
+                }
             }
             _ => {}
         }
@@ -3100,10 +3106,12 @@ fn collect_scope_escapes(ops: &[OpIR], func: &FunctionIR, hoisted_vars: &mut BTr
             _ => {}
         }
         if let Some(ref out_name) = op.out
-            && out_name != "none" && !op.kind.starts_with("nop") {
-                let var = rust_ident(out_name);
-                decl_depth.entry(var).or_insert(depth);
-            }
+            && out_name != "none"
+            && !op.kind.starts_with("nop")
+        {
+            let var = rust_ident(out_name);
+            decl_depth.entry(var).or_insert(depth);
+        }
         let mut refs: Vec<String> = op
             .args
             .as_deref()
@@ -3119,9 +3127,10 @@ fn collect_scope_escapes(ops: &[OpIR], func: &FunctionIR, hoisted_vars: &mut BTr
                 continue;
             }
             if let Some(&dd) = decl_depth.get(&r)
-                && dd > depth {
-                    hoisted_vars.insert(r);
-                }
+                && dd > depth
+            {
+                hoisted_vars.insert(r);
+            }
         }
     }
 }

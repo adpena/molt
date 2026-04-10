@@ -60,14 +60,17 @@ fn alloc_class_balances_heap_class_refcount() {
     assert_eq!(
         unsafe {
             molt_itertools_object_class_bits(
-            MoltObject::from_bits(obj_bits)
-                .as_ptr()
-                .expect("expected instance pointer")
+                MoltObject::from_bits(obj_bits)
+                    .as_ptr()
+                    .expect("expected instance pointer"),
             )
         },
         class_bits
     );
-    assert_eq!(header_ref(obj_bits).flags & HEADER_FLAG_SKIP_CLASS_DECREF, 0);
+    assert_eq!(
+        header_ref(obj_bits).flags & HEADER_FLAG_SKIP_CLASS_DECREF,
+        0
+    );
     assert_eq!(refcount(class_bits), class_before + 1);
 
     molt_runtime::molt_dec_ref_obj(obj_bits);
@@ -89,14 +92,17 @@ fn alloc_class_static_marks_skip_class_decref_and_preserves_class_refcount() {
     assert_eq!(
         unsafe {
             molt_itertools_object_class_bits(
-            MoltObject::from_bits(obj_bits)
-                .as_ptr()
-                .expect("expected instance pointer")
+                MoltObject::from_bits(obj_bits)
+                    .as_ptr()
+                    .expect("expected instance pointer"),
             )
         },
         class_bits
     );
-    assert_ne!(header_ref(obj_bits).flags & HEADER_FLAG_SKIP_CLASS_DECREF, 0);
+    assert_ne!(
+        header_ref(obj_bits).flags & HEADER_FLAG_SKIP_CLASS_DECREF,
+        0
+    );
     assert_eq!(refcount(class_bits), class_before);
 
     molt_runtime::molt_dec_ref_obj(obj_bits);
