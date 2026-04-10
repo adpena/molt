@@ -29,6 +29,31 @@ const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_BACKEND_BATCH_SIZE: usize = 64;
 const DEFAULT_STDLIB_BATCH_SIZE: usize = 128;
 const DEFAULT_STDLIB_BATCH_OP_BUDGET: usize = 12_000;
+const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
+    "MOLT_TIR_OPT",
+    "MOLT_DISABLE_DEAD_FUNC_ELIM",
+    "MOLT_BACKEND_BATCH_SIZE",
+    "MOLT_BACKEND_BATCH_OP_BUDGET",
+    "MOLT_MAX_FUNCTION_OPS",
+    "MOLT_DISABLE_RC_COALESCING",
+    "TIR_DUMP",
+    "TIR_OPT_STATS",
+    "MOLT_DUMP_CLIF",
+    "MOLT_DUMP_CLIF_ON_ERROR",
+    "MOLT_DUMP_FINAL_FUNC_IR",
+    "MOLT_DUMP_IR",
+    "MOLT_DEBUG_BIND",
+    "MOLT_BACKEND",
+    "MOLT_DEBUG_CHECK_EXC",
+    "MOLT_DEBUG_CHECK_EXCEPTION",
+    "MOLT_LLVM_DUMP_IR",
+    "MOLT_BACKEND_TIMING",
+    "MOLT_TIR_NO_TYPES",
+    "MOLT_ENTRY_MODULE",
+    "MOLT_STDLIB_OBJ",
+    "MOLT_STDLIB_CACHE_KEY",
+    "MOLT_STDLIB_MODULE_SYMBOLS",
+];
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum BackendOutputKind {
@@ -534,6 +559,11 @@ impl DaemonRequest {
         // Apply per-request env var overrides so callers can control
         // MOLT_TIR_OPT, MOLT_DISABLE_DEAD_FUNC_ELIM, etc. without
         // restarting the daemon.
+        for key in DAEMON_REQUEST_ENV_KEYS {
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
         if let Some(JsonValue::Object(env_map)) = obj.get("env") {
             for (key, val) in env_map {
                 if let Some(s) = val.as_str() {
@@ -2857,6 +2887,37 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn daemon_request_env_clears_omitted_stdlib_module_symbols() {
+        unsafe {
+            std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"stale\"]");
+            std::env::set_var("MOLT_ENTRY_MODULE", "stale_entry");
+        }
+
+        let request = serde_json::json!({
+            "version": BACKEND_DAEMON_PROTOCOL_VERSION,
+            "config_digest": "daemon-clear-test",
+            "env": {
+                "MOLT_ENTRY_MODULE": "demo",
+            },
+            "jobs": [],
+        });
+
+        let parsed = DaemonRequest::from_json_bytes(
+            serde_json::to_string(&request)
+                .expect("serialize request")
+                .as_bytes(),
+        )
+        .expect("parse daemon request");
+
+        assert_eq!(parsed.version, Some(BACKEND_DAEMON_PROTOCOL_VERSION));
+        assert_eq!(
+            std::env::var("MOLT_ENTRY_MODULE").ok().as_deref(),
+            Some("demo")
+        );
+        assert!(std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").is_err());
     }
 
     #[test]

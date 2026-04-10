@@ -21,6 +21,8 @@ use crate::llvm_backend::LlvmBackend;
 use crate::llvm_backend::types::lower_type;
 #[cfg(feature = "llvm")]
 use inkwell::attributes::AttributeLoc;
+#[cfg(feature = "llvm")]
+use inkwell::FloatPredicate;
 
 #[cfg(feature = "llvm")]
 use crate::tir::blocks::{BlockId, Terminator};
@@ -97,10 +99,25 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
                 .unwrap()
         }
         TirType::None => i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false),
-        TirType::F64 => builder
-            .build_bit_cast(operand, i64_ty, "f64_to_i64")
-            .unwrap()
-            .into_int_value(),
+        TirType::F64 => {
+            let float_val = operand.into_float_value();
+            let raw_bits = builder
+                .build_bit_cast(float_val, i64_ty, "f64_to_i64")
+                .unwrap()
+                .into_int_value();
+            let is_nan = builder
+                .build_float_compare(FloatPredicate::UNO, float_val, float_val, "f64_is_nan")
+                .unwrap();
+            builder
+                .build_select(
+                    is_nan,
+                    i64_ty.const_int(crate::CANONICAL_NAN_BITS, false),
+                    raw_bits,
+                    "f64_nan_canonical_bits",
+                )
+                .unwrap()
+                .into_int_value()
+        }
         TirType::DynBox
         | TirType::BigInt
         | TirType::Str
@@ -1058,6 +1075,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .unwrap()
                         .try_as_basic_value()
                         .unwrap_basic();
+                    if let Some(&result_id) = op.results.first() {
+                        self.values.insert(result_id, result);
+                        self.value_types.insert(result_id, TirType::DynBox);
+                    }
+                    return;
+                }
+
+                if matches!(original_kind, Some("call_guarded"))
+                    && let Some(callable_id) = guarded_callable
+                {
+                    let callable = self.resolve(callable_id);
+                    let result = self.emit_call_func_runtime(callable, direct_operands);
                     if let Some(&result_id) = op.results.first() {
                         self.values.insert(result_id, result);
                         self.value_types.insert(result_id, TirType::DynBox);
@@ -7115,7 +7144,53 @@ mod tests {
         backend.module.verify().expect("llvm module should verify");
         let ir = trampoline.print_to_string().to_string();
         assert!(ir.contains("f64_to_i64") || ir.contains("bitcast double"), "{ir}");
+        assert!(ir.contains("fcmp uno"), "{ir}");
         assert!(ir.contains("ret i64"), "{ir}");
+    }
+
+    #[test]
+    fn lower_call_guarded_uses_runtime_callable_dispatch_even_with_known_target() {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        let _target = backend.module.add_function(
+            "guarded_target",
+            ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        backend
+            .function_param_types
+            .insert("guarded_target".to_string(), vec![TirType::DynBox]);
+        backend
+            .function_return_types
+            .insert("guarded_target".to_string(), TirType::DynBox);
+
+        let mut func = TirFunction::new("guarded_call_abi".into(), vec![], TirType::DynBox);
+        let callable = func.fresh_value();
+        let arg0 = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: vec![callable, arg0],
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("_original_kind".into(), AttrValue::Str("call_guarded".into()));
+                attrs.insert("s_value".into(), AttrValue::Str("guarded_target".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+
+        assert!(ir.contains("molt_call_func_fast1"), "{ir}");
+        assert!(!ir.contains("call i64 @guarded_target"), "{ir}");
     }
 
     #[test]
