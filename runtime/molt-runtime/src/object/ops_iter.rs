@@ -557,6 +557,7 @@ pub(crate) unsafe fn enumerate_new_impl(
         }
         *(enum_ptr as *mut u64) = iter_bits;
         *(enum_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = index_bits;
+        inc_ref_bits(_py, iter_bits);
         inc_ref_bits(_py, index_bits);
         MoltObject::from_ptr(enum_ptr).bits()
     }

@@ -1858,6 +1858,27 @@ pub extern "C" fn molt_os_setsid() -> u64 {
 // System configuration (Phase 2)
 // ---------------------------------------------------------------------------
 
+#[cfg(target_arch = "wasm32")]
+const WASM_SYSCONF_SC_IOV_MAX: i64 = 1;
+#[cfg(target_arch = "wasm32")]
+const WASM_SYSCONF_SC_PAGE_SIZE: i64 = 2;
+#[cfg(target_arch = "wasm32")]
+const WASM_SYSCONF_SC_PAGESIZE: i64 = 3;
+#[cfg(target_arch = "wasm32")]
+const WASM_SYSCONF_SC_NPROCESSORS_CONF: i64 = 4;
+#[cfg(target_arch = "wasm32")]
+const WASM_SYSCONF_SC_NPROCESSORS_ONLN: i64 = 5;
+#[cfg(target_arch = "wasm32")]
+const WASM_SYSCONF_ENTRIES: &[(&str, i64, i64)] = &[
+    // Deterministic wasm-side subset used by stdlib bootstrap and common
+    // portability probes. These are not host sysconf passthroughs.
+    ("SC_IOV_MAX", WASM_SYSCONF_SC_IOV_MAX, 1024),
+    ("SC_PAGE_SIZE", WASM_SYSCONF_SC_PAGE_SIZE, 65536),
+    ("SC_PAGESIZE", WASM_SYSCONF_SC_PAGESIZE, 65536),
+    ("SC_NPROCESSORS_CONF", WASM_SYSCONF_SC_NPROCESSORS_CONF, 1),
+    ("SC_NPROCESSORS_ONLN", WASM_SYSCONF_SC_NPROCESSORS_ONLN, 1),
+];
+
 /// `os.sysconf(name)` → int — get system configuration value
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
@@ -1867,7 +1888,12 @@ pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
         };
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = name;
+            if let Some((_, _, value)) = WASM_SYSCONF_ENTRIES
+                .iter()
+                .find(|(_, key, _)| *key == name)
+            {
+                return MoltObject::from_int(*value).bits();
+            }
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "sysconf")
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1895,8 +1921,22 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
     crate::with_gil_entry!(_py, {
         #[cfg(target_arch = "wasm32")]
         {
-            // Return an empty list on WASM — Python side builds dict from it
-            let list_ptr = alloc_list(_py, &[]);
+            let mut entries: Vec<u64> = Vec::with_capacity(WASM_SYSCONF_ENTRIES.len() * 2);
+            for (name_str, key, _) in WASM_SYSCONF_ENTRIES {
+                let s_ptr = alloc_string(_py, name_str.as_bytes());
+                if s_ptr.is_null() {
+                    for e in &entries {
+                        dec_ref_bits(_py, *e);
+                    }
+                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                }
+                entries.push(MoltObject::from_ptr(s_ptr).bits());
+                entries.push(MoltObject::from_int(*key).bits());
+            }
+            let list_ptr = alloc_list(_py, &entries);
+            for e in &entries {
+                dec_ref_bits(_py, *e);
+            }
             if list_ptr.is_null() {
                 return raise_exception::<_>(_py, "MemoryError", "out of memory");
             }

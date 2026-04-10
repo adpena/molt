@@ -249,52 +249,14 @@ pub(crate) fn bigint_bits(_py: &PyToken<'_>, value: BigInt) -> u64 {
     unsafe {
         std::ptr::write(ptr as *mut BigInt, value);
     }
-    let bits = MoltObject::from_ptr(ptr).bits();
-    // Debug: always log bigint allocation to file
-    {
-        use std::io::Write;
-        let header = unsafe { &*(ptr.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader) };
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/bigint_trace.log")
-        {
-            let _ = writeln!(
-                f,
-                "BIGINT_ALLOC ptr=0x{:x} bits=0x{:x} type_id={} rc={}",
-                ptr as usize,
-                bits,
-                header.type_id,
-                header.ref_count.load(std::sync::atomic::Ordering::Relaxed)
-            );
-        }
-    }
-    bits
+    MoltObject::from_ptr(ptr).bits()
 }
 
 #[inline]
 pub(crate) fn int_bits_from_i128(_py: &PyToken<'_>, val: i128) -> u64 {
     if let Some(i) = inline_int_from_i128(val) {
-        // Debug trace: log when a value near the boundary is inlined
-        if val.abs() > (1_i128 << 44)
-            && let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/bigint_trace.log")
-        {
-            use std::io::Write;
-            let _ = writeln!(f, "INT_BITS_I128_INLINE val={} inlined_as={}", val, i);
-        }
         MoltObject::from_int(i).bits()
     } else {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/bigint_trace.log")
-        {
-            use std::io::Write;
-            let _ = writeln!(f, "INT_BITS_I128_BIGINT val={}", val);
-        }
         bigint_bits(_py, BigInt::from(val))
     }
 }

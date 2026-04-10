@@ -59,6 +59,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from molt.compat import CompatibilityError
 from molt._wasm_runtime_exports import (
     wasm_runtime_export_link_args,
+    wasm_runtime_missing_required_exports,
     wasm_runtime_required_import_names,
 )
 from molt.debug import (
@@ -1589,6 +1590,19 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _runtime_wasm_integrity_sidecar_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.sha256")
+
+
+def _write_runtime_wasm_integrity_sidecar(path: Path) -> None:
+    digest = _sha256_file(path)
+    sidecar = _runtime_wasm_integrity_sidecar_path(path)
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = sidecar.with_name(f"{sidecar.name}.tmp")
+    tmp_path.write_text(f"{digest}\n", encoding="utf-8")
+    tmp_path.replace(sidecar)
 
 
 def _git_rev(root: Path) -> str | None:
@@ -17626,7 +17640,7 @@ def _prepare_backend_compile(
     backend_daemon_config_digest: str | None,
     entry_module: str,
     resolved_modules: frozenset[str],
-    ensure_runtime_wasm_shared: Callable[[], bool],
+    ensure_runtime_wasm_shared: Callable[[set[str] | frozenset[str] | None], bool],
     ensure_runtime_wasm_reloc: Callable[[], bool],
     artifacts_root: Path,
     ir: Mapping[str, Any],
@@ -18376,7 +18390,7 @@ def _prepare_non_native_build_result(
             required_runtime_exports = _collect_wasm_module_import_names(
                 output_wasm, "molt_runtime"
             )
-            if _split_runtime and not is_wasm_freestanding:
+            if not is_wasm_freestanding:
                 if runtime_wasm is None:
                     return None, _fail(
                         "Runtime wasm build failed",
@@ -21628,6 +21642,13 @@ def _ensure_runtime_lib(
             + sorted(builtin_features)
             + ["stdlib_micro", "no-default-features"]
         )
+    required_exports_feature = _required_runtime_exports_fingerprint_feature(
+        required_exports
+    )
+    if required_exports_feature is not None:
+        fingerprint_features = tuple(
+            list(fingerprint_features) + [required_exports_feature]
+        )
     # Session-level short-circuit: once we have verified (and possibly built)
     # the runtime for the exact fingerprint-driving feature set, do not repeat
     # the fingerprint/stat dance in this process.
@@ -21956,8 +21977,8 @@ def _link_runtime_staticlib_to_reloc_wasm(
             "-r",
             "--whole-archive",
             str(staticlib_path),
-            str(libc_archive),
             "--no-whole-archive",
+            str(libc_archive),
             "-o",
             str(output_path),
         ],
@@ -22013,7 +22034,9 @@ def _ensure_runtime_wasm(
     # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
         if runtime_wasm.exists():
-            return True
+            return _is_valid_runtime_wasm_artifact(
+                runtime_wasm
+            ) and _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
     requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
@@ -22065,6 +22088,13 @@ def _ensure_runtime_wasm(
             + sorted(builtin_features)
             + ["stdlib_micro", "no-default-features"]
         )
+    required_exports_feature = _required_runtime_exports_fingerprint_feature(
+        required_exports
+    )
+    if required_exports_feature is not None:
+        fingerprint_features = tuple(
+            list(fingerprint_features) + [required_exports_feature]
+        )
     fingerprint_path = _runtime_fingerprint_path(
         root, runtime_wasm, cargo_profile, "wasm32-wasip1"
     )
@@ -22086,14 +22116,49 @@ def _ensure_runtime_wasm(
         needs_rebuild = _artifact_needs_rebuild(
             runtime_wasm, fingerprint, stored_fingerprint
         )
-        if not needs_rebuild and _is_valid_runtime_wasm_artifact(runtime_wasm):
+        if (
+            not needs_rebuild
+            and _is_valid_runtime_wasm_artifact(runtime_wasm)
+            and _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
+        ):
             if not reloc:
                 current_src = _resolve_built_runtime_wasm_artifact(target_root, profile_dir)
-                if current_src != runtime_wasm and _inspect_wasm_binary(current_src) == "valid":
+                if (
+                    current_src != runtime_wasm
+                    and _inspect_wasm_binary(current_src) == "valid"
+                    and _runtime_wasm_exports_satisfy(current_src, required_exports)
+                ):
                     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(current_src, runtime_wasm)
+                    try:
+                        _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+                    except OSError:
+                        if not json_output:
+                            print(
+                                "Failed to update runtime wasm integrity sidecar.",
+                                file=sys.stderr,
+                            )
+                        return False
+            try:
+                _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+            except OSError:
+                if not json_output:
+                    print(
+                        "Failed to update runtime wasm integrity sidecar.",
+                        file=sys.stderr,
+                    )
+                return False
             return True
-        if not needs_rebuild and not json_output:
+        if (
+            not needs_rebuild
+            and not _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
+            and not json_output
+        ):
+            print(
+                "Runtime wasm artifact missing required exports; forcing rebuild.",
+                file=sys.stderr,
+            )
+        elif not needs_rebuild and not json_output:
             print(
                 "Runtime wasm artifact invalid/corrupt; forcing rebuild.",
                 file=sys.stderr,
@@ -22210,6 +22275,15 @@ def _ensure_runtime_wasm(
                 json_output=json_output,
                 link_timeout=cargo_timeout,
             ):
+                return False
+            try:
+                _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+            except OSError:
+                if not json_output:
+                    print(
+                        "Failed to update runtime wasm integrity sidecar.",
+                        file=sys.stderr,
+                    )
                 return False
             fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
             _write_runtime_fingerprint(fingerprint_path, fingerprint)
@@ -22340,12 +22414,30 @@ def _ensure_runtime_wasm(
                 src = fallback_src
             else:
                 src = recovery_src
+        missing_exports = _runtime_wasm_missing_exports(src, required_exports)
+        if missing_exports:
+            if not json_output:
+                print(
+                    "Runtime wasm build produced artifact missing required exports: "
+                    + ", ".join(sorted(missing_exports)),
+                    file=sys.stderr,
+                )
+            return False
         runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, runtime_wasm)
         if _inspect_wasm_binary(runtime_wasm) != "valid":
             if not json_output:
                 print(
                     f"Copied runtime wasm artifact is invalid: {runtime_wasm}",
+                    file=sys.stderr,
+                )
+            return False
+        try:
+            _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+        except OSError:
+            if not json_output:
+                print(
+                    "Failed to update runtime wasm integrity sidecar.",
                     file=sys.stderr,
                 )
             return False
@@ -22658,6 +22750,77 @@ def _collect_wasm_module_import_names(path: Path, module_name: str) -> set[str]:
     except ValueError:
         return set()
     return result
+
+
+def _collect_wasm_export_names(path: Path) -> set[str]:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return set()
+    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\x00\x00\x00":
+        return set()
+    offset = 8
+    result: set[str] = set()
+    try:
+        while offset < len(data):
+            section_id = data[offset]
+            offset += 1
+            size, offset = _read_wasm_varuint(data, offset)
+            end = offset + size
+            if end > len(data):
+                raise ValueError("Unexpected EOF while reading section")
+            payload = data[offset:end]
+            offset = end
+            if section_id != 7:
+                continue
+            cursor = 0
+            count, cursor = _read_wasm_varuint(payload, cursor)
+            for _ in range(count):
+                name, cursor = _read_wasm_string(payload, cursor)
+                if cursor >= len(payload):
+                    raise ValueError("Unexpected EOF while reading export")
+                kind = payload[cursor]
+                cursor += 1
+                _, cursor = _read_wasm_varuint(payload, cursor)
+                if kind == 0:
+                    result.add(name)
+            break
+    except ValueError:
+        return set()
+    return result
+
+
+def _required_runtime_exports_fingerprint_feature(
+    required_exports: set[str] | frozenset[str] | None,
+) -> str | None:
+    if not required_exports:
+        return None
+    normalized = sorted(
+        name if name.startswith("molt_") else f"molt_{name}"
+        for name in required_exports
+    )
+    digest = hashlib.sha256(",".join(normalized).encode("utf-8")).hexdigest()
+    return f"required-exports:{digest}"
+
+
+def _runtime_wasm_exports_satisfy(
+    path: Path,
+    required_exports: set[str] | frozenset[str] | None,
+) -> bool:
+    return not _runtime_wasm_missing_exports(path, required_exports)
+
+
+def _runtime_wasm_missing_exports(
+    path: Path,
+    required_exports: set[str] | frozenset[str] | None,
+) -> set[str]:
+    export_names = _collect_wasm_export_names(path)
+    if not export_names and required_exports:
+        return {
+            name if name.startswith("molt_") else f"molt_{name}"
+            for name in required_exports
+        }
+    return wasm_runtime_missing_required_exports(export_names, required_exports)
 
 
 _DEPLOY_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {

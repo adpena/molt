@@ -19,6 +19,32 @@ _HOST_RUNTIME_EXPORTS = frozenset(
         "molt_set_wasm_table_base",
     }
 )
+_BROWSER_RUNTIME_IMPORT_FALLBACK_EXPORTS = {
+    "molt_resource_on_allocate": (),
+    "molt_resource_on_free": (),
+    "molt_fast_list_append": (
+        "molt_call_bind_ic",
+        "molt_callargs_new",
+        "molt_callargs_push_pos",
+    ),
+    "molt_fast_str_join": (
+        "molt_call_bind_ic",
+        "molt_callargs_new",
+        "molt_callargs_push_pos",
+    ),
+    "molt_fast_dict_get": (
+        "molt_call_bind_ic",
+        "molt_callargs_new",
+        "molt_callargs_push_pos",
+    ),
+    "molt_dict_setitem": ("molt_dict_set",),
+    "molt_dict_getitem": ("molt_dict_getitem_borrowed",),
+    "molt_tuple_getitem": ("molt_tuple_getitem_borrowed",),
+}
+
+
+def _normalize_runtime_export_name(name: str) -> str:
+    return name if name.startswith("molt_") else f"molt_{name}"
 
 
 @lru_cache(maxsize=1)
@@ -112,6 +138,38 @@ def wasm_runtime_required_import_names(
     return tuple(sorted(raw_names & known))
 
 
+def wasm_runtime_required_export_names(
+    required_runtime_imports: Iterable[str] | None,
+) -> tuple[str, ...]:
+    if required_runtime_imports is None:
+        return tuple(sorted(f"molt_{name}" for name in wasm_runtime_import_names()))
+    export_names = set(_HOST_RUNTIME_EXPORTS)
+    for raw_name in required_runtime_imports:
+        name = _normalize_runtime_export_name(raw_name)
+        export_names.add(name)
+        export_names.update(_BROWSER_RUNTIME_IMPORT_FALLBACK_EXPORTS.get(name, ()))
+    return tuple(sorted(export_names))
+
+
+def wasm_runtime_missing_required_exports(
+    export_names: Iterable[str],
+    required_runtime_imports: Iterable[str] | None,
+) -> set[str]:
+    if not required_runtime_imports:
+        return set()
+    available = set(export_names)
+    missing: set[str] = set()
+    for raw_name in required_runtime_imports:
+        name = _normalize_runtime_export_name(raw_name)
+        if name in available:
+            continue
+        fallback_exports = _BROWSER_RUNTIME_IMPORT_FALLBACK_EXPORTS.get(name)
+        if fallback_exports is not None and set(fallback_exports).issubset(available):
+            continue
+        missing.add(name)
+    return missing
+
+
 def wasm_runtime_export_link_args(
     required_runtime_imports: Iterable[str] | None = None,
     resolved_modules: Iterable[str] | None = None,
@@ -119,11 +177,7 @@ def wasm_runtime_export_link_args(
     if required_runtime_imports is None:
         export_names = {f"molt_{name}" for name in wasm_runtime_import_names()}
     else:
-        export_names = set(_HOST_RUNTIME_EXPORTS)
-        export_names.update(
-            name if name.startswith("molt_") else f"molt_{name}"
-            for name in required_runtime_imports
-        )
+        export_names = set(wasm_runtime_required_export_names(required_runtime_imports))
     export_names.update(
         canonical_intrinsic_runtime_name(name)
         for name in _resolved_stdlib_intrinsic_exports(resolved_modules)

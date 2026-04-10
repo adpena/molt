@@ -168,9 +168,9 @@ def test_intrinsic_alias_lowers_to_canonical_runtime_symbol() -> None:
         "from _intrinsics import require_intrinsic as _require_intrinsic\n"
         "_HOOK = _require_intrinsic('molt_async_sleep')\n"
     )
-    assert _has_runtime_intrinsic_lookup_call(source, "molt_async_sleep")
-    assert not _has_builtin_func(source, "molt_async_sleep_new")
-    assert not _has_builtin_func(source, "molt_async_sleep")
+    assert not _has_runtime_intrinsic_lookup_call(source, "molt_async_sleep")
+    assert _has_builtin_func(source, "molt_async_sleep_new")
+    assert _has_builtin_func(source, "molt_require_intrinsic_runtime")
 
 
 def test_chunked_stdlib_intrinsics_import_binding_survives_reset() -> None:
@@ -190,9 +190,15 @@ def test_chunked_stdlib_intrinsics_import_binding_survives_reset() -> None:
     )
     gen.visit(ast.parse(source))
     assert gen.global_imported_names["_require_intrinsic"] == "_intrinsics"
-    assert _ops_have_runtime_intrinsic_lookup_call(
-        [func["ops"] for func in gen.funcs_map.values()],
-        "molt_json_parse_scalar_obj",
+    op_groups = [func["ops"] for func in gen.funcs_map.values()]
+    assert not _ops_have_runtime_intrinsic_lookup_call(
+        op_groups, "molt_json_parse_scalar_obj"
+    )
+    assert any(
+        _op_field(op, "kind") == "builtin_func"
+        and _op_field(op, "s_value") == "molt_json_parse_scalar_obj"
+        for ops in op_groups
+        for op in ops
     )
 
 
@@ -327,6 +333,32 @@ def test_try_wrapped_return_avoids_list_return_slot_in_sync_function() -> None:
     assert "list_new" not in kinds
     assert "store_index" not in kinds
     assert "index" not in kinds
+
+
+def test_nested_listcomp_function_does_not_capture_comprehension_target() -> None:
+    source = (
+        "def outer():\n"
+        "    data = ('a', 'b')\n"
+        "    def inner(kw):\n"
+        "        return [kw.get(name) for name in data]\n"
+    )
+    ir = compile_to_tir(source)
+    outer_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____outer"
+    )
+    for idx, op in enumerate(outer_ops):
+        if op["kind"] != "func_new_closure" or op.get("s_value") != "__main____inner":
+            continue
+        closure_tuple_var = op["args"][0]
+        tuple_op = next(
+            candidate
+            for candidate in outer_ops[:idx]
+            if candidate.get("kind") == "tuple_new" and candidate.get("out") == closure_tuple_var
+        )
+        assert tuple_op["args"] == ["v84"]
+        break
+    else:
+        raise AssertionError("missing inner func_new_closure")
 
 
 def test_imported_class_ctor_avoids_cross_module_name_collision() -> None:
@@ -486,6 +518,22 @@ def test_internal_module_imported_class_ctor_stays_on_call_bind() -> None:
     assert any(op.get("kind") == "call_bind" for op in func_ops), func_ops
     assert all(
         not (op.get("kind") == "call" and op.get("s_value") == "molt_gpu_tensor__Tensor")
+        for op in func_ops
+    ), func_ops
+
+
+def test_internal_module_vararg_function_import_stays_on_call_bind() -> None:
+    ir = compile_to_tir(
+        "from molt.gpu.tensor import zeros\n"
+        "def f():\n"
+        "    return zeros((2, 3))\n"
+    )
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+    assert any(op.get("kind") == "call_bind" for op in func_ops), func_ops
+    assert all(
+        not (op.get("kind") == "call" and op.get("s_value") == "molt_gpu_tensor__zeros")
         for op in func_ops
     ), func_ops
 

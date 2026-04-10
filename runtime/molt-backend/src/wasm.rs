@@ -1137,7 +1137,9 @@ pub struct WasmCompileOptions {
     pub data_base: u32,
     pub table_base: u32,
     /// Enable native WASM exception handling (WASM 3.0 EH proposal).
-    /// Enabled by default; set `MOLT_WASM_NATIVE_EH=0` to disable.
+    /// Disabled by default until the backend emits full try/catch handler
+    /// regions for all Python exception flows. Set `MOLT_WASM_NATIVE_EH=1`
+    /// to opt in explicitly.
     pub native_eh_enabled: bool,
     /// WASM profile for compile-time import stripping.
     /// Gated by `MOLT_WASM_PROFILE` environment variable ("full" or "pure").
@@ -1168,7 +1170,7 @@ impl Default for WasmCompileOptions {
                 Ok(value) => value.parse::<u32>().unwrap_or(RELOC_TABLE_BASE_DEFAULT),
                 Err(_) => RELOC_TABLE_BASE_DEFAULT,
             },
-            native_eh_enabled: !matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("0")),
+            native_eh_enabled: matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("1")),
             wasm_profile: match std::env::var("MOLT_WASM_PROFILE").as_deref() {
                 Ok("pure") => WasmProfile::Pure,
                 Ok("full") => WasmProfile::Full,
@@ -1497,6 +1499,11 @@ impl WasmBackend {
             }
         }
 
+        // Build the set of all defined function/import names so Auto mode can
+        // distinguish internal direct calls from imported runtime direct calls.
+        let defined_function_names: BTreeSet<&str> =
+            ir.functions.iter().map(|func| func.name.as_str()).collect();
+
         // Build the set of all known import names for auto-discovery.
         let known_imports: BTreeSet<&str> = crate::wasm_imports::IMPORT_REGISTRY
             .iter()
@@ -1545,6 +1552,15 @@ impl WasmBackend {
                 {
                     let import_name = name.strip_prefix("molt_").unwrap_or(name.as_str());
                     required.insert(import_name.to_string());
+                }
+                if kind == "call"
+                    && let Some(name) = op.s_value.as_ref()
+                    && !defined_function_names.contains(name.as_str())
+                {
+                    let import_name = name.strip_prefix("molt_").unwrap_or(name.as_str());
+                    if name.starts_with("molt_") || known_imports.contains(import_name) {
+                        required.insert(import_name.to_string());
+                    }
                 }
 
                 // Task allocation semantics are keyed off task_kind metadata in
@@ -2373,10 +2389,13 @@ impl WasmBackend {
 
         let reloc_enabled = self.options.reloc_enabled;
 
+        let defined_function_names: BTreeSet<&str> =
+            ir.functions.iter().map(|func| func.name.as_str()).collect();
         let mut max_func_arity = 0usize;
         let mut max_call_arity = 0usize;
         let mut max_class_def_words = 0usize;
         let mut builtin_trampoline_specs: BTreeMap<String, usize> = BTreeMap::new();
+        let mut direct_import_call_specs: BTreeMap<String, usize> = BTreeMap::new();
         let mut manifest_intrinsic_names: BTreeSet<String> = BTreeSet::new();
         for func_ir in &ir.functions {
             let is_poll = func_ir.name.ends_with("_poll");
@@ -2444,6 +2463,29 @@ impl WasmBackend {
                         builtin_trampoline_specs.insert(name.clone(), arity);
                     }
                 }
+                if op.kind == "call"
+                    && let Some(target_name) = op.s_value.as_ref()
+                    && !defined_function_names.contains(target_name.as_str())
+                {
+                    let import_name = target_name
+                        .strip_prefix("molt_")
+                        .unwrap_or(target_name.as_str());
+                    let is_runtime_import_target = target_name.starts_with("molt_")
+                        || self.import_ids.contains_key(import_name);
+                    if !is_runtime_import_target {
+                        continue;
+                    }
+                    let arity = op.args.as_ref().map_or(0, Vec::len);
+                    if let Some(prev) = direct_import_call_specs.get(target_name) {
+                        if *prev != arity {
+                            panic!(
+                                "direct imported call arity mismatch for {target_name}: {prev} vs {arity}"
+                            );
+                        }
+                    } else {
+                        direct_import_call_specs.insert(target_name.clone(), arity);
+                    }
+                }
                 if op.kind == "call_func"
                     && let Some(args) = op.args.as_ref()
                     && args.len() >= 3
@@ -2467,6 +2509,20 @@ impl WasmBackend {
             })
             .filter(|(import_name, _)| !self.import_ids.contains_key(import_name))
             .collect();
+        auto_import_names.extend(
+            direct_import_call_specs
+                .iter()
+                .map(|(runtime_name, arity)| {
+                    (
+                        runtime_name
+                            .strip_prefix("molt_")
+                            .unwrap_or(runtime_name.as_str())
+                            .to_string(),
+                        *arity,
+                    )
+                })
+                .filter(|(import_name, _)| !self.import_ids.contains_key(import_name)),
+        );
         for spec in RESERVED_RUNTIME_CALLABLE_SPECS {
             if !self.import_ids.contains_key(spec.import_name) {
                 auto_import_names.push((spec.import_name.to_string(), spec.arity));
@@ -3732,6 +3788,19 @@ impl WasmBackend {
         for (_import_name, target_index) in &compact_builtin_entries {
             table_indices.push(*target_index);
         }
+        for runtime_name in direct_import_call_specs.keys() {
+            let import_name = runtime_name
+                .strip_prefix("molt_")
+                .unwrap_or(runtime_name.as_str());
+            let import_idx = *self
+                .import_ids
+                .get(import_name)
+                .unwrap_or_else(|| panic!("missing direct runtime import for {runtime_name}"));
+            if import_idx == u32::MAX {
+                panic!("direct runtime import unexpectedly stripped for {runtime_name}");
+            }
+            func_to_index.insert(runtime_name.clone(), import_idx);
+        }
         for (i, (name, _)) in compact_builtin_trampoline_funcs.iter().enumerate() {
             let idx = compact_builtin_trampoline_table_start + i as u32;
             func_to_trampoline_idx.insert(name.clone(), idx);
@@ -4639,6 +4708,34 @@ impl WasmBackend {
         };
         // Also treat function parameters as always live.
         let param_set: BTreeSet<String> = func_ir.params.iter().cloned().collect();
+        let mut runtime_lookup_vars: BTreeSet<String> = BTreeSet::new();
+        for op in &func_ir.ops {
+            if op.kind == "builtin_func"
+                && op.s_value.as_deref() == Some("molt_require_intrinsic_runtime")
+                && let Some(out) = op.out.as_ref()
+            {
+                runtime_lookup_vars.insert(out.clone());
+            }
+        }
+        let mut runtime_lookup_only_vars = runtime_lookup_vars.clone();
+        for op in &func_ir.ops {
+            if let Some(var) = op.var.as_ref()
+                && runtime_lookup_vars.contains(var)
+            {
+                runtime_lookup_only_vars.remove(var);
+            }
+            if let Some(args) = op.args.as_ref() {
+                for (idx, arg) in args.iter().enumerate() {
+                    if !runtime_lookup_vars.contains(arg) {
+                        continue;
+                    }
+                    let ok = op.kind == "call_func" && idx == 0 && args.len() == 3;
+                    if !ok {
+                        runtime_lookup_only_vars.remove(arg);
+                    }
+                }
+            }
+        }
 
         // --- Local variable coalescing (liveness analysis) ---
         // Compute live ranges for each variable: first write -> last read.
@@ -11237,6 +11334,14 @@ impl WasmBackend {
                         func.instruction(&Instruction::Drop);
                     }
                     "builtin_func" => {
+                        if op.s_value.as_deref() == Some("molt_require_intrinsic_runtime")
+                            && op
+                                .out
+                                .as_ref()
+                                .is_some_and(|out| runtime_lookup_only_vars.contains(out))
+                        {
+                            continue;
+                        }
                         let func_name = op.s_value.as_ref().unwrap();
                         let arity = op.value.unwrap_or(0);
                         let table_slot = func_map[func_name];
@@ -11284,9 +11389,24 @@ impl WasmBackend {
                         }
                     }
                     "call_func" => {
+                        let args_names = op.args.as_ref().unwrap();
+                        if args_names.len() == 3 && runtime_lookup_only_vars.contains(&args_names[0])
+                        {
+                            let name_bits = locals[&args_names[1]];
+                            let namespace_bits = locals[&args_names[2]];
+                            let out = locals[op.out.as_ref().unwrap()];
+                            func.instruction(&Instruction::LocalGet(name_bits));
+                            func.instruction(&Instruction::LocalGet(namespace_bits));
+                            emit_call(
+                                func,
+                                reloc_enabled,
+                                import_ids["require_intrinsic_runtime"],
+                            );
+                            func.instruction(&Instruction::LocalSet(out));
+                            continue;
+                        }
                         // Outlined: spill args to linear memory, then delegate
                         // to molt_call_func_dispatch runtime helper.
-                        let args_names = op.args.as_ref().unwrap();
                         let func_bits = locals[&args_names[0]];
                         let out = locals[op.out.as_ref().unwrap()];
                         let nargs = args_names.len().saturating_sub(1);
