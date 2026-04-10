@@ -319,6 +319,7 @@ fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirTyp
             _ => None,
         },
         OpCode::Not => Some(TirType::Bool),
+        OpCode::Bool => Some(TirType::Bool),
 
         // Bitwise (I64 only)
         OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::Shl | OpCode::Shr => {

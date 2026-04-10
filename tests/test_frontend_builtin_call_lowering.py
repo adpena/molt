@@ -3,7 +3,29 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from molt.frontend import MoltValue, SimpleTIRGenerator, compile_to_tir
+from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
+
+
+def _op_field(op: dict[str, object] | MoltOp, field: str) -> object:
+    if isinstance(op, dict):
+        return op.get(field)
+    if field == "kind":
+        return op.kind.lower()
+    if field == "args":
+        return op.args
+    if field == "out":
+        return op.result.name
+    if field == "s_value":
+        if op.kind in {"BUILTIN_FUNC", "CONST_STR"} and op.args:
+            return op.args[0]
+        return None
+    return None
+
+
+def _value_name(value: object) -> object:
+    if isinstance(value, MoltValue):
+        return value.name
+    return value
 
 
 def _first_builtin_call_kind(source: str, runtime_name: str) -> str:
@@ -59,6 +81,47 @@ def _has_builtin_func(source: str, runtime_name: str) -> bool:
     )
 
 
+def _has_runtime_intrinsic_lookup_call(source: str, runtime_name: str) -> bool:
+    ir = compile_to_tir(source)
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+    return _ops_have_runtime_intrinsic_lookup_call([main_ops], runtime_name)
+
+
+def _ops_have_runtime_intrinsic_lookup_call(
+    op_groups: list[list[dict[str, object] | MoltOp]], runtime_name: str
+) -> bool:
+    const_str = {
+        _op_field(op, "out"): _op_field(op, "s_value")
+        for ops in op_groups
+        for op in ops
+        if _op_field(op, "kind") == "const_str"
+        and isinstance(_op_field(op, "out"), str)
+        and isinstance(_op_field(op, "s_value"), str)
+    }
+    resolver_vars = {
+        _op_field(op, "out")
+        for ops in op_groups
+        for op in ops
+        if _op_field(op, "kind") == "builtin_func"
+        and _op_field(op, "s_value") == "molt_require_intrinsic_runtime"
+        and isinstance(_op_field(op, "out"), str)
+    }
+    for ops in op_groups:
+        for op in ops:
+            if _op_field(op, "kind") != "call_func":
+                continue
+            args = _op_field(op, "args")
+            if not isinstance(args, list) or len(args) < 3:
+                continue
+            callee_var = _value_name(args[0])
+            name_var = _value_name(args[1])
+            if callee_var in resolver_vars and const_str.get(name_var) == runtime_name:
+                return True
+    return False
+
+
 def test_zip_lowering_uses_call_bind() -> None:
     source = "print(list(zip([1, 2], [3, 4])))\n"
     assert _first_builtin_call_kind(source, "molt_zip_builtin") == "call_bind"
@@ -100,6 +163,16 @@ def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic() -> None:
     assert _has_builtin_func(source, "molt_importlib_module_spec_is_package")
 
 
+def test_intrinsic_alias_lowers_to_canonical_runtime_symbol() -> None:
+    source = (
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        "_HOOK = _require_intrinsic('molt_async_sleep')\n"
+    )
+    assert _has_runtime_intrinsic_lookup_call(source, "molt_async_sleep")
+    assert not _has_builtin_func(source, "molt_async_sleep_new")
+    assert not _has_builtin_func(source, "molt_async_sleep")
+
+
 def test_chunked_stdlib_intrinsics_import_binding_survives_reset() -> None:
     source_path = (
         Path(__file__).resolve().parents[1] / "src" / "molt" / "stdlib" / "json" / "__init__.py"
@@ -117,10 +190,9 @@ def test_chunked_stdlib_intrinsics_import_binding_survives_reset() -> None:
     )
     gen.visit(ast.parse(source))
     assert gen.global_imported_names["_require_intrinsic"] == "_intrinsics"
-    assert any(
-        op.kind == "BUILTIN_FUNC" and op.args[0] == "molt_json_parse_scalar_obj"
-        for func in gen.funcs_map.values()
-        for op in func["ops"]
+    assert _ops_have_runtime_intrinsic_lookup_call(
+        [func["ops"] for func in gen.funcs_map.values()],
+        "molt_json_parse_scalar_obj",
     )
 
 
@@ -383,3 +455,130 @@ def test_known_module_import_uses_runtime_import_boundary() -> None:
         not (op.get("kind") == "call" and op.get("s_value") == "molt_init_sys")
         for op in main_ops
     )
+
+
+def test_internal_module_function_import_lowers_via_direct_call() -> None:
+    ir = compile_to_tir(
+        "from molt.gpu.tensor import tensor_linear\n"
+        "def f(x, w):\n"
+        "    return tensor_linear(x, w)\n"
+    )
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+    assert any(
+        op.get("kind") == "call"
+        and op.get("s_value") == "molt_gpu_tensor__tensor_linear"
+        for op in func_ops
+    ), func_ops
+    assert all(op.get("kind") != "call_bind" for op in func_ops), func_ops
+
+
+def test_internal_module_imported_class_ctor_stays_on_call_bind() -> None:
+    ir = compile_to_tir(
+        "from molt.gpu.tensor import Tensor\n"
+        "def f(x):\n"
+        "    return Tensor(x)\n"
+    )
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+    assert any(op.get("kind") == "call_bind" for op in func_ops), func_ops
+    assert all(
+        not (op.get("kind") == "call" and op.get("s_value") == "molt_gpu_tensor__Tensor")
+        for op in func_ops
+    ), func_ops
+
+
+def test_tensor_linear_uses_internal_fast_tensor_wrap_helper() -> None:
+    source = Path("src/molt/gpu/tensor.py").read_text(encoding="utf-8")
+    ir = compile_to_tir(source)
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____tensor_linear"
+    )
+    assert any(
+        op.get("kind") == "call"
+        and op.get("s_value") == "__main_____tensor_from_parts"
+        for op in func_ops
+    ), func_ops
+
+
+def test_tensor_view_helpers_use_internal_fast_wrap_helpers() -> None:
+    source = Path("src/molt/gpu/tensor.py").read_text(encoding="utf-8")
+    ir = compile_to_tir(source)
+    reshape_ops = next(
+        func["ops"]
+        for func in ir["functions"]
+        if func["name"] == "__main____tensor_reshape_view"
+    )
+    data_list_ops = next(
+        func["ops"]
+        for func in ir["functions"]
+        if func["name"] == "__main____tensor_data_list"
+    )
+    assert any(
+        op.get("kind") == "call"
+        and op.get("s_value") == "__main_____tensor_from_buffer"
+        for op in reshape_ops
+    ), reshape_ops
+    assert any(
+        op.get("kind") == "call"
+        and op.get("s_value") == "__main_____buffer_to_list"
+        for op in data_list_ops
+    ), data_list_ops
+
+
+def test_internal_module_intrinsic_alias_import_stays_on_call_bind() -> None:
+    gen = SimpleTIRGenerator(
+        source_path="src/molt/stdlib/abc.py",
+        module_name="abc",
+        stdlib_allowlist={"abc", "_abc"},
+        known_modules={"abc", "_abc"},
+        known_func_defaults={"abc": {}, "_abc": {}},
+    )
+    gen.visit(
+        ast.parse(
+            "from _abc import _abc_init\n"
+            "def f(x):\n"
+            "    return _abc_init(x)\n"
+        )
+    )
+    ir = gen.to_json()
+    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "abc__f")
+    assert any(op.get("kind") == "call_bind" for op in func_ops), func_ops
+    assert all(
+        not (op.get("kind") == "call" and op.get("s_value") == "_abc___abc_init")
+        for op in func_ops
+    ), func_ops
+
+
+def test_tensor_linear_family_helpers_inline_result_format_selection() -> None:
+    source = Path("src/molt/gpu/tensor.py").read_text(encoding="utf-8")
+    ir = compile_to_tir(source)
+    for func_name in (
+        "__main____tensor_linear",
+        "__main____tensor_linear_split_last_dim",
+        "__main____tensor_linear_squared_relu_gate_interleaved",
+    ):
+        func_ops = next(
+            func["ops"] for func in ir["functions"] if func["name"] == func_name
+        )
+        assert all(op.get("kind") != "call_bind" for op in func_ops), (func_name, func_ops)
+
+
+def test_module_optional_intrinsic_global_call_lowers_directly() -> None:
+    ir = compile_to_tir(
+        "def _load_optional_intrinsic(name):\n"
+        "    return None\n"
+        "_MOLT_GPU = _load_optional_intrinsic('molt_gpu_linear_contiguous')\n"
+        "def f(a, b, c, d, e, f0, g, h):\n"
+        "    if _MOLT_GPU is not None:\n"
+        "        return _MOLT_GPU(a, b, c, d, e, f0, g, h)\n"
+        "    return None\n"
+    )
+    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
+    assert any(
+        op.get("kind") == "call"
+        and op.get("s_value") == "molt_gpu_linear_contiguous"
+        for op in func_ops
+    ), func_ops

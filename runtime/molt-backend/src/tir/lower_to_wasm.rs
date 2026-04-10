@@ -620,6 +620,25 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
                 ctx.emit_set(result.id);
             }
         }
+        OpCode::Bool => {
+            if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
+            {
+                match ctx.repr_of(src) {
+                    LirRepr::Bool1 => ctx.emit_get(src),
+                    LirRepr::F64 => {
+                        ctx.emit_get(src);
+                        ctx.instructions
+                            .push(Instruction::F64Const(Ieee64::from(0.0)));
+                        ctx.instructions.push(Instruction::F64Ne);
+                    }
+                    _ => {
+                        ctx.emit_get(src);
+                        ctx.instructions.push(Instruction::Call(0));
+                    }
+                }
+                ctx.emit_set(result.id);
+            }
+        }
         OpCode::CallBuiltin
             if matches!(
                 tir_op.attrs.get("lir.truthy_cond"),
@@ -1301,7 +1320,8 @@ mod tests {
 
     #[test]
     fn alloc_task_falls_back_to_runtime_call() {
-        let mut func = TirFunction::new("alloc_task".into(), vec![TirType::DynBox], TirType::DynBox);
+        let mut func =
+            TirFunction::new("alloc_task".into(), vec![TirType::DynBox], TirType::DynBox);
         let result_id = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
@@ -1332,7 +1352,11 @@ mod tests {
 
     #[test]
     fn state_switch_falls_back_to_runtime_call() {
-        let mut func = TirFunction::new("state_switch".into(), vec![TirType::DynBox], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "state_switch".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+        );
         let result_id = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {

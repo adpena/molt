@@ -173,6 +173,130 @@ host.run();
         server.shutdown()
 
 
+def test_browser_direct_run_wasm_import_os_name(tmp_path: Path) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser direct-mode os.name test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser direct-mode os.name test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_direct_os_name.py"
+    src.write_text(
+        "import os\n"
+        "print(os.name)\n"
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "0"
+    run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
+    run = subprocess.run(
+        ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
+        cwd=root,
+        env=run_env,
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 0, run.stderr
+    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == ["posix"]
+
+
+def test_browser_direct_run_wasm_bool_or_call_result(tmp_path: Path) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser direct-mode bool-or test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser direct-mode bool-or test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_direct_bool_or.py"
+    src.write_text(
+        "from _intrinsics import require_intrinsic\n"
+        "cap = require_intrinsic('molt_capabilities_has')\n"
+        "print(cap('time.wall'))\n"
+        "print(cap('time'))\n"
+        "print(bool(cap('time.wall') or cap('time')))\n"
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "0"
+    run_env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
+    run_env["MOLT_CAPABILITY_TIER"] = "full"
+    run = subprocess.run(
+        ["node", str(root / "wasm" / "run_wasm.js"), str(output_wasm)],
+        cwd=root,
+        env=run_env,
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 0, run.stderr
+    assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == [
+        "True",
+        "False",
+        "True",
+    ]
+
+
 def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for wasm browser DB host test")

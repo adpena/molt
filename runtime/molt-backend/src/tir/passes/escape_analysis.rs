@@ -205,6 +205,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::And
                 | OpCode::Or
                 | OpCode::Not
+                | OpCode::Bool
                 | OpCode::LoadAttr
                 | OpCode::DelAttr
                 | OpCode::Index

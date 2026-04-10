@@ -73,6 +73,13 @@ const POLL_TABLE_FUNCS: &[&str] = &[
     "contextlib_async_exitstack_enter_context_poll",
 ];
 
+fn intrinsic_manifest_name(runtime_name: &str) -> &str {
+    match runtime_name {
+        "molt_async_sleep_new" => "molt_async_sleep",
+        _ => runtime_name,
+    }
+}
+
 fn prepare_lir_wasm_fast_output(
     tir_func: &crate::tir::function::TirFunction,
 ) -> Option<crate::tir::lower_to_wasm::WasmFunctionOutput> {
@@ -2370,8 +2377,33 @@ impl WasmBackend {
         let mut max_call_arity = 0usize;
         let mut max_class_def_words = 0usize;
         let mut builtin_trampoline_specs: BTreeMap<String, usize> = BTreeMap::new();
+        let mut manifest_intrinsic_names: BTreeSet<String> = BTreeSet::new();
         for func_ir in &ir.functions {
             let is_poll = func_ir.name.ends_with("_poll");
+            let const_strings: BTreeMap<&str, &str> = func_ir
+                .ops
+                .iter()
+                .filter_map(|op| {
+                    if op.kind == "const_str" {
+                        Some((op.out.as_deref()?, op.s_value.as_deref()?))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let runtime_lookup_vars: BTreeSet<&str> = func_ir
+                .ops
+                .iter()
+                .filter_map(|op| {
+                    if op.kind == "builtin_func"
+                        && op.s_value.as_deref() == Some("molt_require_intrinsic_runtime")
+                    {
+                        op.out.as_deref()
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             if !is_poll {
                 max_func_arity = max_func_arity.max(func_ir.params.len());
             }
@@ -2412,6 +2444,14 @@ impl WasmBackend {
                         builtin_trampoline_specs.insert(name.clone(), arity);
                     }
                 }
+                if op.kind == "call_func"
+                    && let Some(args) = op.args.as_ref()
+                    && args.len() >= 3
+                    && runtime_lookup_vars.contains(args[0].as_str())
+                    && let Some(name) = const_strings.get(args[1].as_str())
+                {
+                    manifest_intrinsic_names.insert((*name).to_string());
+                }
             }
         }
         let mut auto_import_names: Vec<(String, usize)> = builtin_trampoline_specs
@@ -2447,7 +2487,7 @@ impl WasmBackend {
         // NUL-separated data segment so the runtime only registers these.
         let manifest_bytes: Vec<u8> = {
             let mut buf = Vec::new();
-            for (i, name) in builtin_trampoline_specs.keys().enumerate() {
+            for (i, name) in manifest_intrinsic_names.iter().enumerate() {
                 if i > 0 {
                     buf.push(0);
                 }
@@ -6887,6 +6927,30 @@ impl WasmBackend {
                         let val = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(val));
                         emit_call(func, reloc_enabled, import_ids["not"]);
+                        if let Some(out) = op.out.as_ref() {
+                            let res = locals[out];
+                            func.instruction(&Instruction::LocalSet(res));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "bool" | "cast_bool" | "builtin_bool" => {
+                        let args = op.args.as_ref().unwrap();
+                        let val = locals[&args[0]];
+                        let truthy_import = if op.type_hint.as_deref() == Some("bool") {
+                            "is_truthy_bool"
+                        } else if op.fast_int.unwrap_or(false)
+                            || op.type_hint.as_deref() == Some("int")
+                        {
+                            "is_truthy_int"
+                        } else {
+                            "is_truthy"
+                        };
+                        func.instruction(&Instruction::LocalGet(val));
+                        emit_call(func, reloc_enabled, import_ids[truthy_import]);
+                        func.instruction(&Instruction::I64Const(0));
+                        func.instruction(&Instruction::I64Ne);
+                        emit_box_bool_from_i32(func);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
