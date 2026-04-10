@@ -22,8 +22,7 @@ impl CApiTestGuard {
 }
 
 impl Drop for CApiTestGuard {
-    fn drop(&mut self) {
-    }
+    fn drop(&mut self) {}
 }
 
 extern "C" fn c_api_test_meth_varargs(self_bits: u64, args_bits: u64) -> u64 {
@@ -614,6 +613,174 @@ fn class_apply_set_name_tolerates_plain_function_attrs() {
 }
 
 #[test]
+fn runtime_intrinsic_function_obj_zero_arg_vec_call_returns_value() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry!(_py, {
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::molt_sys_version_info as *const () as usize as u64,
+            0,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+
+        let out_bits = unsafe { crate::call::function::call_function_obj_vec(_py, func_bits, &[]) };
+        let out_ptr = obj_from_bits(out_bits).as_ptr();
+        assert!(out_ptr.is_some(), "expected tuple result, got none");
+        assert_eq!(unsafe { object_type_id(out_ptr.unwrap()) }, TYPE_ID_TUPLE);
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, out_bits);
+        dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
+fn runtime_intrinsic_function_obj_zero_arg_indirect_call_returns_value() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry!(_py, {
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::molt_sys_version_info as *const () as usize as u64,
+            0,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+        let site_bits = MoltObject::from_int(17).bits();
+        let builder_bits = crate::call::bind::molt_callargs_new(0, 0);
+
+        let out_bits = crate::call::bind::molt_call_indirect_ic(site_bits, func_bits, builder_bits);
+        let out_ptr = obj_from_bits(out_bits).as_ptr();
+        assert!(out_ptr.is_some(), "expected tuple result, got none");
+        assert_eq!(unsafe { object_type_id(out_ptr.unwrap()) }, TYPE_ID_TUPLE);
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, out_bits);
+        dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
+fn runtime_intrinsic_function_obj_zero_arg_fastcall_returns_value() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry!(_py, {
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::molt_sys_version_info as *const () as usize as u64,
+            0,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+
+        let out_bits = crate::molt_call_func_fast0(func_bits);
+        let out_ptr = obj_from_bits(out_bits).as_ptr();
+        assert!(out_ptr.is_some(), "expected tuple result, got none");
+        assert_eq!(unsafe { object_type_id(out_ptr.unwrap()) }, TYPE_ID_TUPLE);
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, out_bits);
+        dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
+fn resolved_intrinsic_function_obj_zero_arg_indirect_call_returns_value() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry!(_py, {
+        crate::intrinsics::registry::register_intrinsics_module(_py);
+
+        let name_ptr = alloc_string(_py, b"molt_sys_version_info");
+        assert!(!name_ptr.is_null());
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let func_bits = crate::intrinsics::registry::molt_intrinsic_resolve(name_bits);
+        assert!(
+            !obj_from_bits(func_bits).is_none(),
+            "resolver returned none"
+        );
+
+        let site_bits = MoltObject::from_int(19).bits();
+        let builder_bits = crate::call::bind::molt_callargs_new(0, 0);
+        let out_bits = crate::call::bind::molt_call_indirect_ic(site_bits, func_bits, builder_bits);
+        let out_ptr = obj_from_bits(out_bits).as_ptr();
+        assert!(out_ptr.is_some(), "expected tuple result, got none");
+        assert_eq!(unsafe { object_type_id(out_ptr.unwrap()) }, TYPE_ID_TUPLE);
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, out_bits);
+        dec_ref_bits(_py, func_bits);
+        dec_ref_bits(_py, name_bits);
+    });
+}
+
+#[test]
+fn intrinsic_resolver_function_obj_indirect_call_returns_callable() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry!(_py, {
+        let resolver_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::intrinsics::registry::molt_intrinsic_resolve as *const () as usize as u64,
+            1,
+        );
+        assert!(!resolver_ptr.is_null());
+        let resolver_bits = MoltObject::from_ptr(resolver_ptr).bits();
+
+        let name_ptr = alloc_string(_py, b"molt_sys_version_info");
+        assert!(!name_ptr.is_null());
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let site_bits = MoltObject::from_int(23).bits();
+        let builder_bits = crate::call::bind::molt_callargs_new(1, 0);
+        let _ = unsafe { crate::molt_callargs_push_pos(builder_bits, name_bits) };
+
+        let func_bits =
+            crate::call::bind::molt_call_indirect_ic(site_bits, resolver_bits, builder_bits);
+        let func_ptr = obj_from_bits(func_bits).as_ptr();
+        assert!(func_ptr.is_some(), "resolver returned none");
+        assert_eq!(
+            unsafe { object_type_id(func_ptr.unwrap()) },
+            TYPE_ID_FUNCTION
+        );
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, func_bits);
+        dec_ref_bits(_py, name_bits);
+        dec_ref_bits(_py, resolver_bits);
+    });
+}
+
+#[test]
+fn runtime_intrinsic_module_import_fast_call_returns_module() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry!(_py, {
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::molt_module_import as *const () as usize as u64,
+            1,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+
+        let name_ptr = alloc_string(_py, b"sys");
+        assert!(!name_ptr.is_null());
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+
+        let out_bits = crate::molt_call_func_fast1(func_bits, name_bits);
+        let out_ptr = obj_from_bits(out_bits)
+            .as_ptr()
+            .expect("expected module import result");
+        let ty = unsafe { object_type_id(out_ptr) };
+        assert!(
+            ty == TYPE_ID_MODULE || ty == TYPE_ID_DICT,
+            "expected module-like result, got type_id={ty}"
+        );
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, out_bits);
+        dec_ref_bits(_py, name_bits);
+        dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
 fn scalar_handle_helpers_roundtrip() {
     let _guard = CApiTestGuard::new();
     assert!(obj_from_bits(molt_none()).is_none());
@@ -857,8 +1024,8 @@ fn module_capi_metadata_and_state_registry_roundtrip() {
         );
         assert_eq!(molt_module_capi_get_def(module_bits), module_def_ptr);
         let state_ptr = molt_module_capi_get_state(module_bits);
-        assert_ne!(state_ptr, 0);
-        let state_slice = unsafe { std::slice::from_raw_parts_mut(state_ptr as *mut u8, 32) };
+        assert!(!state_ptr.is_null());
+        let state_slice = unsafe { std::slice::from_raw_parts_mut(state_ptr, 32) };
         for byte in state_slice.iter() {
             assert_eq!(*byte, 0);
         }
@@ -877,7 +1044,7 @@ fn module_capi_metadata_and_state_registry_roundtrip() {
         assert_eq!(molt_module_state_add(module_bits, module_def_ptr), 0);
         c_api_module_on_module_teardown(_py, module_ptr);
         assert_eq!(molt_module_capi_get_def(module_bits), 0);
-        assert_eq!(molt_module_capi_get_state(module_bits), 0);
+        assert!(molt_module_capi_get_state(module_bits).is_null());
         assert_eq!(molt_module_state_find(module_def_ptr), 0);
 
         dec_ref_bits(_py, module_bits);
@@ -900,7 +1067,7 @@ fn module_capi_method_bridge_handles_supported_flags() {
                     module_bits,
                     b"meth_varargs".as_ptr(),
                     b"meth_varargs".len() as u64,
-                    c_api_test_meth_varargs as *const () as usize,
+                    Some(c_api_test_meth_varargs),
                     C_API_METH_VARARGS,
                     b"varargs".as_ptr(),
                     b"varargs".len() as u64,
@@ -910,11 +1077,11 @@ fn module_capi_method_bridge_handles_supported_flags() {
         );
         assert_eq!(
             unsafe {
-                molt_module_add_cfunction_bytes(
+                molt_module_add_cfunction_keywords_bytes(
                     module_bits,
                     b"meth_kwargs".as_ptr(),
                     b"meth_kwargs".len() as u64,
-                    c_api_test_meth_varargs_keywords as *const () as usize,
+                    Some(c_api_test_meth_varargs_keywords),
                     C_API_METH_VARARGS | C_API_METH_KEYWORDS,
                     std::ptr::null(),
                     0,
@@ -928,7 +1095,7 @@ fn module_capi_method_bridge_handles_supported_flags() {
                     module_bits,
                     b"meth_noargs".as_ptr(),
                     b"meth_noargs".len() as u64,
-                    c_api_test_meth_noargs as *const () as usize,
+                    Some(c_api_test_meth_noargs),
                     C_API_METH_NOARGS,
                     std::ptr::null(),
                     0,
@@ -942,7 +1109,7 @@ fn module_capi_method_bridge_handles_supported_flags() {
                     module_bits,
                     b"meth_o".as_ptr(),
                     b"meth_o".len() as u64,
-                    c_api_test_meth_o as *const () as usize,
+                    Some(c_api_test_meth_o),
                     C_API_METH_O,
                     std::ptr::null(),
                     0,
@@ -1042,7 +1209,7 @@ fn module_capi_method_bridge_rejects_unsupported_flags() {
                 module_bits,
                 b"bad".as_ptr(),
                 3,
-                c_api_test_meth_varargs as *const () as usize,
+                Some(c_api_test_meth_varargs),
                 C_API_METH_VARARGS | C_API_METH_O,
                 std::ptr::null(),
                 0,
@@ -1066,7 +1233,7 @@ fn c_api_method_dispatch_supports_dynamic_self_callbacks() {
                 none_bits(),
                 b"dyn_varargs".as_ptr(),
                 b"dyn_varargs".len() as u64,
-                c_api_test_dynamic_varargs as *const () as usize,
+                Some(c_api_test_dynamic_varargs),
                 C_API_METH_VARARGS,
                 std::ptr::null(),
                 0,
@@ -1077,7 +1244,7 @@ fn c_api_method_dispatch_supports_dynamic_self_callbacks() {
                 none_bits(),
                 b"dyn_noargs".as_ptr(),
                 b"dyn_noargs".len() as u64,
-                c_api_test_dynamic_noargs as *const () as usize,
+                Some(c_api_test_dynamic_noargs),
                 C_API_METH_NOARGS,
                 std::ptr::null(),
                 0,
@@ -1088,7 +1255,7 @@ fn c_api_method_dispatch_supports_dynamic_self_callbacks() {
                 none_bits(),
                 b"dyn_o".as_ptr(),
                 b"dyn_o".len() as u64,
-                c_api_test_dynamic_o as *const () as usize,
+                Some(c_api_test_dynamic_o),
                 C_API_METH_O,
                 std::ptr::null(),
                 0,
@@ -1184,7 +1351,7 @@ fn c_api_method_dispatch_supports_null_self_for_static_callbacks() {
                 0,
                 b"static_noargs".as_ptr(),
                 b"static_noargs".len() as u64,
-                c_api_test_static_noargs as *const () as usize,
+                Some(c_api_test_static_noargs),
                 C_API_METH_NOARGS,
                 std::ptr::null(),
                 0,
