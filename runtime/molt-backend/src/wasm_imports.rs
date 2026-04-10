@@ -94,6 +94,9 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("is_function_obj", 2),
     // ── INTERNAL: Call dispatch ──
     ("bridge_unavailable", 2),
+    ("capabilities_has", 2),
+    ("capabilities_require", 2),
+    ("capabilities_trusted", 0),
     ("call_arity_error", 3),
     ("call_bind", 3),
     ("call_bind_ic", 5),
@@ -442,6 +445,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("io_wait_new", 5),
     // ── STDLIB: asyncio ──
     ("async_sleep", 2),
+    ("async_sleep_new", 3),
     ("asyncgen_hooks_get", 0),
     ("asyncgen_hooks_set", 3),
     ("asyncgen_locals", 2),
@@ -1245,6 +1249,16 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("const_str", &["string_from_bytes"]),
     (
         "coroutine",
+        &[
+            "cancel_token_get_current",
+            "handle_resolve",
+            "inc_ref_obj",
+            "task_new",
+            "task_register_token_owned",
+        ],
+    ),
+    (
+        "alloc_task",
         &[
             "cancel_token_get_current",
             "handle_resolve",
