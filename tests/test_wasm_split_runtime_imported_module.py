@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+SPLIT_RUNTIME_TARGET_DIR = ROOT / "target" / "pytest" / "split_runtime_imported_module"
 
 
 def _build_split(
@@ -24,9 +25,10 @@ def _build_split(
         repo_src + os.pathsep + current_pythonpath if current_pythonpath else repo_src
     )
     env["MOLT_BACKEND_DAEMON"] = "0"
-    if cargo_target_dir is not None:
-        env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
-        env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(cargo_target_dir)
+    target_dir = cargo_target_dir or SPLIT_RUNTIME_TARGET_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(target_dir)
     if extra_env:
         env.update(extra_env)
     cmd = [
@@ -86,14 +88,11 @@ def test_split_runtime_imported_module_function_attr_survives_publication(
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    target_dir = ROOT / "target" / "pytest" / tmp_path.name
-    target_dir.mkdir(parents=True, exist_ok=True)
 
     build = _build_split(
         main_src,
         out_dir,
         extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
-        cargo_target_dir=target_dir,
     )
     assert build.returncode == 0, (
         f"split build failed (rc={build.returncode}).\n"
@@ -119,10 +118,8 @@ def test_split_runtime_import_os_exposes_open_flags(tmp_path: Path) -> None:
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    target_dir = ROOT / "target" / "pytest" / tmp_path.name
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    build = _build_split(main_src, out_dir)
     assert build.returncode == 0, (
         f"split build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
@@ -144,10 +141,8 @@ def test_split_runtime_import_builtins_direct_mode(tmp_path: Path) -> None:
     main_src.write_text("import builtins\n")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    target_dir = ROOT / "target" / "pytest" / tmp_path.name
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    build = _build_split(main_src, out_dir)
     assert build.returncode == 0, (
         f"split build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
@@ -190,10 +185,8 @@ def test_split_runtime_typing_alias_bootstrap(tmp_path: Path) -> None:
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    target_dir = ROOT / "target" / "pytest" / tmp_path.name
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    build = _build_split(main_src, out_dir)
     assert build.returncode == 0, (
         f"split build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
@@ -218,10 +211,8 @@ def test_split_runtime_import_typing_direct_mode(tmp_path: Path) -> None:
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    target_dir = ROOT / "target" / "pytest" / tmp_path.name
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    build = _build_split(main_src, out_dir)
     assert build.returncode == 0, (
         f"split build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
@@ -263,10 +254,8 @@ def test_split_runtime_branch_local_object_merge_direct_mode(tmp_path: Path) -> 
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    target_dir = ROOT / "target" / "pytest" / tmp_path.name
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    build = _build_split(main_src, out_dir)
     assert build.returncode == 0, (
         f"split build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
@@ -297,10 +286,8 @@ def test_split_runtime_annotated_staticmethod_tuple_param_direct_mode(
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    target_dir = ROOT / "target" / "pytest" / tmp_path.name
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    build = _build_split(main_src, out_dir)
     assert build.returncode == 0, (
         f"split build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
@@ -328,10 +315,8 @@ def test_split_runtime_generator_creation_direct_mode(tmp_path: Path) -> None:
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    target_dir = ROOT / "target" / "pytest" / tmp_path.name
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    build = _build_split(main_src, out_dir)
     assert build.returncode == 0, (
         f"split build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
@@ -358,10 +343,8 @@ def test_split_runtime_namedtuple_replace_direct_mode(tmp_path: Path) -> None:
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    target_dir = ROOT / "target" / "pytest" / tmp_path.name
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    build = _build_split(main_src, out_dir)
     assert build.returncode == 0, (
         f"split build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
@@ -389,10 +372,8 @@ def test_split_runtime_module_loop_dict_store_direct_mode(tmp_path: Path) -> Non
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    target_dir = ROOT / "target" / "pytest" / tmp_path.name
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    build = _build_split(main_src, out_dir)
     assert build.returncode == 0, (
         f"split build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
@@ -416,10 +397,8 @@ def test_split_runtime_direct_mode_surfaces_unhandled_exception(
     main_src.write_text("raise RuntimeError('boom')\n")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    target_dir = ROOT / "target" / "pytest" / tmp_path.name
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    build = _build_split(main_src, out_dir)
     assert build.returncode == 0, (
         f"split build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
@@ -446,10 +425,8 @@ def test_split_runtime_import_typing_then_raise_direct_mode_surfaces_exception(
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
-    target_dir = ROOT / "target" / "pytest" / tmp_path.name
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    build = _build_split(main_src, out_dir)
     assert build.returncode == 0, (
         f"split build failed (rc={build.returncode}).\n"
         f"stdout:\n{build.stdout[-2000:]}\n"
