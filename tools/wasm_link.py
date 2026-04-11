@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import os
 import re
@@ -1965,6 +1966,85 @@ def _collect_module_imports(
     return result
 
 
+def _wasm_link_build_state_root() -> Path:
+    override = os.environ.get("MOLT_BUILD_STATE_DIR", "").strip()
+    if override:
+        root = Path(override).expanduser()
+    else:
+        target_dir = os.environ.get("CARGO_TARGET_DIR", "").strip()
+        root = Path(target_dir).expanduser() if target_dir else Path("target")
+        root = root / ".molt_state"
+    if not root.is_absolute():
+        root = (Path.cwd() / root).resolve()
+    return root
+
+
+def _tree_shake_runtime_cache_root() -> Path:
+    return _wasm_link_build_state_root() / "wasm_link_cache" / "runtime_tree_shake"
+
+
+@functools.lru_cache(maxsize=1)
+def _wasm_link_source_digest() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+@functools.lru_cache(maxsize=4)
+def _wasm_opt_version(executable: str) -> str:
+    try:
+        result = subprocess.run(
+            [executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception:
+        return "unknown"
+    output = (result.stdout or result.stderr or "").strip()
+    return output or "unknown"
+
+
+def _tree_shake_runtime_cache_key(
+    *,
+    optimized_baseline: bytes,
+    normalized_required_exports: set[str],
+    wasm_opt: str,
+    feature_flags: list[str],
+) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(optimized_baseline)
+    hasher.update(b"\0exports\0")
+    for name in sorted(normalized_required_exports):
+        hasher.update(name.encode("utf-8"))
+        hasher.update(b"\0")
+    hasher.update(b"\0wasm-opt\0")
+    hasher.update(_wasm_opt_version(wasm_opt).encode("utf-8"))
+    hasher.update(b"\0flags\0")
+    for flag in feature_flags:
+        hasher.update(flag.encode("utf-8"))
+        hasher.update(b"\0")
+    hasher.update(b"\0tool\0")
+    hasher.update(_wasm_link_source_digest().encode("utf-8"))
+    return hasher.hexdigest()
+
+
+def _read_cached_tree_shaken_runtime(path: Path) -> bytes | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 8 or data[:8] != WASM_MAGIC + WASM_VERSION:
+        return None
+    return data
+
+
+def _write_cached_tree_shaken_runtime(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_bytes(data)
+    tmp_path.replace(path)
+
+
 def _tree_shake_runtime(
     runtime_data: bytes,
     required_exports: set[str],
@@ -2094,6 +2174,26 @@ def _tree_shake_runtime(
             "--disable-custom-descriptors",
         ]
 
+        cache_path = (
+            _tree_shake_runtime_cache_root()
+            / (
+                _tree_shake_runtime_cache_key(
+                    optimized_baseline=optimized_baseline,
+                    normalized_required_exports=normalized_required_exports,
+                    wasm_opt=wasm_opt,
+                    feature_flags=feature_flags,
+                )
+                + ".wasm"
+            )
+        )
+        cached = _read_cached_tree_shaken_runtime(cache_path)
+        if cached is not None:
+            print(
+                f"Runtime tree-shake cache hit: {cache_path}",
+                file=sys.stderr,
+            )
+            return cached
+
         cmd = [
             wasm_opt,
             str(input_path),
@@ -2139,6 +2239,10 @@ def _tree_shake_runtime(
         final_path.write_bytes(shaken_data)
         if _run_wasm_opt_via_optimize(final_path, level="Oz"):
             final_data = final_path.read_bytes()
+            try:
+                _write_cached_tree_shaken_runtime(cache_path, final_data)
+            except OSError:
+                pass
             print(
                 f"Runtime final optimize: {len(runtime_data):,} -> {len(final_data):,} bytes "
                 f"({len(runtime_data) - len(final_data):,} bytes eliminated, "
@@ -2146,6 +2250,10 @@ def _tree_shake_runtime(
                 file=sys.stderr,
             )
             return final_data
+        try:
+            _write_cached_tree_shaken_runtime(cache_path, shaken_data)
+        except OSError:
+            pass
         return shaken_data
 
 
