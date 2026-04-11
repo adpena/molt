@@ -4613,13 +4613,58 @@ const buildRuntimeImportWrappers = () => {
 
   const runtimeImports = {};
   const traceStrings = process.env.MOLT_WASM_TRACE_STRINGS === '1';
-  for (const [name, sig] of funcSigs) {
+  const seen = new Set();
+  for (const entry of outputImports.funcImports) {
+    if (entry.module !== 'molt_runtime' || seen.has(entry.name)) {
+      continue;
+    }
+    seen.add(entry.name);
+    const name = entry.name;
+    const sig = funcSigs.get(name);
     runtimeImports[name] = (...args) => {
-      if (!runtimeInstance) {
-        throw new Error('molt_runtime not initialized');
+      const exportName = name.startsWith('molt_') ? name : `molt_${name}`;
+      let fn = runtimeInstance ? runtimeInstance.exports[exportName] : null;
+      if (typeof fn !== 'function') {
+        if (name === 'resource_on_allocate') {
+          fn = () => 0;
+        } else if (name === 'resource_on_free') {
+          fn = () => {};
+        } else if (!runtimeInstance) {
+          throw new Error(`molt_runtime not initialized (${name})`);
+        } else {
+          const callBindIc = runtimeInstance.exports.molt_call_bind_ic;
+          const callargsNew = runtimeInstance.exports.molt_callargs_new;
+          const callargsPushPos = runtimeInstance.exports.molt_callargs_push_pos;
+          const dictSet = runtimeInstance.exports.molt_dict_set;
+          const dictGetitemBorrowed = runtimeInstance.exports.molt_dict_getitem_borrowed;
+          const tupleGetitemBorrowed = runtimeInstance.exports.molt_tuple_getitem_borrowed;
+          const makeCallBindFallback = (arity) => {
+            if (typeof callBindIc !== 'function' || typeof callargsNew !== 'function' || typeof callargsPushPos !== 'function') {
+              return null;
+            }
+            return (methodBits, ...argBits) => {
+              const builderBits = callargsNew(boxInt(arity), boxInt(0));
+              for (const argBitsValue of argBits) {
+                callargsPushPos(builderBits, argBitsValue);
+              }
+              return callBindIc(boxInt(0), methodBits, builderBits);
+            };
+          };
+          if (name === 'fast_list_append') {
+            fn = makeCallBindFallback(1);
+          } else if (name === 'fast_str_join') {
+            fn = makeCallBindFallback(1);
+          } else if (name === 'fast_dict_get') {
+            fn = makeCallBindFallback(2);
+          } else if (name === 'dict_setitem') {
+            fn = typeof dictSet === 'function' ? dictSet : null;
+          } else if (name === 'dict_getitem') {
+            fn = typeof dictGetitemBorrowed === 'function' ? dictGetitemBorrowed : null;
+          } else if (name === 'tuple_getitem') {
+            fn = typeof tupleGetitemBorrowed === 'function' ? tupleGetitemBorrowed : null;
+          }
+        }
       }
-      const exportName = `molt_${name}`;
-      const fn = runtimeInstance.exports[exportName];
       if (typeof fn !== 'function') {
         throw new Error(`molt_runtime.${name} missing export ${exportName}`);
       }
@@ -4958,6 +5003,22 @@ const runDirectLink = async () => {
   }
 
   if (traceRun) {
+    console.error('[molt wasm] direct: instantiate output');
+  }
+  const outputImportsDirect = buildRuntimeImportWrappers();
+  const outputModule = await WebAssembly.instantiate(wasmBuffer, {
+    molt_runtime: outputImportsDirect,
+    env: {
+      ...env,
+      memory,
+      __indirect_function_table: table,
+    },
+  });
+  outputInstance = outputModule.instance;
+  if (traceRun) {
+    console.error('[molt wasm] direct: output instantiated');
+  }
+  if (traceRun) {
     console.error('[molt wasm] direct: instantiate runtime');
   }
   const runtimeModule = await WebAssembly.instantiate(runtimeBuffer, {
@@ -4981,24 +5042,6 @@ const runDirectLink = async () => {
   traceTableSlot(table, 'after-runtime-instantiate');
   traceTableRange(table, 'after-runtime-instantiate');
   const runtimeTableSnapshot = snapshotTableEntries(table);
-  const outputImportsDirect = traceImports
-    ? buildRuntimeImportWrappers()
-    : buildRuntimeImportDirect(runtimeInst);
-  if (traceRun) {
-    console.error('[molt wasm] direct: instantiate output');
-  }
-  const outputModule = await WebAssembly.instantiate(wasmBuffer, {
-    molt_runtime: outputImportsDirect,
-    env: {
-      ...env,
-      memory,
-      __indirect_function_table: table,
-    },
-  });
-  outputInstance = outputModule.instance;
-  if (traceRun) {
-    console.error('[molt wasm] direct: output instantiated');
-  }
   traceTableDiff(runtimeTableSnapshot, table, 'after-output-instantiate');
   traceTableRange(table, 'after-output-instantiate');
 
