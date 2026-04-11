@@ -5187,9 +5187,9 @@ const runLinked = async () => {
     (importObject.env && importObject.env.__indirect_function_table) ||
     null;
   ensureTableCapacityForExportedRefs(linkedModule.instance, linkedTable, 'linked');
-  if (typeof molt_table_init === 'function') {
-    molt_table_init();
-  }
+  // Fully linked artifacts already carry finalized active element segments.
+  // Re-running molt_table_init here replays split/direct startup semantics
+  // against a post-link table layout and corrupts linked startup.
   // Linked artifacts can still carry table-relocation edge cases on some wasm-ld
   // versions. Opt-in reinstall helps debug signature-mismatch traps.
   if (installTableRefsEnabled) {

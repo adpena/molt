@@ -152,6 +152,29 @@ class TestWasmOptReduction:
         assert not result["ok"]
         assert "Invalid" in str(result["error"])
 
+    def test_optimize_can_disable_converge_flag(self, tmp_path: Path, monkeypatch) -> None:
+        dummy = tmp_path / "dummy.wasm"
+        dummy.write_bytes(b"\x00asm\x01\x00\x00\x00")
+        output = tmp_path / "out.wasm"
+
+        import tools.wasm_optimize as mod
+
+        monkeypatch.setattr(mod, "find_wasm_opt", lambda: "/usr/bin/wasm-opt")
+        recorded: dict[str, object] = {}
+
+        def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
+            recorded["cmd"] = list(cmd)
+            output.write_bytes(dummy.read_bytes())
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        result = mod.optimize(dummy, output_path=output, level="Oz", converge=False)
+
+        assert result["ok"]
+        cmd = recorded["cmd"]
+        assert "--converge" not in cmd
+        assert "-Oz" in cmd
+
 
 # ---------------------------------------------------------------------------
 # Tests: optimised module correctness

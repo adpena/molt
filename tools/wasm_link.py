@@ -4085,7 +4085,9 @@ _LEVEL_PASSES: dict[str, list[str]] = {
 }
 
 
-def _run_wasm_opt_via_optimize(linked: Path, level: str = "Oz") -> bool:
+def _run_wasm_opt_via_optimize(
+    linked: Path, level: str = "Oz", *, converge: bool = True
+) -> bool:
     """Run wasm-opt on the linked binary via tools/wasm_optimize.py.
 
     Returns True if optimization ran successfully.
@@ -4113,7 +4115,11 @@ def _run_wasm_opt_via_optimize(linked: Path, level: str = "Oz") -> bool:
     pre_size = linked.stat().st_size
     temp_output = linked.with_suffix(".opt.wasm")
     result = mod.optimize(
-        linked, output_path=temp_output, level=level, extra_passes=extra_passes,
+        linked,
+        output_path=temp_output,
+        level=level,
+        extra_passes=extra_passes,
+        converge=converge,
     )
 
     if not result["ok"]:
@@ -4389,7 +4395,7 @@ def _run_wasm_ld(
             linked.write_bytes(linked_bytes)
 
         if optimize:
-            if _run_wasm_opt_via_optimize(linked, level=optimize_level):
+            if _run_wasm_opt_via_optimize(linked, level=optimize_level, converge=False):
                 # Re-read after optimization since the file changed on disk
                 linked_bytes = linked.read_bytes()
 
