@@ -228,14 +228,37 @@ def test_generate_split_worker_prefers_live_shared_table_for_call_indirect() -> 
 
     assert "const indirectName = `molt_call_indirect${arity}`;" in content
     assert "const idx = Number(fnIndex);" in content
-    assert "const tableFn = sharedTable.get(idx);" in content
+    assert "const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);" in content
+    assert "const tableFn = sharedTable.get(dispatchIdx);" in content
     assert 'if (typeof tableFn === "function") {' in content
-    assert "return normalizeI64Result(tableFn(...args));" in content
+    assert "return tableFn(...args);" in content
     assert "const indirectFn = appInstance?.exports?.[indirectName];" in content
-    assert "return normalizeI64Result(indirectFn(fnIndex, ...args));" in content
-    assert "const directName = `__molt_table_ref_${idx}`;" in content
+    assert "return indirectFn(fnIndex, ...args);" in content
+    assert "const directName = `__molt_table_ref_${dispatchIdx}`;" in content
     assert "const rtDirectFn = rtInstance?.exports?.[directName];" in content
-    assert "return callWithSignature(" in content
+    assert "return rtDirectFn(...args);" in content
+
+
+def test_generate_split_worker_remaps_legacy_reserved_runtime_slots() -> None:
+    from molt.cli import _generate_split_worker_js
+
+    content = _generate_split_worker_js(
+        shared_memory_initial_pages=8,
+        shared_table_initial=16,
+        shared_table_base=4130,
+        app_table_ref_signatures={"__molt_table_ref_4189": {"params": ["i64"], "result": "i64"}},
+        runtime_table_ref_signatures={"__molt_table_ref_315": {"params": ["i32"], "result": "i32"}},
+    )
+
+    assert "const LEGACY_WASM_TABLE_BASE = 256;" in content
+    assert "const RESERVED_RUNTIME_CALLABLE_BASE = 33;" in content
+    assert "const RESERVED_RUNTIME_SHARED_PREFIX_LEN = 77;" in content
+    assert "const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);" in content
+    assert "idx >= LEGACY_WASM_TABLE_BASE + RESERVED_RUNTIME_CALLABLE_BASE" in content
+    assert "idx < LEGACY_WASM_TABLE_BASE + RESERVED_RUNTIME_SHARED_PREFIX_LEN" in content
+    assert "return idx - LEGACY_WASM_TABLE_BASE + 4130;" in content
+    assert "const directName = `__molt_table_ref_${dispatchIdx}`;" in content
+    assert "const tableFn = sharedTable.get(dispatchIdx);" in content
 
 
 def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface() -> None:
@@ -265,7 +288,7 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     assert 'const runtimeTableRefSignatures = {"__molt_table_ref_2": {"params": ["i32"], "result": "i32"}};' in content
     assert 'const resultKind = runtimeImportResultKinds[entry.name] || null;' in content
     assert "const signature = runtimeImportSignatures[entry.name] || null;" in content
-    assert "? signature.params.map((kind, index) => normalizeValueForKind(args[index], kind))" in content
+    assert "? args.map((value, index) => normalizeValueForKind(value, signature.params[index] || null))" in content
     assert "return normalizeImportResult(out, resultKind);" in content
     assert "const callWithSignature = (fn, signature, args) => {" in content
     assert "return normalizeI64Result(appInstance.exports.molt_isolate_import(...args));" in content
