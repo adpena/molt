@@ -4,7 +4,7 @@ use crate::object::ops::string_obj_to_owned;
 use crate::{
     CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
     HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, PyToken, TYPE_ID_FUNCTION, TYPE_ID_TUPLE,
-    ensure_function_code_bits, exception_pending, frame_stack_pop, frame_stack_push, inc_ref_bits,
+    ensure_function_code_bits, exception_pending, frame_stack_pop, frame_stack_push,
     function_arity, function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
     function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy,
     molt_exception_clear, obj_from_bits, object_type_id, profile_hit, raise_exception,
@@ -15,6 +15,7 @@ use crate::{
 use crate::MoltObject;
 #[cfg(target_arch = "wasm32")]
 use crate::{
+    inc_ref_bits,
     molt_call_indirect0, molt_call_indirect1, molt_call_indirect2, molt_call_indirect3,
     molt_call_indirect4, molt_call_indirect5, molt_call_indirect6, molt_call_indirect7,
     molt_call_indirect8, molt_call_indirect9, molt_call_indirect10, molt_call_indirect11,
@@ -45,10 +46,13 @@ fn fixed_arity_call_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
         let direct_target = wasm_direct_call_table_idx(fn_ptr);
-        select_wasm_fixed_arity_call_target(direct_target, tramp_ptr)
+        let normalized_tramp =
+            crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, tramp_ptr);
+        select_wasm_fixed_arity_call_target(direct_target, normalized_tramp)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let _ = tramp_ptr;
         fn_ptr
     }
 }
@@ -58,8 +62,10 @@ fn fixed_arity_call_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
 fn fixed_arity_trampoline_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        if tramp_ptr != 0 {
-            return tramp_ptr;
+        let normalized_tramp =
+            crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, tramp_ptr);
+        if normalized_tramp != 0 {
+            return normalized_tramp;
         }
         wasm_direct_call_table_idx(fn_ptr)
     }
@@ -73,7 +79,25 @@ fn fixed_arity_trampoline_target_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
 #[inline]
 fn can_use_fixed_arity_wasm_trampoline(fn_ptr: u64, tramp_ptr: u64) -> bool {
     let direct = crate::builtins::functions::normalize_runtime_callable_ptr(fn_ptr);
-    u32::try_from(direct).is_ok() && u32::try_from(tramp_ptr).is_ok()
+    let normalized_tramp =
+        crate::builtins::functions::normalize_runtime_trampoline_ptr(fn_ptr, tramp_ptr);
+    u32::try_from(direct).is_ok() && u32::try_from(normalized_tramp).is_ok()
+}
+
+#[inline]
+unsafe fn normalized_function_trampoline_ptr(func_ptr: *mut u8, fn_ptr: u64) -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::builtins::functions::normalize_runtime_trampoline_ptr(
+            fn_ptr,
+            unsafe { function_trampoline_ptr(func_ptr) },
+        )
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = fn_ptr;
+        unsafe { function_trampoline_ptr(func_ptr) }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -169,43 +193,39 @@ fn assert_no_pending_on_success_enabled() -> bool {
 }
 
 unsafe fn enforce_no_pending_on_success(_py: &PyToken<'_>, result: u64, context: &str) -> u64 {
-    unsafe {
-        if !assert_no_pending_on_success_enabled() || !exception_pending(_py) {
-            return result;
-        }
-        let _ = molt_exception_clear();
-        eprintln!("pending exception on success path: {context} result=0x{result:x}");
-        std::process::abort();
+    if !assert_no_pending_on_success_enabled() || !exception_pending(_py) {
+        return result;
     }
+    let _ = molt_exception_clear();
+    eprintln!("pending exception on success path: {context} result=0x{result:x}");
+    std::process::abort();
 }
 
 unsafe fn trace_function_vec_call(_py: &PyToken<'_>, func_ptr: *mut u8, args: &[u64], lane: &str) {
-    unsafe {
-        if !trace_call_vec_enabled() {
-            return;
-        }
-        let name_bits = function_name_bits(_py, func_ptr);
-        let name = if name_bits != 0 {
-            string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<unnamed>".to_string())
-        } else {
-            "<unnamed>".to_string()
-        };
-        let fn_ptr = function_fn_ptr(func_ptr);
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
-        let arity = function_arity(func_ptr);
+    if !trace_call_vec_enabled() {
+        return;
+    }
+    let name_bits = unsafe { function_name_bits(_py, func_ptr) };
+    let name = if name_bits != 0 {
+        string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<unnamed>".to_string())
+    } else {
+        "<unnamed>".to_string()
+    };
+    let fn_ptr = unsafe { function_fn_ptr(func_ptr) };
+    let tramp_ptr = unsafe { normalized_function_trampoline_ptr(func_ptr, fn_ptr) };
+    let closure_bits = unsafe { function_closure_bits(func_ptr) };
+    let arity = unsafe { function_arity(func_ptr) };
+    eprintln!(
+        "[molt call_function_vec] lane={lane} name={name} fn_ptr=0x{fn_ptr:x} tramp_ptr=0x{tramp_ptr:x} closure_bits=0x{closure_bits:x} arity={arity} argc={}",
+        args.len()
+    );
+    for (idx, &arg_bits) in args.iter().enumerate() {
+        let arg_obj = obj_from_bits(arg_bits);
         eprintln!(
-            "[molt call_function_vec] lane={lane} name={name} fn_ptr=0x{fn_ptr:x} tramp_ptr=0x{tramp_ptr:x} closure_bits=0x{closure_bits:x} arity={arity} argc={}",
-            args.len()
+            "  arg[{idx}] type={} bits=0x{:x}",
+            crate::type_name(_py, arg_obj),
+            arg_bits
         );
-        for (idx, &arg_bits) in args.iter().enumerate() {
-            let arg_obj = obj_from_bits(arg_bits);
-            eprintln!(
-                "  arg[{idx}] type={} bits=0x{:x}",
-                crate::type_name(_py, arg_obj),
-                arg_bits
-            );
-        }
     }
 }
 
@@ -296,7 +316,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         #[cfg(target_arch = "wasm32")]
         if matches!(
             std::env::var("MOLT_TRACE_CALL_FUNCTION_OBJ1")
@@ -501,7 +521,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -657,7 +677,7 @@ pub(crate) unsafe fn call_function_obj2(
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -767,7 +787,7 @@ pub(crate) unsafe fn call_function_obj3(
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -871,7 +891,7 @@ pub(crate) unsafe fn call_function_obj4(
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -978,7 +998,7 @@ unsafe fn call_function_obj5(
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -1105,7 +1125,7 @@ unsafe fn call_function_obj6(
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -1237,7 +1257,7 @@ unsafe fn call_function_obj7(
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -1373,7 +1393,7 @@ unsafe fn call_function_obj8(
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -1516,7 +1536,7 @@ unsafe fn call_function_obj9(
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -1674,7 +1694,7 @@ unsafe fn call_function_obj10(
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -1859,7 +1879,7 @@ unsafe fn call_function_obj11(
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
@@ -2063,7 +2083,7 @@ unsafe fn call_function_obj12(
         let fn_ptr = function_fn_ptr(func_ptr);
         let closure_bits = function_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
-        let tramp_ptr = function_trampoline_ptr(func_ptr);
+        let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         let code_bits = ensure_function_code_bits(_py, func_ptr);
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
