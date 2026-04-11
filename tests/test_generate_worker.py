@@ -273,6 +273,22 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
     assert "const runtimeAbiExports = (exports) => {" not in content
 
 
+def test_effective_split_worker_table_base_prefers_app_inferred_base() -> None:
+    from molt.cli import _effective_split_worker_table_base
+
+    assert (
+        _effective_split_worker_table_base(
+            wasm_table_base=None,
+            runtime_table_min=315,
+            app_table_ref_signatures={
+                "__molt_table_ref_4130": {"params": ["i64"], "result": "i64"},
+                "__molt_table_ref_4189": {"params": ["i64"], "result": "i64"},
+            },
+        )
+        == 4130
+    )
+
+
 def test_wasm_import_function_result_kinds_parses_objdump_output(
     monkeypatch, tmp_path
 ) -> None:
