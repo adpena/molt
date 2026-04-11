@@ -35,6 +35,8 @@ def _build_split(
         "molt.cli",
         "build",
         str(source_file),
+        "--build-profile",
+        "dev",
         "--target",
         "wasm",
         "--split-runtime",
