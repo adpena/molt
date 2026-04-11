@@ -417,7 +417,7 @@ wheels = [
 [[package]]
 name = "molt"
 version = "0.0.1"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "packaging" },
