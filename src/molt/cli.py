@@ -17490,6 +17490,7 @@ def _execute_backend_compile(
                         cmd_with_output,
                         env=backend_env,
                         timeout=backend_timeout,
+                        progress_label=None if json_output else "Backend compilation",
                     )
                 else:
                     backend_process = _run_subprocess_captured_to_tempfiles(
@@ -17497,6 +17498,7 @@ def _execute_backend_compile(
                         input=ir_bytes,
                         env=backend_env,
                         timeout=backend_timeout,
+                        progress_label=None if json_output else "Backend compilation",
                     )
             except subprocess.TimeoutExpired:
                 return None, _fail(
@@ -21642,13 +21644,6 @@ def _ensure_runtime_lib(
             + sorted(builtin_features)
             + ["stdlib_micro", "no-default-features"]
         )
-    required_exports_feature = _required_runtime_exports_fingerprint_feature(
-        required_exports
-    )
-    if required_exports_feature is not None:
-        fingerprint_features = tuple(
-            list(fingerprint_features) + [required_exports_feature]
-        )
     # Session-level short-circuit: once we have verified (and possibly built)
     # the runtime for the exact fingerprint-driving feature set, do not repeat
     # the fingerprint/stat dance in this process.
@@ -21914,6 +21909,7 @@ def _run_runtime_wasm_cargo_build(
         cwd=root,
         env=build_env,
         timeout=cargo_timeout,
+        progress_label=None if json_output else "Runtime wasm build",
     )
     build = subprocess.CompletedProcess(
         build_raw.args,
@@ -21935,6 +21931,7 @@ def _run_runtime_wasm_cargo_build(
             cwd=root,
             env=retry_env,
             timeout=cargo_timeout,
+            progress_label=None if json_output else "Runtime wasm build",
         )
         build = subprocess.CompletedProcess(
             build_raw.args,
@@ -23956,27 +23953,80 @@ def _run_subprocess_captured_to_tempfiles(
     cwd: str | os.PathLike[str] | None = None,
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
+    progress_label: str | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a subprocess while capturing stdout/stderr via temporary files.
 
     This avoids pipe-inheritance hangs from descendants that keep stdout/stderr
     open after the direct child has already exited.
     """
+
+    def _keepalive_interval_secs() -> float | None:
+        raw = os.environ.get("MOLT_SUBPROCESS_KEEPALIVE_SECS", "20").strip()
+        if raw in {"", "0", "off", "false"}:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            return 20.0
+        return value if value > 0 else None
+
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             list(cmd),
-            input=input,
             stdout=stdout_file,
             stderr=stderr_file,
             cwd=cwd,
             env=dict(env) if env is not None else None,
-            timeout=timeout,
+            stdin=subprocess.PIPE if input is not None else None,
         )
+        if input is not None and proc.stdin is not None:
+            proc.stdin.write(input)
+            proc.stdin.close()
+        keepalive_interval = (
+            _keepalive_interval_secs() if progress_label is not None else None
+        )
+        started = time.monotonic()
+        next_keepalive = (
+            started + keepalive_interval if keepalive_interval is not None else None
+        )
+        while True:
+            now = time.monotonic()
+            remaining = None if timeout is None else timeout - (now - started)
+            if remaining is not None and remaining <= 0:
+                proc.kill()
+                proc.wait()
+                raise subprocess.TimeoutExpired(list(cmd), timeout)
+            wait_timeout = remaining
+            if next_keepalive is not None:
+                keepalive_wait = max(0.0, next_keepalive - now)
+                wait_timeout = (
+                    keepalive_wait
+                    if wait_timeout is None
+                    else min(wait_timeout, keepalive_wait)
+                )
+            try:
+                returncode = proc.wait(timeout=wait_timeout)
+                break
+            except subprocess.TimeoutExpired:
+                now = time.monotonic()
+                if next_keepalive is not None and now >= next_keepalive:
+                    elapsed = now - started
+                    print(
+                        f"{progress_label} still running... ({elapsed:.0f}s)",
+                        file=sys.stderr,
+                    )
+                    next_keepalive = now + keepalive_interval
+                    continue
+                if timeout is not None and now - started >= timeout:
+                    proc.kill()
+                    proc.wait()
+                    raise subprocess.TimeoutExpired(list(cmd), timeout)
         stdout_file.seek(0)
         stderr_file.seek(0)
         stdout = stdout_file.read()
         stderr = stderr_file.read()
-    return subprocess.CompletedProcess(result.args, result.returncode, stdout, stderr)
+    return subprocess.CompletedProcess(list(cmd), returncode, stdout, stderr)
 
 
 def _function_cache_key(
