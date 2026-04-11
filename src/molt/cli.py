@@ -17159,15 +17159,25 @@ def _prepare_backend_dispatch(
             split_runtime
             and "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN" not in backend_env
         ):
-            if runtime_wasm is None or not runtime_wasm.exists():
+            split_runtime_table_probe = runtime_wasm
+            if split_runtime_table_probe is None or not split_runtime_table_probe.exists():
+                split_runtime_table_probe = layout_probe_path
+            if (
+                split_runtime_table_probe is None
+                or not split_runtime_table_probe.exists()
+            ):
                 if not ensure_runtime_wasm_shared():
                     return None, _fail(
                         "Runtime wasm build failed",
                         json_output,
                         command="build",
                     )
-            if runtime_wasm is not None and runtime_wasm.exists():
-                runtime_table_min = _read_wasm_table_min(runtime_wasm)
+                split_runtime_table_probe = runtime_wasm
+            if (
+                split_runtime_table_probe is not None
+                and split_runtime_table_probe.exists()
+            ):
+                runtime_table_min = _read_wasm_table_min(split_runtime_table_probe)
                 if runtime_table_min is not None:
                     backend_env["MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN"] = str(
                         runtime_table_min
