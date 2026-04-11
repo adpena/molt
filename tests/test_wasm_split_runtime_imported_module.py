@@ -79,7 +79,8 @@ def test_split_runtime_imported_module_function_attr_survives_publication(
     main_src = tmp_path / "probe_main.py"
     main_src.write_text(
         "import probe_mod\n"
-        "print(probe_mod.foo)\n"
+        "print(callable(probe_mod.foo))\n"
+        "print(probe_mod.foo())\n"
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -104,7 +105,7 @@ def test_split_runtime_imported_module_function_attr_survives_publication(
         f"stdout:\n{run.stdout[-2000:]}\n"
         f"stderr:\n{run.stderr[-2000:]}"
     )
-    assert run.stdout == "<function>\n"
+    assert run.stdout == "True\n7\n"
 
 
 @pytest.mark.slow
@@ -277,6 +278,101 @@ def test_split_runtime_branch_local_object_merge_direct_mode(tmp_path: Path) -> 
         f"stderr:\n{run.stderr[-2000:]}"
     )
     assert run.stdout == "(3, 12, 0, 'final', 0)\n"
+
+
+@pytest.mark.slow
+def test_split_runtime_annotated_staticmethod_tuple_param_direct_mode(
+    tmp_path: Path,
+) -> None:
+    main_src = tmp_path / "probe_main.py"
+    main_src.write_text(
+        "class C:\n"
+        "    @staticmethod\n"
+        "    def m(values: tuple[int, ...]):\n"
+        "        return len(values)\n"
+        "\n"
+        "print(C.m((1, 2, 3)))\n"
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    target_dir = ROOT / "target" / "pytest" / tmp_path.name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    assert build.returncode == 0, (
+        f"split build failed (rc={build.returncode}).\n"
+        f"stdout:\n{build.stdout[-2000:]}\n"
+        f"stderr:\n{build.stderr[-2000:]}"
+    )
+
+    run = _run_split_direct(out_dir)
+    assert run.returncode == 0, (
+        f"direct-link run failed (rc={run.returncode}).\n"
+        f"stdout:\n{run.stdout[-2000:]}\n"
+        f"stderr:\n{run.stderr[-2000:]}"
+    )
+    assert run.stdout == "3\n"
+
+
+@pytest.mark.slow
+def test_split_runtime_generator_creation_direct_mode(tmp_path: Path) -> None:
+    main_src = tmp_path / "probe_main.py"
+    main_src.write_text(
+        "def _f():\n"
+        "    yield\n"
+        "\n"
+        "_g = _f()\n"
+        "print(type(_g))\n"
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    target_dir = ROOT / "target" / "pytest" / tmp_path.name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    assert build.returncode == 0, (
+        f"split build failed (rc={build.returncode}).\n"
+        f"stdout:\n{build.stdout[-2000:]}\n"
+        f"stderr:\n{build.stderr[-2000:]}"
+    )
+
+    run = _run_split_direct(out_dir)
+    assert run.returncode == 0, (
+        f"direct-link run failed (rc={run.returncode}).\n"
+        f"stdout:\n{run.stdout[-2000:]}\n"
+        f"stderr:\n{run.stderr[-2000:]}"
+    )
+    assert run.stdout == "<class 'generator'>\n"
+
+
+@pytest.mark.slow
+def test_split_runtime_namedtuple_replace_direct_mode(tmp_path: Path) -> None:
+    main_src = tmp_path / "probe_main.py"
+    main_src.write_text(
+        "from collections import namedtuple\n"
+        "\n"
+        "T = namedtuple('T', ['a', 'b'])\n"
+        "print(T(1, 2)._replace(a=3))\n"
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    target_dir = ROOT / "target" / "pytest" / tmp_path.name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    build = _build_split(main_src, out_dir, cargo_target_dir=target_dir)
+    assert build.returncode == 0, (
+        f"split build failed (rc={build.returncode}).\n"
+        f"stdout:\n{build.stdout[-2000:]}\n"
+        f"stderr:\n{build.stderr[-2000:]}"
+    )
+
+    run = _run_split_direct(out_dir)
+    assert run.returncode == 0, (
+        f"direct-link run failed (rc={run.returncode}).\n"
+        f"stdout:\n{run.stdout[-2000:]}\n"
+        f"stderr:\n{run.stderr[-2000:]}"
+    )
+    assert run.stdout == "T(a=3, b=2)\n"
 
 
 @pytest.mark.slow
