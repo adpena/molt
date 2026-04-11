@@ -22900,31 +22900,24 @@ def _ensure_runtime_wasm(
         if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         target_label = "wasm32-wasip1"
-        canonical_target_root = _canonical_target_root(root)
-        canonical_build_state_root = _canonical_build_state_root(root)
-        if reloc:
-            canonical_runtime_wasm = _runtime_wasm_artifact_path(
-                root,
-                runtime_wasm.name,
-            )
-        else:
-            canonical_runtime_wasm = _resolve_built_runtime_wasm_artifact(
-                canonical_target_root,
-                profile_dir,
-            )
-        canonical_fingerprint_path = _artifact_state_path_for_build_state_root(
-            canonical_build_state_root,
-            canonical_runtime_wasm,
+        target_build_state_root = _build_state_root(root)
+        target_runtime_wasm = _resolve_built_runtime_wasm_artifact(
+            target_root,
+            profile_dir,
+        )
+        target_runtime_wasm_fingerprint_path = _artifact_state_path_for_build_state_root(
+            target_build_state_root,
+            target_runtime_wasm,
             subdir="runtime_fingerprints",
             stem_suffix=f"{cargo_profile}.{target_label}",
             extension="fingerprint",
         )
-        if _maybe_hydrate_artifact_from_canonical_target(
+        if not reloc and _maybe_hydrate_artifact_from_canonical_target(
             artifact=runtime_wasm,
             fingerprint=fingerprint,
             fingerprint_path=fingerprint_path,
-            candidate_artifact=canonical_runtime_wasm,
-            candidate_fingerprint_path=canonical_fingerprint_path,
+            candidate_artifact=target_runtime_wasm,
+            candidate_fingerprint_path=target_runtime_wasm_fingerprint_path,
         ):
             if _inspect_wasm_binary(runtime_wasm) != "valid":
                 if not json_output:
@@ -22949,6 +22942,48 @@ def _ensure_runtime_wasm(
                         file=sys.stderr,
                     )
                 return False
+            return True
+        target_runtime_staticlib = _wasm_runtime_staticlib_path(target_root, profile_dir)
+        target_runtime_staticlib_fingerprint_path = (
+            _artifact_state_path_for_build_state_root(
+                target_build_state_root,
+                target_runtime_staticlib,
+                subdir="runtime_fingerprints",
+                stem_suffix=f"{cargo_profile}.{target_label}",
+                extension="fingerprint",
+            )
+        )
+        if reloc and not _artifact_needs_rebuild(
+            target_runtime_staticlib,
+            fingerprint,
+            _read_runtime_fingerprint(target_runtime_staticlib_fingerprint_path),
+        ):
+            if not _link_runtime_staticlib_to_reloc_wasm(
+                staticlib_path=target_runtime_staticlib,
+                output_path=runtime_wasm,
+                json_output=json_output,
+                link_timeout=cargo_timeout,
+            ):
+                return False
+            try:
+                _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+            except OSError:
+                if not json_output:
+                    print(
+                        "Failed to update runtime wasm integrity sidecar.",
+                        file=sys.stderr,
+                    )
+                return False
+            if fingerprint is not None:
+                try:
+                    fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                    _write_runtime_fingerprint(fingerprint_path, fingerprint)
+                except OSError:
+                    if not json_output:
+                        print(
+                            "Warning: failed to write runtime fingerprint metadata.",
+                            file=sys.stderr,
+                        )
             return True
         needs_rebuild = _artifact_needs_rebuild(
             runtime_wasm, fingerprint, stored_fingerprint
@@ -23122,8 +23157,17 @@ def _ensure_runtime_wasm(
                         file=sys.stderr,
                     )
                 return False
-            fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-            _write_runtime_fingerprint(fingerprint_path, fingerprint)
+            if fingerprint is not None:
+                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(fingerprint_path, fingerprint)
+                target_runtime_staticlib_fingerprint_path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+                _write_runtime_fingerprint(
+                    target_runtime_staticlib_fingerprint_path,
+                    fingerprint,
+                )
             return True
         src_state = _inspect_wasm_binary(src)
         if src_state == "missing":
@@ -23280,6 +23324,14 @@ def _ensure_runtime_wasm(
             return False
         if fingerprint is not None:
             try:
+                target_runtime_wasm_fingerprint_path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+                _write_runtime_fingerprint(
+                    target_runtime_wasm_fingerprint_path,
+                    fingerprint,
+                )
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
                 _write_runtime_fingerprint(fingerprint_path, fingerprint)
             except OSError:
