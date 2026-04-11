@@ -176,12 +176,12 @@ def wasm_runtime_export_link_args(
 ) -> str:
     if required_runtime_imports is None:
         export_names = {f"molt_{name}" for name in wasm_runtime_import_names()}
+        export_names.update(
+            canonical_intrinsic_runtime_name(name)
+            for name in _resolved_stdlib_intrinsic_exports(resolved_modules)
+        )
     else:
         export_names = set(wasm_runtime_required_export_names(required_runtime_imports))
-    export_names.update(
-        canonical_intrinsic_runtime_name(name)
-        for name in _resolved_stdlib_intrinsic_exports(resolved_modules)
-    )
     return "".join(
         f" -C link-arg=--export-if-defined={name}"
         for name in sorted(export_names)
