@@ -14,6 +14,36 @@ NATIVE_BOOTSTRAP_SESSION_ID = "pytest-native-bootstrap"
 NATIVE_BUILD_TIMEOUT_SECS = 600
 
 
+def _native_bootstrap_target_dirs(env: dict[str, str]) -> tuple[Path, Path]:
+    default_target_dir = ROOT / "target"
+    raw_target = env.get("CARGO_TARGET_DIR", "").strip()
+    target_dir = Path(raw_target).expanduser() if raw_target else default_target_dir
+    raw_diff_target = env.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
+    diff_target_dir = (
+        Path(raw_diff_target).expanduser() if raw_diff_target else target_dir
+    )
+    return target_dir, diff_target_dir
+
+
+def test_native_bootstrap_target_dir_respects_explicit_env_override() -> None:
+    env = {
+        "CARGO_TARGET_DIR": "/tmp/molt-native-target",
+        "MOLT_DIFF_CARGO_TARGET_DIR": "/tmp/molt-native-diff-target",
+    }
+
+    target_dir, diff_target_dir = _native_bootstrap_target_dirs(env)
+
+    assert target_dir == Path("/tmp/molt-native-target")
+    assert diff_target_dir == Path("/tmp/molt-native-diff-target")
+
+
+def test_native_bootstrap_target_dir_defaults_to_repo_target() -> None:
+    target_dir, diff_target_dir = _native_bootstrap_target_dirs({})
+
+    assert target_dir == ROOT / "target"
+    assert diff_target_dir == target_dir
+
+
 def _build_and_run(tmp_path: Path, source: str, name: str) -> subprocess.CompletedProcess[str]:
     return _build_and_run_with_env(
         tmp_path,
@@ -21,6 +51,7 @@ def _build_and_run(tmp_path: Path, source: str, name: str) -> subprocess.Complet
         name,
         session_id=NATIVE_BOOTSTRAP_SESSION_ID,
         cache_dir=ROOT / ".molt_cache",
+        backend="cranelift",
     )
 
 
@@ -31,22 +62,37 @@ def _build_and_run_with_env(
     *,
     session_id: str,
     cache_dir: Path,
+    backend: str,
+    source_relpath: str | None = None,
+    extra_files: dict[str, str] | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    src_path = tmp_path / f"{name}.py"
+    src_path = tmp_path / source_relpath if source_relpath is not None else tmp_path / f"{name}.py"
     out_path = tmp_path / name
+    src_path.parent.mkdir(parents=True, exist_ok=True)
+    if extra_files:
+        for rel_path, contents in extra_files.items():
+            path = tmp_path / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(contents)
     src_path.write_text(source)
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(SRC_DIR)
     env["MOLT_SESSION_ID"] = session_id
-    env["CARGO_TARGET_DIR"] = str(ROOT / "target")
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
+    target_dir, diff_target_dir = _native_bootstrap_target_dirs(env)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    diff_target_dir.mkdir(parents=True, exist_ok=True)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
     env["MOLT_CACHE"] = str(cache_dir)
     env["MOLT_DIFF_ROOT"] = str(ROOT / "tmp" / "diff")
     env["MOLT_DIFF_TMPDIR"] = str(ROOT / "tmp")
     env["UV_CACHE_DIR"] = str(ROOT / ".uv-cache")
     env["TMPDIR"] = str(ROOT / "tmp")
     env["MOLT_BACKEND_DAEMON"] = "0"
+    if extra_env:
+        env.update(extra_env)
 
     build = subprocess.run(
         [
@@ -59,6 +105,8 @@ def _build_and_run_with_env(
             "native",
             "--build-profile",
             "dev",
+            "--backend",
+            backend,
             "--output",
             str(out_path),
         ],
@@ -98,6 +146,52 @@ def _write_safetensors_fixture(path: Path, *, count: int) -> None:
         offset += len(raw)
     header_json = json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8")
     path.write_bytes(struct.pack("<Q", len(header_json)) + header_json + payload)
+
+
+def _build_and_run_package_bootstrap(
+    tmp_path: Path,
+    source: str,
+    name: str,
+    *,
+    cache_suffix: str,
+) -> subprocess.CompletedProcess[str]:
+    return _build_and_run_with_env(
+        tmp_path,
+        source,
+        name,
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-package-{cache_suffix}",
+        cache_dir=ROOT / f".molt_cache-package-{cache_suffix}",
+        backend="cranelift",
+        source_relpath="pkg/main.py",
+        extra_files={
+            "pkg/__init__.py": "",
+            "pkg/helper.py": (
+                "import os\n"
+                "import sys\n"
+                "from .sibling import SIBLING\n"
+                "\n"
+                "class Helper:\n"
+                "    def describe(self):\n"
+                "        return 'helper-ok'\n"
+                "\n"
+                "def identify():\n"
+                "    return (__name__, __package__, sys.__name__, os.__name__, SIBLING)\n"
+                "\n"
+                "def ping():\n"
+                "    return SIBLING\n"
+            ),
+            "pkg/sibling.py": "SIBLING = 'sibling-ok'\n",
+            "pkg/subpkg/__init__.py": "",
+            "pkg/subpkg/leaf.py": (
+                "import os\n"
+                "import sys\n"
+                "\n"
+                "def describe_leaf():\n"
+                "    return (__name__, __package__, sys.__name__, os.__name__)\n"
+            ),
+        },
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
 
 
 def test_native_or_short_circuit_preserves_truthy_left(tmp_path: Path) -> None:
@@ -144,10 +238,351 @@ def test_native_import_json_is_clean(tmp_path: Path) -> None:
     assert run.stdout.strip() == "ok"
 
 
+def test_native_local_from_import_direct_call_executes(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        "from helper import ping\nping()\n",
+        "local_from_import_direct_call",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-from-import-local",
+        cache_dir=ROOT / ".molt_cache-import-local",
+        backend="cranelift",
+        extra_files={
+            "helper.py": "def ping():\n    print('ok')\n",
+        },
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "ok"
+
+
+def test_native_relative_from_import_direct_call_executes(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        "from .helper import ping\nping()\n",
+        "relative_from_import_direct_call",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-from-import-relative",
+        cache_dir=ROOT / ".molt_cache-import-relative",
+        backend="cranelift",
+        source_relpath="pkg/main.py",
+        extra_files={
+            "pkg/__init__.py": "",
+            "pkg/helper.py": "def ping():\n    print('ok')\n",
+        },
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "ok"
+
+
+def test_native_package_entry_bootstrap_tracks_module_identity(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_package_bootstrap(
+        tmp_path,
+        (
+            "import os\n"
+            "import sys\n"
+            "import pkg.helper as helper\n"
+            "from pkg.helper import ping\n"
+            "from .subpkg.leaf import describe_leaf\n"
+            "from .sibling import SIBLING\n"
+            "print(__name__)\n"
+            "print(__package__)\n"
+            "print(helper.identify())\n"
+            "print(ping())\n"
+            "print(describe_leaf())\n"
+            "print(SIBLING)\n"
+            "print(sys.__name__)\n"
+            "print(os.__name__)\n"
+        ),
+        "package_entry_bootstrap_identity",
+        cache_suffix="identity",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "__main__",
+        "pkg",
+        "('pkg.helper', 'pkg', 'sys', 'os', 'sibling-ok')",
+        "sibling-ok",
+        "('pkg.subpkg.leaf', 'pkg.subpkg', 'sys', 'os')",
+        "sibling-ok",
+        "sys",
+        "os",
+    ]
+
+
+def test_native_package_entry_direct_import_and_from_import_bindings_are_resolved(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_package_bootstrap(
+        tmp_path,
+        (
+            "import pkg.helper as helper\n"
+            "from pkg.helper import ping\n"
+            "print(helper.__name__)\n"
+            "print(helper.__package__)\n"
+            "print(ping())\n"
+        ),
+        "package_entry_import_bindings",
+        cache_suffix="imports",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "pkg.helper",
+        "pkg",
+        "sibling-ok",
+    ]
+
+
+def test_native_package_entry_alias_imports_and_sys_modules_identity_are_resolved(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_package_bootstrap(
+        tmp_path,
+        (
+            "import sys\n"
+            "import pkg.helper as helper_alias\n"
+            "from pkg.helper import Helper as HelperAlias\n"
+            "from pkg.helper import ping as ping_alias\n"
+            "print(helper_alias is sys.modules['pkg.helper'])\n"
+            "print(HelperAlias is helper_alias.Helper)\n"
+            "print(ping_alias is helper_alias.ping)\n"
+            "print(HelperAlias().describe())\n"
+            "print(ping_alias())\n"
+        ),
+        "package_entry_alias_identity",
+        cache_suffix="aliases",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "True",
+        "True",
+        "True",
+        "helper-ok",
+        "sibling-ok",
+    ]
+
+
+def test_native_package_entry_alias_imports_preserve_os_and_sys_identity(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_package_bootstrap(
+        tmp_path,
+        (
+            "import os as os_alias\n"
+            "import sys as sys_alias\n"
+            "import pkg.helper as helper_alias\n"
+            "print(sys_alias is sys.modules['sys'])\n"
+            "print(os_alias is sys.modules['os'])\n"
+            "print(helper_alias is sys.modules['pkg.helper'])\n"
+            "print(sys_alias.__name__)\n"
+            "print(os_alias.__name__)\n"
+            "print(helper_alias.__package__)\n"
+        ),
+        "package_entry_alias_imports_os_sys",
+        cache_suffix="os-sys-aliases",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "True",
+        "True",
+        "True",
+        "sys",
+        "os",
+        "pkg",
+    ]
+
+
+def test_native_package_entry_class_import_alias_preserves_metadata_and_identity(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_package_bootstrap(
+        tmp_path,
+        (
+            "import sys\n"
+            "import pkg.helper as helper_alias\n"
+            "from pkg.helper import Helper as HelperAlias\n"
+            "print(HelperAlias is helper_alias.Helper)\n"
+            "print(HelperAlias is sys.modules['pkg.helper'].Helper)\n"
+            "print(HelperAlias.__module__)\n"
+            "print(HelperAlias.__qualname__)\n"
+            "print(HelperAlias().describe())\n"
+        ),
+        "package_entry_class_import_alias_metadata",
+        cache_suffix="class-alias",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "True",
+        "True",
+        "pkg.helper",
+        "Helper",
+        "helper-ok",
+    ]
+
+
+def test_native_package_entry_submodule_alias_import_preserves_package_identity(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_package_bootstrap(
+        tmp_path,
+        (
+            "import sys\n"
+            "import pkg.subpkg.leaf as leaf_alias\n"
+            "from .subpkg.leaf import describe_leaf as describe_leaf_alias\n"
+            "print(leaf_alias is sys.modules['pkg.subpkg.leaf'])\n"
+            "print(leaf_alias.__name__)\n"
+            "print(leaf_alias.__package__)\n"
+            "print(describe_leaf_alias())\n"
+        ),
+        "package_entry_submodule_alias_identity",
+        cache_suffix="submodule-alias",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "True",
+        "pkg.subpkg.leaf",
+        "pkg.subpkg",
+        "('pkg.subpkg.leaf', 'pkg.subpkg', 'sys', 'os')",
+    ]
+
+
+def test_native_package_main_entrypoint_preserves_main_module_identity(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import sys\n"
+            "import pkg.helper as helper_alias\n"
+            "from .helper import Helper as HelperAlias\n"
+            "from .helper import ping as ping_alias\n"
+            "print(__name__)\n"
+            "print(__package__)\n"
+            "print(sys.modules['__main__'] is sys.modules[__name__])\n"
+            "print(helper_alias is sys.modules['pkg.helper'])\n"
+            "print(HelperAlias is helper_alias.Helper)\n"
+            "print(ping_alias is helper_alias.ping)\n"
+            "print(HelperAlias().describe())\n"
+            "print(ping_alias())\n"
+        ),
+        "package_main_entrypoint_identity",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-package-main",
+        cache_dir=ROOT / ".molt_cache-package-main",
+        backend="cranelift",
+        source_relpath="pkg/__main__.py",
+        extra_files={
+            "pkg/__init__.py": "",
+            "pkg/helper.py": (
+                "from .sibling import SIBLING\n"
+                "\n"
+                "class Helper:\n"
+                "    def describe(self):\n"
+                "        return 'helper-ok'\n"
+                "\n"
+                "def ping():\n"
+                "    return SIBLING\n"
+            ),
+            "pkg/sibling.py": "SIBLING = 'sibling-ok'\n",
+        },
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "__main__",
+        "pkg",
+        "True",
+        "True",
+        "True",
+        "True",
+        "helper-ok",
+        "sibling-ok",
+    ]
+
+
+def test_native_top_level_alias_imports_preserve_os_sys_identity(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import os\n"
+            "import sys\n"
+            "import os as os_alias\n"
+            "import sys as sys_alias\n"
+            "print(sys_alias is sys.modules['sys'])\n"
+            "print(os_alias is sys.modules['os'])\n"
+            "print(sys_alias is sys)\n"
+            "print(os_alias is os)\n"
+            "print(sys_alias.__name__)\n"
+            "print(os_alias.__name__)\n"
+        ),
+        "top_level_alias_identity",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-top-level-alias",
+        cache_dir=ROOT / ".molt_cache-top-level-alias",
+        backend="cranelift",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "True",
+        "True",
+        "True",
+        "True",
+        "sys",
+        "os",
+    ]
+
+
+def test_native_llvm_json_loads_with_kwonly_defaults_executes(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import json\n"
+            "class C:\n"
+            "    def __init__(self, dim: int = 768, n_layers: int = 22):\n"
+            "        self.dim = dim\n"
+            "        self.n_layers = n_layers\n"
+            "    @classmethod\n"
+            "    def make(cls, s: str):\n"
+            "        data = json.loads(s)\n"
+            "        return cls(dim=data['dim'])\n"
+            "obj = C.make('{\"dim\":5}')\n"
+            "print(obj.dim)\n"
+            "print(obj.n_layers)\n"
+        ),
+        "llvm_json_loads_kwonly_defaults",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-llvm",
+        cache_dir=ROOT / ".molt_cache",
+        backend="llvm",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["5", "22"]
+
+
 def test_native_import_os_is_clean(tmp_path: Path) -> None:
     run = _build_and_run(tmp_path, "import os\nprint('ok')\n", "import_os")
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "ok"
+
+
+def test_native_array_repeat_semantics_executes(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "a = array('f', [1.5, -2.0])\n"
+            "print((a * 3).tolist())\n"
+            "a *= 2\n"
+            "print(a.tolist())\n"
+            "print((a * 0).tolist())\n"
+        ),
+        "array_repeat_semantics",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "[1.5, -2.0, 1.5, -2.0, 1.5, -2.0]",
+        "[1.5, -2.0, 1.5, -2.0]",
+        "[]",
+    ]
 
 
 def test_native_os_env_snapshot_executes(tmp_path: Path) -> None:
@@ -295,6 +730,202 @@ def test_native_tensor_linear_split_last_dim_f32_contiguous_fast_path(
     ]
 
 
+def test_native_tensor_linear_squared_relu_gate_interleaved_f32_contiguous_fast_path(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor\n"
+            "x = Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))\n"
+            "w = Tensor(to_device(array('f', [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0])), shape=(4, 2))\n"
+            "out = x.linear_squared_relu_gate_interleaved(w)\n"
+            "print(out._buf.format_char)\n"
+            "print(out.to_list())\n"
+        ),
+        "tensor_linear_squared_relu_gate_interleaved_f32_contiguous",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "[[2.0, 18.0], [36.0, 294.0]]",
+    ]
+
+
+def test_native_tensor_functional_linear_family_fast_path(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor, tensor_linear, tensor_linear_split_last_dim, tensor_linear_squared_relu_gate_interleaved\n"
+            "x = Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))\n"
+            "split_weight = Tensor(to_device(array('f', [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0, 0.0, 2.0])), shape=(5, 2))\n"
+            "gate_weight = Tensor(to_device(array('f', [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0])), shape=(4, 2))\n"
+            "proj = tensor_linear(x, split_weight)\n"
+            "left, right = tensor_linear_split_last_dim(x, split_weight, (2, 3))\n"
+            "gated = tensor_linear_squared_relu_gate_interleaved(x, gate_weight)\n"
+            "print(proj._buf.format_char)\n"
+            "print(left._buf.format_char)\n"
+            "print(right._buf.format_char)\n"
+            "print(gated._buf.format_char)\n"
+            "print(left.to_list())\n"
+            "print(right.to_list())\n"
+            "print(gated.to_list())\n"
+        ),
+        "tensor_functional_linear_family_f32_contiguous",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "f",
+        "f",
+        "f",
+        "[[1.0, 2.0], [3.0, 4.0]]",
+        "[[3.0, 2.0, 4.0], [7.0, 6.0, 8.0]]",
+        "[[2.0, 18.0], [36.0, 294.0]]",
+    ]
+
+
+def test_native_tensor_functional_permute_and_softmax_last_axis_fast_path(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor, tensor_permute_dims, tensor_softmax_last_axis\n"
+            "t = Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0])), shape=(1, 2, 1, 2))\n"
+            "permuted = tensor_permute_dims(t, (0, 2, 1, 3))\n"
+            "softmaxed = tensor_softmax_last_axis(Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0])), shape=(2, 2)))\n"
+            "print(permuted._buf.format_char)\n"
+            "print(permuted.to_list())\n"
+            "print(softmaxed._buf.format_char)\n"
+            "print(softmaxed.shape)\n"
+        ),
+        "tensor_functional_permute_softmax_f32_contiguous",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "[[[[1.0, 2.0], [3.0, 4.0]]]]",
+        "f",
+        "(2, 2)",
+    ]
+
+
+def test_native_tensor_functional_reshape_and_data_list_fast_path(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor, tensor_data_list, tensor_reshape_view\n"
+            "t = Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0])), shape=(4,))\n"
+            "reshaped = tensor_reshape_view(t, (2, 2))\n"
+            "print(reshaped._buf.format_char)\n"
+            "print(reshaped.to_list())\n"
+            "print(tensor_data_list(reshaped))\n"
+        ),
+        "tensor_functional_reshape_data_list_f32",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "[[1.0, 2.0], [3.0, 4.0]]",
+        "[1.0, 2.0, 3.0, 4.0]",
+    ]
+
+
+def test_native_tensor_attention_hybrid_mask_fast_path(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from molt.gpu.tensor import tensor_attention_hybrid_mask, tensor_data_list\n"
+            "token_ids = [17, 244, 227, 230, 42]\n"
+            "mask = tensor_attention_hybrid_mask(token_ids, 244, 230)\n"
+            "rows = tensor_data_list(mask)\n"
+            "size = len(token_ids)\n"
+            "print(mask._buf.format_char)\n"
+            "print(rows[0 * size + 1] < -1e8)\n"
+            "print(rows[1 * size + 3])\n"
+            "print(rows[2 * size + 3])\n"
+            "print(rows[3 * size + 1])\n"
+            "print(rows[4 * size + 3])\n"
+            "print(rows[4 * size + 4])\n"
+        ),
+        "tensor_attention_hybrid_mask",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "True",
+        "0.0",
+        "0.0",
+        "0.0",
+        "0.0",
+        "0.0",
+    ]
+
+
+def test_native_tensor_scaled_dot_product_attention_fast_path(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor, tensor_scaled_dot_product_attention\n"
+            "q = Tensor(to_device(array('f', [1.0, 0.0, 0.0, 1.0])), shape=(1, 1, 2, 2))\n"
+            "k = Tensor(to_device(array('f', [1.0, 0.0, 0.0, 1.0])), shape=(1, 1, 2, 2))\n"
+            "v = Tensor(to_device(array('f', [10.0, 1.0, 2.0, 20.0])), shape=(1, 1, 2, 2))\n"
+            "mask = Tensor(to_device(array('f', [0.0, -1.0e9, -1.0e9, 0.0])), shape=(1, 1, 2, 2))\n"
+            "out = tensor_scaled_dot_product_attention(q, k, v, mask, 1.0)\n"
+            "print(out._buf.format_char)\n"
+            "print(out.to_list())\n"
+        ),
+        "tensor_scaled_dot_product_attention",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "[[[[10.0, 1.0], [2.0, 20.0]]]]",
+    ]
+
+
+def test_native_tensor_functional_take_rows_fast_path(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor, tensor_take_rows\n"
+            "weight = Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])), shape=(3, 2))\n"
+            "out = tensor_take_rows(weight, [2, 0])\n"
+            "print(out._buf.format_char)\n"
+            "print(out.to_list())\n"
+        ),
+        "tensor_functional_take_rows_f32",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "f",
+        "[[5.0, 6.0], [1.0, 2.0]]",
+    ]
+
+
 def test_native_tensor_softmax_f32_contiguous_fast_path(tmp_path: Path) -> None:
     run = _build_and_run(
         tmp_path,
@@ -314,6 +945,49 @@ def test_native_tensor_softmax_f32_contiguous_fast_path(tmp_path: Path) -> None:
     lines = run.stdout.strip().splitlines()
     assert lines[0] == "f"
     assert lines[1] == "(2, 2)"
+
+
+def test_native_tensor_ndim_property_fast_path(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from array import array\n"
+            "from molt.gpu import to_device\n"
+            "from molt.gpu.tensor import Tensor\n"
+            "t = Tensor(to_device(array('f', [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))\n"
+            "print(t.shape)\n"
+            "print(t.ndim)\n"
+        ),
+        "tensor_ndim_property",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "(2, 2)",
+        "2",
+    ]
+
+
+def test_native_intrinsics_module_exports_module_form_api(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import _intrinsics as intr\n"
+            "print(callable(intr.require_intrinsic))\n"
+            "print(callable(intr.load_intrinsic))\n"
+            "print(intr.runtime_active())\n"
+            "print(intr.load_intrinsic('molt_gpu_buffer_to_list') is not None)\n"
+            "print(intr.load_intrinsic('molt_missing_intrinsic') is None)\n"
+        ),
+        "intrinsics_module_api",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "True",
+        "True",
+        "True",
+        "True",
+        "True",
+    ]
 
 
 def test_native_tensor_rms_norm_f32_contiguous_fast_path(tmp_path: Path) -> None:
@@ -360,6 +1034,96 @@ def test_native_tensor_squared_relu_gate_interleaved_f32_contiguous_fast_path(
     ]
 
 
+def test_native_bound_method_positional_fast_path_preserves_semantics(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class Acc:\n"
+            "    def add3(self, a, b, c):\n"
+            "        return a + b + c\n"
+            "obj = Acc()\n"
+            "print(obj.add3(1, 2, 3))\n"
+        ),
+        "bound_method_positional_fast_path",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "6"
+
+
+def test_native_bound_method_defaults_still_take_full_binding_path(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class Acc:\n"
+            "    def add(self, a, b=2):\n"
+            "        return a + b\n"
+            "obj = Acc()\n"
+            "print(obj.add(1))\n"
+        ),
+        "bound_method_defaults_binding",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "3"
+
+
+def test_native_callable_object_positional_fast_path_preserves_semantics(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class Acc:\n"
+            "    def __call__(self, a, b, c):\n"
+            "        return a + b + c\n"
+            "obj = Acc()\n"
+            "print(obj(1, 2, 3))\n"
+        ),
+        "callable_object_positional_fast_path",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "6"
+
+
+def test_native_callable_object_defaults_still_take_full_binding_path(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class Acc:\n"
+            "    def __call__(self, a, b=2):\n"
+            "        return a + b\n"
+            "obj = Acc()\n"
+            "print(obj(1))\n"
+        ),
+        "callable_object_defaults_binding",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "3"
+
+
+def test_native_indirect_noncallable_still_raises_typeerror(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "def f():\n"
+            "    x = 1\n"
+            "    x()\n"
+            "f()\n"
+        ),
+        "indirect_noncallable_typeerror",
+    )
+    assert run.returncode != 0
+    assert "TypeError" in run.stderr
+    assert "not callable" in run.stderr
+
+
 def test_native_import_typing_optional_is_clean(tmp_path: Path) -> None:
     run = _build_and_run_with_env(
         tmp_path,
@@ -367,6 +1131,7 @@ def test_native_import_typing_optional_is_clean(tmp_path: Path) -> None:
         "import_typing_optional",
         session_id="pytest-native-bootstrap-typing",
         cache_dir=ROOT / ".molt_cache-typing",
+        backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "ok"
@@ -463,6 +1228,7 @@ def test_native_repo_package_imports_include_molt_parent_package(tmp_path: Path)
         "import_molt_gpu_tensor",
         session_id="pytest-native-bootstrap-package-import",
         cache_dir=ROOT / ".molt_cache-package-import",
+        backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "ok"
@@ -500,6 +1266,7 @@ def test_native_load_safetensors_multi_entry_is_clean(tmp_path: Path) -> None:
         "load_safetensors_multi_entry",
         session_id="pytest-native-bootstrap-safetensors",
         cache_dir=ROOT / ".molt_cache-safetensors",
+        backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == ["160", "Tensor"]
@@ -521,6 +1288,7 @@ def test_native_load_safetensors_mapping_get_returns_tensor_and_default(
         "load_safetensors_mapping_get",
         session_id="pytest-native-bootstrap-safetensors-get",
         cache_dir=ROOT / ".molt_cache-safetensors-get",
+        backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == ["Tensor", "fallback"]
