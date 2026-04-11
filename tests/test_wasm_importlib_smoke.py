@@ -171,3 +171,16 @@ def test_wasm_linked_caught_missing_intrinsic_does_not_poison_module_init(
 
     assert run.returncode == 0, run.stderr
     assert run.stdout.splitlines() == ["caught", "ok"]
+
+
+def test_wasm_linked_import_typing_runs_module_body(tmp_path: Path) -> None:
+    require_wasm_toolchain()
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "typing_probe.py"
+    src.write_text('import typing\nprint("ok")\n', encoding="utf-8")
+
+    output_wasm = build_wasm_linked(root, src, tmp_path)
+    run = run_wasm_linked(root, output_wasm)
+
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.splitlines() == ["ok"]

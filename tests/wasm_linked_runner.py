@@ -23,6 +23,15 @@ def _artifact_root(root: Path) -> Path:
     return root
 
 
+def _linked_test_artifact_root(root: Path, out_dir: Path) -> Path:
+    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    # Default linked-wasm test runs should isolate runtime/cache state per
+    # test case instead of sharing the repo-level wasm artifact root.
+    return out_dir.parent
+
+
 def _same_location(lhs: Path, rhs: Path) -> bool:
     try:
         return lhs.samefile(rhs)
@@ -179,10 +188,10 @@ def build_wasm_linked(
 ) -> Path:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
-    artifact_root = _artifact_root(root)
+    out_dir = _select_out_dir(out_dir, root)
+    artifact_root = _linked_test_artifact_root(root, out_dir)
     use_external = os.environ.get("MOLT_WASM_TEST_USE_EXTERNAL", "").strip().lower()
     allow_external = use_external not in {"0", "false", "no", "off"}
-    out_dir = _select_out_dir(out_dir, root)
     env["CARGO_TARGET_DIR"] = str(_wasm_test_target_dir(root, out_dir, artifact_root))
     env.setdefault(
         "MOLT_SESSION_ID",
@@ -198,19 +207,14 @@ def build_wasm_linked(
     env.setdefault("MOLT_MIDEND_DISABLE", "1")
     if allow_external and artifact_root != root:
         tmp_root = artifact_root / "tmp"
-        tmp_root.mkdir(parents=True, exist_ok=True)
-        env.setdefault("TMPDIR", str(tmp_root))
-        env.setdefault("MOLT_HOME", str(artifact_root))
-        env.setdefault("MOLT_CACHE", str(artifact_root / ".molt_cache"))
-        env.setdefault("MOLT_WASM_RUNTIME_DIR", str(artifact_root / "wasm"))
     else:
-        tmp_root = root / "tmp"
-        tmp_root.mkdir(parents=True, exist_ok=True)
-        env.setdefault("TMPDIR", str(tmp_root))
-        env.setdefault("MOLT_HOME", str(root))
-        env.setdefault("MOLT_CACHE", str(root / ".molt_cache"))
-        env.setdefault("MOLT_WASM_RUNTIME_DIR", str(root / "wasm"))
-    env.setdefault("MOLT_EXT_ROOT", str(artifact_root))
+        tmp_root = artifact_root / "tmp"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    env["TMPDIR"] = str(tmp_root)
+    env["MOLT_HOME"] = str(artifact_root)
+    env["MOLT_CACHE"] = str(artifact_root / ".molt_cache")
+    env["MOLT_WASM_RUNTIME_DIR"] = str(artifact_root / "wasm")
+    env["MOLT_EXT_ROOT"] = str(artifact_root)
     args = [
         sys.executable,
         "-m",
