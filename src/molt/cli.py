@@ -19184,7 +19184,10 @@ def _prepare_non_native_build_result(
                         json_output,
                         command="build",
                     )
-                if not ensure_runtime_wasm_shared(required_runtime_exports):
+                shared_runtime_required_exports = (
+                    None if _split_runtime else required_runtime_exports
+                )
+                if not ensure_runtime_wasm_shared(shared_runtime_required_exports):
                     return None, _fail(
                         "Runtime wasm build failed",
                         json_output,
