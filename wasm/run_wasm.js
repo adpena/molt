@@ -63,6 +63,8 @@ const traceSocketHost = process.env.MOLT_WASM_TRACE_SOCKET_HOST === '1';
 const installTableRefsEnabled = process.env.MOLT_WASM_INSTALL_TABLE_REFS === '1';
 const verifyTableRefsEnabled = process.env.MOLT_WASM_VERIFY_TABLE_REFS === '1';
 const traceTableSlotRaw = process.env.MOLT_WASM_TRACE_TABLE_SLOT || null;
+const traceTableRangeRaw = process.env.MOLT_WASM_TRACE_TABLE_RANGE || null;
+const traceTableDiffEnabled = process.env.MOLT_WASM_TRACE_TABLE_DIFF === '1';
 const formatTraceError = (err) => {
   if (err instanceof Error) {
     return err.stack || err.message || String(err);
@@ -324,8 +326,12 @@ const loadRuntimeAssets = () => {
   if (!runtimeBuffer) {
     runtimeBuffer = fs.readFileSync(runtimePath);
   }
-  const witPath = path.join(__dirname, 'wit', 'molt-runtime.wit');
-  if (fs.existsSync(witPath)) {
+  const witCandidates = [
+    path.join(__dirname, 'wit', 'molt-runtime.wit'),
+    path.join(__dirname, '..', 'wit', 'molt-runtime.wit'),
+  ];
+  const witPath = witCandidates.find((candidate) => fs.existsSync(candidate));
+  if (witPath) {
     witSource = fs.readFileSync(witPath, 'utf8');
   }
 };
@@ -4523,48 +4529,87 @@ const parseWitFunctions = (source) => {
   return funcSigs;
 };
 
+const expectsRuntimeImportBigInt = (ty) => ty === 'molt-object' || ty === 'u64' || ty === 's64';
+
+const runtimeImportToBigInt = (value, ty) => {
+  if (typeof value === 'bigint') {
+    return value;
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new TypeError(`Expected integer for ${ty}, got ${value}`);
+  }
+  return BigInt.asUintN(64, BigInt(value));
+};
+
+const normalizeRuntimeImportArg = (arg, ty) => {
+  if (!ty) {
+    return arg;
+  }
+  if (expectsRuntimeImportBigInt(ty)) {
+    return runtimeImportToBigInt(arg, ty);
+  }
+  if (typeof arg === 'bigint') {
+    return Number(arg);
+  }
+  return arg;
+};
+
+const normalizeRuntimeImportReturn = (value, ty) => {
+  if (!ty) {
+    return value;
+  }
+  if (expectsRuntimeImportBigInt(ty)) {
+    return runtimeImportToBigInt(value, ty);
+  }
+  if (typeof value === 'bigint') {
+    return Number(value);
+  }
+  return value;
+};
+
+let cachedRuntimeImportFuncSigs = null;
+
+const runtimeImportFuncSigs = () => {
+  if (cachedRuntimeImportFuncSigs) {
+    return cachedRuntimeImportFuncSigs;
+  }
+  cachedRuntimeImportFuncSigs = witSource ? parseWitFunctions(witSource) : new Map();
+  return cachedRuntimeImportFuncSigs;
+};
+
+const makeRuntimeImportAdapter = (name, fn, sig, { traceStrings = false } = {}) => {
+  return (...args) => {
+    const converted = sig ? args.map((arg, idx) => normalizeRuntimeImportArg(arg, sig.argTypes[idx])) : args;
+    if (traceImports) {
+      console.error(`molt_runtime.${name}`, sig ? sig.argTypes : [], converted);
+    }
+    const result = fn(...converted);
+    if (traceStrings && name === 'string_from_bytes') {
+      const ptr = Number(converted[0] ?? 0);
+      const len = Number(converted[1] ?? 0);
+      const outPtr = Number(converted[2] ?? 0);
+      const raw = readBytes(ptr, Math.min(len, 64));
+      const preview = raw.length ? raw.toString('utf8') : '';
+      let outBits = null;
+      if (wasmMemory && outPtr) {
+        const view = new DataView(wasmMemory.buffer);
+        outBits = view.getBigUint64(outPtr, true);
+      }
+      console.error(
+        `[molt wasm] string_from_bytes ptr=${ptr} len=${len} out=${outPtr} ret=${result} bits=${outBits} preview=${preview}`
+      );
+    }
+    return sig ? normalizeRuntimeImportReturn(result, sig.retType) : result;
+  };
+};
+
 const buildRuntimeImportWrappers = () => {
   if (!witSource) {
     throw new Error(
       'molt runtime WIT metadata is unavailable; disable MOLT_WASM_TRACE=1 or provide wit/molt-runtime.wit',
     );
   }
-  const funcSigs = parseWitFunctions(witSource);
-
-  const expectsBigInt = (ty) => ty === 'molt-object' || ty === 'u64' || ty === 's64';
-  const toBigInt = (value, ty) => {
-    if (typeof value === 'bigint') {
-      return value;
-    }
-    if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
-      throw new TypeError(`Expected integer for ${ty}, got ${value}`);
-    }
-    return BigInt.asUintN(64, BigInt(value));
-  };
-  const normalizeArg = (arg, ty) => {
-    if (!ty) {
-      return arg;
-    }
-    if (expectsBigInt(ty)) {
-      return toBigInt(arg, ty);
-    }
-    if (typeof arg === 'bigint') {
-      return Number(arg);
-    }
-    return arg;
-  };
-  const normalizeReturn = (value, ty) => {
-    if (!ty) {
-      return value;
-    }
-    if (expectsBigInt(ty)) {
-      return toBigInt(value, ty);
-    }
-    if (typeof value === 'bigint') {
-      return Number(value);
-    }
-    return value;
-  };
+  const funcSigs = runtimeImportFuncSigs();
 
   const runtimeImports = {};
   const traceStrings = process.env.MOLT_WASM_TRACE_STRINGS === '1';
@@ -4578,27 +4623,7 @@ const buildRuntimeImportWrappers = () => {
       if (typeof fn !== 'function') {
         throw new Error(`molt_runtime.${name} missing export ${exportName}`);
       }
-      const converted = args.map((arg, idx) => normalizeArg(arg, sig.argTypes[idx]));
-      if (traceImports) {
-        console.error(`molt_runtime.${name}`, sig.argTypes, converted);
-      }
-      const result = fn(...converted);
-      if (traceStrings && name === 'string_from_bytes') {
-        const ptr = Number(converted[0] ?? 0);
-        const len = Number(converted[1] ?? 0);
-        const outPtr = Number(converted[2] ?? 0);
-        const raw = readBytes(ptr, Math.min(len, 64));
-        const preview = raw.length ? raw.toString('utf8') : '';
-        let outBits = null;
-        if (wasmMemory && outPtr) {
-          const view = new DataView(wasmMemory.buffer);
-          outBits = view.getBigUint64(outPtr, true);
-        }
-        console.error(
-          `[molt wasm] string_from_bytes ptr=${ptr} len=${len} out=${outPtr} ret=${result} bits=${outBits} preview=${preview}`
-        );
-      }
-      return normalizeReturn(result, sig.retType);
+      return makeRuntimeImportAdapter(name, fn, sig, { traceStrings })(...args);
     };
   }
   return runtimeImports;
@@ -4606,6 +4631,7 @@ const buildRuntimeImportWrappers = () => {
 
 const buildRuntimeImportDirect = (runtimeInst) => {
   const runtimeImports = {};
+  const funcSigs = runtimeImportFuncSigs();
   const callBindIc = runtimeInst.exports.molt_call_bind_ic;
   const callargsNew = runtimeInst.exports.molt_callargs_new;
   const callargsPushPos = runtimeInst.exports.molt_callargs_push_pos;
@@ -4652,11 +4678,12 @@ const buildRuntimeImportDirect = (runtimeInst) => {
     if (typeof fn !== 'function') {
       throw new Error(`molt_runtime.${entry.name} missing export ${exportName}`);
     }
+    const sig = funcSigs.get(entry.name);
     runtimeImports[entry.name] = (...args) => {
       if (traceRun) {
         console.error(`[molt wasm] direct runtime import ${entry.name} argc=${args.length}`);
       }
-      return fn(...args);
+      return makeRuntimeImportAdapter(entry.name, fn, sig)(...args);
     };
   }
   return runtimeImports;
@@ -4705,6 +4732,63 @@ const traceTableSlot = (table, label) => {
   console.error(
     `[molt wasm] table-slot ${label} slot=${slot} state=${state} name=${entryName} len=${entryLen}`
   );
+};
+
+const traceTableRange = (table, label) => {
+  if (!traceRun || !traceTableRangeRaw || !table) {
+    return;
+  }
+  const [startRaw, endRaw] = traceTableRangeRaw.split(':', 2);
+  const start = Number.parseInt(startRaw, 10);
+  const end = Number.parseInt(endRaw ?? startRaw, 10);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) {
+    return;
+  }
+  for (let slot = start; slot <= end; slot += 1) {
+    const entry = slot < table.length ? table.get(slot) : null;
+    const state = entry ? 'set' : 'null';
+    const entryName = entry && entry.name ? entry.name : 'unknown';
+    const entryLen = entry && typeof entry.length === 'number' ? entry.length : 'unknown';
+    console.error(
+      `[molt wasm] table-slot ${label} slot=${slot} state=${state} name=${entryName} len=${entryLen}`
+    );
+  }
+};
+
+const snapshotTableEntries = (table) => {
+  if (!table || !traceTableDiffEnabled) {
+    return null;
+  }
+  const snapshot = new Array(table.length);
+  for (let i = 0; i < table.length; i += 1) {
+    const entry = table.get(i);
+    snapshot[i] = entry && entry.name ? entry.name : null;
+  }
+  return snapshot;
+};
+
+const traceTableDiff = (before, table, label) => {
+  if (!traceRun || !traceTableDiffEnabled || !before || !table) {
+    return;
+  }
+  const changed = [];
+  const len = Math.min(before.length, table.length);
+  for (let i = 0; i < len; i += 1) {
+    const entry = table.get(i);
+    const current = entry && entry.name ? entry.name : null;
+    if (before[i] !== current) {
+      changed.push({ slot: i, before: before[i], after: current });
+      if (changed.length >= 20) {
+        break;
+      }
+    }
+  }
+  console.error(`[molt wasm] table-diff ${label} changed=${changed.length}`);
+  for (const change of changed) {
+    console.error(
+      `[molt wasm] table-diff ${label} slot=${change.slot} before=${change.before || 'null'} after=${change.after || 'null'}`
+    );
+  }
 };
 
 const verifyTableRefs = (instance, table, label) => {
@@ -4895,6 +4979,8 @@ const runDirectLink = async () => {
     installTableRefs(runtimeInst, table, 'runtime');
   }
   traceTableSlot(table, 'after-runtime-instantiate');
+  traceTableRange(table, 'after-runtime-instantiate');
+  const runtimeTableSnapshot = snapshotTableEntries(table);
   const outputImportsDirect = traceImports
     ? buildRuntimeImportWrappers()
     : buildRuntimeImportDirect(runtimeInst);
@@ -4913,6 +4999,8 @@ const runDirectLink = async () => {
   if (traceRun) {
     console.error('[molt wasm] direct: output instantiated');
   }
+  traceTableDiff(runtimeTableSnapshot, table, 'after-output-instantiate');
+  traceTableRange(table, 'after-output-instantiate');
 
   const { molt_main, molt_memory, molt_table, molt_table_init } =
     outputInstance.exports;
@@ -4927,6 +5015,7 @@ const runDirectLink = async () => {
     }
   }
   traceTableSlot(table, 'after-output-table-init');
+  traceTableRange(table, 'after-output-table-init');
   if (installTableRefsEnabled) {
     installTableRefs(outputInstance, table, 'output');
   }

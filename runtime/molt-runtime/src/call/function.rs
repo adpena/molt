@@ -4,7 +4,7 @@ use crate::object::ops::string_obj_to_owned;
 use crate::{
     CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
     HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, PyToken, TYPE_ID_FUNCTION, TYPE_ID_TUPLE,
-    ensure_function_code_bits, exception_pending, frame_stack_pop, frame_stack_push,
+    ensure_function_code_bits, exception_pending, frame_stack_pop, frame_stack_push, inc_ref_bits,
     function_arity, function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
     function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy,
     molt_exception_clear, obj_from_bits, object_type_id, profile_hit, raise_exception,
@@ -2342,13 +2342,13 @@ pub(crate) unsafe fn call_function_obj_trampoline(
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // SAFETY: `tramp_ptr` from `function_trampoline_ptr` is a valid extern "C"
-                // fn pointer emitted by the compiler. Arity is verified above. UB if null.
                 let func: extern "C" fn(u64, u64, u64) -> i64 =
                     std::mem::transmute(tramp_ptr as usize);
                 func(closure_bits, args.as_ptr() as u64, args.len() as u64) as u64
             }
         };
+        #[cfg(target_arch = "wasm32")]
+        inc_ref_bits(_py, res);
         frame_stack_pop(_py);
         recursion_guard_exit();
         res

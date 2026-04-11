@@ -312,20 +312,57 @@ pub(crate) fn default_sys_version_info() -> PythonVersionInfo {
     })
 }
 
-pub(crate) fn format_sys_version(info: &PythonVersionInfo) -> String {
-    let base = format!("{}.{}.{}", info.major, info.minor, info.micro);
-    let suffix = match info.releaselevel.as_str() {
-        "alpha" => format!("a{}", info.serial),
-        "beta" => format!("b{}", info.serial),
-        "candidate" => format!("rc{}", info.serial),
-        "final" => String::new(),
-        other => format!("{other}{}", info.serial),
-    };
-    if suffix.is_empty() {
-        format!("{base} (molt)")
-    } else {
-        format!("{base}{suffix} (molt)")
+fn push_i64_decimal(out: &mut String, value: i64) {
+    if value == 0 {
+        out.push('0');
+        return;
     }
+    let negative = value < 0;
+    let mut n = value.unsigned_abs();
+    let mut digits = [0u8; 20];
+    let mut len = 0usize;
+    while n > 0 {
+        digits[len] = (n % 10) as u8;
+        n /= 10;
+        len += 1;
+    }
+    if negative {
+        out.push('-');
+    }
+    while len > 0 {
+        len -= 1;
+        out.push(char::from(b'0' + digits[len]));
+    }
+}
+
+pub(crate) fn format_sys_version(info: &PythonVersionInfo) -> String {
+    let mut out = String::with_capacity(48);
+    push_i64_decimal(&mut out, info.major);
+    out.push('.');
+    push_i64_decimal(&mut out, info.minor);
+    out.push('.');
+    push_i64_decimal(&mut out, info.micro);
+    match info.releaselevel.as_str() {
+        "alpha" => {
+            out.push('a');
+            push_i64_decimal(&mut out, info.serial);
+        }
+        "beta" => {
+            out.push('b');
+            push_i64_decimal(&mut out, info.serial);
+        }
+        "candidate" => {
+            out.push_str("rc");
+            push_i64_decimal(&mut out, info.serial);
+        }
+        "final" => {}
+        other => {
+            out.push_str(other);
+            push_i64_decimal(&mut out, info.serial);
+        }
+    }
+    out.push_str(" (molt)");
+    out
 }
 
 pub(crate) const DEFAULT_SYS_API_VERSION: i64 = 1013;
@@ -1955,7 +1992,10 @@ fn find_caret_anchor(region: &[char]) -> Option<(usize, usize)> {
 
 #[cfg(test)]
 mod traceback_format_tests {
-    use super::{traceback_format_caret_line_native, traceback_infer_column_offsets};
+    use super::{
+        PythonVersionInfo, format_sys_version, traceback_format_caret_line_native,
+        traceback_infer_column_offsets,
+    };
 
     #[test]
     fn infer_column_offsets_prefers_rhs_for_assignment() {
@@ -1984,6 +2024,30 @@ mod traceback_format_tests {
         let line = "value = source";
         assert!(traceback_format_caret_line_native(line, 0, 0).is_empty());
         assert!(traceback_format_caret_line_native(line, 10, 5).is_empty());
+    }
+
+    #[test]
+    fn format_sys_version_final_release() {
+        let info = PythonVersionInfo {
+            major: 3,
+            minor: 12,
+            micro: 7,
+            releaselevel: "final".to_string(),
+            serial: 0,
+        };
+        assert_eq!(format_sys_version(&info), "3.12.7 (molt)");
+    }
+
+    #[test]
+    fn format_sys_version_candidate_release() {
+        let info = PythonVersionInfo {
+            major: 3,
+            minor: 13,
+            micro: 0,
+            releaselevel: "candidate".to_string(),
+            serial: 2,
+        };
+        assert_eq!(format_sys_version(&info), "3.13.0rc2 (molt)");
     }
 }
 
