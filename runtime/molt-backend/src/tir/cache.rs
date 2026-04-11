@@ -19,6 +19,8 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const BACKEND_CACHE_NAMESPACE_VERSION: &str = "molt-backend-tir-cache-v1";
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -270,6 +272,29 @@ impl CompilationCache {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Resolve the canonical cache namespace for the current backend binary.
+///
+/// The namespace is rooted under `MOLT_CACHE` when configured, or `.molt_cache`
+/// otherwise, and salted with the current executable path + mtime so cached
+/// optimized IR is invalidated automatically when the backend binary changes.
+pub fn backend_cache_dir() -> PathBuf {
+    let root = std::env::var_os("MOLT_CACHE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".molt_cache"));
+    let exe = std::env::current_exe().unwrap_or_default();
+    let mtime = std::fs::metadata(&exe)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut hasher = DefaultHasher::new();
+    BACKEND_CACHE_NAMESPACE_VERSION.hash(&mut hasher);
+    exe.hash(&mut hasher);
+    mtime.hash(&mut hasher);
+    root.join(format!("{:016x}", hasher.finish()))
+}
+
 /// Return the current time as seconds since the Unix epoch.
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -285,6 +310,7 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // Use a unique temp directory per test run to avoid collisions.
@@ -303,6 +329,11 @@ mod tests {
         CompilationCache::compute_hash_with_signature(func_name, &[], None, body)
     }
 
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
     /// 1. put + get round-trip (in-memory)
     #[test]
     fn test_put_get_roundtrip() {
@@ -314,6 +345,23 @@ mod tests {
         let result = cache.get(&hash);
 
         assert_eq!(result, Some(artifact.to_vec()));
+    }
+
+    #[test]
+    fn backend_cache_dir_uses_env_root_and_version_namespace() {
+        let _guard = env_lock().lock().expect("env lock");
+        let root = tmp_cache_dir();
+        unsafe { std::env::set_var("MOLT_CACHE", &root) };
+        let dir = backend_cache_dir();
+        unsafe { std::env::remove_var("MOLT_CACHE") };
+        assert!(
+            dir.starts_with(&root),
+            "backend cache dir should live under configured MOLT_CACHE root: dir={dir:?} root={root:?}"
+        );
+        assert_ne!(
+            dir, root,
+            "backend cache dir should use a versioned namespace below the root"
+        );
     }
 
     /// 2. get on missing key → None
