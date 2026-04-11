@@ -115,3 +115,15 @@ pub const _SC_PAGESIZE: c_int = 29;
 pub const _SC_IOV_MAX: c_int = 56;
 pub const _SC_NPROCESSORS_CONF: c_int = 57;
 pub const _SC_NPROCESSORS_ONLN: c_int = 58;
+
+// Rust's WASI libc object emits relocatable references to these underscored
+// clock-id symbols when CPU-time support is linked into the runtime staticlib.
+// Define the canonical WASI values here so the relocatable runtime artifact
+// closes over them before the final app link.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub static _CLOCK_PROCESS_CPUTIME_ID: u32 = 2;
+
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub static _CLOCK_THREAD_CPUTIME_ID: u32 = 3;
