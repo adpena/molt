@@ -53,6 +53,38 @@ for i in range(10):
 """
 
 
+def _split_runtime_target_dirs(env: dict[str, str]) -> tuple[Path, Path]:
+    default_target_dir = ROOT / "target" / "pytest" / "test_wasm_split_runtime"
+    raw_target = env.get("CARGO_TARGET_DIR", "").strip()
+    target_dir = (
+        Path(raw_target).expanduser() if raw_target else default_target_dir
+    )
+    raw_diff_target = env.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
+    diff_target_dir = (
+        Path(raw_diff_target).expanduser() if raw_diff_target else target_dir
+    )
+    return target_dir, diff_target_dir
+
+
+def test_split_runtime_target_dir_respects_explicit_env_override() -> None:
+    env = {
+        "CARGO_TARGET_DIR": "/tmp/molt-explicit-target",
+        "MOLT_DIFF_CARGO_TARGET_DIR": "/tmp/molt-explicit-diff-target",
+    }
+
+    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
+
+    assert target_dir == Path("/tmp/molt-explicit-target")
+    assert diff_target_dir == Path("/tmp/molt-explicit-diff-target")
+
+
+def test_split_runtime_target_dir_defaults_to_repo_pytest_target() -> None:
+    target_dir, diff_target_dir = _split_runtime_target_dirs({})
+
+    assert target_dir == ROOT / "target" / "pytest" / "test_wasm_split_runtime"
+    assert diff_target_dir == target_dir
+
+
 def test_generate_split_worker_js_lifecycle_contract() -> None:
     from molt.cli import _generate_split_worker_js
 
@@ -102,10 +134,11 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
         else repo_src
     )
     env["MOLT_BACKEND_DAEMON"] = "0"
-    target_dir = ROOT / "target" / "pytest" / "test_wasm_split_runtime"
+    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
     target_dir.mkdir(parents=True, exist_ok=True)
+    diff_target_dir.mkdir(parents=True, exist_ok=True)
     env["CARGO_TARGET_DIR"] = str(target_dir)
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(target_dir)
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
     env.setdefault("MOLT_SESSION_ID", "test-wasm-split-runtime")
 
     cmd = [
