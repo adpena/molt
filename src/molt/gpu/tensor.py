@@ -42,9 +42,21 @@ def _runtime_intrinsics_active() -> bool:
     return False
 
 
+_MOLT_GPU_BUFFER_TO_LIST = _load_optional_intrinsic("molt_gpu_buffer_to_list")
+_MOLT_GPU_TENSOR_FROM_BUFFER = _load_optional_intrinsic("molt_gpu_tensor_from_buffer")
+_MOLT_GPU_TENSOR_FROM_PARTS = _load_optional_intrinsic("molt_gpu_tensor_from_parts")
+_MOLT_GPU_REPEAT_AXIS_CONTIGUOUS = _load_optional_intrinsic(
+    "molt_gpu_repeat_axis_contiguous"
+)
 _MOLT_GPU_LINEAR_CONTIGUOUS = _load_optional_intrinsic("molt_gpu_linear_contiguous")
 _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS = _load_optional_intrinsic(
     "molt_gpu_linear_split_last_dim_contiguous"
+)
+_MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM = _load_optional_intrinsic(
+    "molt_gpu_tensor__tensor_linear_split_last_dim"
+)
+_MOLT_GPU_LINEAR_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS = _load_optional_intrinsic(
+    "molt_gpu_linear_squared_relu_gate_interleaved_contiguous"
 )
 _MOLT_GPU_BROADCAST_BINARY_CONTIGUOUS = _load_optional_intrinsic(
     "molt_gpu_broadcast_binary_contiguous"
@@ -117,6 +129,502 @@ def _binary_result_dtype_and_format(lhs: "Tensor", rhs) -> tuple[type, str]:
             return float, _preferred_float_format(lhs)
         return lhs._dtype, lhs._buf.format_char
     raise TypeError(f"Unsupported binary operand type: {type(rhs)!r}")
+
+
+def _tensor_from_parts(
+    data,
+    element_type: type,
+    size: int,
+    format_char: str,
+    shape,
+    dtype: type,
+) -> "Tensor":
+    if _MOLT_GPU_TENSOR_FROM_PARTS is not None:
+        return _MOLT_GPU_TENSOR_FROM_PARTS(
+            Tensor,
+            Buffer,
+            data,
+            element_type,
+            size,
+            format_char,
+            shape,
+            dtype,
+        )
+    if _runtime_intrinsics_active():
+        raise RuntimeError("intrinsic unavailable: molt_gpu_tensor_from_parts")
+    return Tensor(
+        Buffer(data, element_type, size, format_char=format_char),
+        shape=shape,
+        dtype=dtype,
+    )
+
+
+def _tensor_from_buffer(buf: Buffer, shape, dtype: type) -> "Tensor":
+    if _MOLT_GPU_TENSOR_FROM_BUFFER is not None:
+        return _MOLT_GPU_TENSOR_FROM_BUFFER(Tensor, buf, shape, dtype)
+    if _runtime_intrinsics_active():
+        raise RuntimeError("intrinsic unavailable: molt_gpu_tensor_from_buffer")
+    return Tensor(buf, shape=shape, dtype=dtype)
+
+
+def _buffer_to_list(buf: Buffer, size: int) -> list:
+    if _MOLT_GPU_BUFFER_TO_LIST is not None:
+        return _MOLT_GPU_BUFFER_TO_LIST(buf, size)
+    if _runtime_intrinsics_active():
+        raise RuntimeError("intrinsic unavailable: molt_gpu_buffer_to_list")
+    return from_device(buf)[:size]
+
+
+def tensor_linear(x: "Tensor", weight: "Tensor") -> "Tensor":
+    if not isinstance(weight, Tensor):
+        return NotImplemented
+
+    x_shape = x._shape
+    weight_shape = weight._shape
+    if len(weight_shape) != 2:
+        raise ValueError(f"linear weight must be 2D, got {weight_shape}")
+
+    if len(x_shape) == 0:
+        raise ValueError("linear input must be at least 1D")
+
+    in_features = x_shape[-1]
+    out_features, weight_in = weight_shape
+    if in_features != weight_in:
+        raise ValueError(
+            f"Linear shape mismatch: {x_shape} with weight {weight_shape}"
+        )
+
+    outer = _product(x_shape[:-1]) if len(x_shape) > 1 else 1
+    if x._dtype is float and weight._dtype is float:
+        result_dtype = x._dtype
+        if (
+            x._buf.element_type is float
+            and weight._buf.element_type is float
+            and x._buf.format_char == "f"
+            and weight._buf.format_char == "f"
+        ):
+            result_format = "f"
+        else:
+            result_format = "d"
+    else:
+        result_dtype = x._dtype
+        result_format = x._buf.format_char
+    out_shape = x_shape[:-1] + (out_features,)
+    if not out_shape:
+        out_shape = (out_features,)
+
+    if _MOLT_GPU_LINEAR_CONTIGUOUS is not None:
+        out_bits = _MOLT_GPU_LINEAR_CONTIGUOUS(
+            x._buf._data,
+            x._buf.format_char,
+            weight._buf._data,
+            weight._buf.format_char,
+            outer,
+            in_features,
+            out_features,
+            result_format,
+        )
+        return _tensor_from_parts(
+            out_bits,
+            result_dtype,
+            outer * out_features,
+            result_format,
+            out_shape,
+            result_dtype,
+        )
+
+    if _runtime_intrinsics_active():
+        raise RuntimeError("intrinsic unavailable: molt_gpu_linear_contiguous")
+
+    x_data = tensor_data_list(x)
+    out_buf = alloc(
+        outer * out_features,
+        result_dtype,
+        format_char=result_format,
+    )
+
+    for batch in range(outer):
+        x_off = batch * in_features
+        out_off = batch * out_features
+        for out_idx in range(out_features):
+            w_off = out_idx * in_features
+            acc = 0.0
+            for k in range(in_features):
+                acc += x_data[x_off + k] * weight._buf[w_off + k]
+            out_buf[out_off + out_idx] = acc
+
+    return _tensor_from_buffer(out_buf, out_shape, result_dtype)
+
+
+def tensor_linear_split_last_dim(
+    x: "Tensor", weight: "Tensor", sizes
+) -> tuple["Tensor", ...]:
+    if not isinstance(weight, Tensor):
+        return NotImplemented
+
+    x_shape = x._shape
+    weight_shape = weight._shape
+    if len(weight_shape) != 2:
+        raise ValueError(f"linear weight must be 2D, got {weight_shape}")
+    if len(x_shape) == 0:
+        raise ValueError("linear input must be at least 1D")
+
+    normalized_sizes = []
+    for size in sizes:
+        if isinstance(size, bool):
+            raise TypeError("split sizes must be integers")
+        if isinstance(size, int):
+            normalized_sizes.append(size)
+            continue
+        try:
+            normalized_sizes.append(operator.index(size))
+        except TypeError as exc:
+            raise TypeError("split sizes must be integers") from exc
+    sizes = tuple(normalized_sizes)
+    if any(size < 0 for size in sizes):
+        raise ValueError("split sizes must be non-negative")
+
+    in_features = x_shape[-1]
+    out_features, weight_in = weight_shape
+    if in_features != weight_in:
+        raise ValueError(
+            f"Linear shape mismatch: {x_shape} with weight {weight_shape}"
+        )
+    if sum(sizes) != out_features:
+        raise ValueError(
+            f"split sizes {sizes} do not match projected dimension {out_features}"
+        )
+
+    outer = _product(x_shape[:-1]) if len(x_shape) > 1 else 1
+    if x._dtype is float and weight._dtype is float:
+        result_dtype = x._dtype
+        if (
+            x._buf.element_type is float
+            and weight._buf.element_type is float
+            and x._buf.format_char == "f"
+            and weight._buf.format_char == "f"
+        ):
+            result_format = "f"
+        else:
+            result_format = "d"
+    else:
+        result_dtype = x._dtype
+        result_format = x._buf.format_char
+    prefix_shape = x_shape[:-1]
+
+    if _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS is not None:
+        out_parts = _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS(
+            x._buf._data,
+            x._buf.format_char,
+            weight._buf._data,
+            weight._buf.format_char,
+            outer,
+            in_features,
+            sizes,
+            result_format,
+        )
+        if len(out_parts) != len(sizes):
+            raise RuntimeError("intrinsic returned wrong split count")
+        return tuple(
+            _tensor_from_parts(
+                part_bits,
+                result_dtype,
+                outer * size,
+                result_format,
+                prefix_shape + (size,),
+                result_dtype,
+            )
+            for size, part_bits in zip(sizes, out_parts)
+        )
+
+    if _runtime_intrinsics_active():
+        raise RuntimeError("intrinsic unavailable: molt_gpu_linear_split_last_dim_contiguous")
+
+    return tensor_linear(x, weight).split_last_dim(sizes)
+
+
+def tensor_linear_squared_relu_gate_interleaved(
+    x: "Tensor", weight: "Tensor"
+) -> "Tensor":
+    if not isinstance(weight, Tensor):
+        return NotImplemented
+    x_shape = x._shape
+    weight_shape = weight._shape
+    if len(weight_shape) != 2:
+        raise ValueError(f"linear weight must be 2D, got {weight_shape}")
+    if len(x_shape) == 0:
+        raise ValueError("linear input must be at least 1D")
+
+    in_features = x_shape[-1]
+    out_features, weight_in = weight_shape
+    if in_features != weight_in:
+        raise ValueError(
+            f"Linear shape mismatch: {x_shape} with weight {weight_shape}"
+        )
+    if out_features % 2 != 0:
+        raise ValueError(
+            f"interleaved gate weight output dimension must be even, got {out_features}"
+        )
+
+    outer = _product(x_shape[:-1]) if len(x_shape) > 1 else 1
+    hidden = out_features // 2
+    prefix_shape = x_shape[:-1]
+    out_shape = prefix_shape + (hidden,)
+    if x._dtype is float and weight._dtype is float:
+        result_dtype = x._dtype
+        if (
+            x._buf.element_type is float
+            and weight._buf.element_type is float
+            and x._buf.format_char == "f"
+            and weight._buf.format_char == "f"
+        ):
+            result_format = "f"
+        else:
+            result_format = "d"
+    else:
+        result_dtype = x._dtype
+        result_format = x._buf.format_char
+
+    if _MOLT_GPU_LINEAR_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS is not None:
+        out_bits = _MOLT_GPU_LINEAR_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS(
+            x._buf._data,
+            x._buf.format_char,
+            weight._buf._data,
+            weight._buf.format_char,
+            outer,
+            in_features,
+            result_format,
+        )
+        return _tensor_from_parts(
+            out_bits,
+            result_dtype,
+            outer * hidden,
+            result_format,
+            out_shape,
+            result_dtype,
+        )
+
+    if _runtime_intrinsics_active():
+        raise RuntimeError(
+            "intrinsic unavailable: molt_gpu_linear_squared_relu_gate_interleaved_contiguous"
+        )
+
+    projected = tensor_linear(x, weight)
+    data = tensor_data_list(projected)
+    axis_len = projected._shape[-1]
+    hidden = axis_len // 2
+    out_buf = alloc(_product(out_shape), result_dtype, format_char=result_format)
+
+    for row in range(outer):
+        in_base = row * axis_len
+        out_base = row * hidden
+        for i in range(hidden):
+            gate = float(data[in_base + 2 * i])
+            up = float(data[in_base + 2 * i + 1])
+            relu = gate if gate > 0.0 else 0.0
+            out_buf[out_base + i] = relu * relu * up
+
+    return _tensor_from_buffer(out_buf, out_shape, result_dtype)
+
+
+def tensor_permute_dims(x: "Tensor", dims) -> "Tensor":
+    if not isinstance(x, Tensor):
+        return NotImplemented
+    x_ndim = len(x._shape)
+    if len(dims) == 1 and isinstance(dims[0], (list, tuple)):
+        dims = tuple(dims[0])
+    else:
+        dims = tuple(dims)
+
+    if len(dims) != x_ndim:
+        raise ValueError(
+            f"permute expected {x_ndim} dims for shape {x._shape}, got {dims}"
+        )
+
+    normalized = []
+    for dim in dims:
+        if dim < 0:
+            dim += x_ndim
+        if dim < 0 or dim >= x_ndim:
+            raise ValueError(f"permute dim {dim} out of range for ndim={x_ndim}")
+        normalized.append(dim)
+    if sorted(normalized) != list(range(x_ndim)):
+        raise ValueError(f"permute dims must be a permutation of 0..{x_ndim - 1}")
+
+    if x_ndim <= 1:
+        return _tensor_from_buffer(x._buf, x._shape, x._dtype)
+
+    old_shape = x._shape
+    new_shape = tuple(old_shape[dim] for dim in normalized)
+    if _MOLT_GPU_PERMUTE_CONTIGUOUS is not None:
+        out_bits = _MOLT_GPU_PERMUTE_CONTIGUOUS(
+            x._buf._data,
+            x._buf.format_char,
+            old_shape,
+            normalized,
+            x._buf.format_char,
+        )
+        return _tensor_from_parts(
+            out_bits,
+            x._buf.element_type,
+            x.size,
+            x._buf.format_char,
+            new_shape,
+            x._dtype,
+        )
+
+    data = tensor_data_list(x)
+    result = [0.0] * len(data)
+
+    old_strides = []
+    stride = 1
+    for size in reversed(old_shape):
+        old_strides.append(stride)
+        stride *= size
+    old_strides.reverse()
+
+    new_strides = []
+    stride = 1
+    for size in reversed(new_shape):
+        new_strides.append(stride)
+        stride *= size
+    new_strides.reverse()
+
+    for old_index, value in enumerate(data):
+        rem = old_index
+        coords = []
+        for axis_stride, axis_size in zip(old_strides, old_shape):
+            coord = rem // axis_stride
+            rem %= axis_stride
+            coords.append(coord)
+
+        new_index = 0
+        for axis, coord in enumerate(normalized):
+            new_index += coords[coord] * new_strides[axis]
+        result[new_index] = value
+
+    out_buf = alloc(len(result), x._dtype, format_char=x._buf.format_char)
+    for idx, value in enumerate(result):
+        out_buf[idx] = value
+    return _tensor_from_buffer(out_buf, new_shape, x._dtype)
+
+
+def tensor_softmax_last_axis(x: "Tensor") -> "Tensor":
+    if not isinstance(x, Tensor):
+        return NotImplemented
+    if x.ndim == 0:
+        return Tensor(1.0)
+
+    if _MOLT_GPU_SOFTMAX_LAST_AXIS_CONTIGUOUS is not None:
+        out_bits = _MOLT_GPU_SOFTMAX_LAST_AXIS_CONTIGUOUS(
+            x._buf._data,
+            x._buf.format_char,
+            x._shape,
+            x._buf.format_char,
+        )
+        return _tensor_from_parts(
+            out_bits,
+            x._dtype,
+            x.size,
+            x._buf.format_char,
+            x._shape,
+            x._dtype,
+        )
+
+    if _runtime_intrinsics_active():
+        raise RuntimeError("intrinsic unavailable: molt_gpu_softmax_last_axis_contiguous")
+
+    data = tensor_data_list(x)
+    outer = _product(x._shape[:-1]) if x.ndim > 1 else 1
+    axis_len = x._shape[-1]
+    result = [0.0] * len(data)
+
+    for row in range(outer):
+        base = row * axis_len
+        vals = data[base:base + axis_len]
+        max_val = max(vals)
+        exps = [math.exp(v - max_val) for v in vals]
+        total = sum(exps)
+        for idx, exp_v in enumerate(exps):
+            result[base + idx] = exp_v / total
+
+    out_buf = alloc(len(result), x._dtype, format_char=x._buf.format_char)
+    for idx, value in enumerate(result):
+        out_buf[idx] = value
+    return _tensor_from_buffer(out_buf, x._shape, x._dtype)
+
+
+def tensor_reshape_view(x: "Tensor", shape) -> "Tensor":
+    if not isinstance(x, Tensor):
+        return NotImplemented
+    if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
+        shape = tuple(shape[0])
+
+    neg_idx = None
+    known = 1
+    for i, s in enumerate(shape):
+        if s == -1:
+            if neg_idx is not None:
+                raise ValueError("Only one dimension can be -1")
+            neg_idx = i
+        else:
+            known *= s
+
+    if neg_idx is not None:
+        inferred = x.size // known
+        shape = shape[:neg_idx] + (inferred,) + shape[neg_idx + 1:]
+
+    if _product(shape) != x.size:
+        raise ValueError(
+            f"Cannot reshape tensor of size {x.size} into shape {shape}"
+        )
+    return _tensor_from_buffer(x._buf, shape, x._dtype)
+
+
+def tensor_data_list(x: "Tensor") -> list:
+    if not isinstance(x, Tensor):
+        raise TypeError(f"Expected Tensor, got {type(x)!r}")
+    return _buffer_to_list(x._buf, x.size)
+
+
+def tensor_take_rows(
+    x: "Tensor", indices, *, allow_negative: bool = True
+) -> "Tensor":
+    if not isinstance(x, Tensor):
+        return NotImplemented
+    if x.ndim == 0:
+        raise ValueError("take_rows requires a tensor with at least 1 dimension")
+
+    if not isinstance(indices, Tensor):
+        indices = Tensor(indices)
+
+    rows = tensor_data_list(indices)
+    row_shape = x._shape[1:]
+    row_size = _product(row_shape) if row_shape else 1
+    width = row_size * x._buf.itemsize
+    out = bytearray(len(rows) * width)
+
+    for out_row, raw_idx in enumerate(rows):
+        idx = int(raw_idx)
+        if idx != raw_idx:
+            raise TypeError(f"take_rows indices must be integers, got {raw_idx!r}")
+        if idx < 0 and allow_negative:
+            idx += x._shape[0]
+        if idx < 0 or idx >= x._shape[0]:
+            raise IndexError(
+                f"Index {raw_idx} out of range for axis 0 with size {x._shape[0]}"
+            )
+        src_start = idx * width
+        dst_start = out_row * width
+        out[dst_start:dst_start + width] = x._buf._data[src_start:src_start + width]
+
+    out_buf = Buffer(
+        out,
+        x._buf.element_type,
+        len(rows) * row_size,
+        format_char=x._buf.format_char,
+    )
+    return _tensor_from_buffer(out_buf, indices.shape + row_shape, x._dtype)
 
 
 def _flatten_nested(data):
@@ -234,29 +742,7 @@ class Tensor:
 
         One dimension can be -1, which is inferred from the others.
         """
-        if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
-            shape = tuple(shape[0])
-
-        # Handle -1 dimension
-        neg_idx = None
-        known = 1
-        for i, s in enumerate(shape):
-            if s == -1:
-                if neg_idx is not None:
-                    raise ValueError("Only one dimension can be -1")
-                neg_idx = i
-            else:
-                known *= s
-
-        if neg_idx is not None:
-            inferred = self.size // known
-            shape = shape[:neg_idx] + (inferred,) + shape[neg_idx + 1:]
-
-        if _product(shape) != self.size:
-            raise ValueError(
-                f"Cannot reshape tensor of size {self.size} into shape {shape}"
-            )
-        return Tensor(self._buf, shape=shape, dtype=self._dtype)
+        return tensor_reshape_view(self, shape)
 
     def transpose(self) -> 'Tensor':
         """Transpose a 2D tensor (swap rows and columns)."""
@@ -281,77 +767,7 @@ class Tensor:
 
     def permute(self, *dims) -> 'Tensor':
         """Reorder tensor dimensions."""
-        if len(dims) == 1 and isinstance(dims[0], (list, tuple)):
-            dims = tuple(dims[0])
-        else:
-            dims = tuple(dims)
-
-        if len(dims) != self.ndim:
-            raise ValueError(
-                f"permute expected {self.ndim} dims for shape {self._shape}, got {dims}"
-            )
-
-        normalized = []
-        for dim in dims:
-            if dim < 0:
-                dim += self.ndim
-            if dim < 0 or dim >= self.ndim:
-                raise ValueError(f"permute dim {dim} out of range for ndim={self.ndim}")
-            normalized.append(dim)
-        if sorted(normalized) != list(range(self.ndim)):
-            raise ValueError(f"permute dims must be a permutation of 0..{self.ndim - 1}")
-
-        if self.ndim <= 1:
-            return Tensor(self._buf, shape=self._shape, dtype=self._dtype)
-
-        old_shape = self._shape
-        new_shape = tuple(old_shape[dim] for dim in normalized)
-        if _MOLT_GPU_PERMUTE_CONTIGUOUS is not None:
-            out_bits = _MOLT_GPU_PERMUTE_CONTIGUOUS(
-                self._buf._data,
-                self._buf.format_char,
-                old_shape,
-                normalized,
-                self._buf.format_char,
-            )
-            out_buf = Buffer(
-                out_bits,
-                self._buf.element_type,
-                self.size,
-                format_char=self._buf.format_char,
-            )
-            return Tensor(out_buf, shape=new_shape, dtype=self._dtype)
-        data = self._data_list()
-        result = [0.0] * len(data)
-
-        old_strides = []
-        stride = 1
-        for size in reversed(old_shape):
-            old_strides.append(stride)
-            stride *= size
-        old_strides.reverse()
-
-        new_strides = []
-        stride = 1
-        for size in reversed(new_shape):
-            new_strides.append(stride)
-            stride *= size
-        new_strides.reverse()
-
-        for old_index, value in enumerate(data):
-            rem = old_index
-            coords = []
-            for axis_stride, axis_size in zip(old_strides, old_shape):
-                coord = rem // axis_stride
-                rem %= axis_stride
-                coords.append(coord)
-
-            new_index = 0
-            for axis, coord in enumerate(normalized):
-                new_index += coords[coord] * new_strides[axis]
-            result[new_index] = value
-
-        return self._from_flat(result, new_shape)
+        return tensor_permute_dims(self, dims)
 
     @property
     def T(self) -> 'Tensor':
@@ -674,144 +1090,15 @@ class Tensor:
         This computes ``self @ weight.T`` without materializing a transposed copy
         of ``weight``. Leading dimensions on ``self`` are treated as batch dims.
         """
-        if not isinstance(weight, Tensor):
-            return NotImplemented
-
-        if weight.ndim != 2:
-            raise ValueError(f"linear weight must be 2D, got {weight.shape}")
-
-        if self.ndim == 0:
-            raise ValueError("linear input must be at least 1D")
-
-        in_features = self._shape[-1]
-        out_features, weight_in = weight._shape
-        if in_features != weight_in:
-            raise ValueError(
-                f"Linear shape mismatch: {self._shape} with weight {weight._shape}"
-            )
-
-        outer = _product(self._shape[:-1]) if self.ndim > 1 else 1
-        result_format = None
-        if self._dtype is float and weight._dtype is float:
-            result_format = _preferred_float_format(self, weight)
-        else:
-            result_format = self._buf.format_char
-
-        if _MOLT_GPU_LINEAR_CONTIGUOUS is not None:
-            out_bits = _MOLT_GPU_LINEAR_CONTIGUOUS(
-                self._buf._data,
-                self._buf.format_char,
-                weight._buf._data,
-                weight._buf.format_char,
-                outer,
-                in_features,
-                out_features,
-                result_format,
-            )
-            out_buf = Buffer(
-                out_bits,
-                self._dtype,
-                outer * out_features,
-                format_char=result_format,
-            )
-            out_shape = self._shape[:-1] + (out_features,)
-            if not out_shape:
-                out_shape = (out_features,)
-            return Tensor(out_buf, shape=out_shape, dtype=self._dtype)
-
-        if _runtime_intrinsics_active():
-            raise RuntimeError("intrinsic unavailable: molt_gpu_linear_contiguous")
-
-        x_data = self._data_list()
-        out_buf = alloc(
-            outer * out_features,
-            self._dtype,
-            format_char=result_format,
-        )
-
-        for batch in range(outer):
-            x_off = batch * in_features
-            out_off = batch * out_features
-            for out_idx in range(out_features):
-                w_off = out_idx * in_features
-                acc = 0.0
-                for k in range(in_features):
-                    acc += x_data[x_off + k] * weight._buf[w_off + k]
-                out_buf[out_off + out_idx] = acc
-
-        out_shape = self._shape[:-1] + (out_features,)
-        if not out_shape:
-            out_shape = (out_features,)
-        return Tensor(out_buf, shape=out_shape, dtype=self._dtype)
+        return tensor_linear(self, weight)
 
     def linear_split_last_dim(self, weight, sizes) -> tuple['Tensor', ...]:
         """Apply a linear projection, then split the output last dimension."""
-        if not isinstance(weight, Tensor):
-            return NotImplemented
+        return tensor_linear_split_last_dim(self, weight, sizes)
 
-        if weight.ndim != 2:
-            raise ValueError(f"linear weight must be 2D, got {weight.shape}")
-        if self.ndim == 0:
-            raise ValueError("linear input must be at least 1D")
-
-        normalized_sizes = []
-        for size in sizes:
-            if isinstance(size, bool):
-                raise TypeError("split sizes must be integers")
-            try:
-                normalized_sizes.append(operator.index(size))
-            except TypeError as exc:
-                raise TypeError("split sizes must be integers") from exc
-        sizes = tuple(normalized_sizes)
-        if any(size < 0 for size in sizes):
-            raise ValueError("split sizes must be non-negative")
-
-        in_features = self._shape[-1]
-        out_features, weight_in = weight._shape
-        if in_features != weight_in:
-            raise ValueError(
-                f"Linear shape mismatch: {self._shape} with weight {weight._shape}"
-            )
-        if sum(sizes) != out_features:
-            raise ValueError(
-                f"split sizes {sizes} do not match projected dimension {out_features}"
-            )
-
-        outer = _product(self._shape[:-1]) if self.ndim > 1 else 1
-        if self._dtype is float and weight._dtype is float:
-            result_dtype = self._dtype
-            result_format = _preferred_float_format(self, weight)
-        else:
-            result_dtype = self._dtype
-            result_format = self._buf.format_char
-        prefix_shape = self._shape[:-1]
-
-        if _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS is not None:
-            out_parts = _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS(
-                self._buf._data,
-                self._buf.format_char,
-                weight._buf._data,
-                weight._buf.format_char,
-                outer,
-                in_features,
-                sizes,
-                result_format,
-            )
-            if len(out_parts) != len(sizes):
-                raise RuntimeError("intrinsic returned wrong split count")
-            return tuple(
-                Tensor(
-                    Buffer(part_bits, result_dtype, outer * size, format_char=result_format),
-                    shape=prefix_shape + (size,),
-                    dtype=result_dtype,
-                )
-                for size, part_bits in zip(sizes, out_parts)
-            )
-
-        if _runtime_intrinsics_active():
-            raise RuntimeError("intrinsic unavailable: molt_gpu_linear_split_last_dim_contiguous")
-
-        return self.linear(weight).split_last_dim(sizes)
+    def linear_squared_relu_gate_interleaved(self, weight) -> 'Tensor':
+        """Apply linear(weight) then interleaved squared-ReLU gating."""
+        return tensor_linear_squared_relu_gate_interleaved(self, weight)
 
     def split_last_dim(self, sizes) -> tuple['Tensor', ...]:
         """Split the last dimension into contiguous views copied into new buffers."""
@@ -889,6 +1176,30 @@ class Tensor:
                 dtype=self._dtype,
             )
 
+        out_shape = self._shape[:axis] + (
+            self._shape[axis] * repeats,
+        ) + self._shape[axis + 1:]
+        if _MOLT_GPU_REPEAT_AXIS_CONTIGUOUS is not None:
+            out_bits = _MOLT_GPU_REPEAT_AXIS_CONTIGUOUS(
+                self._buf._data,
+                self._buf.format_char,
+                self._shape,
+                axis,
+                repeats,
+                self._buf.format_char,
+            )
+            return _tensor_from_parts(
+                out_bits,
+                self._buf.element_type,
+                _product(out_shape),
+                self._buf.format_char,
+                out_shape,
+                self._dtype,
+            )
+
+        if _runtime_intrinsics_active():
+            raise RuntimeError("intrinsic unavailable: molt_gpu_repeat_axis_contiguous")
+
         outer = _product(self._shape[:axis]) if axis > 0 else 1
         axis_len = self._shape[axis]
         inner = _product(self._shape[axis + 1:]) if axis + 1 < self.ndim else 1
@@ -905,9 +1216,7 @@ class Tensor:
                 src_base = src_outer + axis_idx * chunk_bytes
                 chunk = src[src_base:src_base + chunk_bytes]
                 dst_base = dst_outer + axis_idx * repeats * chunk_bytes
-                for rep in range(repeats):
-                    rep_base = dst_base + rep * chunk_bytes
-                    out[rep_base:rep_base + chunk_bytes] = chunk
+                out[dst_base:dst_base + repeats * chunk_bytes] = chunk * repeats
 
         out_shape = self._shape[:axis] + (out_axis_len,) + self._shape[axis + 1:]
         out_buf = Buffer(
@@ -920,39 +1229,7 @@ class Tensor:
 
     def take_rows(self, indices, *, allow_negative: bool = True) -> 'Tensor':
         """Gather slices along axis 0 without materializing the full tensor."""
-        if self.ndim == 0:
-            raise ValueError("take_rows requires a tensor with at least 1 dimension")
-
-        if not isinstance(indices, Tensor):
-            indices = Tensor(indices)
-
-        rows = indices._data_list()
-        row_shape = self._shape[1:]
-        row_size = _product(row_shape) if row_shape else 1
-        width = row_size * self._buf.itemsize
-        out = bytearray(len(rows) * width)
-
-        for out_row, raw_idx in enumerate(rows):
-            idx = int(raw_idx)
-            if idx != raw_idx:
-                raise TypeError(f"take_rows indices must be integers, got {raw_idx!r}")
-            if idx < 0 and allow_negative:
-                idx += self._shape[0]
-            if idx < 0 or idx >= self._shape[0]:
-                raise IndexError(
-                    f"Index {raw_idx} out of range for axis 0 with size {self._shape[0]}"
-                )
-            src_start = idx * width
-            dst_start = out_row * width
-            out[dst_start:dst_start + width] = self._buf._data[src_start:src_start + width]
-
-        out_buf = Buffer(
-            out,
-            self._buf.element_type,
-            len(rows) * row_size,
-            format_char=self._buf.format_char,
-        )
-        return Tensor(out_buf, shape=indices.shape + row_shape, dtype=self._dtype)
+        return tensor_take_rows(self, indices, allow_negative=allow_negative)
 
     # ── Reductions ────────────────────────────────────────────────────
 
@@ -1067,19 +1344,7 @@ class Tensor:
             return Tensor(1.0)
 
         if axis == self.ndim - 1 and _MOLT_GPU_SOFTMAX_LAST_AXIS_CONTIGUOUS is not None:
-            out_bits = _MOLT_GPU_SOFTMAX_LAST_AXIS_CONTIGUOUS(
-                self._buf._data,
-                self._buf.format_char,
-                self._shape,
-                self._buf.format_char,
-            )
-            out_buf = Buffer(
-                out_bits,
-                self._dtype,
-                self.size,
-                format_char=self._buf.format_char,
-            )
-            return Tensor(out_buf, shape=self._shape, dtype=self._dtype)
+            return tensor_softmax_last_axis(self)
 
         if axis == self.ndim - 1 and _runtime_intrinsics_active():
             raise RuntimeError("intrinsic unavailable: molt_gpu_softmax_last_axis_contiguous")
