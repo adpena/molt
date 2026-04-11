@@ -207,6 +207,8 @@ def build_wasm_linked(
         "molt.cli",
         "build",
         str(src),
+        "--build-profile",
+        "dev",
         "--target",
         "wasm",
         "--require-linked",
