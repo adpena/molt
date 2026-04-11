@@ -8735,7 +8735,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
     monkeypatch.setenv("MOLT_STDLIB_MODULE_SYMBOLS", '["ambient_mod"]')
     monkeypatch.setenv("MOLT_ENTRY_MODULE", "ambient.entry")
 
-    def fake_subprocess_run(
+    def fake_run_subprocess_captured_to_tempfiles(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         env = cast(dict[str, str] | None, kwargs.get("env"))
@@ -8746,7 +8746,11 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
         output_path.write_bytes(b"object")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(
+        cli,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_run_subprocess_captured_to_tempfiles,
+    )
 
     result, error = cli._execute_backend_compile(
         cache=False,
@@ -8805,6 +8809,98 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
     assert env["MOLT_STDLIB_CACHE_KEY"] == "real-key"
     assert env["MOLT_STDLIB_MODULE_SYMBOLS"] == '["builtins","sys"]'
     assert env["MOLT_ENTRY_MODULE"] == entry_module
+
+
+def test_native_backend_compile_clears_stale_partition_env_without_split(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    output_artifact = project_root / "build" / "main.o"
+    backend_bin = tmp_path / "backend-bin"
+    artifacts_root = tmp_path / "artifacts"
+    captured_envs: list[dict[str, str] | None] = []
+
+    monkeypatch.setenv("MOLT_STDLIB_OBJ", str(tmp_path / "ambient.stdlib.o"))
+    monkeypatch.setenv("MOLT_STDLIB_CACHE_KEY", "ambient-key")
+    monkeypatch.setenv("MOLT_STDLIB_MODULE_SYMBOLS", '["ambient_mod"]')
+    monkeypatch.setenv("MOLT_ENTRY_MODULE", "ambient.entry")
+
+    def fake_run_subprocess_captured_to_tempfiles(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        env = cast(dict[str, str] | None, kwargs.get("env"))
+        captured_envs.append(env)
+        assert env is not None
+        output_path = Path(cmd[cmd.index("--output") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"object")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(
+        cli,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_run_subprocess_captured_to_tempfiles,
+    )
+
+    result, error = cli._execute_backend_compile(
+        cache=False,
+        cache_path=None,
+        function_cache_path=None,
+        artifacts_root=artifacts_root,
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=False,
+        diagnostics_enabled=False,
+        phase_starts={},
+        daemon_ready=False,
+        daemon_socket=None,
+        project_root=project_root,
+        output_artifact=output_artifact,
+        cache_key=None,
+        function_cache_key=None,
+        cache_setup=cli._BackendCacheSetup(
+            cache_enabled=False,
+            cache_key=None,
+            function_cache_key=None,
+            cache_path=None,
+            function_cache_path=None,
+            stdlib_object_path=None,
+            stdlib_object_cache_key=None,
+            cache_candidates=(),
+            cache_hit=False,
+            cache_hit_tier=None,
+            stdlib_module_symbols_json=None,
+        ),
+        target_triple=None,
+        backend_daemon_config_digest=None,
+        ir={"functions": []},
+        json_output=False,
+        warnings=[],
+        verbose=False,
+        backend_bin=backend_bin,
+        backend_env=None,
+        backend_timeout=None,
+        molt_root=project_root,
+        backend_cargo_profile="dev-fast",
+        entry_module="pkg.app",
+        _ensure_backend_ir_bytes=lambda: b"{}",
+        _get_backend_ir_fmt=lambda: "json",
+        cache_hit=False,
+        backend_daemon_cached=None,
+        backend_daemon_cache_tier=None,
+        backend_daemon_health=None,
+    )
+
+    assert error is None
+    assert result is not None
+    assert captured_envs and captured_envs[0] is not None
+    env = captured_envs[0]
+    assert "MOLT_STDLIB_OBJ" not in env
+    assert "MOLT_STDLIB_CACHE_KEY" not in env
+    assert "MOLT_STDLIB_MODULE_SYMBOLS" not in env
+    assert env["MOLT_ENTRY_MODULE"] == "pkg.app"
 
 
 def test_backend_compile_stages_one_shot_output_into_cache(
