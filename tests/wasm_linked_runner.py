@@ -253,23 +253,6 @@ def build_wasm_linked(
     assert build.returncode == 0, build.stderr
     output_wasm = out_dir / "output_linked.wasm"
     assert output_wasm.exists(), "linked wasm output missing"
-    # Keep runtime path explicit for node runner so tests do not depend on
-    # repo-root wasm artifacts.
-    runtime_candidates = [
-        Path(env["CARGO_TARGET_DIR"])
-        / "wasm32-wasip1"
-        / "release"
-        / "molt_runtime.wasm",
-        Path(env["CARGO_TARGET_DIR"])
-        / "wasm32-wasip1"
-        / "release"
-        / "deps"
-        / "molt_runtime.wasm",
-    ]
-    for candidate in runtime_candidates:
-        if candidate.exists():
-            os.environ["MOLT_RUNTIME_WASM"] = str(candidate)
-            break
     return output_wasm
 
 
@@ -277,6 +260,14 @@ def run_wasm_linked(
     root: Path, wasm_path: Path, *, env_overrides: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    for key in (
+        "MOLT_WASM_DIRECT_LINK",
+        "MOLT_WASM_PREFER_LINKED",
+        "MOLT_WASM_LINKED_PATH",
+        "MOLT_WASM_TABLE_BASE",
+        "MOLT_RUNTIME_WASM",
+    ):
+        env.pop(key, None)
     env.setdefault("NODE_NO_WARNINGS", "1")
     if env_overrides:
         env.update(env_overrides)
