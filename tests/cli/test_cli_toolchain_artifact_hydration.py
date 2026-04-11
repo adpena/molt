@@ -91,3 +91,50 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
         1.0,
     )
     assert isolated_runtime.read_text() == "runtime-lib"
+
+
+def test_ensure_runtime_wasm_hydrates_from_canonical_target(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path
+    canonical_target = project_root / "target"
+    isolated_target = project_root / "isolated-target"
+    profile_dir = cli._cargo_profile_dir("dev-fast")
+    canonical_runtime = cli._wasm_runtime_artifact_path(canonical_target, profile_dir)
+    isolated_runtime = project_root / "wasm" / "molt_runtime.wasm"
+    canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
+    canonical_runtime.write_bytes(b"\x00asm\x01\x00\x00\x00runtime")
+
+    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    canonical_fp = cli._artifact_state_path_for_build_state_root(
+        cli._canonical_build_state_root(project_root),
+        canonical_runtime,
+        subdir="runtime_fingerprints",
+        stem_suffix=f"dev-fast.wasm32-wasip1",
+        extension="fingerprint",
+    )
+    canonical_fp.parent.mkdir(parents=True, exist_ok=True)
+    cli._write_runtime_fingerprint(canonical_fp, fingerprint)
+
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: dict(fingerprint),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_runtime_wasm_cargo_build",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("cargo should not run")),
+    )
+
+    assert cli._ensure_runtime_wasm(
+        isolated_runtime,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+        project_root=project_root,
+    )
+    assert isolated_runtime.read_bytes() == canonical_runtime.read_bytes()
