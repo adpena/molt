@@ -51,6 +51,8 @@ def optimize(
     output_path: Path | None = None,
     level: str = "O2",
     extra_passes: list[str] | None = None,
+    *,
+    converge: bool = True,
 ) -> dict[str, object]:
     """Run ``wasm-opt`` on *input_path*.
 
@@ -101,8 +103,9 @@ def optimize(
 
     input_bytes = input_path.stat().st_size
 
-    cmd = [wasm_opt, f"-{level}", *_DEFAULT_FEATURE_FLAGS,
-           "--strip-producers", "--converge"]
+    cmd = [wasm_opt, f"-{level}", *_DEFAULT_FEATURE_FLAGS, "--strip-producers"]
+    if converge:
+        cmd.append("--converge")
     if extra_passes:
         cmd.extend(extra_passes)
     cmd.extend([str(input_path), "-o", str(output_path)])
