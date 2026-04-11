@@ -40,7 +40,7 @@ For the full setup and troubleshooting path, use
 [docs/getting-started.md](docs/getting-started.md).
 
 ```bash
-export PYTHONPATH=src
+uv sync --group dev --python 3.12
 uv run --python 3.12 python3 -m molt.cli build examples/hello.py
 ./hello_molt
 ```
@@ -48,7 +48,6 @@ uv run --python 3.12 python3 -m molt.cli build examples/hello.py
 You can also compare behavior directly against CPython:
 
 ```bash
-export PYTHONPATH=src
 uv run --python 3.12 python3 -m molt.cli compare examples/hello.py
 ```
 

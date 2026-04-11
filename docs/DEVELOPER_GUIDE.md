@@ -301,7 +301,7 @@ If you want to modify Molt, follow these steps:
     ```
     For day-to-day compiler/runtime iteration, prefer the dev profile:
     ```bash
-    PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py
+    uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py
     ```
     Use `--profile release` for production parity, benchmark baselines, and release artifacts.
 3.  **Test**:
@@ -360,7 +360,7 @@ If you have a packaged install (Homebrew/Scoop/Winget), keep local dev
 isolated by running the repo CLI directly:
 
 ```bash
-MOLT_HOME=~/.molt-dev PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build examples/hello.py
+MOLT_HOME=~/.molt-dev uv run --python 3.12 python3 -m molt.cli build examples/hello.py
 ```
 
 Build knobs (optional):
@@ -427,9 +427,9 @@ cargo flamegraph -p molt-runtime --bench ptr_registry
 
 ## WASM Workflow
 
-- Build (linked): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py`
-- Build (custom linked output): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`
-- Build (require linked): `PYTHONPATH=src uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py`
+- Build (linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py`
+- Build (custom linked output): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`
+- Build (require linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py`
 - Run (Node/WASI): `node wasm/run_wasm.js dist/output_linked.wasm` (requires linked output; build with `--linked` or `--require-linked`)
 
 ## Operational Assumptions

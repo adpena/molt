@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=80", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "molt"
 version = "0.0.001"
