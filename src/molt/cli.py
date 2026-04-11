@@ -9630,6 +9630,17 @@ def _effective_split_worker_table_base(
     return runtime_table_min
 
 
+@functools.lru_cache(maxsize=1)
+def _reserved_wasm_runtime_callable_count() -> int:
+    include_path = Path(__file__).resolve().parents[2] / "runtime" / "wasm_runtime_callables.inc"
+    pattern = re.compile(r"^\s*\((\d+),")
+    count = 0
+    for line in include_path.read_text().splitlines():
+        if pattern.match(line):
+            count += 1
+    return count
+
+
 def _generate_split_worker_js(
     *,
     shared_memory_initial_pages: int,
@@ -9657,6 +9668,11 @@ def _generate_split_worker_js(
     )
     runtime_table_ref_signatures_json = json.dumps(
         dict(runtime_table_ref_signatures or {}), sort_keys=True
+    )
+    legacy_wasm_table_base = 256
+    reserved_runtime_callable_base = 33
+    reserved_runtime_shared_prefix_len = (
+        reserved_runtime_callable_base + _reserved_wasm_runtime_callable_count() * 2
     )
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
@@ -9744,6 +9760,9 @@ export default {
     const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
     const appTableRefSignatures = __MOLT_APP_TABLE_REF_SIGNATURES__;
     const runtimeTableRefSignatures = __MOLT_RUNTIME_TABLE_REF_SIGNATURES__;
+    const LEGACY_WASM_TABLE_BASE = __MOLT_LEGACY_WASM_TABLE_BASE__;
+    const RESERVED_RUNTIME_CALLABLE_BASE = __MOLT_RESERVED_RUNTIME_CALLABLE_BASE__;
+    const RESERVED_RUNTIME_SHARED_PREFIX_LEN = __MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__;
     const WASI_FILETYPE_CHARACTER_DEVICE = 2;
     const WASI_FILETYPE_DIRECTORY = 3;
     const WASI_FILETYPE_REGULAR_FILE = 4;
@@ -10300,6 +10319,19 @@ export default {
       table.grow(maxIndex + 1 - table.length);
     };
 
+    const remapLegacyRuntimeSharedIdx = (idx) => {
+      if (__MOLT_SHARED_TABLE_BASE__ === null || __MOLT_SHARED_TABLE_BASE__ <= LEGACY_WASM_TABLE_BASE) {
+        return idx;
+      }
+      if (
+        idx >= LEGACY_WASM_TABLE_BASE + RESERVED_RUNTIME_CALLABLE_BASE &&
+        idx < LEGACY_WASM_TABLE_BASE + RESERVED_RUNTIME_SHARED_PREFIX_LEN
+      ) {
+        return idx - LEGACY_WASM_TABLE_BASE + __MOLT_SHARED_TABLE_BASE__;
+      }
+      return idx;
+    };
+
     const buildRuntimeImports = (module, runtimeInstance) => {
       const imports = {};
       const callBindIc = runtimeInstance.exports.molt_call_bind_ic;
@@ -10492,7 +10524,8 @@ export default {
       hostEnv[`molt_call_indirect${arity}`] = (fnIndex, ...args) => {
         const indirectName = `molt_call_indirect${arity}`;
         const idx = Number(fnIndex);
-        const directName = `__molt_table_ref_${idx}`;
+        const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
+        const directName = `__molt_table_ref_${dispatchIdx}`;
         const indirectFn = appInstance?.exports?.[indirectName];
         if (typeof indirectFn === "function") {
           try {
@@ -10502,14 +10535,14 @@ export default {
             throw new Error(`${indirectName} app export failed at idx=${idx}: ${detail}; fnLen=${indirectFn.length}; argsLen=${args.length}`);
           }
         }
-        const tableFn = sharedTable.get(idx);
+        const tableFn = sharedTable.get(dispatchIdx);
         if (typeof tableFn === "function") {
           try {
             return tableFn(...args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             const fnName = tableFn.name || "<anon>";
-            throw new Error(`${indirectName} shared-table entry failed at idx=${idx}: ${detail}; fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`);
+            throw new Error(`${indirectName} shared-table entry failed at idx=${dispatchIdx}: ${detail}; fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`);
           }
         }
         const rtDirectFn = rtInstance?.exports?.[directName];
@@ -10522,7 +10555,7 @@ export default {
           }
         }
         if (typeof tableFn !== "function") {
-          throw new Error(`${indirectName} missing table entry at ${idx}`);
+          throw new Error(`${indirectName} missing table entry at ${dispatchIdx}`);
         }
         return tableFn(...args);
       };
@@ -10623,6 +10656,18 @@ export default {
         .replace(
             "__MOLT_RUNTIME_TABLE_REF_SIGNATURES__",
             runtime_table_ref_signatures_json,
+        )
+        .replace(
+            "__MOLT_LEGACY_WASM_TABLE_BASE__",
+            str(legacy_wasm_table_base),
+        )
+        .replace(
+            "__MOLT_RESERVED_RUNTIME_CALLABLE_BASE__",
+            str(reserved_runtime_callable_base),
+        )
+        .replace(
+            "__MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__",
+            str(reserved_runtime_shared_prefix_len),
         )
         .replace(
             "__MOLT_SHARED_TABLE_BASE__",
@@ -19184,10 +19229,7 @@ def _prepare_non_native_build_result(
                         json_output,
                         command="build",
                     )
-                shared_runtime_required_exports = (
-                    None if _split_runtime else required_runtime_exports
-                )
-                if not ensure_runtime_wasm_shared(shared_runtime_required_exports):
+                if not ensure_runtime_wasm_shared(required_runtime_exports):
                     return None, _fail(
                         "Runtime wasm build failed",
                         json_output,
