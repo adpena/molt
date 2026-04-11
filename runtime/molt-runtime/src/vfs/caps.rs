@@ -1,7 +1,10 @@
 //! Mount-to-capability mapping for VFS access control.
 
 use crate::vfs::VfsError;
+#[cfg(not(target_arch = "wasm32"))]
 use std::cell::RefCell;
+#[cfg(target_arch = "wasm32")]
+use std::sync::atomic::{AtomicU8, Ordering};
 
 // ---------------------------------------------------------------------------
 // IO mode selection
@@ -18,12 +21,41 @@ pub enum IoMode {
     Callback,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 thread_local! {
     static IO_MODE: RefCell<IoMode> = const { RefCell::new(IoMode::Real) };
 }
 
+#[cfg(target_arch = "wasm32")]
+static IO_MODE: AtomicU8 = AtomicU8::new(0);
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+const fn io_mode_encode(mode: IoMode) -> u8 {
+    match mode {
+        IoMode::Real => 0,
+        IoMode::Virtual => 1,
+        IoMode::Callback => 2,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn io_mode_decode(bits: u8) -> IoMode {
+    match bits {
+        1 => IoMode::Virtual,
+        2 => IoMode::Callback,
+        _ => IoMode::Real,
+    }
+}
+
 /// Set the IO mode for the current thread.
 pub fn set_io_mode(mode: IoMode) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        IO_MODE.store(io_mode_encode(mode), Ordering::Relaxed);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     IO_MODE.with(|cell| {
         *cell.borrow_mut() = mode;
     });
@@ -31,7 +63,14 @@ pub fn set_io_mode(mode: IoMode) {
 
 /// Get the current IO mode.
 pub fn io_mode() -> IoMode {
-    IO_MODE.with(|cell| *cell.borrow())
+    #[cfg(target_arch = "wasm32")]
+    {
+        return io_mode_decode(IO_MODE.load(Ordering::Relaxed));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        IO_MODE.with(|cell| *cell.borrow())
+    }
 }
 
 /// Sentinel for "never writable" (distinct from "" which means "always allowed").
@@ -198,5 +237,16 @@ mod tests {
             matches!(result, Err(VfsError::NotFound)),
             "/unknown should be NotFound — got {result:?}"
         );
+    }
+
+    #[test]
+    fn io_mode_roundtrip_updates_and_reads_current_mode() {
+        set_io_mode(IoMode::Real);
+        assert_eq!(io_mode(), IoMode::Real);
+        set_io_mode(IoMode::Virtual);
+        assert_eq!(io_mode(), IoMode::Virtual);
+        set_io_mode(IoMode::Callback);
+        assert_eq!(io_mode(), IoMode::Callback);
+        set_io_mode(IoMode::Real);
     }
 }

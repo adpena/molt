@@ -459,15 +459,32 @@ static CORE_GIL_VT: molt_runtime_core::GilVtable = molt_runtime_core::GilVtable 
     is_held: __core_gil_is_held,
 };
 
+#[inline]
+fn trace_runtime_init_enabled() -> bool {
+    matches!(
+        std::env::var("MOLT_TRACE_RUNTIME_INIT").ok().as_deref(),
+        Some("1")
+    )
+}
+
+#[inline]
+fn trace_runtime_init(stage: &str) {
+    if trace_runtime_init_enabled() {
+        eprintln!("[molt runtime_init] {stage}");
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init() -> u64 {
     #[cfg(target_arch = "wasm32")]
     ensure_wasm_ctors();
+    trace_runtime_init("enter");
     touch_tls_guard();
     #[cfg(not(target_arch = "wasm32"))]
     ensure_debug_sigtrap_handler();
     let _guard = runtime_state_lock().lock().unwrap();
     if !RUNTIME_STATE_PTR.load(AtomicOrdering::SeqCst).is_null() {
+        trace_runtime_init("already_initialized");
         return 1;
     }
     // After `molt_runtime_shutdown` has run, the process is exiting.
@@ -479,42 +496,52 @@ pub extern "C" fn molt_runtime_init() -> u64 {
     // may already be partially destroyed, causing a use-after-free segfault
     // (exit code 245 on macOS / SIGSEGV on Linux).
     if RUNTIME_SHUTDOWN_COMPLETE.load(AtomicOrdering::SeqCst) {
+        trace_runtime_init("shutdown_complete");
         return 0;
     }
     let state = Box::new(RuntimeState::new());
     let ptr = Box::into_raw(state);
     RUNTIME_STATE_PTR.store(ptr, AtomicOrdering::SeqCst);
     let state_ref = unsafe { &*ptr };
+    trace_runtime_init("state_allocated");
     let gil = GilGuard::new();
     {
         let py = gil.token();
         runtime_reset_for_init(&py, state_ref);
     }
+    trace_runtime_init("runtime_reset_for_init");
     // Register synthetic _intrinsics module so stdlib .py files can import it
     {
         let py = crate::concurrency::GilGuard::new();
         let tok = py.token();
         crate::intrinsics::registry::register_intrinsics_module(&tok);
     }
+    trace_runtime_init("intrinsics_registered");
     hold_runtime_gil(gil);
 
     // Initialize the serial crate vtable so all bridge functions dispatch
     // through a single struct instead of 58 individual extern "C" symbols.
     #[cfg(feature = "stdlib_serial")]
     molt_runtime_serial::bridge::init_vtable();
+    trace_runtime_init("serial_vtable");
 
     #[cfg(feature = "stdlib_itertools")]
     molt_runtime_itertools::bridge::init_vtable();
+    trace_runtime_init("itertools_vtable");
 
     // Initialize the core GIL vtable so extracted crates can acquire the GIL
     // via molt-runtime-core without depending on molt-runtime.
     molt_runtime_core::set_gil_vtable(&CORE_GIL_VT);
+    trace_runtime_init("core_gil_vtable");
 
     // Initialize resource limits, audit sink, and IO mode from environment
     // variables set by the capability manifest.
     crate::object::ops_sys::molt_runtime_init_resources();
+    trace_runtime_init("resources");
     crate::object::ops_sys::molt_runtime_init_audit();
+    trace_runtime_init("audit");
     crate::object::ops_sys::molt_runtime_init_io_mode();
+    trace_runtime_init("io_mode");
 
     // SECURITY: Eagerly load capabilities and trusted flag from environment
     // BEFORE any user code runs.  Lazy loading (OnceLock::get_or_init) would
@@ -526,7 +553,9 @@ pub extern "C" fn molt_runtime_init() -> u64 {
         let _ = crate::is_trusted(&tok);
         let _ = crate::has_capability(&tok, "_init");
     }
+    trace_runtime_init("capabilities");
 
+    trace_runtime_init("ok");
     1
 }
 
