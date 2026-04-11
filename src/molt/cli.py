@@ -2756,6 +2756,18 @@ def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> 
     )
 
 
+def _entry_module_root_for_path(path: Path) -> Path:
+    resolved = path.resolve()
+    package_dir = resolved.parent
+    topmost_package_parent = package_dir
+    while (package_dir / "__init__.py").exists():
+        topmost_package_parent = package_dir.parent
+        if topmost_package_parent == package_dir:
+            break
+        package_dir = topmost_package_parent
+    return topmost_package_parent
+
+
 def _module_name_from_resolved_path(
     resolved: Path,
     *,
@@ -3251,7 +3263,7 @@ def _resolve_build_entry(
             return None, _fail(
                 f"File not found: {source_path}", json_output, command=command
             )
-        module_roots.append(source_path.parent)
+        module_roots.append(_entry_module_root_for_path(source_path))
         module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
     if module:
         resolved = _resolve_entry_module(module, module_roots)
