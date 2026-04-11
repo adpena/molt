@@ -173,6 +173,19 @@ extern "C" fn c_api_test_static_noargs(self_bits: u64, arg_bits: u64) -> u64 {
     })
 }
 
+extern "C" fn c_api_test_bound_identity(self_bits: u64, arg_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        if obj_from_bits(self_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "bound self missing");
+        }
+        if arg_bits == 0 || obj_from_bits(arg_bits).is_none() {
+            return raise_exception::<u64>(_py, "TypeError", "bound arg missing");
+        }
+        inc_ref_bits(_py, arg_bits);
+        arg_bits
+    })
+}
+
 fn create_test_heap_class(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]) -> u64 {
     let builtins = crate::builtins::classes::builtin_classes(_py);
     let name_bits = unsafe { molt_string_from(name.as_ptr(), name.len() as u64) };
@@ -656,6 +669,87 @@ fn runtime_intrinsic_function_obj_zero_arg_indirect_call_returns_value() {
         assert!(!exception_pending(_py));
 
         dec_ref_bits(_py, out_bits);
+        dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
+fn call_bind_ic_hits_bound_direct_function_method() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry!(_py, {
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            c_api_test_bound_identity as *const () as usize as u64,
+            2,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+        let class_bits = create_test_heap_class(_py, b"A", &[(b"f", func_bits)]);
+        let _ = crate::molt_class_apply_set_name(class_bits);
+        let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let name_ptr = alloc_string(_py, b"f");
+        assert!(!name_ptr.is_null());
+        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+        let method_bits = molt_object_getattr(inst_bits, name_bits);
+        assert!(!obj_from_bits(method_bits).is_none());
+        let site_bits = MoltObject::from_int(31).bits();
+
+        let builder_a = crate::call::bind::molt_callargs_new(1, 0);
+        let _ = unsafe { crate::molt_callargs_push_pos(builder_a, MoltObject::from_int(9).bits()) };
+        let out_a = crate::call::bind::molt_call_bind_ic(site_bits, method_bits, builder_a);
+        assert_eq!(to_i64(obj_from_bits(out_a)), Some(9));
+        assert!(!exception_pending(_py));
+
+        let builder_b = crate::call::bind::molt_callargs_new(1, 0);
+        let _ = unsafe { crate::molt_callargs_push_pos(builder_b, MoltObject::from_int(11).bits()) };
+        let out_b = crate::call::bind::molt_call_bind_ic(site_bits, method_bits, builder_b);
+        assert_eq!(to_i64(obj_from_bits(out_b)), Some(11));
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, out_b);
+        dec_ref_bits(_py, out_a);
+        dec_ref_bits(_py, method_bits);
+        dec_ref_bits(_py, name_bits);
+        dec_ref_bits(_py, inst_bits);
+        dec_ref_bits(_py, class_bits);
+        dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
+fn call_bind_ic_hits_simple_object_call_bound_function() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry!(_py, {
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            c_api_test_bound_identity as *const () as usize as u64,
+            2,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+        let class_bits = create_test_heap_class(_py, b"CallableA", &[(b"__call__", func_bits)]);
+        let _ = crate::molt_class_apply_set_name(class_bits);
+        let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let site_bits = MoltObject::from_int(37).bits();
+
+        let builder_a = crate::call::bind::molt_callargs_new(1, 0);
+        let _ = unsafe { crate::molt_callargs_push_pos(builder_a, MoltObject::from_int(5).bits()) };
+        let out_a = crate::call::bind::molt_call_bind_ic(site_bits, inst_bits, builder_a);
+        assert_eq!(to_i64(obj_from_bits(out_a)), Some(5));
+        assert!(!exception_pending(_py));
+
+        let builder_b = crate::call::bind::molt_callargs_new(1, 0);
+        let _ = unsafe { crate::molt_callargs_push_pos(builder_b, MoltObject::from_int(7).bits()) };
+        let out_b = crate::call::bind::molt_call_bind_ic(site_bits, inst_bits, builder_b);
+        assert_eq!(to_i64(obj_from_bits(out_b)), Some(7));
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, out_b);
+        dec_ref_bits(_py, out_a);
+        dec_ref_bits(_py, inst_bits);
+        dec_ref_bits(_py, class_bits);
         dec_ref_bits(_py, func_bits);
     });
 }
