@@ -6843,6 +6843,76 @@ def test_prepare_backend_dispatch_prefers_reloc_runtime_for_wasm_layout_probe(
     assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "1234"
 
 
+def test_prepare_backend_dispatch_uses_reloc_runtime_for_split_runtime_table_min_when_shared_runtime_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    runtime_reloc_wasm = tmp_path / "molt_runtime_reloc.wasm"
+    runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    backend_bin = tmp_path / "molt-backend"
+    backend_bin.write_text("")
+
+    calls: list[tuple[str, object | None]] = []
+
+    monkeypatch.delenv("MOLT_WASM_DATA_BASE", raising=False)
+    monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
+    monkeypatch.delenv("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", raising=False)
+    monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
+    monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
+    monkeypatch.setattr(cli, "wasm_runtime_required_import_names", lambda modules: ())
+    monkeypatch.setattr(cli, "_read_wasm_data_end", lambda path: None)
+    monkeypatch.setattr(cli, "_read_wasm_memory_min_bytes", lambda path: None)
+    monkeypatch.setattr(
+        cli,
+        "_read_wasm_table_min",
+        lambda path: 1234 if path == runtime_reloc_wasm else None,
+    )
+
+    def ensure_shared(required=None):
+        calls.append(("shared", frozenset(required) if required else None))
+        return True
+
+    def ensure_reloc():
+        calls.append(("reloc", None))
+        return True
+
+    prepared, err = cli._prepare_backend_dispatch(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        split_runtime=True,
+        linked=True,
+        deterministic=False,
+        profile="dev",
+        runtime_state=cli._RuntimeArtifactState(
+            runtime_wasm=runtime_wasm,
+            runtime_reloc_wasm=runtime_reloc_wasm,
+        ),
+        runtime_cargo_profile="dev-fast",
+        cargo_timeout=1.0,
+        molt_root=tmp_path,
+        target_triple=None,
+        backend_cargo_profile="dev-fast",
+        diagnostics_enabled=False,
+        phase_starts={},
+        json_output=True,
+        backend_daemon_config_digest=None,
+        ensure_runtime_wasm_shared=ensure_shared,
+        ensure_runtime_wasm_reloc=ensure_reloc,
+        resolved_modules=frozenset(),
+        warnings=[],
+    )
+
+    assert err is None
+    assert prepared is not None
+    assert calls == []
+    assert prepared.backend_env is not None
+    assert prepared.backend_env["MOLT_WASM_TABLE_BASE"] == "1234"
+    assert prepared.backend_env["MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN"] == "1234"
+
+
 def test_ensure_runtime_wasm_verified_key_tracks_micro_builtin_feature_shape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
