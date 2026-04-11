@@ -9640,6 +9640,21 @@ export default {
       },
       fd_filestat_set_size: wasiUnsupported,
       fd_readdir: wasiUnsupported,
+      fd_advise: wasiUnsupported,
+      fd_datasync: wasiUnsupported,
+      fd_fdstat_set_flags: wasiUnsupported,
+      fd_fdstat_set_rights: wasiUnsupported,
+      fd_pread: wasiUnsupported,
+      fd_pwrite: wasiUnsupported,
+      fd_renumber: wasiUnsupported,
+      fd_sync: wasiUnsupported,
+      path_filestat_set_times: wasiUnsupported,
+      path_link: wasiUnsupported,
+      path_symlink: wasiUnsupported,
+      sock_accept: wasiUnsupported,
+      sock_recv: wasiUnsupported,
+      sock_send: wasiUnsupported,
+      sock_shutdown: wasiUnsupported,
       environ_sizes_get(countPtr, sizePtr) {
         if (wasmMemory) {
           const view = new DataView(wasmMemory.buffer);
@@ -17054,23 +17069,39 @@ def _prepare_backend_dispatch(
             backend_env["MOLT_WASM_EXTRA_REQUIRED_IMPORTS"] = ",".join(
                 extra_required_imports
             )
+        layout_probe_path: Path | None = None
+        if reloc_requested and linked and runtime_reloc_wasm is not None:
+            if runtime_reloc_wasm.exists():
+                layout_probe_path = runtime_reloc_wasm
+            else:
+                if not ensure_runtime_wasm_reloc():
+                    return None, _fail(
+                        "Runtime wasm build failed",
+                        json_output,
+                        command="build",
+                    )
+                if runtime_reloc_wasm.exists():
+                    layout_probe_path = runtime_reloc_wasm
         if "MOLT_WASM_DATA_BASE" not in backend_env:
-            if not ensure_runtime_wasm_shared():
-                return None, _fail(
-                    "Runtime wasm build failed",
-                    json_output,
-                    command="build",
-                )
+            if layout_probe_path is None:
+                if not ensure_runtime_wasm_shared():
+                    return None, _fail(
+                        "Runtime wasm build failed",
+                        json_output,
+                        command="build",
+                    )
+                if runtime_wasm is not None and runtime_wasm.exists():
+                    layout_probe_path = runtime_wasm
         if (
             "MOLT_WASM_DATA_BASE" not in backend_env
-            and runtime_wasm is not None
-            and runtime_wasm.exists()
+            and layout_probe_path is not None
+            and layout_probe_path.exists()
         ):
             data_base_candidates: list[int] = []
-            data_end = _read_wasm_data_end(runtime_wasm)
+            data_end = _read_wasm_data_end(layout_probe_path)
             if data_end is not None:
                 data_base_candidates.append((data_end + 7) & ~7)
-            memory_min = _read_wasm_memory_min_bytes(runtime_wasm)
+            memory_min = _read_wasm_memory_min_bytes(layout_probe_path)
             if memory_min is not None:
                 data_base_candidates.append((memory_min + 7) & ~7)
             if data_base_candidates:
@@ -17096,20 +17127,7 @@ def _prepare_backend_dispatch(
                     "Failed to read runtime memory layout; using default data base."
                 )
         if "MOLT_WASM_TABLE_BASE" not in backend_env:
-            table_probe_path = runtime_wasm
-            if reloc_requested:
-                if linked and not ensure_runtime_wasm_reloc():
-                    return None, _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-                if (
-                    linked
-                    and runtime_reloc_wasm is not None
-                    and runtime_reloc_wasm.exists()
-                ):
-                    table_probe_path = runtime_reloc_wasm
+            table_probe_path = layout_probe_path or runtime_wasm
             if table_probe_path is not None and table_probe_path.exists():
                 table_base = _read_wasm_table_min(table_probe_path)
                 if table_base is not None:
@@ -17121,14 +17139,20 @@ def _prepare_backend_dispatch(
         if (
             split_runtime
             and "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN" not in backend_env
-            and runtime_wasm is not None
-            and runtime_wasm.exists()
         ):
-            runtime_table_min = _read_wasm_table_min(runtime_wasm)
-            if runtime_table_min is not None:
-                backend_env["MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN"] = str(
-                    runtime_table_min
-                )
+            if runtime_wasm is None or not runtime_wasm.exists():
+                if not ensure_runtime_wasm_shared():
+                    return None, _fail(
+                        "Runtime wasm build failed",
+                        json_output,
+                        command="build",
+                    )
+            if runtime_wasm is not None and runtime_wasm.exists():
+                runtime_table_min = _read_wasm_table_min(runtime_wasm)
+                if runtime_table_min is not None:
+                    backend_env["MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN"] = str(
+                        runtime_table_min
+                    )
     if reloc_requested and backend_env is not None:
         backend_env["MOLT_WASM_LINK"] = "1"
 
