@@ -22671,21 +22671,6 @@ def _wasm_runtime_staticlib_path(target_root: Path, profile_dir: str) -> Path:
     return target_root / "wasm32-wasip1" / profile_dir / "libmolt_runtime.a"
 
 
-def _resolve_built_runtime_staticlib_artifact(target_root: Path, profile_dir: str) -> Path:
-    primary = _wasm_runtime_staticlib_path(target_root, profile_dir)
-    if primary.exists():
-        return primary
-    deps_dir = _wasm_runtime_deps_dir(target_root, profile_dir)
-    candidates = sorted(
-        deps_dir.glob("libmolt_runtime-*.a"),
-        key=lambda path: (path.stat().st_mtime_ns, path.name),
-        reverse=True,
-    )
-    if candidates:
-        return candidates[0]
-    return primary
-
-
 def _wasm_runtime_deps_dir(target_root: Path, profile_dir: str) -> Path:
     return target_root / "wasm32-wasip1" / profile_dir / "deps"
 
@@ -22789,7 +22774,7 @@ def _run_runtime_wasm_cargo_build(
             build_raw.stderr.decode("utf-8", errors="replace"),
         )
     if artifact_kind == "staticlib":
-        return build, _resolve_built_runtime_staticlib_artifact(target_root, profile_dir)
+        return build, _wasm_runtime_staticlib_path(target_root, profile_dir)
     return build, _resolve_built_runtime_wasm_artifact(target_root, profile_dir)
 
 
@@ -23003,10 +22988,7 @@ def _ensure_runtime_wasm(
                     )
                 return False
             return True
-        target_runtime_staticlib = _resolve_built_runtime_staticlib_artifact(
-            target_root,
-            profile_dir,
-        )
+        target_runtime_staticlib = _wasm_runtime_staticlib_path(target_root, profile_dir)
         target_runtime_staticlib_fingerprint_path = (
             _artifact_state_path_for_build_state_root(
                 target_build_state_root,
