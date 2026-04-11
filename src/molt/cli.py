@@ -9579,6 +9579,27 @@ def _wasm_export_function_signatures(
     return export_signatures
 
 
+def _infer_wasm_table_base_from_export_names(
+    export_signatures: Mapping[str, Mapping[str, object]],
+    *,
+    export_name_prefix: str,
+) -> int | None:
+    indices: list[int] = []
+    for name in export_signatures:
+        if not name.startswith(export_name_prefix):
+            continue
+        suffix = name[len(export_name_prefix) :]
+        try:
+            idx = int(suffix)
+        except ValueError:
+            continue
+        if idx > 0:
+            indices.append(idx)
+    if not indices:
+        return None
+    return min(indices)
+
+
 def _generate_split_worker_js(
     *,
     shared_memory_initial_pages: int,
@@ -19303,6 +19324,14 @@ def _prepare_non_native_build_result(
             runtime_table_ref_signatures = _wasm_export_function_signatures(
                 rt_wasm, export_name_prefix="__molt_table_ref_"
             )
+            effective_wasm_table_base = wasm_table_base
+            if effective_wasm_table_base is None:
+                effective_wasm_table_base = _infer_wasm_table_base_from_export_names(
+                    app_table_ref_signatures,
+                    export_name_prefix="__molt_table_ref_",
+                )
+            if effective_wasm_table_base is None:
+                effective_wasm_table_base = rt_table_min
 
             # Generate split-runtime Cloudflare Workers shim with full
             # WASI support and multi-module instantiation.
@@ -19311,7 +19340,7 @@ def _prepare_non_native_build_result(
                 _generate_split_worker_js(
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
-                    shared_table_base=wasm_table_base,
+                    shared_table_base=effective_wasm_table_base,
                     runtime_import_result_kinds=app_runtime_import_result_kinds,
                     runtime_import_signatures=app_runtime_import_signatures,
                     app_table_ref_signatures=app_table_ref_signatures,
