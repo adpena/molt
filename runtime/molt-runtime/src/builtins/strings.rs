@@ -1943,16 +1943,47 @@ impl ConstStrCache {
 }
 
 use std::cell::RefCell;
+use std::sync::{Mutex, OnceLock};
 
+#[cfg(not(target_arch = "wasm32"))]
 thread_local! {
     static CONST_STR_TLS: RefCell<ConstStrCache> = const { RefCell::new(ConstStrCache::new()) };
 }
 
+#[cfg(target_arch = "wasm32")]
+static CONST_STR_WASM: OnceLock<Mutex<ConstStrCache>> = OnceLock::new();
+
+fn with_const_str_cache<R>(f: impl FnOnce(&mut ConstStrCache) -> R) -> R {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let cache = CONST_STR_WASM.get_or_init(|| Mutex::new(ConstStrCache::new()));
+        let mut guard = cache.lock().unwrap();
+        return f(&mut guard);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return CONST_STR_TLS.with(|cell| f(&mut cell.borrow_mut()));
+    }
+}
+
+fn trace_string_from_bytes() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_STRING_FROM_BYTES").as_deref() == Ok("1"))
+}
+
 /// Clear the const-string intern cache (called during runtime teardown).
 pub fn clear_const_str_cache(_py: &crate::PyToken<'_>) {
-    let _ = CONST_STR_TLS.try_with(|cell| {
-        cell.borrow_mut().clear(_py);
-    });
+    #[cfg(target_arch = "wasm32")]
+    {
+        let cache = CONST_STR_WASM.get_or_init(|| Mutex::new(ConstStrCache::new()));
+        cache.lock().unwrap().clear(_py);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = CONST_STR_TLS.try_with(|cell| {
+            cell.borrow_mut().clear(_py);
+        });
+    }
 }
 
 #[inline]
@@ -1973,20 +2004,38 @@ pub unsafe extern "C" fn molt_string_from_bytes(
     unsafe {
         crate::with_gil_entry!(_py, {
             let len = usize_from_bits(len_bits);
+            if trace_string_from_bytes() {
+                eprintln!(
+                    "[molt string_from_bytes] enter ptr=0x{:x} len={} out=0x{:x}",
+                    ptr as usize, len, out as usize
+                );
+            }
             if out.is_null() {
+                if trace_string_from_bytes() {
+                    eprintln!("[molt string_from_bytes] out null");
+                }
                 return 2;
             }
             if ptr.is_null() {
                 if len != 0 {
+                    if trace_string_from_bytes() {
+                        eprintln!("[molt string_from_bytes] ptr null with nonzero len");
+                    }
                     return 1;
                 }
                 // Empty string: allocate directly to avoid from_raw_parts UB
                 // with a null pointer (even with len 0).
                 let obj_ptr = alloc_string(_py, &[]);
                 if obj_ptr.is_null() {
+                    if trace_string_from_bytes() {
+                        eprintln!("[molt string_from_bytes] alloc empty failed");
+                    }
                     return 2;
                 }
                 write_bits_out(out, MoltObject::from_ptr(obj_ptr).bits());
+                if trace_string_from_bytes() {
+                    eprintln!("[molt string_from_bytes] empty ok");
+                }
                 return 0;
             }
 
@@ -1994,18 +2043,27 @@ pub unsafe extern "C" fn molt_string_from_bytes(
             // `const_str` ops always pass the same data-segment pointer for
             // the same literal, so (ptr, len) is an identity key.
             let data_key = ptr as usize;
-            if let Some(bits) = CONST_STR_TLS.with(|cell| cell.borrow().lookup(data_key, len)) {
+            if let Some(bits) = with_const_str_cache(|cache| cache.lookup(data_key, len)) {
                 inc_ref_bits(_py, bits);
                 write_bits_out(out, bits);
+                if trace_string_from_bytes() {
+                    eprintln!("[molt string_from_bytes] cache hit bits=0x{:x}", bits);
+                }
                 return 0;
             }
 
             let slice = std::slice::from_raw_parts(ptr, len);
             if !is_wtf8(slice) {
+                if trace_string_from_bytes() {
+                    eprintln!("[molt string_from_bytes] invalid wtf8");
+                }
                 return 1;
             }
             let obj_ptr = alloc_string(_py, slice);
             if obj_ptr.is_null() {
+                if trace_string_from_bytes() {
+                    eprintln!("[molt string_from_bytes] alloc_string failed");
+                }
                 return 2;
             }
             // Make the string immortal so dec_ref becomes a no-op. Const
@@ -2017,11 +2075,14 @@ pub unsafe extern "C" fn molt_string_from_bytes(
 
             // Cache the newly allocated string for future calls with the
             // same data-segment pointer.
-            CONST_STR_TLS.with(|cell| {
-                cell.borrow_mut().insert(_py, data_key, len, bits);
+            with_const_str_cache(|cache| {
+                cache.insert(_py, data_key, len, bits);
             });
 
             write_bits_out(out, bits);
+            if trace_string_from_bytes() {
+                eprintln!("[molt string_from_bytes] fresh ok bits=0x{:x}", bits);
+            }
             0
         })
     }

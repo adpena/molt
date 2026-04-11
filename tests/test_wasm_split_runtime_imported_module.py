@@ -159,6 +159,33 @@ def test_split_runtime_import_builtins_direct_mode(tmp_path: Path) -> None:
 
 
 @pytest.mark.slow
+def test_split_runtime_sys_version_info_direct_mode(tmp_path: Path) -> None:
+    main_src = tmp_path / "probe_main.py"
+    main_src.write_text(
+        "import sys\n"
+        "print(type(sys.version_info).__name__)\n"
+        "print(sys.version_info[0])\n"
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    build = _build_split(main_src, out_dir)
+    assert build.returncode == 0, (
+        f"split build failed (rc={build.returncode}).\n"
+        f"stdout:\n{build.stdout[-2000:]}\n"
+        f"stderr:\n{build.stderr[-2000:]}"
+    )
+
+    run = _run_split_direct(out_dir)
+    assert run.returncode == 0, (
+        f"direct-link run failed (rc={run.returncode}).\n"
+        f"stdout:\n{run.stdout[-2000:]}\n"
+        f"stderr:\n{run.stderr[-2000:]}"
+    )
+    assert run.stdout == "version_info\n3\n"
+
+
+@pytest.mark.slow
 def test_split_runtime_typing_alias_bootstrap(tmp_path: Path) -> None:
     main_src = tmp_path / "probe_main.py"
     main_src.write_text(
@@ -358,6 +385,34 @@ def test_split_runtime_namedtuple_replace_direct_mode(tmp_path: Path) -> None:
         f"stderr:\n{run.stderr[-2000:]}"
     )
     assert run.stdout == "T(a=3, b=2)\n"
+
+
+@pytest.mark.slow
+def test_split_runtime_inline_python_function_returned_list_prints(tmp_path: Path) -> None:
+    main_src = tmp_path / "probe_main.py"
+    main_src.write_text(
+        "def f():\n"
+        "    return [1, 2]\n"
+        "\n"
+        "print(f())\n"
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    build = _build_split(main_src, out_dir)
+    assert build.returncode == 0, (
+        f"split build failed (rc={build.returncode}).\n"
+        f"stdout:\n{build.stdout[-2000:]}\n"
+        f"stderr:\n{build.stderr[-2000:]}"
+    )
+
+    run = _run_split_direct(out_dir)
+    assert run.returncode == 0, (
+        f"direct-link run failed (rc={run.returncode}).\n"
+        f"stdout:\n{run.stdout[-2000:]}\n"
+        f"stderr:\n{run.stderr[-2000:]}"
+    )
+    assert run.stdout == "[1, 2]\n"
 
 
 @pytest.mark.slow
