@@ -60,6 +60,35 @@ def test_run_wasm_linked_env_overrides_can_opt_out_of_node_warning_suppression(
     assert env.get("NODE_NO_WARNINGS") == "0"
 
 
+def test_run_wasm_linked_scrubs_stale_direct_mode_env(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    wasm_path = tmp_path / "output_linked.wasm"
+    wasm_path.write_bytes(b"\x00asm")
+    monkeypatch.setattr(wasm_runner, "_select_node_binary", lambda: "/usr/bin/node")
+    monkeypatch.setenv("MOLT_WASM_DIRECT_LINK", "1")
+    monkeypatch.setenv("MOLT_WASM_PREFER_LINKED", "0")
+    monkeypatch.setenv("MOLT_WASM_LINKED_PATH", "/tmp/stale-linked.wasm")
+    monkeypatch.setenv("MOLT_WASM_TABLE_BASE", "123")
+    monkeypatch.setenv("MOLT_RUNTIME_WASM", "/tmp/stale-runtime.wasm")
+    recorded: dict[str, Any] = {}
+
+    def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        recorded["env"] = dict(kwargs["env"])
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(wasm_runner.subprocess, "run", _fake_run)
+    result = wasm_runner.run_wasm_linked(tmp_path, wasm_path)
+    assert result.returncode == 0
+    env = cast(dict[str, str], recorded["env"])
+    assert "MOLT_WASM_DIRECT_LINK" not in env
+    assert "MOLT_WASM_PREFER_LINKED" not in env
+    assert "MOLT_WASM_LINKED_PATH" not in env
+    assert "MOLT_WASM_TABLE_BASE" not in env
+    assert "MOLT_RUNTIME_WASM" not in env
+
+
 def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
     monkeypatch,
     tmp_path: Path,
