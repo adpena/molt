@@ -227,3 +227,85 @@ def test_ensure_runtime_wasm_reloc_relinks_from_current_target_staticlib(
     )
     assert linked["staticlib_path"] == current_staticlib
     assert runtime_reloc.read_bytes() == b"\x00asm\x01\x00\x00\x00reloc"
+
+
+def test_ensure_runtime_wasm_reloc_relinks_from_current_target_hashed_staticlib(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path
+    target_root = project_root / "shared-target"
+    profile_dir = cli._cargo_profile_dir("release-fast")
+    current_staticlib = (
+        target_root
+        / "wasm32-wasip1"
+        / profile_dir
+        / "deps"
+        / "libmolt_runtime-deadbeefdeadbeef.a"
+    )
+    runtime_reloc = project_root / "wasm" / "molt_runtime_reloc.wasm"
+    current_staticlib.parent.mkdir(parents=True, exist_ok=True)
+    current_staticlib.write_bytes(b"archive")
+
+    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    current_staticlib_fp = cli._artifact_state_path_for_build_state_root(
+        target_root / ".molt_state",
+        current_staticlib,
+        subdir="runtime_fingerprints",
+        stem_suffix="release-fast.wasm32-wasip1",
+        extension="fingerprint",
+    )
+    current_staticlib_fp.parent.mkdir(parents=True, exist_ok=True)
+    cli._write_runtime_fingerprint(current_staticlib_fp, fingerprint)
+
+    linked: dict[str, Path] = {}
+
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(project_root))
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: dict(fingerprint),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_runtime_wasm_cargo_build",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("cargo should not run")
+        ),
+    )
+
+    def fake_link_runtime_staticlib_to_reloc_wasm(
+        *,
+        staticlib_path: Path,
+        output_path: Path,
+        json_output: bool,
+        link_timeout: float | None,
+    ) -> bool:
+        del json_output, link_timeout
+        linked["staticlib_path"] = staticlib_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"\x00asm\x01\x00\x00\x00reloc")
+        return True
+
+    monkeypatch.setattr(
+        cli,
+        "_link_runtime_staticlib_to_reloc_wasm",
+        fake_link_runtime_staticlib_to_reloc_wasm,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_write_runtime_wasm_integrity_sidecar",
+        lambda _path: None,
+    )
+
+    assert cli._ensure_runtime_wasm(
+        runtime_reloc,
+        reloc=True,
+        json_output=True,
+        cargo_profile="release-fast",
+        cargo_timeout=1.0,
+        project_root=project_root,
+    )
+    assert linked["staticlib_path"] == current_staticlib
+    assert runtime_reloc.read_bytes() == b"\x00asm\x01\x00\x00\x00reloc"
