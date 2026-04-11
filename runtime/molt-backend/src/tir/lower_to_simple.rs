@@ -519,6 +519,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         let Some(else_blk) = func.blocks.get(&else_bid) else {
             continue;
         };
+        let then_predecessors = predecessors.get(&then_bid).cloned().unwrap_or_default();
+        if then_predecessors.iter().any(|pred| *pred != *bid) {
+            continue;
+        }
+        let else_predecessors = predecessors.get(&else_bid).cloned().unwrap_or_default();
+        if else_predecessors.iter().any(|pred| *pred != *bid) {
+            continue;
+        }
         if if_inlined_blocks.contains(&then_bid) || if_inlined_blocks.contains(&else_bid) {
             continue;
         }
@@ -3155,6 +3163,106 @@ mod tests {
         assert!(
             ops.iter().filter(|op| op.kind == "label").count() >= 4,
             "shared-join lowering must preserve explicit labels for the merge shape: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn structured_if_skips_arm_with_external_predecessor() {
+        let mut func = TirFunction::new(
+            "branch_with_shared_then_arm".into(),
+            vec![TirType::Bool, TirType::Bool],
+            TirType::None,
+        );
+
+        let inner_if = func.fresh_block();
+        let external_pred = func.fresh_block();
+        let then_blk = func.fresh_block();
+        let else_blk = func.fresh_block();
+        let join_blk = func.fresh_block();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.terminator = Terminator::CondBranch {
+            cond: ValueId(0),
+            then_block: inner_if,
+            then_args: vec![],
+            else_block: external_pred,
+            else_args: vec![],
+        };
+
+        func.blocks.insert(
+            inner_if,
+            TirBlock {
+                id: inner_if,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::CondBranch {
+                    cond: ValueId(1),
+                    then_block: then_blk,
+                    then_args: vec![],
+                    else_block: else_blk,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            external_pred,
+            TirBlock {
+                id: external_pred,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: then_blk,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            then_blk,
+            TirBlock {
+                id: then_blk,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: join_blk,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            else_blk,
+            TirBlock {
+                id: else_blk,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: join_blk,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            join_blk,
+            TirBlock {
+                id: join_blk,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        assert!(
+            validate_labels(&ops),
+            "shared-arm lowering must remain label-valid after lower_to_simple: {ops:?}"
+        );
+        assert!(
+            !ops.iter()
+                .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
+            "shared-arm lowering must stay label-based instead of inlining to structured if/else: {ops:?}"
+        );
+        assert!(
+            ops.iter().filter(|op| op.kind == "label").count() >= 4,
+            "shared-arm lowering must preserve explicit labels for the reused then-arm shape: {ops:?}"
         );
     }
 
