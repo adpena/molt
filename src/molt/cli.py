@@ -17435,6 +17435,13 @@ def _execute_backend_compile(
             _is_transpile = is_rust_transpile or is_luau_transpile
             if not is_wasm and not _is_transpile and backend_env is None:
                 backend_env = os.environ.copy()
+            if not is_wasm and not _is_transpile and backend_env is not None:
+                # Always scrub the partition contract before setting the
+                # current build's values so stale ambient state cannot leak
+                # into a later native compile.
+                backend_env.pop("MOLT_STDLIB_OBJ", None)
+                backend_env.pop("MOLT_STDLIB_CACHE_KEY", None)
+                backend_env.pop("MOLT_STDLIB_MODULE_SYMBOLS", None)
             stdlib_obj_path = cache_setup.stdlib_object_path
             if not is_wasm and not _is_transpile and stdlib_obj_path is not None:
                 stdlib_obj_path.parent.mkdir(parents=True, exist_ok=True)
