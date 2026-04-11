@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 import molt.cli as cli
 
 
@@ -32,6 +34,41 @@ def test_wasm_runtime_recovery_target_root_suffix(tmp_path: Path) -> None:
     assert cli._wasm_runtime_recovery_target_root(target_root) == (
         tmp_path / "cargo-target-wasm-runtime-recovery"
     )
+
+
+@pytest.mark.slow
+def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo required")
+    wasm_objdump = shutil.which("wasm-objdump")
+    if wasm_objdump is None:
+        pytest.skip("wasm-objdump required")
+
+    project_root = Path(__file__).resolve().parents[2]
+    runtime_reloc = tmp_path / "wasm" / "molt_runtime_reloc.wasm"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
+    monkeypatch.setenv("MOLT_BACKEND_DAEMON", "0")
+
+    assert cli._ensure_runtime_wasm(
+        runtime_reloc,
+        reloc=True,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=300.0,
+        project_root=project_root,
+    )
+
+    exports = subprocess.check_output(
+        [wasm_objdump, "-x", str(runtime_reloc)],
+        text=True,
+        cwd=project_root,
+    )
+    assert "D <_CLOCK_PROCESS_CPUTIME_ID> [ undefined" not in exports
+    assert "D <_CLOCK_THREAD_CPUTIME_ID> [ undefined" not in exports
+    assert "D <_CLOCK_PROCESS_CPUTIME_ID>" in exports
+    assert "D <_CLOCK_THREAD_CPUTIME_ID>" in exports
 
 
 def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
