@@ -75,6 +75,62 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
     assert contract.manifest == bundle_root / "manifest.json"
 
 
+def test_validate_bundle_contract_accepts_precise_split_runtime_module_rules(
+    tmp_path: Path,
+) -> None:
+    from tools import cloudflare_demo_verify as verify
+
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+    (bundle_root / "worker.js").write_text("export default {};\n")
+    (bundle_root / "molt_vfs_browser.js").write_text("export class MoltVfs {}\n")
+    (bundle_root / "app.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+    (bundle_root / "molt_runtime.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+    (bundle_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "mode": "split-runtime",
+                "modules": {
+                    "app": {"path": "app.wasm", "size": 1},
+                    "runtime": {"path": "molt_runtime.wasm", "size": 1},
+                },
+            }
+        )
+        + "\n"
+    )
+    wrangler_config = bundle_root / "wrangler.jsonc"
+    wrangler_config.write_text(
+        json.dumps(
+            {
+                "name": "molt-python-demo",
+                "main": "worker.js",
+                "compatibility_date": "2026-03-28",
+                "no_bundle": True,
+                "find_additional_modules": True,
+                "rules": [
+                    {
+                        "type": "ESModule",
+                        "globs": ["worker.js", "molt_vfs_browser.js"],
+                        "fallthrough": False,
+                    },
+                    {
+                        "type": "CompiledWasm",
+                        "globs": ["app.wasm", "molt_runtime.wasm"],
+                        "fallthrough": False,
+                    },
+                ],
+            }
+        )
+        + "\n"
+    )
+
+    contract = verify.validate_bundle_contract(bundle_root, wrangler_config)
+
+    assert contract.bundle_root == bundle_root
+    assert contract.wrangler_config == wrangler_config
+
+
 def test_run_wrangler_dry_run_uses_no_bundle_and_outdir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

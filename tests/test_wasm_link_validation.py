@@ -900,6 +900,59 @@ def test_collect_output_wrapper_specs_skips_internal_module_helpers() -> None:
     assert "__future_____Feature___init__" not in kept
 
 
+def test_split_app_reference_function_exports_preserves_public_and_isolate_exports() -> None:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = bytearray()
+    func_payload.extend(write_varuint(6))
+    for _ in range(6):
+        func_payload.extend(write_varuint(0))
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(6))
+    for name, index in (
+        ("main_molt__init", 0),
+        ("main_molt__ocr_tokens", 1),
+        ("molt_isolate_import", 2),
+        ("molt_isolate_bootstrap", 3),
+        ("molt_main", 4),
+        ("molt_set_wasm_table_base", 5),
+    ):
+        export_payload.extend(wasm_link._write_string(name))
+        export_payload.append(0x00)
+        export_payload.extend(write_varuint(index))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(6))
+    for _ in range(6):
+        code_payload.extend(write_varuint(2))
+        code_payload.append(0x42)
+        code_payload.append(0x00)
+        code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    keep = wasm_link._split_app_reference_function_exports(
+        wasm_link._build_sections(sections)
+    )
+    assert "main_molt__init" in keep
+    assert "main_molt__ocr_tokens" in keep
+    assert "molt_isolate_import" in keep
+    assert "molt_isolate_bootstrap" in keep
+    assert "molt_main" in keep
+    assert "molt_set_wasm_table_base" in keep
+
+
 def test_entry_module_prefix_from_main_init_prefers_main_module() -> None:
     write_varuint = wasm_link._write_varuint
     sections: list[tuple[int, bytes]] = []
