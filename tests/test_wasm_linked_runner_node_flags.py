@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -113,6 +114,27 @@ def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
     assert output.exists()
     env = cast(dict[str, str], recorded["env"])
     assert env["CARGO_TARGET_DIR"].startswith(str(root / "target" / "pytest_wasm"))
+
+
+def test_build_wasm_linked_does_not_mutate_process_runtime_env(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "probe.py"
+    src.write_text("print('hi')\n")
+    monkeypatch.delenv("MOLT_RUNTIME_WASM", raising=False)
+
+    def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        out_dir = Path(args[0][args[0].index("--out-dir") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "output_linked.wasm").write_bytes(b"\x00asm")
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(wasm_runner.subprocess, "run", _fake_run)
+    output = wasm_runner.build_wasm_linked(root, src, tmp_path)
+    assert output.exists()
+    assert "MOLT_RUNTIME_WASM" not in os.environ
 
 
 def test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked(
