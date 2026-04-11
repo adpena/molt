@@ -14,12 +14,18 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
+import urllib.error
+import urllib.request
 from tests.wasm_linked_runner import _read_timeout_seconds
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -109,7 +115,6 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
         "build",
         str(source_file),
         "--target", "wasm",
-        "--profile", "browser",
         "--split-runtime",
         "--no-cache",
         "--out-dir", str(output_dir),
@@ -142,6 +147,102 @@ def _run_split_direct(
         cwd=str(ROOT),
         timeout=timeout,
     )
+
+
+def _run_split_worker_live(
+    output_dir: Path,
+    path: str = "/",
+    timeout: float = 120.0,
+) -> tuple[int, str, str]:
+    wrangler = shutil.which("wrangler")
+    if wrangler is None:
+        pytest.skip("wrangler is required for live split-runtime worker verification")
+
+    port_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        port_socket.bind(("127.0.0.1", 0))
+        port = port_socket.getsockname()[1]
+    finally:
+        port_socket.close()
+
+    env = os.environ.copy()
+    env.setdefault("MOLT_SESSION_ID", "test-wasm-split-runtime-worker")
+    proc = subprocess.Popen(
+        [
+            wrangler,
+            "dev",
+            "--local",
+            "--ip",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--config",
+            str(output_dir / "wrangler.jsonc"),
+        ],
+        cwd=str(output_dir),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+
+    def _terminate_worker_tree(sig: int) -> None:
+        if proc.poll() is not None:
+            return
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+
+    def _collect_logs() -> str:
+        if proc.stdout is None:
+            return ""
+        _terminate_worker_tree(signal.SIGTERM)
+        try:
+            out, _ = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            _terminate_worker_tree(signal.SIGKILL)
+            out, _ = proc.communicate()
+        return out
+
+    result: tuple[int, str] | None = None
+    try:
+        deadline = time.monotonic() + timeout
+        last_error: Exception | None = None
+        url = f"http://127.0.0.1:{port}{path}"
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                break
+            try:
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    body = resp.read().decode("utf-8", errors="replace")
+                    result = (resp.status, body)
+                    break
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                result = (exc.code, body)
+                break
+            except (urllib.error.URLError, OSError) as exc:
+                last_error = exc
+                time.sleep(0.5)
+        if result is None:
+            logs = _collect_logs()
+            raise AssertionError(
+                f"wrangler dev did not produce a response for {url} within {timeout:.0f}s\n"
+                f"last error: {last_error!r}\n"
+                f"logs:\n{logs}"
+            )
+        logs = _collect_logs()
+        return result[0], result[1], logs
+    finally:
+        if proc.poll() is None:
+            _terminate_worker_tree(signal.SIGTERM)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                _terminate_worker_tree(signal.SIGKILL)
+                proc.wait(timeout=10)
 
 
 def _sha256(path: Path) -> str:
@@ -375,6 +476,30 @@ def test_cloudflare_demo_root_route_completes_under_split_runtime(
 
 
 @pytest.mark.slow
+def test_cloudflare_demo_root_route_completes_under_split_runtime_worker(
+    tmp_path: Path,
+) -> None:
+    source = ROOT / "examples" / "cloudflare-demo" / "src" / "app.py"
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    build = _build_split(source, out_dir)
+    assert build.returncode == 0, (
+        f"split build failed (rc={build.returncode}).\n"
+        f"stdout:\n{build.stdout[-2000:]}\n"
+        f"stderr:\n{build.stderr[-2000:]}"
+    )
+
+    status, body, logs = _run_split_worker_live(out_dir, "/")
+    assert status == 200, (
+        f"split-runtime worker returned HTTP {status}.\n"
+        f"body:\n{body[-2000:]}\n"
+        f"logs:\n{logs[-4000:]}"
+    )
+    assert "Python compiled to WebAssembly." in body
+
+
+@pytest.mark.slow
 class TestWorkerJsContent:
     """Verify worker.js contains key runtime patterns."""
 
@@ -403,12 +528,14 @@ class TestWorkerJsContent:
         content = self._read_worker(split_build_a)
         assert "molt_isolate_import" in content, "worker.js must bridge runtime isolate imports"
 
-    def test_worker_remaps_runtime_abi_exports(self, split_build_a):
+    def test_worker_builds_signature_aware_runtime_imports(self, split_build_a):
         content = self._read_worker(split_build_a)
-        assert "runtimeAbiExports" in content, (
-            "worker.js must remap prefixed runtime exports onto the molt_runtime ABI"
+        assert "const buildRuntimeImports = (module, runtimeInstance) => {" in content, (
+            "worker.js must synthesize runtime imports from the app import surface"
         )
-        assert 'name.startsWith("molt_")' in content
+        assert "const runtimeImportSignatures =" in content
+        assert "const runtimeImportResultKinds =" in content
+        assert "molt_string_from_bytes" in content
 
     def test_worker_sets_runtime_table_base(self, split_build_a):
         content = self._read_worker(split_build_a)
@@ -437,6 +564,12 @@ class TestWorkerJsContent:
         assert "molt_vfs_write" in content
         assert "molt_vfs_exists" in content
         assert "molt_vfs_unlink" in content
+
+    def test_worker_exposes_wasi_fallback_imports(self, split_build_a):
+        content = self._read_worker(split_build_a)
+        assert "path_filestat_set_times" in content
+        assert "path_link" in content
+        assert "path_symlink" in content
 
     def test_runtime_wasm_import(self, split_build_a):
         content = self._read_worker(split_build_a)

@@ -2400,6 +2400,7 @@ def _split_app_reference_function_exports(reference_data: bytes | None) -> set[s
         "molt_table_init",
         "molt_set_wasm_table_base",
     }
+    keep.update(_collect_preserved_output_export_names(reference_data))
     return {
         name for name in _collect_function_exports(reference_data) if name in keep
     }
@@ -2438,7 +2439,6 @@ def _strip_internal_exports(
             name, offset = _read_string(payload, offset)
             if offset >= len(payload):
                 break
-            kind = payload[offset]
             offset += 1
             _, offset = _read_varuint(payload, offset)
             entry_bytes = payload[entry_start:offset]
@@ -3552,11 +3552,9 @@ def _dedup_data_segments(data: bytes) -> bytes | None:
     except ValueError:
         return None
 
-    data_section_idx = None
     data_payload = None
-    for idx, (section_id, payload) in enumerate(sections):
+    for section_id, payload in sections:
         if section_id == 11:
-            data_section_idx = idx
             data_payload = payload
             break
 
@@ -3677,7 +3675,8 @@ def _parse_type_section(sections: list[tuple[int, bytes]]) -> list[tuple[tuple[i
             type_count, offset = _read_varuint(payload, offset)
             types: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
             for _ in range(type_count):
-                _form = payload[offset]; offset += 1
+                _form = payload[offset]
+                offset += 1
                 pc, offset = _read_varuint(payload, offset)
                 params = tuple(payload[offset + j] for j in range(pc))
                 offset += pc
@@ -3738,8 +3737,6 @@ def _fixup_func_type_indices(data: bytes, reference_data: bytes | None = None, r
     func_section_idx, func_type_indices = _parse_func_type_indices(sections)
     if not func_type_indices or func_section_idx < 0:
         return None
-
-    import_count = _count_func_imports(sections)
 
     repairs: dict[int, int] = {}  # code_index -> new_type_index
 
