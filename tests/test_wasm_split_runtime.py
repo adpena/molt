@@ -115,6 +115,7 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
         "build",
         str(source_file),
         "--target", "wasm",
+        "--profile", "cloudflare",
         "--split-runtime",
         "--no-cache",
         "--out-dir", str(output_dir),
