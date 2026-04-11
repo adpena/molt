@@ -5415,9 +5415,28 @@ def test_build_frontend_module_costs_precomputes_source_and_dep_costs() -> None:
 
 
 def test_build_stdlib_like_module_flags_precomputes_classification() -> None:
-    flags = cli._build_stdlib_like_module_flags({"warnings", "pkg.mod"})
+    flags = cli._build_stdlib_like_module_flags(
+        {
+            "warnings": cli._stdlib_root_path() / "warnings.py",
+            "pkg.mod": Path("/tmp/pkg/mod.py"),
+        }
+    )
     assert flags["warnings"] is True
     assert flags["pkg.mod"] is False
+
+
+def test_build_stdlib_like_module_flags_marks_runtime_shipped_modules() -> None:
+    package_root = cli._stdlib_root_path().parent
+    flags = cli._build_stdlib_like_module_flags(
+        {
+            "molt.gpu.tensor": package_root / "gpu" / "tensor.py",
+            "molt.lib.turtle_roblox": package_root / "lib" / "turtle_roblox.py",
+            "user_mod": Path("/tmp/user_mod.py"),
+        }
+    )
+    assert flags["molt.gpu.tensor"] is True
+    assert flags["molt.lib.turtle_roblox"] is True
+    assert flags["user_mod"] is False
 
 
 def test_build_module_graph_metadata_bundles_related_views(tmp_path: Path) -> None:

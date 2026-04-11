@@ -6560,6 +6560,22 @@ def _looks_like_stdlib_module_name(module_name: str) -> bool:
     }
 
 
+def _runtime_owned_module_roots() -> tuple[Path, ...]:
+    stdlib_root = _stdlib_root_path().resolve()
+    package_root = stdlib_root.parent
+    return (
+        stdlib_root,
+        package_root / "gpu",
+        package_root / "lib",
+    )
+
+
+def _is_runtime_owned_module_path(module_path: Path) -> bool:
+    return any(
+        _is_path_within(module_path, root) for root in _runtime_owned_module_roots()
+    )
+
+
 def _predict_frontend_module_cost(
     module_name: str,
     module_sources: dict[str, str],
@@ -6587,11 +6603,14 @@ def _build_frontend_module_costs(
 
 
 def _build_stdlib_like_module_flags(
-    module_names: Collection[str],
+    module_graph: Mapping[str, Path],
 ) -> dict[str, bool]:
     return {
-        module_name: _looks_like_stdlib_module_name(module_name)
-        for module_name in sorted(module_names)
+        module_name: (
+            _is_runtime_owned_module_path(module_path)
+            or _looks_like_stdlib_module_name(module_name)
+        )
+        for module_name, module_path in sorted(module_graph.items())
     }
 
 
