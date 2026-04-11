@@ -7097,6 +7097,53 @@ def test_runtime_wasm_exports_satisfy_browser_runtime_fallback_surface(
     assert cli._runtime_wasm_missing_exports(wasm, required) == set()
 
 
+def test_run_subprocess_captured_to_tempfiles_emits_keepalive(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("MOLT_SUBPROCESS_KEEPALIVE_SECS", "0.01")
+    result = cli._run_subprocess_captured_to_tempfiles(
+        [
+            sys.executable,
+            "-c",
+            "import time; print('ok'); time.sleep(0.05)",
+        ],
+        timeout=1.0,
+        progress_label="Tempfile helper",
+    )
+    assert result.returncode == 0
+    assert result.stdout.decode("utf-8").strip() == "ok"
+    assert "Tempfile helper still running..." in capsys.readouterr().err
+
+
+def test_ensure_runtime_lib_native_path_does_not_require_wasm_export_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    runtime_lib.write_bytes(b"archive")
+    monkeypatch.setattr(cli, "_runtime_fingerprint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: tmp_path / "fingerprint.json",
+    )
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+    )
+
+    assert cli._ensure_runtime_lib(
+        runtime_lib,
+        target_triple=None,
+        json_output=True,
+        cargo_profile="dev-fast",
+        project_root=tmp_path,
+        cargo_timeout=1.0,
+    )
+
+
 def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfied_build_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
