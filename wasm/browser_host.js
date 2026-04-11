@@ -3476,6 +3476,27 @@ export const loadMoltWasm = async (options = {}) => {
     }
     return outputInstance.exports.molt_isolate_import(...args);
   };
+  const outputModule = await WebAssembly.instantiate(wasmBytes, {
+    molt_runtime: buildRuntimeImports(outputImports, {
+      exports: new Proxy(
+        {},
+        {
+          get(_target, exportName) {
+            if (!state.runtimeInstance) {
+              throw new Error(`molt_runtime not initialized (${String(exportName)})`);
+            }
+            return state.runtimeInstance.exports[exportName];
+          },
+        },
+      ),
+    }),
+    env: {
+      memory,
+      __indirect_function_table: table,
+    },
+  });
+  outputInstance = outputModule.instance;
+
   const runtimeModule = await WebAssembly.instantiate(runtimeBytes, {
     env,
     wasi_snapshot_preview1: buildWasiStub(state, logFn),
@@ -3489,15 +3510,6 @@ export const loadMoltWasm = async (options = {}) => {
   }
   installTableRefs(runtimeInstance, table);
   state.runtimeInstance = runtimeInstance;
-  const runtimeImportsObj = buildRuntimeImports(outputImports, runtimeInstance);
-  const outputModule = await WebAssembly.instantiate(wasmBytes, {
-    molt_runtime: runtimeImportsObj,
-    env: {
-      memory,
-      __indirect_function_table: table,
-    },
-  });
-  outputInstance = outputModule.instance;
   ensureTableCapacityForExportedRefs(outputInstance, table);
   if (typeof outputModule.instance.exports.molt_table_init === 'function') {
     outputModule.instance.exports.molt_table_init();
