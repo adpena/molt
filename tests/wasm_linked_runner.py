@@ -23,11 +23,21 @@ def _artifact_root(root: Path) -> Path:
     return root
 
 
+def _same_location(lhs: Path, rhs: Path) -> bool:
+    try:
+        return lhs.samefile(rhs)
+    except OSError:
+        pass
+    return os.path.normcase(os.fspath(lhs.resolve())) == os.path.normcase(
+        os.fspath(rhs.resolve())
+    )
+
+
 def _select_out_dir(default: Path, root: Path) -> Path:
     artifact_root = _artifact_root(root)
     use_external = os.environ.get("MOLT_WASM_TEST_USE_EXTERNAL", "").strip().lower()
     allow_external = use_external not in {"0", "false", "no", "off"}
-    if allow_external and artifact_root != root:
+    if allow_external and not _same_location(artifact_root, root):
         try:
             if default.is_relative_to(artifact_root):
                 return default
@@ -140,7 +150,7 @@ def _wasm_test_target_dir(root: Path, out_dir: Path, artifact_root: Path) -> Pat
     # hold long-lived build locks under CARGO_TARGET_DIR.
     use_external = os.environ.get("MOLT_WASM_TEST_USE_EXTERNAL", "").strip().lower()
     allow_external = use_external not in {"0", "false", "no", "off"}
-    if allow_external and artifact_root != root:
+    if allow_external and not _same_location(artifact_root, root):
         target = artifact_root / "target"
     else:
         target = root / "target" / "pytest_wasm" / _WASM_TEST_LANE
