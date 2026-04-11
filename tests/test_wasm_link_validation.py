@@ -247,6 +247,132 @@ def _build_host_call_indirect_module() -> bytes:
     return wasm_link._build_sections(sections)
 
 
+def _parse_function_imports(wasm_bytes: bytes) -> list[tuple[str, str]]:
+    imports: list[tuple[str, str]] = []
+    offset = 8
+    while offset < len(wasm_bytes):
+        section_id = wasm_bytes[offset]
+        offset += 1
+        size, offset = wasm_link._read_varuint(wasm_bytes, offset)
+        section_end = offset + size
+        if section_id == 2:
+            count, offset = wasm_link._read_varuint(wasm_bytes, offset)
+            for _ in range(count):
+                module, offset = wasm_link._read_string(wasm_bytes, offset)
+                name, offset = wasm_link._read_string(wasm_bytes, offset)
+                kind = wasm_bytes[offset]
+                offset += 1
+                offset = wasm_link._parse_import_desc(wasm_bytes, offset, kind)
+                if kind == 0:
+                    imports.append((module, name))
+            return imports
+        offset = section_end
+    return imports
+
+
+def _parse_function_exports(wasm_bytes: bytes) -> list[tuple[str, int]]:
+    exports: list[tuple[str, int]] = []
+    offset = 8
+    while offset < len(wasm_bytes):
+        section_id = wasm_bytes[offset]
+        offset += 1
+        size, offset = wasm_link._read_varuint(wasm_bytes, offset)
+        section_end = offset + size
+        if section_id == 7:
+            count, offset = wasm_link._read_varuint(wasm_bytes, offset)
+            for _ in range(count):
+                name, offset = wasm_link._read_string(wasm_bytes, offset)
+                kind = wasm_bytes[offset]
+                offset += 1
+                idx, offset = wasm_link._read_varuint(wasm_bytes, offset)
+                if kind == 0:
+                    exports.append((name, idx))
+            return exports
+        offset = section_end
+    return exports
+
+
+def _parse_code_section_call_targets(wasm_bytes: bytes) -> list[list[int]]:
+    targets: list[list[int]] = []
+    offset = 8
+    while offset < len(wasm_bytes):
+        section_id = wasm_bytes[offset]
+        offset += 1
+        size, offset = wasm_link._read_varuint(wasm_bytes, offset)
+        section_end = offset + size
+        if section_id == 10:
+            func_count, offset = wasm_link._read_varuint(wasm_bytes, offset)
+            for _ in range(func_count):
+                body_size, offset = wasm_link._read_varuint(wasm_bytes, offset)
+                body_end = offset + body_size
+                local_count, pos = wasm_link._read_varuint(wasm_bytes, offset)
+                for _ in range(local_count):
+                    _, pos = wasm_link._read_varuint(wasm_bytes, pos)
+                    pos += 1
+                func_targets: list[int] = []
+                while pos < body_end:
+                    opcode = wasm_bytes[pos]
+                    pos += 1
+                    if opcode in (0x10, 0x12):
+                        idx, pos = wasm_link._read_varuint(wasm_bytes, pos)
+                        func_targets.append(idx)
+                    elif opcode == 0x0B:
+                        break
+                    else:
+                        raise AssertionError(
+                            f"unexpected opcode 0x{opcode:02x} in test helper"
+                        )
+                targets.append(func_targets)
+                offset = body_end
+            return targets
+        offset = section_end
+    return targets
+
+
+def _build_runtime_import_strip_module() -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    import_payload = bytearray()
+    import_payload.extend(write_varuint(2))
+    for name in ("unused_runtime_fn", "live_runtime_fn"):
+        import_payload.extend(wasm_link._write_string("molt_runtime"))
+        import_payload.extend(wasm_link._write_string(name))
+        import_payload.append(0x00)
+        import_payload.extend(write_varuint(0))
+    sections.append((2, bytes(import_payload)))
+
+    func_payload = write_varuint(1) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(1))
+    export_payload.extend(wasm_link._write_string("molt_main"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(2))
+    sections.append((7, bytes(export_payload)))
+
+    body = bytearray()
+    body.append(0x00)
+    body.append(0x10)
+    body.extend(write_varuint(1))
+    body.append(0x0B)
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(len(body)))
+    code_payload.extend(body)
+    sections.append((10, bytes(code_payload)))
+
+    return wasm_link._build_sections(sections)
+
+
 def _build_symbol_subsection(entries: list[bytes]) -> bytes:
     return wasm_link._write_varuint(len(entries)) + b"".join(entries)
 
@@ -374,6 +500,24 @@ def test_tree_shake_runtime_preserves_direct_runner_exception_debug_exports() ->
 def test_neutralize_dead_element_entries_preserves_host_call_indirect_modules() -> None:
     module = _build_host_call_indirect_module()
     assert wasm_link._neutralize_dead_element_entries(module) is None
+
+
+def test_strip_unused_module_function_imports_remaps_indices() -> None:
+    module = _build_runtime_import_strip_module()
+
+    stripped = wasm_link._strip_unused_module_function_imports(
+        module,
+        module_name="molt_runtime",
+    )
+
+    imports_after = _parse_function_imports(stripped)
+    assert imports_after == [("molt_runtime", "live_runtime_fn")]
+
+    exports_after = _parse_function_exports(stripped)
+    assert exports_after == [("molt_main", 1)]
+
+    call_targets = _parse_code_section_call_targets(stripped)
+    assert call_targets == [[0]]
 
 
 def test_collect_linking_function_symbols_parses_defined_and_undefined_entries() -> None:
