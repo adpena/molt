@@ -109,6 +109,7 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
         "build",
         str(source_file),
         "--target", "wasm",
+        "--profile", "browser",
         "--split-runtime",
         "--no-cache",
         "--out-dir", str(output_dir),
