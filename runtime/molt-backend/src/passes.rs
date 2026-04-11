@@ -1978,6 +1978,13 @@ pub fn split_large_function(
     allow(dead_code)
 )]
 pub fn split_megafunctions(ir: &mut SimpleIR) {
+    split_megafunctions_with_filter(ir, |_| true);
+}
+
+pub fn split_megafunctions_with_filter(
+    ir: &mut SimpleIR,
+    should_split: impl Fn(&FunctionIR) -> bool,
+) {
     let max_ops: usize = std::env::var("MOLT_MAX_FUNCTION_OPS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -1988,6 +1995,10 @@ pub fn split_megafunctions(ir: &mut SimpleIR) {
 
     for func in old_functions {
         let op_count = func.ops.len();
+        if !should_split(&func) {
+            new_functions.push(func);
+            continue;
+        }
         match split_large_function(func, max_ops) {
             Ok((stub, chunks)) => {
                 eprintln!(
@@ -2786,8 +2797,8 @@ mod tests {
             ops,
         };
 
-        let (stub, chunks) =
-            split_large_function(func, 40).expect("shared suffix exception handler should not block splitting");
+        let (stub, chunks) = split_large_function(func, 40)
+            .expect("shared suffix exception handler should not block splitting");
 
         assert_eq!(stub.name, "builtins__molt_module_chunk_2");
         assert!(chunks.len() >= 2);
@@ -2803,13 +2814,15 @@ mod tests {
                 .filter(|op| matches!(op.kind.as_str(), "label" | "state_label"))
                 .filter_map(|op| op.value)
                 .collect();
-            let cloned_skip_labels: Vec<i64> = labels.iter().copied().filter(|id| *id > 523).collect();
+            let cloned_skip_labels: Vec<i64> =
+                labels.iter().copied().filter(|id| *id > 523).collect();
             let cloned_handler = chunk
                 .ops
                 .iter()
                 .position(|op| op.kind == "label" && op.value == Some(32));
             if !cloned_skip_labels.is_empty() {
-                let handler_idx = cloned_handler.expect("cloned chunk must include handler label 32");
+                let handler_idx =
+                    cloned_handler.expect("cloned chunk must include handler label 32");
                 assert!(handler_idx > 0);
                 let guard = &chunk.ops[handler_idx - 1];
                 assert_eq!(
@@ -2827,7 +2840,8 @@ mod tests {
                         "chunk `{}` retains external control-flow target {}",
                         chunk.name,
                         target
-                );
+                    );
+                }
             }
         }
     }
@@ -2869,7 +2883,6 @@ mod tests {
             "void-only split stubs must terminate explicitly with ret_void",
         );
     }
-    }
 
     #[test]
     fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
@@ -2909,7 +2922,9 @@ mod tests {
             "stub must keep the original module chunk symbol"
         );
         assert!(
-            names.iter().any(|name| name.starts_with("__molt_chunk_builtins__molt_module_chunk_2_")),
+            names
+                .iter()
+                .any(|name| name.starts_with("__molt_chunk_builtins__molt_module_chunk_2_")),
             "module chunk should be split into backend private chunks at the native default threshold"
         );
 

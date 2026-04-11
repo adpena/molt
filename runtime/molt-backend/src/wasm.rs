@@ -1805,8 +1805,13 @@ impl WasmBackend {
 
         crate::inline_functions(&mut ir);
 
-        // Megafunction splitting: prevent O(n²) in wasm-encoder for huge functions.
-        crate::split_megafunctions(&mut ir);
+        // Megafunction splitting is only sound on the current wasm path for
+        // straight-line functions. Non-linear control is lowered into a
+        // jumpful/stateful dispatch machine, and the generic sequential chunk
+        // stub is not a proven semantics-preserving transform there.
+        crate::passes::split_megafunctions_with_filter(&mut ir, |func_ir| {
+            !has_non_linear_control_flow(&func_ir.ops)
+        });
 
         // Dead function elimination: remove unreachable functions after inlining.
         crate::eliminate_dead_functions(&mut ir);

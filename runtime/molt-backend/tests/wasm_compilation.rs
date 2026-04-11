@@ -145,6 +145,10 @@ fn validate_wasm(wasm: &[u8]) -> Result<(), wasmparser::BinaryReaderError> {
     Validator::new().validate_all(wasm).map(|_| ())
 }
 
+fn wasm_contains_name_fragment(wasm: &[u8], needle: &str) -> bool {
+    String::from_utf8_lossy(wasm).contains(needle)
+}
+
 fn ret_value(name: &str) -> OpIR {
     let mut ret = op("ret");
     ret.args = Some(vec![name.to_string()]);
@@ -986,4 +990,83 @@ fn jumpful_br_if_function_validates() {
         &[],
     );
     validate_wasm(&wasm).expect("jumpful br_if function should validate structurally");
+}
+
+#[test]
+fn wasm_does_not_split_non_linear_control_functions() {
+    let mut cond = op("const_bool");
+    cond.value = Some(1);
+    cond.out = Some("v0".to_string());
+
+    let mut br_if = op("br_if");
+    br_if.args = Some(vec!["v0".to_string()]);
+    br_if.value = Some(2);
+
+    let mut one = op("const");
+    one.value = Some(1);
+    one.out = Some("v1".to_string());
+
+    let mut jump = op("jump");
+    jump.value = Some(3);
+
+    let mut label_then = op("label");
+    label_then.value = Some(2);
+
+    let mut two = op("const");
+    two.value = Some(2);
+    two.out = Some("v1".to_string());
+
+    let mut label_join = op("label");
+    label_join.value = Some(3);
+
+    let wasm = compile_ir_with_env(
+        SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_test_func".to_string(),
+                params: vec![],
+                ops: vec![cond, br_if, one, jump, label_then, two, label_join, ret_value("v1")],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        },
+        &[("MOLT_MAX_FUNCTION_OPS", Some("2"))],
+    );
+
+    assert!(
+        !wasm_contains_name_fragment(&wasm, "__molt_chunk_molt_test_func_"),
+        "wasm backend must not chunk non-linear control functions with the current sequential chunk stub model"
+    );
+}
+
+#[test]
+fn wasm_preserves_frontend_module_chunk_boundaries() {
+    let mut one = op("const");
+    one.value = Some(1);
+    one.out = Some("v1".to_string());
+
+    let mut two = op("const");
+    two.value = Some(2);
+    two.out = Some("v2".to_string());
+
+    let wasm = compile_ir_with_env(
+        SimpleIR {
+            functions: vec![FunctionIR {
+                name: "app__molt_module_chunk_6".to_string(),
+                params: vec!["__molt_module_obj__".to_string()],
+                ops: vec![one, two, op("ret_void")],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        },
+        &[("MOLT_MAX_FUNCTION_OPS", Some("2"))],
+    );
+
+    assert!(
+        !wasm_contains_name_fragment(&wasm, "__molt_chunk_app__molt_module_chunk_6_"),
+        "wasm backend must not backend-split frontend module chunk functions"
+    );
 }
