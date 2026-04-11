@@ -1138,9 +1138,8 @@ pub struct WasmCompileOptions {
     pub table_base: u32,
     pub split_runtime_runtime_table_min: Option<u32>,
     /// Enable native WASM exception handling (WASM 3.0 EH proposal).
-    /// Disabled by default until the backend emits full try/catch handler
-    /// regions for all Python exception flows. Set `MOLT_WASM_NATIVE_EH=1`
-    /// to opt in explicitly.
+    /// Enabled by default for non-relocatable wasm output; set
+    /// `MOLT_WASM_NATIVE_EH=0` to disable explicitly.
     pub native_eh_enabled: bool,
     /// WASM profile for compile-time import stripping.
     /// Gated by `MOLT_WASM_PROFILE` environment variable ("full" or "pure").
@@ -1176,7 +1175,7 @@ impl Default for WasmCompileOptions {
             )
             .ok()
             .and_then(|value| value.parse::<u32>().ok()),
-            native_eh_enabled: matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("1")),
+            native_eh_enabled: !matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("0")),
             wasm_profile: match std::env::var("MOLT_WASM_PROFILE").as_deref() {
                 Ok("pure") => WasmProfile::Pure,
                 Ok("full") => WasmProfile::Full,
