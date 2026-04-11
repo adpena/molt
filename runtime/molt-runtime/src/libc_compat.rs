@@ -121,9 +121,11 @@ pub const _SC_NPROCESSORS_ONLN: c_int = 58;
 // Define the canonical WASI values here so the relocatable runtime artifact
 // closes over them before the final app link.
 #[cfg(target_arch = "wasm32")]
+#[used]
 #[unsafe(no_mangle)]
 pub static _CLOCK_PROCESS_CPUTIME_ID: u32 = 2;
 
 #[cfg(target_arch = "wasm32")]
+#[used]
 #[unsafe(no_mangle)]
 pub static _CLOCK_THREAD_CPUTIME_ID: u32 = 3;
