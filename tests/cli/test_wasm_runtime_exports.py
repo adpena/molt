@@ -30,6 +30,18 @@ def test_wasm_runtime_export_link_args_adds_required_runtime_imports() -> None:
     assert " -C link-arg=--export-if-defined=molt_set_update" not in flags
 
 
+def test_wasm_runtime_export_link_args_does_not_widen_required_imports_with_resolved_modules() -> None:
+    flags = wasm_runtime_export_link_args(
+        {"runtime_init"},
+        resolved_modules={"ssl"},
+    )
+    assert " -C link-arg=--export-if-defined=molt_runtime_init" in flags
+    assert " -C link-arg=--export-if-defined=molt_runtime_shutdown" in flags
+    assert " -C link-arg=--export-if-defined=molt_set_wasm_table_base" in flags
+    assert " -C link-arg=--export-if-defined=molt_ssl_cert_none" not in flags
+    assert " -C link-arg=--export-if-defined=molt_ssl_context_new" not in flags
+
+
 def test_wasm_runtime_export_link_args_keeps_host_runtime_exports_in_minimal_mode() -> None:
     flags = wasm_runtime_export_link_args({"runtime_init"})
     assert " -C link-arg=--export-if-defined=molt_runtime_init" in flags
