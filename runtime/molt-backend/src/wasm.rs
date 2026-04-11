@@ -1136,6 +1136,7 @@ pub struct WasmCompileOptions {
     pub reloc_enabled: bool,
     pub data_base: u32,
     pub table_base: u32,
+    pub split_runtime_runtime_table_min: Option<u32>,
     /// Enable native WASM exception handling (WASM 3.0 EH proposal).
     /// Disabled by default until the backend emits full try/catch handler
     /// regions for all Python exception flows. Set `MOLT_WASM_NATIVE_EH=1`
@@ -1170,6 +1171,11 @@ impl Default for WasmCompileOptions {
                 Ok(value) => value.parse::<u32>().unwrap_or(RELOC_TABLE_BASE_DEFAULT),
                 Err(_) => RELOC_TABLE_BASE_DEFAULT,
             },
+            split_runtime_runtime_table_min: std::env::var(
+                "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN",
+            )
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok()),
             native_eh_enabled: matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("1")),
             wasm_profile: match std::env::var("MOLT_WASM_PROFILE").as_deref() {
                 Ok("pure") => WasmProfile::Pure,
@@ -3536,11 +3542,10 @@ impl WasmBackend {
             .count();
         // Table compaction: only count referenced builtins for the table size.
         // Unreferenced builtins are omitted entirely (not sentinel-filled).
-        let table_base: u32 = self.options.table_base;
-        let split_runtime_runtime_table_min =
-            std::env::var("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN")
-                .ok()
-                .and_then(|raw| raw.parse::<u32>().ok());
+        let split_runtime_runtime_table_min = self.options.split_runtime_runtime_table_min;
+        let table_base: u32 = split_runtime_runtime_table_min
+            .map(|min| min.max(self.options.table_base))
+            .unwrap_or(self.options.table_base);
         let split_runtime_owned_slot_start = split_runtime_runtime_table_min
             .map(|min| min.saturating_sub(table_base) as usize)
             .unwrap_or(0);
@@ -4601,6 +4606,8 @@ impl WasmBackend {
         self.funcs.function(0);
         self.func_count += 1;
         let mut func = Function::new_with_locals_types(Vec::new());
+        emit_call(&mut func, reloc_enabled, self.import_ids["runtime_init"]);
+        func.instruction(&Instruction::Drop);
         // Set the intrinsic manifest BEFORE table init and module init.
         // This tells the runtime which intrinsics this app actually uses.
         // Use emit_data_ptr to register a relocation so wasm-ld adjusts the
