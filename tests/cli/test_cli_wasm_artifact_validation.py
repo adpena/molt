@@ -63,30 +63,34 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
 
     seen_target_roots: list[Path] = []
 
-    def fake_run(
-        cmd: list[str],
+    def fake_run_runtime_wasm_cargo_build(
         *,
-        cwd: Path,
+        cmd: list[str],
+        root: Path,
         env: dict[str, str],
-        timeout: float | None,
-        input: bytes | None = None,
-        stdout: object | None = None,
-        stderr: object | None = None,
-        check: bool | None = None,
-        text: bool | None = None,
-    ) -> subprocess.CompletedProcess[bytes]:
-        del cwd, timeout, input, stdout, stderr, check, text
-        target_root = Path(env.get("CARGO_TARGET_DIR", str(project_root / "target")))
+        cargo_timeout: float | None,
+        profile_dir: str,
+        target_root_override: Path | None = None,
+        json_output: bool,
+        artifact_kind: str = "cdylib",
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        del cargo_timeout, json_output, artifact_kind
+        target_root = target_root_override or cli._cargo_target_root(root)
         seen_target_roots.append(target_root)
-        src = target_root / "wasm32-wasip1" / "dev-fast" / "molt_runtime.wasm"
+        src = target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
         src.parent.mkdir(parents=True, exist_ok=True)
         if len(seen_target_roots) == 1:
             src.write_bytes(b"\x00" * 64)
         else:
             src.write_bytes(b"\x00asm\x01\x00\x00\x00ok")
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return subprocess.CompletedProcess(cmd, 0, "", ""), src
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(
+        cli,
+        "_run_runtime_wasm_cargo_build",
+        fake_run_runtime_wasm_cargo_build,
+        raising=True,
+    )
 
     assert cli._ensure_runtime_wasm(
         runtime_wasm,
@@ -135,32 +139,26 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
     seen_profiles: list[str] = []
     seen_targets: list[Path] = []
 
-    def fake_run(
-        cmd: list[str],
+    def fake_run_runtime_wasm_cargo_build(
         *,
-        cwd: Path,
+        cmd: list[str],
+        root: Path,
         env: dict[str, str],
-        timeout: float | None,
-        input: bytes | None = None,
-        stdout: object | None = None,
-        stderr: object | None = None,
-        check: bool | None = None,
-        text: bool | None = None,
-    ) -> subprocess.CompletedProcess[bytes]:
-        del cwd, timeout, input, stdout, stderr, check, text
+        cargo_timeout: float | None,
+        profile_dir: str,
+        target_root_override: Path | None = None,
+        json_output: bool,
+        artifact_kind: str = "cdylib",
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        del cargo_timeout, json_output, artifact_kind
         profile = cmd[5]
-        target_root = Path(env.get("CARGO_TARGET_DIR", str(project_root / "target")))
+        target_root = target_root_override or cli._cargo_target_root(root)
         seen_profiles.append(profile)
         seen_targets.append(target_root)
-        output_profile_dir = (
-            "release-fast"
-            if profile == "release-fast"
-            else cli._cargo_profile_dir(profile)
-        )
         src = (
             target_root
             / "wasm32-wasip1"
-            / output_profile_dir
+            / profile_dir
             / "molt_runtime.wasm"
         )
         src.parent.mkdir(parents=True, exist_ok=True)
@@ -168,9 +166,14 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
             src.write_bytes(b"\x00asm\x01\x00\x00\x00ok")
         else:
             src.write_bytes(b"\x00" * 64)
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return subprocess.CompletedProcess(cmd, 0, "", ""), src
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(
+        cli,
+        "_run_runtime_wasm_cargo_build",
+        fake_run_runtime_wasm_cargo_build,
+        raising=True,
+    )
 
     assert cli._ensure_runtime_wasm(
         runtime_wasm,
@@ -184,6 +187,10 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
     assert seen_profiles == ["wasm-release", "wasm-release", "release-fast"]
     assert seen_targets[0] == primary_target
     assert seen_targets[1] == cli._wasm_runtime_recovery_target_root(primary_target)
+    assert seen_targets[2] == (
+        cli._wasm_runtime_recovery_target_root(primary_target).parent
+        / f"{cli._wasm_runtime_recovery_target_root(primary_target).name}-release-fast"
+    )
 
 
 def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifact_is_newer(
