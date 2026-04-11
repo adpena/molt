@@ -9600,6 +9600,23 @@ def _infer_wasm_table_base_from_export_names(
     return min(indices)
 
 
+def _effective_split_worker_table_base(
+    *,
+    wasm_table_base: int | None,
+    runtime_table_min: int | None,
+    app_table_ref_signatures: Mapping[str, Mapping[str, object]],
+) -> int | None:
+    if wasm_table_base is not None:
+        return wasm_table_base
+    inferred = _infer_wasm_table_base_from_export_names(
+        app_table_ref_signatures,
+        export_name_prefix="__molt_table_ref_",
+    )
+    if inferred is not None:
+        return inferred
+    return runtime_table_min
+
+
 def _generate_split_worker_js(
     *,
     shared_memory_initial_pages: int,
@@ -19294,13 +19311,26 @@ def _prepare_non_native_build_result(
                 8192,
             )
 
+            _export_wasm_table_refs(rt_wasm)
+            app_table_ref_signatures = _wasm_export_function_signatures(
+                app_wasm, export_name_prefix="__molt_table_ref_"
+            )
+            runtime_table_ref_signatures = _wasm_export_function_signatures(
+                rt_wasm, export_name_prefix="__molt_table_ref_"
+            )
+            effective_wasm_table_base = _effective_split_worker_table_base(
+                wasm_table_base=wasm_table_base,
+                runtime_table_min=rt_table_min,
+                app_table_ref_signatures=app_table_ref_signatures,
+            )
+
             manifest_data = {
                 "version": 2,
                 "mode": "split-runtime",
                 "tree_shaken": True,
                 "shared_memory_initial_pages": shared_memory_initial_pages,
                 "shared_table_initial": shared_table_initial,
-                "wasm_table_base": wasm_table_base,
+                "wasm_table_base": effective_wasm_table_base,
                 "modules": {
                     "runtime": {
                         "path": "molt_runtime.wasm",
@@ -19316,22 +19346,6 @@ def _prepare_non_native_build_result(
                 "entry": {"module": "app", "function": "molt_main"},
             }
             manifest.write_text(_json.dumps(manifest_data, indent=2) + "\n")
-
-            _export_wasm_table_refs(rt_wasm)
-            app_table_ref_signatures = _wasm_export_function_signatures(
-                app_wasm, export_name_prefix="__molt_table_ref_"
-            )
-            runtime_table_ref_signatures = _wasm_export_function_signatures(
-                rt_wasm, export_name_prefix="__molt_table_ref_"
-            )
-            effective_wasm_table_base = wasm_table_base
-            if effective_wasm_table_base is None:
-                effective_wasm_table_base = _infer_wasm_table_base_from_export_names(
-                    app_table_ref_signatures,
-                    export_name_prefix="__molt_table_ref_",
-                )
-            if effective_wasm_table_base is None:
-                effective_wasm_table_base = rt_table_min
 
             # Generate split-runtime Cloudflare Workers shim with full
             # WASI support and multi-module instantiation.
