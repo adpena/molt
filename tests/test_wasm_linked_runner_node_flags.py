@@ -60,6 +60,32 @@ def test_run_wasm_linked_env_overrides_can_opt_out_of_node_warning_suppression(
     assert env.get("NODE_NO_WARNINGS") == "0"
 
 
+def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    alias_root = tmp_path / "repo-alias"
+    alias_root.symlink_to(root, target_is_directory=True)
+    src = tmp_path / "probe.py"
+    src.write_text("print('hi')\n")
+    recorded: dict[str, Any] = {}
+
+    def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        recorded["env"] = dict(kwargs["env"])
+        out_dir = Path(args[0][args[0].index("--out-dir") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "output_linked.wasm").write_bytes(b"\x00asm")
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(alias_root))
+    monkeypatch.setattr(wasm_runner.subprocess, "run", _fake_run)
+    output = wasm_runner.build_wasm_linked(root, src, tmp_path)
+    assert output.exists()
+    env = cast(dict[str, str], recorded["env"])
+    assert env["CARGO_TARGET_DIR"].startswith(str(root / "target" / "pytest_wasm"))
+
+
 def test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked(
     tmp_path: Path,
 ) -> None:
