@@ -22902,10 +22902,16 @@ def _ensure_runtime_wasm(
         target_label = "wasm32-wasip1"
         canonical_target_root = _canonical_target_root(root)
         canonical_build_state_root = _canonical_build_state_root(root)
-        canonical_runtime_wasm = _runtime_wasm_artifact_path(
-            canonical_target_root,
-            runtime_wasm.name,
-        )
+        if reloc:
+            canonical_runtime_wasm = _runtime_wasm_artifact_path(
+                root,
+                runtime_wasm.name,
+            )
+        else:
+            canonical_runtime_wasm = _resolve_built_runtime_wasm_artifact(
+                canonical_target_root,
+                profile_dir,
+            )
         canonical_fingerprint_path = _artifact_state_path_for_build_state_root(
             canonical_build_state_root,
             canonical_runtime_wasm,

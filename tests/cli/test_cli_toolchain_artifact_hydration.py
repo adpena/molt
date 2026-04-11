@@ -101,7 +101,9 @@ def test_ensure_runtime_wasm_hydrates_from_canonical_target(
     canonical_target = project_root / "target"
     isolated_target = project_root / "isolated-target"
     profile_dir = cli._cargo_profile_dir("dev-fast")
-    canonical_runtime = cli._wasm_runtime_artifact_path(canonical_target, profile_dir)
+    canonical_runtime = (
+        canonical_target / "wasm32-wasip1" / profile_dir / "deps" / "molt_runtime.wasm"
+    )
     isolated_runtime = project_root / "wasm" / "molt_runtime.wasm"
     canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
     canonical_runtime.write_bytes(b"\x00asm\x01\x00\x00\x00runtime")
@@ -118,10 +120,22 @@ def test_ensure_runtime_wasm_hydrates_from_canonical_target(
     cli._write_runtime_fingerprint(canonical_fp, fingerprint)
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(project_root))
     monkeypatch.setattr(
         cli,
         "_runtime_fingerprint",
         lambda *args, **kwargs: dict(fingerprint),
+    )
+    monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda _path: "valid")
+    monkeypatch.setattr(
+        cli,
+        "_runtime_wasm_exports_satisfy",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_write_runtime_wasm_integrity_sidecar",
+        lambda _path: None,
     )
     monkeypatch.setattr(
         cli,
