@@ -78,7 +78,7 @@ from molt.debug.diff import (
     load_failure_queue,
     render_diff_text,
 )
-from molt.debug.ir import capture_ir_snapshots, render_ir_json, render_ir_text
+from molt.debug.ir import capture_ir_snapshots, render_ir_text
 from molt.debug.perf import (
     build_perf_summary_payload,
     load_profile,
@@ -9166,6 +9166,7 @@ def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int]:
         if byte & 0x80 == 0:
             return result, offset
         shift += 7
+    raise AssertionError("unreachable")
 
 
 def _read_wasm_string(data: bytes, offset: int) -> tuple[str, int]:
@@ -9174,6 +9175,212 @@ def _read_wasm_string(data: bytes, offset: int) -> tuple[str, int]:
     if end > len(data):
         raise ValueError("Unexpected EOF while reading wasm string")
     return data[offset:end].decode("utf-8"), end
+
+
+def _write_wasm_varuint(value: int) -> bytes:
+    if value < 0:
+        raise ValueError("wasm varuint must be non-negative")
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _write_wasm_string(value: str) -> bytes:
+    encoded = value.encode("utf-8")
+    return _write_wasm_varuint(len(encoded)) + encoded
+
+
+def _parse_wasm_sections(data: bytes) -> list[tuple[int, bytes]]:
+    if len(data) < 8 or data[:4] != b"\x00asm":
+        raise ValueError("Invalid wasm binary")
+    offset = 8
+    sections: list[tuple[int, bytes]] = []
+    while offset < len(data):
+        section_id = data[offset]
+        offset += 1
+        section_size, offset = _read_wasm_varuint(data, offset)
+        section_end = offset + section_size
+        if section_end > len(data):
+            raise ValueError("Invalid wasm section length")
+        sections.append((section_id, data[offset:section_end]))
+        offset = section_end
+    return sections
+
+
+def _build_wasm_sections(sections: Sequence[tuple[int, bytes]]) -> bytes:
+    out = bytearray(b"\x00asm\x01\x00\x00\x00")
+    for section_id, payload in sections:
+        out.append(section_id)
+        out.extend(_write_wasm_varuint(len(payload)))
+        out.extend(payload)
+    return bytes(out)
+
+
+def _skip_wasm_init_expr(data: bytes, offset: int) -> tuple[int, int | None]:
+    opcode = data[offset]
+    offset += 1
+    value: int | None = None
+    if opcode == 0x41:  # i32.const
+        value, offset = _read_wasm_varuint(data, offset)
+    elif opcode == 0x23:  # global.get
+        _, offset = _read_wasm_varuint(data, offset)
+    else:
+        raise ValueError(f"Unsupported wasm init expr opcode 0x{opcode:02x}")
+    if offset >= len(data) or data[offset] != 0x0B:
+        raise ValueError("Malformed wasm init expr")
+    return offset + 1, value
+
+
+def _read_wasm_ref_func_expr(data: bytes, offset: int) -> tuple[int, int | None]:
+    opcode = data[offset]
+    offset += 1
+    func_index: int | None = None
+    if opcode == 0xD2:  # ref.func
+        func_index, offset = _read_wasm_varuint(data, offset)
+    elif opcode == 0xD0:  # ref.null
+        offset += 1
+    else:
+        raise ValueError(f"Unsupported wasm element expr opcode 0x{opcode:02x}")
+    if offset >= len(data) or data[offset] != 0x0B:
+        raise ValueError("Malformed wasm ref.func expr")
+    return offset + 1, func_index
+
+
+def _collect_wasm_active_table_function_slots(data: bytes) -> dict[int, int]:
+    sections = _parse_wasm_sections(data)
+    slots: dict[int, int] = {}
+    for section_id, payload in sections:
+        if section_id != 9:
+            continue
+        offset = 0
+        count, offset = _read_wasm_varuint(payload, offset)
+        for _ in range(count):
+            flags, offset = _read_wasm_varuint(payload, offset)
+            table_index = 0
+            base_offset: int | None = None
+            if flags == 0:
+                offset, base_offset = _skip_wasm_init_expr(payload, offset)
+                if offset < len(payload) and payload[offset] == 0x00:
+                    offset += 1
+                elem_count, offset = _read_wasm_varuint(payload, offset)
+                for elem_index in range(elem_count):
+                    func_index, offset = _read_wasm_varuint(payload, offset)
+                    if base_offset is not None:
+                        slots[base_offset + elem_index] = func_index
+            elif flags == 1:
+                if offset < len(payload) and payload[offset] == 0x00:
+                    offset += 1
+                elem_count, offset = _read_wasm_varuint(payload, offset)
+                for _ in range(elem_count):
+                    _, offset = _read_wasm_varuint(payload, offset)
+            elif flags == 2:
+                table_index, offset = _read_wasm_varuint(payload, offset)
+                offset, base_offset = _skip_wasm_init_expr(payload, offset)
+                if offset < len(payload) and payload[offset] == 0x00:
+                    offset += 1
+                elem_count, offset = _read_wasm_varuint(payload, offset)
+                for elem_index in range(elem_count):
+                    func_index, offset = _read_wasm_varuint(payload, offset)
+                    if table_index == 0 and base_offset is not None:
+                        slots[base_offset + elem_index] = func_index
+            elif flags == 3:
+                if offset < len(payload) and payload[offset] == 0x00:
+                    offset += 1
+                elem_count, offset = _read_wasm_varuint(payload, offset)
+                for _ in range(elem_count):
+                    _, offset = _read_wasm_varuint(payload, offset)
+            elif flags == 4:
+                offset, base_offset = _skip_wasm_init_expr(payload, offset)
+                offset += 1  # reftype
+                elem_count, offset = _read_wasm_varuint(payload, offset)
+                for elem_index in range(elem_count):
+                    offset, func_index = _read_wasm_ref_func_expr(payload, offset)
+                    if func_index is not None and base_offset is not None:
+                        slots[base_offset + elem_index] = func_index
+            elif flags == 5:
+                offset += 1  # reftype
+                elem_count, offset = _read_wasm_varuint(payload, offset)
+                for _ in range(elem_count):
+                    offset, _ = _read_wasm_ref_func_expr(payload, offset)
+            elif flags == 6:
+                table_index, offset = _read_wasm_varuint(payload, offset)
+                offset, base_offset = _skip_wasm_init_expr(payload, offset)
+                offset += 1  # reftype
+                elem_count, offset = _read_wasm_varuint(payload, offset)
+                for elem_index in range(elem_count):
+                    offset, func_index = _read_wasm_ref_func_expr(payload, offset)
+                    if table_index == 0 and func_index is not None and base_offset is not None:
+                        slots[base_offset + elem_index] = func_index
+            elif flags == 7:
+                offset += 1  # reftype
+                elem_count, offset = _read_wasm_varuint(payload, offset)
+                for _ in range(elem_count):
+                    offset, _ = _read_wasm_ref_func_expr(payload, offset)
+            else:
+                raise ValueError(f"Unsupported wasm element flags {flags}")
+    return slots
+
+
+def _export_wasm_table_refs(path: Path) -> None:
+    data = path.read_bytes()
+    sections = _parse_wasm_sections(data)
+    slot_to_func = _collect_wasm_active_table_function_slots(data)
+    if not slot_to_func:
+        return
+
+    exports: list[tuple[str, int, int]] = []
+    existing_names: set[str] = set()
+    new_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id != 7:
+            new_sections.append((section_id, payload))
+            continue
+        offset = 0
+        count, offset = _read_wasm_varuint(payload, offset)
+        for _ in range(count):
+            name, offset = _read_wasm_string(payload, offset)
+            kind = payload[offset]
+            offset += 1
+            index, offset = _read_wasm_varuint(payload, offset)
+            exports.append((name, kind, index))
+            existing_names.add(name)
+
+    additions = [
+        (f"__molt_table_ref_{slot}", 0, func_index)
+        for slot, func_index in sorted(slot_to_func.items())
+        if f"__molt_table_ref_{slot}" not in existing_names
+    ]
+    if not additions:
+        return
+
+    export_payload = bytearray()
+    merged = exports + additions
+    export_payload.extend(_write_wasm_varuint(len(merged)))
+    for name, kind, index in merged:
+        export_payload.extend(_write_wasm_string(name))
+        export_payload.append(kind)
+        export_payload.extend(_write_wasm_varuint(index))
+
+    inserted = False
+    rebuilt_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id == 7:
+            rebuilt_sections.append((7, bytes(export_payload)))
+            inserted = True
+            continue
+        if not inserted and section_id > 7:
+            rebuilt_sections.append((7, bytes(export_payload)))
+            inserted = True
+        rebuilt_sections.append((section_id, payload))
+    if not inserted:
+        rebuilt_sections.append((7, bytes(export_payload)))
+    path.write_bytes(_build_wasm_sections(rebuilt_sections))
 
 
 def _wasm_import_minima(path: Path) -> tuple[int | None, int | None]:
@@ -9230,11 +9437,157 @@ def _wasm_import_minima(path: Path) -> tuple[int | None, int | None]:
     return memory_min, table_min
 
 
+def _wasm_import_function_result_kinds(
+    path: Path, *, module_name: str
+) -> dict[str, str]:
+    wasm_objdump = shutil.which("wasm-objdump")
+    if wasm_objdump is None:
+        return {}
+    result = subprocess.run(
+        [wasm_objdump, "-x", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
+    if not text:
+        return {}
+
+    type_kinds: dict[int, str] = {}
+    for line in text.splitlines():
+        match = re.match(r"\s*-\s*type\[(\d+)\]\s+\(.*\)\s+->\s+(.+)", line)
+        if not match:
+            continue
+        type_kinds[int(match.group(1))] = match.group(2).strip()
+
+    result_kinds: dict[str, str] = {}
+    import_re = re.compile(
+        rf"\s*-\s*func\[\d+\]\s+sig=(\d+)\s+<{re.escape(module_name)}\.([^>]+)>\s+<-\s+{re.escape(module_name)}\.[^\s]+"
+    )
+    for line in text.splitlines():
+        match = import_re.match(line)
+        if not match:
+            continue
+        sig = int(match.group(1))
+        name = match.group(2)
+        result_kind = type_kinds.get(sig)
+        if result_kind:
+            result_kinds[name] = result_kind
+    return result_kinds
+
+
+def _wasm_import_function_signatures(
+    path: Path, *, module_name: str
+) -> dict[str, dict[str, object]]:
+    wasm_objdump = shutil.which("wasm-objdump")
+    if wasm_objdump is None:
+        return {}
+    result = subprocess.run(
+        [wasm_objdump, "-x", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
+    if not text:
+        return {}
+
+    type_signatures: dict[int, tuple[list[str], str]] = {}
+    for line in text.splitlines():
+        match = re.match(r"\s*-\s*type\[(\d+)\]\s+\((.*)\)\s+->\s+(.+)", line)
+        if not match:
+            continue
+        type_index = int(match.group(1))
+        raw_params = match.group(2).strip()
+        params = [part.strip() for part in raw_params.split(",") if part.strip()]
+        result_kind = match.group(3).strip()
+        type_signatures[type_index] = (params, result_kind)
+
+    signatures: dict[str, dict[str, object]] = {}
+    import_re = re.compile(
+        rf"\s*-\s*func\[\d+\]\s+sig=(\d+)\s+<{re.escape(module_name)}\.([^>]+)>\s+<-\s+{re.escape(module_name)}\.[^\s]+"
+    )
+    for line in text.splitlines():
+        match = import_re.match(line)
+        if not match:
+            continue
+        sig = int(match.group(1))
+        name = match.group(2)
+        signature = type_signatures.get(sig)
+        if signature is None:
+            continue
+        params, result_kind = signature
+        signatures[name] = {"params": params, "result": result_kind}
+    return signatures
+
+
+def _wasm_export_function_signatures(
+    path: Path, *, export_name_prefix: str
+) -> dict[str, dict[str, object]]:
+    wasm_objdump = shutil.which("wasm-objdump")
+    if wasm_objdump is None:
+        return {}
+    result = subprocess.run(
+        [wasm_objdump, "-x", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
+    if not text:
+        return {}
+
+    type_signatures: dict[int, tuple[list[str], str]] = {}
+    for line in text.splitlines():
+        match = re.match(r"\s*-\s*type\[(\d+)\]\s+\((.*)\)\s+->\s+(.+)", line)
+        if not match:
+            continue
+        type_index = int(match.group(1))
+        raw_params = match.group(2).strip()
+        params = [part.strip() for part in raw_params.split(",") if part.strip()]
+        result_kind = match.group(3).strip()
+        type_signatures[type_index] = (params, result_kind)
+
+    func_type_indices: dict[int, int] = {}
+    for line in text.splitlines():
+        match = re.match(r"\s*-\s*func\[(\d+)\]\s+sig=(\d+)", line)
+        if not match:
+            continue
+        func_type_indices[int(match.group(1))] = int(match.group(2))
+
+    export_signatures: dict[str, dict[str, object]] = {}
+    export_re = re.compile(r'\s*-\s*func\[(\d+)\]\s+<[^>]+>\s+->\s+"([^"]+)"')
+    for line in text.splitlines():
+        match = export_re.match(line)
+        if not match:
+            continue
+        func_index = int(match.group(1))
+        export_name = match.group(2)
+        if not export_name.startswith(export_name_prefix):
+            continue
+        type_index = func_type_indices.get(func_index)
+        if type_index is None:
+            continue
+        signature = type_signatures.get(type_index)
+        if signature is None:
+            continue
+        params, result_kind = signature
+        export_signatures[export_name] = {
+            "params": params,
+            "result": result_kind,
+        }
+    return export_signatures
+
+
 def _generate_split_worker_js(
     *,
     shared_memory_initial_pages: int,
     shared_table_initial: int,
     shared_table_base: int | None,
+    runtime_import_result_kinds: Mapping[str, str] | None = None,
+    runtime_import_signatures: Mapping[str, Mapping[str, object]] | None = None,
+    app_table_ref_signatures: Mapping[str, Mapping[str, object]] | None = None,
+    runtime_table_ref_signatures: Mapping[str, Mapping[str, object]] | None = None,
 ) -> str:
     """Generate a Cloudflare Workers shim for split-runtime deployment.
 
@@ -9242,6 +9595,18 @@ def _generate_split_worker_js(
     CDN independently of the app module.  Both modules share linear memory
     through WASI imports.
     """
+    runtime_import_result_kinds_json = json.dumps(
+        dict(runtime_import_result_kinds or {}), sort_keys=True
+    )
+    runtime_import_signatures_json = json.dumps(
+        dict(runtime_import_signatures or {}), sort_keys=True
+    )
+    app_table_ref_signatures_json = json.dumps(
+        dict(app_table_ref_signatures or {}), sort_keys=True
+    )
+    runtime_table_ref_signatures_json = json.dumps(
+        dict(runtime_table_ref_signatures or {}), sort_keys=True
+    )
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
 import "./molt_vfs_browser.js";
@@ -9316,6 +9681,13 @@ export default {
     const EISDIR = 21;
     const ENOTDIR = 20;
     const ESPIPE = 29;
+    const QNAN = 0x7ff8000000000000n;
+    const TAG_INT = 0x0001000000000000n;
+    const INT_MASK = (1n << 47n) - 1n;
+    const runtimeImportResultKinds = __MOLT_RUNTIME_IMPORT_RESULT_KINDS__;
+    const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
+    const appTableRefSignatures = __MOLT_APP_TABLE_REF_SIGNATURES__;
+    const runtimeTableRefSignatures = __MOLT_RUNTIME_TABLE_REF_SIGNATURES__;
     const WASI_FILETYPE_CHARACTER_DEVICE = 2;
     const WASI_FILETYPE_DIRECTORY = 3;
     const WASI_FILETYPE_REGULAR_FILE = 4;
@@ -9658,6 +10030,7 @@ export default {
         return writeFilestat(bufPtr, stat) ? 0 : WASI_ERRNO_NOSYS;
       },
       fd_filestat_set_size: wasiUnsupported,
+      fd_filestat_set_times: wasiUnsupported,
       fd_readdir: wasiUnsupported,
       fd_advise: wasiUnsupported,
       fd_datasync: wasiUnsupported,
@@ -9665,6 +10038,7 @@ export default {
       fd_fdstat_set_rights: wasiUnsupported,
       fd_pread: wasiUnsupported,
       fd_pwrite: wasiUnsupported,
+      fd_allocate: wasiUnsupported,
       fd_renumber: wasiUnsupported,
       fd_sync: wasiUnsupported,
       path_filestat_set_times: wasiUnsupported,
@@ -9720,11 +10094,18 @@ export default {
         }
         return 0;
       },
+      clock_res_get(id, outPtr) {
+        if (wasmMemory) {
+          new DataView(wasmMemory.buffer).setBigUint64(outPtr, 1000000n, true);
+        }
+        return 0;
+      },
       random_get(ptr, len) {
         if (wasmMemory) crypto.getRandomValues(new Uint8Array(wasmMemory.buffer, ptr, len));
         return 0;
       },
       proc_exit(code) { throw new ProcExit(code); },
+      proc_raise() { return WASI_ERRNO_NOSYS; },
       sched_yield() { return 0; },
       poll_oneoff() { return 0; },
       path_open(fd, _dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, _fdflags, openedFdPtr) {
@@ -9758,13 +10139,157 @@ export default {
       path_remove_directory: wasiUnsupported,
     };
 
-    // Host stubs for platform features not available in Workers
-    const callIndirect = (fnIndex, ...args) => {
-      const fn = sharedTable.get(Number(fnIndex));
-      if (typeof fn !== "function") {
-        throw new Error(`missing wasm table entry: ${fnIndex}`);
+    const boxInt = (value) => {
+      let v = BigInt(value);
+      if (v < 0n) {
+        v = (1n << 47n) + v;
       }
-      return fn(...args);
+      return QNAN | TAG_INT | (v & INT_MASK);
+    };
+
+    const normalizeI64Result = (value) =>
+      typeof value === "bigint" ? value : BigInt(value);
+
+    const normalizeImportResult = (value, resultKind) => {
+      if (resultKind === "i64") {
+        return normalizeI64Result(value);
+      }
+      if (resultKind === "i32") {
+        return typeof value === "bigint" ? Number(value) : Number(value);
+      }
+      return value;
+    };
+
+    const normalizeValueForKind = (value, kind) => {
+      if (kind === "i64") {
+        return normalizeI64Result(value);
+      }
+      if (kind === "i32") {
+        return typeof value === "bigint" ? Number(value) : Number(value);
+      }
+      return value;
+    };
+
+    const callWithSignature = (fn, signature, args) => {
+      if (!signature || !Array.isArray(signature.params)) {
+        return fn(...args);
+      }
+      const callArgs = signature.params.map((kind, index) =>
+        normalizeValueForKind(args[index], kind),
+      );
+      const out = fn(...callArgs);
+      return normalizeImportResult(out, signature.result || null);
+    };
+
+    const installTableRefs = (instance, table) => {
+      if (!instance || !table) {
+        return;
+      }
+      const refs = [];
+      for (const [name, value] of Object.entries(instance.exports)) {
+        const match = /^__molt_table_ref_(\\d+)$/.exec(name);
+        if (!match || typeof value !== "function") {
+          continue;
+        }
+        refs.push({ index: Number(match[1]), fn: value });
+      }
+      if (refs.length === 0) {
+        return;
+      }
+      refs.sort((a, b) => a.index - b.index);
+      const maxIndex = refs[refs.length - 1].index;
+      if (maxIndex >= table.length) {
+        table.grow(maxIndex + 1 - table.length);
+      }
+      for (const ref of refs) {
+        table.set(ref.index, ref.fn);
+      }
+    };
+
+    const ensureTableCapacityForExportedRefs = (instance, table) => {
+      if (!instance || !table) {
+        return;
+      }
+      let maxIndex = -1;
+      for (const name of Object.keys(instance.exports)) {
+        const match = /^__molt_table_ref_(\\d+)$/.exec(name);
+        if (!match) {
+          continue;
+        }
+        const idx = Number(match[1]);
+        if (Number.isInteger(idx) && idx > maxIndex) {
+          maxIndex = idx;
+        }
+      }
+      if (maxIndex < 0 || maxIndex < table.length) {
+        return;
+      }
+      table.grow(maxIndex + 1 - table.length);
+    };
+
+    const buildRuntimeImports = (module, runtimeInstance) => {
+      const imports = {};
+      const callBindIc = runtimeInstance.exports.molt_call_bind_ic;
+      const callargsNew = runtimeInstance.exports.molt_callargs_new;
+      const callargsPushPos = runtimeInstance.exports.molt_callargs_push_pos;
+      const dictSet = runtimeInstance.exports.molt_dict_set;
+      const dictGetitemBorrowed = runtimeInstance.exports.molt_dict_getitem_borrowed;
+      const tupleGetitemBorrowed = runtimeInstance.exports.molt_tuple_getitem_borrowed;
+      const makeCallBindFallback = (arity) => {
+        if (
+          typeof callBindIc !== "function" ||
+          typeof callargsNew !== "function" ||
+          typeof callargsPushPos !== "function"
+        ) {
+          return null;
+        }
+        return (methodBits, ...argBits) => {
+          const builderBits = callargsNew(boxInt(arity), boxInt(0));
+          for (const argBitsValue of argBits) {
+            callargsPushPos(builderBits, argBitsValue);
+          }
+          return callBindIc(boxInt(0), methodBits, builderBits);
+        };
+      };
+      for (const entry of WebAssembly.Module.imports(module)) {
+        if (entry.module !== "molt_runtime") continue;
+        const exportName = entry.name.startsWith("molt_")
+          ? entry.name
+          : `molt_${entry.name}`;
+        let fn = runtimeInstance.exports[exportName];
+        if (typeof fn !== "function") {
+          if (entry.name === "resource_on_allocate") {
+            fn = () => 0;
+          } else if (entry.name === "resource_on_free") {
+            fn = () => {};
+          } else if (entry.name === "fast_list_append") {
+            fn = makeCallBindFallback(1);
+          } else if (entry.name === "fast_str_join") {
+            fn = makeCallBindFallback(1);
+          } else if (entry.name === "fast_dict_get") {
+            fn = makeCallBindFallback(2);
+          } else if (entry.name === "dict_setitem") {
+            fn = typeof dictSet === "function" ? dictSet : null;
+          } else if (entry.name === "dict_getitem") {
+            fn = typeof dictGetitemBorrowed === "function" ? dictGetitemBorrowed : null;
+          } else if (entry.name === "tuple_getitem") {
+            fn = typeof tupleGetitemBorrowed === "function" ? tupleGetitemBorrowed : null;
+          }
+        }
+        if (typeof fn !== "function") {
+          throw new Error(`molt_runtime missing export ${exportName}`);
+        }
+        const signature = runtimeImportSignatures[entry.name] || null;
+        const resultKind = runtimeImportResultKinds[entry.name] || null;
+        imports[entry.name] = (...args) => {
+          const callArgs = signature && Array.isArray(signature.params)
+            ? signature.params.map((kind, index) => normalizeValueForKind(args[index], kind))
+            : args;
+          const out = fn(...callArgs);
+          return normalizeImportResult(out, resultKind);
+        };
+      }
+      return imports;
     };
 
     const hostEnv = {
@@ -9829,7 +10354,7 @@ export default {
         if (!appInstance || !appInstance.exports.molt_isolate_import) {
           throw new Error("molt_isolate_import called before app instantiation");
         }
-        return appInstance.exports.molt_isolate_import(...args);
+        return normalizeI64Result(appInstance.exports.molt_isolate_import(...args));
       },
       molt_time_timezone_host()  { return 0n; },
       molt_time_local_offset_host() { return 0n; },
@@ -9883,23 +10408,35 @@ export default {
     };
 
     for (let arity = 0; arity <= 13; arity++) {
-      hostEnv[`molt_call_indirect${arity}`] = (fnIndex, ...args) =>
-        callIndirect(fnIndex, ...args);
+      hostEnv[`molt_call_indirect${arity}`] = (fnIndex, ...args) => {
+        const indirectName = `molt_call_indirect${arity}`;
+        const idx = Number(fnIndex);
+        const tableFn = sharedTable.get(idx);
+        if (typeof tableFn === "function") {
+          return normalizeI64Result(tableFn(...args));
+        }
+        const indirectFn = appInstance?.exports?.[indirectName];
+        if (typeof indirectFn === "function") {
+          return normalizeI64Result(indirectFn(fnIndex, ...args));
+        }
+        const directName = `__molt_table_ref_${idx}`;
+        const rtDirectFn = rtInstance?.exports?.[directName];
+        if (typeof rtDirectFn === "function") {
+          return callWithSignature(
+            rtDirectFn,
+            runtimeTableRefSignatures[directName],
+            args,
+          );
+        }
+        if (typeof tableFn !== "function") {
+          throw new Error(`${indirectName} missing table entry at ${idx}`);
+        }
+        return normalizeI64Result(tableFn(...args));
+      };
     }
 
     // Shared table for indirect calls — both modules reference the same table.
     const sharedTable = new WebAssembly.Table({ initial: __MOLT_SHARED_TABLE_INITIAL__, element: "anyfunc" });
-
-    const runtimeAbiExports = (exports) => {
-      const abi = {};
-      for (const [name, value] of Object.entries(exports)) {
-        abi[name] = value;
-        if (name.startsWith("molt_")) {
-          abi[name.slice(5)] = value;
-        }
-      }
-      return abi;
-    };
 
     let rtInstance = null;
     let pendingError = null;
@@ -9919,6 +10456,7 @@ export default {
       if (__MOLT_SHARED_TABLE_BASE__ !== null && rtInstance.exports.molt_set_wasm_table_base) {
         rtInstance.exports.molt_set_wasm_table_base(BigInt(__MOLT_SHARED_TABLE_BASE__));
       }
+      installTableRefs(rtInstance, sharedTable);
 
       // 2. Instantiate the app module.
       //    It imports the runtime ABI exports plus the same host-owned memory/table.
@@ -9929,13 +10467,15 @@ export default {
           memory: wasmMemory,
           __indirect_function_table: sharedTable,
         },
-        molt_runtime: runtimeAbiExports(rtInstance.exports),
+        molt_runtime: buildRuntimeImports(appModule, rtInstance),
       };
       appInstance = await WebAssembly.instantiate(appModule, appImports);
+      ensureTableCapacityForExportedRefs(appInstance, sharedTable);
 
       // 3. Initialize and run
       if (rtInstance.exports._initialize) rtInstance.exports._initialize();
       if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
+      installTableRefs(appInstance, sharedTable);
       if (appInstance.exports.molt_main) appInstance.exports.molt_main();
       else if (appInstance.exports._start) appInstance.exports._start();
     } catch (err) {
@@ -9977,9 +10517,49 @@ export default {
         )
         .replace("__MOLT_SHARED_TABLE_INITIAL__", str(shared_table_initial))
         .replace(
+            "__MOLT_RUNTIME_IMPORT_RESULT_KINDS__",
+            runtime_import_result_kinds_json,
+        )
+        .replace(
+            "__MOLT_RUNTIME_IMPORT_SIGNATURES__",
+            runtime_import_signatures_json,
+        )
+        .replace(
+            "__MOLT_APP_TABLE_REF_SIGNATURES__",
+            app_table_ref_signatures_json,
+        )
+        .replace(
+            "__MOLT_RUNTIME_TABLE_REF_SIGNATURES__",
+            runtime_table_ref_signatures_json,
+        )
+        .replace(
             "__MOLT_SHARED_TABLE_BASE__",
             "null" if shared_table_base is None else str(shared_table_base),
         )
+    )
+
+
+def _generate_split_wrangler_jsonc(compatibility_date: str) -> str:
+    return (
+        "{\n"
+        '  "name": "molt-app",\n'
+        '  "main": "worker.js",\n'
+        f'  "compatibility_date": "{compatibility_date}",\n'
+        '  "no_bundle": true,\n'
+        '  "find_additional_modules": true,\n'
+        '  "rules": [\n'
+        "    {\n"
+        '      "type": "ESModule",\n'
+        '      "globs": ["worker.js", "molt_vfs_browser.js"],\n'
+        '      "fallthrough": false\n'
+        "    },\n"
+        "    {\n"
+        '      "type": "CompiledWasm",\n'
+        '      "globs": ["app.wasm", "molt_runtime.wasm"],\n'
+        '      "fallthrough": false\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
     )
 
 
@@ -11206,6 +11786,7 @@ def _backend_daemon_compile_request_bytes(
     wasm_link: bool,
     wasm_data_base: int | None,
     wasm_table_base: int | None,
+    wasm_split_runtime_runtime_table_min: int | None = None,
     target_triple: str | None,
     cache_key: str | None,
     function_cache_key: str | None,
@@ -11236,6 +11817,7 @@ def _backend_daemon_compile_request_bytes(
         "wasm_link": wasm_link,
         "wasm_data_base": wasm_data_base,
         "wasm_table_base": wasm_table_base,
+        "wasm_split_runtime_runtime_table_min": wasm_split_runtime_runtime_table_min,
         "output": str(backend_output),
         "cache_key": effective_cache_key,
         "function_cache_key": effective_function_cache_key,
@@ -11623,6 +12205,7 @@ def _compile_with_backend_daemon(
     wasm_link: bool,
     wasm_data_base: int | None,
     wasm_table_base: int | None,
+    wasm_split_runtime_runtime_table_min: int | None = None,
     target_triple: str | None,
     cache_key: str | None,
     function_cache_key: str | None,
@@ -11647,6 +12230,7 @@ def _compile_with_backend_daemon(
             wasm_link=wasm_link,
             wasm_data_base=wasm_data_base,
             wasm_table_base=wasm_table_base,
+            wasm_split_runtime_runtime_table_min=wasm_split_runtime_runtime_table_min,
             target_triple=target_triple,
             cache_key=cache_key,
             function_cache_key=function_cache_key,
@@ -11672,6 +12256,7 @@ def _compile_with_backend_daemon(
             wasm_link=wasm_link,
             wasm_data_base=wasm_data_base,
             wasm_table_base=wasm_table_base,
+            wasm_split_runtime_runtime_table_min=wasm_split_runtime_runtime_table_min,
             target_triple=target_triple,
             cache_key=cache_key,
             function_cache_key=function_cache_key,
@@ -11770,6 +12355,7 @@ def _compile_with_backend_daemon(
                 wasm_link=wasm_link,
                 wasm_data_base=wasm_data_base,
                 wasm_table_base=wasm_table_base,
+                wasm_split_runtime_runtime_table_min=wasm_split_runtime_runtime_table_min,
                 target_triple=target_triple,
                 cache_key=cache_key,
                 function_cache_key=function_cache_key,
@@ -17061,6 +17647,10 @@ def _prepare_backend_dispatch(
     warnings: list[str],
 ) -> tuple[_PreparedBackendDispatch | None, dict[str, Any] | None]:
     backend_env = os.environ.copy() if is_wasm else None
+    if backend_env is not None:
+        backend_env.pop("MOLT_WASM_DATA_BASE", None)
+        backend_env.pop("MOLT_WASM_TABLE_BASE", None)
+        backend_env.pop("MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN", None)
     if is_luau_transpile:
         backend_features: tuple[str, ...] = ("luau-backend",)
     elif is_rust_transpile:
@@ -17155,6 +17745,20 @@ def _prepare_backend_dispatch(
                     warnings.append(
                         "Failed to read runtime table size; using default table base."
                     )
+        if runtime_wasm is not None and runtime_wasm.exists():
+            runtime_table_min = _read_wasm_table_min(runtime_wasm)
+            if runtime_table_min is not None:
+                raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
+                try:
+                    current_table_base = (
+                        int(raw_table_base)
+                        if raw_table_base is not None
+                        else None
+                    )
+                except ValueError:
+                    current_table_base = None
+                if current_table_base is None or current_table_base < runtime_table_min:
+                    backend_env["MOLT_WASM_TABLE_BASE"] = str(runtime_table_min)
         if (
             split_runtime
             and "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN" not in backend_env
@@ -17303,10 +17907,14 @@ def _execute_backend_compile(
         wasm_link = False
         wasm_data_base: int | None = None
         wasm_table_base: int | None = None
+        wasm_split_runtime_runtime_table_min: int | None = None
         if is_wasm and backend_env is not None:
             wasm_link = backend_env.get("MOLT_WASM_LINK") == "1"
             raw_data_base = backend_env.get("MOLT_WASM_DATA_BASE")
             raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
+            raw_split_runtime_runtime_table_min = backend_env.get(
+                "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN"
+            )
             try:
                 wasm_data_base = (
                     int(raw_data_base) if raw_data_base is not None else None
@@ -17319,6 +17927,14 @@ def _execute_backend_compile(
                 )
             except ValueError:
                 wasm_table_base = None
+            try:
+                wasm_split_runtime_runtime_table_min = (
+                    int(raw_split_runtime_runtime_table_min)
+                    if raw_split_runtime_runtime_table_min is not None
+                    else None
+                )
+            except ValueError:
+                wasm_split_runtime_runtime_table_min = None
         if daemon_ready and daemon_socket is not None:
             output_sync_state_path = _artifact_sync_state_path(
                 project_root, output_artifact
@@ -17359,6 +17975,7 @@ def _execute_backend_compile(
                 wasm_link=wasm_link,
                 wasm_data_base=wasm_data_base,
                 wasm_table_base=wasm_table_base,
+                wasm_split_runtime_runtime_table_min=wasm_split_runtime_runtime_table_min,
                 target_triple=target_triple,
                 cache_key=cache_key,
                 function_cache_key=function_cache_key,
@@ -17414,6 +18031,7 @@ def _execute_backend_compile(
                         wasm_link=wasm_link,
                         wasm_data_base=wasm_data_base,
                         wasm_table_base=wasm_table_base,
+                        wasm_split_runtime_runtime_table_min=wasm_split_runtime_runtime_table_min,
                         target_triple=target_triple,
                         cache_key=cache_key,
                         function_cache_key=function_cache_key,
@@ -17503,6 +18121,19 @@ def _execute_backend_compile(
                 cmd.extend(["--target", "rust"])
             elif is_wasm:
                 cmd.extend(["--target", "wasm"])
+                if wasm_link:
+                    cmd.append("--wasm-link")
+                if wasm_data_base is not None:
+                    cmd.extend(["--wasm-data-base", str(wasm_data_base)])
+                if wasm_table_base is not None:
+                    cmd.extend(["--wasm-table-base", str(wasm_table_base)])
+                if wasm_split_runtime_runtime_table_min is not None:
+                    cmd.extend(
+                        [
+                            "--wasm-split-runtime-runtime-table-min",
+                            str(wasm_split_runtime_runtime_table_min),
+                        ]
+                    )
             elif target_triple:
                 cmd.extend(["--target-triple", target_triple])
             cmd_with_output = cmd + ["--output", str(backend_output)]
@@ -18626,6 +19257,12 @@ def _prepare_non_native_build_result(
             rt_size = rt_wasm.stat().st_size
             app_memory_min, app_table_min = _wasm_import_minima(app_wasm)
             rt_memory_min, rt_table_min = _wasm_import_minima(rt_wasm)
+            app_runtime_import_result_kinds = _wasm_import_function_result_kinds(
+                app_wasm, module_name="molt_runtime"
+            )
+            app_runtime_import_signatures = _wasm_import_function_signatures(
+                app_wasm, module_name="molt_runtime"
+            )
             shared_memory_initial_pages = max(
                 app_memory_min or 0,
                 rt_memory_min or 0,
@@ -18659,6 +19296,14 @@ def _prepare_non_native_build_result(
             }
             manifest.write_text(_json.dumps(manifest_data, indent=2) + "\n")
 
+            _export_wasm_table_refs(rt_wasm)
+            app_table_ref_signatures = _wasm_export_function_signatures(
+                app_wasm, export_name_prefix="__molt_table_ref_"
+            )
+            runtime_table_ref_signatures = _wasm_export_function_signatures(
+                rt_wasm, export_name_prefix="__molt_table_ref_"
+            )
+
             # Generate split-runtime Cloudflare Workers shim with full
             # WASI support and multi-module instantiation.
             worker_js = split_dir / "worker.js"
@@ -18667,6 +19312,10 @@ def _prepare_non_native_build_result(
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
                     shared_table_base=wasm_table_base,
+                    runtime_import_result_kinds=app_runtime_import_result_kinds,
+                    runtime_import_signatures=app_runtime_import_signatures,
+                    app_table_ref_signatures=app_table_ref_signatures,
+                    runtime_table_ref_signatures=runtime_table_ref_signatures,
                 )
             )
             vfs_support_src = molt_root / "wasm" / "molt_vfs_browser.js"
@@ -18685,25 +19334,7 @@ def _prepare_non_native_build_result(
             # live-verification tooling contract.
             wrangler_jsonc = split_dir / "wrangler.jsonc"
             wrangler_jsonc.write_text(
-                "{\n"
-                '  "name": "molt-app",\n'
-                '  "main": "worker.js",\n'
-                f'  "compatibility_date": "{dt.date.today().isoformat()}",\n'
-                '  "no_bundle": true,\n'
-                '  "find_additional_modules": true,\n'
-                '  "rules": [\n'
-                "    {\n"
-                '      "type": "ESModule",\n'
-                '      "globs": ["**/*.js"],\n'
-                '      "fallthrough": false\n'
-                "    },\n"
-                "    {\n"
-                '      "type": "CompiledWasm",\n'
-                '      "globs": ["**/*.wasm"],\n'
-                '      "fallthrough": false\n'
-                "    }\n"
-                "  ]\n"
-                "}\n"
+                _generate_split_wrangler_jsonc(dt.date.today().isoformat())
             )
             legacy_wrangler_toml = split_dir / "wrangler.toml"
             if legacy_wrangler_toml.exists():

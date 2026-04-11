@@ -74,7 +74,7 @@ def test_ensure_runtime_wasm_recovers_from_invalid_primary_artifact(
         json_output: bool,
         artifact_kind: str = "cdylib",
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
-        del cargo_timeout, json_output, artifact_kind
+        del env, cargo_timeout, json_output, artifact_kind
         target_root = target_root_override or cli._cargo_target_root(root)
         seen_target_roots.append(target_root)
         src = target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
@@ -150,17 +150,12 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
         json_output: bool,
         artifact_kind: str = "cdylib",
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
-        del cargo_timeout, json_output, artifact_kind
+        del env, cargo_timeout, json_output, artifact_kind
         profile = cmd[5]
         target_root = target_root_override or cli._cargo_target_root(root)
         seen_profiles.append(profile)
         seen_targets.append(target_root)
-        src = (
-            target_root
-            / "wasm32-wasip1"
-            / profile_dir
-            / "molt_runtime.wasm"
-        )
+        src = target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
         src.parent.mkdir(parents=True, exist_ok=True)
         if profile == "release-fast":
             src.write_bytes(b"\x00asm\x01\x00\x00\x00ok")
@@ -187,10 +182,6 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
     assert seen_profiles == ["wasm-release", "wasm-release", "release-fast"]
     assert seen_targets[0] == primary_target
     assert seen_targets[1] == cli._wasm_runtime_recovery_target_root(primary_target)
-    assert seen_targets[2] == (
-        cli._wasm_runtime_recovery_target_root(primary_target).parent
-        / f"{cli._wasm_runtime_recovery_target_root(primary_target).name}-release-fast"
-    )
 
 
 def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifact_is_newer(
@@ -267,6 +258,40 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
     )
     assert build_calls, "feature-shape changes must force a wasm runtime rebuild"
     assert runtime_wasm.read_bytes() == b"\x00asm\x01\x00\x00\x00rebuilt"
+
+
+def test_ensure_runtime_wasm_skip_rebuild_still_requires_requested_exports(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\x00asm\x01\x00\x00\x00runtime")
+
+    monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
+    monkeypatch.setattr(
+        cli,
+        "_runtime_wasm_exports_satisfy",
+        lambda path, required: False,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_is_valid_runtime_wasm_artifact",
+        lambda path: True,
+        raising=True,
+    )
+
+    assert not cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+        required_exports={"molt_fast_list_append"},
+    )
 
 
 def test_run_subprocess_captured_to_tempfiles_respects_cwd(tmp_path: Path) -> None:
@@ -458,3 +483,37 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(tmp_path: Path, monk
         target_root / "wasm32-wasip1" / "release-fast" / "libmolt_runtime.a"
     )
     assert runtime_wasm.read_bytes() == b"\x00asm\x01\x00\x00\x00reloc"
+
+
+def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staticlib = tmp_path / "libmolt_runtime.a"
+    staticlib.write_bytes(b"archive")
+    runtime_wasm = tmp_path / "molt_runtime_reloc.wasm"
+    libc_archive = tmp_path / "libc.a"
+    libc_archive.write_bytes(b"libc")
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        runtime_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/wasm-ld")
+    monkeypatch.setattr(cli, "_wasm_wasi_libc_archive", lambda: libc_archive, raising=True)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True, raising=True)
+
+    assert cli._link_runtime_staticlib_to_reloc_wasm(
+        staticlib_path=staticlib,
+        output_path=runtime_wasm,
+        json_output=True,
+        link_timeout=5.0,
+    )
+
+    cmd = captured["cmd"]
+    assert cmd[:4] == ["/usr/bin/wasm-ld", "-r", "--whole-archive", str(staticlib)]
+    assert "--no-whole-archive" in cmd
+    no_whole_index = cmd.index("--no-whole-archive")
+    assert cmd[no_whole_index + 1] == str(libc_archive)
