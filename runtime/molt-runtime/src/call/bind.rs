@@ -5,7 +5,7 @@ use crate::call::type_policy::{
 use crate::state::tls::FRAME_STACK;
 use crate::{
     ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_OPEN, CALL_BIND_IC_HIT_COUNT,
-    CALL_BIND_IC_MISS_COUNT, CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT, GEN_CONTROL_SIZE,
+    CALL_BIND_IC_MISS_COUNT, GEN_CONTROL_SIZE,
     INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject, PtrDropGuard, PyToken,
     TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE, TYPE_ID_DATACLASS, TYPE_ID_DICT,
     TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT,
@@ -17,16 +17,16 @@ use crate::{
     audit::{AuditArgs, audit_capability_decision},
     bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes, call_callable0,
     call_callable1, call_class_init_with_args, call_function_obj_vec, class_attr_lookup,
-    class_attr_lookup_raw_mro, class_dict_bits, class_name_bits, class_name_for_error,
-    code_argcount, code_filename_bits, code_name_bits, dec_ref_bits, dict_fromkeys_method,
-    dict_get_in_place, dict_get_method, dict_order, dict_pop_method, dict_setdefault_method,
-    dict_update_apply, dict_update_method, dict_update_set_in_place, dict_update_set_via_store,
-    exception_class_bits, exception_pending, exception_type_bits_from_name, function_arity,
-    function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
-    function_trampoline_ptr, generic_alias_origin_bits, has_capability, inc_ref_bits,
-    init_atomic_bits, intern_static_name, is_builtin_class_bits, is_trusted, is_truthy,
-    isinstance_bits, issubclass_bits, lookup_call_attr, maybe_ptr_from_bits, missing_bits,
-    molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
+    class_attr_lookup_raw_mro, class_dict_bits, class_layout_version_bits, class_name_bits,
+    class_name_for_error, code_argcount, code_filename_bits, code_name_bits, dec_ref_bits,
+    dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_order, dict_pop_method,
+    dict_setdefault_method, dict_update_apply, dict_update_method, dict_update_set_in_place,
+    dict_update_set_via_store, exception_class_bits, exception_pending,
+    exception_type_bits_from_name, function_arity, function_attr_bits, function_closure_bits,
+    function_fn_ptr, function_name_bits, function_trampoline_ptr, generic_alias_origin_bits,
+    has_capability, inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits,
+    is_trusted, is_truthy, isinstance_bits, issubclass_bits, lookup_call_attr, maybe_ptr_from_bits,
+    missing_bits, molt_bytearray_count_slice, molt_bytearray_decode, molt_bytearray_endswith_slice,
     molt_bytearray_find_slice, molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop,
     molt_bytearray_rfind_slice, molt_bytearray_rindex_slice, molt_bytearray_rsplit_max,
     molt_bytearray_split_max, molt_bytearray_splitlines, molt_bytearray_startswith_slice,
@@ -37,9 +37,9 @@ use crate::{
     molt_file_reconfigure, molt_frozenset_copy_method, molt_frozenset_difference_multi,
     molt_frozenset_intersection_multi, molt_frozenset_isdisjoint, molt_frozenset_issubset,
     molt_frozenset_issuperset, molt_frozenset_symmetric_difference, molt_frozenset_union_multi,
-    molt_generator_new, molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_is_callable,
-    molt_iter, molt_iter_next, molt_list_append, molt_list_index_range, molt_list_pop,
-    molt_list_sort, molt_memoryview_cast, molt_memoryview_hex, molt_object_init,
+    molt_generator_new, molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_iter,
+    molt_iter_next, molt_list_append, molt_list_index_range, molt_list_pop, molt_list_sort,
+    molt_memoryview_cast, molt_memoryview_hex, molt_object_init,
     molt_object_init_subclass, molt_object_new_bound, molt_open_builtin, molt_set_clear,
     molt_set_copy_method, molt_set_difference_multi, molt_set_difference_update_multi,
     molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
@@ -86,7 +86,9 @@ fn trace_call_type_builder_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         trace_call_type_builder_enabled_raw(
-            std::env::var("MOLT_TRACE_CALL_TYPE_BUILDER").ok().as_deref(),
+            std::env::var("MOLT_TRACE_CALL_TYPE_BUILDER")
+                .ok()
+                .as_deref(),
         )
     })
 }
@@ -167,12 +169,17 @@ fn callargs_storage_is_live(args_ptr: *mut CallArgs) -> bool {
 #[derive(Clone, Copy)]
 struct CallBindIcEntry {
     fn_ptr: u64,
+    target_bits: u64,
+    class_bits: u64,
+    class_version: u64,
     arity: u8,
     kind: u8,
 }
 
 const CALL_BIND_IC_KIND_DIRECT_FUNC: u8 = 1;
 const CALL_BIND_IC_KIND_LIST_APPEND: u8 = 2;
+const CALL_BIND_IC_KIND_BOUND_DIRECT_FUNC: u8 = 3;
+const CALL_BIND_IC_KIND_OBJECT_CALL_SIMPLE_BOUND_FUNC: u8 = 4;
 
 // Thread-local direct-mapped inline cache for call_bind dispatch.
 // Each slot stores (site_id, entry). On lookup, we check if the stored site_id
@@ -182,7 +189,7 @@ const IC_TLS_SIZE: usize = 256; // Must be power of 2
 
 thread_local! {
     static IC_TLS: std::cell::RefCell<[(u64, CallBindIcEntry); IC_TLS_SIZE]> =
-        const { std::cell::RefCell::new([(0u64, CallBindIcEntry { fn_ptr: 0, arity: 0, kind: 0 }); IC_TLS_SIZE]) };
+        const { std::cell::RefCell::new([(0u64, CallBindIcEntry { fn_ptr: 0, target_bits: 0, class_bits: 0, class_version: 0, arity: 0, kind: 0 }); IC_TLS_SIZE]) };
 }
 
 #[inline]
@@ -1131,15 +1138,34 @@ unsafe fn protect_callargs_aliased_return(
     result: u64,
     args_ptr: *mut CallArgs,
 ) -> u64 {
+    unsafe { protect_callargs_aliased_return_with_extra(_py, result, args_ptr, &[]) }
+}
+
+/// Protect a call result from cleanup of builder-owned values plus any
+/// additional synthesized owned arguments passed outside the builder.
+///
+/// Some fast-path IC lanes synthesize a receiver locally instead of pushing it
+/// through `CallArgs`. If the callee returns that synthesized receiver (for
+/// example `return self`), the caller must still receive an owned reference
+/// that survives surrounding cleanup.
+unsafe fn protect_callargs_aliased_return_with_extra(
+    _py: &PyToken<'_>,
+    result: u64,
+    args_ptr: *mut CallArgs,
+    extra_owned: &[u64],
+) -> u64 {
     unsafe {
-        if args_ptr.is_null() {
+        if extra_owned.contains(&result) {
+            inc_ref_bits(_py, result);
             return result;
         }
-        let args = &*args_ptr;
-        for &val in args.pos.iter().chain(args.kw_values.iter()) {
-            if val == result {
-                inc_ref_bits(_py, result);
-                break;
+        if !args_ptr.is_null() {
+            let args = &*args_ptr;
+            for &val in args.pos.iter().chain(args.kw_values.iter()) {
+                if val == result {
+                    inc_ref_bits(_py, result);
+                    break;
+                }
             }
         }
         result
@@ -1481,7 +1507,7 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_
                 return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
             }
             let mapping_obj = obj_from_bits(mapping_bits);
-            let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
+            let _args_ptr = match require_callargs_ptr(_py, builder_ptr) {
                 Ok(ptr) => ptr,
                 Err(err) => return err,
             };
@@ -1581,6 +1607,76 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_
     }
 }
 
+unsafe fn function_requires_full_binding(_py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
+    let attr = |name_bytes: &'static [u8]| unsafe {
+        function_attr_bits(
+            _py,
+            func_ptr,
+            intern_static_name(
+                _py,
+                match name_bytes {
+                    b"__molt_bind_kind__" => &runtime_state(_py).interned.molt_bind_kind,
+                    b"__molt_vararg__" => &runtime_state(_py).interned.molt_vararg,
+                    b"__molt_varkw__" => &runtime_state(_py).interned.molt_varkw,
+                    b"__molt_kwonly_names__" => &runtime_state(_py).interned.molt_kwonly_names,
+                    b"__defaults__" => &runtime_state(_py).interned.defaults_name,
+                    b"__kwdefaults__" => &runtime_state(_py).interned.kwdefaults_name,
+                    _ => unreachable!("unknown binding metadata attr"),
+                },
+                name_bytes,
+            ),
+        )
+        .unwrap_or_else(|| MoltObject::none().bits())
+    };
+
+    for name in [
+        b"__molt_bind_kind__".as_slice(),
+        b"__molt_vararg__",
+        b"__molt_varkw__",
+    ] {
+        if !obj_from_bits(attr(name)).is_none() {
+            return true;
+        }
+    }
+
+    let kwonly_bits = attr(b"__molt_kwonly_names__");
+    if !obj_from_bits(kwonly_bits).is_none() {
+        let Some(ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
+            return true;
+        };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE
+            || !unsafe { seq_vec_ref(ptr) }.is_empty()
+        {
+            return true;
+        }
+    }
+
+    let defaults_bits = attr(b"__defaults__");
+    if !obj_from_bits(defaults_bits).is_none() {
+        let Some(ptr) = obj_from_bits(defaults_bits).as_ptr() else {
+            return true;
+        };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE
+            || !unsafe { seq_vec_ref(ptr) }.is_empty()
+        {
+            return true;
+        }
+    }
+
+    let kwdefaults_bits = attr(b"__kwdefaults__");
+    if !obj_from_bits(kwdefaults_bits).is_none() {
+        let Some(ptr) = obj_from_bits(kwdefaults_bits).as_ptr() else {
+            return true;
+        };
+        if unsafe { object_type_id(ptr) } != TYPE_ID_DICT || !unsafe { dict_order(ptr) }.is_empty()
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
 unsafe fn call_bind_ic_entry_for_call(
     _py: &PyToken<'_>,
     call_bits: u64,
@@ -1588,81 +1684,6 @@ unsafe fn call_bind_ic_entry_for_call(
     unsafe {
         let call_obj = obj_from_bits(call_bits);
         let call_ptr = call_obj.as_ptr()?;
-        unsafe fn function_requires_full_binding(_py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
-            let attr = |name_bytes: &'static [u8]| {
-                unsafe {
-                    function_attr_bits(
-                        _py,
-                        func_ptr,
-                        intern_static_name(
-                            _py,
-                            match name_bytes {
-                                b"__molt_bind_kind__" => &runtime_state(_py).interned.molt_bind_kind,
-                                b"__molt_vararg__" => &runtime_state(_py).interned.molt_vararg,
-                                b"__molt_varkw__" => &runtime_state(_py).interned.molt_varkw,
-                                b"__molt_kwonly_names__" => {
-                                    &runtime_state(_py).interned.molt_kwonly_names
-                                }
-                                b"__defaults__" => &runtime_state(_py).interned.defaults_name,
-                                b"__kwdefaults__" => &runtime_state(_py).interned.kwdefaults_name,
-                                _ => unreachable!("unknown binding metadata attr"),
-                            },
-                            name_bytes,
-                        ),
-                    )
-                    .unwrap_or_else(|| MoltObject::none().bits())
-                }
-            };
-
-            for name in [
-                b"__molt_bind_kind__".as_slice(),
-                b"__molt_vararg__",
-                b"__molt_varkw__",
-            ] {
-                if !obj_from_bits(attr(name)).is_none() {
-                    return true;
-                }
-            }
-
-            let kwonly_bits = attr(b"__molt_kwonly_names__");
-            if !obj_from_bits(kwonly_bits).is_none() {
-                let Some(ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
-                    return true;
-                };
-                if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE
-                    || !unsafe { seq_vec_ref(ptr) }.is_empty()
-                {
-                    return true;
-                }
-            }
-
-            let defaults_bits = attr(b"__defaults__");
-            if !obj_from_bits(defaults_bits).is_none() {
-                let Some(ptr) = obj_from_bits(defaults_bits).as_ptr() else {
-                    return true;
-                };
-                if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE
-                    || !unsafe { seq_vec_ref(ptr) }.is_empty()
-                {
-                    return true;
-                }
-            }
-
-            let kwdefaults_bits = attr(b"__kwdefaults__");
-            if !obj_from_bits(kwdefaults_bits).is_none() {
-                let Some(ptr) = obj_from_bits(kwdefaults_bits).as_ptr() else {
-                    return true;
-                };
-                if unsafe { object_type_id(ptr) } != TYPE_ID_DICT
-                    || !unsafe { dict_order(ptr) }.is_empty()
-                {
-                    return true;
-                }
-            }
-
-            false
-        }
-
         match object_type_id(call_ptr) {
             TYPE_ID_FUNCTION => {
                 if function_requires_full_binding(_py, call_ptr) {
@@ -1698,6 +1719,9 @@ unsafe fn call_bind_ic_entry_for_call(
                     }
                     Some(CallBindIcEntry {
                         fn_ptr: function_fn_ptr(call_ptr) as u64,
+                        target_bits: call_bits,
+                        class_bits: 0,
+                        class_version: 0,
                         arity: arity as u8,
                         kind: CALL_BIND_IC_KIND_DIRECT_FUNC,
                     })
@@ -1728,12 +1752,58 @@ unsafe fn call_bind_ic_entry_for_call(
                 if fn_ptr == fn_addr!(molt_list_append) {
                     Some(CallBindIcEntry {
                         fn_ptr: fn_ptr as u64,
+                        target_bits: func_bits,
+                        class_bits: 0,
+                        class_version: 0,
                         arity: 1,
                         kind: CALL_BIND_IC_KIND_LIST_APPEND,
                     })
+                } else if !function_requires_full_binding(_py, func_ptr) {
+                    let arity = function_arity(func_ptr);
+                    if (1..=5).contains(&arity) {
+                        Some(CallBindIcEntry {
+                            fn_ptr: fn_ptr as u64,
+                            target_bits: func_bits,
+                            class_bits: 0,
+                            class_version: 0,
+                            arity: (arity - 1) as u8,
+                            kind: CALL_BIND_IC_KIND_BOUND_DIRECT_FUNC,
+                        })
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
+            }
+            TYPE_ID_OBJECT | TYPE_ID_DATACLASS => {
+                let call_attr_bits = lookup_call_attr(_py, call_ptr)?;
+                let call_attr_ptr = obj_from_bits(call_attr_bits).as_ptr()?;
+                if object_type_id(call_attr_ptr) != TYPE_ID_BOUND_METHOD {
+                    return None;
+                }
+                let func_bits = bound_method_func_bits(call_attr_ptr);
+                let func_ptr = obj_from_bits(func_bits).as_ptr()?;
+                if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+                    return None;
+                }
+                if function_requires_full_binding(_py, func_ptr) {
+                    return None;
+                }
+                let arity = function_arity(func_ptr);
+                if !(1..=5).contains(&arity) {
+                    return None;
+                }
+                let class_bits = object_class_bits(call_ptr);
+                let class_ptr = obj_from_bits(class_bits).as_ptr()?;
+                Some(CallBindIcEntry {
+                    fn_ptr: function_fn_ptr(func_ptr) as u64,
+                    target_bits: func_bits,
+                    class_bits,
+                    class_version: class_layout_version_bits(class_ptr),
+                    arity: (arity - 1) as u8,
+                    kind: CALL_BIND_IC_KIND_OBJECT_CALL_SIMPLE_BOUND_FUNC,
+                })
             }
             _ => None,
         }
@@ -1789,6 +1859,72 @@ unsafe fn try_call_bind_ic_fast(
             return Some(call_function_obj_vec(_py, call_bits, pos.as_slice()));
         }
 
+        if entry.kind == CALL_BIND_IC_KIND_BOUND_DIRECT_FUNC {
+            if object_type_id(call_ptr) != TYPE_ID_BOUND_METHOD {
+                return None;
+            }
+            let func_bits = bound_method_func_bits(call_ptr);
+            let func_ptr = obj_from_bits(func_bits).as_ptr()?;
+            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+                return None;
+            }
+            if function_fn_ptr(func_ptr) as u64 != entry.fn_ptr {
+                return None;
+            }
+            if args.pos.len() != entry.arity as usize {
+                return None;
+            }
+            let self_bits = bound_method_self_bits(call_ptr);
+            let mut argv = [0u64; 5];
+            argv[0] = self_bits;
+            for (idx, arg) in args.pos.iter().copied().enumerate() {
+                argv[idx + 1] = arg;
+            }
+            let result = call_function_obj_vec(_py, func_bits, &argv[..args.pos.len() + 1]);
+            return Some(protect_callargs_aliased_return_with_extra(
+                _py,
+                result,
+                args_ptr,
+                &[self_bits],
+            ));
+        }
+
+        if entry.kind == CALL_BIND_IC_KIND_OBJECT_CALL_SIMPLE_BOUND_FUNC {
+            if !matches!(object_type_id(call_ptr), TYPE_ID_OBJECT | TYPE_ID_DATACLASS) {
+                return None;
+            }
+            let class_bits = object_class_bits(call_ptr);
+            if class_bits != entry.class_bits {
+                return None;
+            }
+            let class_ptr = obj_from_bits(class_bits).as_ptr()?;
+            if class_layout_version_bits(class_ptr) != entry.class_version {
+                return None;
+            }
+            let func_ptr = obj_from_bits(entry.target_bits).as_ptr()?;
+            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+                return None;
+            }
+            if function_fn_ptr(func_ptr) as u64 != entry.fn_ptr {
+                return None;
+            }
+            if args.pos.len() != entry.arity as usize {
+                return None;
+            }
+            let mut argv = [0u64; 5];
+            argv[0] = call_bits;
+            for (idx, arg) in args.pos.iter().copied().enumerate() {
+                argv[idx + 1] = arg;
+            }
+            let result = call_function_obj_vec(_py, entry.target_bits, &argv[..args.pos.len() + 1]);
+            return Some(protect_callargs_aliased_return_with_extra(
+                _py,
+                result,
+                args_ptr,
+                &[call_bits],
+            ));
+        }
+
         None
     }
 }
@@ -1840,6 +1976,10 @@ unsafe fn call_bind_ic_dispatch(
                     let kind = match entry.kind {
                         CALL_BIND_IC_KIND_DIRECT_FUNC => "direct_func",
                         CALL_BIND_IC_KIND_LIST_APPEND => "list_append",
+                        CALL_BIND_IC_KIND_BOUND_DIRECT_FUNC => "bound_direct_func",
+                        CALL_BIND_IC_KIND_OBJECT_CALL_SIMPLE_BOUND_FUNC => {
+                            "object_call_simple_bound_func"
+                        }
                         _ => "unknown",
                     };
                     eprintln!(
@@ -1929,11 +2069,6 @@ pub extern "C" fn molt_invoke_ffi_ic(
 /// `builder_bits`.
 pub extern "C" fn molt_call_indirect_ic(site_bits: u64, call_bits: u64, builder_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let is_callable_bits = molt_is_callable(call_bits);
-        if !bool_flag_from_bits(is_callable_bits) {
-            profile_hit_unchecked(&CALL_INDIRECT_NONCALLABLE_DEOPT_COUNT);
-            return raise_not_callable(_py, obj_from_bits(call_bits));
-        }
         unsafe { call_bind_ic_dispatch(_py, site_bits, call_bits, builder_bits) }
     })
 }
@@ -2080,6 +2215,18 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                     let Some(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
                         return raise_not_callable(_py, call_obj);
                     };
+                    if !builder_ptr.is_null() {
+                        let args_ptr = match require_callargs_ptr(_py, builder_ptr) {
+                            Ok(ptr) => ptr,
+                            Err(err) => return err,
+                        };
+                        if let Some(entry) = call_bind_ic_entry_for_call(_py, call_attr_bits)
+                            && let Some(res) =
+                                try_call_bind_ic_fast(_py, entry, call_attr_bits, args_ptr)
+                        {
+                            return protect_callargs_aliased_return(_py, res, args_ptr);
+                        }
+                    }
                     builder_guard.release();
                     return molt_call_bind(call_attr_bits, builder_bits);
                 }
@@ -4457,7 +4604,10 @@ unsafe fn bind_builtin_pop(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64
 
 #[cfg(test)]
 mod tests {
-    use super::trace_call_type_builder_enabled_raw;
+    use super::{protect_callargs_aliased_return_with_extra, trace_call_type_builder_enabled_raw};
+    use crate::object::builders::alloc_list;
+    use molt_obj_model::MoltObject;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn trace_call_type_builder_gate_requires_explicit_opt_in() {
@@ -4465,5 +4615,31 @@ mod tests {
         assert!(!trace_call_type_builder_enabled_raw(Some("0")));
         assert!(!trace_call_type_builder_enabled_raw(Some("true")));
         assert!(trace_call_type_builder_enabled_raw(Some("1")));
+    }
+
+    #[test]
+    fn protect_aliased_return_with_extra_inc_refs_synthesized_owner() {
+        crate::with_gil_entry!(_py, {
+            let list_ptr = alloc_list(_py, &[MoltObject::from_int(1).bits()]);
+            assert!(!list_ptr.is_null());
+            let list_bits = MoltObject::from_ptr(list_ptr).bits();
+            let before = unsafe {
+                (*crate::object::header_from_obj_ptr(list_ptr))
+                    .ref_count
+                    .load(Ordering::Relaxed)
+            };
+            let protected = unsafe {
+                protect_callargs_aliased_return_with_extra(_py, list_bits, std::ptr::null_mut(), &[list_bits])
+            };
+            assert_eq!(protected, list_bits);
+            let after = unsafe {
+                (*crate::object::header_from_obj_ptr(list_ptr))
+                    .ref_count
+                    .load(Ordering::Relaxed)
+            };
+            assert_eq!(after, before + 1);
+            crate::dec_ref_bits(_py, list_bits);
+            crate::dec_ref_bits(_py, list_bits);
+        });
     }
 }
