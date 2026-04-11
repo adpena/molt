@@ -7805,6 +7805,7 @@ def _write_runtime_fingerprint(path: Path, fingerprint: dict[str, str | None]) -
 
 
 def _write_text_if_changed(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         existing = path.read_text()
     except OSError:
@@ -9596,20 +9597,20 @@ def _infer_wasm_table_base_from_export_names(
     *,
     export_name_prefix: str,
 ) -> int | None:
-    indices: list[int] = []
+    slots: list[int] = []
     for name in export_signatures:
         if not name.startswith(export_name_prefix):
             continue
-        suffix = name[len(export_name_prefix) :]
+        raw = name[len(export_name_prefix) :]
         try:
-            idx = int(suffix)
+            slot = int(raw)
         except ValueError:
             continue
-        if idx > 0:
-            indices.append(idx)
-    if not indices:
+        if slot > 0:
+            slots.append(slot)
+    if not slots:
         return None
-    return min(indices)
+    return min(slots)
 
 
 def _effective_split_worker_table_base(
@@ -9718,6 +9719,9 @@ export default {
 
     const envVars = [
       "MOLT_TRUSTED=1",
+      ...(__MOLT_SHARED_TABLE_BASE__ !== null
+        ? [`MOLT_WASM_TABLE_BASE=${__MOLT_SHARED_TABLE_BASE__}`]
+        : []),
       ...(queryString ? [`QUERY_STRING=${queryString}`] : []),
     ];
     const envEncoded = envVars.map(e => encoder.encode(e + "\\0"));
@@ -9733,7 +9737,9 @@ export default {
     const ESPIPE = 29;
     const QNAN = 0x7ff8000000000000n;
     const TAG_INT = 0x0001000000000000n;
+    const TAG_NONE = 0x0003000000000000n;
     const INT_MASK = (1n << 47n) - 1n;
+    const NONE_BITS = QNAN | TAG_NONE;
     const runtimeImportResultKinds = __MOLT_RUNTIME_IMPORT_RESULT_KINDS__;
     const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
     const appTableRefSignatures = __MOLT_APP_TABLE_REF_SIGNATURES__;
@@ -10198,7 +10204,11 @@ export default {
     };
 
     const normalizeI64Result = (value) =>
-      typeof value === "bigint" ? value : BigInt(value);
+      value === undefined || value === null
+        ? NONE_BITS
+        : typeof value === "bigint"
+          ? value
+          : BigInt(value);
 
     const normalizeImportResult = (value, resultKind) => {
       if (resultKind === "i64") {
@@ -10220,12 +10230,25 @@ export default {
       return value;
     };
 
+    const formatDebugValue = (value) => {
+      if (typeof value === "bigint") {
+        return `${value}n`;
+      }
+      if (Array.isArray(value)) {
+        return `[${value.map((item) => formatDebugValue(item)).join(", ")}]`;
+      }
+      if (value && typeof value === "object") {
+        return Object.prototype.toString.call(value);
+      }
+      return String(value);
+    };
+
     const callWithSignature = (fn, signature, args) => {
       if (!signature || !Array.isArray(signature.params)) {
         return fn(...args);
       }
-      const callArgs = signature.params.map((kind, index) =>
-        normalizeValueForKind(args[index], kind),
+      const callArgs = args.map((value, index) =>
+        normalizeValueForKind(value, signature.params[index] || null),
       );
       const out = fn(...callArgs);
       return normalizeImportResult(out, signature.result || null);
@@ -10333,9 +10356,17 @@ export default {
         const resultKind = runtimeImportResultKinds[entry.name] || null;
         imports[entry.name] = (...args) => {
           const callArgs = signature && Array.isArray(signature.params)
-            ? signature.params.map((kind, index) => normalizeValueForKind(args[index], kind))
+            ? args.map((value, index) => normalizeValueForKind(value, signature.params[index] || null))
             : args;
-          const out = fn(...callArgs);
+          let out;
+          try {
+            out = fn(...callArgs);
+          } catch (err) {
+            const detail = err && typeof err.message === "string" ? err.message : String(err);
+            throw new Error(
+              `runtime import ${entry.name} failed: ${detail}; args=${formatDebugValue(callArgs)}; signature=${formatDebugValue(signature)}`,
+            );
+          }
           return normalizeImportResult(out, resultKind);
         };
       }
@@ -10461,27 +10492,39 @@ export default {
       hostEnv[`molt_call_indirect${arity}`] = (fnIndex, ...args) => {
         const indirectName = `molt_call_indirect${arity}`;
         const idx = Number(fnIndex);
-        const tableFn = sharedTable.get(idx);
-        if (typeof tableFn === "function") {
-          return normalizeI64Result(tableFn(...args));
-        }
+        const directName = `__molt_table_ref_${idx}`;
         const indirectFn = appInstance?.exports?.[indirectName];
         if (typeof indirectFn === "function") {
-          return normalizeI64Result(indirectFn(fnIndex, ...args));
+          try {
+            return indirectFn(fnIndex, ...args);
+          } catch (err) {
+            const detail = err && typeof err.message === "string" ? err.message : String(err);
+            throw new Error(`${indirectName} app export failed at idx=${idx}: ${detail}; fnLen=${indirectFn.length}; argsLen=${args.length}`);
+          }
         }
-        const directName = `__molt_table_ref_${idx}`;
+        const tableFn = sharedTable.get(idx);
+        if (typeof tableFn === "function") {
+          try {
+            return tableFn(...args);
+          } catch (err) {
+            const detail = err && typeof err.message === "string" ? err.message : String(err);
+            const fnName = tableFn.name || "<anon>";
+            throw new Error(`${indirectName} shared-table entry failed at idx=${idx}: ${detail}; fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`);
+          }
+        }
         const rtDirectFn = rtInstance?.exports?.[directName];
         if (typeof rtDirectFn === "function") {
-          return callWithSignature(
-            rtDirectFn,
-            runtimeTableRefSignatures[directName],
-            args,
-          );
+          try {
+            return rtDirectFn(...args);
+          } catch (err) {
+            const detail = err && typeof err.message === "string" ? err.message : String(err);
+            throw new Error(`${indirectName} runtime direct export ${directName} failed: ${detail}; fnLen=${rtDirectFn.length}; argsLen=${args.length}`);
+          }
         }
         if (typeof tableFn !== "function") {
           throw new Error(`${indirectName} missing table entry at ${idx}`);
         }
-        return normalizeI64Result(tableFn(...args));
+        return tableFn(...args);
       };
     }
 
@@ -10507,7 +10550,6 @@ export default {
         rtInstance.exports.molt_set_wasm_table_base(BigInt(__MOLT_SHARED_TABLE_BASE__));
       }
       installTableRefs(rtInstance, sharedTable);
-
       // 2. Instantiate the app module.
       //    It imports the runtime ABI exports plus the same host-owned memory/table.
       const appImports = {
@@ -11702,6 +11744,8 @@ def _stage_backend_output_and_caches(
             output_already_synced = _is_reusable_wasm_artifact(output_artifact)
 
     try:
+        if output_already_synced and not output_artifact.exists():
+            output_already_synced = False
         if output_already_synced:
             pass
         elif staged_source == backend_output and cache_path is None:
@@ -19322,7 +19366,6 @@ def _prepare_non_native_build_result(
                 rt_table_min or 0,
                 8192,
             )
-
             _export_wasm_table_refs(rt_wasm)
             app_table_ref_signatures = _wasm_export_function_signatures(
                 app_wasm, export_name_prefix="__molt_table_ref_"
@@ -22856,6 +22899,51 @@ def _ensure_runtime_wasm(
     with _build_lock(root, lock_name):
         if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
+        target_label = "wasm32-wasip1"
+        canonical_target_root = _canonical_target_root(root)
+        canonical_build_state_root = _canonical_build_state_root(root)
+        canonical_runtime_wasm = _runtime_wasm_artifact_path(
+            canonical_target_root,
+            runtime_wasm.name,
+        )
+        canonical_fingerprint_path = _artifact_state_path_for_build_state_root(
+            canonical_build_state_root,
+            canonical_runtime_wasm,
+            subdir="runtime_fingerprints",
+            stem_suffix=f"{cargo_profile}.{target_label}",
+            extension="fingerprint",
+        )
+        if _maybe_hydrate_artifact_from_canonical_target(
+            artifact=runtime_wasm,
+            fingerprint=fingerprint,
+            fingerprint_path=fingerprint_path,
+            candidate_artifact=canonical_runtime_wasm,
+            candidate_fingerprint_path=canonical_fingerprint_path,
+        ):
+            if _inspect_wasm_binary(runtime_wasm) != "valid":
+                if not json_output:
+                    print(
+                        f"Hydrated runtime wasm artifact is invalid: {runtime_wasm}",
+                        file=sys.stderr,
+                    )
+                return False
+            if not _runtime_wasm_exports_satisfy(runtime_wasm, required_exports):
+                if not json_output:
+                    print(
+                        "Hydrated runtime wasm artifact missing required exports.",
+                        file=sys.stderr,
+                    )
+                return False
+            try:
+                _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+            except OSError:
+                if not json_output:
+                    print(
+                        "Failed to update runtime wasm integrity sidecar.",
+                        file=sys.stderr,
+                    )
+                return False
+            return True
         needs_rebuild = _artifact_needs_rebuild(
             runtime_wasm, fingerprint, stored_fingerprint
         )
