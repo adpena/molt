@@ -24,8 +24,8 @@ Platform details and pitfalls live in:
 ### Local repo workflow
 
 ```bash
-export PYTHONPATH=src
-uv run --python 3.12 python3 -m molt.cli doctor --json
+uv sync --group dev --python 3.12
+./.venv/bin/molt doctor --json
 ```
 
 ## Verify The Toolchain
@@ -39,7 +39,6 @@ Expected: JSON output with exit code `0`.
 ## Build And Run Hello World
 
 ```bash
-export PYTHONPATH=src
 uv run --python 3.12 python3 -m molt.cli build examples/hello.py
 ./hello_molt
 ```
@@ -47,21 +46,18 @@ uv run --python 3.12 python3 -m molt.cli build examples/hello.py
 You can also use the run wrapper directly:
 
 ```bash
-export PYTHONPATH=src
 uv run --python 3.12 python3 -m molt.cli run examples/hello.py
 ```
 
 ## Compare Against CPython
 
 ```bash
-export PYTHONPATH=src
 uv run --python 3.12 python3 -m molt.cli compare examples/hello.py
 ```
 
 ## Benchmark A Script
 
 ```bash
-export PYTHONPATH=src
 uv run --python 3.12 python3 -m molt.cli bench --script examples/hello.py
 ```
 
@@ -70,7 +66,8 @@ uv run --python 3.12 python3 -m molt.cli bench --script examples/hello.py
 - macOS arm64 + Python 3.14: uv-managed 3.14 can hang; use system `python3.14`
   or stay on 3.12/3.13.
 - WASM linked builds require `wasm-ld` and `wasm-tools`.
-- Keep `PYTHONPATH=src` when running from a local checkout.
+- After changing `pyproject.toml` or dependency groups, rerun `uv sync` so the
+  editable `molt` install in `.venv` stays current.
 
 ## Where To Go Next
 
