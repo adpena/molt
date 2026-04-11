@@ -475,6 +475,16 @@ def test_local_user_class_ctor_lowers_via_call_bind() -> None:
     ), "local class constructor should not lower via synthetic object allocation"
 
 
+def test_function_param_types_cover_kwonly_and_varkw_slots() -> None:
+    ir = compile_to_tir(
+        "def f(x: int, *, strict=None, parse=None, **kw):\n"
+        "    return x\n"
+    )
+    fn = next(func for func in ir["functions"] if func["name"] == "__main____f")
+    assert fn["params"] == ["x", "strict", "parse", "kw"]
+    assert fn["param_types"] == ["i64", "i64", "i64", "i64"]
+
+
 def test_known_module_import_uses_runtime_import_boundary() -> None:
     gen = SimpleTIRGenerator(known_modules={"sys"})
     gen.visit(ast.parse("import sys\n"))
@@ -611,7 +621,13 @@ def test_tensor_linear_family_helpers_inline_result_format_selection() -> None:
         func_ops = next(
             func["ops"] for func in ir["functions"] if func["name"] == func_name
         )
-        assert all(op.get("kind") != "call_bind" for op in func_ops), (func_name, func_ops)
+        assert all(
+            not (
+                op.get("kind") == "call"
+                and op.get("s_value") == "__main_____preferred_float_format"
+            )
+            for op in func_ops
+        ), (func_name, func_ops)
 
 
 def test_module_optional_intrinsic_global_call_lowers_directly() -> None:
