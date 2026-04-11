@@ -2163,7 +2163,12 @@ def _optimize_split_app_module(
     as the fully linked artifact. Apply those cleanup passes first, then run
     wasm-opt when requested.
     """
-    optimized = _post_link_optimize(app_data, reference_data=reference_data)
+    optimized = _post_link_optimize(
+        app_data,
+        reference_data=reference_data,
+        preserve_exports=_split_app_reference_function_exports(reference_data),
+        preserve_reference_exports=False,
+    )
     stripped = _strip_unused_module_function_imports(
         optimized,
         module_name="molt_runtime",
@@ -2384,6 +2389,20 @@ _ESSENTIAL_EXPORTS = frozenset({
     "molt_set_wasm_table_base",
     "__indirect_function_table",
 })
+
+
+def _split_app_reference_function_exports(reference_data: bytes | None) -> set[str]:
+    """Return the split-app function exports that must remain host-visible."""
+    if reference_data is None:
+        return set()
+    keep = {
+        "molt_main",
+        "molt_table_init",
+        "molt_set_wasm_table_base",
+    }
+    return {
+        name for name in _collect_function_exports(reference_data) if name in keep
+    }
 
 
 def _strip_internal_exports(
@@ -3773,6 +3792,7 @@ def _post_link_optimize(
     *,
     reference_data: bytes | None = None,
     preserve_exports: set[str] | None = None,
+    preserve_reference_exports: bool = True,
 ) -> bytes:
     """Apply post-link optimizations to reduce V8 compilation memory pressure.
 
@@ -3793,7 +3813,7 @@ def _post_link_optimize(
         data = updated
 
     preserved_export_names = set(preserve_exports or ())
-    if reference_data is not None:
+    if preserve_reference_exports and reference_data is not None:
         preserved_export_names.update(
             name
             for name in _collect_function_exports(reference_data)

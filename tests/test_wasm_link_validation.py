@@ -520,6 +520,29 @@ def test_strip_unused_module_function_imports_remaps_indices() -> None:
     assert call_targets == [[0]]
 
 
+def test_post_link_optimize_split_app_does_not_preserve_all_reference_exports() -> None:
+    module = _build_exported_runtime_module_many(
+        ["dead_user_export", "molt_main", "__molt_table_ref_7"]
+    )
+
+    default_optimized = wasm_link._post_link_optimize(
+        module,
+        reference_data=module,
+    )
+    assert "dead_user_export" in wasm_link._collect_exports(default_optimized)
+
+    split_app_optimized = wasm_link._post_link_optimize(
+        module,
+        reference_data=module,
+        preserve_exports=wasm_link._split_app_reference_function_exports(module),
+        preserve_reference_exports=False,
+    )
+    split_exports = wasm_link._collect_exports(split_app_optimized)
+    assert "dead_user_export" not in split_exports
+    assert "molt_main" in split_exports
+    assert "__molt_table_ref_7" in split_exports
+
+
 def test_collect_linking_function_symbols_parses_defined_and_undefined_entries() -> None:
     data = _module_with_linking_symbols(
         [
