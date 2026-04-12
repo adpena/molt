@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import molt.cli as cli
@@ -39,6 +41,61 @@ def test_append_darwin_runtime_frameworks_adds_metal_when_enabled(
         "Metal",
         "-lobjc",
     ]
+
+
+def test_append_darwin_runtime_frameworks_adds_webgpu_when_enabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    monkeypatch.setenv("MOLT_RUNTIME_GPU_WEBGPU", "1")
+    monkeypatch.delenv("MOLT_RUNTIME_GPU_METAL", raising=False)
+    args = ["clang", "-lc++"]
+    cli._append_darwin_runtime_frameworks(args, target_triple=None)
+    assert args[-13:] == [
+        "-framework",
+        "Security",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-framework",
+        "QuartzCore",
+        "-framework",
+        "AppKit",
+        "-lobjc",
+    ]
+
+
+def test_collect_cargo_native_link_deps_preserves_framework_link_kinds(
+    tmp_path: Path,
+) -> None:
+    runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
+    runtime_lib.parent.mkdir(parents=True)
+    runtime_lib.write_bytes(b"")
+    build_output = runtime_lib.parent / "build" / "wgpu-sys" / "output"
+    build_output.parent.mkdir(parents=True)
+    build_output.write_text(
+        "\n".join(
+            [
+                "cargo:rustc-link-lib=framework=Metal",
+                "cargo:rustc-link-lib=framework=Foundation",
+                "cargo:rustc-link-lib=dylib=c++",
+                "cargo:rustc-link-search=framework=/tmp/fwk",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    search_paths, link_libs = cli._collect_cargo_native_link_deps(runtime_lib)
+
+    assert "-L/tmp/fwk" in search_paths
+    assert "-framework" in link_libs
+    assert "Metal" in link_libs
+    assert "Foundation" in link_libs
+    assert "-lc++" in link_libs
 
 
 def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:

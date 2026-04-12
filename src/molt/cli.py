@@ -15995,12 +15995,25 @@ def _collect_cargo_native_link_deps(runtime_lib: Path) -> tuple[list[str], list[
                 # Skip static= linkages (those are baked into the .a already)
                 if raw.startswith("static=") or raw.startswith("static:"):
                     continue
-                # Strip optional kind prefix (e.g. "dylib=")
+                kind = None
                 if "=" in raw:
-                    raw = raw.split("=", 1)[1]
-                if raw and raw not in seen_libs:
-                    link_libs.append(f"-l{raw}")
-                    seen_libs.add(raw)
+                    kind, raw = raw.split("=", 1)
+                elif ":" in raw:
+                    kind, raw = raw.split(":", 1)
+                if not raw:
+                    continue
+                if kind in {"framework", "weak_framework"}:
+                    key = f"{kind}:{raw}"
+                    if key not in seen_libs:
+                        if kind == "weak_framework":
+                            link_libs.extend(["-weak_framework", raw])
+                        else:
+                            link_libs.extend(["-framework", raw])
+                        seen_libs.add(key)
+                else:
+                    if raw not in seen_libs:
+                        link_libs.append(f"-l{raw}")
+                        seen_libs.add(raw)
     return search_paths, link_libs
 
 
@@ -25267,6 +25280,20 @@ def _append_darwin_runtime_frameworks(
         args.extend(["-framework", "Security", "-framework", "CoreFoundation"])
         if _coerce_bool(os.environ.get("MOLT_RUNTIME_GPU_METAL"), False):
             args.extend(["-framework", "Metal", "-lobjc"])
+        if _coerce_bool(os.environ.get("MOLT_RUNTIME_GPU_WEBGPU"), False):
+            args.extend(
+                [
+                    "-framework",
+                    "Metal",
+                    "-framework",
+                    "Foundation",
+                    "-framework",
+                    "QuartzCore",
+                    "-framework",
+                    "AppKit",
+                    "-lobjc",
+                ]
+            )
 
 
 def build(
