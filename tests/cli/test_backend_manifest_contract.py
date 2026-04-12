@@ -179,6 +179,18 @@ def test_runtime_manifest_declares_vfs_bundle_tar_feature() -> None:
     assert "vfs_bundle_tar" in runtime_manifest["features"]
 
 
+def test_runtime_manifest_native_crate_types_exclude_cdylib() -> None:
+    runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
+    with runtime_manifest_path.open("rb") as handle:
+        runtime_manifest = tomllib.load(handle)
+
+    crate_types = runtime_manifest["lib"]["crate-type"]
+
+    assert "staticlib" in crate_types
+    assert "rlib" in crate_types
+    assert "cdylib" not in crate_types
+
+
 def test_backend_manifest_gates_loop_continue_to_native_backend() -> None:
     manifest = _load_backend_manifest()
     tests = manifest.get("test", [])

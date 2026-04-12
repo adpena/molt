@@ -6,7 +6,7 @@ license = "Apache-2.0"
 build = "build.rs"
 
 [lib]
-crate-type = ["cdylib", "staticlib", "rlib"]
+crate-type = ["staticlib", "rlib"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(fuzzing)', 'cfg(feature, values("audit", "refcount_verify"))'] }
