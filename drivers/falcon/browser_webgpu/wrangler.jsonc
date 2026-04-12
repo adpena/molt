@@ -1,0 +1,12 @@
+{
+  "name": "molt-falcon-browser-webgpu",
+  "compatibility_date": "2026-04-12",
+  "main": "worker.ts",
+  "r2_buckets": [
+    {
+      "binding": "WEIGHTS",
+      "bucket_name": "falcon-ocr-weights"
+    }
+  ],
+  "observability": { "enabled": true }
+}
