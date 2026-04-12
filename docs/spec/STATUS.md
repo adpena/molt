@@ -35,6 +35,10 @@ It is current-state only. For forward-looking priorities, use
 - CPython coverage is incomplete across language, stdlib, and target-specific
   behavior.
 - Native and WASM parity is still incomplete for several claimed surfaces.
+- The runpy dynamic-lane expected failures list is currently empty because
+  supported lanes moved to intrinsic support; governance for unsupported
+  runpy dynamic execution remains documented rather than tracked through an
+  active expected-failure entry.
 - The current backend entry path still carries a stringly `SimpleIR` transport
   and compatibility hint fields (`fast_int` / `fast_float` / `raw_int` /
   `type_hint`) for legacy consumers, but the canonical backend contract is now

@@ -57,7 +57,7 @@ def test_build_runtime_wasm_uses_wasm_release_profile_and_aggressive_features(
     # Non-relocatable builds use standard import/export link flags
     rustflags = env.get("RUSTFLAGS", "")
     assert "--import-memory" in rustflags
-    assert "--export=molt_frozenset_add" in rustflags
+    assert "--export-if-defined=molt_frozenset_add" in rustflags
 
 
 def test_build_runtime_wasm_honors_baseline_mode_and_legacy_shared_link_flags(

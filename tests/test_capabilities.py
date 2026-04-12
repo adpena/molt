@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 
 import pytest
 
@@ -29,4 +30,22 @@ def test_capability_trusted(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MOLT_TRUSTED", "1")
     assert capabilities.trusted()
     assert capabilities.has("fs.read")
+    capabilities.require("fs.read")
+
+
+def test_capability_trusted_short_circuits_stale_require_intrinsic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = getattr(builtins, "_molt_intrinsics", None)
+    if not isinstance(registry, dict):
+        registry = {}
+        monkeypatch.setattr(builtins, "_molt_intrinsics", registry, raising=False)
+    monkeypatch.setenv("MOLT_CAPABILITIES", "")
+    monkeypatch.setenv("MOLT_TRUSTED", "1")
+
+    def _deny(_cap: str) -> None:
+        raise PermissionError("stale intrinsic should be ignored when trusted")
+
+    monkeypatch.setitem(registry, "molt_capabilities_require", _deny)
+
     capabilities.require("fs.read")

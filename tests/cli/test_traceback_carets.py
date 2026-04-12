@@ -14,12 +14,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import json
 from pathlib import Path
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+_WARM_NATIVE_BUILD_LOCK = threading.Lock()
+_WARM_NATIVE_BUILD_READY = False
 
 # ---------------------------------------------------------------------------
 # Helpers (mirrors test_cli_smoke.py conventions)
@@ -98,6 +102,8 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
     build step).  Raises ``pytest.skip`` if the build itself fails for
     infrastructure reasons.
     """
+    _ensure_native_build_warm()
+
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = _resolve_macos_tmp(tmpdir)
         src_file = os.path.join(tmpdir, "test_input.py")
@@ -118,6 +124,7 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
                 "--output",
                 out_dir,
                 src_file,
+                "--json",
                 "--rebuild",
             ],
             capture_output=True,
@@ -132,10 +139,18 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
                 f"molt build failed (infrastructure): {build_result.stderr[:500]}"
             )
 
-        # Find the compiled binary
-        binary = os.path.join(out_dir, "test_input")
+        try:
+            payload = json.loads(build_result.stdout)
+        except json.JSONDecodeError:
+            payload = {}
+
+        binary = (
+            payload.get("data", {}).get("consumer_output")
+            or payload.get("data", {}).get("output")
+            or out_dir
+        )
+        binary = str(binary)
         if not os.path.isfile(binary):
-            # Try platform-specific extensions
             for ext in ("", ".exe"):
                 candidate = binary + ext
                 if os.path.isfile(candidate):
@@ -143,8 +158,9 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
                     break
             else:
                 pytest.fail(
-                    f"Compiled binary not found in {out_dir}. "
-                    f"Contents: {os.listdir(out_dir) if os.path.isdir(out_dir) else 'dir missing'}"
+                    f"Compiled binary not found at {binary}. "
+                    f"Build stdout: {build_result.stdout}\n"
+                    f"Build stderr: {build_result.stderr}"
                 )
 
         # Run
@@ -157,6 +173,49 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
         )
 
         return run_result
+
+
+def _ensure_native_build_warm() -> None:
+    global _WARM_NATIVE_BUILD_READY
+    if _WARM_NATIVE_BUILD_READY:
+        return
+    with _WARM_NATIVE_BUILD_LOCK:
+        if _WARM_NATIVE_BUILD_READY:
+            return
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = _resolve_macos_tmp(tmpdir)
+            src_file = os.path.join(tmpdir, "warm_input.py")
+            out_dir = os.path.join(tmpdir, "warm_out")
+            with open(src_file, "w") as f:
+                f.write("print(1)\n")
+            try:
+                warm_result = subprocess.run(
+                    [
+                        _python_executable(),
+                        "-m",
+                        "molt",
+                        "build",
+                        "--target",
+                        "native",
+                        "--output",
+                        out_dir,
+                        src_file,
+                        "--rebuild",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=900,
+                    cwd=ROOT,
+                    env=_base_env(),
+                )
+            except subprocess.TimeoutExpired as exc:
+                pytest.skip(f"molt native warmup timed out: {exc}")
+            if warm_result.returncode != 0:
+                pytest.skip(
+                    "molt native warmup failed (infrastructure): "
+                    f"{warm_result.stderr[:500]}"
+                )
+            _WARM_NATIVE_BUILD_READY = True
 
 
 # ---------------------------------------------------------------------------
