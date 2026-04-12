@@ -320,6 +320,9 @@ def tensor_linear_split_last_dim(
         result_format = x._buf.format_char
     prefix_shape = x_shape[:-1]
 
+    if _MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM is not None:
+        return _MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM(x, weight, sizes)
+
     if _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS is not None:
         out_parts = _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS(
             x._buf._data,
@@ -346,7 +349,9 @@ def tensor_linear_split_last_dim(
         )
 
     if _runtime_intrinsics_active():
-        raise RuntimeError("intrinsic unavailable: molt_gpu_linear_split_last_dim_contiguous")
+        raise RuntimeError(
+            "intrinsic unavailable: molt_gpu_tensor__tensor_linear_split_last_dim"
+        )
 
     return tensor_linear(x, weight).split_last_dim(sizes)
 
