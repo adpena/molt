@@ -1226,6 +1226,128 @@ fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
     )
 }
 
+#[cfg(target_arch = "wasm32")]
+fn render_webgpu_attention_source(entry: &str, workgroup_size: u32) -> String {
+    format!(
+        "@group(0) @binding(0) var<storage, read> q: array<f32>;\n\
+@group(0) @binding(1) var<storage, read> k: array<f32>;\n\
+@group(0) @binding(2) var<storage, read> v: array<f32>;\n\
+@group(0) @binding(3) var<storage, read_write> out: array<f32>;\n\
+@group(0) @binding(4) var<storage, read> mask: array<f32>;\n\
+@group(0) @binding(5) var<storage, read> batch: array<i32>;\n\
+@group(0) @binding(6) var<storage, read> heads: array<i32>;\n\
+@group(0) @binding(7) var<storage, read> seq_q: array<i32>;\n\
+@group(0) @binding(8) var<storage, read> seq_k: array<i32>;\n\
+@group(0) @binding(9) var<storage, read> dim: array<i32>;\n\
+@group(0) @binding(10) var<storage, read> value_dim: array<i32>;\n\
+@group(0) @binding(11) var<storage, read> scale: array<f32>;\n\
+@group(0) @binding(12) var<storage, read> has_mask: array<i32>;\n\
+\n\
+@compute @workgroup_size({workgroup_size})\n\
+fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
+    let idx = i32(gid.x);\n\
+    let batch_val = batch[0];\n\
+    let heads_val = heads[0];\n\
+    let seq_q_val = seq_q[0];\n\
+    let seq_k_val = seq_k[0];\n\
+    let dim_val = dim[0];\n\
+    let value_dim_val = value_dim[0];\n\
+    let has_mask_val = has_mask[0] != 0;\n\
+    let total = batch_val * heads_val * seq_q_val * value_dim_val;\n\
+    if (idx >= total) {{\n\
+        return;\n\
+    }}\n\
+    let d = idx % value_dim_val;\n\
+    let q_idx = (idx / value_dim_val) % seq_q_val;\n\
+    let h = (idx / (value_dim_val * seq_q_val)) % heads_val;\n\
+    let b = idx / (value_dim_val * seq_q_val * heads_val);\n\
+    let q_base = ((b * heads_val + h) * seq_q_val + q_idx) * dim_val;\n\
+    var max_score: f32 = -1.0e30;\n\
+    for (var k_idx: i32 = 0; k_idx < seq_k_val; k_idx = k_idx + 1) {{\n\
+        let k_base = ((b * heads_val + h) * seq_k_val + k_idx) * dim_val;\n\
+        var score: f32 = 0.0;\n\
+        for (var i: i32 = 0; i < dim_val; i = i + 1) {{\n\
+            score = score + q[q_base + i] * k[k_base + i];\n\
+        }}\n\
+        score = score * scale[0];\n\
+        if (has_mask_val) {{\n\
+            score = score + mask[((b * heads_val + h) * seq_q_val + q_idx) * seq_k_val + k_idx];\n\
+        }}\n\
+        if (score > max_score) {{\n\
+            max_score = score;\n\
+        }}\n\
+    }}\n\
+    var sum: f32 = 0.0;\n\
+    var acc: f32 = 0.0;\n\
+    for (var k_idx: i32 = 0; k_idx < seq_k_val; k_idx = k_idx + 1) {{\n\
+        let k_base = ((b * heads_val + h) * seq_k_val + k_idx) * dim_val;\n\
+        var score: f32 = 0.0;\n\
+        for (var i: i32 = 0; i < dim_val; i = i + 1) {{\n\
+            score = score + q[q_base + i] * k[k_base + i];\n\
+        }}\n\
+        score = score * scale[0];\n\
+        if (has_mask_val) {{\n\
+            score = score + mask[((b * heads_val + h) * seq_q_val + q_idx) * seq_k_val + k_idx];\n\
+        }}\n\
+        let weight = exp(score - max_score);\n\
+        sum = sum + weight;\n\
+        let v_base = ((b * heads_val + h) * seq_k_val + k_idx) * value_dim_val;\n\
+        acc = acc + weight * v[v_base + d];\n\
+    }}\n\
+    out[idx] = select(0.0, acc / sum, sum != 0.0);\n\
+}}\n"
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+fn expand_attention_mask_to_webgpu_bytes(
+    mask: &TensorRuntimeView,
+    mask_shape: &[usize],
+    mask_strides: &[usize],
+    batch: usize,
+    heads: usize,
+    seq_q: usize,
+    seq_k: usize,
+) -> Result<Vec<u8>, String> {
+    let total = batch
+        .checked_mul(heads)
+        .and_then(|n| n.checked_mul(seq_q))
+        .and_then(|n| n.checked_mul(seq_k))
+        .ok_or_else(|| "attention mask shape overflow".to_string())?;
+    let mut out = vec![0u8; total * 4];
+    for b in 0..batch {
+        for h in 0..heads {
+            for q_idx in 0..seq_q {
+                for k_idx in 0..seq_k {
+                    let mask_index = (if mask_shape[0] == 1 {
+                        0
+                    } else {
+                        b * mask_strides[0]
+                    }) + (if mask_shape[1] == 1 {
+                        0
+                    } else {
+                        h * mask_strides[1]
+                    }) + (if mask_shape[2] == 1 {
+                        0
+                    } else {
+                        q_idx * mask_strides[2]
+                    }) + (if mask_shape[3] == 1 {
+                        0
+                    } else {
+                        k_idx * mask_strides[3]
+                    });
+                    let value = unsafe {
+                        (mask.buffer.data_view.ptr.add(mask_index * 4) as *const f32).read_unaligned()
+                    };
+                    let out_index = ((b * heads + h) * seq_q + q_idx) * seq_k + k_idx;
+                    out[out_index * 4..(out_index + 1) * 4].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
 struct RuntimeMetalPipeline {
     pipeline: ComputePipelineState,
@@ -5732,6 +5854,127 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
         else {
             return raise_exception::<_>(_py, "OverflowError", "attention output shape overflow");
         };
+
+        #[cfg(target_arch = "wasm32")]
+        if requested_gpu_backend().as_deref() == Some("webgpu") {
+            let browser_result: Result<u64, u64> = (|| {
+                let q_bytes = bytes_like_view_to_webgpu_bytes(q.buffer.data_view, ScalarFormat::F32)
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let k_bytes = bytes_like_view_to_webgpu_bytes(k.buffer.data_view, ScalarFormat::F32)
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let v_bytes = bytes_like_view_to_webgpu_bytes(v.buffer.data_view, ScalarFormat::F32)
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let (mask_bytes, has_mask_i32) = if let Some((mask, mask_shape, mask_strides)) = &mask_info
+                {
+                    (
+                        expand_attention_mask_to_webgpu_bytes(
+                            mask,
+                            mask_shape.as_slice(),
+                            mask_strides.as_slice(),
+                            batch,
+                            heads,
+                            seq_q,
+                            seq_k,
+                        )
+                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+                        1i32,
+                    )
+                } else {
+                    (vec![0u8; 4], 0i32)
+                };
+                let mut out_webgpu = vec![0u8; out_elems * 4];
+                let batch_bytes = i32::try_from(batch)
+                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32"))?
+                    .to_le_bytes();
+                let heads_bytes = i32::try_from(heads)
+                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "heads exceeds i32"))?
+                    .to_le_bytes();
+                let seq_q_bytes = i32::try_from(seq_q)
+                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32"))?
+                    .to_le_bytes();
+                let seq_k_bytes = i32::try_from(seq_k)
+                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32"))?
+                    .to_le_bytes();
+                let dim_bytes = i32::try_from(dim)
+                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32"))?
+                    .to_le_bytes();
+                let value_dim_bytes = i32::try_from(value_dim).map_err(|_| {
+                    raise_exception::<u64>(_py, "OverflowError", "value_dim exceeds i32")
+                })?
+                .to_le_bytes();
+                let scale_bytes = scale.to_le_bytes();
+                let has_mask_bytes = has_mask_i32.to_le_bytes();
+                let workgroup_size = 64u32;
+                let grid = if out_elems == 0 {
+                    0
+                } else {
+                    u32::try_from((out_elems + workgroup_size as usize - 1) / workgroup_size as usize)
+                        .map_err(|_| {
+                            raise_exception::<u64>(_py, "OverflowError", "attention grid exceeds u32")
+                        })?
+                };
+                let source = render_webgpu_attention_source(
+                    "scaled_dot_product_attention",
+                    workgroup_size,
+                );
+                dispatch_browser_webgpu_bindings(
+                    _py,
+                    source.as_str(),
+                    "scaled_dot_product_attention",
+                    vec![
+                        serde_json::json!({"binding": 0, "name": "q", "kind": "buffer", "access": "read", "ptr": q_bytes.as_ptr() as usize as u32, "len": q_bytes.len() as u32}),
+                        serde_json::json!({"binding": 1, "name": "k", "kind": "buffer", "access": "read", "ptr": k_bytes.as_ptr() as usize as u32, "len": k_bytes.len() as u32}),
+                        serde_json::json!({"binding": 2, "name": "v", "kind": "buffer", "access": "read", "ptr": v_bytes.as_ptr() as usize as u32, "len": v_bytes.len() as u32}),
+                        serde_json::json!({"binding": 3, "name": "out", "kind": "buffer", "access": "read_write", "ptr": out_webgpu.as_mut_ptr() as usize as u32, "len": out_webgpu.len() as u32}),
+                        serde_json::json!({"binding": 4, "name": "mask", "kind": "buffer", "access": "read", "ptr": mask_bytes.as_ptr() as usize as u32, "len": mask_bytes.len() as u32}),
+                        serde_json::json!({"binding": 5, "name": "batch", "kind": "scalar", "access": "read", "ptr": batch_bytes.as_ptr() as usize as u32, "len": batch_bytes.len() as u32}),
+                        serde_json::json!({"binding": 6, "name": "heads", "kind": "scalar", "access": "read", "ptr": heads_bytes.as_ptr() as usize as u32, "len": heads_bytes.len() as u32}),
+                        serde_json::json!({"binding": 7, "name": "seq_q", "kind": "scalar", "access": "read", "ptr": seq_q_bytes.as_ptr() as usize as u32, "len": seq_q_bytes.len() as u32}),
+                        serde_json::json!({"binding": 8, "name": "seq_k", "kind": "scalar", "access": "read", "ptr": seq_k_bytes.as_ptr() as usize as u32, "len": seq_k_bytes.len() as u32}),
+                        serde_json::json!({"binding": 9, "name": "dim", "kind": "scalar", "access": "read", "ptr": dim_bytes.as_ptr() as usize as u32, "len": dim_bytes.len() as u32}),
+                        serde_json::json!({"binding": 10, "name": "value_dim", "kind": "scalar", "access": "read", "ptr": value_dim_bytes.as_ptr() as usize as u32, "len": value_dim_bytes.len() as u32}),
+                        serde_json::json!({"binding": 11, "name": "scale", "kind": "scalar", "access": "read", "ptr": scale_bytes.as_ptr() as usize as u32, "len": scale_bytes.len() as u32}),
+                        serde_json::json!({"binding": 12, "name": "has_mask", "kind": "scalar", "access": "read", "ptr": has_mask_bytes.as_ptr() as usize as u32, "len": has_mask_bytes.len() as u32}),
+                    ],
+                    grid,
+                    workgroup_size,
+                )?;
+                let data_ptr = alloc_bytearray(_py, out_webgpu.as_slice());
+                if data_ptr.is_null() {
+                    return Err(MoltObject::none().bits());
+                }
+                let data_bits = MoltObject::from_ptr(data_ptr).bits();
+                let format_bits = alloc_string_bits(_py, b"f")?;
+                let shape_bits =
+                    alloc_tuple_bits_from_usize(_py, &[batch, heads, seq_q, value_dim])?;
+                let tensor_bits = match unsafe {
+                    build_tensor_from_data_bits(
+                        _py,
+                        q.class_bits,
+                        q.buffer.class_bits,
+                        data_bits,
+                        crate::builtins::classes::builtin_classes(_py).float,
+                        out_elems,
+                        format_bits,
+                        ScalarFormat::F32.itemsize(),
+                        shape_bits,
+                        crate::builtins::classes::builtin_classes(_py).float,
+                    )
+                } {
+                    Ok(bits) => bits,
+                    Err(bits) => bits,
+                };
+                crate::dec_ref_bits(_py, data_bits);
+                crate::dec_ref_bits(_py, format_bits);
+                crate::dec_ref_bits(_py, shape_bits);
+                Ok(tensor_bits)
+            })();
+            return match browser_result {
+                Ok(bits) => bits,
+                Err(bits) => bits,
+            };
+        }
+
         let mut out = vec![0u8; out_elems * ScalarFormat::F32.itemsize()];
         let q_stride = seq_q * dim;
         let k_stride = seq_k * dim;
