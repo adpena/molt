@@ -23,6 +23,23 @@ from __future__ import annotations
 
 import struct
 import array
+import _intrinsics as _molt_intrinsics
+
+
+def _load_optional_intrinsic(name: str):
+    loader = getattr(_molt_intrinsics, "load_intrinsic", None)
+    if callable(loader):
+        return loader(name)
+    require = getattr(_molt_intrinsics, "require_intrinsic", None)
+    if callable(require):
+        try:
+            return require(name)
+        except RuntimeError:
+            return None
+    return None
+
+
+_MOLT_GPU_KERNEL_LAUNCH = _load_optional_intrinsic("molt_gpu_kernel_launch")
 
 
 def _default_format_char(element_type: type) -> str:
@@ -212,6 +229,8 @@ class _KernelLauncher:
         """
         grid = self._grid or 256
         threads = self._threads or 256
+        if callable(_MOLT_GPU_KERNEL_LAUNCH):
+            return _MOLT_GPU_KERNEL_LAUNCH(self._func, grid, threads, args)
         total_threads = grid * threads if isinstance(grid, int) else grid
 
         # Interpreted fallback: simulate GPU execution sequentially
