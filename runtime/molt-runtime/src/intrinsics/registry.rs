@@ -338,6 +338,28 @@ fn set_intrinsic_entry(
     true
 }
 
+fn register_bootstrap_callable(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    export_name: &[u8],
+    fn_ptr: u64,
+    arity: u8,
+    defaults: &[u64],
+) {
+    let Some(fn_bits) = build_bootstrap_function(_py, fn_ptr, arity, defaults) else {
+        return;
+    };
+    let key_ptr = alloc_string(_py, export_name);
+    if !key_ptr.is_null() {
+        let key_bits = MoltObject::from_ptr(key_ptr).bits();
+        unsafe {
+            dict_set_in_place(_py, dict_ptr, key_bits, fn_bits);
+        }
+        dec_ref_bits(_py, key_bits);
+    }
+    dec_ref_bits(_py, fn_bits);
+}
+
 fn alias_name(name: &str) -> Option<String> {
     let rest = name.strip_prefix("molt_")?;
     if rest.is_empty() {
@@ -474,7 +496,7 @@ pub(crate) fn try_resolve_intrinsic_func(
 /// the runtime's intrinsic lookup.
 pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     use crate::object::builders::alloc_module_obj;
-    use crate::{alloc_string, dict_set_in_place, module_dict_bits};
+    use crate::{alloc_string, module_dict_bits};
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -499,28 +521,37 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     }
     let module_bits = MoltObject::from_ptr(module_ptr).bits();
 
-    // Add require_intrinsic function to the module dict
+    // Mirror the public helpers exposed by src/_intrinsics.py so module-form
+    // imports (`import _intrinsics as mod`) and from-imports see the same API.
     let dict_bits = unsafe { module_dict_bits(module_ptr) };
     if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() {
         // Avoid builtin_classes() here: register_intrinsics_module runs during
         // bootstrap while init_builtin_classes still holds its mutex.
         let none = MoltObject::none().bits();
-        if let Some(fn_bits) = build_bootstrap_function(
+        register_bootstrap_callable(
             _py,
+            dict_ptr,
+            b"require_intrinsic",
             molt_require_intrinsic_runtime as *const () as usize as u64,
-            2,
+            2u8,
             &[none],
-        ) {
-            let key_ptr = alloc_string(_py, b"require_intrinsic");
-            if !key_ptr.is_null() {
-                let key_bits = MoltObject::from_ptr(key_ptr).bits();
-                unsafe {
-                    dict_set_in_place(_py, dict_ptr, key_bits, fn_bits);
-                }
-                dec_ref_bits(_py, key_bits);
-            }
-            dec_ref_bits(_py, fn_bits);
-        }
+        );
+        register_bootstrap_callable(
+            _py,
+            dict_ptr,
+            b"load_intrinsic",
+            molt_load_intrinsic_runtime as *const () as usize as u64,
+            2u8,
+            &[none],
+        );
+        register_bootstrap_callable(
+            _py,
+            dict_ptr,
+            b"runtime_active",
+            molt_runtime_active_runtime as *const () as usize as u64,
+            0u8,
+            &[],
+        );
     }
 
     // Register in module cache
@@ -629,10 +660,119 @@ pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits:
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_load_intrinsic_runtime(name_bits: u64, namespace_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let _ = namespace_bits;
+        let name_obj = obj_from_bits(name_bits);
+        let Some(name_ptr) = name_obj.as_ptr() else {
+            return raise_exception::<u64>(_py, "TypeError", "intrinsic name must be str");
+        };
+        let name = unsafe {
+            if object_type_id(name_ptr) != TYPE_ID_STRING {
+                return raise_exception::<u64>(_py, "TypeError", "intrinsic name must be str");
+            }
+            let len = string_len(name_ptr);
+            let bytes = std::slice::from_raw_parts(string_bytes(name_ptr), len);
+            std::str::from_utf8(bytes).unwrap_or("")
+        };
+        match resolve_intrinsic_func(_py, name, true) {
+            Ok(func_bits) => {
+                inc_ref_bits(_py, name_bits);
+                func_bits
+            }
+            Err(IntrinsicResolveError::Unknown | IntrinsicResolveError::MissingSymbol) => {
+                MoltObject::none().bits()
+            }
+            Err(IntrinsicResolveError::AllocFailed) => raise_exception::<u64>(
+                _py,
+                "MemoryError",
+                &format!("failed to allocate intrinsic function: {name}"),
+            ),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_runtime_active_runtime() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_bool(true).bits() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::sync::atomic::Ordering;
+
+    #[test]
+    fn register_intrinsics_module_exports_public_helpers() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry!(_py, {
+            register_intrinsics_module(_py);
+
+            let module_name_ptr = alloc_string(_py, b"_intrinsics");
+            assert!(!module_name_ptr.is_null());
+            let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
+            let module_bits = crate::builtins::modules::molt_module_cache_get(module_name_bits);
+            let module_ptr = obj_from_bits(module_bits)
+                .as_ptr()
+                .expect("_intrinsics module should exist");
+            assert_eq!(unsafe { object_type_id(module_ptr) }, TYPE_ID_MODULE);
+
+            let runtime_active_name_ptr = alloc_string(_py, b"runtime_active");
+            let runtime_active_name_bits = MoltObject::from_ptr(runtime_active_name_ptr).bits();
+            let runtime_active_bits = crate::molt_get_attr_name(module_bits, runtime_active_name_bits);
+            assert!(obj_from_bits(runtime_active_bits).as_ptr().is_some());
+            let runtime_active_out = molt_runtime_active_runtime();
+            assert_eq!(crate::is_truthy(_py, obj_from_bits(runtime_active_out)), true);
+
+            let load_name_ptr = alloc_string(_py, b"load_intrinsic");
+            let load_name_bits = MoltObject::from_ptr(load_name_ptr).bits();
+            let load_bits = crate::molt_get_attr_name(module_bits, load_name_bits);
+            assert!(obj_from_bits(load_bits).as_ptr().is_some());
+            let intrinsic_name_ptr = alloc_string(_py, b"molt_gpu_buffer_to_list");
+            let intrinsic_name_bits = MoltObject::from_ptr(intrinsic_name_ptr).bits();
+            let resolved_bits =
+                molt_load_intrinsic_runtime(intrinsic_name_bits, MoltObject::none().bits());
+            let resolved_ptr = obj_from_bits(resolved_bits)
+                .as_ptr()
+                .expect("load_intrinsic should resolve known intrinsics");
+            assert_eq!(unsafe { object_type_id(resolved_ptr) }, crate::TYPE_ID_FUNCTION);
+
+            let split_name_ptr =
+                alloc_string(_py, b"molt_gpu_tensor__tensor_linear_split_last_dim");
+            let split_name_bits = MoltObject::from_ptr(split_name_ptr).bits();
+            let split_bits =
+                molt_load_intrinsic_runtime(split_name_bits, MoltObject::none().bits());
+            let split_ptr = obj_from_bits(split_bits)
+                .as_ptr()
+                .expect("split intrinsic should resolve to a function");
+            assert_eq!(unsafe { object_type_id(split_ptr) }, crate::TYPE_ID_FUNCTION);
+            assert_eq!(
+                unsafe { crate::function_fn_ptr(split_ptr) },
+                crate::molt_gpu_tensor__tensor_linear_split_last_dim as *const () as usize as u64
+            );
+
+            let missing_name_ptr = alloc_string(_py, b"molt_missing_intrinsic");
+            let missing_name_bits = MoltObject::from_ptr(missing_name_ptr).bits();
+            let missing_bits =
+                molt_load_intrinsic_runtime(missing_name_bits, MoltObject::none().bits());
+            assert!(obj_from_bits(missing_bits).is_none());
+
+            dec_ref_bits(_py, missing_bits);
+            dec_ref_bits(_py, missing_name_bits);
+            dec_ref_bits(_py, split_bits);
+            dec_ref_bits(_py, split_name_bits);
+            dec_ref_bits(_py, resolved_bits);
+            dec_ref_bits(_py, intrinsic_name_bits);
+            dec_ref_bits(_py, load_bits);
+            dec_ref_bits(_py, load_name_bits);
+            dec_ref_bits(_py, runtime_active_out);
+            dec_ref_bits(_py, runtime_active_bits);
+            dec_ref_bits(_py, runtime_active_name_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, module_name_bits);
+        });
+    }
 
     /// Test one-shot manifest guard: first call sets, second is ignored.
     ///
