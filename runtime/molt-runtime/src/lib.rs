@@ -211,6 +211,15 @@ pub mod ffi_bridge {
 #[allow(unused_imports)]
 pub(crate) use crate::async_rt::*;
 pub use crate::builtins::gpu::molt_gpu_broadcast_binary_contiguous;
+pub use crate::builtins::gpu::molt_gpu_buffer_to_list;
+pub use crate::builtins::gpu::molt_gpu_linear_squared_relu_gate_interleaved_contiguous;
+pub use crate::builtins::gpu::molt_gpu_repeat_axis_contiguous;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_attention_hybrid_mask;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_linear_split_last_dim;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_scaled_dot_product_attention;
+pub use crate::builtins::gpu::molt_gpu_tensor__zeros;
+pub use crate::builtins::gpu::molt_gpu_tensor_from_buffer;
+pub use crate::builtins::gpu::molt_gpu_tensor_from_parts;
 pub use crate::builtins::gpu::molt_gpu_linear_contiguous;
 pub use crate::builtins::gpu::molt_gpu_linear_split_last_dim_contiguous;
 pub use crate::builtins::gpu::molt_gpu_matmul_contiguous;

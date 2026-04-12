@@ -105,8 +105,6 @@ _FAST_ARITH_OPS = frozenset(
         "INPLACE_BIT_OR",
         "INPLACE_BIT_AND",
         "INPLACE_BIT_XOR",
-        "LSHIFT",
-        "RSHIFT",
         # Comparison ops: when both operands are int/bool, the backend
         # emits inline Cranelift icmp instead of calling molt_le/lt/etc.
         "LT",
@@ -6408,6 +6406,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return self._emit_runtime_function(
             _canonical_intrinsic_runtime_name(runtime_name), arity
         )
+
+    def _emit_optional_intrinsic_lookup_value(self, runtime_name: str) -> MoltValue:
+        loader = self._emit_runtime_function("molt_load_intrinsic_runtime", 2)
+        name_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[runtime_name], result=name_val))
+        namespace_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=namespace_val))
+        res = MoltValue(self.next_var(), type_hint="Any")
+        self.emit(
+            MoltOp(kind="CALL_FUNC", args=[loader, name_val, namespace_val], result=res)
+        )
+        return res
 
     def _emit_runtime_function(self, runtime_name: str, arity: int) -> MoltValue:
         func_val = MoltValue(self.next_var(), type_hint="function")
@@ -21231,7 +21241,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self._emit_annotation_exec_mark(exec_map, exec_id)
         if node.value is None:
             return None
-        value_node = self.visit(node.value)
+        optional_intrinsic_name = self._match_optional_intrinsic_loader_expr(node.value)
+        if optional_intrinsic_name is not None:
+            value_node = self._emit_optional_intrinsic_lookup_value(
+                optional_intrinsic_name
+            )
+        else:
+            value_node = self.visit(node.value)
         if isinstance(node.target, ast.Name):
             self._apply_explicit_hint(node.target.id, value_node)
             if (
@@ -21672,15 +21688,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if self.current_func_name == "molt_main":
                 self.global_imported_names.pop(target.id, None)
                 self.global_imported_modules.pop(target.id, None)
-                runtime_name = (
-                    self._match_optional_intrinsic_loader_expr(source_expr)
-                    if source_expr is not None
-                    else None
-                )
-                if runtime_name is not None:
-                    self.module_intrinsic_globals[target.id] = runtime_name
-                else:
-                    self.module_intrinsic_globals.pop(target.id, None)
+                # `_load_optional_intrinsic(...)` is a runtime value with
+                # optional semantics (`None` when unavailable). Keep calls to
+                # those globals routed through the actual bound value instead
+                # of devirtualizing them to a direct CALL target.
+                self.module_intrinsic_globals.pop(target.id, None)
             if (
                 self.current_func_name == "molt_main"
                 or target.id not in self.global_decls
@@ -21768,7 +21780,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
                 return None
-        value_node = self.visit(node.value)
+        optional_intrinsic_name = self._match_optional_intrinsic_loader_expr(node.value)
+        if optional_intrinsic_name is not None:
+            value_node = self._emit_optional_intrinsic_lookup_value(
+                optional_intrinsic_name
+            )
+        else:
+            value_node = self.visit(node.value)
         for target in node.targets:
             self._emit_assign_target(target, value_node, node.value)
         return None
@@ -27358,7 +27376,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         # Extract type hints from parameter annotations for fast-path codegen.
         _param_type_hints = []
         if self._hints_enabled():
-            for arg in node.args.posonlyargs + node.args.args:
+            for arg in arg_nodes:
                 hint = self._annotation_to_hint(arg.annotation) if arg.annotation else None
                 _param_type_hints.append(hint or "Any")
         self.start_function(
@@ -28000,13 +28018,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if alias.name in {
                     "require_intrinsic",
                     "_require_intrinsic",
-                    "load_intrinsic",
-                    "_load_intrinsic",
                 }:
                     bound_val = self._emit_runtime_function_with_none_defaults(
                         "molt_require_intrinsic_runtime",
                         2,
                         default_count=1,
+                    )
+                elif alias.name in {"load_intrinsic", "_load_intrinsic"}:
+                    bound_val = self._emit_runtime_function_with_none_defaults(
+                        "molt_load_intrinsic_runtime",
+                        2,
+                        default_count=1,
+                    )
+                elif alias.name == "runtime_active":
+                    bound_val = self._emit_runtime_function(
+                        "molt_runtime_active_runtime",
+                        0,
                     )
                 else:
                     bound_val = MoltValue(self.next_var(), type_hint="None")
@@ -39243,11 +39270,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # Always emit param_types so the backend creates Cranelift block
             # params for function arguments. Without this, parameters are
             # uninitialized (read as 0x0 = float +0.0 in NaN-boxing).
-            explicit_types = data.get("param_types") or []
-            if explicit_types:
+            explicit_types = list(data.get("param_types") or [])
+            if data["params"]:
+                if len(explicit_types) < len(data["params"]):
+                    explicit_types.extend(
+                        ["i64"] * (len(data["params"]) - len(explicit_types))
+                    )
                 func_entry["param_types"] = explicit_types
-            elif data["params"]:
-                func_entry["param_types"] = ["i64"] * len(data["params"])
             if self.source_path:
                 func_entry["source_file"] = self.source_path
             # Perceus-style borrowing analysis: identify parameters that can
