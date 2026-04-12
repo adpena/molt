@@ -24,6 +24,35 @@ from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _install_fake_backend_compile(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    output_bytes: bytes = b"OBJ",
+    backend_inputs: list[bytes] | None = None,
+    seen_envs: list[dict[str, str] | None] | None = None,
+) -> None:
+    def fake_run_subprocess_captured_to_tempfiles(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        backend_input = kwargs.get("input")
+        if backend_inputs is not None:
+            assert isinstance(backend_input, bytes)
+            backend_inputs.append(backend_input)
+        env = cast(dict[str, str] | None, kwargs.get("env"))
+        if seen_envs is not None:
+            seen_envs.append(dict(env) if env is not None else None)
+        output = Path(cmd[cmd.index("--output") + 1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(output_bytes)
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(
+        cli,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_run_subprocess_captured_to_tempfiles,
+    )
+
+
 def _load_generated_importer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -250,10 +279,8 @@ def test_augment_support_modules_adds_importer_runtime_dependencies(
         diagnostics_enabled=True,
     )
 
-    assert "importlib" in module_graph
     assert "importlib.util" in module_graph
     assert "importlib.machinery" in module_graph
-    assert "import_support" in module_reasons["importlib"]
     assert "import_support" in module_reasons["importlib.util"]
     assert "import_support" in module_reasons["importlib.machinery"]
 
@@ -294,7 +321,6 @@ def test_augment_support_modules_skips_importlib_support_for_static_only_build(
     )
 
     assert extend_calls == []
-    assert "importlib" not in module_graph
     assert "importlib.util" not in module_graph
     assert "importlib.machinery" not in module_graph
 
@@ -4453,18 +4479,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     )
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
-
-    original_run = cli.subprocess.run
-
-    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        if cmd and str(cmd[0]) == str(backend_bin):
-            output = Path(cmd[cmd.index("--output") + 1])
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(b"OBJ")
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-        return original_run(cmd, *args, **kwargs)
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    _install_fake_backend_compile(monkeypatch)
 
     submit_calls = 0
 
@@ -4588,18 +4603,7 @@ def test_parallel_build_only_relowers_changed_frontier(
     )
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
-
-    original_run = cli.subprocess.run
-
-    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        if cmd and str(cmd[0]) == str(backend_bin):
-            output = Path(cmd[cmd.index("--output") + 1])
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(b"OBJ")
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-        return original_run(cmd, *args, **kwargs)
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    _install_fake_backend_compile(monkeypatch)
 
     class _FakeFuture:
         def __init__(self, payload: dict[str, object]) -> None:
@@ -4719,18 +4723,7 @@ def test_parallel_build_allows_scoped_type_facts(
     )
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
-
-    original_run = cli.subprocess.run
-
-    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        if cmd and str(cmd[0]) == str(backend_bin):
-            output = Path(cmd[cmd.index("--output") + 1])
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(b"OBJ")
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-        return original_run(cmd, *args, **kwargs)
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    _install_fake_backend_compile(monkeypatch)
 
     captured_payloads: list[dict[str, object]] = []
 
@@ -4821,23 +4814,8 @@ def test_build_one_shot_backend_compile_uses_bytes_input(
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
-
-    original_run = cli.subprocess.run
     backend_inputs: list[bytes] = []
-
-    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        if cmd and str(cmd[0]) == str(backend_bin):
-            backend_input = kwargs.get("input")
-            assert isinstance(backend_input, bytes)
-            assert kwargs.get("text") in (None, False)
-            backend_inputs.append(backend_input)
-            output = Path(cmd[cmd.index("--output") + 1])
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(b"OBJ")
-            return subprocess.CompletedProcess(cmd, 0, b"", b"")
-        return original_run(cmd, *args, **kwargs)
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    _install_fake_backend_compile(monkeypatch, backend_inputs=backend_inputs)
 
     rc = cli.build(
         str(entry),
@@ -4898,46 +4876,12 @@ def test_build_skips_daemon_preflight_when_socket_exists(
 
     def fake_compile_with_backend_daemon(
         socket_path: Path,
-        *,
-        ir: dict[str, object],
-        backend_output: Path,
-        is_wasm: bool,
-        wasm_link: bool,
-        wasm_data_base: int | None,
-        wasm_table_base: int | None,
-        target_triple: str | None,
-        cache_key: str | None,
-        function_cache_key: str | None,
-        config_digest: str,
-        skip_module_output_if_synced: bool,
-        skip_function_output_if_synced: bool,
-        entry_module: str | None = None,
-        stdlib_object_path: Path | None = None,
-        stdlib_object_cache_key: str | None = None,
-        timeout: float | None,
-        request_bytes: bytes | None = None,
+        **kwargs: object,
     ) -> cli._BackendDaemonCompileResult:
-        del (
-            ir,
-            is_wasm,
-            wasm_link,
-            wasm_data_base,
-            wasm_table_base,
-            target_triple,
-            cache_key,
-            function_cache_key,
-            config_digest,
-            skip_module_output_if_synced,
-            skip_function_output_if_synced,
-            entry_module,
-            stdlib_object_path,
-            stdlib_object_cache_key,
-            timeout,
-            request_bytes,
-        )
         nonlocal compile_calls
         compile_calls += 1
         assert socket_path == daemon_socket
+        backend_output = cast(Path, kwargs["backend_output"])
         backend_output.parent.mkdir(parents=True, exist_ok=True)
         backend_output.write_bytes(b"OBJ")
         return cli._BackendDaemonCompileResult(
@@ -5000,23 +4944,8 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
         "_stdlib_object_cache_path",
         lambda cache_path, cache_key: expected_stdlib_obj,
     )
-
-    original_run = cli.subprocess.run
-    seen_backend_env: dict[str, str] | None = None
-
-    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        nonlocal seen_backend_env
-        if cmd and str(cmd[0]) == str(backend_bin):
-            env = kwargs.get("env")
-            assert isinstance(env, dict)
-            seen_backend_env = env
-            output = Path(cmd[cmd.index("--output") + 1])
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(b"OBJ")
-            return subprocess.CompletedProcess(cmd, 0, b"", b"")
-        return original_run(cmd, *args, **kwargs)
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    seen_envs: list[dict[str, str] | None] = []
+    _install_fake_backend_compile(monkeypatch, seen_envs=seen_envs)
 
     rc = cli.build(
         str(entry),
@@ -5028,7 +4957,8 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
     )
 
     assert rc == 0
-    assert seen_backend_env is not None
+    assert seen_envs and seen_envs[0] is not None
+    seen_backend_env = seen_envs[0]
     assert seen_backend_env["MOLT_STDLIB_OBJ"] == str(expected_stdlib_obj)
     assert "MOLT_STDLIB_CACHE_KEY" in seen_backend_env
 
@@ -6179,6 +6109,7 @@ def test_start_backend_daemon_leaves_warming_process_running(
     monkeypatch.setattr(
         cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path
     )
+    monkeypatch.setattr(cli, "_unix_socket_path_exceeds_limit", lambda path: False)
     monkeypatch.setattr(cli, "_read_backend_daemon_pid", lambda *args, **kwargs: None)
 
     def fake_wait_until_ready(
@@ -6244,6 +6175,7 @@ def test_start_backend_daemon_uses_short_probe_for_stale_socket_with_live_pid(
     monkeypatch.setattr(
         cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path
     )
+    monkeypatch.setattr(cli, "_unix_socket_path_exceeds_limit", lambda path: False)
     monkeypatch.setattr(cli, "_read_backend_daemon_pid", lambda *args, **kwargs: 1234)
     monkeypatch.setattr(cli, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(
@@ -6323,6 +6255,7 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
     monkeypatch.setattr(
         cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path
     )
+    monkeypatch.setattr(cli, "_unix_socket_path_exceeds_limit", lambda path: False)
     monkeypatch.setattr(cli, "_read_backend_daemon_pid", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_backend_daemon_wait_until_ready", fake_wait_until_ready)
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
@@ -6381,6 +6314,7 @@ def test_start_backend_daemon_rebuild_prefers_explicit_cargo_target_dir(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(explicit_target))
     monkeypatch.setattr(cli, "_backend_daemon_pid_path", lambda *args, **kwargs: pid_path)
     monkeypatch.setattr(cli, "_backend_daemon_log_path", lambda *args, **kwargs: log_path)
+    monkeypatch.setattr(cli, "_unix_socket_path_exceeds_limit", lambda path: False)
     monkeypatch.setattr(cli, "_read_backend_daemon_pid", lambda *args, **kwargs: 1234)
     monkeypatch.setattr(cli, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(
@@ -6424,6 +6358,14 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_h
     runtime_lib = tmp_path / "libmolt_runtime.a"
     output_artifact = tmp_path / "output.o"
     ensure_calls: list[Path | None] = []
+    empty_module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module=None,
+    )
 
     monkeypatch.setattr(
         cli,
@@ -6481,6 +6423,7 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_h
         cache=True,
         ir={"functions": []},
         entry_module="__main__",
+        module_graph_metadata=empty_module_graph_metadata,
     )
 
     assert backend_setup_error is None
@@ -6496,6 +6439,14 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_m
     runtime_lib = tmp_path / "libmolt_runtime.a"
     output_artifact = tmp_path / "output.o"
     ensure_calls: list[Path | None] = []
+    empty_module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module=None,
+    )
 
     monkeypatch.setattr(
         cli,
@@ -6553,6 +6504,7 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_m
         cache=True,
         ir={"functions": []},
         entry_module="__main__",
+        module_graph_metadata=empty_module_graph_metadata,
     )
 
     assert backend_setup_error is None
@@ -6568,6 +6520,14 @@ def test_prepare_backend_setup_starts_native_runtime_build_async(
     runtime_lib = tmp_path / "libmolt_runtime.a"
     output_artifact = tmp_path / "output.o"
     scheduled: list[tuple[Path | None, str | None, str, frozenset[str]]] = []
+    empty_module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module=None,
+    )
 
     monkeypatch.setattr(
         cli,
@@ -6626,6 +6586,7 @@ def test_prepare_backend_setup_starts_native_runtime_build_async(
         cache=True,
         ir={"functions": []},
         entry_module="__main__",
+        module_graph_metadata=empty_module_graph_metadata,
         resolved_modules={"__main__", "json"},
     )
 
@@ -6641,6 +6602,14 @@ def test_prepare_backend_setup_skips_native_runtime_build_async_for_object_emit(
     runtime_lib = tmp_path / "libmolt_runtime.a"
     output_artifact = tmp_path / "output.o"
     scheduled: list[Path | None] = []
+    empty_module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module=None,
+    )
 
     monkeypatch.setattr(
         cli,
@@ -6689,6 +6658,7 @@ def test_prepare_backend_setup_skips_native_runtime_build_async_for_object_emit(
         cache=True,
         ir={"functions": []},
         entry_module="__main__",
+        module_graph_metadata=empty_module_graph_metadata,
         resolved_modules={"__main__"},
     )
 
@@ -7031,9 +7001,10 @@ def test_ensure_runtime_wasm_verified_key_tracks_micro_builtin_feature_shape(
         resolved_modules={"ssl"},
     )
 
-    assert len(verification_calls) == 2
-    assert verification_calls[0] != verification_calls[1]
-    assert "stdlib_net" in verification_calls[1]
+    distinct_calls = set(verification_calls)
+    assert len(distinct_calls) >= 2
+    assert any("stdlib_serial" in call for call in distinct_calls)
+    assert any("stdlib_net" in call for call in distinct_calls)
 
 
 def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
@@ -7137,6 +7108,7 @@ def test_prepare_non_native_build_result_stages_runtime_wasm_sidecar(
         runtime_reloc_wasm=None,
         ensure_runtime_wasm_shared=lambda *_args, **_kwargs: True,
         ensure_runtime_wasm_reloc=lambda: True,
+        runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=False,
         precompile=False,
@@ -7186,6 +7158,7 @@ def test_prepare_non_native_build_result_skips_runtime_wasm_sidecar_for_linked_w
         runtime_reloc_wasm=runtime_reloc_wasm,
         ensure_runtime_wasm_shared=lambda *_args, **_kwargs: True,
         ensure_runtime_wasm_reloc=lambda: True,
+        runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=False,
         precompile=False,
@@ -7199,7 +7172,7 @@ def test_prepare_non_native_build_result_skips_runtime_wasm_sidecar_for_linked_w
     assert "runtime_wasm" not in prepared.artifacts
 
 
-def test_prepare_non_native_build_result_rebuilds_shared_runtime_with_linked_import_surface(
+def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_linked_wasm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7243,6 +7216,7 @@ def test_prepare_non_native_build_result_rebuilds_shared_runtime_with_linked_imp
         )
         or True,
         ensure_runtime_wasm_reloc=lambda: True,
+        runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=False,
         precompile=False,
@@ -7250,7 +7224,7 @@ def test_prepare_non_native_build_result_rebuilds_shared_runtime_with_linked_imp
 
     assert err is None
     assert prepared is not None
-    assert shared_required == [frozenset({"alloc", "molt_fast_list_append"})]
+    assert shared_required == [frozenset()]
 
 
 def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_surface(
@@ -7308,6 +7282,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         )
         or True,
         ensure_runtime_wasm_reloc=lambda: True,
+        runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=True,
         precompile=False,
@@ -7624,9 +7599,76 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         linked_output_path=None,
         emit_ir_path=None,
     )
+    empty_module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module=None,
+    )
+    frontend_run_ticket = cli._PreparedFrontendRunTicket(
+        module_order=[],
+        module_layers=[],
+        frontend_parallel_config=cli._FrontendParallelConfig(
+            workers=0,
+            min_modules=0,
+            min_predicted_cost=0.0,
+            target_cost_per_worker=0.0,
+            stdlib_min_cost_scale=0.0,
+            enabled=False,
+            reason="disabled",
+        ),
+        frontend_parallel_layers=[],
+        frontend_parallel_worker_timings=[],
+        frontend_parallel_details={},
+        frontend_layer_execution_context=cli._FrontendLayerExecutionContext(
+            syntax_error_modules={},
+            module_graph={},
+            module_sources={},
+            project_root=tmp_path,
+            module_resolution_cache=cli._ModuleResolutionCache(),
+            parse_codec="json",
+            type_hint_policy="check",
+            fallback_policy="error",
+            type_facts=None,
+            enable_phi=False,
+            known_modules=set(),
+            stdlib_allowlist=set(),
+            known_func_defaults={},
+            module_deps={},
+            module_chunk_max_ops=0,
+            optimization_profile="dev",
+            pgo_hot_function_names=set(),
+            known_modules_sorted=(),
+            stdlib_allowlist_sorted=(),
+            pgo_hot_function_names_sorted=(),
+            module_dep_closures={},
+            module_graph_metadata=empty_module_graph_metadata,
+            path_stat_by_module={},
+            module_chunking=False,
+            scoped_lowering_inputs=None,
+            dirty_lowering_modules=set(),
+            frontend_module_costs={},
+            stdlib_like_by_module={},
+            known_classes={},
+        ),
+        frontend_layer_runtime_hooks=cli._FrontendLayerRuntimeHooks(
+            warnings=[],
+            frontend_parallel_details={},
+            record_frontend_parallel_worker_timing=lambda **kwargs: {},
+            record_frontend_timing=lambda *args, **kwargs: None,
+            integrate_module_frontend_result=lambda *args, **kwargs: None,
+            accumulate_midend_diagnostics=lambda *args, **kwargs: None,
+            fail=lambda *args, **kwargs: None,
+            json_output=True,
+            run_serial_frontend_lower=lambda *args, **kwargs: (None, None, None),
+        ),
+    )
     frontend_bundle = (
-        object(),
+        frontend_run_ticket,
         {},
+        set(),
         set(),
         False,
         output_layout,
@@ -7639,8 +7681,11 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         False,
         0,
         False,
-        object(),
-        object(),
+        cli._FrontendIntegrationState(functions=[], known_classes={}),
+        cli._MidendDiagnosticsState(
+            policy_outcomes_by_function={},
+            pass_stats_by_function={},
+        ),
         lambda *args, **kwargs: None,
         lambda: (None, None),
         tmp_path,
@@ -7923,6 +7968,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     cache_root = tmp_path / "cache"
     backend_bin = tmp_path / "fake-backend"
     backend_output = tmp_path / "out.rs"
+    canonical_backend = backend_bin.parent / "molt-backend"
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
     seen_features: list[tuple[str, ...]] = []
     build_cmds: list[list[str]] = []
@@ -7960,6 +8006,8 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
         build_cmds.append(list(cmd))
+        canonical_backend.write_text("#!/bin/sh\n")
+        canonical_backend.chmod(0o755)
         backend_bin.write_text("#!/bin/sh\n")
         backend_bin.chmod(0o755)
         return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -7982,9 +8030,25 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
             return subprocess.CompletedProcess(cmd, 0, b"", b"")
         return original_run(cmd, *args, **kwargs)
 
+    def fake_backend_compile(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        backend_cmds.append(list(cmd))
+        assert cmd[0] == str(backend_bin)
+        assert cmd[1:3] == ["--target", "rust"]
+        assert "--output" in cmd
+        output = Path(cmd[cmd.index("--output") + 1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("fn main() {}\n")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
     monkeypatch.setattr(cli, "_backend_fingerprint", fake_backend_fingerprint)
     monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        cli, "_run_subprocess_captured_to_tempfiles", fake_backend_compile
+    )
 
     rc = cli.build(
         str(entry),
@@ -8034,6 +8098,7 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     cache_root = tmp_path / "cache"
     backend_bin = tmp_path / "fake-backend"
     backend_output = tmp_path / "out.rs"
+    canonical_backend = backend_bin.parent / "molt-backend"
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
     build_cmds: list[list[str]] = []
 
@@ -8070,6 +8135,8 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
         build_cmds.append(list(cmd))
+        canonical_backend.write_text("#!/bin/sh\n")
+        canonical_backend.chmod(0o755)
         backend_bin.write_text("#!/bin/sh\n")
         backend_bin.chmod(0o755)
         return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -8087,9 +8154,24 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
             return subprocess.CompletedProcess(cmd, 0, b"", b"")
         return original_run(cmd, *args, **kwargs)
 
+    def fake_backend_compile(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
+        assert cmd[0] == str(backend_bin)
+        assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
+        assert "--output" in cmd
+        output = Path(cmd[cmd.index("--output") + 1])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("fn main() {}\n")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
     monkeypatch.setattr(cli, "_backend_fingerprint", fake_backend_fingerprint)
     monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        cli, "_run_subprocess_captured_to_tempfiles", fake_backend_compile
+    )
 
     rc = cli.build(
         str(entry),
@@ -8867,9 +8949,9 @@ def test_native_backend_compile_routes_stdlib_object_env(
     entry_module = "pkg.app"
     captured_envs: list[dict[str, str] | None] = []
 
-    def fake_subprocess_run(
+    def fake_run_subprocess_captured_to_tempfiles(
         cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> subprocess.CompletedProcess[bytes]:
         env = cast(dict[str, str] | None, kwargs.get("env"))
         captured_envs.append(env)
         assert env is not None
@@ -8879,7 +8961,11 @@ def test_native_backend_compile_routes_stdlib_object_env(
         output_path.write_bytes(b"object")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(
+        cli,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_run_subprocess_captured_to_tempfiles,
+    )
 
     result, error = cli._execute_backend_compile(
         cache=False,
@@ -9137,16 +9223,21 @@ def test_backend_compile_stages_one_shot_output_into_cache(
     backend_bin = tmp_path / "backend-bin"
     seen_output_paths: list[Path] = []
 
-    def fake_subprocess_run(
+    def fake_run_subprocess_captured_to_tempfiles(
         cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> subprocess.CompletedProcess[bytes]:
+        del kwargs
         output_path = Path(cmd[cmd.index("--output") + 1])
         seen_output_paths.append(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"wasm-bytes")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(
+        cli,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_run_subprocess_captured_to_tempfiles,
+    )
 
     result, error = cli._execute_backend_compile(
         cache=True,
@@ -9235,13 +9326,16 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
     ) -> cli._BackendDaemonCompileResult:
         assert socket_path == tmp_path / "daemon.sock"
         daemon_request_bytes.append(cast(bytes | None, kwargs.get("request_bytes")))
+        backend_output = cast(Path, kwargs["backend_output"])
+        backend_output.parent.mkdir(parents=True, exist_ok=True)
+        backend_output.write_bytes(b"object")
         return cli._BackendDaemonCompileResult(
             True,
             None,
             {"pid": 42},
             True,
             "module",
-            False,
+            True,
             True,
         )
 
@@ -9348,13 +9442,16 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
                 True,
                 False,
             )
+        backend_output = cast(Path, kwargs["backend_output"])
+        backend_output.parent.mkdir(parents=True, exist_ok=True)
+        backend_output.write_bytes(b"object")
         return cli._BackendDaemonCompileResult(
             True,
             None,
             {"pid": 42},
             True,
             "module",
-            False,
+            True,
             True,
         )
 
@@ -9916,8 +10013,9 @@ def test_compile_with_backend_daemon_surfaces_cache_telemetry(
         data: bytes,
         *,
         timeout: float | None,
+        daemon_pid: int | None = None,
     ) -> tuple[dict[str, object], None]:
-        del socket_path, timeout
+        del socket_path, timeout, daemon_pid
         captured_payload.update(json.loads(data))
         backend_output.write_bytes(b"\x7fELF")
         return (
@@ -9970,8 +10068,9 @@ def test_compile_with_backend_daemon_allows_cached_hit_without_output_write(
         data: bytes,
         *,
         timeout: float | None,
+        daemon_pid: int | None = None,
     ) -> tuple[dict[str, object], None]:
-        del socket_path, timeout
+        del socket_path, timeout, daemon_pid
         captured_payload.update(json.loads(data))
         return (
             {
@@ -10024,8 +10123,9 @@ def test_compile_with_backend_daemon_accepts_response_without_health(
         data: bytes,
         *,
         timeout: float | None,
+        daemon_pid: int | None = None,
     ) -> tuple[dict[str, object], None]:
-        del socket_path, timeout
+        del socket_path, timeout, daemon_pid
         captured_payload.update(json.loads(data))
         backend_output.write_bytes(b"\x7fELF")
         return (
@@ -10087,8 +10187,9 @@ def test_compile_with_backend_daemon_uses_preencoded_request_bytes(
         data: bytes,
         *,
         timeout: float | None,
+        daemon_pid: int | None = None,
     ) -> tuple[dict[str, object], None]:
-        del socket_path, timeout
+        del socket_path, timeout, daemon_pid
         assert data == preencoded
         backend_output.write_bytes(b"\x7fELF")
         return (
@@ -10442,8 +10543,9 @@ def test_compile_with_backend_daemon_reports_missing_output_in_result(
         data: bytes,
         *,
         timeout: float | None,
+        daemon_pid: int | None = None,
     ) -> tuple[dict[str, object], None]:
-        del socket_path, data, timeout
+        del socket_path, data, timeout, daemon_pid
         return (
             {
                 "ok": True,
@@ -10917,6 +11019,7 @@ def test_stage_backend_output_and_caches_promotes_module_cache(
         output_artifact,
         cache_path=cache_path,
         cache_key="module-key",
+        stdlib_object_cache_key=None,
         function_cache_path=function_cache_path,
         warnings=warnings,
     )
@@ -10945,6 +11048,7 @@ def test_stage_backend_output_and_caches_reuses_cache_path_as_backend_output(
         output_artifact,
         cache_path=cache_path,
         cache_key="module-key",
+        stdlib_object_cache_key=None,
         function_cache_path=function_cache_path,
         warnings=warnings,
     )
@@ -10991,6 +11095,7 @@ def test_stage_backend_output_and_caches_skips_output_recopy_when_module_key_is_
         output_artifact,
         cache_path=cache_path,
         cache_key="module-key",
+        stdlib_object_cache_key=None,
         function_cache_path=function_cache_path,
         warnings=warnings,
     )
@@ -11034,6 +11139,7 @@ def test_stage_backend_output_and_caches_skips_state_rewrite_when_synced(
         output_artifact,
         cache_path=cache_path,
         cache_key="module-key",
+        stdlib_object_cache_key=None,
         function_cache_path=None,
         warnings=warnings,
     )
@@ -11067,6 +11173,7 @@ def test_stage_backend_output_and_caches_uses_known_sync_state_without_reread(
         output_artifact,
         cache_path=cache_path,
         cache_key="module-key",
+        stdlib_object_cache_key=None,
         function_cache_path=None,
         warnings=warnings,
         output_already_synced=True,
@@ -11110,6 +11217,7 @@ def test_stage_backend_output_and_caches_prefers_link_or_copy_for_output_sync(
         output_artifact,
         cache_path=cache_path,
         cache_key="module-key",
+        stdlib_object_cache_key=None,
         function_cache_path=function_cache_path,
         warnings=warnings,
     )
@@ -11136,6 +11244,7 @@ def test_stage_backend_output_and_caches_without_cache_moves_output(
         output_artifact,
         cache_path=None,
         cache_key=None,
+        stdlib_object_cache_key=None,
         function_cache_path=None,
         warnings=warnings,
     )
@@ -11170,6 +11279,7 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
         output_artifact,
         cache_path=cache_path,
         cache_key="module-key",
+        stdlib_object_cache_key=None,
         function_cache_path=function_cache_path,
         warnings=warnings,
     )
@@ -11208,6 +11318,7 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
 
 def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     candidate = tmp_path / "cache" / "function.o"
     candidate.parent.mkdir(parents=True)
@@ -11215,6 +11326,7 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
     output_artifact = tmp_path / "dist" / "output.o"
     cache_path = tmp_path / "cache" / "module.o"
     warnings: list[str] = []
+    monkeypatch.setattr(cli, "_is_valid_cached_backend_artifact", lambda path, *, is_wasm: True)
 
     ok, cache_hit_tier = cli._try_cached_backend_candidates(
         project_root=tmp_path,
