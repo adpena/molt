@@ -1403,6 +1403,8 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_array_len", symbol: "molt_array_len", arity: 1 },
     IntrinsicSpec { name: "molt_array_new", symbol: "molt_array_new", arity: 1 },
     IntrinsicSpec { name: "molt_array_pop", symbol: "molt_array_pop", arity: 2 },
+    IntrinsicSpec { name: "molt_array_repeat", symbol: "molt_array_repeat", arity: 2 },
+    IntrinsicSpec { name: "molt_array_repeat_in_place", symbol: "molt_array_repeat_in_place", arity: 2 },
     IntrinsicSpec { name: "molt_array_remove", symbol: "molt_array_remove", arity: 2 },
     IntrinsicSpec { name: "molt_array_reverse", symbol: "molt_array_reverse", arity: 1 },
     IntrinsicSpec { name: "molt_array_setitem", symbol: "molt_array_setitem", arity: 3 },
@@ -2688,6 +2690,8 @@ fn resolve_array_symbol(symbol: &str) -> Option<u64> {
         "molt_array_len" => Some(crate::molt_array_len as *const () as usize as u64),
         "molt_array_new" => Some(crate::molt_array_new as *const () as usize as u64),
         "molt_array_pop" => Some(crate::molt_array_pop as *const () as usize as u64),
+        "molt_array_repeat" => Some(crate::molt_array_repeat as *const () as usize as u64),
+        "molt_array_repeat_in_place" => Some(crate::molt_array_repeat_in_place as *const () as usize as u64),
         "molt_array_remove" => Some(crate::molt_array_remove as *const () as usize as u64),
         "molt_array_reverse" => Some(crate::molt_array_reverse as *const () as usize as u64),
         "molt_array_setitem" => Some(crate::molt_array_setitem as *const () as usize as u64),
@@ -6646,4 +6650,3 @@ fn resolve_zoneinfo_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
-
