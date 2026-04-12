@@ -36,6 +36,7 @@ def test_falcon_driver_deploy_surface_is_target_root_driven(tmp_path: Path) -> N
     weights_dir = target_root / "weights"
     weights_dir.mkdir()
     (weights_dir / "layer0.safetensors").write_bytes(b"weights")
+    (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
 
     deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy")
     surface = deploy.build_deploy_surface(
@@ -48,11 +49,13 @@ def test_falcon_driver_deploy_surface_is_target_root_driven(tmp_path: Path) -> N
     assert surface["artifacts"]["app_wasm"] == str(artifact_dir / "app.wasm")
     assert surface["artifacts"]["runtime_wasm"] == str(artifact_dir / "molt_runtime.wasm")
     assert surface["artifacts"]["config_json"] == str(target_root / "config.json")
+    assert surface["artifacts"]["tokenizer_json"] == str(weights_dir / "tokenizer.json")
     assert surface["status"] == "manifest_ready"
     immutable = surface["artifact_manifest"]["immutable"]
     assert immutable["app_wasm"]["sha256"]
     assert immutable["runtime_wasm"]["sha256"]
     assert immutable["config_json"]["sha256"]
+    assert immutable["tokenizer_json"]["sha256"]
     assert immutable["browser_loader"]["relative_path"] == "browser.js"
     assert immutable["worker_entrypoint"]["relative_path"] == "worker.ts"
     assert immutable["wrangler_config"]["relative_path"] == "wrangler.jsonc"
@@ -69,6 +72,7 @@ def test_falcon_driver_deploy_script_emits_json(tmp_path: Path) -> None:
     weights_dir = target_root / "weights"
     weights_dir.mkdir()
     (weights_dir / "layer0.safetensors").write_bytes(b"weights")
+    (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
 
     res = subprocess.run(
         [sys.executable, str(DEPLOY_PY), "--target-root", str(target_root)],
@@ -96,6 +100,7 @@ def test_falcon_driver_materialize_bundle_emits_manifest_and_assets(
     weights_dir = target_root / "weights"
     weights_dir.mkdir()
     (weights_dir / "layer0.safetensors").write_bytes(b"weights")
+    (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
 
     deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy_materialize")
     bundle = deploy.materialize_deploy_bundle(
@@ -111,6 +116,7 @@ def test_falcon_driver_materialize_bundle_emits_manifest_and_assets(
     assert (bundle_root / "assets" / "browser_host.js").exists()
     assert (bundle_root / "assets" / "molt_vfs_browser.js").exists()
     assert (bundle_root / "assets" / "config.json").exists()
+    assert (bundle_root / "assets" / "tokenizer.json").exists()
     materialized_browser_js = (bundle_root / "assets" / "browser.js").read_text(encoding="utf-8")
     assert 'import { loadMoltWasm } from "./browser_host.js";' in materialized_browser_js
     manifest = json.loads((bundle_root / "assets" / "driver-manifest.base.json").read_text(encoding="utf-8"))
@@ -118,6 +124,7 @@ def test_falcon_driver_materialize_bundle_emits_manifest_and_assets(
     assert manifest["artifacts"]["app_wasm"]["url"] == "/app.wasm"
     assert manifest["artifacts"]["runtime_wasm"]["url"] == "/molt_runtime.wasm"
     assert manifest["artifacts"]["config_json"]["url"] == "/config.json"
+    assert manifest["artifacts"]["tokenizer_json"]["url"] == "/tokenizer.json"
     assert manifest["weights"]["base_url"] == "https://weights.example.invalid/falcon"
     assert manifest["weights"]["files"][0]["path"] == "layer0.safetensors"
     wrangler = json.loads((bundle_root / "wrangler.jsonc").read_text(encoding="utf-8"))
@@ -148,6 +155,7 @@ def test_falcon_driver_materialize_bundle_requires_weights_base_url(
     weights_dir = target_root / "weights"
     weights_dir.mkdir()
     (weights_dir / "layer0.safetensors").write_bytes(b"weights")
+    (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
 
     deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy_require_base_url")
     try:
@@ -184,6 +192,7 @@ def test_falcon_driver_verify_wrapper_emits_json(tmp_path: Path) -> None:
     weights_dir = target_root / "weights"
     weights_dir.mkdir()
     (weights_dir / "layer0.safetensors").write_bytes(b"weights")
+    (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
 
     res = subprocess.run(
         [
@@ -205,6 +214,7 @@ def test_falcon_driver_verify_wrapper_emits_json(tmp_path: Path) -> None:
     payload = json.loads(res.stdout)
     assert payload["target"] == "falcon.browser_webgpu"
     assert payload["bundle"]["bundle_root"]
+    assert payload["bundle_contract"]["manifest_asset"]
     assert payload["wrangler_check"]["returncode"] == 0
     assert payload["wrangler_dry_run"]["returncode"] == 0
 
@@ -264,6 +274,32 @@ def test_falcon_browser_driver_init_and_ocr_tokens_roundtrip(tmp_path: Path) -> 
     weights_bin.write_bytes(b"weights")
     config_json = tmp_path / "config.json"
     config_json.write_text('{"dim":2}\n', encoding="utf-8")
+    tokenizer_json = tmp_path / "tokenizer.json"
+    tokenizer_json.write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+    manifest_json = tmp_path / "driver-manifest.base.json"
+    manifest_json.write_text(
+        json.dumps(
+            {
+                "target": "falcon.browser_webgpu",
+                "artifacts": {
+                    "app_wasm": {"url": "/output.wasm"},
+                    "runtime_wasm": {"url": "/molt_runtime.wasm"},
+                    "config_json": {"url": "/config.json"},
+                    "tokenizer_json": {"url": "/tokenizer.json"},
+                },
+                "weights": {
+                    "base_url": None,
+                    "files": [{"path": "weights.bin", "url": "/weights.bin"}],
+                },
+                "exports": {
+                    "init": "main_molt__init",
+                    "ocrTokens": "main_molt__ocr_tokens",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     class _ArtifactHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
@@ -275,6 +311,8 @@ def test_falcon_browser_driver_init_and_ocr_tokens_roundtrip(tmp_path: Path) -> 
                 "/molt_runtime.wasm": runtime_wasm,
                 "/weights.bin": weights_bin,
                 "/config.json": config_json,
+                "/tokenizer.json": tokenizer_json,
+                "/driver-manifest.base.json": manifest_json,
             }
             target = mapping.get(self.path)
             if target is None:
@@ -301,10 +339,7 @@ def test_falcon_browser_driver_init_and_ocr_tokens_roundtrip(tmp_path: Path) -> 
             f"""
 import {{ initFalconBrowserWebGpu }} from {BROWSER_JS.as_uri()!r};
 const session = await initFalconBrowserWebGpu({{
-  wasmUrl: {f"{base_url}/output.wasm"!r},
-  runtimeUrl: {f"{base_url}/molt_runtime.wasm"!r},
-  weightsUrl: {f"{base_url}/weights.bin"!r},
-  configUrl: {f"{base_url}/config.json"!r},
+  manifestUrl: {f"{base_url}/driver-manifest.base.json"!r},
 }});
 const tokens = await session.ocrTokens({{
   width: 32,
@@ -312,9 +347,9 @@ const tokens = await session.ocrTokens({{
   rgb: new Uint8Array([1,2,3,4,5,6]),
   promptIds: [257, 258],
   maxNewTokens: 3,
-  exportName: 'main_molt__ocr_tokens',
 }});
 console.log(JSON.stringify(tokens));
+console.error(JSON.stringify({{ tokenizerUrl: session.tokenizerUrl }}));
 """.lstrip(),
             encoding="utf-8",
         )
@@ -329,6 +364,7 @@ console.log(JSON.stringify(tokens));
         lines = [line.strip() for line in run.stdout.splitlines() if line.strip()]
         assert lines[:7] == ["7", '{"dim":2}', "32", "16", "6", "[257, 258]", "3"]
         assert json.loads(lines[7]) == [257, 258]
+        assert json.loads(run.stderr.strip())["tokenizerUrl"] == f"{base_url}/tokenizer.json"
     finally:
         server.shutdown()
 
@@ -390,16 +426,23 @@ def test_falcon_browser_driver_init_from_manifest_roundtrip(tmp_path: Path) -> N
                     "app_wasm": {"url": "/output.wasm"},
                     "runtime_wasm": {"url": "/molt_runtime.wasm"},
                     "config_json": {"url": "/config.json"},
+                    "tokenizer_json": {"url": "/tokenizer.json"},
                 },
                 "weights": {
                     "base_url": None,
                     "files": [{"path": "weights.bin", "url": "/weights.bin"}],
+                },
+                "exports": {
+                    "init": "main_molt__init",
+                    "ocrTokens": "main_molt__ocr_tokens",
                 },
             }
         )
         + "\n",
         encoding="utf-8",
     )
+    tokenizer_json = tmp_path / "tokenizer.json"
+    tokenizer_json.write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
 
     class _ArtifactHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
@@ -411,6 +454,7 @@ def test_falcon_browser_driver_init_from_manifest_roundtrip(tmp_path: Path) -> N
                 "/molt_runtime.wasm": runtime_wasm,
                 "/weights.bin": weights_bin,
                 "/config.json": config_json,
+                "/tokenizer.json": tokenizer_json,
                 "/driver-manifest.base.json": manifest_json,
             }
             target = mapping.get(self.path)
@@ -477,10 +521,15 @@ def test_falcon_browser_driver_accepts_same_origin_relative_manifest_url(
                     "app_wasm": {"url": "/app.wasm"},
                     "runtime_wasm": {"url": "/molt_runtime.wasm"},
                     "config_json": {"url": "/config.json"},
+                    "tokenizer_json": {"url": "/tokenizer.json"},
                 },
                 "weights": {
                     "base_url": "https://weights.example.invalid/falcon",
                     "files": [{"path": "weights.bin", "url": "weights.bin"}],
+                },
+                "exports": {
+                    "init": "main_molt__init",
+                    "ocrTokens": "main_molt__ocr_tokens",
                 },
             }
         )
@@ -521,3 +570,27 @@ try {{
     assert run.returncode == 0, run.stderr
     assert "Relative manifestUrl requires" not in run.stdout
     assert "resolved-fetch:" in run.stdout
+
+
+def test_falcon_browser_driver_requires_manifest_url(tmp_path: Path) -> None:
+    script = tmp_path / "missing_manifest_url.mjs"
+    script.write_text(
+        f"""
+import {{ initFalconBrowserWebGpu }} from {BROWSER_JS.as_uri()!r};
+try {{
+  await initFalconBrowserWebGpu({{}});
+}} catch (error) {{
+  console.log(String(error));
+}}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    run = subprocess.run(
+        ["node", str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert run.returncode == 0, run.stderr
+    assert "requires manifestUrl" in run.stdout

@@ -38,6 +38,14 @@ function manifestArtifactUrl(manifest, manifestUrl, key) {
   return resolveArtifactUrl(manifestUrl, artifact.url);
 }
 
+function optionalManifestArtifactUrl(manifest, manifestUrl, key) {
+  const artifact = manifest?.artifacts?.[key];
+  if (!artifact || typeof artifact.url !== "string" || !artifact.url) {
+    return null;
+  }
+  return resolveArtifactUrl(manifestUrl, artifact.url);
+}
+
 function manifestWeightUrl(manifest, manifestUrl) {
   const weights = manifest?.weights;
   const first = Array.isArray(weights?.files) ? weights.files[0] : null;
@@ -77,33 +85,24 @@ export async function imageToRgbPatchAligned(blob, patchSize = DEFAULT_PATCH_SIZ
 
 export async function initFalconBrowserWebGpu({
   manifestUrl,
-  wasmUrl,
-  runtimeUrl,
-  weightsUrl,
-  configUrl,
-  initExport = "main_molt__init",
+  initExport,
   browserHostOptions = {},
 }) {
-  let manifest = null;
-  const resolvedManifestUrl = manifestUrl ? normalizeManifestUrl(manifestUrl) : null;
-  if (manifestUrl) {
-    manifest = await fetchRequiredJson(resolvedManifestUrl);
+  if (!manifestUrl) {
+    throw new Error("Falcon browser driver requires manifestUrl.");
   }
-  const resolvedWasmUrl =
-    wasmUrl ?? (manifest ? manifestArtifactUrl(manifest, resolvedManifestUrl, "app_wasm") : null);
-  const resolvedRuntimeUrl =
-    runtimeUrl ??
-    (manifest ? manifestArtifactUrl(manifest, resolvedManifestUrl, "runtime_wasm") : null);
-  const resolvedWeightsUrl =
-    weightsUrl ?? (manifest ? manifestWeightUrl(manifest, resolvedManifestUrl) : null);
-  const resolvedConfigUrl =
-    configUrl ??
-    (manifest ? manifestArtifactUrl(manifest, resolvedManifestUrl, "config_json") : null);
-  if (!resolvedWasmUrl || !resolvedRuntimeUrl || !resolvedWeightsUrl || !resolvedConfigUrl) {
-    throw new Error(
-      "Falcon browser driver requires wasmUrl, runtimeUrl, weightsUrl, and configUrl or a manifestUrl that resolves them.",
-    );
-  }
+  const resolvedManifestUrl = normalizeManifestUrl(manifestUrl);
+  const manifest = await fetchRequiredJson(resolvedManifestUrl);
+  const resolvedWasmUrl = manifestArtifactUrl(manifest, resolvedManifestUrl, "app_wasm");
+  const resolvedRuntimeUrl = manifestArtifactUrl(manifest, resolvedManifestUrl, "runtime_wasm");
+  const resolvedWeightsUrl = manifestWeightUrl(manifest, resolvedManifestUrl);
+  const resolvedConfigUrl = manifestArtifactUrl(manifest, resolvedManifestUrl, "config_json");
+  const resolvedTokenizerUrl = optionalManifestArtifactUrl(
+    manifest,
+    resolvedManifestUrl,
+    "tokenizer_json",
+  );
+  const resolvedInitExport = initExport ?? manifest?.exports?.init ?? "main_molt__init";
   const [host, weightsBytes, configJson] = await Promise.all([
     loadMoltWasm({
       wasmUrl: resolvedWasmUrl,
@@ -122,19 +121,27 @@ export async function initFalconBrowserWebGpu({
     }),
   ]);
 
-  await host.invokeExport(initExport, [new Uint8Array(weightsBytes), configJson]);
+  await host.invokeExport(resolvedInitExport, [new Uint8Array(weightsBytes), configJson]);
 
   return {
     host,
+    manifest,
+    manifestUrl: resolvedManifestUrl,
+    tokenizerUrl: resolvedTokenizerUrl,
+    async invokeExport(exportName, args = []) {
+      return host.invokeExport(exportName, args);
+    },
     async ocrTokens({
       width,
       height,
       rgb,
       promptIds,
       maxNewTokens = DEFAULT_MAX_NEW_TOKENS,
-      exportName = "main_molt__ocr_tokens",
+      exportName,
     }) {
-      const result = await host.invokeExport(exportName, [
+      const resolvedOcrTokensExport =
+        exportName ?? manifest?.exports?.ocrTokens ?? "main_molt__ocr_tokens";
+      const result = await host.invokeExport(resolvedOcrTokensExport, [
         width,
         height,
         rgb,
@@ -143,7 +150,7 @@ export async function initFalconBrowserWebGpu({
       ]);
       if (!Array.isArray(result.resultJson)) {
         throw new Error(
-          `Falcon ocr_tokens returned a non-list payload: ${result.resultRepr ?? "null"}`,
+          `Falcon ${resolvedOcrTokensExport} returned a non-list payload: ${result.resultRepr ?? "null"}`,
         );
       }
       return result.resultJson;
