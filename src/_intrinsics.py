@@ -96,6 +96,12 @@ def require_intrinsic(name, namespace=None):
         if value is not None:
             return value
 
+    # 3. Check the builtins-backed intrinsic registry used by host-side tests
+    # and runtime bootstrap shims.
+    value = _lookup_runtime_builtins(name)
+    if value is not None:
+        return value
+
     if not runtime_active():
         raise RuntimeError("runtime inactive")
 
