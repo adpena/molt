@@ -36,6 +36,7 @@ def _load_stdlib_intrinsics(module_name: str) -> types.ModuleType:
 @pytest.fixture(autouse=True)
 def _clear_runtime_intrinsics(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delattr(builtins, "_molt_intrinsic_lookup", raising=False)
+    monkeypatch.delattr(builtins, "_molt_intrinsics", raising=False)
     monkeypatch.delattr(builtins, "_molt_runtime", raising=False)
     monkeypatch.delattr(builtins, "_molt_intrinsics_strict", raising=False)
 
@@ -88,6 +89,21 @@ def test_root_intrinsics_uses_runtime_lookup_helper() -> None:
         return None
 
     loader.__dict__["_molt_intrinsic_lookup"] = _lookup
+    assert loader.require_intrinsic("molt_probe", None) is runtime_fn
+
+
+def test_root_intrinsics_uses_builtins_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loader = _load_root_intrinsics("_molt_test_root_intrinsics_builtins_registry")
+    runtime_fn = lambda: "runtime"  # noqa: E731
+
+    monkeypatch.setattr(
+        builtins,
+        "_molt_intrinsics",
+        {"molt_probe": runtime_fn},
+        raising=False,
+    )
     assert loader.require_intrinsic("molt_probe", None) is runtime_fn
 
 
