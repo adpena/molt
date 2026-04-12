@@ -1024,6 +1024,38 @@ mod tests {
         assert_eq!(import_op.operands.len(), 1, "{:?}", import_op.operands);
     }
 
+    #[test]
+    fn gpu_thread_id_lowers_to_runtime_backed_call_in_tir() {
+        let func_ir = make_func(
+            "gpu_tid",
+            &[],
+            vec![
+                OpIR {
+                    kind: "gpu_thread_id".to_string(),
+                    out: Some("tid".to_string()),
+                    ..OpIR::default()
+                },
+                op_args("ret", &["tid"]),
+            ],
+        );
+
+        let tir = lower_to_tir(&func_ir);
+        let call_op = tir
+            .blocks
+            .values()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| op.opcode == crate::tir::ops::OpCode::Call)
+            .expect("expected gpu_thread_id to lower to a call op");
+        assert_eq!(
+            call_op.attrs.get("s_value"),
+            Some(&crate::tir::ops::AttrValue::Str("molt_gpu_thread_id".to_string()))
+        );
+        assert_eq!(
+            call_op.attrs.get("_original_kind"),
+            Some(&crate::tir::ops::AttrValue::Str("gpu_thread_id".to_string()))
+        );
+    }
+
     // =======================================================================
     // Test 3: transport hints do not seed canonical SSA types
     // =======================================================================
