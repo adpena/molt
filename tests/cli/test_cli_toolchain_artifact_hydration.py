@@ -6,6 +6,8 @@ from pathlib import Path
 
 from molt import cli
 
+_FAKE_STATICLIB = b"!<arch>\nfake-staticlib"
+
 
 def test_ensure_backend_binary_hydrates_from_canonical_target(
     monkeypatch,
@@ -76,7 +78,7 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
     canonical_runtime = canonical_target / "dev-fast" / "libmolt_runtime.a"
     isolated_runtime = isolated_target / "dev-fast" / "libmolt_runtime.a"
     canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
-    canonical_runtime.write_text("runtime-lib")
+    canonical_runtime.write_bytes(_FAKE_STATICLIB)
 
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
     canonical_fp = cli._artifact_state_path_for_build_state_root(
@@ -109,7 +111,7 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
         project_root,
         1.0,
     )
-    assert isolated_runtime.read_text() == "runtime-lib"
+    assert isolated_runtime.read_bytes() == _FAKE_STATICLIB
 
 
 def test_ensure_runtime_wasm_hydrates_from_current_target_artifact(
@@ -182,7 +184,7 @@ def test_ensure_runtime_wasm_reloc_relinks_from_current_target_staticlib(
     current_staticlib = target_root / "wasm32-wasip1" / profile_dir / "libmolt_runtime.a"
     runtime_reloc = project_root / "wasm" / "molt_runtime_reloc.wasm"
     current_staticlib.parent.mkdir(parents=True, exist_ok=True)
-    current_staticlib.write_bytes(b"archive")
+    current_staticlib.write_bytes(_FAKE_STATICLIB)
 
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
     current_staticlib_fp = cli._artifact_state_path_for_build_state_root(
@@ -264,7 +266,7 @@ def test_ensure_runtime_wasm_reloc_builds_when_only_hashed_current_target_static
     )
     runtime_reloc = project_root / "wasm" / "molt_runtime_reloc.wasm"
     current_staticlib.parent.mkdir(parents=True, exist_ok=True)
-    current_staticlib.write_bytes(b"archive")
+    current_staticlib.write_bytes(_FAKE_STATICLIB)
 
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
     current_staticlib_fp = cli._artifact_state_path_for_build_state_root(

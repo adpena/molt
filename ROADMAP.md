@@ -75,3 +75,7 @@ This file is forward-looking only.
 - Runtime monkeypatching as a default compatibility strategy.
 - Hidden host-CPython fallback paths in compiled binaries.
 - Unrestricted reflection that violates Molt's AOT constraints.
+- The runpy dynamic-lane expected failures list is currently empty because
+  supported lanes moved to intrinsic support; unsupported runpy dynamic
+  execution remains policy-governed rather than represented by an active
+  expected-failure lane.

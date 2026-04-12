@@ -60,20 +60,20 @@ def trusted() -> bool:
 
 
 def has(capability: str) -> bool:
+    if trusted():
+        return True
     fn = _load_intrinsic("molt_capabilities_has")
     if fn is not None:
         return bool(fn(capability))
-    if trusted():
-        return True
     return capability in capabilities()
 
 
 def require(capability: str) -> None:
+    if trusted():
+        return None
     fn = _load_intrinsic("molt_capabilities_require")
     if fn is not None:
         fn(capability)
-        return None
-    if trusted():
         return None
     if capability not in capabilities():
         raise PermissionError(
