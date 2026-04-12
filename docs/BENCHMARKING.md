@@ -68,42 +68,6 @@ It also records wasm import-surface metrics per benchmark
 (`molt_wasm_import_count`, `molt_wasm_function_import_count`,
 `molt_wasm_function_imports_per_kb`) to track call-surface density over time.
 
-### Falcon Split-Runtime Host-Fed Benchmarks
-
-For Falcon-OCR split-runtime validation, use the dedicated host-fed mode in
-`tools/bench_wasm.py` instead of ad hoc `node wasm/run_wasm.js` invocations.
-This mode records structured per-phase results and writes canonical JSON under
-`bench/results/`.
-
-```bash
-# Fast, reproducible init-only proof on the real split-runtime artifact
-uv run --python 3.12 python3 tools/bench_wasm.py \
-  --falcon-hostfed \
-  --runner node \
-  --falcon-phase init_only \
-  --falcon-phase-timeout-s 120 \
-  --json-out bench/results/falcon_split_runtime_init_only.json
-
-# Bounded first-token attempt with explicit timeout classification
-uv run --python 3.12 python3 tools/bench_wasm.py \
-  --falcon-hostfed \
-  --runner node \
-  --falcon-phase init_plus_1_token \
-  --falcon-phase-timeout-s 10 \
-  --json-out bench/results/falcon_split_runtime_token_timeout.json
-```
-
-Rules:
-- Use `--falcon-phase init_only` when you need deterministic startup data without
-  paying full token-generation cost.
-- Use `--falcon-phase-timeout-s` for heavyweight phases so failure is explicit
-  (`runner_timeout`) and the run still emits a benchmark JSON artifact.
-- Successful phases capture `molt_profile_json` payloads from the wasm runtime in
-  the phase record when `MOLT_PROFILE=1` / `MOLT_PROFILE_JSON=1` are enabled.
-- Do not assume timed-out synchronous wasm inference can always dump a final
-  profile payload on shutdown; the timeout classification is reliable, but a
-  JS-side `SIGTERM` handler cannot preempt a long-running synchronous wasm call.
-
 ## Compiled GPU Kernel Backend Lanes
 
 Compiled `@gpu.kernel` now has three distinct execution states:
