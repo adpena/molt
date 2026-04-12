@@ -1,0 +1,33 @@
+{
+  "lanes": [
+    {
+      "backend": "tinygrad",
+      "model": "falcon-1",
+      "enabled": true,
+      "id": "falcon-1-tinygrad",
+      "notes": "Reference lane placeholder for Falcon #1.",
+      "path": "bench/friends/reference/tinygrad"
+    },
+    {
+      "backend": "tinygpu",
+      "model": "falcon-1",
+      "enabled": true,
+      "id": "falcon-1-tinygpu",
+      "notes": "Reference lane placeholder for Falcon #1.",
+      "path": "bench/friends/reference/tinygpu"
+    }
+  ],
+  "models": [
+    {
+      "display_name": "Falcon #1",
+      "family": "falcon",
+      "id": "falcon-1",
+      "status": "scaffold"
+    }
+  ],
+  "schema_version": 1,
+  "workspace": {
+    "name": "reference",
+    "root": "bench/friends/reference"
+  }
+}
