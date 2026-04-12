@@ -1012,6 +1012,11 @@ impl<'a> SsaContext<'a> {
         if let Some(ref v) = op.s_value {
             attrs.insert("s_value".into(), AttrValue::Str(v.clone()));
         }
+        if op.s_value.is_none()
+            && let Some(symbol) = gpu_runtime_symbol_for_simple_kind(op.kind.as_str())
+        {
+            attrs.insert("s_value".into(), AttrValue::Str(symbol.to_string()));
+        }
         if let Some(ref v) = op.bytes {
             attrs.insert("bytes".into(), AttrValue::Bytes(v.clone()));
         }
@@ -1455,11 +1460,10 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "del_index" => OpCode::DelIndex,
         "call" | "call_func" | "call_internal" | "call_indirect" | "call_bind"
         | "call_function" | "call_guarded" | "invoke_ffi" => OpCode::Call,
+        "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim"
+        | "gpu_barrier" => OpCode::Call,
         "call_method" => OpCode::CallMethod,
         "call_builtin" | "builtin_print" | "print" => OpCode::CallBuiltin,
-        "classmethod_new" => OpCode::ClassmethodNew,
-        "staticmethod_new" => OpCode::StaticmethodNew,
-        "property_new" => OpCode::PropertyNew,
         "box" | "box_from_raw_int" => OpCode::BoxVal,
         "unbox" | "unbox_to_raw_int" => OpCode::UnboxVal,
         "type_guard" => OpCode::TypeGuard,
@@ -1501,6 +1505,17 @@ fn kind_to_opcode(kind: &str) -> OpCode {
         "warn_stderr" => OpCode::WarnStderr,
         // Fallback for unknown ops.
         _ => OpCode::Copy,
+    }
+}
+
+fn gpu_runtime_symbol_for_simple_kind(kind: &str) -> Option<&'static str> {
+    match kind {
+        "gpu_thread_id" => Some("molt_gpu_thread_id"),
+        "gpu_block_id" => Some("molt_gpu_block_id"),
+        "gpu_block_dim" => Some("molt_gpu_block_dim"),
+        "gpu_grid_dim" => Some("molt_gpu_grid_dim"),
+        "gpu_barrier" => Some("molt_gpu_barrier"),
+        _ => None,
     }
 }
 
