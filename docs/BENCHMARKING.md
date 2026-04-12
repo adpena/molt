@@ -145,7 +145,22 @@ molt run --profile dev path/to/kernel_smoke.py
 Current native compiled-kernel backend proofs:
 - Metal: real backend dispatch on macOS
 - WebGPU: real `wgpu` backend dispatch on native desktop
-- WASM: correct compiled launch semantics, still not real browser GPU dispatch yet
+- WASM split-runtime/browser host: real browser-host WebGPU dispatch is available
+  through `wasm/browser_host.js` when `MOLT_GPU_BACKEND=webgpu` is present in the
+  WASI env and the host provides either:
+  - `gpuKernelDispatcher`, or
+  - the default worker-backed WebGPU dispatcher (`wasm/browser_gpu_worker.js`)
+
+Browser WebGPU rules:
+- The browser host contract is worker-oriented. A synchronous compiled kernel
+  launch cannot run on the page main thread and still wait for WebGPU readback
+  correctly.
+- `loadMoltWasm({...})` may inject `env` entries into WASI boot, which is the
+  canonical way to request `MOLT_GPU_BACKEND=webgpu` on browser-hosted wasm.
+- Deterministic host proof:
+  - [tests/test_wasm_browser_gpu_host.py](/Users/adpena/Projects/molt/tests/test_wasm_browser_gpu_host.py)
+    - compiled browser-host wasm kernel correctness
+    - browser-host WebGPU dispatcher usage
 
 ```bash
 # Basic run

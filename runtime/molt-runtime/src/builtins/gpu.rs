@@ -7,11 +7,13 @@ use crate::{
 };
 use std::cell::RefCell;
 #[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
@@ -337,6 +339,7 @@ impl RuntimeWebGpuDevice {
 }
 
 #[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
@@ -351,6 +354,7 @@ struct RuntimeKernelBufferArg {
 }
 
 #[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
@@ -363,6 +367,7 @@ enum RuntimeKernelArg {
 }
 
 #[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
@@ -376,6 +381,7 @@ struct RuntimeKernelOp {
 }
 
 #[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
@@ -387,6 +393,7 @@ struct RuntimeKernelDescriptor {
 }
 
 #[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
@@ -493,6 +500,7 @@ fn parse_usize_arg(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<us
 }
 
 #[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
@@ -546,6 +554,7 @@ fn kernel_arg_from_bits(
 }
 
 #[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
@@ -558,6 +567,7 @@ fn metal_scalar_type_for_buffer(format: &str) -> Result<(&'static str, usize), S
 }
 
 #[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
@@ -571,10 +581,11 @@ fn metal_scalar_type_for_arg(arg: &RuntimeKernelArg) -> Result<(&'static str, Ve
 }
 
 #[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
-fn buffer_host_bytes_for_metal(
+fn buffer_host_bytes_for_gpu_compute(
     _py: &crate::PyToken<'_>,
     arg: &RuntimeKernelBufferArg,
 ) -> Result<Vec<u8>, String> {
@@ -596,10 +607,11 @@ fn buffer_host_bytes_for_metal(
 }
 
 #[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
-fn copy_metal_output_back_to_buffer(
+fn copy_gpu32_output_back_to_buffer(
     _py: &crate::PyToken<'_>,
     arg: &RuntimeKernelBufferArg,
     gpu_output: &[u8],
@@ -632,6 +644,20 @@ fn copy_metal_output_back_to_buffer(
     unsafe { set_object_attr_bytes(_py, arg.object_ptr, b"_data", "_data", data_bits)? };
     dec_ref_bits(_py, data_bits);
     Ok(())
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
+fn webgpu_scalar_bytes_for_arg(arg: &RuntimeKernelArg) -> Result<Vec<u8>, String> {
+    match arg {
+        RuntimeKernelArg::Int(v) => Ok((*v as i32).to_le_bytes().to_vec()),
+        RuntimeKernelArg::Float(v) => Ok((*v as f32).to_le_bytes().to_vec()),
+        RuntimeKernelArg::Bool(v) => Ok(u32::from(*v).to_le_bytes().to_vec()),
+        RuntimeKernelArg::Buffer(_) => Err("buffer passed as scalar param".to_string()),
+    }
 }
 
 #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
@@ -790,7 +816,10 @@ fn render_metal_source(
     ))
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+#[cfg(any(
+    target_arch = "wasm32",
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 fn webgpu_scalar_type_for_buffer(format: &str) -> Result<&'static str, String> {
     match format {
         "f" | "d" => Ok("f32"),
@@ -799,7 +828,10 @@ fn webgpu_scalar_type_for_buffer(format: &str) -> Result<&'static str, String> {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+#[cfg(any(
+    target_arch = "wasm32",
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 fn render_webgpu_source(
     desc: &RuntimeKernelDescriptor,
     args: &BTreeMap<String, RuntimeKernelArg>,
@@ -1104,7 +1136,7 @@ fn try_dispatch_metal_kernel(
         let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("buffer arg missing") else {
             return Err(raise_exception::<u64>(_py, "RuntimeError", "expected buffer arg"));
         };
-        let host_bytes = buffer_host_bytes_for_metal(_py, buf).map_err(|msg| {
+        let host_bytes = buffer_host_bytes_for_gpu_compute(_py, buf).map_err(|msg| {
             raise_exception::<u64>(_py, "RuntimeError", &msg)
         })?;
         let metal_buf = device.alloc_buffer(host_bytes.len());
@@ -1148,7 +1180,7 @@ fn try_dispatch_metal_kernel(
             }
         };
         let gpu_output = device.copy_from_buffer(&owned_buffers[buffer_idx], output_size);
-        copy_metal_output_back_to_buffer(_py, buf, &gpu_output)?;
+        copy_gpu32_output_back_to_buffer(_py, buf, &gpu_output)?;
     }
     Ok(Some(MoltObject::none().bits()))
 }
@@ -1230,7 +1262,7 @@ fn try_dispatch_webgpu_kernel(
         let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("buffer arg missing") else {
             return Err(raise_exception::<u64>(_py, "RuntimeError", "expected buffer arg"));
         };
-        let host_bytes = buffer_host_bytes_for_metal(_py, buf).map_err(|msg| {
+        let host_bytes = buffer_host_bytes_for_gpu_compute(_py, buf).map_err(|msg| {
             raise_exception::<u64>(_py, "RuntimeError", &msg)
         })?;
         let (_, gpu_buf) = device.alloc_buffer(host_bytes.len().max(1));
@@ -1242,12 +1274,8 @@ fn try_dispatch_webgpu_kernel(
     }
     for name in &scalar_names {
         let arg = args_map.get(name).expect("scalar arg missing");
-        let scalar_bytes = match arg {
-            RuntimeKernelArg::Int(v) => (*v as i32).to_le_bytes().to_vec(),
-            RuntimeKernelArg::Float(v) => (*v as f32).to_le_bytes().to_vec(),
-            RuntimeKernelArg::Bool(v) => u32::from(*v).to_le_bytes().to_vec(),
-            RuntimeKernelArg::Buffer(_) => unreachable!(),
-        };
+        let scalar_bytes = webgpu_scalar_bytes_for_arg(arg)
+            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
         let (_, gpu_buf) = device.alloc_buffer(scalar_bytes.len().max(1));
         device.copy_to_buffer(&gpu_buf, &scalar_bytes);
         owned_buffers.push(gpu_buf);
@@ -1277,45 +1305,187 @@ fn try_dispatch_webgpu_kernel(
         let gpu_output = device
             .copy_from_buffer(&owned_buffers[buffer_idx], output_size)
             .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-        let rebuilt = match buf.original_format.as_str() {
-            "f" => gpu_output,
-            "d" => {
-                let mut out = Vec::with_capacity(buf.size * 8);
-                for chunk in gpu_output.chunks_exact(4) {
-                    let val = f32::from_le_bytes(chunk.try_into().map_err(|_| {
-                        raise_exception::<u64>(_py, "RuntimeError", "invalid webgpu f32 output bytes")
-                    })?) as f64;
-                    out.extend_from_slice(&val.to_le_bytes());
-                }
-                out
-            }
-            "q" => {
-                let mut out = Vec::with_capacity(buf.size * 8);
-                for chunk in gpu_output.chunks_exact(4) {
-                    let val = i32::from_le_bytes(chunk.try_into().map_err(|_| {
-                        raise_exception::<u64>(_py, "RuntimeError", "invalid webgpu i32 output bytes")
-                    })?) as i64;
-                    out.extend_from_slice(&val.to_le_bytes());
-                }
-                out
-            }
-            _ => unreachable!(),
-        };
-        let data_ptr = alloc_bytearray(_py, rebuilt.as_slice());
-        if data_ptr.is_null() {
-            return Err(MoltObject::none().bits());
-        }
-        let data_bits = MoltObject::from_ptr(data_ptr).bits();
-        if let Err(err) = unsafe { set_object_attr_bytes(_py, buf.object_ptr, b"_data", "_data", data_bits) } {
-            dec_ref_bits(_py, data_bits);
-            return Err(err);
-        }
-        dec_ref_bits(_py, data_bits);
+        copy_gpu32_output_back_to_buffer(_py, buf, &gpu_output)?;
     }
     Ok(Some(MoltObject::none().bits()))
 }
 
-#[cfg(not(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")))]
+#[cfg(target_arch = "wasm32")]
+fn try_dispatch_webgpu_kernel(
+    _py: &crate::PyToken<'_>,
+    callable_bits: u64,
+    grid: i64,
+    threads: i64,
+    builder_bits: u64,
+) -> Result<Option<u64>, u64> {
+    if requested_gpu_backend().as_deref() != Some("webgpu") {
+        return Ok(None);
+    }
+    if trace_gpu_backend_enabled() {
+        eprintln!("[molt gpu backend] webgpu");
+    }
+    let descriptor_bits = match unsafe { gpu_kernel_descriptor_bits(_py, callable_bits) } {
+        Ok(Some(bits)) => bits,
+        Ok(None) => {
+            return Err(raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "webgpu backend requires __molt_gpu_descriptor__ metadata",
+            ))
+        }
+        Err(err) => return Err(err),
+    };
+    let descriptor_json = string_obj_to_owned(obj_from_bits(descriptor_bits)).ok_or_else(|| {
+        raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
+    })?;
+    let descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
+        raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            &format!("invalid gpu kernel descriptor: {msg}"),
+        )
+    })?;
+    let arg_bits = unsafe { crate::call::bind::callargs_positional_snapshot(_py, builder_bits) }?;
+    if arg_bits.len() != descriptor.params.len() {
+        return Err(raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            "gpu kernel descriptor parameter count does not match launch args",
+        ));
+    }
+    let mut args_map = BTreeMap::new();
+    for (name, bits) in descriptor.params.iter().zip(arg_bits.iter().copied()) {
+        args_map.insert(name.clone(), kernel_arg_from_bits(_py, name, bits)?);
+    }
+    let (source, buffer_names, scalar_names, output_buffers) =
+        render_webgpu_source(&descriptor, &args_map, threads as u32).map_err(|msg| {
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                &format!("webgpu kernel render failed: {msg}"),
+            )
+        })?;
+    let output_buffer_names: BTreeSet<String> = output_buffers.iter().cloned().collect();
+    let mut staging_buffers: Vec<Vec<u8>> = Vec::new();
+    let mut launch_bindings = Vec::new();
+    let mut output_records: Vec<(RuntimeKernelBufferArg, usize)> = Vec::new();
+    let mut binding_index = 0usize;
+
+    for name in &buffer_names {
+        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("buffer arg missing") else {
+            return Err(raise_exception::<u64>(_py, "RuntimeError", "expected buffer arg"));
+        };
+        let bytes = buffer_host_bytes_for_gpu_compute(_py, buf)
+            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+        let staging_index = staging_buffers.len();
+        staging_buffers.push(bytes);
+        let staging = &staging_buffers[staging_index];
+        let ptr = if staging.is_empty() {
+            0
+        } else {
+            staging.as_ptr() as usize as u32
+        };
+        let access = if output_buffer_names.contains(name) {
+            output_records.push((buf.clone(), staging_index));
+            "read_write"
+        } else {
+            "read"
+        };
+        launch_bindings.push(serde_json::json!({
+            "binding": binding_index,
+            "name": name,
+            "kind": "buffer",
+            "access": access,
+            "ptr": ptr,
+            "len": staging.len() as u32,
+        }));
+        binding_index += 1;
+    }
+
+    for name in &scalar_names {
+        let arg = args_map.get(name).expect("scalar arg missing");
+        let staging_index = staging_buffers.len();
+        staging_buffers.push(
+            webgpu_scalar_bytes_for_arg(arg)
+                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+        );
+        let staging = &staging_buffers[staging_index];
+        let ptr = if staging.is_empty() {
+            0
+        } else {
+            staging.as_ptr() as usize as u32
+        };
+        launch_bindings.push(serde_json::json!({
+            "binding": binding_index,
+            "name": name,
+            "kind": "scalar",
+            "access": "read",
+            "ptr": ptr,
+            "len": staging.len() as u32,
+        }));
+        binding_index += 1;
+    }
+
+    let launch_record_bytes = serde_json::to_vec(&serde_json::json!({
+        "bindings": launch_bindings,
+    }))
+    .map_err(|err| {
+        raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            &format!("failed to encode webgpu launch record: {err}"),
+        )
+    })?;
+    let mut err_bytes = vec![0u8; 4096];
+    let mut out_err_len = 0u32;
+    let rc = unsafe {
+        crate::molt_gpu_webgpu_dispatch_host(
+            source.as_ptr() as usize as u32,
+            source.len() as u32,
+            descriptor.name.as_ptr() as usize as u32,
+            descriptor.name.len() as u32,
+            launch_record_bytes.as_ptr() as usize as u32,
+            launch_record_bytes.len() as u32,
+            grid as u32,
+            threads as u32,
+            err_bytes.as_mut_ptr() as usize as u32,
+            err_bytes.len() as u32,
+            &mut out_err_len as *mut u32,
+        )
+    };
+    if rc != 0 {
+        let detail = if out_err_len == 0 {
+            String::new()
+        } else {
+            let len = usize::min(out_err_len as usize, err_bytes.len());
+            String::from_utf8_lossy(&err_bytes[..len]).into_owned()
+        };
+        let message = if !detail.is_empty() {
+            detail
+        } else {
+            match rc.unsigned_abs() {
+                12 => "browser webgpu dispatch ran out of memory".to_string(),
+                22 => "browser webgpu dispatch rejected the launch record".to_string(),
+                38 => {
+                    "browser webgpu dispatch is unavailable; run the wasm host in a worker-backed WebGPU environment"
+                        .to_string()
+                }
+                110 => "browser webgpu dispatch timed out".to_string(),
+                other => format!("browser webgpu dispatch failed with errno {other}"),
+            }
+        };
+        return Err(raise_exception::<u64>(_py, "RuntimeError", &message));
+    }
+    for (buf, staging_index) in output_records {
+        copy_gpu32_output_back_to_buffer(_py, &buf, &staging_buffers[staging_index])?;
+    }
+    Ok(Some(MoltObject::none().bits()))
+}
+
+#[cfg(not(any(
+    target_arch = "wasm32",
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+)))]
 fn try_dispatch_webgpu_kernel(
     _py: &crate::PyToken<'_>,
     _callable_bits: u64,
