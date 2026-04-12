@@ -28,6 +28,15 @@ def _native_env() -> dict[str, str]:
     return env
 
 
+def _gpu_env(*, metal: bool = False) -> dict[str, str]:
+    env = _native_env()
+    if metal:
+        env["MOLT_RUNTIME_GPU_METAL"] = "1"
+        env["MOLT_GPU_BACKEND"] = "metal"
+        env["MOLT_TRACE_GPU_BACKEND"] = "1"
+    return env
+
+
 def test_compiled_gpu_kernel_vector_add_matches_interpreted_semantics(
     tmp_path: Path,
 ) -> None:
@@ -50,7 +59,7 @@ def test_compiled_gpu_kernel_vector_add_matches_interpreted_semantics(
         encoding="utf-8",
     )
 
-    env = _native_env()
+    env = _gpu_env()
     build = subprocess.run(
         [
             sys.executable,
@@ -85,6 +94,68 @@ def test_compiled_gpu_kernel_vector_add_matches_interpreted_semantics(
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "[11.0, 22.0, 33.0, 44.0]"
+
+
+def test_compiled_gpu_kernel_vector_add_uses_metal_backend_when_enabled(
+    tmp_path: Path,
+) -> None:
+    if sys.platform != "darwin":
+        return
+    src_path = tmp_path / "gpu_kernel_smoke_metal.py"
+    out_path = tmp_path / "gpu_kernel_smoke_metal"
+    src_path.write_text(
+        "import molt.gpu as gpu\n"
+        "\n"
+        "@gpu.kernel\n"
+        "def vector_add(a, b, c, n):\n"
+        "    tid = gpu.thread_id()\n"
+        "    if tid < n:\n"
+        "        c[tid] = a[tid] + b[tid]\n"
+        "\n"
+        "a = gpu.to_device([1.0, 2.0, 3.0, 4.0])\n"
+        "b = gpu.to_device([10.0, 20.0, 30.0, 40.0])\n"
+        "c = gpu.alloc(4, float)\n"
+        "vector_add[1, 4](a, b, c, 4)\n"
+        "print(gpu.from_device(c))\n",
+        encoding="utf-8",
+    )
+
+    env = _gpu_env(metal=True)
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src_path),
+            "--target",
+            "native",
+            "--build-profile",
+            "dev",
+            "--backend",
+            "cranelift",
+            "--output",
+            str(out_path),
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+
+    run = subprocess.run(
+        [str(out_path)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "[11.0, 22.0, 33.0, 44.0]"
+    assert "[molt gpu backend] metal" in run.stderr
 
 
 def test_gpu_kernel_call_lowers_to_first_class_gpu_launch_ir(tmp_path: Path) -> None:
