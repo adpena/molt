@@ -5583,142 +5583,6 @@ pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u6
 
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__tensor_attention_hybrid_mask(
-    token_ids_bits: u64,
-    image_cls_id_bits: u64,
-    img_end_id_bits: u64,
-) -> u64 {
-    crate::with_gil_entry!(_py, {
-        let tensor_class_bits =
-            match unsafe { module_global_bits(_py, b"molt.gpu.tensor", b"Tensor", "Tensor") } {
-                Ok(bits) => bits,
-                Err(bits) => return bits,
-            };
-        let buffer_class_bits =
-            match unsafe { module_global_bits(_py, b"molt.gpu.tensor", b"Buffer", "Buffer") } {
-                Ok(bits) => bits,
-                Err(bits) => {
-                    crate::dec_ref_bits(_py, tensor_class_bits);
-                    return bits;
-                }
-            };
-        let token_ids = match parse_i64_sequence_arg(_py, token_ids_bits, "token_ids", false) {
-            Ok(value) => value,
-            Err(bits) => {
-                crate::dec_ref_bits(_py, tensor_class_bits);
-                crate::dec_ref_bits(_py, buffer_class_bits);
-                return bits;
-            }
-        };
-        let Some(image_cls_id) = to_i64(obj_from_bits(image_cls_id_bits)) else {
-            crate::dec_ref_bits(_py, tensor_class_bits);
-            crate::dec_ref_bits(_py, buffer_class_bits);
-            return raise_exception::<_>(_py, "TypeError", "image_cls_id must be an int");
-        };
-        let Some(img_end_id) = to_i64(obj_from_bits(img_end_id_bits)) else {
-            crate::dec_ref_bits(_py, tensor_class_bits);
-            crate::dec_ref_bits(_py, buffer_class_bits);
-            return raise_exception::<_>(_py, "TypeError", "img_end_id must be an int");
-        };
-
-        let len = token_ids.len();
-        let mut in_block = vec![false; len];
-        let mut block_idx = vec![0usize; len];
-        let mut block_starts: Vec<usize> = Vec::new();
-        let mut block_ends: Vec<usize> = Vec::new();
-        let mut depth = 0i64;
-        let mut current_block = 0usize;
-        for (i, tid) in token_ids.iter().copied().enumerate() {
-            let is_soi = tid == image_cls_id;
-            let is_eoi = tid == img_end_id;
-            if is_soi {
-                depth += 1;
-                current_block += 1;
-                block_starts.push(i);
-                block_ends.push(i + 1);
-            }
-            if depth > 0 {
-                in_block[i] = true;
-                let block = current_block - 1;
-                block_idx[i] = block;
-                block_ends[block] = i + 1;
-            }
-            if is_eoi && depth > 0 {
-                depth -= 1;
-            }
-        }
-
-        let mut values = vec![-1.0e9f32; len * len];
-        for q in 0..len {
-            let row = &mut values[q * len..(q + 1) * len];
-            row[..=q].fill(0.0);
-            if in_block[q] {
-                let block = block_idx[q];
-                row[block_starts[block]..block_ends[block]].fill(0.0);
-            }
-        }
-
-        let raw = unsafe {
-            std::slice::from_raw_parts(
-                values.as_ptr() as *const u8,
-                values.len() * std::mem::size_of::<f32>(),
-            )
-        };
-        let data_ptr = alloc_bytearray(_py, raw);
-        if data_ptr.is_null() {
-            crate::dec_ref_bits(_py, tensor_class_bits);
-            crate::dec_ref_bits(_py, buffer_class_bits);
-            return MoltObject::none().bits();
-        }
-        let data_bits = MoltObject::from_ptr(data_ptr).bits();
-        let format_bits = match alloc_string_bits(_py, b"f") {
-            Ok(bits) => bits,
-            Err(bits) => {
-                crate::dec_ref_bits(_py, tensor_class_bits);
-                crate::dec_ref_bits(_py, buffer_class_bits);
-                crate::dec_ref_bits(_py, data_bits);
-                return bits;
-            }
-        };
-        let shape_bits = match alloc_tuple_bits_from_usize(_py, &[1, 1, len, len]) {
-            Ok(bits) => bits,
-            Err(bits) => {
-                crate::dec_ref_bits(_py, tensor_class_bits);
-                crate::dec_ref_bits(_py, buffer_class_bits);
-                crate::dec_ref_bits(_py, data_bits);
-                crate::dec_ref_bits(_py, format_bits);
-                return bits;
-            }
-        };
-        let float_bits = crate::builtins::classes::builtin_classes(_py).float;
-        let tensor_bits = match unsafe {
-            build_tensor_from_data_bits(
-                _py,
-                tensor_class_bits,
-                buffer_class_bits,
-                data_bits,
-                float_bits,
-                values.len(),
-                format_bits,
-                ScalarFormat::F32.itemsize(),
-                shape_bits,
-                float_bits,
-            )
-        } {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        };
-        crate::dec_ref_bits(_py, tensor_class_bits);
-        crate::dec_ref_bits(_py, buffer_class_bits);
-        crate::dec_ref_bits(_py, data_bits);
-        crate::dec_ref_bits(_py, format_bits);
-        crate::dec_ref_bits(_py, shape_bits);
-        tensor_bits
-    })
-}
-
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
-#[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
     q_bits: u64,
     k_bits: u64,
@@ -7876,9 +7740,8 @@ mod tests {
         molt_gpu_repeat_axis_contiguous, molt_gpu_rms_norm_last_axis_contiguous,
         molt_gpu_rope_apply_contiguous, molt_gpu_softmax_last_axis_contiguous,
         molt_gpu_squared_relu_gate_interleaved_contiguous,
-        molt_gpu_tensor__tensor_attention_hybrid_mask, molt_gpu_tensor__tensor_data_list,
-        molt_gpu_tensor__tensor_linear, molt_gpu_tensor__tensor_reshape_view,
-        molt_gpu_tensor__zeros, molt_gpu_tensor_from_parts,
+        molt_gpu_tensor__tensor_data_list, molt_gpu_tensor__tensor_linear,
+        molt_gpu_tensor__tensor_reshape_view, molt_gpu_tensor__zeros, molt_gpu_tensor_from_parts,
     };
     use crate::{
         MoltObject, alloc_bytes, alloc_class_obj, alloc_string, alloc_tuple,
@@ -8614,60 +8477,6 @@ mod tests {
                 .map(|bits| to_f64(obj_from_bits(bits)).expect("float element"))
                 .collect();
             assert_eq!(zero_values, vec![0.0; 6]);
-        });
-    }
-
-    #[test]
-    fn gpu_module_tensor_attention_hybrid_mask_wrapper_roundtrip() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap();
-        crate::with_gil_entry!(_py, {
-            let tensor_name_ptr = alloc_string(_py, b"Tensor");
-            let buffer_name_ptr = alloc_string(_py, b"Buffer");
-            let tensor_cls_ptr = alloc_class_obj(_py, MoltObject::from_ptr(tensor_name_ptr).bits());
-            let buffer_cls_ptr = alloc_class_obj(_py, MoltObject::from_ptr(buffer_name_ptr).bits());
-            let tensor_cls_bits = MoltObject::from_ptr(tensor_cls_ptr).bits();
-            let buffer_cls_bits = MoltObject::from_ptr(buffer_cls_ptr).bits();
-            install_gpu_tensor_module(_py, tensor_cls_bits, buffer_cls_bits);
-
-            let token_ids_ptr = alloc_tuple(
-                _py,
-                &[
-                    MoltObject::from_int(17).bits(),
-                    MoltObject::from_int(244).bits(),
-                    MoltObject::from_int(227).bits(),
-                    MoltObject::from_int(230).bits(),
-                    MoltObject::from_int(42).bits(),
-                ],
-            );
-            let mask_bits = molt_gpu_tensor__tensor_attention_hybrid_mask(
-                MoltObject::from_ptr(token_ids_ptr).bits(),
-                MoltObject::from_int(244).bits(),
-                MoltObject::from_int(230).bits(),
-            );
-            assert!(!crate::exception_pending(_py));
-
-            let shape_bits = attr_bits(_py, mask_bits, b"_shape");
-            let shape_ptr = obj_from_bits(shape_bits).as_ptr().expect("shape tuple");
-            let shape: Vec<i64> = unsafe { seq_vec_ref(shape_ptr) }
-                .iter()
-                .map(|bits| to_f64(obj_from_bits(*bits)).expect("shape element") as i64)
-                .collect();
-            assert_eq!(shape, vec![1, 1, 5, 5]);
-
-            let data_list_bits = molt_gpu_tensor__tensor_data_list(mask_bits);
-            let data_list_ptr = obj_from_bits(data_list_bits).as_ptr().expect("data list");
-            let rows: Vec<f64> = unsafe { seq_vec_ref(data_list_ptr) }
-                .iter()
-                .copied()
-                .map(|bits| to_f64(obj_from_bits(bits)).expect("float element"))
-                .collect();
-            let at = |q: usize, k: usize| rows[q * 5 + k];
-            assert!(at(0, 1) < -1.0e8);
-            assert_eq!(at(1, 3), 0.0);
-            assert_eq!(at(2, 3), 0.0);
-            assert_eq!(at(3, 1), 0.0);
-            assert_eq!(at(4, 3), 0.0);
-            assert_eq!(at(4, 4), 0.0);
         });
     }
 

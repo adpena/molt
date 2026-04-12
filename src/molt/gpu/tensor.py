@@ -57,9 +57,6 @@ _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS = _load_optional_intrinsic(
 _MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM = _load_optional_intrinsic(
     "molt_gpu_tensor__tensor_linear_split_last_dim"
 )
-_MOLT_GPU_TENSOR_ATTENTION_HYBRID_MASK = _load_optional_intrinsic(
-    "molt_gpu_tensor__tensor_attention_hybrid_mask"
-)
 _MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION = _load_optional_intrinsic(
     "molt_gpu_tensor__tensor_scaled_dot_product_attention"
 )
@@ -1612,65 +1609,6 @@ class Tensor:
                 dtype=self._dtype,
             )
         raise TypeError(f"Tensor indexing with {type(idx)} not supported")
-
-
-# ── Module-level constructors ─────────────────────────────────────────
-
-def tensor_attention_hybrid_mask(
-    token_ids,
-    image_cls_id: int,
-    img_end_id: int,
-) -> "Tensor":
-    if _MOLT_GPU_TENSOR_ATTENTION_HYBRID_MASK is not None:
-        return _MOLT_GPU_TENSOR_ATTENTION_HYBRID_MASK(
-            token_ids,
-            image_cls_id,
-            img_end_id,
-        )
-
-    if _runtime_intrinsics_active():
-        raise RuntimeError(
-            "intrinsic unavailable: molt_gpu_tensor__tensor_attention_hybrid_mask"
-        )
-
-    length = len(token_ids)
-    in_block = [False] * length
-    block_idx = [0] * length
-    block_bounds: list[list[int]] = []
-    depth = 0
-    current_block = 0
-    for i, tid in enumerate(token_ids):
-        is_soi = tid == image_cls_id
-        is_eoi = tid == img_end_id
-        if is_soi:
-            depth += 1
-            current_block += 1
-            block_bounds.append([i, i + 1])
-        if depth > 0:
-            in_block[i] = True
-            block_idx[i] = current_block - 1
-            block_bounds[current_block - 1][1] = i + 1
-        if is_eoi and depth > 0:
-            depth -= 1
-
-    values = array.array("f", [-1.0e9]) * (length * length)
-    row_zero = array.array("f", [0.0]) * length
-    for q in range(length):
-        row_base = q * length
-        prefix_len = q + 1
-        values[row_base : row_base + prefix_len] = row_zero[:prefix_len]
-        if in_block[q]:
-            start, end = block_bounds[block_idx[q]]
-            values[row_base + start : row_base + end] = row_zero[: end - start]
-
-    return _tensor_from_parts(
-        values.tobytes(),
-        float,
-        len(values),
-        "f",
-        (1, 1, length, length),
-        float,
-    )
 
 
 def tensor_scaled_dot_product_attention(

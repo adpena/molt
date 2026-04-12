@@ -196,6 +196,53 @@ def molt_gpu_linear_split_last_dim_contiguous(
     split_sizes: Any,
     out_format: str,
 ) -> tuple[Any, ...]: ...
+def molt_gpu_tensor__tensor_linear_split_last_dim(
+    x: Any,
+    weight: Any,
+    split_sizes: Any,
+) -> tuple[Any, ...]: ...
+def molt_gpu_tensor__tensor_scaled_dot_product_attention(
+    q: Any,
+    k: Any,
+    v: Any,
+    mask: Any,
+    scale: Any,
+) -> Any: ...
+def molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
+    x_data: Any,
+    x_format: str,
+    weight_data: Any,
+    weight_format: str,
+    outer: int,
+    in_features: int,
+    out_format: str,
+) -> bytes: ...
+def molt_gpu_tensor_from_parts(
+    tensor_class: Any,
+    buffer_class: Any,
+    data: Any,
+    element_type: Any,
+    size: int,
+    format_char: str,
+    shape: Any,
+    dtype: Any,
+) -> Any: ...
+def molt_gpu_repeat_axis_contiguous(
+    x_data: Any,
+    x_format: str,
+    shape: Any,
+    axis: int,
+    repeats: int,
+    out_format: str,
+) -> bytes: ...
+def molt_gpu_tensor_from_buffer(
+    tensor_class: Any,
+    buffer: Any,
+    shape: Any,
+    dtype: Any,
+) -> Any: ...
+def molt_gpu_tensor__zeros(shape: Any, dtype: Any) -> Any: ...
+def molt_gpu_buffer_to_list(buffer: Any, count: int) -> list[Any]: ...
 def molt_gpu_broadcast_binary_contiguous(
     a_data: Any,
     a_format: str,
