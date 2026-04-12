@@ -1,8 +1,11 @@
 use crate::{
     MoltObject, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE, TYPE_ID_TYPE,
-    alloc_bytearray, alloc_tuple, bytes_data, bytes_len, obj_from_bits, object_type_id,
-    raise_exception, seq_vec_ref, string_obj_to_owned, to_f64, to_i64,
+    alloc_bytearray, alloc_tuple, attr_name_bits_from_bytes, bytes_data, bytes_len,
+    dec_ref_bits, molt_call_bind, molt_exception_clear, molt_exception_kind, molt_exception_last,
+    obj_from_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64,
+    to_i64,
 };
+use std::cell::RefCell;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum ScalarFormat {
@@ -24,6 +27,100 @@ impl ScalarFormat {
 struct ByteView {
     ptr: *const u8,
     len: usize,
+}
+
+#[derive(Copy, Clone)]
+struct GpuLaunchContext {
+    thread_id: i64,
+    block_id: i64,
+    block_dim: i64,
+    grid_dim: i64,
+}
+
+impl Default for GpuLaunchContext {
+    fn default() -> Self {
+        Self {
+            thread_id: 0,
+            block_id: 0,
+            block_dim: 1,
+            grid_dim: 1,
+        }
+    }
+}
+
+thread_local! {
+    static GPU_LAUNCH_CONTEXT_STACK: RefCell<Vec<GpuLaunchContext>> = const { RefCell::new(Vec::new()) };
+}
+
+fn with_gpu_launch_context<R>(ctx: GpuLaunchContext, body: impl FnOnce() -> R) -> R {
+    GPU_LAUNCH_CONTEXT_STACK.with(|stack| {
+        stack.borrow_mut().push(ctx);
+        let out = body();
+        let _ = stack.borrow_mut().pop();
+        out
+    })
+}
+
+fn current_gpu_launch_context() -> GpuLaunchContext {
+    GPU_LAUNCH_CONTEXT_STACK
+        .with(|stack| stack.borrow().last().copied())
+        .unwrap_or_default()
+}
+
+fn trace_gpu_kernel_launch_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_GPU_KERNEL_LAUNCH").as_deref() == Ok("1"))
+}
+
+fn trace_gpu_thread_id_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_GPU_THREAD_ID").as_deref() == Ok("1"))
+}
+
+fn parse_i64_launch_arg(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<i64, u64> {
+    let Some(value) = to_i64(obj_from_bits(bits)) else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            &format!("{role} must be an integer"),
+        ));
+    };
+    Ok(value)
+}
+
+unsafe fn try_object_attr_bits(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    name: &[u8],
+) -> Result<Option<u64>, u64> {
+    let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
+        return Err(MoltObject::none().bits());
+    };
+    let out = crate::builtins::attributes::molt_get_attr_name(obj_bits, name_bits);
+    dec_ref_bits(_py, name_bits);
+    if crate::exception_pending(_py) {
+        let exc_bits = molt_exception_last();
+        let kind_bits = molt_exception_kind(exc_bits);
+        let kind =
+            string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| "<exc>".to_string());
+        dec_ref_bits(_py, kind_bits);
+        if kind == "AttributeError" {
+            let _ = molt_exception_clear();
+            return Ok(None);
+        }
+        return Err(out);
+    }
+    if obj_from_bits(out).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(out))
+}
+
+unsafe fn gpu_kernel_callable_bits(_py: &crate::PyToken<'_>, launcher_bits: u64) -> Result<u64, u64> {
+    if let Some(func_bits) = unsafe { try_object_attr_bits(_py, launcher_bits, b"_func")? } {
+        return Ok(func_bits);
+    }
+    Ok(launcher_bits)
 }
 
 fn parse_format(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<ScalarFormat, u64> {
@@ -265,6 +362,112 @@ unsafe fn build_tensor_instance(
         return Err(MoltObject::none().bits());
     }
     Ok(tensor_bits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_thread_id() -> u64 {
+    crate::with_gil_entry!(_py, {
+        let tid = current_gpu_launch_context().thread_id;
+        if trace_gpu_thread_id_enabled() {
+            eprintln!("[molt gpu thread_id] tid={tid}");
+        }
+        MoltObject::from_int(tid).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_block_id() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_int(current_gpu_launch_context().block_id).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_block_dim() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_int(current_gpu_launch_context().block_dim).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_grid_dim() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::from_int(current_gpu_launch_context().grid_dim).bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_barrier() -> u64 {
+    crate::with_gil_entry!(_py, { MoltObject::none().bits() })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_kernel_launch(
+    launcher_bits: u64,
+    grid_bits: u64,
+    threads_bits: u64,
+    builder_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let trace_launch = trace_gpu_kernel_launch_enabled();
+        let grid = match parse_i64_launch_arg(_py, grid_bits, "grid") {
+            Ok(value) => value,
+            Err(err) => return err,
+        };
+        let threads = match parse_i64_launch_arg(_py, threads_bits, "threads") {
+            Ok(value) => value,
+            Err(err) => return err,
+        };
+        let callable_bits = match unsafe { gpu_kernel_callable_bits(_py, launcher_bits) } {
+            Ok(bits) => bits,
+            Err(err) => return err,
+        };
+        let total_threads = grid.saturating_mul(threads);
+        if total_threads <= 0 {
+            return MoltObject::none().bits();
+        }
+        let block_dim = if threads <= 0 { 1 } else { threads };
+        for tid in 0..total_threads {
+            let block_id = if block_dim <= 0 { 0 } else { tid / block_dim };
+            if trace_launch {
+                eprintln!(
+                    "[molt gpu launch] tid={} block_id={} block_dim={} grid_dim={}",
+                    tid, block_id, block_dim, grid
+                );
+            }
+            let call_builder_bits = match unsafe {
+                crate::call::bind::clone_callargs_builder_bits(_py, builder_bits)
+            } {
+                Ok(bits) => bits,
+                Err(err) => return err,
+            };
+            let out_bits = with_gpu_launch_context(
+                GpuLaunchContext {
+                    thread_id: tid,
+                    block_id,
+                    block_dim,
+                    grid_dim: grid,
+                },
+                || molt_call_bind(callable_bits, call_builder_bits),
+            );
+            if crate::exception_pending(_py) {
+                let exc_bits = molt_exception_last();
+                let kind_bits = molt_exception_kind(exc_bits);
+                let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+                    .unwrap_or_else(|| "<exc>".to_string());
+                dec_ref_bits(_py, kind_bits);
+                dec_ref_bits(_py, call_builder_bits);
+                if trace_launch {
+                    eprintln!("[molt gpu launch] tid={} exception={}", tid, kind);
+                }
+                if kind == "IndexError" {
+                    let _ = molt_exception_clear();
+                    continue;
+                }
+                return out_bits;
+            }
+            if trace_launch {
+                eprintln!("[molt gpu launch] tid={} ok", tid);
+            }
+            dec_ref_bits(_py, call_builder_bits);
+            dec_ref_bits(_py, out_bits);
+        }
+        MoltObject::none().bits()
+    })
 }
 
 fn parse_shape(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<Vec<usize>, u64> {
@@ -2627,10 +2830,7 @@ fn alloc_string_bits(_py: &crate::PyToken<'_>, value: &[u8]) -> Result<u64, u64>
     }
 }
 
-fn alloc_tuple_bits_from_usize(
-    _py: &crate::PyToken<'_>,
-    dims: &[usize],
-) -> Result<u64, u64> {
+fn alloc_tuple_bits_from_usize(_py: &crate::PyToken<'_>, dims: &[usize]) -> Result<u64, u64> {
     let bits: Vec<u64> = dims
         .iter()
         .copied()
@@ -2803,7 +3003,8 @@ unsafe fn ensure_tensor_object_bits(_py: &crate::PyToken<'_>, value_bits: u64) -
         crate::dec_ref_bits(_py, tensor_class_bits);
         return Ok(value_bits);
     }
-    let tensor_bits = unsafe { crate::call::dispatch::call_callable1(_py, tensor_class_bits, value_bits) };
+    let tensor_bits =
+        unsafe { crate::call::dispatch::call_callable1(_py, tensor_class_bits, value_bits) };
     crate::dec_ref_bits(_py, tensor_class_bits);
     if crate::exception_pending(_py) {
         return Err(tensor_bits);
@@ -2823,9 +3024,19 @@ unsafe fn promoted_result_format_bits(
             && x.buffer.format == ScalarFormat::F32
             && weight.buffer.format == ScalarFormat::F32
         {
-            return Ok((alloc_string_bits(_py, b"f")?, ScalarFormat::F32, true, x.dtype_bits));
+            return Ok((
+                alloc_string_bits(_py, b"f")?,
+                ScalarFormat::F32,
+                true,
+                x.dtype_bits,
+            ));
         }
-        return Ok((alloc_string_bits(_py, b"d")?, ScalarFormat::F64, true, x.dtype_bits));
+        return Ok((
+            alloc_string_bits(_py, b"d")?,
+            ScalarFormat::F64,
+            true,
+            x.dtype_bits,
+        ));
     }
     Ok((x.buffer.format_bits, x.buffer.format, false, x.dtype_bits))
 }
@@ -2853,8 +3064,9 @@ unsafe fn build_tensor_from_data_bits(
             itemsize,
         )
     }?;
-    let tensor_bits =
-        unsafe { build_tensor_instance(_py, tensor_class_bits, buffer_bits, shape_bits, dtype_bits) };
+    let tensor_bits = unsafe {
+        build_tensor_instance(_py, tensor_class_bits, buffer_bits, shape_bits, dtype_bits)
+    };
     crate::dec_ref_bits(_py, buffer_bits);
     tensor_bits
 }
@@ -2867,10 +3079,11 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) 
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let (weight, weight_shape) = match unsafe { tensor_runtime_view(_py, weight_bits, "weight") } {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
+        let (weight, weight_shape) =
+            match unsafe { tensor_runtime_view(_py, weight_bits, "weight") } {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
         if weight_shape.len() != 2 {
             return raise_exception::<_>(
                 _py,
@@ -2888,7 +3101,10 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) 
             return raise_exception::<_>(
                 _py,
                 "ValueError",
-                &format!("Linear shape mismatch: {:?} with weight {:?}", x_shape, weight_shape),
+                &format!(
+                    "Linear shape mismatch: {:?} with weight {:?}",
+                    x_shape, weight_shape
+                ),
             );
         }
         let outer = if x_shape.len() > 1 {
@@ -2971,10 +3187,11 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let (weight, weight_shape) = match unsafe { tensor_runtime_view(_py, weight_bits, "weight") } {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
+        let (weight, weight_shape) =
+            match unsafe { tensor_runtime_view(_py, weight_bits, "weight") } {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
         if weight_shape.len() != 2 {
             return raise_exception::<_>(
                 _py,
@@ -2996,7 +3213,10 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
             return raise_exception::<_>(
                 _py,
                 "ValueError",
-                &format!("Linear shape mismatch: {:?} with weight {:?}", x_shape, weight_shape),
+                &format!(
+                    "Linear shape mismatch: {:?} with weight {:?}",
+                    x_shape, weight_shape
+                ),
             );
         }
         if split_sizes.iter().copied().sum::<usize>() != out_features {
@@ -3122,10 +3342,11 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let (weight, weight_shape) = match unsafe { tensor_runtime_view(_py, weight_bits, "weight") } {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
+        let (weight, weight_shape) =
+            match unsafe { tensor_runtime_view(_py, weight_bits, "weight") } {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
         if weight_shape.len() != 2 {
             return raise_exception::<_>(
                 _py,
@@ -3143,7 +3364,10 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
             return raise_exception::<_>(
                 _py,
                 "ValueError",
-                &format!("Linear shape mismatch: {:?} with weight {:?}", x_shape, weight_shape),
+                &format!(
+                    "Linear shape mismatch: {:?} with weight {:?}",
+                    x_shape, weight_shape
+                ),
             );
         }
         if out_features % 2 != 0 {
@@ -3244,10 +3468,11 @@ pub extern "C" fn molt_gpu_tensor__tensor_permute_dims(x_bits: u64, dims_bits: u
                 Err(bits) => bits,
             };
         }
-        let normalized_dims_bits = match alloc_tuple_bits_from_usize(_py, normalized_dims.as_slice()) {
-            Ok(bits) => bits,
-            Err(bits) => return bits,
-        };
+        let normalized_dims_bits =
+            match alloc_tuple_bits_from_usize(_py, normalized_dims.as_slice()) {
+                Ok(bits) => bits,
+                Err(bits) => return bits,
+            };
         let out_data_bits = molt_gpu_permute_contiguous(
             x.buffer.data_bits,
             x.buffer.format_bits,
@@ -3274,7 +3499,11 @@ pub extern "C" fn molt_gpu_tensor__tensor_permute_dims(x_bits: u64, dims_bits: u
                 x.buffer.class_bits,
                 out_data_bits,
                 x.buffer.element_type_bits,
-                if x_shape.is_empty() { 1 } else { product(&x_shape) },
+                if x_shape.is_empty() {
+                    1
+                } else {
+                    product(&x_shape)
+                },
                 x.buffer.format_bits,
                 x.buffer.format.itemsize(),
                 out_shape_bits,
@@ -3343,7 +3572,11 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let total_size = if x_shape.is_empty() { 1 } else { product(&x_shape) };
+        let total_size = if x_shape.is_empty() {
+            1
+        } else {
+            product(&x_shape)
+        };
         let mut dims = match normalize_reshape_dims(_py, shape_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -3353,11 +3586,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
         for (idx, dim) in dims.iter().copied().enumerate() {
             if dim == -1 {
                 if neg_idx.is_some() {
-                    return raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        "Only one dimension can be -1",
-                    );
+                    return raise_exception::<_>(_py, "ValueError", "Only one dimension can be -1");
                 }
                 neg_idx = Some(idx);
             } else {
@@ -3366,7 +3595,11 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
         }
         if let Some(idx) = neg_idx {
             if known == 0 {
-                return raise_exception::<_>(_py, "ZeroDivisionError", "integer division or modulo by zero");
+                return raise_exception::<_>(
+                    _py,
+                    "ZeroDivisionError",
+                    "integer division or modulo by zero",
+                );
             }
             dims[idx] = (total_size as i64) / known;
         }
@@ -3376,7 +3609,10 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
                 raise_exception::<u64>(
                     _py,
                     "ValueError",
-                    &format!("Cannot reshape tensor of size {} into shape {:?}", total_size, dims),
+                    &format!(
+                        "Cannot reshape tensor of size {} into shape {:?}",
+                        total_size, dims
+                    ),
                 )
             });
             match value {
@@ -3398,11 +3634,18 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        let tensor_bits =
-            match unsafe { build_tensor_instance(_py, x.class_bits, x.buffer_bits, final_shape_bits, x.dtype_bits) } {
-                Ok(bits) => bits,
-                Err(bits) => bits,
-            };
+        let tensor_bits = match unsafe {
+            build_tensor_instance(
+                _py,
+                x.class_bits,
+                x.buffer_bits,
+                final_shape_bits,
+                x.dtype_bits,
+            )
+        } {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        };
         crate::dec_ref_bits(_py, final_shape_bits);
         tensor_bits
     })
@@ -3416,7 +3659,11 @@ pub extern "C" fn molt_gpu_tensor__tensor_data_list(x_bits: u64) -> u64 {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let size = if x_shape.is_empty() { 1 } else { product(&x_shape) };
+        let size = if x_shape.is_empty() {
+            1
+        } else {
+            product(&x_shape)
+        };
         molt_gpu_buffer_to_list(x.buffer_bits, MoltObject::from_int(size as i64).bits())
     })
 }
@@ -3469,15 +3716,15 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
             );
         };
         let row_shape = &x_shape[1..];
-        let row_size = if row_shape.is_empty() { 1 } else { product(row_shape) };
+        let row_size = if row_shape.is_empty() {
+            1
+        } else {
+            product(row_shape)
+        };
         let width = row_size * x.buffer.format.itemsize();
         let expected_bytes = x.buffer.size * x.buffer.format.itemsize();
         if x.buffer.data_view.len < expected_bytes {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "x_data buffer is too small",
-            );
+            return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
         }
         let allow_negative = crate::is_truthy(_py, obj_from_bits(allow_negative_bits));
         let rows = unsafe { seq_vec_ref(rows_list_ptr) };
@@ -3955,23 +4202,23 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
                         }
                         score *= scale;
                         if let Some((mask, mask_shape, mask_strides)) = &mask_info {
-                            let mask_index =
-                                (if mask_shape[0] == 1 { 0 } else { b * mask_strides[0] })
-                                + (if mask_shape[1] == 1 {
-                                    0
-                                } else {
-                                    h * mask_strides[1]
-                                })
-                                + (if mask_shape[2] == 1 {
-                                    0
-                                } else {
-                                    q_idx * mask_strides[2]
-                                })
-                                + (if mask_shape[3] == 1 {
-                                    0
-                                } else {
-                                    k_idx * mask_strides[3]
-                                });
+                            let mask_index = (if mask_shape[0] == 1 {
+                                0
+                            } else {
+                                b * mask_strides[0]
+                            }) + (if mask_shape[1] == 1 {
+                                0
+                            } else {
+                                h * mask_strides[1]
+                            }) + (if mask_shape[2] == 1 {
+                                0
+                            } else {
+                                q_idx * mask_strides[2]
+                            }) + (if mask_shape[3] == 1 {
+                                0
+                            } else {
+                                k_idx * mask_strides[3]
+                            });
                             score += unsafe {
                                 (mask.buffer.data_view.ptr.add(mask_index * 4) as *const f32)
                                     .read_unaligned()
@@ -4000,23 +4247,23 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
                         }
                         score *= scale;
                         if let Some((mask, mask_shape, mask_strides)) = &mask_info {
-                            let mask_index =
-                                (if mask_shape[0] == 1 { 0 } else { b * mask_strides[0] })
-                                + (if mask_shape[1] == 1 {
-                                    0
-                                } else {
-                                    h * mask_strides[1]
-                                })
-                                + (if mask_shape[2] == 1 {
-                                    0
-                                } else {
-                                    q_idx * mask_strides[2]
-                                })
-                                + (if mask_shape[3] == 1 {
-                                    0
-                                } else {
-                                    k_idx * mask_strides[3]
-                                });
+                            let mask_index = (if mask_shape[0] == 1 {
+                                0
+                            } else {
+                                b * mask_strides[0]
+                            }) + (if mask_shape[1] == 1 {
+                                0
+                            } else {
+                                h * mask_strides[1]
+                            }) + (if mask_shape[2] == 1 {
+                                0
+                            } else {
+                                q_idx * mask_strides[2]
+                            }) + (if mask_shape[3] == 1 {
+                                0
+                            } else {
+                                k_idx * mask_strides[3]
+                            });
                             score += unsafe {
                                 (mask.buffer.data_view.ptr.add(mask_index * 4) as *const f32)
                                     .read_unaligned()
@@ -4252,11 +4499,7 @@ pub extern "C" fn molt_gpu_repeat_axis_contiguous(
             return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
         }
 
-        let outer = if axis > 0 {
-            product(&shape[..axis])
-        } else {
-            1
-        };
+        let outer = if axis > 0 { product(&shape[..axis]) } else { 1 };
         let axis_len = shape[axis];
         let inner = if axis + 1 < shape.len() {
             product(&shape[axis + 1..])
@@ -5587,10 +5830,11 @@ mod tests {
         molt_gpu_linear_split_last_dim_contiguous,
         molt_gpu_linear_squared_relu_gate_interleaved_contiguous, molt_gpu_matmul_contiguous,
         molt_gpu_repeat_axis_contiguous, molt_gpu_rms_norm_last_axis_contiguous,
-        molt_gpu_rope_apply_contiguous,
-        molt_gpu_softmax_last_axis_contiguous, molt_gpu_squared_relu_gate_interleaved_contiguous,
-        molt_gpu_tensor__tensor_attention_hybrid_mask, molt_gpu_tensor__tensor_data_list, molt_gpu_tensor__tensor_linear,
-        molt_gpu_tensor__tensor_reshape_view, molt_gpu_tensor__zeros, molt_gpu_tensor_from_parts,
+        molt_gpu_rope_apply_contiguous, molt_gpu_softmax_last_axis_contiguous,
+        molt_gpu_squared_relu_gate_interleaved_contiguous,
+        molt_gpu_tensor__tensor_attention_hybrid_mask, molt_gpu_tensor__tensor_data_list,
+        molt_gpu_tensor__tensor_linear, molt_gpu_tensor__tensor_reshape_view,
+        molt_gpu_tensor__zeros, molt_gpu_tensor_from_parts,
     };
     use crate::{
         MoltObject, alloc_bytes, alloc_class_obj, alloc_string, alloc_tuple,
@@ -5657,8 +5901,7 @@ mod tests {
         assert!(!crate::exception_pending(_py));
 
         let gpu_attr_bits = attr_name_bits_from_bytes(_py, b"gpu").expect("gpu attr");
-        let tensor_attr_bits =
-            attr_name_bits_from_bytes(_py, b"tensor").expect("tensor attr");
+        let tensor_attr_bits = attr_name_bits_from_bytes(_py, b"tensor").expect("tensor attr");
         let tensor_name_bits = attr_name_bits_from_bytes(_py, b"Tensor").expect("Tensor attr");
         let buffer_name_bits = attr_name_bits_from_bytes(_py, b"Buffer").expect("Buffer attr");
         crate::builtins::modules::molt_module_set_attr(
@@ -6183,7 +6426,13 @@ mod tests {
             let tensor_cls_bits = MoltObject::from_ptr(tensor_cls_ptr).bits();
             let buffer_cls_bits = MoltObject::from_ptr(buffer_cls_ptr).bits();
 
-            let x_bits = make_tensor_from_f32(_py, tensor_cls_bits, buffer_cls_bits, &[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+            let x_bits = make_tensor_from_f32(
+                _py,
+                tensor_cls_bits,
+                buffer_cls_bits,
+                &[1.0, 2.0, 3.0, 4.0],
+                &[2, 2],
+            );
             let weight_bits = make_tensor_from_f32(
                 _py,
                 tensor_cls_bits,
@@ -6235,11 +6484,16 @@ mod tests {
             );
             let shape_ptr = alloc_tuple(
                 _py,
-                &[MoltObject::from_int(2).bits(), MoltObject::from_int(2).bits()],
+                &[
+                    MoltObject::from_int(2).bits(),
+                    MoltObject::from_int(2).bits(),
+                ],
             );
 
-            let reshaped_bits =
-                molt_gpu_tensor__tensor_reshape_view(tensor_bits, MoltObject::from_ptr(shape_ptr).bits());
+            let reshaped_bits = molt_gpu_tensor__tensor_reshape_view(
+                tensor_bits,
+                MoltObject::from_ptr(shape_ptr).bits(),
+            );
             assert!(!crate::exception_pending(_py));
 
             let original_buf_bits = attr_bits(_py, tensor_bits, b"_buf");
@@ -6288,19 +6542,27 @@ mod tests {
 
             let zero_shape_ptr = alloc_tuple(
                 _py,
-                &[MoltObject::from_int(2).bits(), MoltObject::from_int(3).bits()],
+                &[
+                    MoltObject::from_int(2).bits(),
+                    MoltObject::from_int(3).bits(),
+                ],
             );
-            let zeros_bits =
-                molt_gpu_tensor__zeros(MoltObject::from_ptr(zero_shape_ptr).bits(), builtin_classes(_py).float);
+            let zeros_bits = molt_gpu_tensor__zeros(
+                MoltObject::from_ptr(zero_shape_ptr).bits(),
+                builtin_classes(_py).float,
+            );
             assert!(!crate::exception_pending(_py));
             let zero_shape_bits = attr_bits(_py, zeros_bits, b"_shape");
-            let zero_shape_ptr = obj_from_bits(zero_shape_bits).as_ptr().expect("shape tuple");
+            let zero_shape_ptr = obj_from_bits(zero_shape_bits)
+                .as_ptr()
+                .expect("shape tuple");
             let zero_dims = unsafe { seq_vec_ref(zero_shape_ptr) };
             assert_eq!(crate::to_i64(obj_from_bits(zero_dims[0])), Some(2));
             assert_eq!(crate::to_i64(obj_from_bits(zero_dims[1])), Some(3));
 
             let zero_buf_bits = attr_bits(_py, zeros_bits, b"_buf");
-            let zero_list_bits = molt_gpu_buffer_to_list(zero_buf_bits, MoltObject::from_int(6).bits());
+            let zero_list_bits =
+                molt_gpu_buffer_to_list(zero_buf_bits, MoltObject::from_int(6).bits());
             let zero_list_ptr = obj_from_bits(zero_list_bits).as_ptr().expect("zero list");
             let zero_values: Vec<f64> = unsafe { seq_vec_ref(zero_list_ptr) }
                 .iter()
