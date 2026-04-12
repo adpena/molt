@@ -211,6 +211,11 @@ def molt_gpu_tensor__tensor_scaled_dot_product_attention(
     mask: Any,
     scale: Any,
 ) -> Any: ...
+def molt_gpu_tensor__tensor_take_rows(
+    x: Any,
+    indices: Any,
+    allow_negative: Any,
+) -> Any: ...
 def molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
     x_data: Any,
     x_format: str,
