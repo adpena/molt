@@ -2069,6 +2069,104 @@ pub(crate) fn env_setting(var: &str) -> Option<String> {
 }
 
 #[cfg(feature = "native-backend")]
+fn emitted_module_symbol(name: &str) -> Option<&str> {
+    name.strip_prefix("molt_init_")
+}
+
+#[cfg(feature = "native-backend")]
+fn emitted_name_matches_module_symbol(name: &str, module_symbol: &str) -> bool {
+    if let Some(rest) = name.strip_prefix("molt_init_") {
+        return rest == module_symbol;
+    }
+    name.starts_with(&format!("{module_symbol}__"))
+}
+
+#[cfg(feature = "native-backend")]
+fn explicit_stdlib_module_symbols_from_env() -> Option<BTreeSet<String>> {
+    let raw = std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").ok()?;
+    let parsed: Vec<String> = serde_json::from_str(&raw).ok()?;
+    Some(parsed.into_iter().collect())
+}
+
+#[cfg(feature = "native-backend")]
+fn is_user_owned_symbol(
+    name: &str,
+    entry_module: &str,
+    stdlib_module_symbols: Option<&BTreeSet<String>>,
+) -> bool {
+    let entry_init = format!("molt_init_{entry_module}");
+    if name == "molt_main"
+        || name.starts_with(&format!("{entry_module}__"))
+        || name == entry_init
+        || name == "molt_init___main__"
+        || name == "molt_isolate_import"
+        || name == "molt_isolate_bootstrap"
+    {
+        return true;
+    }
+    if let Some(stdlib_module_symbols) = stdlib_module_symbols {
+        if let Some(module_symbol) = emitted_module_symbol(name) {
+            return !stdlib_module_symbols.contains(module_symbol);
+        }
+        return !stdlib_module_symbols
+            .iter()
+            .any(|module_symbol| emitted_name_matches_module_symbol(name, module_symbol));
+    }
+    false
+}
+
+#[cfg(feature = "native-backend")]
+fn prune_and_partition_native_stdlib(
+    ir: &mut SimpleIR,
+    entry_module: &str,
+    stdlib_module_symbols: Option<&BTreeSet<String>>,
+) -> (Vec<FunctionIR>, Vec<FunctionIR>) {
+    eliminate_dead_functions(ir);
+    let user_func_set: BTreeSet<String> = ir
+        .functions
+        .iter()
+        .filter(|f| is_user_owned_symbol(&f.name, entry_module, stdlib_module_symbols))
+        .map(|f| f.name.clone())
+        .collect();
+    let all_funcs: Vec<_> = ir.functions.drain(..).collect();
+    let (user_remaining, mut stdlib_funcs): (Vec<_>, Vec<_>) = all_funcs
+        .into_iter()
+        .partition(|f| user_func_set.contains(&f.name));
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    stdlib_funcs.retain(|f| seen.insert(f.name.clone()));
+    (user_remaining, stdlib_funcs)
+}
+
+#[cfg(feature = "native-backend")]
+fn externalize_shared_stdlib_partition(ir: &mut SimpleIR) {
+    let Some(stdlib_obj_path) = std::env::var("MOLT_STDLIB_OBJ").ok() else {
+        return;
+    };
+    let Ok(entry_module) = std::env::var("MOLT_ENTRY_MODULE") else {
+        return;
+    };
+    let stdlib_path = std::path::Path::new(&stdlib_obj_path);
+    if !stdlib_path.exists() {
+        return;
+    }
+    let explicit_stdlib_module_symbols = explicit_stdlib_module_symbols_from_env();
+    let (mut user_remaining, mut stdlib_funcs) = prune_and_partition_native_stdlib(
+        ir,
+        &entry_module,
+        explicit_stdlib_module_symbols.as_ref(),
+    );
+    let extern_count = stdlib_funcs.len();
+    let mut retained = std::mem::take(&mut user_remaining);
+    for mut func in stdlib_funcs.drain(..) {
+        func.is_extern = true;
+        func.ops.clear();
+        retained.push(func);
+    }
+    let _ = extern_count;
+    ir.functions = retained;
+}
+
+#[cfg(feature = "native-backend")]
 impl Default for SimpleBackend {
     fn default() -> Self {
         Self::new()
@@ -3041,6 +3139,7 @@ impl SimpleBackend {
                 let _ = std::fs::write("tmp/rewritten_func_ir.txt", dump);
             }
         }
+        externalize_shared_stdlib_partition(&mut ir);
         if timing {
             let passes_elapsed = compile_start.elapsed();
             eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");
