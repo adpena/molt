@@ -1260,6 +1260,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.imported_modules: dict[str, str] = {}
         self.global_imported_modules: dict[str, str] = {}
         self.local_intrinsic_wrappers: set[str] = set()
+        self.gpu_kernel_symbols_by_name: dict[str, str] = {}
+        self.current_gpu_kernel_context: bool = False
         # Track aliases for ``import typing as <alias>`` so that
         # ``@<alias>.overload`` is recognised as a typing overload stub.
         self._typing_import_aliases: set[str] = set()
@@ -2507,6 +2509,60 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     ) -> bool:
         """Return True if any decorator on *node* is @gpu.kernel."""
         return any(self._is_gpu_kernel_decorator(d) for d in node.decorator_list)
+
+    def _emit_gpu_kernel_intrinsic_op(self, gpu_intrinsic: str) -> MoltValue:
+        hint = "int" if gpu_intrinsic != "gpu_barrier" else "None"
+        res = MoltValue(self.next_var(), type_hint=hint)
+        self.emit(MoltOp(kind=gpu_intrinsic, args=[], result=res))
+        return res
+
+    def _parse_gpu_launch_config_expr(
+        self, config_expr: ast.expr
+    ) -> tuple[MoltValue, MoltValue] | None:
+        default_threads = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[256], result=default_threads))
+        if isinstance(config_expr, ast.Tuple):
+            if len(config_expr.elts) == 0:
+                return None
+            grid = self.visit(config_expr.elts[0])
+            if grid is None:
+                return None
+            if len(config_expr.elts) == 1:
+                return grid, default_threads
+            threads = self.visit(config_expr.elts[1])
+            if threads is None:
+                return None
+            return grid, threads
+        grid = self.visit(config_expr)
+        if grid is None:
+            return None
+        return grid, default_threads
+
+    def _lower_gpu_kernel_launch_call(self, node: ast.Call) -> MoltValue | None:
+        if not isinstance(node.func, ast.Subscript):
+            return None
+        base = node.func.value
+        if not isinstance(base, ast.Name):
+            return None
+        if base.id not in self.gpu_kernel_symbols_by_name:
+            return None
+        launcher = self.visit(base)
+        if launcher is None:
+            return None
+        config = self._parse_gpu_launch_config_expr(node.func.slice)
+        if config is None:
+            return None
+        grid, threads = config
+        callargs = self._emit_call_args_builder(node)
+        res = MoltValue(self.next_var(), type_hint="None")
+        self.emit(
+            MoltOp(
+                kind="CALL",
+                args=["molt_gpu_kernel_launch", launcher, grid, threads, callargs],
+                result=res,
+            )
+        )
+        return res
 
     @staticmethod
     def _sanitize_module_name(name: str) -> str:
@@ -15584,12 +15640,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return res
 
     def visit_Call(self, node: ast.Call) -> Any:
-        # GPU builtins must remain ordinary Python calls until Molt has a
-        # first-class compiled-kernel extraction + launch path end to end.
-        # Today, compiled `@gpu.kernel` still executes through the launcher's
-        # sequential fallback, which monkey-patches `molt.gpu.thread_id()` and
-        # friends at runtime. Lowering those calls early to IR-only intrinsics
-        # breaks that contract and silently changes semantics.
+        gpu_launch = self._lower_gpu_kernel_launch_call(node)
+        if gpu_launch is not None:
+            return gpu_launch
+
+        gpu_intrinsic = self._is_gpu_intrinsic_call(node)
+        if gpu_intrinsic is not None and self.current_gpu_kernel_context:
+            return self._emit_gpu_kernel_intrinsic_op(gpu_intrinsic)
 
         needs_bind = self._call_needs_bind(node)
         if isinstance(node.func, ast.Attribute):
@@ -27344,8 +27401,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             docstring=ast.get_docstring(node),
             varnames=varnames,
         )
+        is_gpu_kernel = self._has_gpu_kernel_decorator(node)
         # ── @gpu.kernel: mark function IR so the backend routes through GPU pipeline ──
-        if self._has_gpu_kernel_decorator(node):
+        if is_gpu_kernel:
+            self.gpu_kernel_symbols_by_name[func_name] = func_symbol
             gpu_flag = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=gpu_flag))
             self.emit(
@@ -27386,6 +27445,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             needs_return_slot=has_return and needs_exc_stack,
             needs_exception_stack=needs_exc_stack,
         )
+        prev_gpu_kernel_context = self.current_gpu_kernel_context
+        self.current_gpu_kernel_context = is_gpu_kernel
         self.current_method_first_param = params[0] if params else None
         if has_closure:
             self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
@@ -27477,6 +27538,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)
+        self.current_gpu_kernel_context = prev_gpu_kernel_context
         self.current_method_first_param = prev_first_param
         if node.decorator_list:
             decorated = func_val

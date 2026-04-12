@@ -53,7 +53,8 @@ fn infer_scalar_lane(
     float_like_vars: &BTreeSet<String>,
     str_like_vars: &BTreeSet<String>,
 ) -> Option<ScalarLane> {
-    if let Some(type_hint) = op.type_hint.as_deref() {
+    let shift_op = matches!(op.kind.as_str(), "lshift" | "rshift");
+    if !shift_op && let Some(type_hint) = op.type_hint.as_deref() {
         match type_hint {
             "bool" => return Some(ScalarLane::Bool),
             "int" => return Some(ScalarLane::Int),
@@ -79,6 +80,9 @@ fn infer_scalar_lane(
     let is_int = |name: &str| name_is_int_like(name, int_like_vars, bool_like_vars);
     match op.kind.as_str() {
         "const" | "loop_index_start" | "loop_index_next" => Some(ScalarLane::Int),
+        "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => {
+            Some(ScalarLane::Int)
+        }
         "const_bool" => Some(ScalarLane::Bool),
         "const_float" => Some(ScalarLane::Float),
         "const_str" => Some(ScalarLane::Str),
@@ -131,8 +135,7 @@ fn infer_scalar_lane(
         }
         "sub" | "mul" | "inplace_sub" | "inplace_mul" | "floordiv" | "mod" | "mod_"
         | "inplace_floordiv" | "inplace_mod" | "bit_and" | "bit_or" | "bit_xor" | "bitand"
-        | "bitor" | "bitxor" | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor"
-        | "lshift" | "rshift" => {
+        | "bitor" | "bitxor" | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor" => {
             if args_all(&is_float)
                 || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
             {
@@ -143,6 +146,7 @@ fn infer_scalar_lane(
                 None
             }
         }
+        "lshift" | "rshift" => None,
         "neg" | "pos" | "abs" | "builtin_abs" => first_source().and_then(|src| {
             if float_like_vars.contains(src) {
                 Some(ScalarLane::Float)
@@ -1398,56 +1402,59 @@ impl SimpleBackend {
             std::collections::BTreeMap::new();
         let scalar_fast_paths_enabled = !is_cold_module_chunk_function(&func_ir.name);
         let var_is_int = |name: &str| scalar_fast_paths_enabled && int_like_vars.contains(name);
-        let var_is_bool =
-            |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
+        let var_is_bool = |name: &str| scalar_fast_paths_enabled && bool_like_vars.contains(name);
         let var_is_str = |name: &str| scalar_fast_paths_enabled && str_like_vars.contains(name);
         let op_prefers_int_lane = |op: &OpIR| {
-            scalar_fast_paths_enabled && matches!(
-                infer_scalar_lane(
-                    op,
-                    &int_like_vars,
-                    &bool_like_vars,
-                    &float_like_vars,
-                    &str_like_vars,
-                ),
-                Some(ScalarLane::Int)
-            )
+            scalar_fast_paths_enabled
+                && matches!(
+                    infer_scalar_lane(
+                        op,
+                        &int_like_vars,
+                        &bool_like_vars,
+                        &float_like_vars,
+                        &str_like_vars,
+                    ),
+                    Some(ScalarLane::Int)
+                )
         };
         let op_prefers_bool_lane = |op: &OpIR| {
-            scalar_fast_paths_enabled && matches!(
-                infer_scalar_lane(
-                    op,
-                    &int_like_vars,
-                    &bool_like_vars,
-                    &float_like_vars,
-                    &str_like_vars,
-                ),
-                Some(ScalarLane::Bool)
-            )
+            scalar_fast_paths_enabled
+                && matches!(
+                    infer_scalar_lane(
+                        op,
+                        &int_like_vars,
+                        &bool_like_vars,
+                        &float_like_vars,
+                        &str_like_vars,
+                    ),
+                    Some(ScalarLane::Bool)
+                )
         };
         let op_prefers_float_lane = |op: &OpIR| {
-            scalar_fast_paths_enabled && matches!(
-                infer_scalar_lane(
-                    op,
-                    &int_like_vars,
-                    &bool_like_vars,
-                    &float_like_vars,
-                    &str_like_vars,
-                ),
-                Some(ScalarLane::Float)
-            )
+            scalar_fast_paths_enabled
+                && matches!(
+                    infer_scalar_lane(
+                        op,
+                        &int_like_vars,
+                        &bool_like_vars,
+                        &float_like_vars,
+                        &str_like_vars,
+                    ),
+                    Some(ScalarLane::Float)
+                )
         };
         let op_prefers_str_lane = |op: &OpIR| {
-            scalar_fast_paths_enabled && matches!(
-                infer_scalar_lane(
-                    op,
-                    &int_like_vars,
-                    &bool_like_vars,
-                    &float_like_vars,
-                    &str_like_vars,
-                ),
-                Some(ScalarLane::Str)
-            )
+            scalar_fast_paths_enabled
+                && matches!(
+                    infer_scalar_lane(
+                        op,
+                        &int_like_vars,
+                        &bool_like_vars,
+                        &float_like_vars,
+                        &str_like_vars,
+                    ),
+                    Some(ScalarLane::Str)
+                )
         };
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -12366,6 +12373,38 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
+                "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim"
+                | "gpu_barrier" => {
+                    let symbol = match op.kind.as_str() {
+                        "gpu_thread_id" => "molt_gpu_thread_id",
+                        "gpu_block_id" => "molt_gpu_block_id",
+                        "gpu_block_dim" => "molt_gpu_block_dim",
+                        "gpu_grid_dim" => "molt_gpu_grid_dim",
+                        "gpu_barrier" => "molt_gpu_barrier",
+                        _ => unreachable!(),
+                    };
+                    let local_callee = import_func_ref(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        symbol,
+                        &[],
+                        &[types::I64],
+                    );
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out.as_ref() {
+                        def_var_named(&mut builder, &vars, out__, res);
+                        if op.kind != "gpu_barrier" {
+                            let raw = unbox_int(&mut builder, res, &nbc);
+                            if let Some(&shadow_var) = raw_int_shadow.get(out__.as_str()) {
+                                builder.def_var(shadow_var, raw);
+                            }
+                            raw_int_shadow_vals.insert(out__.clone(), raw);
+                        }
+                    }
+                }
                 "call" => {
                     let Some(target_name) = op.s_value.as_ref() else {
                         continue;
@@ -12516,7 +12555,8 @@ impl SimpleBackend {
                     // When the target is a defined function in this module (not a closure),
                     // emit a direct Cranelift call with a lightweight recursion guard.
                     // This avoids: arg spill/reload, match-on-arity dispatch, indirect call.
-                    let use_direct_call = module_known_functions.contains(target_name)
+                    let use_direct_call = (module_known_functions.contains(target_name)
+                        || matches!(linkage, Linkage::Import))
                         && !closure_functions.contains(target_name.as_str())
                         && args.len() == sig_arity
                         && !emit_traces;
@@ -15264,13 +15304,12 @@ impl SimpleBackend {
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
-                    let check_exception_fallthrough_rebind_vars =
-                        live_exception_rebind_vars_for_op(
-                            &vars,
-                            &transport_last_use,
-                            &first_defined_at,
-                            op_idx,
-                        );
+                    let check_exception_fallthrough_rebind_vars = live_exception_rebind_vars_for_op(
+                        &vars,
+                        &transport_last_use,
+                        &first_defined_at,
+                        op_idx,
+                    );
                     let flag_ptr_val: Option<Value> =
                         exc_flag_ptr_slot.map(|slot| builder.ins().stack_load(types::I64, slot, 0));
                     if let Some(flag_ptr) = flag_ptr_val {
@@ -19730,9 +19769,8 @@ impl SimpleBackend {
 mod tests {
     use super::{
         alias_root_name, cleanup_roots_for_names, collect_slot_backed_join_names,
-        is_cold_module_chunk_function, live_exception_rebind_vars_for_op,
-        materialize_label_block, preanalyze_function_ir, switch_to_block_materialized,
-        switch_to_block_with_rebind,
+        is_cold_module_chunk_function, live_exception_rebind_vars_for_op, materialize_label_block,
+        preanalyze_function_ir, switch_to_block_materialized, switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR};
     use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, types};
@@ -19909,10 +19947,18 @@ mod tests {
 
     #[test]
     fn cold_module_chunk_codegen_classification_only_matches_module_chunks() {
-        assert!(is_cold_module_chunk_function("molt_gpu_tensor__molt_module_chunk_2"));
-        assert!(is_cold_module_chunk_function("builtins__molt_module_chunk_4"));
-        assert!(!is_cold_module_chunk_function("main_molt__Attention___call__"));
-        assert!(!is_cold_module_chunk_function("molt_gpu_tensor__Tensor__broadcast_op"));
+        assert!(is_cold_module_chunk_function(
+            "molt_gpu_tensor__molt_module_chunk_2"
+        ));
+        assert!(is_cold_module_chunk_function(
+            "builtins__molt_module_chunk_4"
+        ));
+        assert!(!is_cold_module_chunk_function(
+            "main_molt__Attention___call__"
+        ));
+        assert!(!is_cold_module_chunk_function(
+            "molt_gpu_tensor__Tensor__broadcast_op"
+        ));
         assert!(!is_cold_module_chunk_function("molt_main"));
     }
 
@@ -19933,12 +19979,8 @@ mod tests {
         first_defined_at.insert("late".to_string(), 5usize);
         first_defined_at.insert("dead".to_string(), 0usize);
 
-        let live = live_exception_rebind_vars_for_op(
-            &vars,
-            &transport_last_use,
-            &first_defined_at,
-            3,
-        );
+        let live =
+            live_exception_rebind_vars_for_op(&vars, &transport_last_use, &first_defined_at, 3);
 
         assert!(live.contains_key("early"));
         assert!(!live.contains_key("late"));

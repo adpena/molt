@@ -5,12 +5,12 @@ use crate::call::type_policy::{
 use crate::state::tls::FRAME_STACK;
 use crate::{
     ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_OPEN, CALL_BIND_IC_HIT_COUNT,
-    CALL_BIND_IC_MISS_COUNT, GEN_CONTROL_SIZE,
-    INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject, PtrDropGuard, PyToken,
-    TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_CODE, TYPE_ID_DATACLASS, TYPE_ID_DICT,
-    TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT,
-    TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
-    alloc_dict_with_pairs, alloc_exception_from_class_bits, alloc_instance_for_class,
+    CALL_BIND_IC_MISS_COUNT, GEN_CONTROL_SIZE, INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT,
+    MoltHeader, MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS,
+    TYPE_ID_CODE, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FROZENSET,
+    TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_SET, TYPE_ID_STRING,
+    TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs,
+    alloc_exception_from_class_bits, alloc_instance_for_class,
     alloc_instance_for_default_object_new, alloc_object, alloc_string, alloc_tuple,
     apply_class_slots_layout, attr_lookup_ptr, attr_lookup_ptr_allow_missing,
     attr_name_bits_from_bytes,
@@ -39,20 +39,19 @@ use crate::{
     molt_frozenset_issuperset, molt_frozenset_symmetric_difference, molt_frozenset_union_multi,
     molt_generator_new, molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_iter,
     molt_iter_next, molt_list_append, molt_list_index_range, molt_list_pop, molt_list_sort,
-    molt_memoryview_cast, molt_memoryview_hex, molt_object_init,
-    molt_object_init_subclass, molt_object_new_bound, molt_open_builtin, molt_set_clear,
-    molt_set_copy_method, molt_set_difference_multi, molt_set_difference_update_multi,
-    molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
-    molt_set_issubset, molt_set_issuperset, molt_set_symmetric_difference,
-    molt_set_symmetric_difference_update, molt_set_union_multi, molt_set_update_multi,
-    molt_string_count_slice, molt_string_encode, molt_string_endswith_slice,
-    molt_string_find_slice, molt_string_format_method, molt_string_index_slice,
-    molt_string_rfind_slice, molt_string_rindex_slice, molt_string_rsplit_max,
-    molt_string_split_max, molt_string_splitlines, molt_string_startswith_slice, molt_super_new,
-    molt_tuple_index_range, molt_type_call, molt_type_init, molt_type_new, obj_from_bits,
-    object_class_bits, object_set_class_bits, object_type_id, profile_hit_unchecked, ptr_from_bits,
-    raise_exception, raise_not_callable, raise_not_iterable, runtime_state, seq_vec_ref,
-    string_obj_to_owned, type_name, type_of_bits,
+    molt_memoryview_cast, molt_memoryview_hex, molt_object_init, molt_object_init_subclass,
+    molt_object_new_bound, molt_open_builtin, molt_set_clear, molt_set_copy_method,
+    molt_set_difference_multi, molt_set_difference_update_multi, molt_set_intersection_multi,
+    molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
+    molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
+    molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
+    molt_string_endswith_slice, molt_string_find_slice, molt_string_format_method,
+    molt_string_index_slice, molt_string_rfind_slice, molt_string_rindex_slice,
+    molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
+    molt_string_startswith_slice, molt_super_new, molt_tuple_index_range, molt_type_call,
+    molt_type_init, molt_type_new, obj_from_bits, object_class_bits, object_set_class_bits,
+    object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception, raise_not_callable,
+    raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned, type_name, type_of_bits,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -144,6 +143,46 @@ pub(crate) fn note_callargs_free(builder_ptr: *mut u8, args_ptr: *mut CallArgs) 
         .lock()
         .unwrap()
         .remove(&(args_ptr as usize));
+}
+
+pub(crate) unsafe fn clone_callargs_builder_bits(
+    _py: &PyToken<'_>,
+    builder_bits: u64,
+) -> Result<u64, u64> {
+    let builder_ptr = ptr_from_bits(builder_bits);
+    if builder_ptr.is_null() {
+        return Err(raise_exception::<_>(_py, "TypeError", "invalid callargs builder"));
+    }
+    if unsafe { object_type_id(builder_ptr) } != TYPE_ID_CALLARGS {
+        return Err(raise_exception::<_>(_py, "TypeError", "invalid callargs builder"));
+    }
+    let args_ptr = match unsafe { require_callargs_ptr(_py, builder_ptr) } {
+        Ok(ptr) => ptr,
+        Err(err) => return Err(err),
+    };
+    let args = unsafe { &*args_ptr };
+    let clone_bits = molt_callargs_new(
+        MoltObject::from_int(args.pos.len() as i64).bits(),
+        MoltObject::from_int(args.kw_names.len() as i64).bits(),
+    );
+    if obj_from_bits(clone_bits).is_none() {
+        return Err(clone_bits);
+    }
+    for &value_bits in &args.pos {
+        let pushed = unsafe { molt_callargs_push_pos(clone_bits, value_bits) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, clone_bits);
+            return Err(pushed);
+        }
+    }
+    for (&name_bits, &value_bits) in args.kw_names.iter().zip(args.kw_values.iter()) {
+        let pushed = unsafe { molt_callargs_push_kw(clone_bits, name_bits, value_bits) };
+        if exception_pending(_py) {
+            dec_ref_bits(_py, clone_bits);
+            return Err(pushed);
+        }
+    }
+    Ok(clone_bits)
 }
 
 fn callargs_builder_is_live(builder_ptr: *mut u8) -> bool {
@@ -4629,7 +4668,12 @@ mod tests {
                     .load(Ordering::Relaxed)
             };
             let protected = unsafe {
-                protect_callargs_aliased_return_with_extra(_py, list_bits, std::ptr::null_mut(), &[list_bits])
+                protect_callargs_aliased_return_with_extra(
+                    _py,
+                    list_bits,
+                    std::ptr::null_mut(),
+                    &[list_bits],
+                )
             };
             assert_eq!(protected, list_bits);
             let after = unsafe {
