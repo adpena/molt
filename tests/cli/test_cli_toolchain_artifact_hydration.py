@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 from molt import cli
@@ -16,11 +17,28 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
     canonical_backend = canonical_target / "dev-fast" / "molt-backend"
     isolated_backend = isolated_target / "dev-fast" / "molt-backend"
     canonical_backend.parent.mkdir(parents=True, exist_ok=True)
-    canonical_backend.write_text("backend-binary")
+    canonical_backend.write_text(
+        "#!/bin/sh\n"
+        "out=\"\"\n"
+        "while [ $# -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"--output\" ]; then\n"
+        "    shift\n"
+        "    out=\"$1\"\n"
+        "  fi\n"
+        "  shift\n"
+        "done\n"
+        "printf 'ok' > \"$out\"\n"
+    )
     canonical_backend.chmod(0o755)
 
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
-    canonical_fp = cli._backend_fingerprint_path(project_root, canonical_backend, "dev-fast")
+    canonical_fp = cli._artifact_state_path_for_build_state_root(
+        cli._canonical_build_state_root(project_root),
+        canonical_backend,
+        subdir="backend_fingerprints",
+        stem_suffix="dev-fast",
+        extension="fingerprint",
+    )
     canonical_fp.parent.mkdir(parents=True, exist_ok=True)
     cli._write_runtime_fingerprint(canonical_fp, fingerprint)
 
@@ -44,7 +62,7 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         project_root=project_root,
         backend_features=("native-backend",),
     )
-    assert isolated_backend.read_text() == "backend-binary"
+    assert isolated_backend.read_text() == canonical_backend.read_text()
     assert os.access(isolated_backend, os.X_OK)
 
 
@@ -61,11 +79,12 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
     canonical_runtime.write_text("runtime-lib")
 
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
-    canonical_fp = cli._runtime_fingerprint_path(
-        project_root,
+    canonical_fp = cli._artifact_state_path_for_build_state_root(
+        cli._canonical_build_state_root(project_root),
         canonical_runtime,
-        "dev-fast",
-        None,
+        subdir="runtime_fingerprints",
+        stem_suffix="dev-fast.native",
+        extension="fingerprint",
     )
     canonical_fp.parent.mkdir(parents=True, exist_ok=True)
     cli._write_runtime_fingerprint(canonical_fp, fingerprint)
@@ -229,7 +248,7 @@ def test_ensure_runtime_wasm_reloc_relinks_from_current_target_staticlib(
     assert runtime_reloc.read_bytes() == b"\x00asm\x01\x00\x00\x00reloc"
 
 
-def test_ensure_runtime_wasm_reloc_relinks_from_current_target_hashed_staticlib(
+def test_ensure_runtime_wasm_reloc_builds_when_only_hashed_current_target_staticlib_exists(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -267,13 +286,13 @@ def test_ensure_runtime_wasm_reloc_relinks_from_current_target_hashed_staticlib(
         "_runtime_fingerprint",
         lambda *args, **kwargs: dict(fingerprint),
     )
-    monkeypatch.setattr(
-        cli,
-        "_run_runtime_wasm_cargo_build",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("cargo should not run")
-        ),
-    )
+    cargo_calls: list[tuple[object, object]] = []
+
+    def fake_run_runtime_wasm_cargo_build(*args: object, **kwargs: object):
+        cargo_calls.append((args, kwargs))
+        return subprocess.CompletedProcess(["cargo"], 0, "", ""), current_staticlib
+
+    monkeypatch.setattr(cli, "_run_runtime_wasm_cargo_build", fake_run_runtime_wasm_cargo_build)
 
     def fake_link_runtime_staticlib_to_reloc_wasm(
         *,
@@ -307,5 +326,6 @@ def test_ensure_runtime_wasm_reloc_relinks_from_current_target_hashed_staticlib(
         cargo_timeout=1.0,
         project_root=project_root,
     )
+    assert cargo_calls
     assert linked["staticlib_path"] == current_staticlib
     assert runtime_reloc.read_bytes() == b"\x00asm\x01\x00\x00\x00reloc"

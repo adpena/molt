@@ -16154,6 +16154,53 @@ def _run_native_link_command(
     )
 
 
+def _build_native_reloc_link_command(
+    *,
+    input_objects: Sequence[Path],
+    output_path: Path,
+    target_triple: str | None = None,
+) -> list[str]:
+    linker_cmd: list[str]
+    driver_style = False
+
+    if target_triple:
+        cross_cc = os.environ.get("MOLT_CROSS_CC")
+        if cross_cc:
+            linker_cmd = shlex.split(cross_cc)
+            linker_cmd.extend(["-target", target_triple])
+            driver_style = True
+        elif shutil.which("zig"):
+            linker_cmd = ["zig", "cc", "-target", _zig_target_query(target_triple)]
+            driver_style = True
+        else:
+            cc = os.environ.get("CC", "clang")
+            linker_cmd = shlex.split(cc)
+            linker_cmd.extend(["-target", target_triple])
+            driver_style = True
+    else:
+        raw = (
+            os.environ.get("MOLT_LINKER")
+            or os.environ.get("LD")
+            or os.environ.get("CC")
+            or "ld"
+        )
+        linker_cmd = shlex.split(raw)
+        executable = Path(linker_cmd[0]).name if linker_cmd else "ld"
+        driver_style = (
+            len(linker_cmd) > 1
+            or executable in {"cc", "c++", "gcc", "g++", "clang", "clang++", "zig"}
+            or "clang" in executable
+            or "gcc" in executable
+        )
+
+    if driver_style:
+        linker_cmd.extend(["-Wl,-r", "-o", str(output_path)])
+    else:
+        linker_cmd.extend(["-r", "-o", str(output_path)])
+    linker_cmd.extend(str(path) for path in input_objects)
+    return linker_cmd
+
+
 def _run_native_partial_link_command(
     *,
     input_objects: Sequence[Path],
@@ -16163,15 +16210,11 @@ def _run_native_partial_link_command(
     target_triple: str | None = None,
     sysroot_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    primary_object = input_objects[0] if input_objects else None
-    link_cmd, _linker_hint, _normalized_target = _build_native_link_driver_command(
-        output_obj=primary_object,
+    del sysroot_path
+    link_cmd = _build_native_reloc_link_command(
+        input_objects=input_objects,
+        output_path=output_path,
         target_triple=target_triple,
-        sysroot_path=sysroot_path,
-        profile="dev",
-    )
-    link_cmd.extend(
-        ["-r", *[str(path) for path in input_objects], "-o", str(output_path)]
     )
     return _run_native_link_command(
         link_cmd=link_cmd,
