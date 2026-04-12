@@ -51,12 +51,6 @@ impl CompiledKernel {
     pub fn _handle_bytes(&self) -> &[u8] {
         &self._handle
     }
-
-    /// Return the opaque handle bytes interpreted as a UTF-8 WGSL source string,
-    /// if the bytes are valid UTF-8. Used by the `gpu-webgpu` backend.
-    pub fn wgsl_source(&self) -> Option<&str> {
-        std::str::from_utf8(&self._handle).ok()
-    }
 }
 
 /// Opaque handle to a GPU buffer.

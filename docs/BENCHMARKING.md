@@ -6,6 +6,37 @@ Molt is performance-obsessed. Every major change must be validated against our b
 Benchmarks target **Python 3.12+** semantics. Use 3.12 as the minimum baseline,
 and record any 3.13/3.14 divergences in specs/tests.
 
+## Runtime CPU Kernel Fast-Path Matrix
+
+The hot tensor kernels in `runtime/molt-runtime/src/builtins/gpu.rs` must not
+have silent performance coverage gaps. Current contract:
+
+| Target | Fast path | Scope | Verification |
+| --- | --- | --- | --- |
+| `aarch64` native | NEON direct-store helpers plus scalar unaligned asm loads/stores | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo test -p molt-runtime gpu_ -- --nocapture` plus native workload sample |
+| `x86_64` native | SSE unaligned 4-lane helpers | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo check -p molt-runtime --target x86_64-apple-darwin` or the relevant host target |
+| `wasm32` with `simd128` | `wasm32` SIMD128 unaligned 4-lane helpers | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo check -p molt-runtime --target wasm32-unknown-unknown` with the SIMD-enabled target config used by the lane |
+| Other targets | Scalar fallback only | Same semantics, lower throughput | Explicitly treat as a perf gap until a target-specific fast path lands |
+
+Rules:
+- Do not assume a fast path is active unless the target/feature lane above is
+  actually compiled and verified.
+- When adding a new target-specific kernel lane, update this matrix in the same
+  change.
+- If a benchmark or profile result comes from a scalar fallback lane, say so
+  explicitly in the artifact note rather than implying parity with optimized
+  native targets.
+
+## Split Runtime Contract
+
+For `--target wasm --split-runtime`, the packaging contract is:
+- `output.wasm` is the raw rewritten app module emitted before split packaging.
+- `app.wasm` must be smaller than `output.wasm`; it is expected to go through
+  split-app deforestation (`_post_link_optimize`) plus wasm-opt when enabled.
+- `molt_runtime.wasm` must be tree-shaken against the app import surface.
+- If any of those assumptions stop holding, treat it as a real regression in
+  the split-runtime pipeline rather than “normal wasm variance”.
+
 ## Running Benchmarks
 
 We use `tools/bench.py` for native and `tools/bench_wasm.py` for WASM.
@@ -36,6 +67,42 @@ failed benchmark in JSON outputs for quick node-vs-wasmtime classification.
 It also records wasm import-surface metrics per benchmark
 (`molt_wasm_import_count`, `molt_wasm_function_import_count`,
 `molt_wasm_function_imports_per_kb`) to track call-surface density over time.
+
+### Falcon Split-Runtime Host-Fed Benchmarks
+
+For Falcon-OCR split-runtime validation, use the dedicated host-fed mode in
+`tools/bench_wasm.py` instead of ad hoc `node wasm/run_wasm.js` invocations.
+This mode records structured per-phase results and writes canonical JSON under
+`bench/results/`.
+
+```bash
+# Fast, reproducible init-only proof on the real split-runtime artifact
+uv run --python 3.12 python3 tools/bench_wasm.py \
+  --falcon-hostfed \
+  --runner node \
+  --falcon-phase init_only \
+  --falcon-phase-timeout-s 120 \
+  --json-out bench/results/falcon_split_runtime_init_only.json
+
+# Bounded first-token attempt with explicit timeout classification
+uv run --python 3.12 python3 tools/bench_wasm.py \
+  --falcon-hostfed \
+  --runner node \
+  --falcon-phase init_plus_1_token \
+  --falcon-phase-timeout-s 10 \
+  --json-out bench/results/falcon_split_runtime_token_timeout.json
+```
+
+Rules:
+- Use `--falcon-phase init_only` when you need deterministic startup data without
+  paying full token-generation cost.
+- Use `--falcon-phase-timeout-s` for heavyweight phases so failure is explicit
+  (`runner_timeout`) and the run still emits a benchmark JSON artifact.
+- Successful phases capture `molt_profile_json` payloads from the wasm runtime in
+  the phase record when `MOLT_PROFILE=1` / `MOLT_PROFILE_JSON=1` are enabled.
+- Do not assume timed-out synchronous wasm inference can always dump a final
+  profile payload on shutdown; the timeout classification is reliable, but a
+  JS-side `SIGTERM` handler cannot preempt a long-running synchronous wasm call.
 
 ```bash
 # Basic run
