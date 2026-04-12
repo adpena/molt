@@ -6,6 +6,18 @@ use crate::{
     to_i64,
 };
 use std::cell::RefCell;
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+use std::collections::{BTreeMap, BTreeSet};
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+use serde_json::Value as JsonValue;
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+use metal::{
+    Buffer as MetalBuffer, CommandQueue, CompileOptions, ComputePipelineState, Device, Library,
+    MTLResourceOptions, MTLSize, NSUInteger,
+};
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+use std::sync::Arc;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum ScalarFormat {
@@ -77,6 +89,21 @@ fn trace_gpu_thread_id_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_GPU_THREAD_ID").as_deref() == Ok("1"))
 }
 
+fn trace_gpu_backend_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_GPU_BACKEND").as_deref() == Ok("1"))
+}
+
+fn requested_gpu_backend() -> Option<String> {
+    let raw = std::env::var("MOLT_GPU_BACKEND").ok()?;
+    let name = raw.trim().to_ascii_lowercase();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 fn parse_i64_launch_arg(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<i64, u64> {
     let Some(value) = to_i64(obj_from_bits(bits)) else {
         return Err(raise_exception::<_>(
@@ -123,6 +150,121 @@ unsafe fn gpu_kernel_callable_bits(_py: &crate::PyToken<'_>, launcher_bits: u64)
     Ok(launcher_bits)
 }
 
+unsafe fn gpu_kernel_descriptor_bits(
+    _py: &crate::PyToken<'_>,
+    callable_bits: u64,
+) -> Result<Option<u64>, u64> {
+    unsafe { try_object_attr_bits(_py, callable_bits, b"__molt_gpu_descriptor__") }
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[derive(Clone)]
+struct RuntimeKernelBufferArg {
+    name: String,
+    object_bits: u64,
+    object_ptr: *mut u8,
+    data_bits: u64,
+    original_format: String,
+    size: usize,
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[derive(Clone)]
+enum RuntimeKernelArg {
+    Buffer(RuntimeKernelBufferArg),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[derive(Clone)]
+struct RuntimeKernelOp {
+    kind: String,
+    args: Vec<String>,
+    out: Option<String>,
+    var: Option<String>,
+    value: Option<i64>,
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[derive(Clone)]
+struct RuntimeKernelDescriptor {
+    name: String,
+    params: Vec<String>,
+    ops: Vec<RuntimeKernelOp>,
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, String> {
+    let root: JsonValue = serde_json::from_str(text).map_err(|err| err.to_string())?;
+    let obj = root
+        .as_object()
+        .ok_or_else(|| "kernel descriptor must be an object".to_string())?;
+    let kind = obj
+        .get("kind")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| "kernel descriptor missing kind".to_string())?;
+    if kind != "molt_gpu_kernel" {
+        return Err(format!("unsupported kernel descriptor kind: {kind}"));
+    }
+    let name = obj
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| "kernel descriptor missing name".to_string())?
+        .to_string();
+    let params = obj
+        .get("params")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| "kernel descriptor missing params".to_string())?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(ToString::to_string)
+                .ok_or_else(|| "kernel param must be a string".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let ops = obj
+        .get("ops")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| "kernel descriptor missing ops".to_string())?
+        .iter()
+        .map(|value| {
+            let op = value
+                .as_object()
+                .ok_or_else(|| "kernel op must be an object".to_string())?;
+            let kind = op
+                .get("kind")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| "kernel op missing kind".to_string())?
+                .to_string();
+            let args = op
+                .get("args")
+                .and_then(JsonValue::as_array)
+                .map(|items| {
+                    items.iter()
+                        .map(|item| {
+                            item.as_str()
+                                .map(ToString::to_string)
+                                .ok_or_else(|| "kernel op args must be strings".to_string())
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?
+                .unwrap_or_default();
+            Ok(RuntimeKernelOp {
+                kind,
+                args,
+                out: op.get("out").and_then(JsonValue::as_str).map(ToString::to_string),
+                var: op.get("var").and_then(JsonValue::as_str).map(ToString::to_string),
+                value: op.get("value").and_then(JsonValue::as_i64),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(RuntimeKernelDescriptor { name, params, ops })
+}
+
 fn parse_format(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<ScalarFormat, u64> {
     let Some(value) = string_obj_to_owned(obj_from_bits(bits)) else {
         return Err(raise_exception::<_>(
@@ -154,6 +296,511 @@ fn parse_usize_arg(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<us
     usize::try_from(value).map_err(|_| {
         raise_exception::<_>(_py, "ValueError", &format!("{role} must be non-negative"))
     })
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+fn kernel_arg_from_bits(
+    _py: &crate::PyToken<'_>,
+    name: &str,
+    bits: u64,
+) -> Result<RuntimeKernelArg, u64> {
+    let obj = obj_from_bits(bits);
+    if let Some(ptr) = obj.as_ptr() {
+        let type_id = unsafe { object_type_id(ptr) };
+        if type_id == TYPE_ID_TYPE {
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "gpu kernel runtime launch does not support class-object arguments",
+            ));
+        }
+        let maybe_data_bits = unsafe { try_object_attr_bits(_py, bits, b"_data")? };
+        if let Some(data_bits) = maybe_data_bits {
+            let format_bits = unsafe { object_attr_bits(_py, bits, b"_format_char", "_format_char")? };
+            let size_bits = unsafe { object_attr_bits(_py, bits, b"_size", "_size")? };
+            let format = string_obj_to_owned(obj_from_bits(format_bits)).ok_or_else(|| {
+                raise_exception::<u64>(_py, "TypeError", "buffer format must be a string")
+            })?;
+            let size = parse_usize_arg(_py, size_bits, "_size")?;
+            return Ok(RuntimeKernelArg::Buffer(RuntimeKernelBufferArg {
+                name: name.to_string(),
+                object_bits: bits,
+                object_ptr: ptr,
+                data_bits,
+                original_format: format,
+                size,
+            }));
+        }
+    }
+    if let Some(value) = to_i64(obj) {
+        return Ok(RuntimeKernelArg::Int(value));
+    }
+    if let Some(value) = to_f64(obj) {
+        return Ok(RuntimeKernelArg::Float(value));
+    }
+    if obj.is_bool() {
+        return Ok(RuntimeKernelArg::Bool(obj.as_bool().unwrap_or(false)));
+    }
+    Err(raise_exception::<_>(
+        _py,
+        "RuntimeError",
+        &format!("unsupported gpu kernel argument for parameter {:?}", name),
+    ))
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+fn metal_scalar_type_for_buffer(format: &str) -> Result<(&'static str, usize), String> {
+    match format {
+        "f" | "d" => Ok(("float", 4)),
+        "q" => Ok(("int64_t", 8)),
+        _ => Err(format!("unsupported buffer format for metal backend: {format}")),
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+fn metal_scalar_type_for_arg(arg: &RuntimeKernelArg) -> Result<(&'static str, Vec<u8>), String> {
+    match arg {
+        RuntimeKernelArg::Int(v) => Ok(("int64_t", v.to_le_bytes().to_vec())),
+        RuntimeKernelArg::Float(v) => Ok(("float", (*v as f32).to_le_bytes().to_vec())),
+        RuntimeKernelArg::Bool(v) => Ok(("bool", vec![u8::from(*v)])),
+        RuntimeKernelArg::Buffer(_) => Err("buffer passed as scalar param".to_string()),
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+fn buffer_host_bytes_for_metal(
+    _py: &crate::PyToken<'_>,
+    arg: &RuntimeKernelBufferArg,
+) -> Result<Vec<u8>, String> {
+    let view = bytes_like_view(_py, arg.data_bits, "_data")
+        .map_err(|_| "buffer _data must be bytes-like".to_string())?;
+    let raw = unsafe { std::slice::from_raw_parts(view.ptr, view.len) };
+    match arg.original_format.as_str() {
+        "f" | "q" => Ok(raw.to_vec()),
+        "d" => {
+            let mut out = Vec::with_capacity(arg.size * 4);
+            for chunk in raw.chunks_exact(8) {
+                let val = f64::from_le_bytes(chunk.try_into().map_err(|_| "invalid f64 bytes")?);
+                out.extend_from_slice(&(val as f32).to_le_bytes());
+            }
+            Ok(out)
+        }
+        other => Err(format!("unsupported buffer format for metal backend: {other}")),
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+fn copy_metal_output_back_to_buffer(
+    _py: &crate::PyToken<'_>,
+    arg: &RuntimeKernelBufferArg,
+    gpu_output: &[u8],
+) -> Result<(), u64> {
+    let rebuilt = match arg.original_format.as_str() {
+        "f" | "q" => gpu_output.to_vec(),
+        "d" => {
+            let mut out = Vec::with_capacity(arg.size * 8);
+            for chunk in gpu_output.chunks_exact(4) {
+                let val = f32::from_le_bytes(chunk.try_into().map_err(|_| {
+                    raise_exception::<u64>(_py, "RuntimeError", "invalid f32 output bytes")
+                })?) as f64;
+                out.extend_from_slice(&val.to_le_bytes());
+            }
+            out
+        }
+        other => {
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                &format!("unsupported buffer format for metal backend: {other}"),
+            ));
+        }
+    };
+    let data_ptr = alloc_bytearray(_py, rebuilt.as_slice());
+    if data_ptr.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    let data_bits = MoltObject::from_ptr(data_ptr).bits();
+    unsafe { set_object_attr_bytes(_py, arg.object_ptr, b"_data", "_data", data_bits)? };
+    dec_ref_bits(_py, data_bits);
+    Ok(())
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+fn render_metal_source(
+    desc: &RuntimeKernelDescriptor,
+    args: &BTreeMap<String, RuntimeKernelArg>,
+) -> Result<(String, Vec<String>, Vec<String>, Vec<String>), String> {
+    let mut write_buffers = BTreeSet::new();
+    let mut read_buffers = BTreeSet::new();
+    for op in &desc.ops {
+        match op.kind.as_str() {
+            "index" => {
+                if let Some(name) = op.args.first() {
+                    read_buffers.insert(name.clone());
+                }
+            }
+            "store_index" => {
+                if let Some(name) = op.args.first() {
+                    write_buffers.insert(name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut source = String::from("#include <metal_stdlib>\nusing namespace metal;\n\n");
+    source.push_str(&format!("kernel void {}(\n", desc.name));
+
+    let mut buffer_names = Vec::new();
+    let mut scalar_names = Vec::new();
+    let mut param_lines = Vec::new();
+    let mut binding_index = 0usize;
+    for name in &desc.params {
+        match args.get(name) {
+            Some(RuntimeKernelArg::Buffer(buf)) => {
+                let (ty, _) = metal_scalar_type_for_buffer(buf.original_format.as_str())?;
+                let qualifier = if write_buffers.contains(name) {
+                    "device"
+                } else {
+                    "device const"
+                };
+                param_lines.push(format!(
+                    "    {qualifier} {ty}* {name} [[buffer({binding_index})]]"
+                ));
+                buffer_names.push(name.clone());
+                binding_index += 1;
+            }
+            Some(arg) => {
+                let (ty, _) = metal_scalar_type_for_arg(arg)?;
+                param_lines.push(format!(
+                    "    constant {ty}& {name} [[buffer({binding_index})]]"
+                ));
+                scalar_names.push(name.clone());
+                binding_index += 1;
+            }
+            None => return Err(format!("missing kernel arg for parameter {name}")),
+        }
+    }
+    param_lines.push("    uint tid [[thread_position_in_grid]]".to_string());
+    source.push_str(&param_lines.join(",\n"));
+    source.push_str("\n) {\n");
+
+    let mut exprs: BTreeMap<String, String> = BTreeMap::new();
+    let mut if_stack: Vec<String> = Vec::new();
+    for op in &desc.ops {
+        match op.kind.as_str() {
+            "missing" | "line" | "const_none" | "ret" => {}
+            "store_var" => {
+                if let (Some(var), Some(src)) = (op.var.as_ref(), op.args.first()) {
+                    let src_expr = exprs.get(src).cloned().unwrap_or_else(|| src.clone());
+                    exprs.insert(var.clone(), src_expr);
+                }
+            }
+            "load_var" => {
+                if let (Some(out), Some(var)) = (op.out.as_ref(), op.var.as_ref()) {
+                    let src = exprs.get(var).cloned().unwrap_or_else(|| var.clone());
+                    exprs.insert(out.clone(), src);
+                }
+            }
+            "gpu_thread_id" => {
+                if let Some(out) = op.out.as_ref() {
+                    exprs.insert(out.clone(), "tid".to_string());
+                }
+            }
+            "const" => {
+                if let Some(out) = op.out.as_ref() {
+                    let value = op.value.ok_or_else(|| "const op missing value".to_string())?;
+                    exprs.insert(out.clone(), value.to_string());
+                }
+            }
+            "lt" | "add" | "sub" | "mul" | "div" => {
+                if let (Some(out), Some(lhs), Some(rhs)) =
+                    (op.out.as_ref(), op.args.first(), op.args.get(1))
+                {
+                    let lhs_expr = exprs.get(lhs).cloned().unwrap_or_else(|| lhs.clone());
+                    let rhs_expr = exprs.get(rhs).cloned().unwrap_or_else(|| rhs.clone());
+                    let op_str = match op.kind.as_str() {
+                        "lt" => "<",
+                        "add" => "+",
+                        "sub" => "-",
+                        "mul" => "*",
+                        "div" => "/",
+                        _ => unreachable!(),
+                    };
+                    source.push_str(&format!(
+                        "    auto {out} = {lhs_expr} {op_str} {rhs_expr};\n"
+                    ));
+                    exprs.insert(out.clone(), out.clone());
+                }
+            }
+            "index" => {
+                if let (Some(out), Some(buf), Some(idx)) =
+                    (op.out.as_ref(), op.args.first(), op.args.get(1))
+                {
+                    let idx_expr = exprs.get(idx).cloned().unwrap_or_else(|| idx.clone());
+                    source.push_str(&format!("    auto {out} = {buf}[{idx_expr}];\n"));
+                    exprs.insert(out.clone(), out.clone());
+                }
+            }
+            "if" => {
+                if let Some(cond_name) = op.args.first() {
+                    let cond_expr = exprs
+                        .get(cond_name)
+                        .cloned()
+                        .unwrap_or_else(|| cond_name.clone());
+                    source.push_str(&format!("    if ({cond_expr}) {{\n"));
+                    if_stack.push(cond_expr);
+                }
+            }
+            "end_if" => {
+                if if_stack.pop().is_some() {
+                    source.push_str("    }\n");
+                }
+            }
+            "store_index" => {
+                if let (Some(buf), Some(idx), Some(src)) =
+                    (op.args.first(), op.args.get(1), op.args.get(2))
+                {
+                    let idx_expr = exprs.get(idx).cloned().unwrap_or_else(|| idx.clone());
+                    let src_expr = exprs.get(src).cloned().unwrap_or_else(|| src.clone());
+                    source.push_str(&format!("        {buf}[{idx_expr}] = {src_expr};\n"));
+                }
+            }
+            other => return Err(format!("unsupported metal kernel op: {other}")),
+        }
+    }
+    while if_stack.pop().is_some() {
+        source.push_str("    }\n");
+    }
+    source.push_str("}\n");
+    Ok((
+        source,
+        buffer_names,
+        scalar_names,
+        write_buffers.into_iter().collect(),
+    ))
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+struct RuntimeMetalPipeline {
+    pipeline: ComputePipelineState,
+    #[allow(dead_code)]
+    library: Library,
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+unsafe impl Send for RuntimeMetalPipeline {}
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+unsafe impl Sync for RuntimeMetalPipeline {}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+struct RuntimeMetalDevice {
+    device: Device,
+    command_queue: CommandQueue,
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+impl RuntimeMetalDevice {
+    fn new() -> Result<Self, String> {
+        let device = Device::system_default().ok_or_else(|| "No Metal device found".to_string())?;
+        Ok(Self {
+            command_queue: device.new_command_queue(),
+            device,
+        })
+    }
+
+    fn compile_pipeline(&self, name: &str, source: &str) -> Result<Arc<RuntimeMetalPipeline>, String> {
+        let options = CompileOptions::new();
+        let library = self
+            .device
+            .new_library_with_source(source, &options)
+            .map_err(|err| format!("MSL compile error: {err}"))?;
+        let function = library
+            .get_function(name, None)
+            .map_err(|err| format!("MSL function lookup failed: {err}"))?;
+        let pipeline = self
+            .device
+            .new_compute_pipeline_state_with_function(&function)
+            .map_err(|err| format!("Metal pipeline creation failed: {err}"))?;
+        Ok(Arc::new(RuntimeMetalPipeline { pipeline, library }))
+    }
+
+    fn alloc_buffer(&self, size_bytes: usize) -> MetalBuffer {
+        self.device
+            .new_buffer(size_bytes as u64, MTLResourceOptions::StorageModeShared)
+    }
+
+    fn copy_to_buffer(&self, buffer: &MetalBuffer, data: &[u8]) {
+        let contents = buffer.contents() as *mut u8;
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), contents, data.len());
+        }
+    }
+
+    fn copy_from_buffer(&self, buffer: &MetalBuffer, size_bytes: usize) -> Vec<u8> {
+        let mut out = vec![0u8; size_bytes];
+        let contents = buffer.contents() as *const u8;
+        unsafe {
+            std::ptr::copy_nonoverlapping(contents, out.as_mut_ptr(), size_bytes);
+        }
+        out
+    }
+
+    fn dispatch(
+        &self,
+        pipeline: &Arc<RuntimeMetalPipeline>,
+        grid_threads: usize,
+        buffers: &[&MetalBuffer],
+    ) -> Result<(), String> {
+        let command_buffer = self.command_queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&pipeline.pipeline);
+        for (index, buffer) in buffers.iter().enumerate() {
+            encoder.set_buffer(index as NSUInteger, Some(*buffer), 0);
+        }
+        encoder.dispatch_threads(
+            MTLSize {
+                width: grid_threads as NSUInteger,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+        Ok(())
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+fn try_dispatch_metal_kernel(
+    _py: &crate::PyToken<'_>,
+    callable_bits: u64,
+    grid: i64,
+    threads: i64,
+    builder_bits: u64,
+) -> Result<Option<u64>, u64> {
+    if requested_gpu_backend().as_deref() != Some("metal") {
+        return Ok(None);
+    }
+    if trace_gpu_backend_enabled() {
+        eprintln!("[molt gpu backend] metal");
+    }
+    let descriptor_bits = match unsafe { gpu_kernel_descriptor_bits(_py, callable_bits) } {
+        Ok(Some(bits)) => bits,
+        Ok(None) => {
+            return Err(raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "metal gpu backend requires __molt_gpu_descriptor__ metadata",
+            ))
+        }
+        Err(err) => return Err(err),
+    };
+    let descriptor_json = string_obj_to_owned(obj_from_bits(descriptor_bits)).ok_or_else(|| {
+        raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
+    })?;
+    let descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
+        raise_exception::<u64>(_py, "RuntimeError", &format!("invalid gpu kernel descriptor: {msg}"))
+    })?;
+    let arg_bits = unsafe { crate::call::bind::callargs_positional_snapshot(_py, builder_bits) }?;
+    if arg_bits.len() != descriptor.params.len() {
+        return Err(raise_exception::<_>(
+            _py,
+            "RuntimeError",
+            "gpu kernel descriptor parameter count does not match launch args",
+        ));
+    }
+    let mut args_map = BTreeMap::new();
+    for (name, bits) in descriptor.params.iter().zip(arg_bits.iter().copied()) {
+        args_map.insert(name.clone(), kernel_arg_from_bits(_py, name, bits)?);
+    }
+    let (source, buffer_names, scalar_names, output_buffers) =
+        render_metal_source(&descriptor, &args_map).map_err(|msg| {
+            raise_exception::<u64>(_py, "RuntimeError", &format!("metal kernel render failed: {msg}"))
+        })?;
+    let device = RuntimeMetalDevice::new()
+        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+    let pipeline = device
+        .compile_pipeline(&descriptor.name, &source)
+        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+
+    let mut owned_buffers: Vec<MetalBuffer> = Vec::new();
+    let mut buffer_index_map: BTreeMap<String, usize> = BTreeMap::new();
+    for name in &buffer_names {
+        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("buffer arg missing") else {
+            return Err(raise_exception::<u64>(_py, "RuntimeError", "expected buffer arg"));
+        };
+        let host_bytes = buffer_host_bytes_for_metal(_py, buf).map_err(|msg| {
+            raise_exception::<u64>(_py, "RuntimeError", &msg)
+        })?;
+        let metal_buf = device.alloc_buffer(host_bytes.len());
+        if !host_bytes.is_empty() {
+            device.copy_to_buffer(&metal_buf, &host_bytes);
+        }
+        buffer_index_map.insert(name.clone(), owned_buffers.len());
+        owned_buffers.push(metal_buf);
+    }
+    for name in &scalar_names {
+        let arg = args_map.get(name).expect("scalar arg missing");
+        let (_, scalar_bytes) = metal_scalar_type_for_arg(arg).map_err(|msg| {
+            raise_exception::<u64>(_py, "RuntimeError", &msg)
+        })?;
+        let metal_buf = device.alloc_buffer(scalar_bytes.len().max(1));
+        if !scalar_bytes.is_empty() {
+            device.copy_to_buffer(&metal_buf, &scalar_bytes);
+        }
+        owned_buffers.push(metal_buf);
+    }
+    let refs: Vec<&MetalBuffer> = owned_buffers.iter().collect();
+    device
+        .dispatch(&pipeline, (grid.saturating_mul(threads)) as usize, &refs)
+        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+
+    for name in &output_buffers {
+        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("output buffer missing") else {
+            continue;
+        };
+        let buffer_idx = *buffer_index_map.get(name).expect("buffer index missing");
+        let output_size = match buf.original_format.as_str() {
+            "f" => buf.size * 4,
+            "d" => buf.size * 4,
+            "q" => buf.size * 8,
+            other => {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    &format!("unsupported output buffer format for metal backend: {other}"),
+                ))
+            }
+        };
+        let gpu_output = device.copy_from_buffer(&owned_buffers[buffer_idx], output_size);
+        copy_metal_output_back_to_buffer(_py, buf, &gpu_output)?;
+    }
+    Ok(Some(MoltObject::none().bits()))
+}
+
+#[cfg(not(all(target_os = "macos", feature = "molt_gpu_metal")))]
+fn try_dispatch_metal_kernel(
+    _py: &crate::PyToken<'_>,
+    _callable_bits: u64,
+    _grid: i64,
+    _threads: i64,
+    _builder_bits: u64,
+) -> Result<Option<u64>, u64> {
+    if requested_gpu_backend().as_deref() == Some("metal") {
+        return Err(raise_exception::<_>(
+            _py,
+            "RuntimeError",
+            "metal gpu backend requested but runtime was built without molt_gpu_metal",
+        ));
+    }
+    Ok(None)
 }
 
 fn bytes_like_view(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<ByteView, u64> {
@@ -416,6 +1063,11 @@ pub extern "C" fn molt_gpu_kernel_launch(
             Ok(bits) => bits,
             Err(err) => return err,
         };
+        match try_dispatch_metal_kernel(_py, callable_bits, grid, threads, builder_bits) {
+            Ok(Some(bits)) => return bits,
+            Ok(None) => {}
+            Err(err) => return err,
+        }
         let total_threads = grid.saturating_mul(threads);
         if total_threads <= 0 {
             return MoltObject::none().bits();

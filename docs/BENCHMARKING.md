@@ -104,6 +104,35 @@ Rules:
   profile payload on shutdown; the timeout classification is reliable, but a
   JS-side `SIGTERM` handler cannot preempt a long-running synchronous wasm call.
 
+## Compiled GPU Kernel Backend Lanes
+
+Compiled `@gpu.kernel` now has three distinct execution states:
+
+- default compiled lane: runtime-owned sequential launch semantics
+- explicit native Metal lane: real backend execution on macOS
+- wasm lanes: correct compiled launch semantics, but still not real GPU backend dispatch
+
+Native Metal is opt-in and must be enabled at both build time and run time:
+
+```bash
+MOLT_RUNTIME_GPU_METAL=1 \
+MOLT_GPU_BACKEND=metal \
+MOLT_TRACE_GPU_BACKEND=1 \
+molt run --profile dev path/to/kernel_smoke.py
+```
+
+Current acceptance proof:
+- [tests/test_gpu_kernel_compiled.py](/Users/adpena/Projects/molt/tests/test_gpu_kernel_compiled.py)
+  - compiled native kernel correctness
+  - compiled native kernel with explicit Metal backend
+- [tests/test_wasm_split_runtime.py](/Users/adpena/Projects/molt/tests/test_wasm_split_runtime.py)
+  - compiled split-runtime wasm kernel correctness
+
+Rule:
+- If `MOLT_GPU_BACKEND=metal` is requested and the runtime was not built with
+  `MOLT_RUNTIME_GPU_METAL=1`, that is a real configuration error and must
+  raise. Do not silently fall back to the sequential launcher.
+
 ```bash
 # Basic run
 uv run --python 3.14 python3 tools/bench.py

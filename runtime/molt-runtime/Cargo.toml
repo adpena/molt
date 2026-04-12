@@ -6,7 +6,7 @@ license = "Apache-2.0"
 build = "build.rs"
 
 [lib]
-crate-type = ["staticlib", "rlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(fuzzing)', 'cfg(feature, values("audit", "refcount_verify"))'] }
@@ -123,6 +123,8 @@ wasi_host = ["stdlib_fs_extra"]
 audit = []
 # Debug feature: tracks inc_ref/dec_ref and panics on leaks or double-free.
 refcount_verify = []
+molt_gpu_metal = ["dep:metal", "dep:objc"]
+molt_gpu_webgpu = ["dep:wgpu", "dep:pollster"]
 
 [dependencies]
 # Core runtime (always required)
@@ -214,6 +216,12 @@ tungstenite = { version = "0.29", default-features = false, features = ["handsha
 os_pipe = "1.2"
 libloading = { version = "0.9.0", optional = true }
 molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi", optional = true, features = ["extension-loader"] }
+wgpu = { version = "29", optional = true }
+pollster = { version = "0.4", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = { version = "0.33", optional = true }
+objc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
@@ -221,6 +229,8 @@ trybuild = { version = "1", features = ["diff"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
+# Keep the older rand/password-hash dependency line browser-wasm-safe too.
+getrandom_legacy = { package = "getrandom", version = "0.2", features = ["js"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
