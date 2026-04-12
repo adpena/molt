@@ -131,6 +131,7 @@ pub mod resource;
 mod state;
 mod utils;
 pub mod vfs;
+mod wasm_abi_exports;
 
 /// Public Rust API for runtime lifecycle, used by `molt-ffi` and other
 /// dependent crates that need to call init/shutdown without going through
@@ -212,22 +213,29 @@ pub mod ffi_bridge {
 pub(crate) use crate::async_rt::*;
 pub use crate::builtins::gpu::molt_gpu_broadcast_binary_contiguous;
 pub use crate::builtins::gpu::molt_gpu_buffer_to_list;
-pub use crate::builtins::gpu::molt_gpu_linear_squared_relu_gate_interleaved_contiguous;
-pub use crate::builtins::gpu::molt_gpu_repeat_axis_contiguous;
-pub use crate::builtins::gpu::molt_gpu_tensor__tensor_attention_hybrid_mask;
-pub use crate::builtins::gpu::molt_gpu_tensor__tensor_linear_split_last_dim;
-pub use crate::builtins::gpu::molt_gpu_tensor__tensor_scaled_dot_product_attention;
-pub use crate::builtins::gpu::molt_gpu_tensor__zeros;
-pub use crate::builtins::gpu::molt_gpu_tensor_from_buffer;
-pub use crate::builtins::gpu::molt_gpu_tensor_from_parts;
+pub use crate::builtins::gpu::molt_gpu_interop__load_safetensors;
 pub use crate::builtins::gpu::molt_gpu_linear_contiguous;
 pub use crate::builtins::gpu::molt_gpu_linear_split_last_dim_contiguous;
+pub use crate::builtins::gpu::molt_gpu_linear_squared_relu_gate_interleaved_contiguous;
 pub use crate::builtins::gpu::molt_gpu_matmul_contiguous;
 pub use crate::builtins::gpu::molt_gpu_permute_contiguous;
+pub use crate::builtins::gpu::molt_gpu_repeat_axis_contiguous;
 pub use crate::builtins::gpu::molt_gpu_rms_norm_last_axis_contiguous;
 pub use crate::builtins::gpu::molt_gpu_rope_apply_contiguous;
 pub use crate::builtins::gpu::molt_gpu_softmax_last_axis_contiguous;
 pub use crate::builtins::gpu::molt_gpu_squared_relu_gate_interleaved_contiguous;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_data_list;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_linear;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_linear_split_last_dim;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_permute_dims;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_reshape_view;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_scaled_dot_product_attention;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_softmax_last_axis;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_take_rows;
+pub use crate::builtins::gpu::molt_gpu_tensor__zeros;
+pub use crate::builtins::gpu::molt_gpu_tensor_from_buffer;
+pub use crate::builtins::gpu::molt_gpu_tensor_from_parts;
 pub use crate::builtins::strings::molt_string_from_bytes;
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{
@@ -250,6 +258,11 @@ pub(crate) use crate::concurrency::{
 };
 #[allow(unused_imports)]
 pub(crate) use crate::state::RuntimeState;
+pub use crate::wasm_abi_exports::{
+    molt_dict_getitem, molt_dict_setitem, molt_fast_dict_get, molt_fast_list_append,
+    molt_fast_str_join, molt_resource_on_allocate, molt_resource_on_free, molt_tuple_getitem,
+    molt_type_tag_of_bits,
+};
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::MoltObject;
 

@@ -706,6 +706,22 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
         }
       }
     }
+    if (
+      typeof runtime.exports.molt_traceback_format_exc === 'function' &&
+      typeof runtime.exports.molt_object_repr === 'function'
+    ) {
+      const tbBits = runtime.exports.molt_traceback_format_exc(0n);
+      if (tbBits && tbBits !== 0n) {
+        try {
+          const tbRepr = reprObjectBitsWithRuntime(runtime, memory, tbBits);
+          if (tbRepr && tbRepr !== 'None' && tbRepr !== '[]') {
+            return `Unhandled Molt exception: ${tbRepr}`;
+          }
+        } finally {
+          decRefMaybeWithRuntime(runtime, tbBits);
+        }
+      }
+    }
     return 'Unhandled Molt exception';
   } finally {
     if (
@@ -717,6 +733,232 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
       runtime.exports.molt_dec_ref_obj(excBits);
     }
   }
+};
+
+const decRefMaybeWithRuntime = (runtime, bits) => {
+  if (
+    runtime &&
+    runtime.exports &&
+    typeof runtime.exports.molt_dec_ref_obj === 'function' &&
+    bits !== null &&
+    bits !== undefined &&
+    bits !== 0n &&
+    bits !== 0
+  ) {
+    runtime.exports.molt_dec_ref_obj(bits);
+  }
+};
+
+const makeBytesObjectWithRuntime = (runtime, memory, bytes) => {
+  if (!runtime || !memory) {
+    throw new Error('runtime not initialized');
+  }
+  const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const tempBytes = allocRuntimeTempBytes(runtime, memory, payload);
+  const tempOut = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
+  try {
+    const status = runtime.exports.molt_bytes_from_bytes(
+      Number(tempBytes.payloadPtr),
+      BigInt(payload.length),
+      Number(tempOut.payloadPtr),
+    );
+    if (Number(status) !== 0) {
+      throw new Error(`molt_bytes_from_bytes failed with status ${status}`);
+    }
+    return new DataView(memory.buffer).getBigUint64(Number(tempOut.payloadPtr), true);
+  } finally {
+    decRefMaybeWithRuntime(runtime, tempBytes.allocBits);
+    decRefMaybeWithRuntime(runtime, tempOut.allocBits);
+  }
+};
+
+const makeStringObjectWithRuntime = (runtime, memory, text) => {
+  if (!runtime || !memory) {
+    throw new Error('runtime not initialized');
+  }
+  const payload = UTF8_ENCODER.encode(String(text));
+  const tempBytes = allocRuntimeTempBytes(runtime, memory, payload);
+  const tempOut = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
+  try {
+    const status = runtime.exports.molt_string_from_bytes(
+      Number(tempBytes.payloadPtr),
+      BigInt(payload.length),
+      Number(tempOut.payloadPtr),
+    );
+    if (Number(status) !== 0) {
+      throw new Error(`molt_string_from_bytes failed with status ${status}`);
+    }
+    return new DataView(memory.buffer).getBigUint64(Number(tempOut.payloadPtr), true);
+  } finally {
+    decRefMaybeWithRuntime(runtime, tempBytes.allocBits);
+    decRefMaybeWithRuntime(runtime, tempOut.allocBits);
+  }
+};
+
+const makeListIntObjectWithRuntime = (runtime, values) => {
+  if (!runtime || !runtime.exports) {
+    throw new Error('runtime not initialized');
+  }
+  if (
+    typeof runtime.exports.molt_list_builder_new !== 'function' ||
+    typeof runtime.exports.molt_list_builder_append !== 'function' ||
+    typeof runtime.exports.molt_list_builder_finish !== 'function'
+  ) {
+    throw new Error('runtime list builder exports are unavailable');
+  }
+  const builder = runtime.exports.molt_list_builder_new(boxInt(values.length));
+  for (const value of values) {
+    runtime.exports.molt_list_builder_append(builder, boxInt(value));
+  }
+  return runtime.exports.molt_list_builder_finish(builder);
+};
+
+const reprObjectBitsWithRuntime = (runtime, memory, bits) => {
+  if (!runtime || !runtime.exports || typeof runtime.exports.molt_object_repr !== 'function') {
+    return null;
+  }
+  const reprBits = runtime.exports.molt_object_repr(bits);
+  if (!reprBits || reprBits === 0n) {
+    return null;
+  }
+  try {
+    return readRuntimeStringBits(runtime, memory, reprBits);
+  } finally {
+    decRefMaybeWithRuntime(runtime, reprBits);
+  }
+};
+
+const parseMoltJsonishRepr = (repr) => {
+  if (typeof repr !== 'string' || !repr) return null;
+  try {
+    return JSON.parse(repr);
+  } catch {
+    return null;
+  }
+};
+
+const tryDecodeListIntBits = (runtime, bits) => {
+  if (
+    !runtime ||
+    !runtime.exports ||
+    typeof runtime.exports.molt_len !== 'function' ||
+    typeof runtime.exports.molt_index !== 'function'
+  ) {
+    return null;
+  }
+  let lenBits;
+  try {
+    lenBits = runtime.exports.molt_len(bits);
+  } catch {
+    return null;
+  }
+  if (!isIntBits(lenBits)) {
+    return null;
+  }
+  const len = unboxInt(lenBits);
+  if (!Number.isInteger(len) || len < 0) {
+    return null;
+  }
+  const out = [];
+  for (let i = 0; i < len; i += 1) {
+    let itemBits;
+    try {
+      itemBits = runtime.exports.molt_index(bits, boxInt(i));
+    } catch {
+      return null;
+    }
+    if (!isIntBits(itemBits)) {
+      return null;
+    }
+    out.push(unboxInt(itemBits));
+  }
+  return out;
+};
+
+const runtimeTypeTagOfBits = (runtime, bits) => {
+  if (
+    !runtime ||
+    !runtime.exports ||
+    typeof runtime.exports.molt_type_tag_of_bits !== 'function' ||
+    bits === null ||
+    bits === undefined ||
+    bits === 0n ||
+    bits === 0
+  ) {
+    return TYPE_TAG_ANY;
+  }
+  const raw = runtime.exports.molt_type_tag_of_bits(bits);
+  const tag = typeof raw === 'bigint' ? Number(raw) : Number(raw);
+  return Number.isFinite(tag) ? tag : TYPE_TAG_ANY;
+};
+
+const tryDecodeResultJson = (runtime, memory, bits) => {
+  if (bits === null || bits === undefined || bits === 0n || bits === 0) {
+    return null;
+  }
+  if (isIntBits(bits)) {
+    return unboxInt(bits);
+  }
+  if (isBoolBits(bits)) {
+    return unboxBool(bits);
+  }
+  const typeTag = runtimeTypeTagOfBits(runtime, bits);
+  if (typeTag === TYPE_TAG_NONE) {
+    return null;
+  }
+  if (typeTag === TYPE_TAG_STR) {
+    return readRuntimeStringBits(runtime, memory, bits);
+  }
+  if (
+    typeTag === TYPE_TAG_BYTES ||
+    typeTag === TYPE_TAG_BYTEARRAY ||
+    typeTag === TYPE_TAG_LIST ||
+    typeTag === TYPE_TAG_TUPLE
+  ) {
+    return tryDecodeListIntBits(runtime, bits);
+  }
+  return null;
+};
+
+const makeBrowserHostArgObject = (runtime, memory, spec) => {
+  if (spec && typeof spec === 'object' && 'kind' in spec && typeof spec.kind === 'string') {
+    switch (spec.kind) {
+      case 'int':
+        return boxInt(spec.value);
+      case 'string':
+        return makeStringObjectWithRuntime(runtime, memory, String(spec.value));
+      case 'bytes':
+        return makeBytesObjectWithRuntime(runtime, memory, spec.value);
+      case 'bytes_utf8':
+        return makeBytesObjectWithRuntime(runtime, memory, UTF8_ENCODER.encode(String(spec.value)));
+      case 'list_int':
+        if (!Array.isArray(spec.value)) {
+          throw new Error('list_int host arg requires an array value');
+        }
+        return makeListIntObjectWithRuntime(runtime, spec.value.map((value) => Number(value)));
+      default:
+        throw new Error(`unsupported browser host arg kind: ${spec.kind}`);
+    }
+  }
+  if (typeof spec === 'number' && Number.isInteger(spec)) {
+    return boxInt(spec);
+  }
+  if (typeof spec === 'bigint') {
+    return boxInt(spec);
+  }
+  if (typeof spec === 'string') {
+    return makeStringObjectWithRuntime(runtime, memory, spec);
+  }
+  if (spec instanceof Uint8Array) {
+    return makeBytesObjectWithRuntime(runtime, memory, spec);
+  }
+  if (spec instanceof ArrayBuffer) {
+    return makeBytesObjectWithRuntime(runtime, memory, new Uint8Array(spec));
+  }
+  if (Array.isArray(spec) && spec.every((value) => Number.isInteger(value))) {
+    return makeListIntObjectWithRuntime(runtime, spec.map((value) => Number(value)));
+  }
+  throw new Error(`unsupported browser host arg: ${Object.prototype.toString.call(spec)}`);
 };
 
 const parseIPv4 = (text) => {
@@ -869,6 +1111,16 @@ const TAG_INT = 0x0001000000000000n;
 const TAG_BOOL = 0x0002000000000000n;
 const TAG_MASK = 0x0007000000000000n;
 const INT_MASK = (1n << 47n) - 1n;
+const TYPE_TAG_ANY = 0;
+const TYPE_TAG_INT = 1;
+const TYPE_TAG_FLOAT = 2;
+const TYPE_TAG_BOOL = 3;
+const TYPE_TAG_NONE = 4;
+const TYPE_TAG_STR = 5;
+const TYPE_TAG_BYTES = 6;
+const TYPE_TAG_BYTEARRAY = 7;
+const TYPE_TAG_LIST = 8;
+const TYPE_TAG_TUPLE = 9;
 const CANCEL_POLL_MS = 10;
 const I64_MIN = -(1n << 63n);
 
@@ -878,6 +1130,15 @@ const boxInt = (value) => {
     v = (1n << 47n) + v;
   }
   return QNAN | TAG_INT | (v & INT_MASK);
+};
+
+const isIntBits = (bits) => (bits & (QNAN | TAG_MASK)) === (QNAN | TAG_INT);
+const unboxInt = (bits) => {
+  let value = bits & INT_MASK;
+  if ((value & (1n << 46n)) !== 0n) {
+    value -= 1n << 47n;
+  }
+  return Number(value);
 };
 
 const isBoolBits = (bits) => (bits & (QNAN | TAG_MASK)) === (QNAN | TAG_BOOL);
@@ -3560,6 +3821,61 @@ export const loadMoltWasm = async (options = {}) => {
     wsBufferedMax: options.wsBufferedMax,
   });
   const gpuHost = createBrowserGpuHost(state, options);
+  let hostExportsInitialized = false;
+  const ensureHostExportsInitialized = (appInstance) => {
+    if (hostExportsInitialized) {
+      return;
+    }
+    const hostInit = appInstance?.exports?.molt_host_init;
+    if (typeof hostInit === 'function') {
+      hostInit();
+      const pending = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
+      if (pending) {
+        throw new Error(pending);
+      }
+    }
+    hostExportsInitialized = true;
+  };
+  const makeExportInvoker = (appInstance) => async (exportName, args = []) => {
+    if (!appInstance?.exports) {
+      throw new Error('app instance not initialized');
+    }
+    const runtime = state.runtimeInstance;
+    const memory = state.memory;
+    if (!runtime || !memory) {
+      throw new Error('runtime not initialized');
+    }
+    ensureHostExportsInitialized(appInstance);
+    const fn = appInstance.exports[exportName];
+    if (typeof fn !== 'function') {
+      throw new Error(`app export missing: ${exportName}`);
+    }
+    const argBits = Array.isArray(args)
+      ? args.map((arg) => makeBrowserHostArgObject(runtime, memory, arg))
+      : [];
+    let resultBits = 0n;
+    try {
+      resultBits = fn(...argBits);
+    } finally {
+      for (const bits of argBits) {
+        decRefMaybeWithRuntime(runtime, bits);
+      }
+    }
+    const pending = pendingRuntimeExceptionMessage(runtime, memory);
+    if (pending) {
+      throw new Error(pending);
+    }
+    const resultJson = tryDecodeResultJson(runtime, memory, resultBits);
+    const resultRepr = reprObjectBitsWithRuntime(runtime, memory, resultBits);
+    const fallbackJson = resultJson === null ? parseMoltJsonishRepr(resultRepr) : null;
+    decRefMaybeWithRuntime(runtime, resultBits);
+    return {
+      resultBits:
+        typeof resultBits === 'bigint' ? resultBits.toString() : String(resultBits),
+      resultRepr,
+      resultJson: resultJson ?? fallbackJson,
+    };
+  };
   const overrides = {
     molt_db_query_host: dbHost.dbQueryHost,
     molt_db_exec_host: dbHost.dbExecHost,
@@ -3665,6 +3981,7 @@ export const loadMoltWasm = async (options = {}) => {
       memory: memoryExport || memory || env.memory || null,
       table: linkedTable,
       linked: true,
+      invokeExport: makeExportInvoker(instance),
       run: () => {
         if (typeof instance.exports.molt_main !== 'function') {
           throw new Error('molt_main export missing');
@@ -3772,6 +4089,7 @@ export const loadMoltWasm = async (options = {}) => {
     memory,
     table,
     linked: false,
+    invokeExport: makeExportInvoker(outputModule.instance),
     run: () => {
       if (typeof outputModule.instance.exports.molt_main !== 'function') {
         throw new Error('molt_main export missing');

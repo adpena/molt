@@ -890,6 +890,26 @@ impl RustBackend {
                 "}\n\n",
             ));
         }
+        if used("molt_unpack_sequence(") {
+            self.output.push_str(concat!(
+                "fn molt_unpack_sequence(seq: &MoltValue, expected_count: usize) -> Vec<MoltValue> {\n",
+                "    let items = match seq {\n",
+                "        MoltValue::List(v) => v.clone(),\n",
+                "        MoltValue::Dict(d) => d.iter().map(|(k, _)| k.clone()).collect(),\n",
+                "        MoltValue::Str(s) => s.chars().map(|c| MoltValue::Str(c.to_string())).collect(),\n",
+                "        _ => panic!(\"cannot unpack non-sequence\"),\n",
+                "    };\n",
+                "    let actual = items.len();\n",
+                "    if actual < expected_count {\n",
+                "        panic!(\"not enough values to unpack (expected {}, got {})\", expected_count, actual);\n",
+                "    }\n",
+                "    if actual > expected_count {\n",
+                "        panic!(\"too many values to unpack (expected {}, got {})\", expected_count, actual);\n",
+                "    }\n",
+                "    items\n",
+                "}\n\n",
+            ));
+        }
 
         // abs
         if used("molt_abs(") {
@@ -1140,6 +1160,21 @@ impl RustBackend {
             .map(rust_ident)
             .collect();
 
+        let named_storage_vars: Vec<String> = {
+            let mut seen = Vec::new();
+            for op in &ops {
+                if op.kind == "store_var"
+                    && let Some(name) = op.var.as_deref().or(op.out.as_deref())
+                {
+                    let storage = rust_ident(name);
+                    if !self.current_params.contains(&storage) && !seen.contains(&storage) {
+                        seen.push(storage);
+                    }
+                }
+            }
+            seen
+        };
+
         // Collect closure slot vars
         let closure_slots: Vec<String> = {
             let mut seen = Vec::new();
@@ -1189,10 +1224,13 @@ impl RustBackend {
         for v in &closure_slots {
             self.emit_line(&format!("let mut {v}: MoltValue = MoltValue::None;"));
         }
+        for v in &named_storage_vars {
+            self.emit_line(&format!("let mut {v}: MoltValue = MoltValue::None;"));
+        }
         let mut sorted_hoisted: Vec<String> = self.hoisted_vars.iter().cloned().collect();
         sorted_hoisted.sort();
         for v in &sorted_hoisted {
-            if !loop_idx_vars.contains(v) {
+            if !loop_idx_vars.contains(v) && !named_storage_vars.contains(v) {
                 self.emit_line(&format!("let mut {v}: MoltValue = MoltValue::None;"));
             }
         }
@@ -1436,7 +1474,10 @@ impl RustBackend {
             "const_bigint" => {
                 let o = out();
                 let s = op.s_value.as_deref().unwrap_or("0");
-                let rhs = format!("MoltValue::Int({s}.parse::<i64>().unwrap_or(0))");
+                let rhs = format!(
+                    "MoltValue::Int({}.parse::<i64>().unwrap_or(0))",
+                    rust_string_literal(s)
+                );
                 self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
             }
             "const_not_implemented" | "const_ellipsis" => {
@@ -1455,6 +1496,29 @@ impl RustBackend {
                     &self.hoisted_vars.clone(),
                 ));
                 self.note_alias(o, v);
+            }
+            "load_var" | "copy_var" => {
+                let o = out();
+                let v = var_ref(op);
+                self.emit_line(&declare(
+                    &o,
+                    &format!("{v}.clone()"),
+                    &self.hoisted_vars.clone(),
+                ));
+                self.note_alias(o, v);
+            }
+            "store_var" => {
+                if let Some(name) = op.var.as_deref().or(op.out.as_deref()) {
+                    let dst = rust_ident(name);
+                    self.clear_alias(&dst);
+                    let rhs = op
+                        .args
+                        .as_deref()
+                        .and_then(|args| args.first())
+                        .map(|src| rust_clone(src))
+                        .unwrap_or_else(|| "MoltValue::None".to_string());
+                    self.emit_line(&format!("{dst} = {rhs};"));
+                }
             }
             "load" | "guarded_load" => {
                 let o = out();
@@ -2850,6 +2914,25 @@ impl RustBackend {
                     &self.hoisted_vars.clone(),
                 ));
             }
+            "unpack_sequence" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(seq_name) = args.first() {
+                    let seq = rust_ident(seq_name);
+                    let outputs = &args[1..];
+                    let expected_count = op.value.unwrap_or(outputs.len() as i64).max(0) as usize;
+                    self.emit_line(&format!(
+                        "let __unpack_seq = molt_unpack_sequence(&{seq}, {expected_count});"
+                    ));
+                    for (index, out_name) in outputs.iter().take(expected_count).enumerate() {
+                        let out = rust_ident(out_name);
+                        self.emit_line(&declare(
+                            &out,
+                            &format!("__unpack_seq[{index}].clone()"),
+                            &self.hoisted_vars.clone(),
+                        ));
+                    }
+                }
+            }
             "string_join" => {
                 // string_join(sep, iterable) → sep.join(str(x) for x in iterable)
                 let o = out();
@@ -3388,6 +3471,128 @@ mod tests {
         assert!(source.contains("if molt_bool(&v0) { v0.clone() } else { v1.clone() }"));
         assert!(!source.contains("(if !molt_bool(&v0) { v0.clone() } else { v1.clone() })"));
         assert!(!source.contains("(if molt_bool(&v0) { v0.clone() } else { v1.clone() })"));
+    }
+
+    #[test]
+    fn compile_unpack_sequence_lowers_outputs_instead_of_stub() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec!["seq".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "unpack_sequence".to_string(),
+                        args: Some(vec![
+                            "seq".to_string(),
+                            "left".to_string(),
+                            "right".to_string(),
+                        ]),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "tuple_new".to_string(),
+                        args: Some(vec!["left".to_string(), "right".to_string()]),
+                        out: Some("pair".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("pair".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let source = backend.compile(&ir);
+        assert!(source.contains("fn molt_unpack_sequence("));
+        assert!(source.contains("let __unpack_seq"));
+        assert!(source.contains("let mut left: MoltValue = __unpack_seq[0].clone();"));
+        assert!(source.contains("let mut right: MoltValue = __unpack_seq[1].clone();"));
+        assert!(!source.contains("MOLT_STUB: unpack_sequence"));
+    }
+
+    #[test]
+    fn compile_const_bigint_parses_from_string_literal() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const_bigint".to_string(),
+                        s_value: Some("2305843009213693951".to_string()),
+                        out: Some("big".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "return_none".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let source = backend.compile(&ir);
+        assert!(source.contains("MoltValue::Int(\"2305843009213693951\".parse::<i64>().unwrap_or(0))"));
+        assert!(!source.contains("MoltValue::Int(2305843009213693951.parse::<i64>().unwrap_or(0))"));
+    }
+
+    #[test]
+    fn compile_store_var_and_load_var_use_named_local_storage() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "helper".to_string(),
+                params: vec![],
+                ops: vec![
+                    OpIR {
+                        kind: "const_none".to_string(),
+                        out: Some("src".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "store_var".to_string(),
+                        var: Some("rows".to_string()),
+                        args: Some(vec!["src".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "load_var".to_string(),
+                        var: Some("rows".to_string()),
+                        out: Some("tmp".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("tmp".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let source = backend.compile(&ir);
+        assert!(source.contains("let mut rows: MoltValue = MoltValue::None;"));
+        assert!(source.contains("rows = src.clone();"));
+        assert!(source.contains("let mut tmp: MoltValue = rows.clone();"));
+        assert!(!source.contains("MOLT_STUB: store_var"));
+        assert!(!source.contains("MOLT_STUB: load_var"));
     }
 
     #[test]

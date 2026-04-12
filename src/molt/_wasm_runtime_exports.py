@@ -17,6 +17,13 @@ _HOST_RUNTIME_EXPORTS = frozenset(
     {
         "molt_runtime_shutdown",
         "molt_set_wasm_table_base",
+        "molt_exception_last",
+        "molt_exception_kind",
+        "molt_exception_message",
+        "molt_object_repr",
+        "molt_profile_dump",
+        "molt_traceback_format_exc",
+        "molt_type_tag_of_bits",
     }
 )
 _BROWSER_RUNTIME_IMPORT_FALLBACK_EXPORTS = {
@@ -176,6 +183,7 @@ def wasm_runtime_export_link_args(
 ) -> str:
     if required_runtime_imports is None:
         export_names = {f"molt_{name}" for name in wasm_runtime_import_names()}
+        export_names.update(_HOST_RUNTIME_EXPORTS)
         export_names.update(
             canonical_intrinsic_runtime_name(name)
             for name in _resolved_stdlib_intrinsic_exports(resolved_modules)

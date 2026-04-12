@@ -10,4 +10,9 @@ Rules:
   should not leak into core runtime/compiler surfaces.
 
 Current layout:
+- `_shared/`
+- `browser/`
+- `wasm/`
+- `cloudflare/`
+- `native/`
 - `falcon/browser_webgpu/`
