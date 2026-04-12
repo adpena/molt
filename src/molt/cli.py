@@ -110,6 +110,9 @@ BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
 STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
 STUB_PARENT_MODULES = {"molt"}
+# Noon UTC on 1980-01-01 keeps localtime-based ZIP writers inside the DOS date
+# range even on western timezones that would roll midnight UTC back into 1979.
+_ZIP_SAFE_SOURCE_DATE_EPOCH = "315576000"
 # Stdlib modules that rely on nested imports for required runtime semantics.
 STDLIB_NESTED_IMPORT_SCAN_MODULES = {
     "collections",
@@ -8089,6 +8092,8 @@ def _artifact_needs_rebuild(
         artifact.stat()
     except OSError:
         return True
+    if not _artifact_content_looks_valid(artifact):
+        return True
     if fingerprint is None or stored_fingerprint is None:
         return True
     if stored_fingerprint.get("hash") != fingerprint.get("hash"):
@@ -8098,6 +8103,24 @@ def _artifact_needs_rebuild(
         stored_rustc = stored_fingerprint.get("rustc")
         return stored_rustc is None or stored_rustc != rustc
     return False
+
+
+def _is_valid_static_library_artifact(path: Path) -> bool:
+    if path.suffix not in {".a", ".lib"}:
+        return True
+    try:
+        with path.open("rb") as handle:
+            return handle.read(8) == b"!<arch>\n"
+    except OSError:
+        return False
+
+
+def _artifact_content_looks_valid(path: Path) -> bool:
+    if path.suffix in {".a", ".lib"}:
+        return _is_valid_static_library_artifact(path)
+    if path.suffix == ".wasm":
+        return _is_valid_wasm_binary(path)
+    return True
 
 
 def _is_valid_wasm_binary(path: Path) -> bool:
@@ -17880,7 +17903,7 @@ def _prepare_backend_dispatch(
     if os.environ.get("MOLT_BACKEND") == "llvm":
         backend_features = (*backend_features, "llvm")
     if deterministic or profile == "release":
-        os.environ.setdefault("SOURCE_DATE_EPOCH", "315532800")
+        os.environ.setdefault("SOURCE_DATE_EPOCH", _ZIP_SAFE_SOURCE_DATE_EPOCH)
     # Auto-set Cranelift optimization level based on profile for size-critical
     # builds.  speed_and_size balances code quality with binary density.
     if profile in ("release-size", "wasm-release"):
@@ -22540,6 +22563,8 @@ def _artifact_newer_than_sources(
         lib_mtime = artifact.stat().st_mtime
     except OSError:
         return False
+    if not _artifact_content_looks_valid(artifact):
+        return False
     newest_src = 0.0
     for path in source_paths:
         try:
@@ -22588,13 +22613,13 @@ def _ensure_runtime_lib(
         rustflags,
         fingerprint_features,
     )
-    if session_key in _RUNTIME_LIB_VERIFIED:
+    if session_key in _RUNTIME_LIB_VERIFIED and _artifact_content_looks_valid(runtime_lib):
         return True
     # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
     # Use when you have already run `cargo build` manually and want to avoid
     # the ~90s overhead of the CLI re-running cargo.
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
-        if runtime_lib.exists():
+        if runtime_lib.exists() and _artifact_content_looks_valid(runtime_lib):
             _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
     fingerprint_path = _runtime_fingerprint_path(
@@ -28445,7 +28470,7 @@ def extension_build(
     build_env = os.environ.copy()
     # Supply-chain: always set SOURCE_DATE_EPOCH for release builds for reproducibility
     if deterministic or profile == "release":
-        build_env.setdefault("SOURCE_DATE_EPOCH", "315532800")
+        build_env.setdefault("SOURCE_DATE_EPOCH", _ZIP_SAFE_SOURCE_DATE_EPOCH)
 
     module_rel = Path(
         *module_parts[:-1],
