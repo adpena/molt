@@ -2,10 +2,11 @@ use molt_obj_model::MoltObject;
 
 use crate::{
     ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, PyToken, exception_context_align_depth,
-    exception_context_fallback_pop, exception_context_fallback_push, exception_stack_baseline_get,
-    exception_stack_baseline_set, exception_stack_depth, exception_stack_set_depth,
-    set_task_raise_active, task_exception_baseline_store, task_exception_baseline_take,
-    task_exception_depth_store, task_exception_depth_take, task_exception_handler_stack_store,
+    exception_context_fallback_pop, exception_context_fallback_push, exception_pending,
+    exception_stack_baseline_get, exception_stack_baseline_set, exception_stack_depth,
+    exception_stack_set_depth, pending_bits_i64, set_task_raise_active,
+    task_exception_baseline_store, task_exception_baseline_take, task_exception_depth_store,
+    task_exception_depth_take, task_exception_handler_stack_store,
     task_exception_handler_stack_take, task_exception_stack_store, task_exception_stack_take,
     task_raise_active,
 };
