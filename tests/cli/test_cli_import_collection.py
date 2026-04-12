@@ -3091,6 +3091,70 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
     assert second["functions"][0]["ops"][0]["value"] == 1
 
 
+def test_finalize_backend_ir_pads_truncated_param_types() -> None:
+    ir = cli._finalize_backend_ir(
+        functions=[
+            {
+                "name": "pkg__f",
+                "params": ["s", "x", "kw"],
+                "param_types": ["Any"],
+                "ops": [],
+            }
+        ],
+        pgo_profile_summary=None,
+        runtime_feedback_summary=None,
+    )
+
+    fn = ir["functions"][0]
+    assert fn["params"] == ["s", "x", "kw"]
+    assert fn["param_types"] == ["Any", "i64", "i64"]
+
+
+def test_persisted_module_lowering_repairs_truncated_param_types(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("x = 1\n")
+    context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
+    assert context_digest is not None
+    cli._PERSISTED_JSON_OBJECT_CACHE.clear()
+    cli._write_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+        result={
+            "functions": [
+                {
+                    "name": "pkg__f",
+                    "params": ["s", "x", "kw"],
+                    "param_types": ["Any"],
+                    "ops": [],
+                }
+            ],
+            "func_code_ids": {},
+            "local_class_names": [],
+            "local_classes": {},
+            "midend_policy_outcomes_by_function": {},
+            "midend_pass_stats_by_function": {},
+            "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
+        },
+    )
+
+    cached = cli._read_persisted_module_lowering(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        context_digest=context_digest,
+    )
+
+    assert cached is not None
+    assert cached["functions"][0]["params"] == ["s", "x", "kw"]
+    assert cached["functions"][0]["param_types"] == ["Any", "i64", "i64"]
+
+
 @pytest.mark.skip(reason="_frontend_cache_epoch was removed from cli")
 def test_persisted_module_lowering_invalidates_on_frontend_cache_epoch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
