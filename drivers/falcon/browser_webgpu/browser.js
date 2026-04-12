@@ -3,6 +3,52 @@ import { loadMoltWasm } from "../../../wasm/browser_host.js";
 const DEFAULT_PATCH_SIZE = 16;
 const DEFAULT_MAX_NEW_TOKENS = 512;
 
+async function fetchRequiredJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to load manifest: ${response.status}`);
+  }
+  return response.json();
+}
+
+function resolveArtifactUrl(baseUrl, relativeOrAbsoluteUrl) {
+  return new URL(relativeOrAbsoluteUrl, baseUrl).toString();
+}
+
+function normalizeManifestUrl(manifestUrl) {
+  try {
+    return new URL(manifestUrl).toString();
+  } catch {
+    const baseHref =
+      typeof globalThis.location?.href === "string" ? globalThis.location.href : null;
+    if (!baseHref) {
+      throw new Error(
+        `Relative manifestUrl requires a browser location base: ${String(manifestUrl)}`,
+      );
+    }
+    return new URL(manifestUrl, baseHref).toString();
+  }
+}
+
+function manifestArtifactUrl(manifest, manifestUrl, key) {
+  const artifact = manifest?.artifacts?.[key];
+  if (!artifact || typeof artifact.url !== "string" || !artifact.url) {
+    throw new Error(`Falcon manifest is missing artifacts.${key}.url`);
+  }
+  return resolveArtifactUrl(manifestUrl, artifact.url);
+}
+
+function manifestWeightUrl(manifest, manifestUrl) {
+  const weights = manifest?.weights;
+  const first = Array.isArray(weights?.files) ? weights.files[0] : null;
+  if (!first || typeof first.url !== "string" || !first.url) {
+    throw new Error("Falcon manifest is missing weights.files[0].url");
+  }
+  const baseUrl =
+    typeof weights?.base_url === "string" && weights.base_url ? weights.base_url : manifestUrl;
+  return resolveArtifactUrl(baseUrl, first.url);
+}
+
 export async function imageToRgbPatchAligned(blob, patchSize = DEFAULT_PATCH_SIZE) {
   const bitmap = await createImageBitmap(blob);
   const width = Math.floor(bitmap.width / patchSize) * patchSize;
@@ -30,6 +76,7 @@ export async function imageToRgbPatchAligned(blob, patchSize = DEFAULT_PATCH_SIZ
 }
 
 export async function initFalconBrowserWebGpu({
+  manifestUrl,
   wasmUrl,
   runtimeUrl,
   weightsUrl,
@@ -37,19 +84,39 @@ export async function initFalconBrowserWebGpu({
   initExport = "main_molt__init",
   browserHostOptions = {},
 }) {
+  let manifest = null;
+  const resolvedManifestUrl = manifestUrl ? normalizeManifestUrl(manifestUrl) : null;
+  if (manifestUrl) {
+    manifest = await fetchRequiredJson(resolvedManifestUrl);
+  }
+  const resolvedWasmUrl =
+    wasmUrl ?? (manifest ? manifestArtifactUrl(manifest, resolvedManifestUrl, "app_wasm") : null);
+  const resolvedRuntimeUrl =
+    runtimeUrl ??
+    (manifest ? manifestArtifactUrl(manifest, resolvedManifestUrl, "runtime_wasm") : null);
+  const resolvedWeightsUrl =
+    weightsUrl ?? (manifest ? manifestWeightUrl(manifest, resolvedManifestUrl) : null);
+  const resolvedConfigUrl =
+    configUrl ??
+    (manifest ? manifestArtifactUrl(manifest, resolvedManifestUrl, "config_json") : null);
+  if (!resolvedWasmUrl || !resolvedRuntimeUrl || !resolvedWeightsUrl || !resolvedConfigUrl) {
+    throw new Error(
+      "Falcon browser driver requires wasmUrl, runtimeUrl, weightsUrl, and configUrl or a manifestUrl that resolves them.",
+    );
+  }
   const [host, weightsBytes, configJson] = await Promise.all([
     loadMoltWasm({
-      wasmUrl,
-      runtimeUrl,
+      wasmUrl: resolvedWasmUrl,
+      runtimeUrl: resolvedRuntimeUrl,
       preferLinked: false,
       env: { MOLT_GPU_BACKEND: "webgpu" },
       ...browserHostOptions,
     }),
-    fetch(weightsUrl).then((r) => {
+    fetch(resolvedWeightsUrl).then((r) => {
       if (!r.ok) throw new Error(`Failed to load weights: ${r.status}`);
       return r.arrayBuffer();
     }),
-    fetch(configUrl).then((r) => {
+    fetch(resolvedConfigUrl).then((r) => {
       if (!r.ok) throw new Error(`Failed to load config: ${r.status}`);
       return r.text();
     }),

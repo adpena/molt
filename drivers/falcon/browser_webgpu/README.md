@@ -9,8 +9,9 @@ This directory intentionally lives in `molt`:
   import layer.
 
 Files:
-- `browser.js`: browser-facing runtime loader and `ocrTokens` driver API
+- `browser.js`: browser-facing runtime loader and `ocrTokens` driver API, with `manifestUrl` bootstrap support
 - `wrangler.jsonc`: target-local Cloudflare Worker config
-- `worker.ts`: Worker entrypoint scaffold
-- `deploy.py`: deployment-surface discovery plus immutable artifact manifest/hashes
+- `worker.ts`: thin Cloudflare manifest/bootstrap worker
+- `deploy.py`: deployment-surface discovery plus bundle materialization and immutable artifact manifest/hashes
+- `verify.py`: materialize + `wrangler check` + `deploy --dry-run` verifier
 - `bench_hostfed.py`: host-fed benchmark wrapper using Molt's generic helper
