@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -168,6 +169,59 @@ def test_run_wasm_linked_bench_sum_has_no_table_signature_trap(
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().endswith("49999995000000")
     assert "null function or function signature mismatch" not in result.stderr
+
+
+def test_run_wasm_direct_bootstraps_split_runtime_before_main(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    wasm_runner.require_wasm_toolchain()
+    src = tmp_path / "direct_bootstrap.py"
+    src.write_text("import abc\nprint('after')\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root / "src")
+    env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=900,
+    )
+    assert build.returncode == 0, build.stderr
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_DIRECT_LINK"] = "1"
+    run_env["MOLT_WASM_PREFER_LINKED"] = "0"
+    run_env["MOLT_RUNTIME_WASM"] = str(tmp_path / "molt_runtime.wasm")
+    result = subprocess.run(
+        ["node", "wasm/run_wasm.js", str(tmp_path / "output.wasm")],
+        cwd=root,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines() == ["after"]
 
 
 def test_linked_wasm_exports_table_base_setter_when_available(

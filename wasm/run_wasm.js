@@ -5670,6 +5670,15 @@ const runDirectLink = async () => {
   }
   initializeWasiForInstance(runtimeInst, memory);
   if (!hostExportCallsEnabled) {
+    if (typeof outputInstance.exports.molt_isolate_bootstrap === 'function') {
+      if (traceRun) {
+        console.error('[molt wasm] direct: call molt_isolate_bootstrap');
+      }
+      outputInstance.exports.molt_isolate_bootstrap();
+      if (traceRun) {
+        console.error('[molt wasm] direct: molt_isolate_bootstrap returned');
+      }
+    }
     if (traceRun) {
       console.error('[molt wasm] direct: call molt_main');
     }
