@@ -720,6 +720,7 @@ class TestRuntimeCacheability:
         env["MOLT_EXT_ROOT"] = str(ROOT)
         env["CARGO_TARGET_DIR"] = str(tmp_path / "target")
         env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
+        env["MOLT_SESSION_ID"] = f"cacheability-{tmp_path.name}"
         env["MOLT_CACHE"] = str(ROOT / ".molt_cache")
         env["MOLT_DIFF_ROOT"] = str(ROOT / "tmp" / "diff")
         env["MOLT_DIFF_TMPDIR"] = str(ROOT / "tmp")
