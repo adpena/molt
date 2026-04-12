@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from molt.frontend import compile_to_tir
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
@@ -86,10 +88,7 @@ def test_compiled_gpu_kernel_vector_add_matches_interpreted_semantics(
 
 
 def test_gpu_kernel_call_lowers_to_first_class_gpu_launch_ir(tmp_path: Path) -> None:
-    src_path = tmp_path / "gpu_kernel_ir_smoke.py"
-    out_path = tmp_path / "gpu_kernel_ir_smoke"
-    ir_path = tmp_path / "gpu_kernel_ir_smoke.json"
-    src_path.write_text(
+    ir = compile_to_tir(
         "import molt.gpu as gpu\n"
         "\n"
         "@gpu.kernel\n"
@@ -101,44 +100,12 @@ def test_gpu_kernel_call_lowers_to_first_class_gpu_launch_ir(tmp_path: Path) -> 
         "a = gpu.to_device([1.0, 2.0, 3.0, 4.0])\n"
         "b = gpu.to_device([10.0, 20.0, 30.0, 40.0])\n"
         "c = gpu.alloc(4, float)\n"
-        "vector_add[1, 4](a, b, c, 4)\n",
-        encoding="utf-8",
+        "vector_add[1, 4](a, b, c, 4)\n"
     )
-
-    env = _native_env()
-    build = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "build",
-            str(src_path),
-            "--target",
-            "native",
-            "--build-profile",
-            "dev",
-            "--backend",
-            "cranelift",
-            "--output",
-            str(out_path),
-            "--emit-ir",
-            str(ir_path),
-        ],
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    assert build.returncode == 0, build.stdout + build.stderr
-
-    import json
-
-    ir = json.loads(ir_path.read_text(encoding="utf-8"))
-    module_chunk = next(
-        func for func in ir["functions"] if func["name"] == "gpu_kernel_ir_smoke__molt_module_chunk_1"
+    module_main = next(
+        func for func in ir["functions"] if func["name"] == "molt_main"
     )
     assert any(
         op.get("kind") == "call" and op.get("s_value") == "molt_gpu_kernel_launch"
-        for op in module_chunk["ops"]
+        for op in module_main["ops"]
     )

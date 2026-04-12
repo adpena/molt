@@ -80,6 +80,17 @@ fn intrinsic_manifest_name(runtime_name: &str) -> &str {
     }
 }
 
+fn gpu_runtime_call_symbol(kind: &str) -> Option<&'static str> {
+    match kind {
+        "gpu_thread_id" => Some("molt_gpu_thread_id"),
+        "gpu_block_id" => Some("molt_gpu_block_id"),
+        "gpu_block_dim" => Some("molt_gpu_block_dim"),
+        "gpu_grid_dim" => Some("molt_gpu_grid_dim"),
+        "gpu_barrier" => Some("molt_gpu_barrier"),
+        _ => None,
+    }
+}
+
 fn prepare_lir_wasm_fast_output(
     tir_func: &crate::tir::function::TirFunction,
 ) -> Option<crate::tir::lower_to_wasm::WasmFunctionOutput> {
@@ -299,6 +310,8 @@ struct CompileFuncContext<'a> {
     const_str_scratch_segment: DataSegmentRef,
     /// Precomputed production-safe LIR-based wasm outputs keyed by function name.
     lir_fast_outputs: &'a BTreeMap<String, crate::tir::lower_to_wasm::WasmFunctionOutput>,
+    /// Functions proven to return one of their parameters by alias.
+    return_alias_summaries: &'a BTreeMap<String, crate::passes::ReturnAliasSummary>,
 }
 
 trait TypeSectionExt {
@@ -2425,7 +2438,11 @@ impl WasmBackend {
                 .iter()
                 .filter_map(|op| {
                     if op.kind == "builtin_func"
-                        && op.s_value.as_deref() == Some("molt_require_intrinsic_runtime")
+                        && matches!(
+                            op.s_value.as_deref(),
+                            Some("molt_require_intrinsic_runtime")
+                                | Some("molt_load_intrinsic_runtime")
+                        )
                     {
                         op.out.as_deref()
                     } else {
@@ -2495,6 +2512,11 @@ impl WasmBackend {
                     } else {
                         direct_import_call_specs.insert(target_name.clone(), arity);
                     }
+                }
+                if let Some(runtime_name) = gpu_runtime_call_symbol(op.kind.as_str()) {
+                    direct_import_call_specs
+                        .entry(runtime_name.to_string())
+                        .or_insert(0);
                 }
                 if op.kind == "call_func"
                     && let Some(args) = op.args.as_ref()
@@ -3853,6 +3875,7 @@ impl WasmBackend {
         }
 
         let import_ids = self.import_ids.clone();
+        let return_alias_summaries = crate::passes::compute_return_alias_summaries(&ir.functions);
 
         // Build the set of functions whose WASM signature includes a leading
         // closure parameter.  The `call_guarded` fast path needs this to
@@ -3883,6 +3906,7 @@ impl WasmBackend {
             class_def_spill_offset,
             const_str_scratch_segment,
             lir_fast_outputs: &lir_fast_outputs,
+            return_alias_summaries: &return_alias_summaries,
         };
         for func_ir in &ir.functions {
             let type_idx = if func_ir.name.ends_with("_poll") {
@@ -4610,27 +4634,42 @@ impl WasmBackend {
         self.funcs.function(0);
         self.func_count += 1;
         let mut func = Function::new_with_locals_types(Vec::new());
-        emit_call(&mut func, reloc_enabled, self.import_ids["runtime_init"]);
+        self.emit_host_init_sequence(
+            reloc_enabled,
+            func_index,
+            &mut func,
+            table_init_index,
+            manifest_segment,
+            manifest_len,
+        );
+        emit_call(&mut func, reloc_enabled, main_index);
+        func.instruction(&Instruction::End);
+        self.codes.function(&func);
+        func_index
+    }
+
+    fn emit_host_init_sequence(
+        &mut self,
+        reloc_enabled: bool,
+        func_index: u32,
+        func: &mut Function,
+        table_init_index: u32,
+        manifest_segment: DataSegmentRef,
+        manifest_len: u32,
+    ) {
+        emit_call(func, reloc_enabled, self.import_ids["runtime_init"]);
         func.instruction(&Instruction::Drop);
-        // Set the intrinsic manifest BEFORE table init and module init.
-        // This tells the runtime which intrinsics this app actually uses.
-        // Use emit_data_ptr to register a relocation so wasm-ld adjusts the
-        // pointer after linking (raw I64Const would become stale).
         if manifest_len > 0 {
-            self.emit_data_ptr(reloc_enabled, func_index, &mut func, manifest_segment);
+            self.emit_data_ptr(reloc_enabled, func_index, func, manifest_segment);
             func.instruction(&Instruction::I64Const(i64::from(manifest_len)));
             emit_call(
-                &mut func,
+                func,
                 reloc_enabled,
                 self.import_ids["set_intrinsic_manifest"],
             );
             func.instruction(&Instruction::Drop);
         }
-        emit_call(&mut func, reloc_enabled, table_init_index);
-        emit_call(&mut func, reloc_enabled, main_index);
-        func.instruction(&Instruction::End);
-        self.codes.function(&func);
-        func_index
+        emit_call(func, reloc_enabled, table_init_index);
     }
 
     fn compile_func(&mut self, func_ir: &FunctionIR, type_idx: u32, ctx: &CompileFuncContext<'_>) {
@@ -5398,6 +5437,29 @@ impl WasmBackend {
             };
             let (rc_skip_inc, _rc_skip_dec) =
                 crate::passes::compute_rc_coalesce_skips(ops, &last_use_local);
+            let live_object_locals_for_call =
+                |rel_idx: usize, out_name: Option<&String>| -> Vec<u32> {
+                    let mut live = BTreeSet::new();
+                    for (name, &local_idx) in &locals {
+                        if name == "none" {
+                            continue;
+                        }
+                        if out_name.is_some_and(|out| out == name) {
+                            continue;
+                        }
+                        if name.starts_with("__molt_tmp")
+                            || name.ends_with("_ptr")
+                            || name.ends_with("_len")
+                        {
+                            continue;
+                        }
+                        if !last_use_local.get(name).is_some_and(|last| *last > rel_idx) {
+                            continue;
+                        }
+                        live.insert(local_idx);
+                    }
+                    live.into_iter().collect()
+                };
 
             // Peephole state: track WASM locals whose raw (unboxed) integer
             // value is known at compile time.  Populated by `const` ops;
@@ -9647,6 +9709,16 @@ impl WasmBackend {
                         let attrs_base = spill_base + bases_words * 8;
                         let attrs_start = 1 + nbases;
 
+                        // `class_def` spills boxed handles through shared linear memory
+                        // before the runtime helper snapshots them. Pin every handle
+                        // across that helper call so RC cleanup cannot reclaim or reuse
+                        // any object between the spill stores and `guarded_class_def`.
+                        for arg_name in args {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(arg));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                        }
+
                         for (i, base_name) in args[1..1 + nbases].iter().enumerate() {
                             let base = locals[base_name];
                             func.instruction(&Instruction::I32Const(
@@ -9693,6 +9765,11 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(layout_version));
                         func.instruction(&Instruction::I64Const(flags));
                         emit_call(func, reloc_enabled, import_ids["guarded_class_def"]);
+                        for arg_name in args.iter().rev() {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(arg));
+                            emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
+                        }
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
@@ -10785,10 +10862,47 @@ impl WasmBackend {
                             }
                         }
                     }
+                    "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim"
+                    | "gpu_barrier" => {
+                        let runtime_name =
+                            gpu_runtime_call_symbol(op.kind.as_str()).expect("gpu runtime symbol");
+                        let import_name = runtime_name
+                            .strip_prefix("molt_")
+                            .unwrap_or(runtime_name);
+                        let out = locals[op.out.as_ref().expect("gpu op result missing")];
+                        emit_call(func, reloc_enabled, import_ids[import_name]);
+                        func.instruction(&Instruction::LocalSet(out));
+                    }
                     "call" => {
                         let target_name = op.s_value.as_ref().unwrap();
                         let args_names = op.args.as_ref().unwrap();
                         let out = locals[op.out.as_ref().unwrap()];
+                        let live_object_locals =
+                            live_object_locals_for_call(rel_idx, op.out.as_ref());
+                        for local_idx in &live_object_locals {
+                            func.instruction(&Instruction::LocalGet(*local_idx));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                        }
+                        let returns_alias_param = ctx
+                            .return_alias_summaries
+                            .get(target_name)
+                            .and_then(|summary| match summary {
+                                crate::passes::ReturnAliasSummary::Param(param_idx)
+                                    if *param_idx < args_names.len() =>
+                                {
+                                    Some(*param_idx)
+                                }
+                                _ => None,
+                            })
+                            .is_some();
+                        if returns_alias_param
+                            && std::env::var("MOLT_DEBUG_WASM_RETURN_ALIAS").as_deref() == Ok("1")
+                        {
+                            eprintln!(
+                                "[molt wasm return-alias] kind=call caller={} callee={}",
+                                func_ir.name, target_name
+                            );
+                        }
                         let func_idx = *func_indices.get(target_name).unwrap_or_else(|| {
                             panic!(
                                 "call target not found: '{}' in func '{}'",
@@ -10818,13 +10932,48 @@ impl WasmBackend {
                             func.instruction(&Instruction::LocalGet(arg));
                         }
                         emit_call(func, reloc_enabled, func_idx);
-                        func.instruction(&Instruction::LocalSet(out));
+                        if returns_alias_param {
+                            func.instruction(&Instruction::LocalTee(out));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                        } else {
+                            func.instruction(&Instruction::LocalSet(out));
+                        }
+                        for local_idx in live_object_locals.iter().rev() {
+                            func.instruction(&Instruction::LocalGet(*local_idx));
+                            emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
+                        }
                     }
                     "call_internal" => {
                         let target_name = op.s_value.as_ref().unwrap();
                         let args_names = op.args.as_ref().unwrap();
                         let out_name = op.out.as_ref().unwrap();
                         let out = locals[out_name];
+                        let live_object_locals =
+                            live_object_locals_for_call(rel_idx, op.out.as_ref());
+                        for local_idx in &live_object_locals {
+                            func.instruction(&Instruction::LocalGet(*local_idx));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                        }
+                        let returns_alias_param = ctx
+                            .return_alias_summaries
+                            .get(target_name)
+                            .and_then(|summary| match summary {
+                                crate::passes::ReturnAliasSummary::Param(param_idx)
+                                    if *param_idx < args_names.len() =>
+                                {
+                                    Some(*param_idx)
+                                }
+                                _ => None,
+                            })
+                            .is_some();
+                        if returns_alias_param
+                            && std::env::var("MOLT_DEBUG_WASM_RETURN_ALIAS").as_deref() == Ok("1")
+                        {
+                            eprintln!(
+                                "[molt wasm return-alias] kind=call_internal caller={} callee={}",
+                                func_ir.name, target_name
+                            );
+                        }
                         let func_idx = *func_indices
                             .get(target_name)
                             .expect("call_internal target not found");
@@ -10885,7 +11034,16 @@ impl WasmBackend {
                             func.instruction(&Instruction::I64Const(0));
                             func.instruction(&Instruction::LocalSet(out));
                         } else {
-                            func.instruction(&Instruction::LocalSet(out));
+                            if returns_alias_param {
+                                func.instruction(&Instruction::LocalTee(out));
+                                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                            } else {
+                                func.instruction(&Instruction::LocalSet(out));
+                            }
+                        }
+                        for local_idx in live_object_locals.iter().rev() {
+                            func.instruction(&Instruction::LocalGet(*local_idx));
+                            emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
                         }
                     }
                     "inc_ref" | "borrow" => {
@@ -10983,27 +11141,6 @@ impl WasmBackend {
                                 // Output aliases input bits — inc_ref to prevent
                                 // use-after-free when the input name is dec_ref'd
                                 // independently by tracking/check_exception cleanup.
-                                emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
-                                func.instruction(&Instruction::LocalGet(src));
-                                let out = locals[out_name];
-                                func.instruction(&Instruction::LocalSet(out));
-                            } else {
-                                func.instruction(&Instruction::Drop);
-                            }
-                        } else {
-                            func.instruction(&Instruction::Drop);
-                        }
-                    }
-                    "identity_alias" => {
-                        let args_names = op.args.as_ref().expect("identity_alias args missing");
-                        let src_name = args_names
-                            .first()
-                            .expect("identity_alias requires one source arg");
-                        let src = locals[src_name];
-                        func.instruction(&Instruction::LocalGet(src));
-                        if let Some(out_name) = op.out.as_ref() {
-                            if out_name != "none" {
-                                // Same aliasing hazard as box/unbox/cast/widen above.
                                 emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                                 func.instruction(&Instruction::LocalGet(src));
                                 let out = locals[out_name];
@@ -11401,19 +11538,26 @@ impl WasmBackend {
                     }
                     "call_func" => {
                         let args_names = op.args.as_ref().unwrap();
-                        if args_names.len() == 3 && runtime_lookup_only_vars.contains(&args_names[0])
+                        let live_object_locals =
+                            live_object_locals_for_call(rel_idx, op.out.as_ref());
+                        for local_idx in &live_object_locals {
+                            func.instruction(&Instruction::LocalGet(*local_idx));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                        }
+                        if args_names.len() == 3
+                            && runtime_lookup_only_vars.contains(&args_names[0])
                         {
                             let name_bits = locals[&args_names[1]];
                             let namespace_bits = locals[&args_names[2]];
                             let out = locals[op.out.as_ref().unwrap()];
                             func.instruction(&Instruction::LocalGet(name_bits));
                             func.instruction(&Instruction::LocalGet(namespace_bits));
-                            emit_call(
-                                func,
-                                reloc_enabled,
-                                import_ids["require_intrinsic_runtime"],
-                            );
+                            emit_call(func, reloc_enabled, import_ids["require_intrinsic_runtime"]);
                             func.instruction(&Instruction::LocalSet(out));
+                            for local_idx in live_object_locals.iter().rev() {
+                                func.instruction(&Instruction::LocalGet(*local_idx));
+                                emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
+                            }
                             continue;
                         }
                         // Outlined: spill args to linear memory, then delegate
@@ -11446,9 +11590,19 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(code_id));
                         emit_call(func, reloc_enabled, import_ids["call_func_dispatch"]);
                         func.instruction(&Instruction::LocalSet(out));
+                        for local_idx in live_object_locals.iter().rev() {
+                            func.instruction(&Instruction::LocalGet(*local_idx));
+                            emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
+                        }
                     }
                     "invoke_ffi" => {
                         let args_names = op.args.as_ref().unwrap();
+                        let live_object_locals =
+                            live_object_locals_for_call(rel_idx, op.out.as_ref());
+                        for local_idx in &live_object_locals {
+                            func.instruction(&Instruction::LocalGet(*local_idx));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                        }
                         let func_bits = locals[&args_names[0]];
                         let out = locals[op.out.as_ref().unwrap()];
                         let callargs_tmp = locals["__molt_tmp0"];
@@ -11482,12 +11636,22 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(box_bool(require_bridge_cap)));
                         emit_call(func, reloc_enabled, import_ids["invoke_ffi_ic"]);
                         func.instruction(&Instruction::LocalSet(out));
+                        for local_idx in live_object_locals.iter().rev() {
+                            func.instruction(&Instruction::LocalGet(*local_idx));
+                            emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
+                        }
                     }
                     "call_bind" | "call_indirect" => {
                         let args_names = op.args.as_ref().unwrap();
                         let func_bits = locals[&args_names[0]];
                         let builder_ptr = locals[&args_names[1]];
                         let out = op.out.as_ref().and_then(|name| locals.get(name).copied());
+                        let live_object_locals =
+                            live_object_locals_for_call(rel_idx, op.out.as_ref());
+                        for local_idx in &live_object_locals {
+                            func.instruction(&Instruction::LocalGet(*local_idx));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                        }
                         let call_site_label = if op.kind == "call_indirect" {
                             "call_indirect"
                         } else {
@@ -11511,11 +11675,21 @@ impl WasmBackend {
                         } else {
                             func.instruction(&Instruction::Drop);
                         }
+                        for local_idx in live_object_locals.iter().rev() {
+                            func.instruction(&Instruction::LocalGet(*local_idx));
+                            emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
+                        }
                     }
                     "call_method" => {
                         let args_names = op.args.as_ref().unwrap();
                         let method_bits = locals[&args_names[0]];
                         let out = locals[op.out.as_ref().unwrap()];
+                        let live_object_locals =
+                            live_object_locals_for_call(rel_idx, op.out.as_ref());
+                        for local_idx in &live_object_locals {
+                            func.instruction(&Instruction::LocalGet(*local_idx));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
+                        }
 
                         // Fast-path: dispatch known bound-method patterns
                         // directly without callargs allocation or IC lookup.
@@ -11577,6 +11751,10 @@ impl WasmBackend {
                             emit_call(func, reloc_enabled, import_ids["call_bind_ic"]);
                         }
                         func.instruction(&Instruction::LocalSet(out));
+                        for local_idx in live_object_locals.iter().rev() {
+                            func.instruction(&Instruction::LocalGet(*local_idx));
+                            emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
+                        }
                     }
                     "chan_new" => {
                         let args = op.args.as_ref().unwrap();
@@ -15173,6 +15351,7 @@ fn add_reloc_sections(
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use wasmparser::{Operator, Parser, Payload};
 
     #[test]
     fn production_lir_wasm_fast_path_is_reserved_for_global_builtin_lane() {
