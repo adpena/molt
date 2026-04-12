@@ -3064,28 +3064,40 @@ impl SimpleBackend {
                 &llvm.module,
             );
 
-            let func_count = ir.functions.len();
-            let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
+            let func_count = ir.functions.iter().filter(|func| !func.is_extern).count();
+            let total_ops: usize = ir
+                .functions
+                .iter()
+                .filter(|func| !func.is_extern)
+                .map(|f| f.ops.len())
+                .sum();
             eprintln!(
                 "MOLT_BACKEND(llvm): compiling {func_count} functions ({total_ops} total ops)"
             );
             let codegen_start = std::time::Instant::now();
 
-            let tir_funcs: Vec<_> = ir.functions.iter().map(lower_to_tir).collect();
+            let tir_funcs: Vec<_> = ir
+                .functions
+                .iter()
+                .map(|func_ir| (func_ir.is_extern, lower_to_tir(func_ir)))
+                .collect();
             llvm.function_param_types = tir_funcs
                 .iter()
-                .map(|func| (func.name.clone(), func.param_types.clone()))
+                .map(|(_, func)| (func.name.clone(), func.param_types.clone()))
                 .collect();
             llvm.function_return_types = tir_funcs
                 .iter()
-                .map(|func| (func.name.clone(), func.return_type.clone()))
+                .map(|(_, func)| (func.name.clone(), func.return_type.clone()))
                 .collect();
 
-            for tir_func in &tir_funcs {
+            for (_, tir_func) in &tir_funcs {
                 crate::llvm_backend::lowering::declare_tir_function(tir_func, &llvm);
             }
 
-            for tir_func in &tir_funcs {
+            for (is_extern, tir_func) in &tir_funcs {
+                if *is_extern {
+                    continue;
+                }
                 if env_setting("TIR_DUMP").as_deref() == Some("1")
                     || env_setting("MOLT_TIR_DUMP").as_deref() == Some("1")
                 {
