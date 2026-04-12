@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import bisect
+import json
 import os
 import sys
 import time
@@ -5348,6 +5349,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             gen_val = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=gen_val))
             set_attr("__molt_is_async_generator__", gen_val)
+
+    def _build_gpu_kernel_descriptor_json(
+        self, *, func_symbol: str, func_name: str
+    ) -> str:
+        func_info = self.funcs_map[func_symbol]
+        payload = {
+            "schema_version": 1,
+            "kind": "molt_gpu_kernel",
+            "symbol": func_symbol,
+            "name": func_name,
+            "params": list(func_info["params"]),
+            "ops": self.map_ops_to_json(func_info["ops"], function_name=func_name),
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
     def _split_function_args(
@@ -27540,6 +27555,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._restore_function_state(prev_state)
         self.current_gpu_kernel_context = prev_gpu_kernel_context
         self.current_method_first_param = prev_first_param
+        if is_gpu_kernel:
+            descriptor_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(
+                MoltOp(
+                    kind="CONST_STR",
+                    args=[
+                        self._build_gpu_kernel_descriptor_json(
+                            func_symbol=func_symbol, func_name=func_name
+                        )
+                    ],
+                    result=descriptor_val,
+                )
+            )
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[func_val, "__molt_gpu_descriptor__", descriptor_val],
+                    result=MoltValue("none"),
+                )
+            )
         if node.decorator_list:
             decorated = func_val
             for deco in reversed(node.decorator_list):

@@ -109,3 +109,40 @@ def test_gpu_kernel_call_lowers_to_first_class_gpu_launch_ir(tmp_path: Path) -> 
         op.get("kind") == "call" and op.get("s_value") == "molt_gpu_kernel_launch"
         for op in module_main["ops"]
     )
+
+
+def test_gpu_kernel_descriptor_is_attached_to_function_metadata() -> None:
+    ir = compile_to_tir(
+        "import molt.gpu as gpu\n"
+        "\n"
+        "@gpu.kernel\n"
+        "def vector_add(a, b, c, n):\n"
+        "    tid = gpu.thread_id()\n"
+        "    if tid < n:\n"
+        "        c[tid] = a[tid] + b[tid]\n"
+        "\n"
+        "a = gpu.to_device([1.0, 2.0, 3.0, 4.0])\n"
+        "b = gpu.to_device([10.0, 20.0, 30.0, 40.0])\n"
+        "c = gpu.alloc(4, float)\n"
+        "vector_add[1, 4](a, b, c, 4)\n"
+    )
+
+    descriptor_set = False
+    descriptor_payload = None
+    for func in ir["functions"]:
+        for index, op in enumerate(func["ops"]):
+            if (
+                op.get("kind") == "set_attr_generic_obj"
+                and op.get("s_value") == "__molt_gpu_descriptor__"
+            ):
+                descriptor_set = True
+                value_name = op["args"][1]
+                for prior in reversed(func["ops"][:index]):
+                    if prior.get("out") == value_name and prior.get("kind") == "const_str":
+                        descriptor_payload = prior.get("s_value")
+                        break
+    assert descriptor_set is True
+    assert isinstance(descriptor_payload, str)
+    assert '"kind":"molt_gpu_kernel"' in descriptor_payload
+    assert '"name":"vector_add"' in descriptor_payload
+    assert '"symbol":"__main____vector_add"' in descriptor_payload
