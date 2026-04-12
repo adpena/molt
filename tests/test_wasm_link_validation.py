@@ -542,6 +542,25 @@ def test_tree_shake_runtime_reuses_cached_result(
     assert second == final_runtime
 
 
+def test_canonical_split_runtime_required_exports_uses_runtime_export_surface() -> None:
+    module = _build_exported_runtime_module_many(
+        [
+            "molt_exception_pending",
+            "molt_object_field_get",
+            "molt_object_field_set",
+            "molt_guarded_field_get_ptr",
+        ]
+    )
+
+    exports = wasm_link._canonical_split_runtime_required_exports(module)
+
+    assert exports == {
+        "molt_object_field_get",
+        "molt_object_field_set",
+        "molt_guarded_field_get_ptr",
+    }
+
+
 def test_tree_shake_runtime_omits_converge_flag(
     tmp_path: Path,
     monkeypatch,

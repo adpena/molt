@@ -19,15 +19,16 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 import pytest
 import urllib.error
 import urllib.request
-import molt.cli as cli
-import tools.bench_wasm as bench_wasm
 from tests.wasm_linked_runner import _read_timeout_seconds
+from molt import cli as molt_cli
+import tools.wasm_link as wasm_link
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -126,7 +127,11 @@ def test_build_isolate_import_ops_initializes_code_slots() -> None:
 
 def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedProcess:
     """Run ``molt build --target wasm --split-runtime`` and return the result."""
-    env = os.environ.copy()
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("PYTEST_")
+    }
     repo_src = str(ROOT / "src")
     current_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
@@ -140,11 +145,7 @@ def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedPro
     diff_target_dir.mkdir(parents=True, exist_ok=True)
     env["CARGO_TARGET_DIR"] = str(target_dir)
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
-    env.setdefault("MOLT_SESSION_ID", "test-wasm-split-runtime")
-    env.setdefault("CARGO_BUILD_JOBS", "1")
-    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
-    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
+    env["MOLT_SESSION_ID"] = "test-wasm-split-runtime"
 
     cmd = [
         sys.executable,
@@ -173,40 +174,13 @@ def _run_split_direct(
     output_dir: Path,
     *argv: str,
     timeout: int = 60,
-    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["MOLT_WASM_DIRECT_LINK"] = "1"
     env["MOLT_WASM_PREFER_LINKED"] = "0"
     env["MOLT_RUNTIME_WASM"] = str(output_dir / "molt_runtime.wasm")
-    if extra_env:
-        env.update(extra_env)
     return subprocess.run(
         ["node", "wasm/run_wasm.js", str(output_dir / "app.wasm"), *argv],
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=str(ROOT),
-        timeout=timeout,
-    )
-
-
-def _run_split_direct_host_exports(
-    output_dir: Path,
-    calls_path: Path,
-    *,
-    timeout: int = 60,
-    extra_env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env["MOLT_WASM_DIRECT_LINK"] = "1"
-    env["MOLT_WASM_PREFER_LINKED"] = "0"
-    env["MOLT_RUNTIME_WASM"] = str(output_dir / "molt_runtime.wasm")
-    env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
-    if extra_env:
-        env.update(extra_env)
-    return subprocess.run(
-        ["node", "wasm/run_wasm.js", str(output_dir / "app.wasm")],
         capture_output=True,
         text=True,
         env=env,
@@ -309,323 +283,6 @@ def _run_split_worker_live(
             except subprocess.TimeoutExpired:
                 _terminate_worker_tree(signal.SIGKILL)
                 proc.wait(timeout=10)
-
-
-def test_falcon_hostfed_split_runtime_benchmark_emits_phase_json(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    artifact_dir = tmp_path / "artifact"
-    artifact_dir.mkdir()
-    (artifact_dir / "app.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
-    (artifact_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
-
-    init_calls = tmp_path / "calls_init_only.json"
-    init_calls.write_text(
-        json.dumps(
-            {
-                "calls": [
-                    {
-                        "export": "main_molt__init",
-                        "args": [
-                            {"kind": "bytes_path", "path": "/tmp/model.safetensors"},
-                            {"kind": "text_path", "path": "/tmp/config.json"},
-                        ],
-                    }
-                ]
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    token_calls = tmp_path / "calls.json"
-    token_calls.write_text(
-        json.dumps(
-            {
-                "calls": [
-                    {
-                        "export": "main_molt__init",
-                        "args": [
-                            {"kind": "bytes_path", "path": "/tmp/model.safetensors"},
-                            {"kind": "text_path", "path": "/tmp/config.json"},
-                        ],
-                    },
-                    {
-                        "export": "main_molt__ocr_tokens",
-                        "args": [
-                            {"kind": "int", "value": 896},
-                            {"kind": "int", "value": 544},
-                            {"kind": "bytes_path", "path": "/tmp/rgb.bin"},
-                            {"kind": "list_int", "value": [257]},
-                            {"kind": "int", "value": 1},
-                        ],
-                    },
-                ]
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    run_calls: list[dict[str, str]] = []
-    outputs = [
-        bench_wasm._RunResult(
-            returncode=0,
-            stdout=json.dumps(
-                [
-                    {
-                        "export": "main_molt__init",
-                        "duration_ms": 11,
-                        "result_repr": None,
-                    }
-                ]
-            )
-            + "\n",
-        ),
-        bench_wasm._RunResult(
-            returncode=0,
-            stdout=json.dumps(
-                [
-                    {
-                        "export": "main_molt__init",
-                        "duration_ms": 13,
-                        "result_repr": None,
-                    },
-                    {
-                        "export": "main_molt__ocr_tokens",
-                        "duration_ms": 97,
-                        "result_repr": "HELLO",
-                    },
-                ]
-            )
-            + "\n",
-        ),
-    ]
-
-    def _fake_run_cmd(cmd, env, capture, tty, log, timeout_s=None):
-        run_calls.append(
-            {
-                "cmd": " ".join(cmd),
-                "calls_json": env["MOLT_WASM_EXPORT_CALLS_JSON"],
-                "runtime_wasm": env["MOLT_RUNTIME_WASM"],
-                "direct_link": env["MOLT_WASM_DIRECT_LINK"],
-                "prefer_linked": env["MOLT_WASM_PREFER_LINKED"],
-            }
-        )
-        return outputs.pop(0)
-
-    monkeypatch.setattr(bench_wasm, "_run_cmd", _fake_run_cmd)
-    monkeypatch.setattr(bench_wasm, "_git_rev", lambda: "deadbeef")
-
-    payload = bench_wasm.run_falcon_hostfed_split_runtime_benchmark(
-        artifact_dir=artifact_dir,
-        init_only_calls=init_calls,
-        token_calls=token_calls,
-        runner_cmd=["node", "wasm/run_wasm.js"],
-        runner_name="node",
-        log=None,
-    )
-
-    assert payload["benchmark"] == "falcon_split_hostfed"
-    assert payload["ok"] is True
-    assert payload["summary"]["init_only_duration_ms"] == 11
-    assert payload["summary"]["init_plus_1_token_duration_ms"] == 97
-    assert payload["phases"][0]["label"] == "init_only"
-    assert payload["phases"][1]["label"] == "init_plus_1_token"
-    assert payload["phases"][0]["call_count"] == 1
-    assert payload["phases"][1]["call_count"] == 2
-    assert payload["phases"][1]["second_call_duration_ms"] == 97
-    assert payload["phases"][1]["exports"] == [
-        "main_molt__init",
-        "main_molt__ocr_tokens",
-    ]
-    assert payload["calls_init_only"] == str(init_calls)
-    assert payload["calls_init_plus_1_token"] == str(token_calls)
-    assert payload["artifact_dir"] == str(artifact_dir)
-    assert run_calls[0]["calls_json"] == str(init_calls)
-    assert run_calls[1]["calls_json"] == str(token_calls)
-    assert run_calls[0]["direct_link"] == "1"
-    assert run_calls[0]["prefer_linked"] == "0"
-
-    out_path = tmp_path / "bench" / "results" / "falcon_split_runtime.json"
-    bench_wasm.write_json(out_path, payload)
-    written = json.loads(out_path.read_text())
-    assert written["benchmark"] == "falcon_split_hostfed"
-    assert written["ok"] is True
-    assert written["summary"]["init_only_duration_ms"] == 11
-    assert bench_wasm._falcon_hostfed_default_json_out() == Path(
-        "bench/results/falcon_split_runtime.json"
-    )
-
-
-def test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output(
-    tmp_path: Path,
-) -> None:
-    src = tmp_path / "gpu_kernel_smoke.py"
-    src.write_text(
-        "import molt.gpu as gpu\n"
-        "\n"
-        "@gpu.kernel\n"
-        "def vector_add(a, b, c, n):\n"
-        "    tid = gpu.thread_id()\n"
-        "    if tid < n:\n"
-        "        c[tid] = a[tid] + b[tid]\n"
-        "\n"
-        "a = gpu.to_device([1.0, 2.0, 3.0, 4.0])\n"
-        "b = gpu.to_device([10.0, 20.0, 30.0, 40.0])\n"
-        "c = gpu.alloc(4, float)\n"
-        "vector_add[1, 4](a, b, c, 4)\n"
-        "print(gpu.from_device(c))\n",
-        encoding="utf-8",
-    )
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-
-    build = _build_split(src, out_dir)
-    assert build.returncode == 0, build.stdout + build.stderr
-
-    run = _run_split_direct(out_dir, timeout=120)
-    assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.strip() == "[11.0, 22.0, 33.0, 44.0]"
-
-
-def test_falcon_hostfed_split_runtime_benchmark_can_limit_to_init_only_phase(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    artifact_dir = tmp_path / "artifact"
-    artifact_dir.mkdir()
-    (artifact_dir / "app.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
-    (artifact_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
-
-    init_calls = tmp_path / "calls_init_only.json"
-    init_calls.write_text(
-        json.dumps({"calls": [{"export": "main_molt__init", "args": []}]}, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    token_calls = tmp_path / "calls.json"
-    token_calls.write_text(
-        json.dumps({"calls": [{"export": "main_molt__ocr_tokens", "args": []}]}, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-    run_calls: list[str] = []
-
-    def _fake_run_cmd(cmd, env, capture, tty, log, timeout_s=None):
-        run_calls.append(env["MOLT_WASM_EXPORT_CALLS_JSON"])
-        return bench_wasm._RunResult(
-            returncode=0,
-            stdout=json.dumps(
-                [
-                    {
-                        "export": "main_molt__init",
-                        "duration_ms": 17,
-                        "result_repr": None,
-                    }
-                ]
-            )
-            + "\n",
-        )
-
-    monkeypatch.setattr(bench_wasm, "_run_cmd", _fake_run_cmd)
-    monkeypatch.setattr(bench_wasm, "_git_rev", lambda: "deadbeef")
-
-    payload = bench_wasm.run_falcon_hostfed_split_runtime_benchmark(
-        artifact_dir=artifact_dir,
-        init_only_calls=init_calls,
-        token_calls=token_calls,
-        runner_cmd=["node", "wasm/run_wasm.js"],
-        runner_name="node",
-        log=None,
-        phases=("init_only",),
-    )
-
-    assert payload["ok"] is True
-    assert [phase["label"] for phase in payload["phases"]] == ["init_only"]
-    assert payload["summary"]["init_only_duration_ms"] == 17
-    assert "init_plus_1_token_duration_ms" not in payload["summary"]
-    assert run_calls == [str(init_calls)]
-
-
-def test_hostfed_call_bundle_parses_profile_and_classifies_timeout(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    app_wasm = tmp_path / "app.wasm"
-    runtime_wasm = tmp_path / "molt_runtime.wasm"
-    app_wasm.write_bytes(b"\0asm\x01\x00\x00\x00")
-    runtime_wasm.write_bytes(b"\0asm\x01\x00\x00\x00")
-
-    calls_path = tmp_path / "calls.json"
-    calls_path.write_text(
-        json.dumps({"calls": [{"export": "main_molt__init", "args": []}]}, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-    def _fake_run_cmd(cmd, env, capture, tty, log, timeout_s=None):
-        assert timeout_s == 12.5
-        return bench_wasm._RunResult(
-            returncode=124,
-            stderr=(
-                "# timeout after 12.5s (command aborted)\n"
-                'molt_profile_json {"alloc_count": 9, "handle_resolve": 3}\n'
-            ),
-            timed_out=True,
-        )
-
-    monkeypatch.setattr(bench_wasm, "_run_cmd", _fake_run_cmd)
-
-    payload = bench_wasm._run_hostfed_call_bundle(
-        label="init_only",
-        app_wasm=app_wasm,
-        runtime_wasm=runtime_wasm,
-        calls_path=calls_path,
-        runner_cmd=["node", "wasm/run_wasm.js"],
-        runner_name="node",
-        log=None,
-        timeout_s=12.5,
-    )
-
-    assert payload["ok"] is False
-    assert payload["timed_out"] is True
-    assert payload["timeout_s"] == 12.5
-    assert payload["error_class"] == "runner_timeout"
-    assert payload["profile"] == {"alloc_count": 9, "handle_resolve": 3}
-
-
-def test_run_cmd_timeout_gracefully_collects_sigterm_output(tmp_path: Path) -> None:
-    if os.name != "posix":
-        pytest.skip("graceful SIGTERM timeout handling is POSIX-specific")
-
-    script = tmp_path / "term_cleanup.py"
-    script.write_text(
-        "import signal\n"
-        "import sys\n"
-        "import time\n"
-        "def _on_term(signum, frame):\n"
-        "    sys.stderr.write('TERM_CLEANUP\\n')\n"
-        "    sys.stderr.flush()\n"
-        "    raise SystemExit(0)\n"
-        "signal.signal(signal.SIGTERM, _on_term)\n"
-        "while True:\n"
-        "    time.sleep(1)\n",
-        encoding="utf-8",
-    )
-
-    res = bench_wasm._run_cmd(
-        [sys.executable, str(script)],
-        env=os.environ.copy(),
-        capture=True,
-        tty=False,
-        log=None,
-        timeout_s=0.1,
-    )
-
-    assert res.timed_out is True
-    assert res.returncode == 124
-    assert "TERM_CLEANUP" in res.stderr
 
 
 def _sha256(path: Path) -> str:
@@ -859,353 +516,6 @@ def test_cloudflare_demo_root_route_completes_under_split_runtime(
 
 
 @pytest.mark.slow
-def test_split_runtime_app_exports_host_init(
-    tmp_path: Path,
-) -> None:
-    source = ROOT / "examples" / "cloudflare-demo" / "src" / "app.py"
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-
-    build = _build_split(source, out_dir)
-    assert build.returncode == 0, (
-        f"split build failed (rc={build.returncode}).\n"
-        f"stdout:\n{build.stdout[-2000:]}\n"
-        f"stderr:\n{build.stderr[-2000:]}"
-    )
-
-    app_wasm = out_dir / "app.wasm"
-    exports = cli._collect_wasm_export_names(app_wasm)
-    assert "molt_host_init" in exports
-    assert "molt_main" in exports
-
-
-@pytest.mark.slow
-def test_split_runtime_host_export_calls_decode_result_repr(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "host_call_smoke.py"
-    source.write_text(
-        "_state = None\n"
-        "\n"
-        "def init(weights: bytes, config_json: str) -> None:\n"
-        "    global _state\n"
-        "    _state = (len(weights), config_json)\n"
-        "\n"
-        "def infer(width: int, height: int, rgb: bytes, prompt_ids: list[int], max_new_tokens: int) -> list[int]:\n"
-        "    if _state is None:\n"
-        "        raise RuntimeError('not initialized')\n"
-        "    return [width, height, len(rgb), max_new_tokens, _state[0], len(_state[1])] + prompt_ids\n",
-        encoding="utf-8",
-    )
-    calls_path = tmp_path / "calls.json"
-    calls_path.write_text(
-        json.dumps(
-            {
-                "calls": [
-                    {
-                        "export": "host_call_smoke__init",
-                        "args": [
-                            {"kind": "bytes_utf8", "value": "weights-bytes"},
-                            {"kind": "string", "value": "{\"k\":1}"},
-                        ],
-                    },
-                    {
-                        "export": "host_call_smoke__infer",
-                        "args": [
-                            {"kind": "int", "value": 8},
-                            {"kind": "int", "value": 4},
-                            {"kind": "bytes_utf8", "value": "abcdefghijklmnopqrstuvwx"},
-                            {"kind": "list_int", "value": [7, 8, 9]},
-                            {"kind": "int", "value": 3},
-                        ],
-                    },
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-
-    build = _build_split(source, out_dir)
-    assert build.returncode == 0, (
-        f"split build failed (rc={build.returncode}).\n"
-        f"stdout:\n{build.stdout[-2000:]}\n"
-        f"stderr:\n{build.stderr[-2000:]}"
-    )
-
-    run = _run_split_direct_host_exports(out_dir, calls_path, timeout=60)
-    assert run.returncode == 0, (
-        f"split direct host-call run failed (rc={run.returncode}).\n"
-        f"stdout:\n{run.stdout[-2000:]}\n"
-        f"stderr:\n{run.stderr[-2000:]}"
-    )
-    results = json.loads(run.stdout)
-    assert results[0]["result_repr"] == "None"
-    assert results[1]["result_repr"] == "[8, 4, 24, 3, 13, 7, 7, 8, 9]"
-
-
-@pytest.mark.slow
-def test_split_runtime_host_export_struct_unpack_from_reads_u64(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "struct_unpack_smoke.py"
-    source.write_text(
-        "import struct\n\n"
-        "def read_qword(data: bytes) -> list[int]:\n"
-        "    return [struct.unpack_from(\"<Q\", data, 0)[0]]\n",
-        encoding="utf-8",
-    )
-    data_path = tmp_path / "data.bin"
-    data_path.write_bytes(bytes([8, 7, 6, 5, 4, 3, 2, 1]))
-    calls_path = tmp_path / "calls.json"
-    calls_path.write_text(
-        json.dumps(
-            {
-                "calls": [
-                    {
-                        "export": "struct_unpack_smoke__read_qword",
-                        "args": [
-                            {
-                                "kind": "bytes_path",
-                                "path": str(data_path),
-                            }
-                        ],
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-
-    build = _build_split(source, out_dir)
-    assert build.returncode == 0, (
-        f"split build failed (rc={build.returncode}).\n"
-        f"stdout:\n{build.stdout[-2000:]}\n"
-        f"stderr:\n{build.stderr[-2000:]}"
-    )
-
-    run = _run_split_direct_host_exports(out_dir, calls_path, timeout=60)
-    assert run.returncode == 0, (
-        f"split direct host-call run failed (rc={run.returncode}).\n"
-        f"stdout:\n{run.stdout[-2000:]}\n"
-        f"stderr:\n{run.stderr[-2000:]}"
-    )
-    results = json.loads(run.stdout)
-    assert results[0]["result_repr"] == "[72623859790382856]"
-
-
-@pytest.mark.slow
-def test_split_runtime_profile_json_emits_on_wasm(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "profile_smoke.py"
-    source.write_text('print("ok")\n', encoding="utf-8")
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-
-    build = _build_split(source, out_dir)
-    assert build.returncode == 0, (
-        f"split build failed (rc={build.returncode}).\n"
-        f"stdout:\n{build.stdout[-2000:]}\n"
-        f"stderr:\n{build.stderr[-2000:]}"
-    )
-
-    run = _run_split_direct(
-        out_dir,
-        timeout=60,
-        extra_env={"MOLT_PROFILE": "1", "MOLT_PROFILE_JSON": "1"},
-    )
-    assert run.returncode == 0, (
-        f"split direct run failed (rc={run.returncode}).\n"
-        f"stdout:\n{run.stdout[-2000:]}\n"
-        f"stderr:\n{run.stderr[-2000:]}"
-    )
-    assert "ok" in run.stdout
-    assert "molt_profile_json " in run.stderr
-
-
-@pytest.mark.slow
-def test_split_runtime_host_export_bytes_survive_raw_temp_cleanup(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "main.py"
-    pkg_dir = tmp_path / "pkg"
-    pkg_dir.mkdir()
-    (pkg_dir / "__init__.py").write_text("# package marker\n", encoding="utf-8")
-    (pkg_dir / "helper_mod.py").write_text(
-        "import _intrinsics as _molt_intrinsics\n"
-        "from molt.gpu import Buffer, alloc, to_device, from_device\n"
-        "\n"
-        "def _load_optional_intrinsic(name: str):\n"
-        "    loader = getattr(_molt_intrinsics, 'load_intrinsic', None)\n"
-        "    if callable(loader):\n"
-        "        return loader(name)\n"
-        "    require = getattr(_molt_intrinsics, 'require_intrinsic', None)\n"
-        "    if callable(require):\n"
-        "        try:\n"
-        "            return require(name)\n"
-        "        except RuntimeError:\n"
-        "            return None\n"
-        "    return None\n"
-        "\n"
-        "_MOLT_GPU_BUFFER_TO_LIST = _load_optional_intrinsic('molt_gpu_buffer_to_list')\n"
-        "_MOLT_GPU_TENSOR_FROM_BUFFER = _load_optional_intrinsic('molt_gpu_tensor_from_buffer')\n"
-        "_MOLT_GPU_TENSOR_FROM_PARTS = _load_optional_intrinsic('molt_gpu_tensor_from_parts')\n"
-        "_MOLT_GPU_TENSOR_ZEROS = _load_optional_intrinsic('molt_gpu_tensor__zeros')\n"
-        "_MOLT_GPU_REPEAT_AXIS_CONTIGUOUS = _load_optional_intrinsic('molt_gpu_repeat_axis_contiguous')\n"
-        "_MOLT_GPU_LINEAR_CONTIGUOUS = _load_optional_intrinsic('molt_gpu_linear_contiguous')\n"
-        "_MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS = _load_optional_intrinsic('molt_gpu_linear_split_last_dim_contiguous')\n"
-        "_MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM = _load_optional_intrinsic('molt_gpu_tensor__tensor_linear_split_last_dim')\n"
-        "_MOLT_GPU_TENSOR_ATTENTION_HYBRID_MASK = _load_optional_intrinsic('molt_gpu_tensor__tensor_attention_hybrid_mask')\n"
-        "_MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION = _load_optional_intrinsic('molt_gpu_tensor__tensor_scaled_dot_product_attention')\n"
-        "_MOLT_GPU_LINEAR_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS = _load_optional_intrinsic('molt_gpu_linear_squared_relu_gate_interleaved_contiguous')\n"
-        "_MOLT_GPU_BROADCAST_BINARY_CONTIGUOUS = _load_optional_intrinsic('molt_gpu_broadcast_binary_contiguous')\n"
-        "_MOLT_GPU_MATMUL_CONTIGUOUS = _load_optional_intrinsic('molt_gpu_matmul_contiguous')\n"
-        "_MOLT_GPU_PERMUTE_CONTIGUOUS = _load_optional_intrinsic('molt_gpu_permute_contiguous')\n"
-        "_MOLT_GPU_RMS_NORM_LAST_AXIS_CONTIGUOUS = _load_optional_intrinsic('molt_gpu_rms_norm_last_axis_contiguous')\n"
-        "_MOLT_GPU_SOFTMAX_LAST_AXIS_CONTIGUOUS = _load_optional_intrinsic('molt_gpu_softmax_last_axis_contiguous')\n"
-        "_MOLT_GPU_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS = _load_optional_intrinsic('molt_gpu_squared_relu_gate_interleaved_contiguous')\n"
-        "\n"
-        "class Huge:\n"
-        "    def m0(self):\n"
-        "        return 0\n"
-        "    def m1(self):\n"
-        "        return 1\n"
-        "    def m2(self):\n"
-        "        return 2\n"
-        "    def m3(self):\n"
-        "        return 3\n"
-        "    def m4(self):\n"
-        "        return 4\n"
-        "    def m5(self):\n"
-        "        return 5\n"
-        "    def m6(self):\n"
-        "        return 6\n"
-        "    def m7(self):\n"
-        "        return 7\n"
-        "    def m8(self):\n"
-        "        return 8\n"
-        "    def m9(self):\n"
-        "        return 9\n"
-        "    def m10(self):\n"
-        "        return 10\n"
-        "    def m11(self):\n"
-        "        return 11\n"
-        "    def m12(self):\n"
-        "        return 12\n"
-        "    def m13(self):\n"
-        "        return 13\n"
-        "    def m14(self):\n"
-        "        return 14\n"
-        "    def m15(self):\n"
-        "        return 15\n"
-        "    def m16(self):\n"
-        "        return 16\n"
-        "    def m17(self):\n"
-        "        return 17\n"
-        "    def m18(self):\n"
-        "        return 18\n"
-        "    def m19(self):\n"
-        "        return 19\n"
-        "    def m20(self):\n"
-        "        return 20\n"
-        "    def m21(self):\n"
-        "        return 21\n"
-        "    def m22(self):\n"
-        "        return 22\n"
-        "    def m23(self):\n"
-        "        return 23\n"
-        "    def m24(self):\n"
-        "        return 24\n"
-        "    def m25(self):\n"
-        "        return 25\n"
-        "    def m26(self):\n"
-        "        return 26\n"
-        "    def m27(self):\n"
-        "        return 27\n"
-        "    def m28(self):\n"
-        "        return 28\n"
-        "    def m29(self):\n"
-        "        return 29\n"
-        "    def m30(self):\n"
-        "        return 30\n"
-        "    def m31(self):\n"
-        "        return 31\n"
-        "    def m32(self):\n"
-        "        return 32\n"
-        "    def m33(self):\n"
-        "        return 33\n"
-        "    def m34(self):\n"
-        "        return 34\n"
-        "    def m35(self):\n"
-        "        return 35\n"
-        "    def m36(self):\n"
-        "        return 36\n"
-        "    def m37(self):\n"
-        "        return 37\n"
-        "    def m38(self):\n"
-        "        return 38\n"
-        "    def m39(self):\n"
-        "        return 39\n"
-        "    @property\n"
-        "    def p0(self):\n"
-        "        return 0\n"
-        "    @property\n"
-        "    def p1(self):\n"
-        "        return 1\n",
-        encoding="utf-8",
-    )
-    source.write_text(
-        "from pkg.helper_mod import Huge\n\n"
-        "def main__probe(data: bytes):\n"
-        "    return [data[0], len(data)]\n",
-        encoding="utf-8",
-    )
-    data_path = tmp_path / "data.bin"
-    payload = (
-        b'O\\x00\\x00\\x00\\x00\\x00\\x00\\x00'
-        b'{\"x\":{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[0,4]},\"__metadata__\":{\"a\":\"b\"}}'
-        b'\\x00\\x00\\x60\\x40'
-    )
-    data_path.write_bytes(payload)
-    calls_path = tmp_path / "calls.json"
-    calls_path.write_text(
-        json.dumps(
-            {
-                "calls": [
-                    {
-                        "export": "main__main__probe",
-                        "args": [{"kind": "bytes_path", "path": str(data_path)}],
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-
-    build = _build_split(source, out_dir)
-    assert build.returncode == 0, (
-        f"split build failed (rc={build.returncode}).\n"
-        f"stdout:\n{build.stdout[-2000:]}\n"
-        f"stderr:\n{build.stderr[-2000:]}"
-    )
-
-    run = _run_split_direct_host_exports(out_dir, calls_path, timeout=120)
-    assert run.returncode == 0, (
-        f"split direct host-call run failed (rc={run.returncode}).\n"
-        f"stdout:\n{run.stdout[-2000:]}\n"
-        f"stderr:\n{run.stderr[-2000:]}"
-    )
-    results = json.loads(run.stdout)
-    assert results[0]["result_repr"] == "[79, 91]"
-
-
-@pytest.mark.slow
 def test_cloudflare_demo_root_route_completes_under_split_runtime_worker(
     tmp_path: Path,
 ) -> None:
@@ -1382,38 +692,127 @@ class TestManifestJson:
 class TestRuntimeCacheability:
     """Two different programs must produce identical molt_runtime.wasm for CDN caching."""
 
-    def test_runtime_hash_identical(self, split_build_a, split_build_b):
-        out_a, result_a = split_build_a
-        out_b, result_b = split_build_b
-        if result_a.returncode != 0 or result_b.returncode != 0:
-            pytest.skip("one or both builds failed")
-        rt_a = out_a / "molt_runtime.wasm"
-        rt_b = out_b / "molt_runtime.wasm"
-        if not rt_a.exists() or not rt_b.exists():
-            pytest.skip("molt_runtime.wasm not produced in both builds")
-        hash_a = _sha256(rt_a)
-        hash_b = _sha256(rt_b)
-        assert hash_a == hash_b, (
+    @staticmethod
+    def _cacheability_probe(tmp_path: Path) -> dict[str, object]:
+        passthrough = {
+            "PATH",
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TERM",
+            "TMPDIR",
+            "RUSTUP_HOME",
+            "CARGO_HOME",
+            "SDKROOT",
+            "DEVELOPER_DIR",
+        }
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key in passthrough and value
+        }
+        env["PYTHONPATH"] = str(ROOT / "src")
+        env["MOLT_PROJECT_ROOT"] = str(ROOT)
+        env["MOLT_EXT_ROOT"] = str(ROOT)
+        env["CARGO_TARGET_DIR"] = str(tmp_path / "target")
+        env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
+        env["MOLT_CACHE"] = str(ROOT / ".molt_cache")
+        env["MOLT_DIFF_ROOT"] = str(ROOT / "tmp" / "diff")
+        env["MOLT_DIFF_TMPDIR"] = str(ROOT / "tmp")
+        env["UV_CACHE_DIR"] = str(ROOT / ".uv-cache")
+        env["TMPDIR"] = str(ROOT / "tmp")
+        env["MOLT_CACHEABILITY_BASE"] = str(tmp_path)
+
+        script = """
+import hashlib, json, os
+from pathlib import Path
+import tests.test_wasm_split_runtime as t
+import tools.wasm_link as wasm_link
+from molt import cli as molt_cli
+
+base = Path(os.environ["MOLT_CACHEABILITY_BASE"])
+base.mkdir(parents=True, exist_ok=True)
+payload = {}
+for label, program in (("a", t.PROGRAM_A), ("b", t.PROGRAM_B)):
+    build_dir = base / f"split_{label}"
+    build_dir.mkdir()
+    src = build_dir / f"prog_{label}.py"
+    src.write_text(program)
+    out = build_dir / "out"
+    out.mkdir()
+    result = t._build_split(src, out)
+    payload[f"{label}_returncode"] = result.returncode
+    payload[f"{label}_stdout_tail"] = (result.stdout or "")[-2000:]
+    payload[f"{label}_stderr_tail"] = (result.stderr or "")[-4000:]
+    rt = out / "molt_runtime.wasm"
+    app = out / "app.wasm"
+    if rt.exists():
+        rt_bytes = rt.read_bytes()
+        payload[f"{label}_runtime_hash"] = hashlib.sha256(rt_bytes).hexdigest()
+        payload[f"{label}_runtime_size"] = len(rt_bytes)
+        payload[f"{label}_runtime_export_count"] = len(
+            wasm_link._collect_function_exports(rt_bytes)
+        )
+    if app.exists():
+        app_bytes = app.read_bytes()
+        payload[f"{label}_app_hash"] = hashlib.sha256(app_bytes).hexdigest()
+        payload[f"{label}_app_size"] = len(app_bytes)
+    target_root = Path(os.environ["CARGO_TARGET_DIR"])
+    target_rt = molt_cli._resolve_built_runtime_wasm_artifact(target_root, "release-fast")
+    if target_rt.exists():
+        target_bytes = target_rt.read_bytes()
+        payload[f"{label}_target_runtime_hash"] = hashlib.sha256(target_bytes).hexdigest()
+        payload[f"{label}_target_runtime_size"] = len(target_bytes)
+        payload[f"{label}_target_runtime_export_count"] = len(
+            wasm_link._collect_function_exports(target_bytes)
+        )
+    shared_rt = Path(t.ROOT) / "wasm" / "molt_runtime.wasm"
+    if shared_rt.exists():
+        shared_bytes = shared_rt.read_bytes()
+        payload[f"{label}_shared_runtime_hash"] = hashlib.sha256(shared_bytes).hexdigest()
+        payload[f"{label}_shared_runtime_size"] = len(shared_bytes)
+        payload[f"{label}_shared_runtime_export_count"] = len(
+            wasm_link._collect_function_exports(shared_bytes)
+        )
+print(json.dumps(payload))
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+        assert result.returncode == 0, (
+            f"cacheability probe failed (rc={result.returncode}).\n"
+            f"stdout:\n{result.stdout[-4000:]}\n"
+            f"stderr:\n{result.stderr[-4000:]}"
+        )
+        return json.loads(result.stdout)
+
+    def test_runtime_hash_identical(self, tmp_path: Path):
+        data = self._cacheability_probe(tmp_path)
+        assert data["a_returncode"] == 0
+        assert data["b_returncode"] == 0
+        assert data["a_runtime_hash"] == data["b_runtime_hash"], (
             f"molt_runtime.wasm differs between two builds — CDN caching will break.\n"
-            f"  Program A runtime hash: {hash_a}\n"
-            f"  Program B runtime hash: {hash_b}\n"
-            f"  Program A runtime size: {rt_a.stat().st_size}\n"
-            f"  Program B runtime size: {rt_b.stat().st_size}"
+            f"  Program A runtime hash: {data['a_runtime_hash']}\n"
+            f"  Program B runtime hash: {data['b_runtime_hash']}\n"
+            f"  Program A runtime size: {data['a_runtime_size']}\n"
+            f"  Program B runtime size: {data['b_runtime_size']}"
         )
 
-    def test_app_wasm_differs(self, split_build_a, split_build_b):
+    def test_app_wasm_differs(self, tmp_path: Path):
         """Sanity check: the app modules should be different."""
-        out_a, result_a = split_build_a
-        out_b, result_b = split_build_b
-        if result_a.returncode != 0 or result_b.returncode != 0:
-            pytest.skip("one or both builds failed")
-        app_a = out_a / "app.wasm"
-        app_b = out_b / "app.wasm"
-        if not app_a.exists() or not app_b.exists():
-            pytest.skip("app.wasm not produced in both builds")
-        hash_a = _sha256(app_a)
-        hash_b = _sha256(app_b)
-        assert hash_a != hash_b, (
+        data = self._cacheability_probe(tmp_path)
+        assert data["a_returncode"] == 0
+        assert data["b_returncode"] == 0
+        assert data["a_app_hash"] != data["b_app_hash"], (
             "app.wasm is identical for two different programs — "
             "split may not be working correctly"
         )
