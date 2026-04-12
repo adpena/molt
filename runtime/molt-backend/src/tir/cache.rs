@@ -288,6 +288,15 @@ pub fn backend_cache_dir() -> PathBuf {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    backend_cache_dir_for(&root, &exe, mtime)
+}
+
+/// Resolve the backend cache namespace for an explicit root/executable/mtime.
+///
+/// This is testable and deterministic: identical inputs must produce the same
+/// path, and changing either the executable path or mtime must invalidate the
+/// namespace.
+pub(crate) fn backend_cache_dir_for(root: &std::path::Path, exe: &std::path::Path, mtime: u64) -> PathBuf {
     let mut hasher = DefaultHasher::new();
     BACKEND_CACHE_NAMESPACE_VERSION.hash(&mut hasher);
     exe.hash(&mut hasher);
@@ -310,8 +319,8 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, OnceLock};
 
     // Use a unique temp directory per test run to avoid collisions.
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -361,6 +370,28 @@ mod tests {
         assert_ne!(
             dir, root,
             "backend cache dir should use a versioned namespace below the root"
+        );
+    }
+
+    #[test]
+    fn backend_cache_dir_for_is_deterministic_and_input_sensitive() {
+        let root = tmp_cache_dir();
+        let exe_a = PathBuf::from("/tmp/molt-backend-a");
+        let exe_b = PathBuf::from("/tmp/molt-backend-b");
+        let dir_a_1 = backend_cache_dir_for(&root, &exe_a, 111);
+        let dir_a_2 = backend_cache_dir_for(&root, &exe_a, 111);
+        let dir_b = backend_cache_dir_for(&root, &exe_b, 111);
+        let dir_time = backend_cache_dir_for(&root, &exe_a, 222);
+
+        assert_eq!(
+            dir_a_1, dir_a_2,
+            "same inputs must produce the same cache dir"
+        );
+        assert_ne!(dir_a_1, dir_b, "exe path must affect the cache namespace");
+        assert_ne!(dir_a_1, dir_time, "mtime must affect the cache namespace");
+        assert!(
+            dir_a_1.starts_with(&root),
+            "cache namespace must stay under the provided root"
         );
     }
 

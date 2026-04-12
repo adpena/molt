@@ -15584,13 +15584,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return res
 
     def visit_Call(self, node: ast.Call) -> Any:
-        # ── GPU intrinsics: gpu.thread_id(), gpu.block_id(), etc. ──
-        gpu_intrinsic = self._is_gpu_intrinsic_call(node)
-        if gpu_intrinsic is not None:
-            hint = "int" if gpu_intrinsic != "gpu_barrier" else "None"
-            res = MoltValue(self.next_var(), type_hint=hint)
-            self.emit(MoltOp(kind=gpu_intrinsic, args=[], result=res))
-            return res
+        # GPU builtins must remain ordinary Python calls until Molt has a
+        # first-class compiled-kernel extraction + launch path end to end.
+        # Today, compiled `@gpu.kernel` still executes through the launcher's
+        # sequential fallback, which monkey-patches `molt.gpu.thread_id()` and
+        # friends at runtime. Lowering those calls early to IR-only intrinsics
+        # breaks that contract and silently changes semantics.
 
         needs_bind = self._call_needs_bind(node)
         if isinstance(node.func, ast.Attribute):

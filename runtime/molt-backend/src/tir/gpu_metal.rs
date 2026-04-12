@@ -45,12 +45,20 @@ mod real {
             &self,
             buffer: &'a GpuBufferHandle,
         ) -> Result<&'a MetalBuffer, GpuError> {
-            let ptr_val = usize::from_ne_bytes(
-                buffer
-                    ._handle_bytes()
-                    .try_into()
-                    .map_err(|_| GpuError::TransferFailed("Invalid buffer handle".into()))?,
-            );
+            if buffer.platform != GpuPlatform::Metal {
+                return Err(GpuError::TransferFailed(format!(
+                    "Expected Metal buffer handle, got {:?}",
+                    buffer.platform
+                )));
+            }
+            let ptr_val =
+                usize::from_ne_bytes(buffer._handle_bytes().try_into().map_err(|_| {
+                    GpuError::TransferFailed(format!(
+                        "Invalid buffer handle width: expected {} bytes, got {}",
+                        std::mem::size_of::<usize>(),
+                        buffer._handle_bytes().len()
+                    ))
+                })?);
             if ptr_val == 0 {
                 return Err(GpuError::TransferFailed("Null Metal buffer handle".into()));
             }
@@ -130,6 +138,24 @@ mod real {
             block: [u32; 3],
             buffers: &[&MetalBuffer],
         ) -> Result<(), GpuError> {
+            if grid.contains(&0) {
+                return Err(GpuError::LaunchFailed(format!(
+                    "Invalid Metal grid dimensions: {:?}",
+                    grid
+                )));
+            }
+            if block.contains(&0) {
+                return Err(GpuError::LaunchFailed(format!(
+                    "Invalid Metal threadgroup dimensions: {:?}",
+                    block
+                )));
+            }
+            if grid[1] != 1 || grid[2] != 1 || block[1] != 1 || block[2] != 1 {
+                return Err(GpuError::LaunchFailed(format!(
+                    "Metal backend currently supports 1D launches only; got grid={:?} block={:?}",
+                    grid, block
+                )));
+            }
             // Recover the Arc<MetalPipeline> from the opaque handle bytes.
             if kernel.platform != GpuPlatform::Metal {
                 return Err(GpuError::LaunchFailed(
@@ -190,6 +216,13 @@ mod real {
             Ok(GpuBufferHandle::new(size_bytes, GpuPlatform::Metal, bytes))
         }
         fn copy_to_device(&self, buffer: &GpuBufferHandle, data: &[u8]) -> Result<(), GpuError> {
+            if data.len() > buffer.size_bytes {
+                return Err(GpuError::TransferFailed(format!(
+                    "Host write overflow: {} bytes into {}-byte Metal buffer",
+                    data.len(),
+                    buffer.size_bytes
+                )));
+            }
             let metal_buf = self.metal_buffer_from_handle(buffer)?;
             let contents = metal_buf.contents() as *mut u8;
             unsafe {
@@ -202,6 +235,13 @@ mod real {
             buffer: &GpuBufferHandle,
             data: &mut [u8],
         ) -> Result<(), GpuError> {
+            if data.len() > buffer.size_bytes {
+                return Err(GpuError::TransferFailed(format!(
+                    "Host read overflow: {} bytes from {}-byte Metal buffer",
+                    data.len(),
+                    buffer.size_bytes
+                )));
+            }
             let metal_buf = self.metal_buffer_from_handle(buffer)?;
             let contents = metal_buf.contents() as *const u8;
             unsafe {
@@ -227,12 +267,20 @@ mod real {
             Ok(())
         }
         fn free_buffer(&self, buffer: GpuBufferHandle) -> Result<(), GpuError> {
-            let ptr_val = usize::from_ne_bytes(
-                buffer
-                    ._handle_bytes()
-                    .try_into()
-                    .map_err(|_| GpuError::AllocationFailed("Invalid buffer handle".into()))?,
-            );
+            if buffer.platform != GpuPlatform::Metal {
+                return Err(GpuError::AllocationFailed(format!(
+                    "Cannot free non-Metal buffer on Metal device: {:?}",
+                    buffer.platform
+                )));
+            }
+            let ptr_val =
+                usize::from_ne_bytes(buffer._handle_bytes().try_into().map_err(|_| {
+                    GpuError::AllocationFailed(format!(
+                        "Invalid buffer handle width: expected {} bytes, got {}",
+                        std::mem::size_of::<usize>(),
+                        buffer._handle_bytes().len()
+                    ))
+                })?);
             if ptr_val != 0 {
                 // Safety: we stored this pointer via Box::into_raw in alloc_buffer.
                 let _: Box<MetalBuffer> = unsafe { Box::from_raw(ptr_val as *mut MetalBuffer) };
@@ -400,20 +448,125 @@ mod tests {
         let msl = r#"
             #include <metal_stdlib>
             using namespace metal;
-            kernel void add(device float* a [[buffer(0)]],
-                            uint id [[thread_position_in_grid]]) {
-                a[id] += 1.0;
+            kernel void add_one(device float* a [[buffer(0)]],
+                                uint id [[thread_position_in_grid]]) {
+                a[id] = a[id] + 1.0;
             }
         "#;
         let kernel = device
-            .compile_kernel("add", msl)
+            .compile_kernel("add_one", msl)
             .expect("compile_kernel should succeed");
-        assert_eq!(kernel.name, "add");
+        assert_eq!(kernel.name, "add_one");
         assert_eq!(kernel.platform, GpuPlatform::Metal);
 
+        let input: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let mut output = vec![0u8; input.len() * std::mem::size_of::<f32>()];
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                input.as_ptr() as *const u8,
+                input.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        let buf =
+            GpuDevice::alloc_buffer(&device, bytes.len()).expect("alloc_buffer should succeed");
         device
-            .launch_kernel(&kernel, [1, 1, 1], [64, 1, 1], &[])
+            .copy_to_device(&buf, bytes)
+            .expect("copy_to_device should succeed");
+        device
+            .launch_kernel(
+                &kernel,
+                [input.len() as u32, 1, 1],
+                [input.len() as u32, 1, 1],
+                &[&buf],
+            )
             .expect("launch_kernel should not crash");
         device.synchronize().expect("synchronize should succeed");
+        device
+            .copy_from_device(&buf, &mut output)
+            .expect("copy_from_device should succeed");
+        device.free_buffer(buf).expect("free_buffer should succeed");
+
+        let out: &[f32] =
+            unsafe { std::slice::from_raw_parts(output.as_ptr() as *const f32, input.len()) };
+        assert_eq!(out, &[2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-metal")]
+    fn metal_device_roundtrip_buffer_transfer() {
+        let device = MetalDevice::new().expect("MetalDevice::new should succeed");
+        let source: Vec<u8> = vec![1, 5, 9, 13, 17, 21, 25, 29];
+        let mut dst = vec![0u8; source.len()];
+        let buf =
+            GpuDevice::alloc_buffer(&device, source.len()).expect("alloc_buffer should succeed");
+        device
+            .copy_to_device(&buf, &source)
+            .expect("copy_to_device should succeed");
+        device
+            .copy_from_device(&buf, &mut dst)
+            .expect("copy_from_device should succeed");
+        device.free_buffer(buf).expect("free_buffer should succeed");
+        assert_eq!(dst, source);
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-metal")]
+    fn metal_device_rejects_oversized_copy_to_device() {
+        let device = MetalDevice::new().expect("MetalDevice::new should succeed");
+        let buf = GpuDevice::alloc_buffer(&device, 4).expect("alloc_buffer should succeed");
+        let result = device.copy_to_device(&buf, &[1, 2, 3, 4, 5]);
+        assert!(
+            result.is_err(),
+            "copy_to_device must reject oversized writes"
+        );
+        device.free_buffer(buf).expect("free_buffer should succeed");
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-metal")]
+    fn metal_device_rejects_oversized_copy_from_device() {
+        let device = MetalDevice::new().expect("MetalDevice::new should succeed");
+        let buf = GpuDevice::alloc_buffer(&device, 4).expect("alloc_buffer should succeed");
+        let mut out = [0u8; 5];
+        let result = device.copy_from_device(&buf, &mut out);
+        assert!(
+            result.is_err(),
+            "copy_from_device must reject oversized reads"
+        );
+        device.free_buffer(buf).expect("free_buffer should succeed");
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-metal")]
+    fn metal_device_rejects_non_metal_buffer_handle() {
+        let device = MetalDevice::new().expect("MetalDevice::new should succeed");
+        let fake = GpuBufferHandle::new(
+            8,
+            GpuPlatform::WebGpu,
+            vec![0; std::mem::size_of::<usize>()],
+        );
+        let result = device.free_buffer(fake);
+        assert!(result.is_err(), "free_buffer must reject non-metal handles");
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-metal")]
+    fn metal_device_rejects_zero_dimension_dispatch() {
+        let device = MetalDevice::new().expect("MetalDevice::new should succeed");
+        let msl = r#"
+            #include <metal_stdlib>
+            using namespace metal;
+            kernel void noop(device uint* out [[buffer(0)]],
+                             uint id [[thread_position_in_grid]]) {
+                out[id] = id;
+            }
+        "#;
+        let kernel = device
+            .compile_kernel("noop", msl)
+            .expect("compile_kernel should succeed");
+        let buf = GpuDevice::alloc_buffer(&device, 16).expect("alloc_buffer should succeed");
+        let result = device.launch_kernel(&kernel, [0, 1, 1], [1, 1, 1], &[&buf]);
+        assert!(result.is_err(), "launch_kernel must reject zero-sized grid");
+        device.free_buffer(buf).expect("free_buffer should succeed");
     }
 }

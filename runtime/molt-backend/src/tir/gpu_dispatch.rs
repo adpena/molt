@@ -13,6 +13,16 @@ pub fn create_gpu_device() -> Result<Box<dyn GpuDevice>, GpuError> {
         "No GPU platform available. Supported: Metal (macOS), WebGPU, CUDA, HIP".into(),
     ))?;
 
+    create_gpu_device_for_platform(platform)
+}
+
+/// Create a GPU device for a specific platform.
+///
+/// This is used by deterministic tests and by explicit backend entrypoints that
+/// should not depend on host platform auto-detection order.
+pub fn create_gpu_device_for_platform(
+    platform: GpuPlatform,
+) -> Result<Box<dyn GpuDevice>, GpuError> {
     match platform {
         GpuPlatform::Metal => {
             #[cfg(target_os = "macos")]
@@ -32,6 +42,23 @@ pub fn create_gpu_device() -> Result<Box<dyn GpuDevice>, GpuError> {
             other
         ))),
     }
+}
+
+/// Compile and launch a WGSL kernel on the WebGPU backend.
+///
+/// This is the explicit WebGPU lane for callers that already own WGSL source.
+pub fn compile_and_launch_wgsl(
+    entry_point: &str,
+    wgsl_source: &str,
+    grid: [u32; 3],
+    block: [u32; 3],
+    buffers: &[&GpuBufferHandle],
+) -> Result<(), GpuError> {
+    let device = create_gpu_device_for_platform(GpuPlatform::WebGpu)?;
+    let compiled = device.compile_kernel(entry_point, wgsl_source)?;
+    device.launch_kernel(&compiled, grid, block, buffers)?;
+    device.synchronize()?;
+    Ok(())
 }
 
 /// Compile and launch a GPU kernel from TIR.
@@ -124,6 +151,44 @@ mod tests {
         assert!(
             result.is_err(),
             "compile_and_launch should fail without gpu-metal"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-webgpu")]
+    fn create_gpu_device_for_platform_supports_webgpu() {
+        let device = create_gpu_device_for_platform(GpuPlatform::WebGpu)
+            .expect("WebGPU device should be constructible with feature enabled");
+        let buf = device
+            .alloc_buffer(32)
+            .expect("alloc_buffer should work on WebGPU");
+        assert_eq!(buf.platform, GpuPlatform::WebGpu);
+        device.free_buffer(buf).expect("free_buffer should succeed");
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-webgpu")]
+    fn compile_and_launch_wgsl_runs_minimal_kernel() {
+        let wgsl = "@compute @workgroup_size(1) fn main() {}";
+        compile_and_launch_wgsl("main", wgsl, [1, 1, 1], [1, 1, 1], &[])
+            .expect("compile_and_launch_wgsl should succeed");
+    }
+
+    #[test]
+    #[cfg(not(feature = "gpu-webgpu"))]
+    fn compile_and_launch_wgsl_requires_feature() {
+        let err = compile_and_launch_wgsl(
+            "main",
+            "@compute @workgroup_size(1) fn main() {}",
+            [1, 1, 1],
+            [1, 1, 1],
+            &[],
+        )
+        .expect_err("webgpu lane should require gpu-webgpu feature");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("gpu-webgpu"),
+            "error should mention feature gate, got: {msg}"
         );
     }
 }

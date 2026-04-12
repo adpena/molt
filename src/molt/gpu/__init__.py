@@ -141,13 +141,16 @@ def alloc(size: int, dtype: type = float, *, format_char: str | None = None) -> 
 def thread_id() -> int:
     """Get the current GPU thread ID.
 
-    This is a compile-time intrinsic — when compiled by Molt, it maps to:
+    This is the logical GPU thread ID primitive. When Molt has a real compiled
+    GPU-kernel lowering path active, it maps to:
     - Metal: [[thread_position_in_grid]]
     - WGSL: @builtin(global_invocation_id).x
     - CUDA: blockIdx.x * blockDim.x + threadIdx.x
     - HIP: hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x
 
-    At Python runtime (interpreted mode), returns 0 for testing.
+    Until that lowering path is active, interpreted and compiled sequential
+    launcher fallback both treat it as a normal Python function so the launcher
+    can override it at runtime for correctness.
     """
     return 0
 
@@ -201,8 +204,11 @@ class _KernelLauncher:
     def __call__(self, *args):
         """Launch the kernel with the given arguments.
 
-        In interpreted mode: runs the kernel function sequentially for each thread ID.
-        When compiled by Molt: dispatches to GPU via the gpu_pipeline.
+        In interpreted mode, and in compiled lanes that have not yet routed the
+        kernel through a real GPU backend, this runs the kernel function
+        sequentially for each logical thread ID. When a real compiled GPU
+        lowering path is active, the compiler/runtime may replace this with
+        backend dispatch via the GPU pipeline.
         """
         grid = self._grid or 256
         threads = self._threads or 256
@@ -234,7 +240,8 @@ def kernel(func):
             if tid < n:
                 b[tid] = a[tid] * 2.0
 
-    When compiled by Molt, this generates Metal/WGSL/CUDA/HIP shader code
-    and dispatches on the GPU. In interpreted mode, it runs sequentially.
+    This marks the function as GPU-kernel-shaped. Interpreted execution runs
+    sequentially. Compiled execution must preserve that sequential fallback
+    until a real backend dispatch path is active for the target/backend lane.
     """
     return _KernelLauncher(func)
