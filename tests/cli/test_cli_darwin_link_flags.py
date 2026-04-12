@@ -9,15 +9,36 @@ def test_append_darwin_runtime_frameworks_for_host_darwin(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(cli.sys, "platform", "darwin")
+    monkeypatch.delenv("MOLT_RUNTIME_GPU_METAL", raising=False)
     args = ["clang", "-lc++"]
     cli._append_darwin_runtime_frameworks(args, target_triple=None)
     assert args[-4:] == ["-framework", "Security", "-framework", "CoreFoundation"]
 
 
 def test_append_darwin_runtime_frameworks_for_cross_target() -> None:
+    import os
+    os.environ.pop("MOLT_RUNTIME_GPU_METAL", None)
     args = ["zig", "cc", "-target", "aarch64-macos"]
     cli._append_darwin_runtime_frameworks(args, target_triple="aarch64-apple-darwin")
     assert args[-4:] == ["-framework", "Security", "-framework", "CoreFoundation"]
+
+
+def test_append_darwin_runtime_frameworks_adds_metal_when_enabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
+    args = ["clang", "-lc++"]
+    cli._append_darwin_runtime_frameworks(args, target_triple=None)
+    assert args[-7:] == [
+        "-framework",
+        "Security",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "Metal",
+        "-lobjc",
+    ]
 
 
 def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:

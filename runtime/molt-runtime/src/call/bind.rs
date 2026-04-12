@@ -185,6 +185,29 @@ pub(crate) unsafe fn clone_callargs_builder_bits(
     Ok(clone_bits)
 }
 
+pub(crate) unsafe fn callargs_positional_snapshot(
+    _py: &PyToken<'_>,
+    builder_bits: u64,
+) -> Result<Vec<u64>, u64> {
+    let builder_ptr = ptr_from_bits(builder_bits);
+    if builder_ptr.is_null() {
+        return Err(raise_exception::<_>(_py, "TypeError", "invalid callargs builder"));
+    }
+    let args_ptr = match unsafe { require_callargs_ptr(_py, builder_ptr) } {
+        Ok(ptr) => ptr,
+        Err(err) => return Err(err),
+    };
+    let args = unsafe { &*args_ptr };
+    if !args.kw_names.is_empty() {
+        return Err(raise_exception::<_>(
+            _py,
+            "RuntimeError",
+            "gpu kernel launch does not support keyword arguments",
+        ));
+    }
+    Ok(args.pos.clone())
+}
+
 fn callargs_builder_is_live(builder_ptr: *mut u8) -> bool {
     if builder_ptr.is_null() {
         return false;
