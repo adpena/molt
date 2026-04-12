@@ -63,6 +63,9 @@ _MOLT_GPU_TENSOR_ATTENTION_HYBRID_MASK = _load_optional_intrinsic(
 _MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION = _load_optional_intrinsic(
     "molt_gpu_tensor__tensor_scaled_dot_product_attention"
 )
+_MOLT_GPU_TENSOR_TAKE_ROWS = _load_optional_intrinsic(
+    "molt_gpu_tensor__tensor_take_rows"
+)
 _MOLT_GPU_LINEAR_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS = _load_optional_intrinsic(
     "molt_gpu_linear_squared_relu_gate_interleaved_contiguous"
 )
@@ -605,6 +608,12 @@ def tensor_take_rows(
 
     if not isinstance(indices, Tensor):
         indices = Tensor(indices)
+
+    if _MOLT_GPU_TENSOR_TAKE_ROWS is not None:
+        return _MOLT_GPU_TENSOR_TAKE_ROWS(x, indices, allow_negative)
+
+    if _runtime_intrinsics_active():
+        raise RuntimeError("intrinsic unavailable: molt_gpu_tensor__tensor_take_rows")
 
     rows = tensor_data_list(indices)
     row_shape = x._shape[1:]
