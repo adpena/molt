@@ -1282,6 +1282,24 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 ..OpIR::default()
             })
         }
+        OpCode::ClassmethodNew => Some(OpIR {
+            kind: "classmethod_new".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::default()
+        }),
+        OpCode::StaticmethodNew => Some(OpIR {
+            kind: "staticmethod_new".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::default()
+        }),
+        OpCode::PropertyNew => Some(OpIR {
+            kind: "property_new".to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::default()
+        }),
 
         // Box/unbox — no-ops at SimpleIR level (type info discarded).
         OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
