@@ -333,6 +333,10 @@ fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirTyp
             _ => None,
         },
 
+        OpCode::ClassmethodNew | OpCode::StaticmethodNew | OpCode::PropertyNew => {
+            Some(TirType::DynBox)
+        }
+
         // Containers
         OpCode::BuildList => Some(TirType::List(Box::new(TirType::DynBox))),
         OpCode::BuildDict => Some(TirType::Dict(

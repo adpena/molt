@@ -238,6 +238,9 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::BuildTuple
                 | OpCode::BuildSet
                 | OpCode::BuildSlice
+                | OpCode::ClassmethodNew
+                | OpCode::StaticmethodNew
+                | OpCode::PropertyNew
                 | OpCode::AllocTask => {
                     escapes.insert(val, EscapeState::GlobalEscape);
                 }

@@ -666,6 +666,9 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::Call
         | OpCode::CallMethod
         | OpCode::CallBuiltin
+        | OpCode::ClassmethodNew
+        | OpCode::StaticmethodNew
+        | OpCode::PropertyNew
         | OpCode::BuildList
         | OpCode::BuildDict
         | OpCode::BuildTuple

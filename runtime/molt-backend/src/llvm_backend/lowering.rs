@@ -1922,6 +1922,77 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
+            OpCode::ClassmethodNew => {
+                let Some(&func_id) = op.operands.first() else {
+                    return;
+                };
+                let func_bits = self.ensure_i64(self.resolve(func_id));
+                let classmethod_fn = self.ensure_runtime_i64_fn("molt_classmethod_new", 1);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        classmethod_fn,
+                        &[func_bits.into()],
+                        "classmethod_new",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
+            OpCode::StaticmethodNew => {
+                let Some(&func_id) = op.operands.first() else {
+                    return;
+                };
+                let func_bits = self.ensure_i64(self.resolve(func_id));
+                let staticmethod_fn = self.ensure_runtime_i64_fn("molt_staticmethod_new", 1);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        staticmethod_fn,
+                        &[func_bits.into()],
+                        "staticmethod_new",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
+            OpCode::PropertyNew => {
+                if op.operands.len() != 3 {
+                    return;
+                }
+                let getter_bits = self.ensure_i64(self.resolve(op.operands[0]));
+                let setter_bits = self.ensure_i64(self.resolve(op.operands[1]));
+                let deleter_bits = self.ensure_i64(self.resolve(op.operands[2]));
+                let property_fn = self.ensure_runtime_i64_fn("molt_property_new", 3);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        property_fn,
+                        &[getter_bits.into(), setter_bits.into(), deleter_bits.into()],
+                        "property_new",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
             // ── StackAlloc: alloca for stack-resident slots ──
             // attrs: { "type": "i64" | "dynbox" | ... }
             // result: pointer stored as i64 (ptrtoint)
@@ -7384,8 +7455,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 #[cfg(all(test, feature = "llvm"))]
 mod tests {
     use super::*;
+    use crate::ir::{FunctionIR, OpIR};
     use crate::llvm_backend::LlvmBackend;
     use crate::llvm_backend::runtime_imports::declare_runtime_functions;
+    use crate::tir::lower_from_simple::lower_to_tir;
     use crate::tir::blocks::{Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -8066,6 +8139,102 @@ mod tests {
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
         assert!(ir.contains("molt_super_new"), "{ir}");
+    }
+
+    #[test]
+    fn lower_from_simple_preserves_classmethod_new_for_llvm() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let func_ir = FunctionIR {
+            name: "classmethod_from_simple".into(),
+            params: vec!["wrapped".into()],
+            ops: vec![
+                OpIR {
+                    kind: "classmethod_new".into(),
+                    args: Some(vec!["wrapped".into()]),
+                    out: Some("wrapped_cm".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    var: Some("wrapped_cm".into()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["object".into()]),
+            source_file: None,
+            is_extern: false,
+        };
+
+        let tir_func = lower_to_tir(&func_ir);
+        let llvm_fn = lower_tir_to_llvm(&tir_func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+
+        assert!(ir.contains("molt_classmethod_new"), "{ir}");
+    }
+
+    #[test]
+    fn lower_from_simple_preserves_staticmethod_new_for_llvm() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let func_ir = FunctionIR {
+            name: "staticmethod_from_simple".into(),
+            params: vec!["wrapped".into()],
+            ops: vec![
+                OpIR {
+                    kind: "staticmethod_new".into(),
+                    args: Some(vec!["wrapped".into()]),
+                    out: Some("wrapped_sm".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    var: Some("wrapped_sm".into()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["object".into()]),
+            source_file: None,
+            is_extern: false,
+        };
+
+        let tir_func = lower_to_tir(&func_ir);
+        let llvm_fn = lower_tir_to_llvm(&tir_func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+
+        assert!(ir.contains("molt_staticmethod_new"), "{ir}");
+    }
+
+    #[test]
+    fn lower_from_simple_preserves_property_new_for_llvm() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let func_ir = FunctionIR {
+            name: "property_from_simple".into(),
+            params: vec!["getter".into(), "setter".into(), "deleter".into()],
+            ops: vec![
+                OpIR {
+                    kind: "property_new".into(),
+                    args: Some(vec!["getter".into(), "setter".into(), "deleter".into()]),
+                    out: Some("prop".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    var: Some("prop".into()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["object".into(), "object".into(), "object".into()]),
+            source_file: None,
+            is_extern: false,
+        };
+
+        let tir_func = lower_to_tir(&func_ir);
+        let llvm_fn = lower_tir_to_llvm(&tir_func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+
+        assert!(ir.contains("molt_property_new"), "{ir}");
     }
 
     #[test]
