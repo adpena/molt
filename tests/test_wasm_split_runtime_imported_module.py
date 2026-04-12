@@ -66,6 +66,11 @@ def _build_split(
         repo_src + os.pathsep + current_pythonpath if current_pythonpath else repo_src
     )
     env["MOLT_BACKEND_DAEMON"] = "0"
+    # Keep split-runtime test builds deterministic and memory-bounded on laptops.
+    env.setdefault("CARGO_BUILD_JOBS", "1")
+    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
+    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
+    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
     target_dir, diff_target_dir = _split_runtime_imported_module_target_dirs(
         env, cargo_target_dir=cargo_target_dir
     )
@@ -455,6 +460,43 @@ def test_split_runtime_namedtuple_replace_direct_mode(tmp_path: Path) -> None:
         f"stderr:\n{run.stderr[-2000:]}"
     )
     assert run.stdout == "T(a=3, b=2)\n"
+
+def test_split_runtime_imported_module_getframe_globals_direct_mode(
+    tmp_path: Path,
+) -> None:
+    module_src = tmp_path / "probe_mod.py"
+    module_src.write_text(
+        "import sys\n"
+        "\n"
+        "def probe():\n"
+        "    return sys._getframe(1).f_globals.get('__name__', '__main__')\n"
+    )
+    main_src = tmp_path / "probe_main.py"
+    main_src.write_text(
+        "from probe_mod import probe\n"
+        "print(probe())\n"
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    build = _build_split(
+        main_src,
+        out_dir,
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
+    assert build.returncode == 0, (
+        f"split build failed (rc={build.returncode}).\n"
+        f"stdout:\n{build.stdout[-2000:]}\n"
+        f"stderr:\n{build.stderr[-2000:]}"
+    )
+
+    run = _run_split_direct(out_dir)
+    assert run.returncode == 0, (
+        f"direct-link run failed (rc={run.returncode}).\n"
+        f"stdout:\n{run.stdout[-2000:]}\n"
+        f"stderr:\n{run.stderr[-2000:]}"
+    )
+    assert run.stdout == "__main__\n"
 
 
 @pytest.mark.slow
