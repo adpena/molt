@@ -24,6 +24,7 @@ DEFAULT_ARTIFACT_SUBDIR = Path("dist") / "browser_split"
 DEFAULT_BUNDLE_SUBDIR = Path("dist") / "cloudflare_browser_webgpu"
 DEFAULT_WEIGHTS_SUBDIR = Path("weights")
 DEFAULT_CONFIG_FILENAME = "config.json"
+DEFAULT_TOKENIZER_FILENAME = "tokenizer.json"
 DEFAULT_WEIGHTS_BUCKET = "falcon-ocr-weights"
 DEFAULT_MANIFEST_ASSET_NAME = "driver-manifest.base.json"
 DEFAULT_MANIFEST_ROUTE = "/driver-manifest.json"
@@ -62,13 +63,14 @@ def build_deploy_surface(config_path: Path, target_root: Path) -> dict[str, Any]
     app_wasm = artifact_root / "app.wasm"
     runtime_wasm = artifact_root / "molt_runtime.wasm"
     config_json = target_root / DEFAULT_CONFIG_FILENAME
+    weights_dir = target_root / DEFAULT_WEIGHTS_SUBDIR
+    tokenizer_json = weights_dir / DEFAULT_TOKENIZER_FILENAME
     if not app_wasm.exists():
         raise FileNotFoundError(f"missing Falcon app wasm: {app_wasm}")
     if not runtime_wasm.exists():
         raise FileNotFoundError(f"missing Falcon runtime wasm: {runtime_wasm}")
     if not config_json.exists():
         raise FileNotFoundError(f"missing Falcon config json: {config_json}")
-    weights_dir = target_root / DEFAULT_WEIGHTS_SUBDIR
     if not weights_dir.exists():
         raise FileNotFoundError(f"missing Falcon weights dir: {weights_dir}")
 
@@ -98,6 +100,17 @@ def build_deploy_surface(config_path: Path, target_root: Path) -> dict[str, Any]
                 kind="config_json",
                 path=config_json,
                 root=target_root,
+            ),
+            **(
+                {
+                    "tokenizer_json": artifact_record(
+                        kind="tokenizer_json",
+                        path=tokenizer_json,
+                        root=weights_dir,
+                    )
+                }
+                if tokenizer_json.exists()
+                else {}
             ),
             "browser_loader": artifact_record(
                 kind="browser_loader",
@@ -137,6 +150,7 @@ def build_deploy_surface(config_path: Path, target_root: Path) -> dict[str, Any]
             "app_wasm": str(app_wasm),
             "runtime_wasm": str(runtime_wasm),
             "config_json": str(config_json),
+            "tokenizer_json": str(tokenizer_json) if tokenizer_json.exists() else None,
             "weights_dir": str(weights_dir),
         },
         "artifact_manifest": artifact_manifest,
@@ -168,6 +182,17 @@ def _base_runtime_manifest(
                 "sha256": immutable["config_json"]["sha256"],
                 "size_bytes": immutable["config_json"]["size_bytes"],
             },
+            **(
+                {
+                    "tokenizer_json": {
+                        "url": "/tokenizer.json",
+                        "sha256": immutable["tokenizer_json"]["sha256"],
+                        "size_bytes": immutable["tokenizer_json"]["size_bytes"],
+                    }
+                }
+                if "tokenizer_json" in immutable
+                else {}
+            ),
             "browser_loader": {
                 "url": "/browser.js",
                 "sha256": immutable["browser_loader"]["sha256"],
@@ -238,6 +263,8 @@ def materialize_deploy_bundle(
     _copy_file(Path(surface["artifacts"]["app_wasm"]), assets_root / "app.wasm")
     _copy_file(Path(surface["artifacts"]["runtime_wasm"]), assets_root / "molt_runtime.wasm")
     _copy_file(Path(surface["artifacts"]["config_json"]), assets_root / "config.json")
+    if surface["artifacts"]["tokenizer_json"]:
+        _copy_file(Path(surface["artifacts"]["tokenizer_json"]), assets_root / "tokenizer.json")
     _copy_file(REPO_ROOT / "wasm" / "browser_host.js", assets_root / "browser_host.js")
     _copy_file(REPO_ROOT / "wasm" / "molt_vfs_browser.js", assets_root / "molt_vfs_browser.js")
     browser_loader_text = (DRIVER_DIR / "browser.js").read_text(encoding="utf-8").replace(
