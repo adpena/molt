@@ -3,7 +3,10 @@ import os, sys, json, subprocess, tempfile, pathlib
 import pytest
 
 MOLT_DIR = pathlib.Path(__file__).resolve().parents[2]
-BACKEND_BIN = MOLT_DIR / "runtime" / "target" / "debug" / "molt-backend"
+TARGET_ROOT = pathlib.Path(
+    os.environ.get("CARGO_TARGET_DIR", str(MOLT_DIR / "target"))
+)
+BACKEND_BIN = TARGET_ROOT / "debug" / "molt-backend"
 BASIC_DIR = MOLT_DIR / "tests" / "differential" / "basic"
 
 def _get_test_files():
@@ -14,6 +17,8 @@ def _get_test_files():
 @pytest.fixture(scope="session", autouse=True)
 def build_backend():
     """Build the backend binary once for all tests."""
+    if BACKEND_BIN.exists():
+        return
     subprocess.run(
         ["cargo", "build", "--manifest-path", str(MOLT_DIR / "runtime" / "molt-backend" / "Cargo.toml"),
          "--features", "luau-backend"],
@@ -51,10 +56,13 @@ json.dump(data, sys.stdout)
             raise RuntimeError(f"Luau transpile failed: {result.stderr[:200]}")
 
         # Step 3: Run through Lune
-        lune = subprocess.run(
-            ["lune", "run", luau_path],
-            capture_output=True, text=True, timeout=10
-        )
+        try:
+            lune = subprocess.run(
+                ["lune", "run", luau_path],
+                capture_output=True, text=True, timeout=10
+            )
+        except FileNotFoundError:
+            raise RuntimeError("lune not found")
         if lune.returncode != 0:
             raise RuntimeError(f"Lune error: {lune.stderr[:200]}")
         return lune.stdout.strip()

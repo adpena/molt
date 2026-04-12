@@ -217,7 +217,7 @@ class TestFuzzMoltCompile:
                         "-m",
                         "molt.cli",
                         "build",
-                        "--profile",
+                        "--build-profile",
                         "dev",
                         "--deterministic",
                         str(src_file),
