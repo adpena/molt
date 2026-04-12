@@ -15,7 +15,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 _WORKER_URL_RE = re.compile(r"https://[^\s\"'<>]+\.workers\.dev[^\s\"'<>]*")
@@ -66,6 +66,47 @@ def _write_text(path: Path, text: str) -> None:
 def _load_json_config(path: Path) -> dict[str, Any]:
     raw = path.read_text()
     return json.loads(raw)
+
+
+def _rule_matches_path(rel_path: str, pattern: str) -> bool:
+    path_obj = PurePosixPath(rel_path)
+    if path_obj.match(pattern):
+        return True
+    if pattern.startswith("**/"):
+        return path_obj.match(pattern[3:])
+    return False
+
+
+def _rule_type_covers_suffix(
+    *,
+    bundle_root: Path,
+    rules: list[dict[str, Any]],
+    rule_type: str,
+    suffix: str,
+) -> bool:
+    required_paths = sorted(
+        str(path.relative_to(bundle_root)).replace("\\", "/")
+        for path in bundle_root.rglob(f"*{suffix}")
+        if path.is_file()
+    )
+    if not required_paths:
+        return False
+    patterns: list[str] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        if rule.get("type") != rule_type or rule.get("fallthrough") is not False:
+            continue
+        globs = rule.get("globs")
+        if not isinstance(globs, list):
+            continue
+        patterns.extend(str(item) for item in globs if isinstance(item, str))
+    if not patterns:
+        return False
+    return all(
+        any(_rule_matches_path(rel_path, pattern) for pattern in patterns)
+        for rel_path in required_paths
+    )
 
 
 def validate_bundle_contract(
@@ -119,25 +160,25 @@ def validate_bundle_contract(
         raise RuntimeError(
             "Cloudflare wrangler config must set find_additional_modules=true"
         )
-    if not any(
-        isinstance(rule, dict)
-        and rule.get("type") == "ESModule"
-        and rule.get("globs") == ["**/*.js"]
-        and rule.get("fallthrough") is False
-        for rule in rules
+    if not _rule_type_covers_suffix(
+        bundle_root=bundle_root,
+        rules=rules,
+        rule_type="ESModule",
+        suffix=".js",
     ):
         raise RuntimeError(
-            "Cloudflare wrangler config must include an ESModule rule for **/*.js"
+            "Cloudflare wrangler config must include fallthrough=false ESModule "
+            "rules covering every JavaScript bundle file"
         )
-    if not any(
-        isinstance(rule, dict)
-        and rule.get("type") == "CompiledWasm"
-        and rule.get("globs") == ["**/*.wasm"]
-        and rule.get("fallthrough") is False
-        for rule in rules
+    if not _rule_type_covers_suffix(
+        bundle_root=bundle_root,
+        rules=rules,
+        rule_type="CompiledWasm",
+        suffix=".wasm",
     ):
         raise RuntimeError(
-            "Cloudflare wrangler config must include a CompiledWasm rule for **/*.wasm"
+            "Cloudflare wrangler config must include fallthrough=false CompiledWasm "
+            "rules covering every wasm bundle file"
         )
 
     manifest_data = json.loads(manifest.read_text())
