@@ -845,6 +845,67 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.values.insert(result_id, val);
                 self.value_types.insert(result_id, TirType::DynBox);
             }
+            OpCode::Bool => {
+                let result_id = op.results[0];
+                let operand_id = op.operands[0];
+                let operand = self.resolve(operand_id);
+                let operand_ty = self
+                    .value_types
+                    .get(&operand_id)
+                    .cloned()
+                    .unwrap_or(TirType::DynBox);
+
+                let bool_val = match operand_ty {
+                    TirType::Bool => operand.into_int_value(),
+                    TirType::I64 => self
+                        .backend
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::NE,
+                            operand.into_int_value(),
+                            self.backend.context.i64_type().const_zero(),
+                            "bool_i64",
+                        )
+                        .unwrap(),
+                    TirType::F64 => self
+                        .backend
+                        .builder
+                        .build_float_compare(
+                            inkwell::FloatPredicate::ONE,
+                            operand.into_float_value(),
+                            self.backend.context.f64_type().const_float(0.0),
+                            "bool_f64",
+                        )
+                        .unwrap(),
+                    _ => {
+                        let truthy_fn =
+                            self.backend.module.get_function("molt_is_truthy").unwrap();
+                        let truthy = self
+                            .backend
+                            .builder
+                            .build_call(
+                                truthy_fn,
+                                &[self.ensure_i64(operand).into()],
+                                "truthy_bool",
+                            )
+                            .unwrap()
+                            .try_as_basic_value()
+                            .unwrap_basic()
+                            .into_int_value();
+                        self.backend
+                            .builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::NE,
+                                truthy,
+                                self.backend.context.i64_type().const_zero(),
+                                "bool_dynbox",
+                            )
+                            .unwrap()
+                    }
+                };
+                self.values.insert(result_id, bool_val.into());
+                self.value_types.insert(result_id, TirType::Bool);
+            }
 
             // ── Box/Unbox ──
             OpCode::BoxVal => self.emit_box(op),
