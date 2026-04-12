@@ -2,11 +2,19 @@
   "name": "molt-falcon-browser-webgpu",
   "compatibility_date": "2026-04-12",
   "main": "worker.ts",
+  "assets": {
+    "directory": "./assets",
+    "binding": "ASSETS",
+    "run_worker_first": ["/driver-manifest.json"]
+  },
+  "vars": {
+    "DRIVER_TARGET": "falcon.browser_webgpu"
+  },
   "r2_buckets": [
     {
       "binding": "WEIGHTS",
       "bucket_name": "falcon-ocr-weights"
     }
   ],
-  "observability": { "enabled": true }
+  "observability": { "enabled": true, "head_sampling_rate": 1 }
 }
