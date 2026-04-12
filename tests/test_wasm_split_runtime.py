@@ -103,6 +103,7 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     assert "const stderrDecoder = new TextDecoder();" in worker_js
     assert "rtInstance.exports.molt_runtime_shutdown" in worker_js
     assert "molt_set_wasm_table_base(BigInt(4096))" in worker_js
+    assert "molt_gpu_webgpu_dispatch_host() { return -38; }" in worker_js
 
 
 def test_build_isolate_import_ops_initializes_code_slots() -> None:

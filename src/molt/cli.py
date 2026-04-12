@@ -10516,6 +10516,7 @@ export default {
       molt_process_wait_host()   { return -1; },
       molt_process_spawn_host()  { return -1; },
       molt_process_stdio_host()  { return -1; },
+      molt_gpu_webgpu_dispatch_host() { return -38; },
       molt_socket_bind_host()    { return -1; },
       molt_socket_close_host()   { return 0; },
       molt_socket_connect_host() { return -1; },
