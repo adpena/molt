@@ -10,6 +10,7 @@ use crate::{
     dec_ref_bits, int_bits_from_i64, obj_from_bits, ptr_from_bits, raise_exception, release_ptr,
     to_f64, to_i64,
 };
+use crate::builtins::numbers::index_i64_with_overflow;
 
 // ---------------------------------------------------------------------------
 // Typecode metadata
@@ -334,6 +335,19 @@ fn array_bits(handle: ArrayHandle) -> u64 {
     bits_from_ptr(Box::into_raw(Box::new(handle)) as *mut u8)
 }
 
+fn repeat_count_from_bits(_py: &PyToken<'_>, count_bits: u64) -> Option<i64> {
+    let err = format!(
+        "can't multiply array by non-int of type '{}'",
+        crate::class_name_for_error(crate::type_of_bits(_py, count_bits))
+    );
+    index_i64_with_overflow(
+        _py,
+        count_bits,
+        &err,
+        Some("cannot fit 'int' into an index-sized integer"),
+    )
+}
+
 fn elem_from_bits(_py: &PyToken<'_>, tc: Typecode, value_bits: u64) -> Result<ArrayElem, u64> {
     let obj = obj_from_bits(value_bits);
     if tc.is_float() {
@@ -498,6 +512,103 @@ pub extern "C" fn molt_array_extend(handle_bits: u64, items_bits: u64) -> u64 {
         }
         for bytes in encoded {
             handle.data.extend_from_slice(&bytes);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_array_repeat(handle_bits: u64, count_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = array_handle_from_bits(handle_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
+        };
+        let Some(count) = repeat_count_from_bits(_py, count_bits) else {
+            return MoltObject::none().bits();
+        };
+        let mut out = ArrayHandle::new(handle.typecode);
+        if count <= 0 || handle.data.is_empty() {
+            return array_bits(out);
+        }
+        let repeat = match usize::try_from(count) {
+            Ok(value) => value,
+            Err(_) => {
+                return raise_exception::<u64>(
+                    _py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
+            }
+        };
+        let item_count = handle.len();
+        let total_items = match item_count.checked_mul(repeat) {
+            Some(total) => total,
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
+            }
+        };
+        let total_bytes = match total_items.checked_mul(handle.typecode.itemsize()) {
+            Some(total) => total,
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
+            }
+        };
+        out.data.reserve(total_bytes);
+        for _ in 0..repeat {
+            out.data.extend_from_slice(&handle.data);
+        }
+        array_bits(out)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_array_repeat_in_place(handle_bits: u64, count_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(handle) = array_handle_from_bits(handle_bits) else {
+            return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
+        };
+        let Some(count) = repeat_count_from_bits(_py, count_bits) else {
+            return MoltObject::none().bits();
+        };
+        if count <= 0 {
+            handle.data.clear();
+            return MoltObject::none().bits();
+        }
+        let repeat = match usize::try_from(count) {
+            Ok(value) => value,
+            Err(_) => {
+                return raise_exception::<u64>(
+                    _py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
+            }
+        };
+        if repeat == 1 || handle.data.is_empty() {
+            return MoltObject::none().bits();
+        }
+        let snapshot = handle.data.clone();
+        let total_len = match snapshot.len().checked_mul(repeat) {
+            Some(total) => total,
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
+            }
+        };
+        handle.data.reserve(total_len.saturating_sub(snapshot.len()));
+        for _ in 1..repeat {
+            handle.data.extend_from_slice(&snapshot);
         }
         MoltObject::none().bits()
     })
