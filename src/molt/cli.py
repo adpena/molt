@@ -19529,7 +19529,10 @@ def _prepare_non_native_build_result(
                 rt_table_min or 0,
                 8192,
             )
-            _export_wasm_table_refs(rt_wasm)
+            # Keep runtime.wasm cacheable and size-stable. The runtime already
+            # seeds the shared imported table via active element segments, so
+            # exporting every runtime table slot here only bloats the emitted
+            # artifact and breaks the split-runtime size gate.
             app_table_ref_signatures = _wasm_export_function_signatures(
                 app_wasm, export_name_prefix="__molt_table_ref_"
             )

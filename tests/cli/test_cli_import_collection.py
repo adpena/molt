@@ -7293,6 +7293,73 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert shared_required == [frozenset()]
 
 
+def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_table_refs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_wasm = tmp_path / "out" / "output.wasm"
+    output_wasm.parent.mkdir(parents=True, exist_ok=True)
+    output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    linked_wasm = tmp_path / "out" / "output_linked.wasm"
+    runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
+    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+    runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
+    runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+    export_ref_calls: list[Path] = []
+
+    def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        linked_wasm.write_bytes(b"\0asm\x01\0\0\0linked")
+        split_dir = output_wasm.parent
+        (split_dir / "app.wasm").write_bytes(b"\0asm\x01\0\0\0app")
+        (split_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\0\0\0runtime")
+        return subprocess.CompletedProcess(args[0], 0, "", "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        cli,
+        "_collect_wasm_module_import_names",
+        lambda path, module_name: {"alloc", "molt_fast_list_append"},
+    )
+    monkeypatch.setattr(cli, "_wasm_import_minima", lambda _path: (1, 1))
+    monkeypatch.setattr(cli, "_wasm_import_function_result_kinds", lambda *args, **kwargs: {})
+    monkeypatch.setattr(cli, "_wasm_import_function_signatures", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        cli,
+        "_export_wasm_table_refs",
+        lambda path: export_ref_calls.append(path),
+    )
+    monkeypatch.setattr(cli, "_wasm_export_function_signatures", lambda *args, **kwargs: {})
+    monkeypatch.setattr(cli, "_effective_split_worker_table_base", lambda **kwargs: 8192)
+    monkeypatch.setattr(cli, "_generate_split_worker_js", lambda **kwargs: "// worker")
+    monkeypatch.setattr(cli.shutil, "copy2", lambda *args, **kwargs: None)
+
+    prepared, err = cli._prepare_non_native_build_result(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        is_wasm_freestanding=False,
+        linked=True,
+        require_linked=False,
+        linked_output_path=linked_wasm,
+        output_artifact=output_wasm,
+        json_output=True,
+        runtime_wasm=runtime_wasm,
+        runtime_reloc_wasm=runtime_reloc_wasm,
+        ensure_runtime_wasm_shared=lambda required=None: True,
+        ensure_runtime_wasm_reloc=lambda: True,
+        runtime_cargo_profile="dev-fast",
+        molt_root=tmp_path,
+        split_runtime=True,
+        precompile=False,
+    )
+
+    assert err is None
+    assert prepared is not None
+    assert export_ref_calls == []
+
+
 def test_runtime_wasm_exports_satisfy_required_surface(tmp_path: Path) -> None:
     wasm = tmp_path / "runtime.wasm"
     payload = bytearray()
