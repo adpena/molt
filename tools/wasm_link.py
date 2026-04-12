@@ -2199,7 +2199,6 @@ def _tree_shake_runtime(
             str(input_path),
             "-o", str(output_path),
             "-Oz",
-            "--converge",
             "--remove-unused-module-elements",
             "--closed-world",
             "--strip-debug",

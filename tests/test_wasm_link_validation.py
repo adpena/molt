@@ -542,6 +542,34 @@ def test_tree_shake_runtime_reuses_cached_result(
     assert second == final_runtime
 
 
+def test_tree_shake_runtime_omits_converge_flag(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _build_exported_runtime_module("molt_exception_pending")
+    target_root = tmp_path / "target"
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
+        del capture_output, text, timeout
+        calls.append(list(cmd))
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_bytes(b"\x00asm\x01\x00\x00\x00shaken")
+        return wasm_link.subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: "/usr/bin/wasm-opt")
+    monkeypatch.setattr(wasm_link, "_wasm_opt_version", lambda _path: "wasm-opt 1.0")
+    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_run_wasm_opt_via_optimize", lambda *_a, **_k: False)
+
+    shaken = wasm_link._tree_shake_runtime(module, {"exception_pending"})
+
+    assert shaken.startswith(b"\x00asm\x01\x00\x00\x00")
+    assert calls, "expected wasm-opt tree-shake invocation"
+    assert "--converge" not in calls[0]
+
+
 def test_neutralize_dead_element_entries_preserves_host_call_indirect_modules() -> None:
     module = _build_host_call_indirect_module()
     assert wasm_link._neutralize_dead_element_entries(module) is None
