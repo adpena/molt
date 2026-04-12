@@ -1099,6 +1099,20 @@ unsafe extern "C" {
     pub(crate) fn molt_process_stdio_host(handle: i64, which: i32, out_stream: *mut u64) -> i32;
     #[link_name = "molt_process_host_poll"]
     pub(crate) fn molt_process_host_poll() -> i32;
+    #[link_name = "molt_gpu_webgpu_dispatch_host"]
+    pub(crate) fn molt_gpu_webgpu_dispatch_host(
+        source_ptr: u32,
+        source_len: u32,
+        entry_ptr: u32,
+        entry_len: u32,
+        bindings_ptr: u32,
+        bindings_len: u32,
+        grid: u32,
+        workgroup_size: u32,
+        err_ptr: u32,
+        err_cap: u32,
+        out_err_len_ptr: *mut u32,
+    ) -> i32;
 }
 
 // (file handle helpers moved to runtime/molt-runtime/src/builtins/io.rs)

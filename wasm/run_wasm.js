@@ -5502,6 +5502,7 @@ const runDirectLink = async () => {
     molt_process_close_stdin_host: processHostCloseStdin,
     molt_process_stdio_host: processHostStdio,
     molt_process_host_poll: processHostPoll,
+    molt_gpu_webgpu_dispatch_host: () => -ENOSYS,
   };
   for (const name of runtimeCallIndirectNames) {
     env[name] = (...args) => {
@@ -5769,6 +5770,7 @@ const runLinked = async () => {
   importObject.env.molt_process_close_stdin_host = processHostCloseStdin;
   importObject.env.molt_process_stdio_host = processHostStdio;
   importObject.env.molt_process_host_poll = processHostPoll;
+  importObject.env.molt_gpu_webgpu_dispatch_host = () => -ENOSYS;
 
   const linkedModule = await WebAssembly.instantiate(linkedBuffer, importObject);
   const { molt_main, molt_table_init } = linkedModule.instance.exports;
