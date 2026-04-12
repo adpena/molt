@@ -15,6 +15,7 @@ Usage:
 
 from __future__ import annotations
 
+import array
 import math
 import operator
 import struct
@@ -45,6 +46,7 @@ def _runtime_intrinsics_active() -> bool:
 _MOLT_GPU_BUFFER_TO_LIST = _load_optional_intrinsic("molt_gpu_buffer_to_list")
 _MOLT_GPU_TENSOR_FROM_BUFFER = _load_optional_intrinsic("molt_gpu_tensor_from_buffer")
 _MOLT_GPU_TENSOR_FROM_PARTS = _load_optional_intrinsic("molt_gpu_tensor_from_parts")
+_MOLT_GPU_TENSOR_ZEROS = _load_optional_intrinsic("molt_gpu_tensor__zeros")
 _MOLT_GPU_REPEAT_AXIS_CONTIGUOUS = _load_optional_intrinsic(
     "molt_gpu_repeat_axis_contiguous"
 )
@@ -54,6 +56,12 @@ _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS = _load_optional_intrinsic(
 )
 _MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM = _load_optional_intrinsic(
     "molt_gpu_tensor__tensor_linear_split_last_dim"
+)
+_MOLT_GPU_TENSOR_ATTENTION_HYBRID_MASK = _load_optional_intrinsic(
+    "molt_gpu_tensor__tensor_attention_hybrid_mask"
+)
+_MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION = _load_optional_intrinsic(
+    "molt_gpu_tensor__tensor_scaled_dot_product_attention"
 )
 _MOLT_GPU_LINEAR_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS = _load_optional_intrinsic(
     "molt_gpu_linear_squared_relu_gate_interleaved_contiguous"
@@ -1599,10 +1607,92 @@ class Tensor:
 
 # ── Module-level constructors ─────────────────────────────────────────
 
+def tensor_attention_hybrid_mask(
+    token_ids,
+    image_cls_id: int,
+    img_end_id: int,
+) -> "Tensor":
+    if _MOLT_GPU_TENSOR_ATTENTION_HYBRID_MASK is not None:
+        return _MOLT_GPU_TENSOR_ATTENTION_HYBRID_MASK(
+            token_ids,
+            image_cls_id,
+            img_end_id,
+        )
+
+    if _runtime_intrinsics_active():
+        raise RuntimeError(
+            "intrinsic unavailable: molt_gpu_tensor__tensor_attention_hybrid_mask"
+        )
+
+    length = len(token_ids)
+    in_block = [False] * length
+    block_idx = [0] * length
+    block_bounds: list[list[int]] = []
+    depth = 0
+    current_block = 0
+    for i, tid in enumerate(token_ids):
+        is_soi = tid == image_cls_id
+        is_eoi = tid == img_end_id
+        if is_soi:
+            depth += 1
+            current_block += 1
+            block_bounds.append([i, i + 1])
+        if depth > 0:
+            in_block[i] = True
+            block_idx[i] = current_block - 1
+            block_bounds[current_block - 1][1] = i + 1
+        if is_eoi and depth > 0:
+            depth -= 1
+
+    values = array.array("f", [-1.0e9]) * (length * length)
+    row_zero = array.array("f", [0.0]) * length
+    for q in range(length):
+        row_base = q * length
+        prefix_len = q + 1
+        values[row_base : row_base + prefix_len] = row_zero[:prefix_len]
+        if in_block[q]:
+            start, end = block_bounds[block_idx[q]]
+            values[row_base + start : row_base + end] = row_zero[: end - start]
+
+    return _tensor_from_parts(
+        values.tobytes(),
+        float,
+        len(values),
+        "f",
+        (1, 1, length, length),
+        float,
+    )
+
+
+def tensor_scaled_dot_product_attention(
+    q: "Tensor",
+    k: "Tensor",
+    v: "Tensor",
+    mask: "Tensor | None" = None,
+    scale: float = 1.0,
+) -> "Tensor":
+    if _MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION is not None:
+        return _MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION(q, k, v, mask, scale)
+
+    if _runtime_intrinsics_active():
+        raise RuntimeError(
+            "intrinsic unavailable: molt_gpu_tensor__tensor_scaled_dot_product_attention"
+        )
+
+    scores = (q @ tensor_permute_dims(k, (0, 1, 3, 2))) * Tensor(scale)
+    if mask is not None:
+        scores = scores + mask
+    attn = tensor_softmax_last_axis(scores)
+    return attn @ v
+
 def zeros(*shape, dtype=float) -> Tensor:
     """Create a zero-filled tensor."""
     if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
         shape = tuple(shape[0])
+    if _MOLT_GPU_TENSOR_ZEROS is not None:
+        return _MOLT_GPU_TENSOR_ZEROS(shape, dtype)
+    if _runtime_intrinsics_active():
+        raise RuntimeError("intrinsic unavailable: molt_gpu_tensor__zeros")
     size = _product(shape)
     return Tensor([0.0] * size, shape=shape, dtype=dtype)
 
