@@ -69,12 +69,15 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
                 return ""
             pytest.skip(f"Compilation failed: {result.stderr[:200]}")
 
-        result = subprocess.run(
-            ["lune", "run", luau_path],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            result = subprocess.run(
+                ["lune", "run", luau_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except FileNotFoundError:
+            pytest.skip("lune not found")
         if result.returncode != 0 and not expect_fail:
             pytest.fail(f"Lune runtime error: {result.stderr[:300]}")
         return result.stdout.strip()
@@ -645,12 +648,15 @@ class TestPerformance:
                 pytest.skip(f"Compilation failed: {result.stderr[:200]}")
 
             t0 = time.perf_counter()
-            result = subprocess.run(
-                ["lune", "run", luau_path],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
+            try:
+                result = subprocess.run(
+                    ["lune", "run", luau_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except FileNotFoundError:
+                pytest.skip("lune not found")
             run_time = time.perf_counter() - t0
             return result.stdout.strip(), compile_time, run_time
         finally:

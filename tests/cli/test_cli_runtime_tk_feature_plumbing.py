@@ -204,10 +204,11 @@ def test_runtime_fingerprint_read_reuses_process_cache(
     second = cli._read_runtime_fingerprint(fingerprint_path)
 
     assert first == second == {
-        "version": 1,
+        "version": 2,
         "hash": "abc",
         "rustc": "rustc-test",
         "inputs_digest": "digest",
+        "meta_digest": None,
     }
     assert first is second
 

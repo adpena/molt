@@ -121,12 +121,15 @@ def _run_luau(python_source: str) -> str:
         if result.returncode != 0:
             pytest.skip(f"Compilation failed: {result.stderr[:300]}")
 
-        result = subprocess.run(
-            ["lune", "run", luau_path],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            result = subprocess.run(
+                ["lune", "run", luau_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except FileNotFoundError:
+            pytest.skip("lune not found")
         if result.returncode != 0:
             pytest.fail(f"Lune runtime error: {result.stderr[:300]}")
         return result.stdout.strip()
