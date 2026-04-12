@@ -15,6 +15,7 @@ if __package__ in {None, ""}:
 from drivers.cloudflare.thin_adapter.verify import (
     run_wrangler_check,
     run_wrangler_dry_run,
+    validate_bundle_contract,
 )
 from drivers.falcon.browser_webgpu.deploy import (
     DEFAULT_WRANGLER_CONFIG,
@@ -46,6 +47,10 @@ def verify_materialized_bundle(
     env_map = dict(os.environ if env is None else env)
     bundle_root_path = Path(bundle["bundle_root"])
     wrangler_config_path = Path(bundle["wrangler_config"])
+    contract = validate_bundle_contract(
+        bundle_root=bundle_root_path,
+        wrangler_config=wrangler_config_path,
+    )
     check = run_wrangler_check(
         wrangler=wrangler,
         bundle_root=bundle_root_path,
@@ -67,6 +72,7 @@ def verify_materialized_bundle(
     return {
         "target": "falcon.browser_webgpu",
         "bundle": bundle,
+        "bundle_contract": contract,
         "wrangler_check": {
             "returncode": check.returncode,
             "stdout": check.stdout,
