@@ -73,6 +73,19 @@ class _DbHostHandler(BaseHTTPRequestHandler):
             return None
 
 
+def _browser_wasm_build_env(root: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root / "src")
+    env["MOLT_WASM_LINKED"] = "0"
+    # Keep browser wasm test builds deterministic and bounded on laptops.
+    env.setdefault("CARGO_BUILD_JOBS", "1")
+    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
+    env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
+    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
+    env.setdefault("MOLT_BACKEND_DAEMON", "0")
+    return env
+
+
 def test_browser_host_direct_mode_bridges_isolate_import(tmp_path: Path) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for browser host direct-mode isolate test")
@@ -90,9 +103,7 @@ def test_browser_host_direct_mode_bridges_isolate_import(tmp_path: Path) -> None
         "asyncio.run(main())\n"
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
         [
             sys.executable,
@@ -189,9 +200,7 @@ def test_browser_host_direct_mode_run_bootstraps_split_runtime_once(
         encoding="utf-8",
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
         [
             sys.executable,
@@ -287,9 +296,7 @@ def test_browser_host_direct_mode_import_stat_constants(tmp_path: Path) -> None:
         "print(stat.S_IFDIR)\n"
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
         [
             sys.executable,
@@ -392,9 +399,7 @@ def test_browser_host_direct_mode_can_invoke_export_with_host_args(
         encoding="utf-8",
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
         [
             sys.executable,
@@ -505,9 +510,7 @@ def test_browser_host_direct_mode_scalar_and_none_results_do_not_poison_next_exp
         encoding="utf-8",
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
         [
             sys.executable,
@@ -611,9 +614,7 @@ def test_browser_host_direct_mode_import_asyncio_iov_max(tmp_path: Path) -> None
         "print(asyncio.selector_events.SC_IOV_MAX)\n"
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
         [
             sys.executable,
@@ -706,9 +707,7 @@ def test_browser_direct_run_wasm_import_os_name(tmp_path: Path) -> None:
         "print(os.name)\n"
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
         [
             sys.executable,
@@ -767,9 +766,7 @@ def test_browser_direct_run_wasm_bool_or_call_result(tmp_path: Path) -> None:
         "print(bool(cap('time.wall') or cap('time')))\n"
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
         [
             sys.executable,
@@ -832,9 +829,7 @@ def test_browser_direct_run_wasm_namedtuple_replace(tmp_path: Path) -> None:
         "print(T(1, 2)._replace(a=3))\n"
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
         [
             sys.executable,
@@ -906,9 +901,7 @@ def test_browser_direct_run_wasm_slots_function_field_roundtrip(
         "print(box.value(7))\n"
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
         [
             sys.executable,
@@ -967,9 +960,7 @@ def test_browser_direct_run_wasm_enumerate_tuple(tmp_path: Path) -> None:
         "print(list(enumerate(('a', 'b'))))\n"
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
         [
             sys.executable,
@@ -1029,9 +1020,7 @@ def test_browser_direct_run_wasm_dict_get_default(tmp_path: Path) -> None:
         "print(d.get('b', 2))\n"
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
-    build_env["MOLT_WASM_LINKED"] = "0"
+    build_env = _browser_wasm_build_env(root)
     build = subprocess.run(
         [
             sys.executable,
@@ -1095,8 +1084,7 @@ def test_browser_direct_run_wasm_tuple_subclass_custom_repr(tmp_path: Path) -> N
         "print(repr(T(1, 2)))\n"
     )
 
-    build_env = os.environ.copy()
-    build_env["PYTHONPATH"] = str(root / "src")
+    build_env = _browser_wasm_build_env(root)
     build_env["MOLT_WASM_LINKED"] = "0"
     build = subprocess.run(
         [
