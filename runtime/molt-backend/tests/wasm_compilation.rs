@@ -137,6 +137,40 @@ fn import_call_counts(wasm: &[u8]) -> HashMap<String, usize> {
     counts
 }
 
+fn import_call_sequence(wasm: &[u8]) -> Vec<String> {
+    let mut imported_function_names: Vec<String> = Vec::new();
+    let mut calls = Vec::new();
+
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload.expect("valid wasm payload") {
+            Payload::ImportSection(section) => {
+                for import in section.into_imports() {
+                    let import = import.expect("valid wasm import");
+                    if matches!(import.ty, TypeRef::Func(_)) {
+                        imported_function_names.push(import.name.to_string());
+                    }
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                let mut reader = body.get_operators_reader().expect("operators reader");
+                while !reader.eof() {
+                    if let Operator::Call { function_index } =
+                        reader.read().expect("valid wasm operator")
+                    {
+                        let idx = function_index as usize;
+                        if idx < imported_function_names.len() {
+                            calls.push(imported_function_names[idx].clone());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    calls
+}
+
 fn count_import(calls: &HashMap<String, usize>, name: &str) -> usize {
     calls.get(name).copied().unwrap_or(0)
 }
@@ -490,6 +524,96 @@ fn class_def_uses_guarded_class_def_import() {
     assert!(
         count_import(&calls, "guarded_class_def") > 0,
         "class_def should call guarded_class_def"
+    );
+}
+
+#[test]
+fn class_def_pins_spilled_refs_across_guarded_helper() {
+    let mut class_name = op("const_str");
+    class_name.s_value = Some("Huge".to_string());
+    class_name.out = Some("v_name".to_string());
+
+    let mut attr_name_a = op("const_str");
+    attr_name_a.s_value = Some("a".to_string());
+    attr_name_a.out = Some("v_attr_a".to_string());
+
+    let mut attr_name_b = op("const_str");
+    attr_name_b.s_value = Some("b".to_string());
+    attr_name_b.out = Some("v_attr_b".to_string());
+
+    let mut attr_value_a = op("const");
+    attr_value_a.value = Some(1);
+    attr_value_a.out = Some("v_value_a".to_string());
+
+    let mut attr_value_b = op("const");
+    attr_value_b.value = Some(2);
+    attr_value_b.out = Some("v_value_b".to_string());
+
+    let mut class_def = op("class_def");
+    class_def.args = Some(vec![
+        "v_name".to_string(),
+        "v_attr_a".to_string(),
+        "v_value_a".to_string(),
+        "v_attr_b".to_string(),
+        "v_value_b".to_string(),
+    ]);
+    class_def.s_value = Some("0,2,0,0,0".to_string());
+    class_def.out = Some("v_cls".to_string());
+
+    let wasm = compile_single_function(
+        vec![
+            class_name,
+            attr_name_a,
+            attr_name_b,
+            attr_value_a,
+            attr_value_b,
+            class_def,
+            ret_value("v_cls"),
+        ],
+        &[],
+    );
+    let calls = import_call_sequence(&wasm);
+    let guarded_idx = calls
+        .iter()
+        .position(|name| name == "guarded_class_def")
+        .expect("class_def should call guarded_class_def");
+    let before = &calls[..guarded_idx];
+    let after = &calls[guarded_idx + 1..];
+    let trailing_before = before
+        .iter()
+        .rev()
+        .take_while(|name| *name == "inc_ref_obj")
+        .count();
+    let leading_after = after
+        .iter()
+        .take_while(|name| *name == "dec_ref_obj")
+        .count();
+    assert_eq!(
+        trailing_before, 5,
+        "class_def should pin each spilled arg before guarded_class_def; calls={calls:?}"
+    );
+    assert_eq!(
+        leading_after, 5,
+        "class_def should release each pinned arg after guarded_class_def; calls={calls:?}"
+    );
+}
+
+#[test]
+fn explicit_trace_ops_lower_to_wasm_runtime_imports() {
+    let mut enter = op("trace_enter_slot");
+    enter.value = Some(7);
+
+    let exit = op("trace_exit");
+
+    let wasm = compile_single_function(vec![enter, exit, op("ret_void")], &[]);
+    let calls = import_call_sequence(&wasm);
+    assert!(
+        calls.iter().any(|name| name == "trace_enter_slot"),
+        "trace_enter_slot op should lower to wasm runtime import; calls={calls:?}"
+    );
+    assert!(
+        calls.iter().any(|name| name == "trace_exit"),
+        "trace_exit op should lower to wasm runtime import; calls={calls:?}"
     );
 }
 
@@ -1024,7 +1148,16 @@ fn wasm_does_not_split_non_linear_control_functions() {
             functions: vec![FunctionIR {
                 name: "molt_test_func".to_string(),
                 params: vec![],
-                ops: vec![cond, br_if, one, jump, label_then, two, label_join, ret_value("v1")],
+                ops: vec![
+                    cond,
+                    br_if,
+                    one,
+                    jump,
+                    label_then,
+                    two,
+                    label_join,
+                    ret_value("v1"),
+                ],
                 param_types: None,
                 source_file: None,
                 is_extern: false,

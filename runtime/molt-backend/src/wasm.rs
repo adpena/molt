@@ -910,6 +910,102 @@ fn build_sparse_state_remap_entries(state_map: &BTreeMap<i64, usize>) -> Vec<(i6
     entries
 }
 
+fn emit_seeded_runtime_const_op(
+    this: &mut WasmBackend,
+    func: &mut Function,
+    op: &OpIR,
+    locals: &BTreeMap<String, u32>,
+    func_index: u32,
+    reloc_enabled: bool,
+    import_ids: &TrackedImportIds,
+    const_str_scratch_segment: DataSegmentRef,
+) {
+    match op.kind.as_str() {
+        "const_not_implemented" => {
+            emit_call(func, reloc_enabled, import_ids["not_implemented"]);
+            let local_idx = locals[op.out.as_ref().expect("const_not_implemented out")];
+            func.instruction(&Instruction::LocalSet(local_idx));
+        }
+        "const_ellipsis" => {
+            emit_call(func, reloc_enabled, import_ids["ellipsis"]);
+            let local_idx = locals[op.out.as_ref().expect("const_ellipsis out")];
+            func.instruction(&Instruction::LocalSet(local_idx));
+        }
+        "const_str" => {
+            let out_name = op.out.as_ref().expect("const_str out");
+            let bytes = op
+                .bytes
+                .as_deref()
+                .unwrap_or_else(|| op.s_value.as_ref().expect("const_str bytes").as_bytes());
+            let data = this.add_data_segment(reloc_enabled, bytes);
+            let ptr_local = locals[&format!("{out_name}_ptr")];
+            let len_local = locals[&format!("{out_name}_len")];
+            this.emit_data_ptr(reloc_enabled, func_index, func, data);
+            func.instruction(&Instruction::LocalSet(ptr_local));
+            func.instruction(&Instruction::I64Const(bytes.len() as i64));
+            func.instruction(&Instruction::LocalSet(len_local));
+            func.instruction(&Instruction::LocalGet(ptr_local));
+            func.instruction(&Instruction::I32WrapI64);
+            func.instruction(&Instruction::LocalGet(len_local));
+            this.emit_data_ptr_i32(reloc_enabled, func_index, func, const_str_scratch_segment);
+            emit_call(func, reloc_enabled, import_ids["string_from_bytes"]);
+            func.instruction(&Instruction::Drop);
+            let out_local = locals[out_name];
+            this.emit_data_ptr_i32(reloc_enabled, func_index, func, const_str_scratch_segment);
+            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                align: 3,
+                offset: 0,
+                memory_index: 0,
+            }));
+            func.instruction(&Instruction::LocalSet(out_local));
+        }
+        "const_bigint" => {
+            let s = op.s_value.as_ref().expect("const_bigint string");
+            let out_name = op.out.as_ref().expect("const_bigint out");
+            let bytes = s.as_bytes();
+            let data = this.add_data_segment(reloc_enabled, bytes);
+            let ptr_local = locals[&format!("{out_name}_ptr")];
+            let len_local = locals[&format!("{out_name}_len")];
+            this.emit_data_ptr(reloc_enabled, func_index, func, data);
+            func.instruction(&Instruction::LocalSet(ptr_local));
+            func.instruction(&Instruction::I64Const(bytes.len() as i64));
+            func.instruction(&Instruction::LocalSet(len_local));
+            func.instruction(&Instruction::LocalGet(ptr_local));
+            func.instruction(&Instruction::I32WrapI64);
+            func.instruction(&Instruction::LocalGet(len_local));
+            emit_call(func, reloc_enabled, import_ids["bigint_from_str"]);
+            let out_local = locals[out_name];
+            func.instruction(&Instruction::LocalSet(out_local));
+        }
+        "const_bytes" => {
+            let bytes = op.bytes.as_ref().expect("const_bytes bytes");
+            let out_name = op.out.as_ref().expect("const_bytes out");
+            let data = this.add_data_segment(reloc_enabled, bytes);
+            let ptr_local = locals[&format!("{out_name}_ptr")];
+            let len_local = locals[&format!("{out_name}_len")];
+            this.emit_data_ptr(reloc_enabled, func_index, func, data);
+            func.instruction(&Instruction::LocalSet(ptr_local));
+            func.instruction(&Instruction::I64Const(bytes.len() as i64));
+            func.instruction(&Instruction::LocalSet(len_local));
+            func.instruction(&Instruction::LocalGet(ptr_local));
+            func.instruction(&Instruction::I32WrapI64);
+            func.instruction(&Instruction::LocalGet(len_local));
+            this.emit_data_ptr_i32(reloc_enabled, func_index, func, const_str_scratch_segment);
+            emit_call(func, reloc_enabled, import_ids["bytes_from_bytes"]);
+            func.instruction(&Instruction::Drop);
+            let out_local = locals[out_name];
+            this.emit_data_ptr_i32(reloc_enabled, func_index, func, const_str_scratch_segment);
+            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
+                align: 3,
+                offset: 0,
+                memory_index: 0,
+            }));
+            func.instruction(&Instruction::LocalSet(out_local));
+        }
+        _ => panic!("unsupported seeded runtime const op {}", op.kind),
+    }
+}
+
 /// Check whether `sorted_entries` form a dense-enough range suitable for
 /// `br_table` dispatch.  Returns `Some((min_state, table_size))` when the
 /// sparsity ratio (table_size / entry_count) is within
@@ -4913,6 +5009,7 @@ impl WasmBackend {
         let mut fast_int_count: usize = 0;
         let mut const_seed_seen: BTreeSet<String> = BTreeSet::new();
         let mut const_seed_locals_all: Vec<(u32, i64)> = Vec::new();
+        let mut seeded_runtime_const_ops: Vec<(usize, OpIR)> = Vec::new();
         let mut defined_vars: BTreeSet<String> = BTreeSet::new();
         let mut used_vars: BTreeSet<String> = BTreeSet::new();
         for op in &func_ir.ops {
@@ -4929,7 +5026,7 @@ impl WasmBackend {
                 defined_vars.insert(out.clone());
             }
         }
-        for op in &func_ir.ops {
+        for (op_idx, op) in func_ir.ops.iter().enumerate() {
             if op.fast_int.unwrap_or(false) {
                 fast_int_count += 1;
             }
@@ -4966,6 +5063,17 @@ impl WasmBackend {
                             const_seed_seen.insert(out.clone());
                             const_seed_locals_all.push((out_local_idx, bits));
                         }
+                    } else if matches!(
+                        op.kind.as_str(),
+                        "const_str"
+                            | "const_bytes"
+                            | "const_bigint"
+                            | "const_not_implemented"
+                            | "const_ellipsis"
+                    ) && !is_dead
+                    {
+                        const_seed_seen.insert(out.clone());
+                        seeded_runtime_const_ops.push((op_idx, op.clone()));
                     }
                 }
             }
@@ -5168,12 +5276,21 @@ impl WasmBackend {
         } else {
             Vec::new()
         };
+        let seeded_runtime_const_ops = if stateful || jumpful {
+            seeded_runtime_const_ops
+        } else {
+            Vec::new()
+        };
+        let seeded_runtime_const_op_indices: BTreeSet<usize> =
+            seeded_runtime_const_ops.iter().map(|(idx, _)| *idx).collect();
         if std::env::var("MOLT_DEBUG_WASM_SEEDS_FUNC").ok().as_deref()
             == Some(func_ir.name.as_str())
         {
             eprintln!(
-                "WASM_SEEDS_FUNC name={} seeds={:?}",
-                func_ir.name, const_seed_locals
+                "WASM_SEEDS_FUNC name={} seeds={:?} runtime_const_ops={}",
+                func_ir.name,
+                const_seed_locals,
+                seeded_runtime_const_ops.len()
             );
             for name in &func_ir.params {
                 if let Some(idx) = locals.get(name) {
@@ -5347,6 +5464,18 @@ impl WasmBackend {
             func.instruction(&Instruction::LocalSet(remap_base_local));
         }
         if stateful || jumpful {
+            for (_, op) in &seeded_runtime_const_ops {
+                emit_seeded_runtime_const_op(
+                    self,
+                    &mut func,
+                    op,
+                    &locals,
+                    func_index,
+                    reloc_enabled,
+                    &import_ids,
+                    ctx.const_str_scratch_segment,
+                );
+            }
             // Seed dispatch locals from their first literal assignment so control-flow
             // edge threading cannot observe a raw wasm zero (0.0 bits) for an
             // otherwise integer/none local before its defining block executes.
@@ -5474,6 +5603,10 @@ impl WasmBackend {
 
             for (rel_idx, op) in ops.iter().enumerate() {
                 let op_idx = base_idx + rel_idx;
+
+                if seeded_runtime_const_op_indices.contains(&op_idx) {
+                    continue;
+                }
 
                 if skip_next {
                     skip_next = false;
@@ -11466,6 +11599,16 @@ impl WasmBackend {
                         let count = op.value.unwrap_or(0);
                         func.instruction(&Instruction::I64Const(count));
                         emit_call(func, reloc_enabled, import_ids["code_slots_init"]);
+                        func.instruction(&Instruction::Drop);
+                    }
+                    "trace_enter_slot" => {
+                        let code_id = op.value.unwrap_or(0);
+                        func.instruction(&Instruction::I64Const(code_id));
+                        emit_call(func, reloc_enabled, import_ids["trace_enter_slot"]);
+                        func.instruction(&Instruction::Drop);
+                    }
+                    "trace_exit" => {
+                        emit_call(func, reloc_enabled, import_ids["trace_exit"]);
                         func.instruction(&Instruction::Drop);
                     }
                     "line" => {
