@@ -6,10 +6,18 @@ use crate::{
     to_i64,
 };
 use std::cell::RefCell;
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 use serde_json::Value as JsonValue;
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+use std::sync::{Arc as WgpuArc, Mutex as WgpuMutex};
 
 #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
 use metal::{
@@ -18,6 +26,10 @@ use metal::{
 };
 #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
 use std::sync::Arc;
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+use wgpu;
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+use pollster;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum ScalarFormat {
@@ -157,7 +169,177 @@ unsafe fn gpu_kernel_descriptor_bits(
     unsafe { try_object_attr_bits(_py, callable_bits, b"__molt_gpu_descriptor__") }
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+type RuntimeWebGpuBufferRegistry = WgpuArc<WgpuMutex<std::collections::HashMap<u64, wgpu::Buffer>>>;
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+struct RuntimeWebGpuPipeline {
+    #[allow(dead_code)]
+    shader: wgpu::ShaderModule,
+    pipeline: wgpu::ComputePipeline,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+struct RuntimeWebGpuDevice {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    buffers: RuntimeWebGpuBufferRegistry,
+    next_id: WgpuMutex<u64>,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+impl RuntimeWebGpuDevice {
+    fn new() -> Result<Self, String> {
+        pollster::block_on(async {
+            let instance =
+                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions::default())
+                .await
+                .map_err(|err| err.to_string())?;
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor::default())
+                .await
+                .map_err(|err| err.to_string())?;
+            Ok(Self {
+                device,
+                queue,
+                buffers: WgpuArc::new(WgpuMutex::new(std::collections::HashMap::new())),
+                next_id: WgpuMutex::new(1),
+            })
+        })
+    }
+
+    fn compile_pipeline(
+        &self,
+        name: &str,
+        source: &str,
+    ) -> Result<WgpuArc<RuntimeWebGpuPipeline>, String> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        if let Some(err) = pollster::block_on(scope.pop()) {
+            return Err(err.to_string());
+        }
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: None,
+                module: &shader,
+                entry_point: Some(name),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+        if let Some(err) = pollster::block_on(scope.pop()) {
+            return Err(err.to_string());
+        }
+        Ok(WgpuArc::new(RuntimeWebGpuPipeline { shader, pipeline }))
+    }
+
+    fn alloc_buffer(&self, size_bytes: usize) -> (u64, wgpu::Buffer) {
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: size_bytes as u64,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut next_id = self.next_id.lock().unwrap();
+        let id = *next_id;
+        *next_id += 1;
+        self.buffers.lock().unwrap().insert(id, buffer.clone());
+        (id, buffer)
+    }
+
+    fn copy_to_buffer(&self, buffer: &wgpu::Buffer, data: &[u8]) {
+        self.queue.write_buffer(buffer, 0, data);
+    }
+
+    fn copy_from_buffer(&self, buffer: &wgpu::Buffer, size_bytes: usize) -> Result<Vec<u8>, String> {
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("runtime_webgpu_staging"),
+            size: size_bytes as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, size_bytes as u64);
+        self.queue.submit(Some(encoder.finish()));
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|err| err.to_string())?;
+        rx.recv().map_err(|_| "map channel dropped".to_string())?
+            .map_err(|err| err.to_string())?;
+        let mapped = slice.get_mapped_range();
+        let mut out = vec![0u8; size_bytes];
+        out.copy_from_slice(&mapped[..size_bytes]);
+        drop(mapped);
+        staging.unmap();
+        Ok(out)
+    }
+
+    fn dispatch(
+        &self,
+        pipeline: &WgpuArc<RuntimeWebGpuPipeline>,
+        grid: u32,
+        buffers: &[&wgpu::Buffer],
+    ) -> Result<(), String> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline.pipeline);
+            if !buffers.is_empty() {
+                let layout = pipeline.pipeline.get_bind_group_layout(0);
+                let entries: Vec<wgpu::BindGroupEntry<'_>> = buffers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, buffer)| wgpu::BindGroupEntry {
+                        binding: index as u32,
+                        resource: buffer.as_entire_binding(),
+                    })
+                    .collect();
+                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &layout,
+                    entries: &entries,
+                });
+                pass.set_bind_group(0, &bind_group, &[]);
+            }
+            pass.dispatch_workgroups(grid, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        if let Some(err) = pollster::block_on(scope.pop()) {
+            return Err(err.to_string());
+        }
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+}
+
+#[cfg(any(
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 #[derive(Clone)]
 struct RuntimeKernelBufferArg {
     name: String,
@@ -168,7 +350,10 @@ struct RuntimeKernelBufferArg {
     size: usize,
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 #[derive(Clone)]
 enum RuntimeKernelArg {
     Buffer(RuntimeKernelBufferArg),
@@ -177,7 +362,10 @@ enum RuntimeKernelArg {
     Bool(bool),
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 #[derive(Clone)]
 struct RuntimeKernelOp {
     kind: String,
@@ -187,7 +375,10 @@ struct RuntimeKernelOp {
     value: Option<i64>,
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 #[derive(Clone)]
 struct RuntimeKernelDescriptor {
     name: String,
@@ -195,7 +386,10 @@ struct RuntimeKernelDescriptor {
     ops: Vec<RuntimeKernelOp>,
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, String> {
     let root: JsonValue = serde_json::from_str(text).map_err(|err| err.to_string())?;
     let obj = root
@@ -298,7 +492,10 @@ fn parse_usize_arg(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<us
     })
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 fn kernel_arg_from_bits(
     _py: &crate::PyToken<'_>,
     name: &str,
@@ -348,7 +545,10 @@ fn kernel_arg_from_bits(
     ))
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 fn metal_scalar_type_for_buffer(format: &str) -> Result<(&'static str, usize), String> {
     match format {
         "f" | "d" => Ok(("float", 4)),
@@ -357,7 +557,10 @@ fn metal_scalar_type_for_buffer(format: &str) -> Result<(&'static str, usize), S
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 fn metal_scalar_type_for_arg(arg: &RuntimeKernelArg) -> Result<(&'static str, Vec<u8>), String> {
     match arg {
         RuntimeKernelArg::Int(v) => Ok(("int64_t", v.to_le_bytes().to_vec())),
@@ -367,7 +570,10 @@ fn metal_scalar_type_for_arg(arg: &RuntimeKernelArg) -> Result<(&'static str, Ve
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 fn buffer_host_bytes_for_metal(
     _py: &crate::PyToken<'_>,
     arg: &RuntimeKernelBufferArg,
@@ -389,7 +595,10 @@ fn buffer_host_bytes_for_metal(
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+#[cfg(any(
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 fn copy_metal_output_back_to_buffer(
     _py: &crate::PyToken<'_>,
     arg: &RuntimeKernelBufferArg,
@@ -579,6 +788,165 @@ fn render_metal_source(
         scalar_names,
         write_buffers.into_iter().collect(),
     ))
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+fn webgpu_scalar_type_for_buffer(format: &str) -> Result<&'static str, String> {
+    match format {
+        "f" | "d" => Ok("f32"),
+        "q" => Ok("i32"),
+        _ => Err(format!("unsupported buffer format for webgpu backend: {format}")),
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+fn render_webgpu_source(
+    desc: &RuntimeKernelDescriptor,
+    args: &BTreeMap<String, RuntimeKernelArg>,
+    workgroup_size: u32,
+) -> Result<(String, Vec<String>, Vec<String>, Vec<String>), String> {
+    let mut write_buffers = BTreeSet::new();
+    for op in &desc.ops {
+        if op.kind == "store_index" && let Some(name) = op.args.first() {
+            write_buffers.insert(name.clone());
+        }
+    }
+
+    let mut source = String::new();
+    let mut buffer_names = Vec::new();
+    let mut scalar_names = Vec::new();
+    let mut binding = 0usize;
+    for name in &desc.params {
+        match args.get(name) {
+            Some(RuntimeKernelArg::Buffer(buf)) => {
+                let ty = webgpu_scalar_type_for_buffer(buf.original_format.as_str())?;
+                let access = if write_buffers.contains(name) {
+                    "read_write"
+                } else {
+                    "read"
+                };
+                source.push_str(&format!(
+                    "@group(0) @binding({binding}) var<storage, {access}> {name}: array<{ty}>;\n"
+                ));
+                buffer_names.push(name.clone());
+                binding += 1;
+            }
+            Some(_) => {
+                let ty = match args.get(name).expect("scalar arg missing") {
+                    RuntimeKernelArg::Int(_) => "i32",
+                    RuntimeKernelArg::Float(_) => "f32",
+                    RuntimeKernelArg::Bool(_) => "u32",
+                    RuntimeKernelArg::Buffer(_) => unreachable!(),
+                };
+                source.push_str(&format!(
+                    "@group(0) @binding({binding}) var<storage, read> {name}: array<{ty}>;\n"
+                ));
+                scalar_names.push(name.clone());
+                binding += 1;
+            }
+            None => return Err(format!("missing kernel arg for parameter {name}")),
+        }
+    }
+    source.push_str(&format!(
+        "\n@compute @workgroup_size({workgroup_size})\nfn {}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n",
+        desc.name
+    ));
+    source.push_str("    let tid = i32(gid.x);\n");
+
+    let mut exprs = BTreeMap::new();
+    for name in &scalar_names {
+        exprs.insert(name.clone(), format!("{name}[0]"));
+    }
+    let mut if_depth = 0usize;
+    for op in &desc.ops {
+        match op.kind.as_str() {
+            "missing" | "line" | "const_none" | "ret" => {}
+            "store_var" => {
+                if let (Some(var), Some(src)) = (op.var.as_ref(), op.args.first()) {
+                    let src_expr = exprs.get(src).cloned().unwrap_or_else(|| src.clone());
+                    exprs.insert(var.clone(), src_expr);
+                }
+            }
+            "load_var" => {
+                if let (Some(out), Some(var)) = (op.out.as_ref(), op.var.as_ref()) {
+                    let src_expr = exprs.get(var).cloned().unwrap_or_else(|| var.clone());
+                    exprs.insert(out.clone(), src_expr);
+                }
+            }
+            "gpu_thread_id" => {
+                if let Some(out) = op.out.as_ref() {
+                    exprs.insert(out.clone(), "tid".to_string());
+                }
+            }
+            "const" => {
+                if let Some(out) = op.out.as_ref() {
+                    let value = op.value.ok_or_else(|| "const op missing value".to_string())?;
+                    exprs.insert(out.clone(), value.to_string());
+                }
+            }
+            "lt" | "add" | "sub" | "mul" | "div" => {
+                if let (Some(out), Some(lhs), Some(rhs)) =
+                    (op.out.as_ref(), op.args.first(), op.args.get(1))
+                {
+                    let lhs_expr = exprs.get(lhs).cloned().unwrap_or_else(|| lhs.clone());
+                    let rhs_expr = exprs.get(rhs).cloned().unwrap_or_else(|| rhs.clone());
+                    let op_str = match op.kind.as_str() {
+                        "lt" => "<",
+                        "add" => "+",
+                        "sub" => "-",
+                        "mul" => "*",
+                        "div" => "/",
+                        _ => unreachable!(),
+                    };
+                    source.push_str(&format!(
+                        "    let {out} = {lhs_expr} {op_str} {rhs_expr};\n"
+                    ));
+                    exprs.insert(out.clone(), out.clone());
+                }
+            }
+            "index" => {
+                if let (Some(out), Some(buf), Some(idx)) =
+                    (op.out.as_ref(), op.args.first(), op.args.get(1))
+                {
+                    let idx_expr = exprs.get(idx).cloned().unwrap_or_else(|| idx.clone());
+                    source.push_str(&format!("    let {out} = {buf}[{idx_expr}];\n"));
+                    exprs.insert(out.clone(), out.clone());
+                }
+            }
+            "if" => {
+                if let Some(cond_name) = op.args.first() {
+                    let cond_expr = exprs
+                        .get(cond_name)
+                        .cloned()
+                        .unwrap_or_else(|| cond_name.clone());
+                    source.push_str(&format!("    if ({cond_expr}) {{\n"));
+                    if_depth += 1;
+                }
+            }
+            "end_if" => {
+                if if_depth > 0 {
+                    if_depth -= 1;
+                    source.push_str("    }\n");
+                }
+            }
+            "store_index" => {
+                if let (Some(buf), Some(idx), Some(src)) =
+                    (op.args.first(), op.args.get(1), op.args.get(2))
+                {
+                    let idx_expr = exprs.get(idx).cloned().unwrap_or_else(|| idx.clone());
+                    let src_expr = exprs.get(src).cloned().unwrap_or_else(|| src.clone());
+                    source.push_str(&format!("        {buf}[{idx_expr}] = {src_expr};\n"));
+                }
+            }
+            other => return Err(format!("unsupported webgpu kernel op: {other}")),
+        }
+    }
+    while if_depth > 0 {
+        if_depth -= 1;
+        source.push_str("    }\n");
+    }
+    source.push_str("}\n");
+    Ok((source, buffer_names, scalar_names, write_buffers.into_iter().collect()))
 }
 
 #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
@@ -798,6 +1166,168 @@ fn try_dispatch_metal_kernel(
             _py,
             "RuntimeError",
             "metal gpu backend requested but runtime was built without molt_gpu_metal",
+        ));
+    }
+    Ok(None)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+fn try_dispatch_webgpu_kernel(
+    _py: &crate::PyToken<'_>,
+    callable_bits: u64,
+    grid: i64,
+    threads: i64,
+    builder_bits: u64,
+) -> Result<Option<u64>, u64> {
+    if requested_gpu_backend().as_deref() != Some("webgpu") {
+        return Ok(None);
+    }
+    if trace_gpu_backend_enabled() {
+        eprintln!("[molt gpu backend] webgpu");
+    }
+    let descriptor_bits = match unsafe { gpu_kernel_descriptor_bits(_py, callable_bits) } {
+        Ok(Some(bits)) => bits,
+        Ok(None) => {
+            return Err(raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "webgpu backend requires __molt_gpu_descriptor__ metadata",
+            ))
+        }
+        Err(err) => return Err(err),
+    };
+    let descriptor_json = string_obj_to_owned(obj_from_bits(descriptor_bits)).ok_or_else(|| {
+        raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
+    })?;
+    let descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
+        raise_exception::<u64>(_py, "RuntimeError", &format!("invalid gpu kernel descriptor: {msg}"))
+    })?;
+    let arg_bits = unsafe { crate::call::bind::callargs_positional_snapshot(_py, builder_bits) }?;
+    if arg_bits.len() != descriptor.params.len() {
+        return Err(raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            "gpu kernel descriptor parameter count does not match launch args",
+        ));
+    }
+    let mut args_map = BTreeMap::new();
+    for (name, bits) in descriptor.params.iter().zip(arg_bits.iter().copied()) {
+        args_map.insert(name.clone(), kernel_arg_from_bits(_py, name, bits)?);
+    }
+    let (source, buffer_names, scalar_names, output_buffers) =
+        render_webgpu_source(&descriptor, &args_map, threads as u32).map_err(|msg| {
+            raise_exception::<u64>(_py, "RuntimeError", &format!("webgpu kernel render failed: {msg}"))
+        })?;
+    let device = RuntimeWebGpuDevice::new()
+        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+    let pipeline = device
+        .compile_pipeline(&descriptor.name, &source)
+        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+
+    let mut owned_buffers: Vec<wgpu::Buffer> = Vec::new();
+    let mut buffer_index_map: BTreeMap<String, usize> = BTreeMap::new();
+    for name in &buffer_names {
+        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("buffer arg missing") else {
+            return Err(raise_exception::<u64>(_py, "RuntimeError", "expected buffer arg"));
+        };
+        let host_bytes = buffer_host_bytes_for_metal(_py, buf).map_err(|msg| {
+            raise_exception::<u64>(_py, "RuntimeError", &msg)
+        })?;
+        let (_, gpu_buf) = device.alloc_buffer(host_bytes.len().max(1));
+        if !host_bytes.is_empty() {
+            device.copy_to_buffer(&gpu_buf, &host_bytes);
+        }
+        buffer_index_map.insert(name.clone(), owned_buffers.len());
+        owned_buffers.push(gpu_buf);
+    }
+    for name in &scalar_names {
+        let arg = args_map.get(name).expect("scalar arg missing");
+        let scalar_bytes = match arg {
+            RuntimeKernelArg::Int(v) => (*v as i32).to_le_bytes().to_vec(),
+            RuntimeKernelArg::Float(v) => (*v as f32).to_le_bytes().to_vec(),
+            RuntimeKernelArg::Bool(v) => u32::from(*v).to_le_bytes().to_vec(),
+            RuntimeKernelArg::Buffer(_) => unreachable!(),
+        };
+        let (_, gpu_buf) = device.alloc_buffer(scalar_bytes.len().max(1));
+        device.copy_to_buffer(&gpu_buf, &scalar_bytes);
+        owned_buffers.push(gpu_buf);
+    }
+    let refs: Vec<&wgpu::Buffer> = owned_buffers.iter().collect();
+    device
+        .dispatch(&pipeline, grid as u32, &refs)
+        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+
+    for name in &output_buffers {
+        let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("output buffer missing") else {
+            continue;
+        };
+        let buffer_idx = *buffer_index_map.get(name).expect("buffer index missing");
+        let output_size = match buf.original_format.as_str() {
+            "f" => buf.size * 4,
+            "d" => buf.size * 4,
+            "q" => buf.size * 4,
+            other => {
+                return Err(raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    &format!("unsupported output buffer format for webgpu backend: {other}"),
+                ))
+            }
+        };
+        let gpu_output = device
+            .copy_from_buffer(&owned_buffers[buffer_idx], output_size)
+            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+        let rebuilt = match buf.original_format.as_str() {
+            "f" => gpu_output,
+            "d" => {
+                let mut out = Vec::with_capacity(buf.size * 8);
+                for chunk in gpu_output.chunks_exact(4) {
+                    let val = f32::from_le_bytes(chunk.try_into().map_err(|_| {
+                        raise_exception::<u64>(_py, "RuntimeError", "invalid webgpu f32 output bytes")
+                    })?) as f64;
+                    out.extend_from_slice(&val.to_le_bytes());
+                }
+                out
+            }
+            "q" => {
+                let mut out = Vec::with_capacity(buf.size * 8);
+                for chunk in gpu_output.chunks_exact(4) {
+                    let val = i32::from_le_bytes(chunk.try_into().map_err(|_| {
+                        raise_exception::<u64>(_py, "RuntimeError", "invalid webgpu i32 output bytes")
+                    })?) as i64;
+                    out.extend_from_slice(&val.to_le_bytes());
+                }
+                out
+            }
+            _ => unreachable!(),
+        };
+        let data_ptr = alloc_bytearray(_py, rebuilt.as_slice());
+        if data_ptr.is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        let data_bits = MoltObject::from_ptr(data_ptr).bits();
+        if let Err(err) = unsafe { set_object_attr_bytes(_py, buf.object_ptr, b"_data", "_data", data_bits) } {
+            dec_ref_bits(_py, data_bits);
+            return Err(err);
+        }
+        dec_ref_bits(_py, data_bits);
+    }
+    Ok(Some(MoltObject::none().bits()))
+}
+
+#[cfg(not(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")))]
+fn try_dispatch_webgpu_kernel(
+    _py: &crate::PyToken<'_>,
+    _callable_bits: u64,
+    _grid: i64,
+    _threads: i64,
+    _builder_bits: u64,
+) -> Result<Option<u64>, u64> {
+    if requested_gpu_backend().as_deref() == Some("webgpu") {
+        return Err(raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            "webgpu backend requested but runtime was built without molt_gpu_webgpu",
         ));
     }
     Ok(None)
@@ -1064,6 +1594,11 @@ pub extern "C" fn molt_gpu_kernel_launch(
             Err(err) => return err,
         };
         match try_dispatch_metal_kernel(_py, callable_bits, grid, threads, builder_bits) {
+            Ok(Some(bits)) => return bits,
+            Ok(None) => {}
+            Err(err) => return err,
+        }
+        match try_dispatch_webgpu_kernel(_py, callable_bits, grid, threads, builder_bits) {
             Ok(Some(bits)) => return bits,
             Ok(None) => {}
             Err(err) => return err,

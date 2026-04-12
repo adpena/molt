@@ -133,6 +133,20 @@ Rule:
   `MOLT_RUNTIME_GPU_METAL=1`, that is a real configuration error and must
   raise. Do not silently fall back to the sequential launcher.
 
+Native WebGPU is also opt-in:
+
+```bash
+MOLT_RUNTIME_GPU_WEBGPU=1 \
+MOLT_GPU_BACKEND=webgpu \
+MOLT_TRACE_GPU_BACKEND=1 \
+molt run --profile dev path/to/kernel_smoke.py
+```
+
+Current native compiled-kernel backend proofs:
+- Metal: real backend dispatch on macOS
+- WebGPU: real `wgpu` backend dispatch on native desktop
+- WASM: correct compiled launch semantics, still not real browser GPU dispatch yet
+
 ```bash
 # Basic run
 uv run --python 3.14 python3 tools/bench.py
