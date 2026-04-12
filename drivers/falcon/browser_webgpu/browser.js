@@ -121,6 +121,7 @@ export async function initFalconBrowserWebGpu({
     }),
   ]);
 
+  host.run();
   await host.invokeExport(resolvedInitExport, [new Uint8Array(weightsBytes), configJson]);
 
   return {
