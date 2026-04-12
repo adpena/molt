@@ -250,8 +250,10 @@ def test_augment_support_modules_adds_importer_runtime_dependencies(
         diagnostics_enabled=True,
     )
 
+    assert "importlib" in module_graph
     assert "importlib.util" in module_graph
     assert "importlib.machinery" in module_graph
+    assert "import_support" in module_reasons["importlib"]
     assert "import_support" in module_reasons["importlib.util"]
     assert "import_support" in module_reasons["importlib.machinery"]
 
@@ -292,6 +294,7 @@ def test_augment_support_modules_skips_importlib_support_for_static_only_build(
     )
 
     assert extend_calls == []
+    assert "importlib" not in module_graph
     assert "importlib.util" not in module_graph
     assert "importlib.machinery" not in module_graph
 

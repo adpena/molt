@@ -16967,7 +16967,7 @@ def _augment_support_modules(
         # importer module is generated so that importlib.util and
         # importlib.machinery appear in the importer's module list.
         import_support_paths: list[Path] = []
-        for module_name in ("importlib.util", "importlib.machinery"):
+        for module_name in ("importlib", "importlib.util", "importlib.machinery"):
             module_path = _resolve_module_path(module_name, [stdlib_root])
             if module_path is None:
                 raise RuntimeError(
