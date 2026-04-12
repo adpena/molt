@@ -330,27 +330,6 @@ def test_tensor_linear_split_last_dim_uses_tensor_level_intrinsic(
     assert right.to_list() == [[3.0, 2.0, 4.0], [7.0, 6.0, 8.0]]
 
 
-def test_tensor_attention_hybrid_mask_preserves_f32_layout_and_values():
-    from molt.gpu.tensor import tensor_attention_hybrid_mask, tensor_data_list
-
-    token_ids = [17, 244, 227, 230, 42]
-    mask = tensor_attention_hybrid_mask(token_ids, 244, 230)
-    rows = tensor_data_list(mask)
-    size = len(token_ids)
-
-    def at(q: int, k: int) -> float:
-        return rows[q * size + k]
-
-    assert mask.shape == (1, 1, size, size)
-    assert mask._buf.format_char == "f"
-    assert at(0, 1) < -1.0e8
-    assert at(1, 3) == 0.0
-    assert at(2, 3) == 0.0
-    assert at(3, 1) == 0.0
-    assert at(4, 3) == 0.0
-    assert at(4, 4) == 0.0
-
-
 def test_tensor_scaled_dot_product_attention_matches_manual_path():
     import array
     from molt.gpu import to_device

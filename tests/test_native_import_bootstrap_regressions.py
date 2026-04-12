@@ -886,39 +886,6 @@ def test_native_tensor_functional_reshape_and_data_list_fast_path(
     ]
 
 
-def test_native_tensor_attention_hybrid_mask_fast_path(
-    tmp_path: Path,
-) -> None:
-    run = _build_and_run(
-        tmp_path,
-        (
-            "from molt.gpu.tensor import tensor_attention_hybrid_mask, tensor_data_list\n"
-            "token_ids = [17, 244, 227, 230, 42]\n"
-            "mask = tensor_attention_hybrid_mask(token_ids, 244, 230)\n"
-            "rows = tensor_data_list(mask)\n"
-            "size = len(token_ids)\n"
-            "print(mask._buf.format_char)\n"
-            "print(rows[0 * size + 1] < -1e8)\n"
-            "print(rows[1 * size + 3])\n"
-            "print(rows[2 * size + 3])\n"
-            "print(rows[3 * size + 1])\n"
-            "print(rows[4 * size + 3])\n"
-            "print(rows[4 * size + 4])\n"
-        ),
-        "tensor_attention_hybrid_mask",
-    )
-    assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.strip().splitlines() == [
-        "f",
-        "True",
-        "0.0",
-        "0.0",
-        "0.0",
-        "0.0",
-        "0.0",
-    ]
-
-
 def test_native_tensor_scaled_dot_product_attention_fast_path(
     tmp_path: Path,
 ) -> None:
@@ -1018,12 +985,16 @@ def test_native_intrinsics_module_exports_module_form_api(tmp_path: Path) -> Non
             "print(callable(intr.load_intrinsic))\n"
             "print(intr.runtime_active())\n"
             "print(intr.load_intrinsic('molt_gpu_buffer_to_list') is not None)\n"
+            "print(intr.load_intrinsic('molt_gpu_tensor__zeros') is not None)\n"
+            "print(intr.load_intrinsic('molt_gpu_tensor__tensor_scaled_dot_product_attention') is not None)\n"
             "print(intr.load_intrinsic('molt_missing_intrinsic') is None)\n"
         ),
         "intrinsics_module_api",
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
+        "True",
+        "True",
         "True",
         "True",
         "True",

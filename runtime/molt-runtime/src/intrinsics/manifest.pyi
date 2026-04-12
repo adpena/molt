@@ -204,11 +204,6 @@ def molt_gpu_tensor__tensor_linear_split_last_dim(
     weight: Any,
     split_sizes: Any,
 ) -> tuple[Any, ...]: ...
-def molt_gpu_tensor__tensor_attention_hybrid_mask(
-    token_ids: Any,
-    image_cls_id: int,
-    img_end_id: int,
-) -> Any: ...
 def molt_gpu_tensor__tensor_scaled_dot_product_attention(
     q: Any,
     k: Any,
