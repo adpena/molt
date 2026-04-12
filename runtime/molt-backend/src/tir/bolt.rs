@@ -185,7 +185,15 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn test_generate_order_file() {
-        let tmp = std::env::temp_dir().join("molt_test_order_file.txt");
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = std::env::temp_dir().join(format!(
+            "molt_test_order_file_{}_{}.txt",
+            std::process::id(),
+            stamp,
+        ));
         let result = generate_order_file(Path::new("/dev/null"), &tmp);
         assert!(result.is_ok());
         let content = std::fs::read_to_string(&tmp).unwrap();

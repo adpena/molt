@@ -286,27 +286,19 @@ fn switch_to_block_with_rebind(
     builder: &mut FunctionBuilder,
     block: Block,
     is_block_filled: &mut bool,
-    has_exception_labels: bool,
-    vars: &BTreeMap<String, Variable>,
-    shadow_vars: &BTreeMap<String, Variable>,
-    shadow_names: &BTreeSet<String>,
+    _has_exception_labels: bool,
+    _vars: &BTreeMap<String, Variable>,
+    _shadow_vars: &BTreeMap<String, Variable>,
+    _shadow_names: &BTreeSet<String>,
 ) {
     crate::switch_to_block_tracking(builder, block, is_block_filled);
-    if !*is_block_filled && (has_exception_labels || !builder.block_params(block).is_empty()) {
-        // Rebind only when the target block already owns explicit SSA transport
-        // (block params) or exception-aware fallthrough semantics. Ordinary
-        // labels must not accrete implicit params as later predecessors appear.
-        for var in vars.values() {
-            let value = builder.use_var(*var);
-            builder.def_var(*var, value);
-        }
-        for name in shadow_names {
-            if let Some(var) = shadow_vars.get(name) {
-                let value = builder.use_var(*var);
-                builder.def_var(*var, value);
-            }
-        }
-    }
+    // Do not synthesize implicit SSA transport here.
+    //
+    // Cranelift materializes missing `use_var` state at a block switch by
+    // appending block params. That is only correct when the predecessor edges
+    // explicitly transport those values. Merge payloads and exception
+    // fallthrough state must therefore be modeled by real block params or
+    // slot-backed joins at the call site, not by opportunistic rebinding here.
 }
 
 #[cfg(feature = "native-backend")]
