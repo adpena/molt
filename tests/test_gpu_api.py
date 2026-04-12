@@ -152,6 +152,36 @@ def test_kernel_scalar_multiply():
     assert result == [6.0, 12.0, 18.0], f"Got {result}"
 
 
+def test_kernel_launcher_uses_backend_intrinsic_when_available(monkeypatch):
+    import molt.gpu as gpu
+
+    executed = []
+    calls = []
+
+    @gpu.kernel
+    def vector_add(a, b, c, n):
+        executed.append("ran")
+        tid = gpu.thread_id()
+        if tid < n:
+            c[tid] = a[tid] + b[tid]
+
+    def fake_launch(func, grid, threads, args):
+        calls.append((func.__name__, grid, threads, len(args)))
+        return None
+
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", fake_launch)
+
+    a = gpu.to_device([1.0, 2.0, 3.0, 4.0])
+    b = gpu.to_device([10.0, 20.0, 30.0, 40.0])
+    c = gpu.alloc(4, float)
+
+    vector_add[2, 4](a, b, c, 4)
+
+    assert calls == [("vector_add", 2, 4, 4)]
+    assert executed == []
+    assert gpu.from_device(c) == [0.0, 0.0, 0.0, 0.0]
+
+
 # ── Tensor ───────────────────────────────────────────────────────────────────
 
 def test_tensor_create_and_shape():
@@ -205,6 +235,247 @@ def test_tensor_linear_split_last_dim_preserves_f32_output_layout():
     assert right.to_list() == [[3.0, 2.0, 4.0], [7.0, 6.0, 8.0]]
     assert left._buf.format_char == "f"
     assert right._buf.format_char == "f"
+
+
+def test_tensor_linear_squared_relu_gate_interleaved_preserves_f32_output_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))
+    w = Tensor(
+        to_device(array.array("f", [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0])),
+        shape=(4, 2),
+    )
+
+    out = x.linear_squared_relu_gate_interleaved(w)
+
+    assert out.shape == (2, 2)
+    assert out.to_list() == [[2.0, 18.0], [36.0, 294.0]]
+    assert out._buf.format_char == "f"
+    assert out._buf.itemsize == 4
+
+
+def test_tensor_functional_linear_family_preserves_f32_output_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import (
+        Tensor,
+        tensor_linear,
+        tensor_linear_split_last_dim,
+        tensor_linear_squared_relu_gate_interleaved,
+    )
+
+    x = Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))
+    split_weight = Tensor(
+        to_device(array.array("f", [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0, 0.0, 2.0])),
+        shape=(5, 2),
+    )
+    gate_weight = Tensor(
+        to_device(array.array("f", [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0])),
+        shape=(4, 2),
+    )
+
+    proj = tensor_linear(x, split_weight)
+    left, right = tensor_linear_split_last_dim(x, split_weight, (2, 3))
+    gated = tensor_linear_squared_relu_gate_interleaved(x, gate_weight)
+
+    assert proj._buf.format_char == "f"
+    assert left._buf.format_char == "f"
+    assert right._buf.format_char == "f"
+    assert gated._buf.format_char == "f"
+    assert proj.to_list() == [[1.0, 2.0, 3.0, 2.0, 4.0], [3.0, 4.0, 7.0, 6.0, 8.0]]
+    assert left.to_list() == [[1.0, 2.0], [3.0, 4.0]]
+    assert right.to_list() == [[3.0, 2.0, 4.0], [7.0, 6.0, 8.0]]
+    assert gated.to_list() == [[2.0, 18.0], [36.0, 294.0]]
+
+
+def test_tensor_linear_split_last_dim_uses_tensor_level_intrinsic(
+    monkeypatch,
+):
+    import array
+    from molt.gpu import to_device
+    import molt.gpu.tensor as tensor_mod
+    from molt.gpu.tensor import Tensor, tensor_linear_split_last_dim
+
+    x = Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])), shape=(2, 2))
+    w = Tensor(
+        to_device(array.array("f", [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0, 0.0, 2.0])),
+        shape=(5, 2),
+    )
+
+    calls = []
+
+    def fake_intrinsic(x_arg, w_arg, sizes_arg):
+        calls.append((x_arg.shape, w_arg.shape, tuple(sizes_arg)))
+        return (
+            Tensor(
+                to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])),
+                shape=(2, 2),
+            ),
+            Tensor(
+                to_device(array.array("f", [3.0, 2.0, 4.0, 7.0, 6.0, 8.0])),
+                shape=(2, 3),
+            ),
+        )
+
+    monkeypatch.setattr(
+        tensor_mod, "_MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM", fake_intrinsic
+    )
+
+    left, right = tensor_linear_split_last_dim(x, w, (2, 3))
+
+    assert calls == [((2, 2), (5, 2), (2, 3))]
+    assert left.to_list() == [[1.0, 2.0], [3.0, 4.0]]
+    assert right.to_list() == [[3.0, 2.0, 4.0], [7.0, 6.0, 8.0]]
+
+
+def test_tensor_attention_hybrid_mask_preserves_f32_layout_and_values():
+    from molt.gpu.tensor import tensor_attention_hybrid_mask, tensor_data_list
+
+    token_ids = [17, 244, 227, 230, 42]
+    mask = tensor_attention_hybrid_mask(token_ids, 244, 230)
+    rows = tensor_data_list(mask)
+    size = len(token_ids)
+
+    def at(q: int, k: int) -> float:
+        return rows[q * size + k]
+
+    assert mask.shape == (1, 1, size, size)
+    assert mask._buf.format_char == "f"
+    assert at(0, 1) < -1.0e8
+    assert at(1, 3) == 0.0
+    assert at(2, 3) == 0.0
+    assert at(3, 1) == 0.0
+    assert at(4, 3) == 0.0
+    assert at(4, 4) == 0.0
+
+
+def test_tensor_scaled_dot_product_attention_matches_manual_path():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import (
+        Tensor,
+        tensor_data_list,
+        tensor_permute_dims,
+        tensor_scaled_dot_product_attention,
+        tensor_softmax_last_axis,
+    )
+
+    q = Tensor(to_device(array.array("f", [1.0, 0.0, 0.0, 1.0])), shape=(1, 1, 2, 2))
+    k = Tensor(to_device(array.array("f", [1.0, 0.0, 0.0, 1.0])), shape=(1, 1, 2, 2))
+    v = Tensor(to_device(array.array("f", [10.0, 1.0, 2.0, 20.0])), shape=(1, 1, 2, 2))
+    mask = Tensor(
+        to_device(array.array("f", [0.0, -1.0e9, -1.0e9, 0.0])),
+        shape=(1, 1, 2, 2),
+    )
+
+    out = tensor_scaled_dot_product_attention(q, k, v, mask, 1.0)
+    manual = tensor_softmax_last_axis(
+        (q @ tensor_permute_dims(k, (0, 1, 3, 2))) * Tensor(1.0) + mask
+    ) @ v
+
+    assert out.shape == (1, 1, 2, 2)
+    assert out._buf.format_char == manual._buf.format_char
+    assert tensor_data_list(out) == tensor_data_list(manual)
+    assert out.to_list() == [[[[10.0, 1.0], [2.0, 20.0]]]]
+
+
+def test_zeros_uses_intrinsic_when_available(monkeypatch):
+    import molt.gpu.tensor as tensor_mod
+    from molt.gpu.tensor import Tensor, zeros
+
+    calls = []
+
+    def fake_intrinsic(shape_arg, dtype_arg):
+        calls.append((tuple(shape_arg), dtype_arg))
+        return Tensor([0.0, 0.0], shape=(2,), dtype=dtype_arg)
+
+    monkeypatch.setattr(tensor_mod, "_MOLT_GPU_TENSOR_ZEROS", fake_intrinsic)
+
+    out = zeros(2)
+
+    assert calls == [((2,), float)]
+    assert out.to_list() == [0.0, 0.0]
+
+
+def test_tensor_scaled_dot_product_attention_uses_intrinsic_when_available(
+    monkeypatch,
+):
+    import molt.gpu.tensor as tensor_mod
+    from molt.gpu.tensor import Tensor, tensor_scaled_dot_product_attention
+
+    calls = []
+
+    def fake_intrinsic(q_arg, k_arg, v_arg, mask_arg, scale_arg):
+        calls.append((q_arg.shape, k_arg.shape, v_arg.shape, mask_arg.shape, scale_arg))
+        return Tensor([10.0, 1.0, 2.0, 20.0], shape=(1, 1, 2, 2), dtype=float)
+
+    monkeypatch.setattr(
+        tensor_mod,
+        "_MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION",
+        fake_intrinsic,
+    )
+
+    q = Tensor([1.0, 0.0, 0.0, 1.0], shape=(1, 1, 2, 2), dtype=float)
+    k = Tensor([1.0, 0.0, 0.0, 1.0], shape=(1, 1, 2, 2), dtype=float)
+    v = Tensor([10.0, 1.0, 2.0, 20.0], shape=(1, 1, 2, 2), dtype=float)
+    mask = Tensor([0.0, -1.0e9, -1.0e9, 0.0], shape=(1, 1, 2, 2), dtype=float)
+
+    out = tensor_scaled_dot_product_attention(q, k, v, mask, 1.0)
+
+    assert calls == [((1, 1, 2, 2), (1, 1, 2, 2), (1, 1, 2, 2), (1, 1, 2, 2), 1.0)]
+    assert out.to_list() == [[[[10.0, 1.0], [2.0, 20.0]]]]
+
+
+def test_tensor_functional_permute_and_softmax_last_axis_preserve_f32_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor, tensor_permute_dims, tensor_softmax_last_axis
+
+    t = Tensor(
+        to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])),
+        shape=(1, 2, 1, 2),
+    )
+    permuted = tensor_permute_dims(t, (0, 2, 1, 3))
+    softmaxed = tensor_softmax_last_axis(Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])), shape=(2, 2)))
+
+    assert permuted.to_list() == [[[[1.0, 2.0], [3.0, 4.0]]]]
+    assert permuted._buf.format_char == "f"
+    assert softmaxed._buf.format_char == "f"
+    rows = softmaxed.to_list()
+    for row in rows:
+        assert abs(sum(row) - 1.0) < 1e-6
+
+
+def test_tensor_functional_reshape_and_data_list_preserve_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor, tensor_data_list, tensor_reshape_view
+
+    t = Tensor(to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])), shape=(4,))
+    reshaped = tensor_reshape_view(t, (2, 2))
+
+    assert reshaped.to_list() == [[1.0, 2.0], [3.0, 4.0]]
+    assert reshaped._buf.format_char == "f"
+    assert tensor_data_list(reshaped) == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_tensor_functional_take_rows_preserves_layout():
+    import array
+    from molt.gpu import to_device
+    from molt.gpu.tensor import Tensor, tensor_take_rows
+
+    weight = Tensor(
+        to_device(array.array("f", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])),
+        shape=(3, 2),
+    )
+
+    out = tensor_take_rows(weight, [2, 0])
+
+    assert out.shape == (2, 2)
+    assert out.to_list() == [[5.0, 6.0], [1.0, 2.0]]
+    assert out._buf.format_char == "f"
 
 
 def test_tensor_linear_weight_layout_matches_transposed_matmul():
@@ -303,6 +574,32 @@ def test_tensor_repeat_axis_preserves_values_and_f32_layout():
     assert out.shape == (1, 6, 2)
     assert out.to_list() == [[[1.0, 2.0], [1.0, 2.0], [1.0, 2.0], [3.0, 4.0], [3.0, 4.0], [3.0, 4.0]]]
     assert out._buf.format_char == "f"
+    assert out._buf.itemsize == 4
+
+
+def test_tensor_repeat_axis_negative_axis_and_zero_repeats():
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor([[1, 2], [3, 4]])
+
+    out = t.repeat_axis(-1, 0)
+
+    assert out.shape == (2, 0)
+    assert out.size == 0
+    assert out.to_list() == [[], []]
+    assert out._buf.format_char == "d"
+
+
+def test_tensor_repeat_axis_single_repeat_returns_view():
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor([[1.0, 2.0, 3.0]])
+
+    out = t.repeat_axis(1, 1)
+
+    assert out.shape == (1, 3)
+    assert out.to_list() == [[1.0, 2.0, 3.0]]
+    assert out._buf is t._buf
 
 
 def test_tensor_indexing_preserves_subtensor_buffer_layout():
@@ -455,6 +752,33 @@ def test_tensor_take_rows_rejects_out_of_range_indices():
 
     with pytest.raises(IndexError, match="out of range"):
         t.take_rows(Tensor([2]))
+
+
+def test_tensor_take_rows_uses_intrinsic_when_available(monkeypatch):
+    import array
+    from molt.gpu import to_device
+    import molt.gpu.tensor as tensor_mod
+    from molt.gpu.tensor import Tensor, tensor_take_rows
+
+    weight = Tensor(
+        to_device(array.array("f", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])),
+        shape=(3, 2),
+    )
+    calls = []
+
+    def fake_intrinsic(x_arg, indices_arg, allow_negative_arg):
+        calls.append((x_arg.shape, indices_arg.shape, allow_negative_arg))
+        return Tensor(
+            to_device(array.array("f", [5.0, 6.0, 1.0, 2.0])),
+            shape=(2, 2),
+        )
+
+    monkeypatch.setattr(tensor_mod, "_MOLT_GPU_TENSOR_TAKE_ROWS", fake_intrinsic)
+
+    out = tensor_take_rows(weight, [2, 0], allow_negative=False)
+
+    assert calls == [((3, 2), (2,), False)]
+    assert out.to_list() == [[5.0, 6.0], [1.0, 2.0]]
 
 
 def test_tensor_permute_4d_common_orders():
@@ -754,6 +1078,39 @@ def test_load_safetensors_materializes_tensors_on_demand(tmp_path, monkeypatch):
         ([3.0, 4.0, 5.0, 6.0], (2, 2)),
     ]
     assert weights.get("missing", "fallback") == "fallback"
+
+
+def test_load_safetensors_bytes_materializes_tensors_on_demand(tmp_path, monkeypatch):
+    import molt.gpu.interop as interop
+    from molt.gpu import from_device
+
+    safetensors_path = tmp_path / "weights_bytes.safetensors"
+    _write_safetensors_fixture(safetensors_path)
+    payload = safetensors_path.read_bytes()
+
+    materialized: list[tuple[list[float], tuple[int, ...]]] = []
+
+    class FakeTensor:
+        def __init__(self, data, shape=None, dtype=float):
+            if hasattr(data, "element_type") and hasattr(data, "size"):
+                values = from_device(data)
+            else:
+                values = list(data)
+            materialized.append((values, tuple(shape or ())))
+            self.shape = tuple(shape or ())
+            self.dtype = dtype
+
+    monkeypatch.setattr(interop, "Tensor", FakeTensor)
+
+    weights = interop.load_safetensors_bytes(payload)
+
+    assert len(weights) == 2
+    assert materialized == []
+
+    first = weights["t0"]
+    assert isinstance(first, FakeTensor)
+    assert materialized == [([1.0, 2.0], (2,))]
+    assert weights["t0"] is first
 
 
 def test_load_safetensors_f32_entries_stay_f32_buffer_backed(tmp_path):
