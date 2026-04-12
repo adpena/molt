@@ -18,6 +18,8 @@ _MOLT_ARRAY_INSERT = _require_intrinsic("molt_array_insert")
 _MOLT_ARRAY_ITEMSIZE = _require_intrinsic("molt_array_itemsize")
 _MOLT_ARRAY_LEN = _require_intrinsic("molt_array_len")
 _MOLT_ARRAY_POP = _require_intrinsic("molt_array_pop")
+_MOLT_ARRAY_REPEAT = _require_intrinsic("molt_array_repeat")
+_MOLT_ARRAY_REPEAT_IN_PLACE = _require_intrinsic("molt_array_repeat_in_place")
 _MOLT_ARRAY_REMOVE = _require_intrinsic("molt_array_remove")
 _MOLT_ARRAY_REVERSE = _require_intrinsic("molt_array_reverse")
 _MOLT_ARRAY_SETITEM = _require_intrinsic("molt_array_setitem")
@@ -107,6 +109,22 @@ class array:
     def pop(self, i: int = -1):
         """Remove the item with the index i from the array and return it."""
         return _MOLT_ARRAY_POP(self._handle, i)
+
+    @classmethod
+    def _from_handle(cls, handle):
+        obj = cls.__new__(cls)
+        obj._handle = handle
+        return obj
+
+    def __mul__(self, count):
+        return type(self)._from_handle(_MOLT_ARRAY_REPEAT(self._handle, count))
+
+    def __rmul__(self, count):
+        return type(self)._from_handle(_MOLT_ARRAY_REPEAT(self._handle, count))
+
+    def __imul__(self, count):
+        _MOLT_ARRAY_REPEAT_IN_PLACE(self._handle, count)
+        return self
 
     def remove(self, v) -> None:
         """Remove the first occurrence of v in the array."""
