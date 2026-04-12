@@ -1492,10 +1492,6 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _falcon_hostfed_default_json_out() -> Path:
-    return Path("bench/results/falcon_split_runtime.json")
-
-
 def _extract_profile_json(text: str) -> dict[str, object] | None:
     profile: dict[str, object] | None = None
     prefix = "molt_profile_json "
@@ -1662,105 +1658,6 @@ def _run_hostfed_call_bundle(
             "exports": [str(call.get("export")) for call in calls],
         }
     )
-    return payload
-
-
-def run_falcon_hostfed_split_runtime_benchmark(
-    *,
-    artifact_dir: Path,
-    init_only_calls: Path,
-    token_calls: Path,
-    runner_cmd: list[str],
-    runner_name: str,
-    log: TextIO | None,
-    phases: tuple[str, ...] = ("init_only", "init_plus_1_token"),
-    phase_timeout_s: float | None = None,
-) -> dict[str, object]:
-    app_wasm = artifact_dir / "app.wasm"
-    runtime_wasm = artifact_dir / "molt_runtime.wasm"
-    if not app_wasm.exists():
-        raise FileNotFoundError(f"Missing Falcon split-runtime app wasm: {app_wasm}")
-    if not runtime_wasm.exists():
-        raise FileNotFoundError(
-            f"Missing Falcon split-runtime runtime wasm: {runtime_wasm}"
-        )
-    if not _is_valid_wasm(app_wasm):
-        raise RuntimeError(f"Invalid Falcon split-runtime app wasm: {app_wasm}")
-    if not _is_valid_wasm(runtime_wasm):
-        raise RuntimeError(f"Invalid Falcon split-runtime runtime wasm: {runtime_wasm}")
-
-    known_phases = {
-        "init_only": init_only_calls,
-        "init_plus_1_token": token_calls,
-    }
-    phase_results: list[dict[str, object]] = []
-    for phase in phases:
-        calls_path = known_phases.get(phase)
-        if calls_path is None:
-            raise ValueError(f"Unsupported Falcon host-fed phase: {phase}")
-        phase_results.append(
-            _run_hostfed_call_bundle(
-                label=phase,
-                app_wasm=app_wasm,
-                runtime_wasm=runtime_wasm,
-                calls_path=calls_path,
-                runner_cmd=runner_cmd,
-                runner_name=runner_name,
-                log=log,
-                timeout_s=phase_timeout_s,
-            )
-        )
-    payload: dict[str, object] = {
-        "schema_version": 1,
-        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "git_rev": _git_rev(),
-        "benchmark": "falcon_split_hostfed",
-        "artifact_dir": str(artifact_dir),
-        "app_wasm": str(app_wasm),
-        "app_wasm_sha256": _sha256(app_wasm),
-        "runtime_wasm": str(runtime_wasm),
-        "runtime_wasm_sha256": _sha256(runtime_wasm),
-        "calls_init_only": str(init_only_calls),
-        "calls_init_only_sha256": _sha256(init_only_calls),
-        "calls_init_plus_1_token": str(token_calls),
-        "calls_init_plus_1_token_sha256": _sha256(token_calls),
-        "runner": runner_name,
-        "phase_order": list(phases),
-        "system": {
-            "platform": platform.platform(),
-            "python": platform.python_version(),
-            "machine": platform.machine(),
-            "cpu_count": os.cpu_count(),
-        },
-        "phases": phase_results,
-        "ok": all(bool(phase.get("ok")) for phase in phase_results),
-    }
-    if phase_timeout_s is not None:
-        payload["phase_timeout_s"] = phase_timeout_s
-    if all(bool(phase.get("ok")) for phase in phase_results):
-        phase_by_label = {
-            str(phase["label"]): phase for phase in phase_results if "label" in phase
-        }
-        summary: dict[str, object] = {}
-        if "init_only" in phase_by_label:
-            init_only = phase_by_label["init_only"]
-            summary["init_only_call_count"] = init_only.get("call_count", 0)
-            summary["init_only_duration_ms"] = init_only.get("first_call_duration_ms")
-            summary["init_only_runner_wall_time_s"] = init_only.get(
-                "runner_wall_time_s"
-            )
-        if "init_plus_1_token" in phase_by_label:
-            init_plus_token = phase_by_label["init_plus_1_token"]
-            summary["init_plus_1_token_call_count"] = init_plus_token.get(
-                "call_count", 0
-            )
-            summary["init_plus_1_token_duration_ms"] = init_plus_token.get(
-                "second_call_duration_ms"
-            )
-            summary["init_plus_1_token_runner_wall_time_s"] = init_plus_token.get(
-                "runner_wall_time_s"
-            )
-        payload["summary"] = summary
     return payload
 
 
@@ -2110,90 +2007,12 @@ def main() -> None:
         action="store_true",
         help="Keep per-benchmark wasm temp dirs (also honors MOLT_WASM_KEEP=1).",
     )
-    parser.add_argument(
-        "--falcon-hostfed",
-        action="store_true",
-        help=(
-            "Run the Falcon split-runtime host-fed proof harness using the "
-            "canonical init-only and init+1-token call bundles."
-        ),
-    )
-    parser.add_argument(
-        "--falcon-artifact-dir",
-        type=Path,
-        default=Path("tmp") / "falcon_hostfed_recheck",
-        help=(
-            "Directory containing split-runtime Falcon artifacts "
-            "(default: tmp/falcon_hostfed_recheck)."
-        ),
-    )
-    parser.add_argument(
-        "--falcon-init-calls",
-        type=Path,
-        default=Path("tmp") / "falcon_realdata_hostfed" / "calls_init_only.json",
-        help=(
-            "Canonical Falcon init-only host-fed call bundle "
-            "(default: tmp/falcon_realdata_hostfed/calls_init_only.json)."
-        ),
-    )
-    parser.add_argument(
-        "--falcon-token-calls",
-        type=Path,
-        default=Path("tmp") / "falcon_realdata_hostfed" / "calls.json",
-        help=(
-            "Canonical Falcon init+1-token host-fed call bundle "
-            "(default: tmp/falcon_realdata_hostfed/calls.json)."
-        ),
-    )
-    parser.add_argument(
-        "--falcon-phase",
-        action="append",
-        choices=["init_only", "init_plus_1_token"],
-        default=None,
-        help=(
-            "Limit Falcon host-fed runs to the selected phase(s). "
-            "Repeat to run multiple phases; defaults to both phases."
-        ),
-    )
-    parser.add_argument(
-        "--falcon-phase-timeout-s",
-        type=float,
-        default=None,
-        help=(
-            "Optional timeout applied to each Falcon host-fed phase. "
-            "Unset means no explicit per-phase timeout."
-        ),
-    )
     args = parser.parse_args()
     env_node_max_old_space_mb = _parse_env_int("MOLT_WASM_NODE_MAX_OLD_SPACE_MB")
     if args.node_max_old_space_mb is None:
         args.node_max_old_space_mb = env_node_max_old_space_mb
     elif args.node_max_old_space_mb <= 0:
         parser.error("--node-max-old-space-mb must be > 0")
-    if args.falcon_hostfed:
-        forbidden = []
-        for flag, enabled in (
-            ("--bench", bool(args.bench)),
-            ("--smoke", args.smoke),
-            ("--super", args.super),
-            ("--ws", args.ws),
-            ("--control-runner", args.control_runner != "none"),
-            ("--require-linked", args.require_linked),
-            ("--allow-unlinked", args.allow_unlinked),
-            ("--tty", args.tty),
-            ("--keep-artifacts", args.keep_artifacts),
-        ):
-            if enabled:
-                forbidden.append(flag)
-        if forbidden:
-            parser.error(
-                "--falcon-hostfed cannot be combined with other benchmark modes: "
-                + ", ".join(forbidden)
-            )
-        if args.runner != "node":
-            parser.error("--falcon-hostfed currently supports only --runner node")
-        if args.falcon_phase_timeout_s is not None and args.falcon_phase_timeout_s <= 0:
-            parser.error("--falcon-phase-timeout-s must be > 0")
     if args.control_runner == args.runner:
         parser.error("--control-runner must differ from --runner (or be 'none')")
     if args.require_linked and args.allow_unlinked:
@@ -2223,38 +2042,6 @@ def main() -> None:
     keep_temp = args.keep_artifacts or os.environ.get("MOLT_WASM_KEEP") == "1"
     if args.keep_artifacts:
         os.environ["MOLT_WASM_KEEP"] = "1"
-
-    if args.falcon_hostfed:
-        runner_cmd = _resolve_runner(
-            "node",
-            tty=use_tty,
-            log=log_file,
-            node_max_old_space_mb=args.node_max_old_space_mb,
-        )
-        json_out = args.json_out or _falcon_hostfed_default_json_out()
-        try:
-            payload = run_falcon_hostfed_split_runtime_benchmark(
-                artifact_dir=args.falcon_artifact_dir,
-                init_only_calls=args.falcon_init_calls,
-                token_calls=args.falcon_token_calls,
-                runner_cmd=runner_cmd,
-                runner_name="node",
-                log=log_file,
-                phases=tuple(args.falcon_phase or ["init_only", "init_plus_1_token"]),
-                phase_timeout_s=args.falcon_phase_timeout_s,
-            )
-        except (FileNotFoundError, RuntimeError) as exc:
-            print(f"Falcon host-fed benchmark aborted: {exc}", file=sys.stderr)
-            if log_file is not None:
-                log_file.close()
-            sys.exit(1)
-        write_json(json_out, payload)
-        if log_file is not None:
-            log_file.close()
-        print(f"Falcon split-runtime host-fed benchmark written to {json_out}")
-        if not bool(payload.get("ok")):
-            sys.exit(1)
-        return
 
     runner_cmd = _resolve_runner(
         args.runner,
