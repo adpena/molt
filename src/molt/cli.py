@@ -7500,33 +7500,20 @@ def _runtime_fingerprint(
 @functools.lru_cache(maxsize=32)
 def _runtime_cargo_features_cached(
     target_triple: str | None,
-    tk_raw: str | None,
-    gpu_metal_raw: str | None,
-    gpu_webgpu_raw: str | None,
+    raw: str | None,
 ) -> tuple[str, ...]:
-    features: list[str] = []
     if target_triple is not None and target_triple.startswith("wasm32"):
-        if True if gpu_webgpu_raw is None or gpu_webgpu_raw.strip() == "" else _coerce_bool(gpu_webgpu_raw, True):
-            pass
-        return tuple(features)
-    tk_enabled = True if tk_raw is None or tk_raw.strip() == "" else _coerce_bool(tk_raw, True)
-    if tk_enabled:
-        features.append("molt_tk_native")
-    metal_enabled = False if gpu_metal_raw is None or gpu_metal_raw.strip() == "" else _coerce_bool(gpu_metal_raw, False)
-    if metal_enabled:
-        features.append("molt_gpu_metal")
-    webgpu_enabled = False if gpu_webgpu_raw is None or gpu_webgpu_raw.strip() == "" else _coerce_bool(gpu_webgpu_raw, False)
-    if webgpu_enabled:
-        features.append("molt_gpu_webgpu")
-    return tuple(features)
+        return ()
+    enabled = True if raw is None or raw.strip() == "" else _coerce_bool(raw, True)
+    if not enabled:
+        return ()
+    return ("molt_tk_native",)
 
 
 def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
     return _runtime_cargo_features_cached(
         target_triple,
         os.environ.get("MOLT_RUNTIME_TK_NATIVE"),
-        os.environ.get("MOLT_RUNTIME_GPU_METAL"),
-        os.environ.get("MOLT_RUNTIME_GPU_WEBGPU"),
     )
 
 
@@ -9643,6 +9630,17 @@ def _effective_split_worker_table_base(
     return runtime_table_min
 
 
+@functools.lru_cache(maxsize=1)
+def _reserved_wasm_runtime_callable_count() -> int:
+    include_path = Path(__file__).resolve().parents[2] / "runtime" / "wasm_runtime_callables.inc"
+    pattern = re.compile(r"^\s*\((\d+),")
+    count = 0
+    for line in include_path.read_text().splitlines():
+        if pattern.match(line):
+            count += 1
+    return count
+
+
 def _generate_split_worker_js(
     *,
     shared_memory_initial_pages: int,
@@ -9670,6 +9668,11 @@ def _generate_split_worker_js(
     )
     runtime_table_ref_signatures_json = json.dumps(
         dict(runtime_table_ref_signatures or {}), sort_keys=True
+    )
+    legacy_wasm_table_base = 256
+    reserved_runtime_callable_base = 33
+    reserved_runtime_shared_prefix_len = (
+        reserved_runtime_callable_base + _reserved_wasm_runtime_callable_count() * 2
     )
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
@@ -9757,6 +9760,9 @@ export default {
     const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
     const appTableRefSignatures = __MOLT_APP_TABLE_REF_SIGNATURES__;
     const runtimeTableRefSignatures = __MOLT_RUNTIME_TABLE_REF_SIGNATURES__;
+    const LEGACY_WASM_TABLE_BASE = __MOLT_LEGACY_WASM_TABLE_BASE__;
+    const RESERVED_RUNTIME_CALLABLE_BASE = __MOLT_RESERVED_RUNTIME_CALLABLE_BASE__;
+    const RESERVED_RUNTIME_SHARED_PREFIX_LEN = __MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__;
     const WASI_FILETYPE_CHARACTER_DEVICE = 2;
     const WASI_FILETYPE_DIRECTORY = 3;
     const WASI_FILETYPE_REGULAR_FILE = 4;
@@ -10292,13 +10298,6 @@ export default {
       }
     };
 
-    const hasExportedTableRefs = (instance) => {
-      if (!instance || !instance.exports) {
-        return false;
-      }
-      return Object.keys(instance.exports).some((name) => /^__molt_table_ref_(\\d+)$/.test(name));
-    };
-
     const ensureTableCapacityForExportedRefs = (instance, table) => {
       if (!instance || !table) {
         return;
@@ -10318,6 +10317,19 @@ export default {
         return;
       }
       table.grow(maxIndex + 1 - table.length);
+    };
+
+    const remapLegacyRuntimeSharedIdx = (idx) => {
+      if (__MOLT_SHARED_TABLE_BASE__ === null || __MOLT_SHARED_TABLE_BASE__ <= LEGACY_WASM_TABLE_BASE) {
+        return idx;
+      }
+      if (
+        idx >= LEGACY_WASM_TABLE_BASE + RESERVED_RUNTIME_CALLABLE_BASE &&
+        idx < LEGACY_WASM_TABLE_BASE + RESERVED_RUNTIME_SHARED_PREFIX_LEN
+      ) {
+        return idx - LEGACY_WASM_TABLE_BASE + __MOLT_SHARED_TABLE_BASE__;
+      }
+      return idx;
     };
 
     const buildRuntimeImports = (module, runtimeInstance) => {
@@ -10512,7 +10524,8 @@ export default {
       hostEnv[`molt_call_indirect${arity}`] = (fnIndex, ...args) => {
         const indirectName = `molt_call_indirect${arity}`;
         const idx = Number(fnIndex);
-        const directName = `__molt_table_ref_${idx}`;
+        const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
+        const directName = `__molt_table_ref_${dispatchIdx}`;
         const indirectFn = appInstance?.exports?.[indirectName];
         if (typeof indirectFn === "function") {
           try {
@@ -10522,28 +10535,27 @@ export default {
             throw new Error(`${indirectName} app export failed at idx=${idx}: ${detail}; fnLen=${indirectFn.length}; argsLen=${args.length}`);
           }
         }
-        const tableFn = sharedTable.get(idx);
+        const tableFn = sharedTable.get(dispatchIdx);
         if (typeof tableFn === "function") {
           try {
-            const signature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
-            return callWithSignature(tableFn, signature, args);
+            return tableFn(...args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             const fnName = tableFn.name || "<anon>";
-            throw new Error(`${indirectName} shared-table entry failed at idx=${idx}: ${detail}; fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`);
+            throw new Error(`${indirectName} shared-table entry failed at idx=${dispatchIdx}: ${detail}; fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`);
           }
         }
         const rtDirectFn = rtInstance?.exports?.[directName];
         if (typeof rtDirectFn === "function") {
           try {
-            return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || null, args);
+            return rtDirectFn(...args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             throw new Error(`${indirectName} runtime direct export ${directName} failed: ${detail}; fnLen=${rtDirectFn.length}; argsLen=${args.length}`);
           }
         }
         if (typeof tableFn !== "function") {
-          throw new Error(`${indirectName} missing table entry at ${idx}`);
+          throw new Error(`${indirectName} missing table entry at ${dispatchIdx}`);
         }
         return tableFn(...args);
       };
@@ -10587,8 +10599,7 @@ export default {
 
       // 3. Initialize and run
       if (rtInstance.exports._initialize) rtInstance.exports._initialize();
-      const appHasTableRefs = hasExportedTableRefs(appInstance);
-      if (!appHasTableRefs && appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
+      if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
       installTableRefs(appInstance, sharedTable);
       if (appInstance.exports.molt_main) appInstance.exports.molt_main();
       else if (appInstance.exports._start) appInstance.exports._start();
@@ -10645,6 +10656,18 @@ export default {
         .replace(
             "__MOLT_RUNTIME_TABLE_REF_SIGNATURES__",
             runtime_table_ref_signatures_json,
+        )
+        .replace(
+            "__MOLT_LEGACY_WASM_TABLE_BASE__",
+            str(legacy_wasm_table_base),
+        )
+        .replace(
+            "__MOLT_RESERVED_RUNTIME_CALLABLE_BASE__",
+            str(reserved_runtime_callable_base),
+        )
+        .replace(
+            "__MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__",
+            str(reserved_runtime_shared_prefix_len),
         )
         .replace(
             "__MOLT_SHARED_TABLE_BASE__",
@@ -13432,7 +13455,7 @@ def _module_frontend_payload(
     total_s: float,
 ) -> dict[str, Any]:
     return {
-        "functions": ir["functions"],
+        "functions": _normalize_backend_ir_functions(ir["functions"]),
         "func_code_ids": dict(gen.func_code_ids),
         "local_class_names": sorted(gen.local_class_names),
         "local_classes": {
@@ -13449,6 +13472,27 @@ def _module_frontend_payload(
             "total_s": total_s,
         },
     }
+
+
+def _normalize_backend_ir_functions(
+    functions: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for func in functions:
+        copied = dict(func)
+        params = copied.get("params")
+        if isinstance(params, list) and params:
+            raw_param_types = copied.get("param_types")
+            param_types = (
+                list(raw_param_types)
+                if isinstance(raw_param_types, list)
+                else []
+            )
+            if len(param_types) < len(params):
+                param_types.extend(["i64"] * (len(params) - len(param_types)))
+            copied["param_types"] = param_types
+        normalized.append(copied)
+    return normalized
 
 
 def _module_frontend_generator(
@@ -14858,7 +14902,7 @@ def _finalize_backend_ir(
     pgo_profile_summary: Any | None,
     runtime_feedback_summary: Any | None,
 ) -> dict[str, Any]:
-    ir: dict[str, Any] = {"functions": list(functions)}
+    ir: dict[str, Any] = {"functions": _normalize_backend_ir_functions(functions)}
     if pgo_profile_summary is not None:
         profile_data: dict[str, Any] = {
             "version": pgo_profile_summary.version,
@@ -15125,22 +15169,6 @@ def _prepare_backend_ir(
 
     entry_call_idx = _entry_call_index(entry_ops, entry_init)
     entry_ops[entry_call_idx:entry_call_idx] = entry_module_code_ops
-    host_init_ops = _build_entry_main_ops(
-        entry_init=entry_init,
-        version_ops=version_ops,
-        register_global_code_id=register_global_code_id,
-    )
-    if _inject_sys_init:
-        _append_entry_sys_init_op(
-            host_init_ops,
-            entry_init=entry_init,
-            register_global_code_id=register_global_code_id,
-            next_var=next_var,
-            lazy=False,
-        )
-    host_init_call_idx = _entry_call_index(host_init_ops, entry_init)
-    host_init_ops[host_init_call_idx:host_init_call_idx] = entry_module_code_ops
-    host_init_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
     if spawn_enabled:
         _replace_entry_call_with_spawn_override(
             entry_ops,
@@ -15149,7 +15177,6 @@ def _prepare_backend_ir(
             next_var=next_var,
         )
     entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
-    functions.append({"name": "molt_host_init", "params": [], "ops": host_init_ops})
     functions.append({"name": "molt_main", "params": [], "ops": entry_ops})
     isolate_bootstrap_ops = _build_isolate_bootstrap_ops(
         code_slot_count=len(global_code_ids),
@@ -15258,7 +15285,6 @@ def _is_user_owned_symbol(
     entry_init = f"molt_init_{entry_module}"
     if (
         name == "molt_main"
-        or name == "molt_host_init"
         or name.startswith(f"{entry_module}__")
         or name == entry_init
         or name == "molt_init___main__"
@@ -15279,7 +15305,7 @@ def _is_stdlib_owned_symbol(
     *,
     stdlib_module_symbols: Collection[str],
 ) -> bool:
-    if name in {"molt_main", "molt_host_init", "molt_init___main__", "molt_isolate_import", "molt_isolate_bootstrap"}:
+    if name in {"molt_main", "molt_init___main__", "molt_isolate_import", "molt_isolate_bootstrap"}:
         return False
     return any(
         _emitted_name_matches_module_symbol(name, module_symbol)
@@ -15321,7 +15347,7 @@ _DEAD_FUNCTION_ELIM_REFERENCE_KINDS = frozenset(
 
 
 def _is_protected_runtime_entrypoint(name: str) -> bool:
-    return name in {"molt_main", "molt_host_init", "_start"} or name.startswith("molt_isolate_")
+    return name in {"molt_main", "_start"} or name.startswith("molt_isolate_")
 
 
 def _reachable_function_names_for_stdlib_cache(
@@ -15995,25 +16021,12 @@ def _collect_cargo_native_link_deps(runtime_lib: Path) -> tuple[list[str], list[
                 # Skip static= linkages (those are baked into the .a already)
                 if raw.startswith("static=") or raw.startswith("static:"):
                     continue
-                kind = None
+                # Strip optional kind prefix (e.g. "dylib=")
                 if "=" in raw:
-                    kind, raw = raw.split("=", 1)
-                elif ":" in raw:
-                    kind, raw = raw.split(":", 1)
-                if not raw:
-                    continue
-                if kind in {"framework", "weak_framework"}:
-                    key = f"{kind}:{raw}"
-                    if key not in seen_libs:
-                        if kind == "weak_framework":
-                            link_libs.extend(["-weak_framework", raw])
-                        else:
-                            link_libs.extend(["-framework", raw])
-                        seen_libs.add(key)
-                else:
-                    if raw not in seen_libs:
-                        link_libs.append(f"-l{raw}")
-                        seen_libs.add(raw)
+                    raw = raw.split("=", 1)[1]
+                if raw and raw not in seen_libs:
+                    link_libs.append(f"-l{raw}")
+                    seen_libs.add(raw)
     return search_paths, link_libs
 
 
@@ -16106,7 +16119,6 @@ def _build_native_link_command(
             link_cmd.append("-lm")
         elif sys.platform == "win32":
             link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
-    _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
     # Forward native library dependencies emitted by cargo build scripts
     # (e.g. lzma-sys emitting -llzma) so the custom link step succeeds.
     cargo_search, cargo_libs = _collect_cargo_native_link_deps(runtime_lib)
@@ -18943,6 +18955,7 @@ def _run_backend_pipeline(
                 ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
                 ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
                 molt_root=prepared_build_roots.molt_root,
+                runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
                 precompile=precompile,
             )
         )
@@ -19173,6 +19186,7 @@ def _prepare_non_native_build_result(
     ensure_runtime_wasm_shared: Callable[[], bool],
     ensure_runtime_wasm_reloc: Callable[[], bool],
     molt_root: Path,
+    runtime_cargo_profile: str,
     split_runtime: bool = False,
     precompile: bool = False,
 ) -> tuple[_PreparedNonNativeResult | None, dict[str, Any] | None]:
@@ -19238,10 +19252,10 @@ def _prepare_non_native_build_result(
                         json_output,
                         command="build",
                     )
-                shared_runtime_required_exports = (
-                    None if _split_runtime else required_runtime_exports
-                )
-                if not ensure_runtime_wasm_shared(shared_runtime_required_exports):
+                # Split-runtime ships a shared runtime artifact that must remain
+                # cacheable across different programs. Do not specialize the
+                # shared runtime build/hydration to this app's import subset.
+                if not ensure_runtime_wasm_shared():
                     return None, _fail(
                         "Runtime wasm build failed",
                         json_output,
@@ -19265,6 +19279,14 @@ def _prepare_non_native_build_result(
                 str(resolved_linked_output),
             ]
             if _split_runtime:
+                target_runtime_root = _cargo_target_root(molt_root)
+                target_runtime_profile = _cargo_profile_dir(
+                    _resolve_wasm_cargo_profile(runtime_cargo_profile)
+                )
+                deploy_runtime = _resolve_built_runtime_wasm_artifact(
+                    target_runtime_root,
+                    target_runtime_profile,
+                )
                 split_dir = output_wasm.parent
                 link_cmd.extend(
                     [
@@ -19277,9 +19299,13 @@ def _prepare_non_native_build_result(
                 link_cmd.append("--freestanding")
             if wasm_opt_enabled:
                 link_cmd.extend(["--optimize", "--optimize-level", wasm_opt_level])
+            link_env = os.environ.copy()
+            if _split_runtime:
+                link_env["MOLT_WASM_DEPLOY_RUNTIME"] = str(deploy_runtime)
             link_process = subprocess.run(
                 link_cmd,
                 cwd=molt_root,
+                env=link_env,
                 capture_output=True,
                 text=True,
             )
@@ -21627,7 +21653,13 @@ def _read_persisted_module_lowering(
     raw_result = payload.get("result")
     if not isinstance(raw_result, dict):
         return None
-    return cast(dict[str, Any], copy.deepcopy(_decode_cached_json_value(raw_result)))
+    result = cast(dict[str, Any], copy.deepcopy(_decode_cached_json_value(raw_result)))
+    raw_functions = result.get("functions")
+    if isinstance(raw_functions, list):
+        result["functions"] = _normalize_backend_ir_functions(
+            [func for func in raw_functions if isinstance(func, dict)]
+        )
+    return result
 
 
 def _write_persisted_module_lowering(
@@ -22533,7 +22565,7 @@ def _ensure_runtime_lib(
         # file that contributes to the fingerprint, skip the expensive cargo
         # build and just update the stored fingerprint.  This handles the
         # common case of running `cargo build` manually before `molt build`.
-        if stored_fingerprint is None and _artifact_newer_than_sources(
+        if _artifact_newer_than_sources(
             runtime_lib, _runtime_source_paths(project_root)
         ):
             _write_runtime_fingerprint(fingerprint_path, fingerprint)
@@ -22683,21 +22715,6 @@ def _wasm_runtime_staticlib_path(target_root: Path, profile_dir: str) -> Path:
     return target_root / "wasm32-wasip1" / profile_dir / "libmolt_runtime.a"
 
 
-def _resolve_built_runtime_staticlib_artifact(target_root: Path, profile_dir: str) -> Path:
-    primary = _wasm_runtime_staticlib_path(target_root, profile_dir)
-    if primary.exists():
-        return primary
-    deps_dir = _wasm_runtime_deps_dir(target_root, profile_dir)
-    candidates = sorted(
-        deps_dir.glob("libmolt_runtime-*.a"),
-        key=lambda path: (path.stat().st_mtime_ns, path.name),
-        reverse=True,
-    )
-    if candidates:
-        return candidates[0]
-    return primary
-
-
 def _wasm_runtime_deps_dir(target_root: Path, profile_dir: str) -> Path:
     return target_root / "wasm32-wasip1" / profile_dir / "deps"
 
@@ -22765,14 +22782,13 @@ def _run_runtime_wasm_cargo_build(
             pass
         except OSError:
             pass
-    with _build_slot() as _slot:
-        build_raw = _run_subprocess_captured_to_tempfiles(
-            cmd,
-            cwd=root,
-            env=build_env,
-            timeout=cargo_timeout,
-            progress_label=None if json_output else "Runtime wasm build",
-        )
+    build_raw = _run_subprocess_captured_to_tempfiles(
+        cmd,
+        cwd=root,
+        env=build_env,
+        timeout=cargo_timeout,
+        progress_label=None if json_output else "Runtime wasm build",
+    )
     build = subprocess.CompletedProcess(
         build_raw.args,
         build_raw.returncode,
@@ -22788,14 +22804,13 @@ def _run_runtime_wasm_cargo_build(
                 "Runtime wasm build: sccache wrapper failure detected; retrying without sccache.",
                 file=sys.stderr,
             )
-        with _build_slot() as _slot:
-            build_raw = _run_subprocess_captured_to_tempfiles(
-                cmd,
-                cwd=root,
-                env=retry_env,
-                timeout=cargo_timeout,
-                progress_label=None if json_output else "Runtime wasm build",
-            )
+        build_raw = _run_subprocess_captured_to_tempfiles(
+            cmd,
+            cwd=root,
+            env=retry_env,
+            timeout=cargo_timeout,
+            progress_label=None if json_output else "Runtime wasm build",
+        )
         build = subprocess.CompletedProcess(
             build_raw.args,
             build_raw.returncode,
@@ -22803,7 +22818,7 @@ def _run_runtime_wasm_cargo_build(
             build_raw.stderr.decode("utf-8", errors="replace"),
         )
     if artifact_kind == "staticlib":
-        return build, _resolve_built_runtime_staticlib_artifact(target_root, profile_dir)
+        return build, _wasm_runtime_staticlib_path(target_root, profile_dir)
     return build, _resolve_built_runtime_wasm_artifact(target_root, profile_dir)
 
 
@@ -23017,10 +23032,7 @@ def _ensure_runtime_wasm(
                     )
                 return False
             return True
-        target_runtime_staticlib = _resolve_built_runtime_staticlib_artifact(
-            target_root,
-            profile_dir,
-        )
+        target_runtime_staticlib = _wasm_runtime_staticlib_path(target_root, profile_dir)
         target_runtime_staticlib_fingerprint_path = (
             _artifact_state_path_for_build_state_root(
                 target_build_state_root,
@@ -25278,22 +25290,6 @@ def _append_darwin_runtime_frameworks(
         is_darwin = sys.platform == "darwin"
     if is_darwin:
         args.extend(["-framework", "Security", "-framework", "CoreFoundation"])
-        if _coerce_bool(os.environ.get("MOLT_RUNTIME_GPU_METAL"), False):
-            args.extend(["-framework", "Metal", "-lobjc"])
-        if _coerce_bool(os.environ.get("MOLT_RUNTIME_GPU_WEBGPU"), False):
-            args.extend(
-                [
-                    "-framework",
-                    "Metal",
-                    "-framework",
-                    "Foundation",
-                    "-framework",
-                    "QuartzCore",
-                    "-framework",
-                    "AppKit",
-                    "-lobjc",
-                ]
-            )
 
 
 def build(
