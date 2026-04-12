@@ -49,6 +49,15 @@ impl ScalarFormat {
     }
 }
 
+fn scalar_format_from_text(value: &str) -> Option<ScalarFormat> {
+    match value {
+        "f" => Some(ScalarFormat::F32),
+        "d" => Some(ScalarFormat::F64),
+        "q" => Some(ScalarFormat::I64),
+        _ => None,
+    }
+}
+
 #[derive(Copy, Clone)]
 struct ByteView {
     ptr: *const u8,
@@ -474,11 +483,9 @@ fn parse_format(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<Scala
             &format!("{role} must be a format string"),
         ));
     };
-    match value.as_str() {
-        "f" => Ok(ScalarFormat::F32),
-        "d" => Ok(ScalarFormat::F64),
-        "q" => Ok(ScalarFormat::I64),
-        _ => Err(raise_exception::<_>(
+    match scalar_format_from_text(value.as_str()) {
+        Some(fmt) => Ok(fmt),
+        None => Err(raise_exception::<_>(
             _py,
             "RuntimeError",
             &format!("{role} format {:?} is unsupported", value),
@@ -608,6 +615,61 @@ fn buffer_host_bytes_for_gpu_compute(
 
 #[cfg(any(
     target_arch = "wasm32",
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
+fn encode_webgpu_buffer_bytes(raw: &[u8], format: ScalarFormat) -> Result<Vec<u8>, String> {
+    match format {
+        ScalarFormat::F32 => Ok(raw.to_vec()),
+        ScalarFormat::F64 => {
+            let mut out = Vec::with_capacity(raw.len() / 2);
+            for chunk in raw.chunks_exact(8) {
+                let val = f64::from_le_bytes(chunk.try_into().map_err(|_| "invalid f64 bytes")?);
+                out.extend_from_slice(&(val as f32).to_le_bytes());
+            }
+            Ok(out)
+        }
+        ScalarFormat::I64 => {
+            let mut out = Vec::with_capacity(raw.len() / 2);
+            for chunk in raw.chunks_exact(8) {
+                let val = i64::from_le_bytes(chunk.try_into().map_err(|_| "invalid i64 bytes")?);
+                let narrowed = i32::try_from(val)
+                    .map_err(|_| "webgpu backend only supports q values that fit in i32")?;
+                out.extend_from_slice(&narrowed.to_le_bytes());
+            }
+            Ok(out)
+        }
+    }
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
+fn bytes_like_view_to_webgpu_bytes(
+    raw_view: ByteView,
+    format: ScalarFormat,
+) -> Result<Vec<u8>, String> {
+    let raw = unsafe { std::slice::from_raw_parts(raw_view.ptr, raw_view.len) };
+    encode_webgpu_buffer_bytes(raw, format)
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
+fn buffer_host_bytes_for_webgpu_compute(
+    _py: &crate::PyToken<'_>,
+    arg: &RuntimeKernelBufferArg,
+) -> Result<Vec<u8>, String> {
+    let view = bytes_like_view(_py, arg.data_bits, "_data")
+        .map_err(|_| "buffer _data must be bytes-like".to_string())?;
+    let format = scalar_format_from_text(arg.original_format.as_str())
+        .ok_or_else(|| format!("unsupported buffer format for webgpu backend: {}", arg.original_format))?;
+    bytes_like_view_to_webgpu_bytes(view, format)
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
     all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
@@ -616,26 +678,14 @@ fn copy_gpu32_output_back_to_buffer(
     arg: &RuntimeKernelBufferArg,
     gpu_output: &[u8],
 ) -> Result<(), u64> {
-    let rebuilt = match arg.original_format.as_str() {
-        "f" | "q" => gpu_output.to_vec(),
-        "d" => {
-            let mut out = Vec::with_capacity(arg.size * 8);
-            for chunk in gpu_output.chunks_exact(4) {
-                let val = f32::from_le_bytes(chunk.try_into().map_err(|_| {
-                    raise_exception::<u64>(_py, "RuntimeError", "invalid f32 output bytes")
-                })?) as f64;
-                out.extend_from_slice(&val.to_le_bytes());
-            }
-            out
-        }
-        other => {
-            return Err(raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                &format!("unsupported buffer format for metal backend: {other}"),
-            ));
-        }
-    };
+    let format = scalar_format_from_text(arg.original_format.as_str()).ok_or_else(|| {
+        raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            &format!("unsupported buffer format for gpu output: {}", arg.original_format),
+        )
+    })?;
+    let rebuilt = rebuild_host_bytes_from_gpu32_output(_py, format, arg.size, gpu_output)?;
     let data_ptr = alloc_bytearray(_py, rebuilt.as_slice());
     if data_ptr.is_null() {
         return Err(MoltObject::none().bits());
@@ -644,6 +694,45 @@ fn copy_gpu32_output_back_to_buffer(
     unsafe { set_object_attr_bytes(_py, arg.object_ptr, b"_data", "_data", data_bits)? };
     dec_ref_bits(_py, data_bits);
     Ok(())
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
+fn rebuild_host_bytes_from_gpu32_output(
+    _py: &crate::PyToken<'_>,
+    format: ScalarFormat,
+    elem_count: usize,
+    gpu_output: &[u8],
+) -> Result<Vec<u8>, u64> {
+    match format {
+        ScalarFormat::F32 | ScalarFormat::I64 => {
+            if format == ScalarFormat::I64 {
+                let mut out = Vec::with_capacity(elem_count * 8);
+                for chunk in gpu_output.chunks_exact(4) {
+                    let val = i32::from_le_bytes(chunk.try_into().map_err(|_| {
+                        raise_exception::<u64>(_py, "RuntimeError", "invalid gpu i32 output bytes")
+                    })?) as i64;
+                    out.extend_from_slice(&val.to_le_bytes());
+                }
+                Ok(out)
+            } else {
+                Ok(gpu_output.to_vec())
+            }
+        }
+        ScalarFormat::F64 => {
+            let mut out = Vec::with_capacity(elem_count * 8);
+            for chunk in gpu_output.chunks_exact(4) {
+                let val = f32::from_le_bytes(chunk.try_into().map_err(|_| {
+                    raise_exception::<u64>(_py, "RuntimeError", "invalid f32 output bytes")
+                })?) as f64;
+                out.extend_from_slice(&val.to_le_bytes());
+            }
+            Ok(out)
+        }
+    }
 }
 
 #[cfg(any(
@@ -979,6 +1068,162 @@ fn render_webgpu_source(
     }
     source.push_str("}\n");
     Ok((source, buffer_names, scalar_names, write_buffers.into_iter().collect()))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_webgpu_error_message(rc: i32, detail: &str) -> String {
+    if !detail.is_empty() {
+        return detail.to_string();
+    }
+    match rc.unsigned_abs() {
+        12 => "browser webgpu dispatch ran out of memory".to_string(),
+        22 => "browser webgpu dispatch rejected the launch record".to_string(),
+        38 => {
+            "browser webgpu dispatch is unavailable; run the wasm host in a worker-backed WebGPU environment"
+                .to_string()
+        }
+        110 => "browser webgpu dispatch timed out".to_string(),
+        other => format!("browser webgpu dispatch failed with errno {other}"),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn dispatch_browser_webgpu_bindings(
+    _py: &crate::PyToken<'_>,
+    source: &str,
+    entry: &str,
+    launch_bindings: Vec<serde_json::Value>,
+    grid: u32,
+    workgroup_size: u32,
+) -> Result<(), u64> {
+    let launch_record_bytes = serde_json::to_vec(&serde_json::json!({
+        "bindings": launch_bindings,
+    }))
+    .map_err(|err| {
+        raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            &format!("failed to encode webgpu launch record: {err}"),
+        )
+    })?;
+    let mut err_bytes = vec![0u8; 4096];
+    let mut out_err_len = 0u32;
+    let rc = unsafe {
+        crate::molt_gpu_webgpu_dispatch_host(
+            source.as_ptr() as usize as u32,
+            source.len() as u32,
+            entry.as_ptr() as usize as u32,
+            entry.len() as u32,
+            launch_record_bytes.as_ptr() as usize as u32,
+            launch_record_bytes.len() as u32,
+            grid,
+            workgroup_size,
+            err_bytes.as_mut_ptr() as usize as u32,
+            err_bytes.len() as u32,
+            &mut out_err_len as *mut u32,
+        )
+    };
+    if rc != 0 {
+        let detail = if out_err_len == 0 {
+            String::new()
+        } else {
+            let len = usize::min(out_err_len as usize, err_bytes.len());
+            String::from_utf8_lossy(&err_bytes[..len]).into_owned()
+        };
+        return Err(raise_exception::<u64>(
+            _py,
+            "RuntimeError",
+            &browser_webgpu_error_message(rc, detail.as_str()),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn webgpu_linear_element_type(
+    x_format: ScalarFormat,
+    weight_format: ScalarFormat,
+    out_format: ScalarFormat,
+) -> Result<&'static str, String> {
+    if x_format == ScalarFormat::I64
+        && weight_format == ScalarFormat::I64
+        && out_format == ScalarFormat::I64
+    {
+        return Ok("i32");
+    }
+    if x_format != ScalarFormat::I64
+        && weight_format != ScalarFormat::I64
+        && out_format != ScalarFormat::I64
+    {
+        return Ok("f32");
+    }
+    Err("browser webgpu linear fast path supports either all-int or all-float formats".to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn render_webgpu_linear_source(entry: &str, element_ty: &str, workgroup_size: u32) -> String {
+    let zero = if element_ty == "f32" { "0.0" } else { "0" };
+    format!(
+        "@group(0) @binding(0) var<storage, read> x: array<{element_ty}>;\n\
+@group(0) @binding(1) var<storage, read> weight: array<{element_ty}>;\n\
+@group(0) @binding(2) var<storage, read_write> out: array<{element_ty}>;\n\
+@group(0) @binding(3) var<storage, read> outer: array<i32>;\n\
+@group(0) @binding(4) var<storage, read> in_features: array<i32>;\n\
+@group(0) @binding(5) var<storage, read> out_features: array<i32>;\n\
+\n\
+@compute @workgroup_size({workgroup_size})\n\
+fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
+    let idx = i32(gid.x);\n\
+    let outer_val = outer[0];\n\
+    let in_features_val = in_features[0];\n\
+    let out_features_val = out_features[0];\n\
+    if (idx >= outer_val * out_features_val) {{\n\
+        return;\n\
+    }}\n\
+    let row = idx / out_features_val;\n\
+    let col = idx % out_features_val;\n\
+    var acc: {element_ty} = {zero};\n\
+    for (var k: i32 = 0; k < in_features_val; k = k + 1) {{\n\
+        acc = acc + x[row * in_features_val + k] * weight[col * in_features_val + k];\n\
+    }}\n\
+    out[idx] = acc;\n\
+}}\n"
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+fn render_webgpu_linear_squared_relu_gate_source(entry: &str, workgroup_size: u32) -> String {
+    format!(
+        "@group(0) @binding(0) var<storage, read> x: array<f32>;\n\
+@group(0) @binding(1) var<storage, read> weight: array<f32>;\n\
+@group(0) @binding(2) var<storage, read_write> out: array<f32>;\n\
+@group(0) @binding(3) var<storage, read> outer: array<i32>;\n\
+@group(0) @binding(4) var<storage, read> in_features: array<i32>;\n\
+@group(0) @binding(5) var<storage, read> hidden: array<i32>;\n\
+\n\
+@compute @workgroup_size({workgroup_size})\n\
+fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
+    let idx = i32(gid.x);\n\
+    let outer_val = outer[0];\n\
+    let in_features_val = in_features[0];\n\
+    let hidden_val = hidden[0];\n\
+    if (idx >= outer_val * hidden_val) {{\n\
+        return;\n\
+    }}\n\
+    let row = idx / hidden_val;\n\
+    let hidden_idx = idx % hidden_val;\n\
+    var gate: f32 = 0.0;\n\
+    var up: f32 = 0.0;\n\
+    let gate_row = 2 * hidden_idx;\n\
+    let up_row = gate_row + 1;\n\
+    for (var k: i32 = 0; k < in_features_val; k = k + 1) {{\n\
+        gate = gate + x[row * in_features_val + k] * weight[gate_row * in_features_val + k];\n\
+        up = up + x[row * in_features_val + k] * weight[up_row * in_features_val + k];\n\
+    }}\n\
+    let relu = max(gate, 0.0);\n\
+    out[idx] = relu * relu * up;\n\
+}}\n"
+    )
 }
 
 #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
@@ -1375,7 +1620,7 @@ fn try_dispatch_webgpu_kernel(
         let RuntimeKernelArg::Buffer(buf) = args_map.get(name).expect("buffer arg missing") else {
             return Err(raise_exception::<u64>(_py, "RuntimeError", "expected buffer arg"));
         };
-        let bytes = buffer_host_bytes_for_gpu_compute(_py, buf)
+        let bytes = buffer_host_bytes_for_webgpu_compute(_py, buf)
             .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
         let staging_index = staging_buffers.len();
         staging_buffers.push(bytes);
@@ -1426,56 +1671,14 @@ fn try_dispatch_webgpu_kernel(
         binding_index += 1;
     }
 
-    let launch_record_bytes = serde_json::to_vec(&serde_json::json!({
-        "bindings": launch_bindings,
-    }))
-    .map_err(|err| {
-        raise_exception::<u64>(
-            _py,
-            "RuntimeError",
-            &format!("failed to encode webgpu launch record: {err}"),
-        )
-    })?;
-    let mut err_bytes = vec![0u8; 4096];
-    let mut out_err_len = 0u32;
-    let rc = unsafe {
-        crate::molt_gpu_webgpu_dispatch_host(
-            source.as_ptr() as usize as u32,
-            source.len() as u32,
-            descriptor.name.as_ptr() as usize as u32,
-            descriptor.name.len() as u32,
-            launch_record_bytes.as_ptr() as usize as u32,
-            launch_record_bytes.len() as u32,
-            grid as u32,
-            threads as u32,
-            err_bytes.as_mut_ptr() as usize as u32,
-            err_bytes.len() as u32,
-            &mut out_err_len as *mut u32,
-        )
-    };
-    if rc != 0 {
-        let detail = if out_err_len == 0 {
-            String::new()
-        } else {
-            let len = usize::min(out_err_len as usize, err_bytes.len());
-            String::from_utf8_lossy(&err_bytes[..len]).into_owned()
-        };
-        let message = if !detail.is_empty() {
-            detail
-        } else {
-            match rc.unsigned_abs() {
-                12 => "browser webgpu dispatch ran out of memory".to_string(),
-                22 => "browser webgpu dispatch rejected the launch record".to_string(),
-                38 => {
-                    "browser webgpu dispatch is unavailable; run the wasm host in a worker-backed WebGPU environment"
-                        .to_string()
-                }
-                110 => "browser webgpu dispatch timed out".to_string(),
-                other => format!("browser webgpu dispatch failed with errno {other}"),
-            }
-        };
-        return Err(raise_exception::<u64>(_py, "RuntimeError", &message));
-    }
+    dispatch_browser_webgpu_bindings(
+        _py,
+        source.as_str(),
+        descriptor.name.as_str(),
+        launch_bindings,
+        grid as u32,
+        threads as u32,
+    )?;
     for (buf, staging_index) in output_records {
         copy_gpu32_output_back_to_buffer(_py, &buf, &staging_buffers[staging_index])?;
     }
@@ -6066,6 +6269,76 @@ pub extern "C" fn molt_gpu_linear_contiguous(
             return raise_exception::<_>(_py, "ValueError", "weight_data buffer is too small");
         }
 
+        #[cfg(target_arch = "wasm32")]
+        if requested_gpu_backend().as_deref() == Some("webgpu") {
+            let browser_result: Result<u64, u64> = (|| {
+                let element_ty = webgpu_linear_element_type(x_format, weight_format, out_format)
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let x_bytes = bytes_like_view_to_webgpu_bytes(x_view, x_format)
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let weight_bytes = bytes_like_view_to_webgpu_bytes(weight_view, weight_format)
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let mut out_webgpu = vec![0u8; outer * out_features * 4];
+                let outer_i32 = i32::try_from(outer)
+                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "outer exceeds i32"))?;
+                let in_features_i32 = i32::try_from(in_features).map_err(|_| {
+                    raise_exception::<u64>(_py, "OverflowError", "in_features exceeds i32")
+                })?;
+                let out_features_i32 = i32::try_from(out_features).map_err(|_| {
+                    raise_exception::<u64>(_py, "OverflowError", "out_features exceeds i32")
+                })?;
+                let outer_bytes = outer_i32.to_le_bytes();
+                let in_features_bytes = in_features_i32.to_le_bytes();
+                let out_features_bytes = out_features_i32.to_le_bytes();
+                let workgroup_size = 64u32;
+                let total_threads = outer.checked_mul(out_features).ok_or_else(|| {
+                    raise_exception::<u64>(_py, "OverflowError", "gpu linear thread count overflow")
+                })?;
+                let grid = if total_threads == 0 {
+                    0
+                } else {
+                    u32::try_from(
+                        (total_threads + workgroup_size as usize - 1) / workgroup_size as usize,
+                    )
+                    .map_err(|_| {
+                        raise_exception::<u64>(_py, "OverflowError", "gpu linear grid exceeds u32")
+                    })?
+                };
+                let source =
+                    render_webgpu_linear_source("linear_contiguous", element_ty, workgroup_size);
+                dispatch_browser_webgpu_bindings(
+                    _py,
+                    source.as_str(),
+                    "linear_contiguous",
+                    vec![
+                        serde_json::json!({"binding": 0, "name": "x", "kind": "buffer", "access": "read", "ptr": x_bytes.as_ptr() as usize as u32, "len": x_bytes.len() as u32}),
+                        serde_json::json!({"binding": 1, "name": "weight", "kind": "buffer", "access": "read", "ptr": weight_bytes.as_ptr() as usize as u32, "len": weight_bytes.len() as u32}),
+                        serde_json::json!({"binding": 2, "name": "out", "kind": "buffer", "access": "read_write", "ptr": out_webgpu.as_mut_ptr() as usize as u32, "len": out_webgpu.len() as u32}),
+                        serde_json::json!({"binding": 3, "name": "outer", "kind": "scalar", "access": "read", "ptr": outer_bytes.as_ptr() as usize as u32, "len": outer_bytes.len() as u32}),
+                        serde_json::json!({"binding": 4, "name": "in_features", "kind": "scalar", "access": "read", "ptr": in_features_bytes.as_ptr() as usize as u32, "len": in_features_bytes.len() as u32}),
+                        serde_json::json!({"binding": 5, "name": "out_features", "kind": "scalar", "access": "read", "ptr": out_features_bytes.as_ptr() as usize as u32, "len": out_features_bytes.len() as u32}),
+                    ],
+                    grid,
+                    workgroup_size,
+                )?;
+                let rebuilt = rebuild_host_bytes_from_gpu32_output(
+                    _py,
+                    out_format,
+                    outer * out_features,
+                    out_webgpu.as_slice(),
+                )?;
+                let out_ptr = alloc_bytearray(_py, rebuilt.as_slice());
+                if out_ptr.is_null() {
+                    return Err(MoltObject::none().bits());
+                }
+                Ok(MoltObject::from_ptr(out_ptr).bits())
+            })();
+            return match browser_result {
+                Ok(bits) => bits,
+                Err(bits) => bits,
+            };
+        }
+
         let mut out = vec![0u8; out_len];
         if x_format == ScalarFormat::F32
             && weight_format == ScalarFormat::F32
@@ -6176,6 +6449,98 @@ pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
         }
         if weight_view.len < weight_required {
             return raise_exception::<_>(_py, "ValueError", "weight_data buffer is too small");
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        if requested_gpu_backend().as_deref() == Some("webgpu") {
+            let browser_result: Result<u64, u64> = (|| {
+                let element_ty = webgpu_linear_element_type(x_format, weight_format, out_format)
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let x_bytes = bytes_like_view_to_webgpu_bytes(x_view, x_format)
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let weight_bytes = bytes_like_view_to_webgpu_bytes(weight_view, weight_format)
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let mut out_webgpu = vec![0u8; outer * out_features * 4];
+                let outer_i32 = i32::try_from(outer)
+                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "outer exceeds i32"))?;
+                let in_features_i32 = i32::try_from(in_features).map_err(|_| {
+                    raise_exception::<u64>(_py, "OverflowError", "in_features exceeds i32")
+                })?;
+                let out_features_i32 = i32::try_from(out_features).map_err(|_| {
+                    raise_exception::<u64>(_py, "OverflowError", "out_features exceeds i32")
+                })?;
+                let outer_bytes = outer_i32.to_le_bytes();
+                let in_features_bytes = in_features_i32.to_le_bytes();
+                let out_features_bytes = out_features_i32.to_le_bytes();
+                let workgroup_size = 64u32;
+                let total_threads = outer.checked_mul(out_features).ok_or_else(|| {
+                    raise_exception::<u64>(_py, "OverflowError", "gpu linear thread count overflow")
+                })?;
+                let grid = if total_threads == 0 {
+                    0
+                } else {
+                    u32::try_from(
+                        (total_threads + workgroup_size as usize - 1) / workgroup_size as usize,
+                    )
+                    .map_err(|_| {
+                        raise_exception::<u64>(_py, "OverflowError", "gpu linear grid exceeds u32")
+                    })?
+                };
+                let source = render_webgpu_linear_source(
+                    "linear_split_last_dim",
+                    element_ty,
+                    workgroup_size,
+                );
+                dispatch_browser_webgpu_bindings(
+                    _py,
+                    source.as_str(),
+                    "linear_split_last_dim",
+                    vec![
+                        serde_json::json!({"binding": 0, "name": "x", "kind": "buffer", "access": "read", "ptr": x_bytes.as_ptr() as usize as u32, "len": x_bytes.len() as u32}),
+                        serde_json::json!({"binding": 1, "name": "weight", "kind": "buffer", "access": "read", "ptr": weight_bytes.as_ptr() as usize as u32, "len": weight_bytes.len() as u32}),
+                        serde_json::json!({"binding": 2, "name": "out", "kind": "buffer", "access": "read_write", "ptr": out_webgpu.as_mut_ptr() as usize as u32, "len": out_webgpu.len() as u32}),
+                        serde_json::json!({"binding": 3, "name": "outer", "kind": "scalar", "access": "read", "ptr": outer_bytes.as_ptr() as usize as u32, "len": outer_bytes.len() as u32}),
+                        serde_json::json!({"binding": 4, "name": "in_features", "kind": "scalar", "access": "read", "ptr": in_features_bytes.as_ptr() as usize as u32, "len": in_features_bytes.len() as u32}),
+                        serde_json::json!({"binding": 5, "name": "out_features", "kind": "scalar", "access": "read", "ptr": out_features_bytes.as_ptr() as usize as u32, "len": out_features_bytes.len() as u32}),
+                    ],
+                    grid,
+                    workgroup_size,
+                )?;
+                let mut out_bits = Vec::with_capacity(split_sizes.len());
+                let mut prefix = 0usize;
+                for &size in &split_sizes {
+                    let mut part_gpu = vec![0u8; outer * size * 4];
+                    for batch in 0..outer {
+                        let src_start = (batch * out_features + prefix) * 4;
+                        let src_end = src_start + size * 4;
+                        let dst_start = batch * size * 4;
+                        let dst_end = dst_start + size * 4;
+                        part_gpu[dst_start..dst_end]
+                            .copy_from_slice(&out_webgpu[src_start..src_end]);
+                    }
+                    let rebuilt = rebuild_host_bytes_from_gpu32_output(
+                        _py,
+                        out_format,
+                        outer * size,
+                        part_gpu.as_slice(),
+                    )?;
+                    let out_ptr = alloc_bytearray(_py, rebuilt.as_slice());
+                    if out_ptr.is_null() {
+                        return Err(MoltObject::none().bits());
+                    }
+                    out_bits.push(MoltObject::from_ptr(out_ptr).bits());
+                    prefix += size;
+                }
+                let tuple_ptr = alloc_tuple(_py, out_bits.as_slice());
+                if tuple_ptr.is_null() {
+                    return Err(MoltObject::none().bits());
+                }
+                Ok(MoltObject::from_ptr(tuple_ptr).bits())
+            })();
+            return match browser_result {
+                Ok(bits) => bits,
+                Err(bits) => bits,
+            };
         }
 
         let mut outputs: Vec<Vec<u8>> = Vec::with_capacity(split_sizes.len());
@@ -6324,6 +6689,85 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
         else {
             return raise_exception::<_>(_py, "OverflowError", "output shape overflow");
         };
+
+        #[cfg(target_arch = "wasm32")]
+        if requested_gpu_backend().as_deref() == Some("webgpu") {
+            let browser_result: Result<u64, u64> = (|| {
+                if x_format == ScalarFormat::I64
+                    || weight_format == ScalarFormat::I64
+                    || out_format == ScalarFormat::I64
+                {
+                    return Err(raise_exception::<u64>(
+                        _py,
+                        "RuntimeError",
+                        "browser webgpu squared-relu gate fast path currently supports float formats only",
+                    ));
+                }
+                let x_bytes = bytes_like_view_to_webgpu_bytes(x_view, x_format)
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let weight_bytes = bytes_like_view_to_webgpu_bytes(weight_view, weight_format)
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                let mut out_webgpu = vec![0u8; outer * hidden * 4];
+                let outer_i32 = i32::try_from(outer)
+                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "outer exceeds i32"))?;
+                let in_features_i32 = i32::try_from(in_features).map_err(|_| {
+                    raise_exception::<u64>(_py, "OverflowError", "in_features exceeds i32")
+                })?;
+                let hidden_i32 = i32::try_from(hidden)
+                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "hidden exceeds i32"))?;
+                let outer_bytes = outer_i32.to_le_bytes();
+                let in_features_bytes = in_features_i32.to_le_bytes();
+                let hidden_bytes = hidden_i32.to_le_bytes();
+                let workgroup_size = 64u32;
+                let total_threads = outer
+                    .checked_mul(hidden)
+                    .ok_or_else(|| raise_exception::<u64>(_py, "OverflowError", "gpu gate thread count overflow"))?;
+                let grid = if total_threads == 0 {
+                    0
+                } else {
+                    u32::try_from(
+                        (total_threads + workgroup_size as usize - 1) / workgroup_size as usize,
+                    )
+                    .map_err(|_| {
+                        raise_exception::<u64>(_py, "OverflowError", "gpu gate grid exceeds u32")
+                    })?
+                };
+                let source = render_webgpu_linear_squared_relu_gate_source(
+                    "linear_squared_relu_gate_interleaved",
+                    workgroup_size,
+                );
+                dispatch_browser_webgpu_bindings(
+                    _py,
+                    source.as_str(),
+                    "linear_squared_relu_gate_interleaved",
+                    vec![
+                        serde_json::json!({"binding": 0, "name": "x", "kind": "buffer", "access": "read", "ptr": x_bytes.as_ptr() as usize as u32, "len": x_bytes.len() as u32}),
+                        serde_json::json!({"binding": 1, "name": "weight", "kind": "buffer", "access": "read", "ptr": weight_bytes.as_ptr() as usize as u32, "len": weight_bytes.len() as u32}),
+                        serde_json::json!({"binding": 2, "name": "out", "kind": "buffer", "access": "read_write", "ptr": out_webgpu.as_mut_ptr() as usize as u32, "len": out_webgpu.len() as u32}),
+                        serde_json::json!({"binding": 3, "name": "outer", "kind": "scalar", "access": "read", "ptr": outer_bytes.as_ptr() as usize as u32, "len": outer_bytes.len() as u32}),
+                        serde_json::json!({"binding": 4, "name": "in_features", "kind": "scalar", "access": "read", "ptr": in_features_bytes.as_ptr() as usize as u32, "len": in_features_bytes.len() as u32}),
+                        serde_json::json!({"binding": 5, "name": "hidden", "kind": "scalar", "access": "read", "ptr": hidden_bytes.as_ptr() as usize as u32, "len": hidden_bytes.len() as u32}),
+                    ],
+                    grid,
+                    workgroup_size,
+                )?;
+                let rebuilt = rebuild_host_bytes_from_gpu32_output(
+                    _py,
+                    out_format,
+                    outer * hidden,
+                    out_webgpu.as_slice(),
+                )?;
+                let out_ptr = alloc_bytearray(_py, rebuilt.as_slice());
+                if out_ptr.is_null() {
+                    return Err(MoltObject::none().bits());
+                }
+                Ok(MoltObject::from_ptr(out_ptr).bits())
+            })();
+            return match browser_result {
+                Ok(bits) => bits,
+                Err(bits) => bits,
+            };
+        }
         let mut out = vec![0u8; out_len];
 
         if x_format == ScalarFormat::F32
