@@ -21,6 +21,13 @@ use std::sync::{Arc, Mutex};
 type BufferRegistry = Arc<Mutex<HashMap<u64, wgpu::Buffer>>>;
 
 #[cfg(feature = "gpu-webgpu")]
+struct WebGpuPipeline {
+    #[allow(dead_code)]
+    shader: wgpu::ShaderModule,
+    pipeline: wgpu::ComputePipeline,
+}
+
+#[cfg(feature = "gpu-webgpu")]
 pub struct WebGpuDevice {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -58,12 +65,17 @@ impl WebGpuDevice {
         _name: &str,
         wgsl_source: &str,
     ) -> Result<wgpu::ShaderModule, GpuError> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
                 source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
             });
+        let validation = pollster::block_on(scope.pop());
+        if let Some(err) = validation {
+            return Err(GpuError::CompilationFailed(err.to_string()));
+        }
         Ok(module)
     }
 
@@ -79,13 +91,28 @@ impl WebGpuDevice {
 #[cfg(feature = "gpu-webgpu")]
 impl GpuDevice for WebGpuDevice {
     fn compile_kernel(&self, name: &str, source: &str) -> Result<CompiledKernel, GpuError> {
-        // Validate WGSL by creating the shader module; store source bytes as
-        // opaque handle so `launch_kernel` can recreate the module.
-        let _module = self.compile_wgsl(name, source)?;
+        let shader = self.compile_wgsl(name, source)?;
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: None,
+                module: &shader,
+                entry_point: Some(name),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            });
+        let validation = pollster::block_on(scope.pop());
+        if let Some(err) = validation {
+            return Err(GpuError::CompilationFailed(err.to_string()));
+        }
+        let handle = Arc::new(WebGpuPipeline { shader, pipeline });
+        let raw = Arc::into_raw(handle);
         Ok(CompiledKernel::new(
             name.to_string(),
             GpuPlatform::WebGpu,
-            source.as_bytes().to_vec(),
+            (raw as usize).to_ne_bytes().to_vec(),
         ))
     }
 
@@ -109,6 +136,13 @@ impl GpuDevice for WebGpuDevice {
     }
 
     fn copy_to_device(&self, buffer: &GpuBufferHandle, data: &[u8]) -> Result<(), GpuError> {
+        if data.len() > buffer.size_bytes {
+            return Err(GpuError::TransferFailed(format!(
+                "Host write ({}) exceeds device buffer size ({})",
+                data.len(),
+                buffer.size_bytes
+            )));
+        }
         let id = Self::buffer_id_from_handle(buffer)?;
         let registry = self.buffers.lock().unwrap();
         let wgpu_buf = registry
@@ -158,8 +192,16 @@ impl GpuDevice for WebGpuDevice {
             .map_err(|e| GpuError::TransferFailed(e.to_string()))?;
 
         let mapped = slice.get_mapped_range();
-        let copy_len = data.len().min(mapped.len());
-        data[..copy_len].copy_from_slice(&mapped[..copy_len]);
+        if data.len() > mapped.len() {
+            return Err(GpuError::TransferFailed(format!(
+                "Host read buffer ({}) exceeds mapped device bytes ({})",
+                data.len(),
+                mapped.len()
+            )));
+        }
+        data.copy_from_slice(&mapped[..data.len()]);
+        drop(mapped);
+        staging.unmap();
         Ok(())
     }
 
@@ -170,29 +212,22 @@ impl GpuDevice for WebGpuDevice {
         _block: [u32; 3],
         buffers: &[&GpuBufferHandle],
     ) -> Result<(), GpuError> {
-        // Retrieve the WGSL source stored in the opaque kernel handle by compile_kernel.
-        let wgsl_source = kernel
-            .wgsl_source()
-            .ok_or_else(|| GpuError::LaunchFailed("No WGSL source in kernel handle".into()))?;
+        if kernel.platform != GpuPlatform::WebGpu {
+            return Err(GpuError::LaunchFailed(
+                "Kernel is not a WebGPU kernel".into(),
+            ));
+        }
+        let ptr_val = usize::from_ne_bytes(
+            kernel
+                ._handle_bytes()
+                .try_into()
+                .map_err(|_| GpuError::LaunchFailed("Invalid kernel handle".into()))?,
+        );
+        let arc: Arc<WebGpuPipeline> = unsafe { Arc::from_raw(ptr_val as *const WebGpuPipeline) };
+        let pipeline_arc = Arc::clone(&arc);
+        std::mem::forget(arc);
 
-        let shader = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
-            });
-
-        let pipeline = self
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: None,
-                layout: None,
-                module: &shader,
-                entry_point: Some(&kernel.name),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
-            });
-
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -202,11 +237,11 @@ impl GpuDevice for WebGpuDevice {
                 label: None,
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&pipeline);
+            pass.set_pipeline(&pipeline_arc.pipeline);
 
             // Only create a bind group when there are buffers to bind.
             if !buffers.is_empty() {
-                let bind_group_layout = pipeline.get_bind_group_layout(0);
+                let bind_group_layout = pipeline_arc.pipeline.get_bind_group_layout(0);
                 let registry = self.buffers.lock().unwrap();
                 let mut bg_entries: Vec<wgpu::BindGroupEntry<'_>> =
                     Vec::with_capacity(buffers.len());
@@ -233,6 +268,10 @@ impl GpuDevice for WebGpuDevice {
         }
 
         self.queue.submit(Some(encoder.finish()));
+        let validation = pollster::block_on(scope.pop());
+        if let Some(err) = validation {
+            return Err(GpuError::LaunchFailed(err.to_string()));
+        }
         Ok(())
     }
 
@@ -245,8 +284,12 @@ impl GpuDevice for WebGpuDevice {
 
     fn free_buffer(&self, buffer: GpuBufferHandle) -> Result<(), GpuError> {
         let id = Self::buffer_id_from_handle(&buffer)?;
-        self.buffers.lock().unwrap().remove(&id);
-        Ok(())
+        self.buffers
+            .lock()
+            .unwrap()
+            .remove(&id)
+            .map(|_| ())
+            .ok_or_else(|| GpuError::TransferFailed(format!("Unknown buffer id {id}")))
     }
 }
 
@@ -365,5 +408,50 @@ mod tests {
             .launch_kernel(&kernel, [1, 1, 1], [64, 1, 1], &[])
             .expect("launch_kernel should not crash");
         device.synchronize().expect("synchronize should succeed");
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-webgpu")]
+    fn webgpu_buffer_copy_roundtrip() {
+        let device = WebGpuDevice::new().expect("WebGpuDevice::new should succeed");
+        let buf = device.alloc_buffer(16).expect("alloc buffer");
+        let input: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        device.copy_to_device(&buf, &input).expect("copy to device");
+        let mut output = [0u8; 16];
+        device
+            .copy_from_device(&buf, &mut output)
+            .expect("copy from device");
+        assert_eq!(output, input);
+        device.free_buffer(buf).expect("free buffer");
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-webgpu")]
+    fn webgpu_copy_to_device_rejects_oversized_write() {
+        let device = WebGpuDevice::new().expect("WebGpuDevice::new should succeed");
+        let buf = device.alloc_buffer(4).expect("alloc buffer");
+        let too_large = [1u8; 8];
+        let err = device
+            .copy_to_device(&buf, &too_large)
+            .expect_err("oversized write should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exceeds device buffer size"),
+            "unexpected error: {msg}"
+        );
+        device.free_buffer(buf).expect("free buffer");
+    }
+
+    #[test]
+    #[cfg(feature = "gpu-webgpu")]
+    fn webgpu_free_buffer_rejects_unknown_handle() {
+        let device = WebGpuDevice::new().expect("WebGpuDevice::new should succeed");
+        let unknown =
+            GpuBufferHandle::new(16, GpuPlatform::WebGpu, (999_999u64).to_le_bytes().to_vec());
+        let err = device
+            .free_buffer(unknown)
+            .expect_err("free unknown buffer should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("Unknown buffer id"), "unexpected error: {msg}");
     }
 }

@@ -1,12 +1,17 @@
-//! Apple MLX backend for machine learning workloads on Apple Silicon.
-//! MLX provides unified memory access between CPU and GPU on Apple chips.
+//! Apple MLX backend stub for Apple Silicon.
+//!
+//! This module is intentionally honest: Molt currently does not route any
+//! runtime GPU execution through MLX, so every API here reports a clear
+//! `DeviceNotAvailable` error. The module exists so the feature gate and
+//! future backend integration points are explicit and testable.
 
-#[cfg(not(all(target_os = "macos", feature = "mlx")))]
 use super::gpu_runtime::{CompiledKernel, GpuBufferHandle, GpuDevice, GpuError};
-#[cfg(all(target_os = "macos", feature = "mlx"))]
-use super::gpu_runtime::{CompiledKernel, GpuBufferHandle, GpuDevice, GpuError, GpuPlatform};
 
-/// MLX device for Apple Silicon unified memory compute.
+/// MLX backend is not implemented yet in Molt.
+pub const MLX_STUB_MSG: &str =
+    "MLX backend is stubbed in Molt; no runtime MLX execution is wired yet";
+
+/// MLX device placeholder.
 #[derive(Debug)]
 pub struct MlxDevice {
     _phantom: std::marker::PhantomData<()>,
@@ -14,46 +19,26 @@ pub struct MlxDevice {
 
 impl MlxDevice {
     pub fn new() -> Result<Self, GpuError> {
-        #[cfg(all(target_os = "macos", feature = "mlx"))]
-        {
-            // MLX initializes automatically on Apple Silicon
-            Ok(Self {
-                _phantom: std::marker::PhantomData,
-            })
-        }
-        #[cfg(not(all(target_os = "macos", feature = "mlx")))]
-        {
-            Err(GpuError::DeviceNotAvailable(
-                "MLX requires macOS with Apple Silicon and the 'mlx' feature".into(),
-            ))
-        }
+        Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
     }
 
-    /// Compile a Metal kernel via MLX's JIT compilation.
+    /// Returns `false` until real MLX lowering and execution are implemented.
+    pub const fn is_real_backend() -> bool {
+        false
+    }
+
+    /// Compile a kernel via MLX.
+    ///
+    /// This is a stub today: real MLX compilation/execution is not wired.
     pub fn compile_metal_kernel(
         &self,
         name: &str,
         msl_source: &str,
     ) -> Result<CompiledKernel, GpuError> {
-        #[cfg(all(target_os = "macos", feature = "mlx"))]
-        {
-            // MLX uses Metal under the hood — it can compile MSL directly
-            Ok(CompiledKernel::new(
-                name.to_string(),
-                GpuPlatform::Metal,
-                msl_source.as_bytes().to_vec(),
-            ))
-        }
-        #[cfg(not(all(target_os = "macos", feature = "mlx")))]
-        {
-            let _ = (name, msl_source);
-            Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
-        }
+        let _ = (name, msl_source);
+        Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
     }
 }
-
-#[cfg(not(all(target_os = "macos", feature = "mlx")))]
-const MLX_STUB_MSG: &str = "MLX requires macOS with Apple Silicon and the 'mlx' feature";
 
 impl GpuDevice for MlxDevice {
     fn compile_kernel(&self, name: &str, source: &str) -> Result<CompiledKernel, GpuError> {
@@ -61,32 +46,12 @@ impl GpuDevice for MlxDevice {
     }
 
     fn alloc_buffer(&self, size_bytes: usize) -> Result<GpuBufferHandle, GpuError> {
-        #[cfg(all(target_os = "macos", feature = "mlx"))]
-        {
-            // MLX uses unified memory — allocation is shared between CPU and GPU
-            Ok(GpuBufferHandle::new(
-                size_bytes,
-                GpuPlatform::Metal,
-                vec![0; 8],
-            ))
-        }
-        #[cfg(not(all(target_os = "macos", feature = "mlx")))]
-        {
-            let _ = size_bytes;
-            Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
-        }
+        let _ = size_bytes;
+        Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
     }
 
     fn copy_to_device(&self, _buffer: &GpuBufferHandle, _data: &[u8]) -> Result<(), GpuError> {
-        #[cfg(all(target_os = "macos", feature = "mlx"))]
-        {
-            // MLX unified memory: no explicit copy needed
-            Ok(())
-        }
-        #[cfg(not(all(target_os = "macos", feature = "mlx")))]
-        {
-            Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
-        }
+        Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
     }
 
     fn copy_from_device(
@@ -94,14 +59,7 @@ impl GpuDevice for MlxDevice {
         _buffer: &GpuBufferHandle,
         _data: &mut [u8],
     ) -> Result<(), GpuError> {
-        #[cfg(all(target_os = "macos", feature = "mlx"))]
-        {
-            Ok(())
-        }
-        #[cfg(not(all(target_os = "macos", feature = "mlx")))]
-        {
-            Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
-        }
+        Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
     }
 
     fn launch_kernel(
@@ -111,37 +69,15 @@ impl GpuDevice for MlxDevice {
         _block: [u32; 3],
         _buffers: &[&GpuBufferHandle],
     ) -> Result<(), GpuError> {
-        #[cfg(all(target_os = "macos", feature = "mlx"))]
-        {
-            // MLX kernel dispatch would go through mlx_rs API
-            Ok(())
-        }
-        #[cfg(not(all(target_os = "macos", feature = "mlx")))]
-        {
-            Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
-        }
+        Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
     }
 
     fn synchronize(&self) -> Result<(), GpuError> {
-        #[cfg(all(target_os = "macos", feature = "mlx"))]
-        {
-            Ok(())
-        }
-        #[cfg(not(all(target_os = "macos", feature = "mlx")))]
-        {
-            Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
-        }
+        Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
     }
 
     fn free_buffer(&self, _buffer: GpuBufferHandle) -> Result<(), GpuError> {
-        #[cfg(all(target_os = "macos", feature = "mlx"))]
-        {
-            Ok(())
-        }
-        #[cfg(not(all(target_os = "macos", feature = "mlx")))]
-        {
-            Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
-        }
+        Err(GpuError::DeviceNotAvailable(MLX_STUB_MSG.into()))
     }
 }
 
@@ -150,44 +86,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mlx_device_creation_without_feature() {
-        // Without the mlx feature on non-macOS, creation should fail gracefully
+    fn test_mlx_device_is_stub_only() {
         let result = MlxDevice::new();
-        #[cfg(not(all(target_os = "macos", feature = "mlx")))]
-        {
-            assert!(result.is_err());
-            let err = result.unwrap_err();
-            assert!(
-                format!("{err}").contains("MLX requires macOS"),
-                "Error should mention MLX requirements"
-            );
-        }
-        #[cfg(all(target_os = "macos", feature = "mlx"))]
-        {
-            assert!(result.is_ok());
-        }
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            format!("{err}").contains("MLX backend is stubbed"),
+            "Error should make the stub-only status explicit"
+        );
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", feature = "mlx"))]
-    fn test_mlx_compile_kernel() {
-        let device = MlxDevice::new().expect("MLX device should create on macOS with feature");
-        let result = device.compile_metal_kernel("test_kernel", "kernel void test() {}");
-        assert!(result.is_ok());
-        let kernel = result.unwrap();
-        assert_eq!(kernel.name, "test_kernel");
-        assert_eq!(kernel.platform, GpuPlatform::Metal);
-    }
-
-    #[test]
-    #[cfg(not(all(target_os = "macos", feature = "mlx")))]
-    fn test_mlx_compile_kernel_stub_returns_error() {
-        // Without the mlx feature, even a manually-constructed device should
-        // return errors from all trait methods.
+    fn test_mlx_trait_methods_return_stub_error() {
         let device = MlxDevice {
             _phantom: std::marker::PhantomData,
         };
-        let result = device.compile_metal_kernel("test_kernel", "kernel void test() {}");
-        assert!(result.is_err(), "Stub compile_metal_kernel should fail");
+        let err = format!(
+            "{:?}",
+            device
+                .compile_metal_kernel("test_kernel", "kernel void test() {}")
+                .unwrap_err()
+        );
+        assert!(err.contains("MLX backend is stubbed"));
+
+        let buf =
+            GpuBufferHandle::new(8, super::super::gpu_runtime::GpuPlatform::Metal, vec![0; 8]);
+        let mut bytes = [0u8; 8];
+        let methods = [
+            device.alloc_buffer(8).map(|_| ()),
+            device.copy_to_device(&buf, &bytes),
+            device.copy_from_device(&buf, &mut bytes),
+            device.launch_kernel(
+                &CompiledKernel::new(
+                    "k".into(),
+                    super::super::gpu_runtime::GpuPlatform::Metal,
+                    vec![],
+                ),
+                [1, 1, 1],
+                [1, 1, 1],
+                &[&buf],
+            ),
+            device.synchronize(),
+            device.free_buffer(buf),
+        ];
+        for result in methods {
+            let err = result.unwrap_err();
+            assert!(
+                format!("{err}").contains("MLX backend is stubbed"),
+                "all MLX trait methods should report the same stub-only error"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mlx_backend_flag_is_false() {
+        assert!(!MlxDevice::is_real_backend());
     }
 }
