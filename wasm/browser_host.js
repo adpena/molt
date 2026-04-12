@@ -3822,6 +3822,7 @@ export const loadMoltWasm = async (options = {}) => {
   });
   const gpuHost = createBrowserGpuHost(state, options);
   let hostExportsInitialized = false;
+  let splitRunBootstrapInitialized = false;
   const ensureHostExportsInitialized = (appInstance) => {
     if (hostExportsInitialized) {
       return;
@@ -3833,8 +3834,31 @@ export const loadMoltWasm = async (options = {}) => {
       if (pending) {
         throw new Error(pending);
       }
+    } else {
+      const isolateBootstrap = appInstance?.exports?.molt_isolate_bootstrap;
+      if (typeof isolateBootstrap === 'function') {
+        isolateBootstrap();
+        const pending = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
+        if (pending) {
+          throw new Error(pending);
+        }
+      }
     }
     hostExportsInitialized = true;
+  };
+  const ensureSplitRunBootstrap = (appInstance) => {
+    if (splitRunBootstrapInitialized || hostExportsInitialized) {
+      return;
+    }
+    const isolateBootstrap = appInstance?.exports?.molt_isolate_bootstrap;
+    if (typeof isolateBootstrap === 'function') {
+      isolateBootstrap();
+      const pending = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
+      if (pending) {
+        throw new Error(pending);
+      }
+    }
+    splitRunBootstrapInitialized = true;
   };
   const makeExportInvoker = (appInstance) => async (exportName, args = []) => {
     if (!appInstance?.exports) {
@@ -4084,17 +4108,18 @@ export const loadMoltWasm = async (options = {}) => {
     outputModule.instance.exports.molt_table_init();
   }
   installTableRefs(outputInstance, table);
-  return {
-    instance: outputModule.instance,
-    memory,
-    table,
-    linked: false,
-    invokeExport: makeExportInvoker(outputModule.instance),
-    run: () => {
-      if (typeof outputModule.instance.exports.molt_main !== 'function') {
-        throw new Error('molt_main export missing');
-      }
-      outputModule.instance.exports.molt_main();
+    return {
+      instance: outputModule.instance,
+      memory,
+      table,
+      linked: false,
+      invokeExport: makeExportInvoker(outputModule.instance),
+      run: () => {
+        ensureSplitRunBootstrap(outputModule.instance);
+        if (typeof outputModule.instance.exports.molt_main !== 'function') {
+          throw new Error('molt_main export missing');
+        }
+        outputModule.instance.exports.molt_main();
       state.stdio?.flushAll();
       const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
       if (pendingException) {
