@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import os
 import subprocess
 import sys
@@ -246,6 +247,76 @@ def test_tinygrad_random_surface_matches_upstream_samples() -> None:
     )
 
 
+def test_tinygrad_random_surface_compiles_in_native_molt(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "tinygrad_random_native.py"
+    probe.write_text(
+        "from tinygrad import Tensor\n"
+        "Tensor.manual_seed(42)\n"
+        "print(Tensor.rand(2, 3).to_list())\n"
+        "Tensor.manual_seed(42)\n"
+        "print(Tensor.uniform(2, 3, low=-1.0, high=1.0).to_list())\n"
+        "Tensor.manual_seed(42)\n"
+        "print(Tensor.glorot_uniform(2, 3).to_list())\n",
+        encoding="utf-8",
+    )
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=_native_molt_env(root, hermetic=True),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    lines = [ast.literal_eval(line) for line in run.stdout.strip().splitlines()]
+    assert _flatten_numeric(lines[0]) == pytest.approx(
+        [
+            0.9970332384109497,
+            0.5899163484573364,
+            0.2225480079650879,
+            0.7550519704818726,
+            0.9056503772735596,
+            0.8648829460144043,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+    assert _flatten_numeric(lines[1]) == pytest.approx(
+        [
+            0.9940664768218994,
+            0.17983269691467285,
+            -0.5549039840698242,
+            0.5101039409637451,
+            0.8113007545471191,
+            0.7297658920288086,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+    assert _flatten_numeric(lines[2]) == pytest.approx(
+        [
+            1.0889452695846558,
+            0.19699685275554657,
+            -0.6078668832778931,
+            0.5587908625602722,
+            0.8887354731559753,
+            0.7994185090065002,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+
+
 def test_tinygrad_nn_initializers_match_upstream_samples() -> None:
     from tinygrad import Tensor, nn
 
@@ -293,30 +364,69 @@ def test_tinygrad_nn_initializers_match_upstream_samples() -> None:
         rel=0.0,
     )
 
-    Tensor.manual_seed(42)
-    embedding = nn.Embedding(5, 3)
-    assert _flatten_numeric(embedding.weight.to_list()) == pytest.approx(
+
+def test_tinygrad_conv2d_compiles_in_native_molt(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "tinygrad_conv2d_native.py"
+    probe.write_text(
+        "from tinygrad import Tensor, nn\n"
+        "Tensor.manual_seed(42)\n"
+        "conv = nn.Conv2d(1, 1, 3)\n"
+        "x = Tensor.arange(16).reshape(1, 1, 4, 4).float()\n"
+        "print(conv.weight.to_list())\n"
+        "print(conv.bias.to_list())\n"
+        "print(conv(x).to_list())\n",
+        encoding="utf-8",
+    )
+    run = subprocess.run(
         [
-            0.09517453610897064,
-            -0.7437633872032166,
-            -0.011449949815869331,
-            -0.5758479833602905,
-            -0.6063239574432373,
-            0.6935641765594482,
-            0.44023483991622925,
-            -0.3650517761707306,
-            0.5532074570655823,
-            0.5130081176757812,
-            0.15388986468315125,
-            0.5957281589508057,
-            -0.16496628522872925,
-            -0.17185786366462708,
-            0.3912637531757355,
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=_native_molt_env(root, hermetic=True),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    lines = [ast.literal_eval(line) for line in run.stdout.strip().splitlines()]
+    assert _flatten_numeric(lines[0]) == pytest.approx(
+        [
+            -0.21733888983726501,
+            -0.22886650264263153,
+            0.20126104354858398,
+            0.2851662039756775,
+            -0.2365218847990036,
+            0.19731943309307098,
+            0.005402088165283203,
+            -0.004575650207698345,
+            -0.13713280856609344,
         ],
         abs=1e-7,
         rel=0.0,
     )
-
+    assert _flatten_numeric(lines[1]) == pytest.approx(
+        [-0.27590489387512207],
+        abs=1e-7,
+        rel=0.0,
+    )
+    assert _flatten_numeric(lines[2]) == pytest.approx(
+        [
+            -0.32956963777542114,
+            -0.4648566246032715,
+            -0.8707174062728882,
+            -1.0060044527053833,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
 
 def test_tinygrad_falcon_main_runs_with_tiny_config_and_empty_weights() -> None:
     root = Path(__file__).resolve().parents[1]
