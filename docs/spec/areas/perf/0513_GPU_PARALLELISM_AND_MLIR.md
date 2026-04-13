@@ -53,6 +53,8 @@ Current cache semantics:
   of KV heads
 - dense cache append should avoid per-token concat churn and materialize lazily
   for attention reads
+- TurboQuant reference paths should precompute query transforms once per query
+  row and cache decoded value rows across repeated attention reads
 
 Current TurboQuant backend boundary:
 - runtime/backend now own an explicit `molt_gpu_turboquant_attention_packed`

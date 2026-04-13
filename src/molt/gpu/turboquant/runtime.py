@@ -10,6 +10,15 @@ from .contracts import TurboQuantConfig, TurboQuantMSEVector, TurboQuantProdVect
 from .rotation import HadamardRotationPlan
 
 
+class TurboQuantPreparedQuery:
+    """Prepared query transforms for repeated TurboQuant score evaluation."""
+
+    def __init__(self, *, query_values, rotated_query, query_sketch) -> None:
+        self.query_values = list(query_values)
+        self.rotated_query = list(rotated_query)
+        self.query_sketch = list(query_sketch)
+
+
 def _coerce_vector(values, *, dim: int) -> list[float]:
     if isinstance(values, Tensor):
         data = values.to_list()
@@ -135,24 +144,44 @@ class TurboQuantCodec:
             unit = [unit[index] + residual[index] for index in range(self.dim)]
         return Tensor([encoded.norm * value for value in unit], shape=(self.dim,))
 
-    def estimate_mse_inner_product(self, query, encoded: TurboQuantMSEVector) -> float:
+    def prepare_query(self, query) -> TurboQuantPreparedQuery:
         query_values = _coerce_vector(query, dim=self.dim)
-        rotated_query = self.mse_rotation.apply(query_values)
+        return TurboQuantPreparedQuery(
+            query_values=query_values,
+            rotated_query=self.mse_rotation.apply(query_values),
+            query_sketch=self.qjl_rotation.apply(query_values),
+        )
+
+    def estimate_mse_inner_product_prepared(
+        self,
+        prepared: TurboQuantPreparedQuery,
+        encoded: TurboQuantMSEVector,
+    ) -> float:
         estimate = 0.0
         for index, code_index in enumerate(encoded.indices):
-            estimate += rotated_query[index] * self.codebook[int(code_index)]
+            estimate += prepared.rotated_query[index] * self.codebook[int(code_index)]
         return encoded.norm * estimate
 
-    def estimate_inner_product(self, query, encoded) -> float:
-        mse_estimate = self.estimate_mse_inner_product(query, encoded)
+    def estimate_mse_inner_product(self, query, encoded: TurboQuantMSEVector) -> float:
+        prepared = self.prepare_query(query)
+        return self.estimate_mse_inner_product_prepared(prepared, encoded)
+
+    def estimate_inner_product_prepared(
+        self,
+        prepared: TurboQuantPreparedQuery,
+        encoded,
+    ) -> float:
+        mse_estimate = self.estimate_mse_inner_product_prepared(prepared, encoded)
         if not isinstance(encoded, TurboQuantProdVector):
             return mse_estimate
-        query_values = _coerce_vector(query, dim=self.dim)
-        query_sketch = self.qjl_rotation.apply(query_values)
-        residual_term = _dot(query_sketch, encoded.residual_signs)
+        residual_term = _dot(prepared.query_sketch, encoded.residual_signs)
         residual_term *= math.sqrt(math.pi / 2.0) / float(self.dim)
         residual_term *= encoded.residual_norm * encoded.norm
         return mse_estimate + residual_term
+
+    def estimate_inner_product(self, query, encoded) -> float:
+        prepared = self.prepare_query(query)
+        return self.estimate_inner_product_prepared(prepared, encoded)
 
 
 class TurboQuantKVCache:
@@ -162,6 +191,7 @@ class TurboQuantKVCache:
         self.codec = codec
         self.key_vectors = list(key_vectors)
         self.value_vectors = list(value_vectors)
+        self._decoded_value_rows = None
 
     @classmethod
     def from_tensors(cls, codec: TurboQuantCodec, keys, values) -> "TurboQuantKVCache":
@@ -174,19 +204,25 @@ class TurboQuantKVCache:
         return cls(codec, key_vectors, value_vectors)
 
     def attention_logits(self, query) -> Tensor:
+        prepared = self.codec.prepare_query(query)
         logits = [
-            self.codec.estimate_inner_product(query, encoded)
+            self.codec.estimate_inner_product_prepared(prepared, encoded)
             for encoded in self.key_vectors
         ]
         return Tensor(logits, shape=(len(logits),))
 
+    def _decoded_values(self) -> list[list[float]]:
+        if self._decoded_value_rows is None:
+            self._decoded_value_rows = [
+                self.codec.dequantize(encoded).to_list()
+                for encoded in self.value_vectors
+            ]
+        return self._decoded_value_rows
+
     def attention_output(self, query) -> Tensor:
         logits = self.attention_logits(query)
         weights = logits.softmax().to_list()
-        decoded_values = [
-            self.codec.dequantize(encoded).to_list()
-            for encoded in self.value_vectors
-        ]
+        decoded_values = self._decoded_values()
         out = []
         for dim_index in range(self.codec.dim):
             acc = 0.0

@@ -193,6 +193,7 @@ class TurboQuantAttentionKVCache:
         self._value_vectors = None
         self._batch = None
         self._heads = None
+        self._decoded_value_rows = None
 
     def __len__(self) -> int:
         if self._key_vectors is None:
@@ -228,6 +229,7 @@ class TurboQuantAttentionKVCache:
                     self._value_vectors[batch_index][head_index].append(
                         self.codec.quantize_prod(v_rows[batch_index][head_index][seq_index])
                     )
+        self._decoded_value_rows = None
 
     def attention(self, q: Tensor, *, scale: float, mask: Tensor | None = None) -> Tensor:
         if _MOLT_GPU_TURBOQUANT_ATTENTION_PACKED is not None:
@@ -262,17 +264,16 @@ class TurboQuantAttentionKVCache:
             batch_out = []
             for query_head_index in range(heads):
                 kv_head_index = _kv_head_index(heads, self._heads, query_head_index)
-                decoded_values = [
-                    self.codec.dequantize(encoded).to_list()
-                    for encoded in self._value_vectors[batch_index][kv_head_index]
-                ]
+                decoded_values = self._decoded_values_for_head(batch_index, kv_head_index)
                 head_out = []
                 for query_index in range(query_seq):
                     query_row = q_rows[batch_index][query_head_index][query_index]
+                    prepared = self.codec.prepare_query(query_row)
                     logits = []
                     for encoded in self._key_vectors[batch_index][kv_head_index]:
                         logits.append(
-                            self.codec.estimate_inner_product(query_row, encoded) * scale
+                            self.codec.estimate_inner_product_prepared(prepared, encoded)
+                            * scale
                         )
                     if mask is not None:
                         mask_row = _expanded_mask_row(
@@ -301,6 +302,24 @@ class TurboQuantAttentionKVCache:
 
         return Tensor(result)
 
+    def _decoded_values_for_head(
+        self, batch_index: int, kv_head_index: int
+    ) -> list[list[float]]:
+        if self._decoded_value_rows is None:
+            self._decoded_value_rows = [
+                [[] for _ in range(self._heads)]
+                for _ in range(self._batch)
+            ]
+        cached = self._decoded_value_rows[batch_index][kv_head_index]
+        if cached:
+            return cached
+        rows = [
+            self.codec.dequantize(encoded).to_list()
+            for encoded in self._value_vectors[batch_index][kv_head_index]
+        ]
+        self._decoded_value_rows[batch_index][kv_head_index] = rows
+        return rows
+
     def truncate(self, length: int) -> None:
         if length < 0:
             raise ValueError("KV cache length must be non-negative")
@@ -318,11 +337,13 @@ class TurboQuantAttentionKVCache:
             self._value_vectors = None
             self._batch = None
             self._heads = None
+            self._decoded_value_rows = None
             return
         for batch_index in range(self._batch):
             for head_index in range(self._heads):
                 del self._key_vectors[batch_index][head_index][length:]
                 del self._value_vectors[batch_index][head_index][length:]
+        self._decoded_value_rows = None
 
     def keys(self):
         return _KVCacheKeyView(self)
