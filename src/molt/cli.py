@@ -19221,6 +19221,7 @@ def _prepare_non_native_build_result(
     runtime_reloc_wasm: Path | None,
     ensure_runtime_wasm_shared: Callable[[], bool],
     ensure_runtime_wasm_reloc: Callable[[], bool],
+    runtime_cargo_profile: str,
     molt_root: Path,
     split_runtime: bool = False,
     precompile: bool = False,
