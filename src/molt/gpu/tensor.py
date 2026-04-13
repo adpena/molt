@@ -1941,6 +1941,36 @@ class Tensor:
             out_buf[idx] = value
         return Tensor(out_buf, shape=self._shape, dtype=self._dtype)
 
+    def layernorm(self, axis=-1, eps: float = 1e-5) -> 'Tensor':
+        """Layer normalization over one or more axes."""
+        if self.ndim == 0:
+            raise ValueError("layernorm requires a tensor with at least 1 dimension")
+
+        if isinstance(axis, int):
+            axes = (axis,)
+        else:
+            axes = tuple(axis)
+        if not axes:
+            raise ValueError("layernorm axis must be non-empty")
+
+        normalized = []
+        for dim in axes:
+            if dim < 0:
+                dim += self.ndim
+            if dim < 0 or dim >= self.ndim:
+                raise ValueError(f"Invalid axis {axis} for tensor with {self.ndim} dims")
+            normalized.append(dim)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("layernorm axes must be unique")
+        mean = self
+        for dim in normalized:
+            mean = mean.mean(dim, keepdim=True)
+        centered = self - mean
+        var = centered * centered
+        for dim in normalized:
+            var = var.mean(dim, keepdim=True)
+        return centered * (var + eps).rsqrt()
+
     def rms_norm(self, eps: float) -> 'Tensor':
         """RMSNorm over the last axis."""
         if self.ndim == 0:
