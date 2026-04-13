@@ -2105,6 +2105,13 @@ def _tree_shake_runtime(
             "molt_dec_ref_obj",
         }
     )
+    raw_dynamic_exports = os.environ.get("MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS", "").strip()
+    if raw_dynamic_exports:
+        normalized_required_exports.update(
+            name.strip()
+            for name in raw_dynamic_exports.split(",")
+            if name.strip()
+        )
 
     # Rewrite export section: keep memory/table/global exports and only
     # function exports that are in the required set.
