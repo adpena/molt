@@ -544,18 +544,26 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
                 &[none],
             ))
         }
-        "split" => Some(builtin_func_bits(
-            _py,
-            &runtime_state(_py).method_cache.str_split,
-            fn_addr!(molt_string_split_max),
-            3,
-        )),
-        "rsplit" => Some(builtin_func_bits(
-            _py,
-            &runtime_state(_py).method_cache.str_rsplit,
-            fn_addr!(molt_string_rsplit_max),
-            3,
-        )),
+        "split" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_split,
+                fn_addr!(molt_string_split_max),
+                3,
+                &[neg_one],
+            ))
+        }
+        "rsplit" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.str_rsplit,
+                fn_addr!(molt_string_rsplit_max),
+                3,
+                &[neg_one],
+            ))
+        }
         "splitlines" => {
             let none = MoltObject::none().bits();
             Some(builtin_func_bits_with_defaults_tuple(
@@ -750,18 +758,26 @@ pub(crate) fn bytes_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
                 &[none, none],
             ))
         }
-        "split" => Some(builtin_func_bits(
-            _py,
-            &runtime_state(_py).method_cache.bytes_split,
-            fn_addr!(molt_bytes_split_max),
-            3,
-        )),
-        "rsplit" => Some(builtin_func_bits(
-            _py,
-            &runtime_state(_py).method_cache.bytes_rsplit,
-            fn_addr!(molt_bytes_rsplit_max),
-            3,
-        )),
+        "split" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytes_split,
+                fn_addr!(molt_bytes_split_max),
+                3,
+                &[neg_one],
+            ))
+        }
+        "rsplit" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytes_rsplit,
+                fn_addr!(molt_bytes_rsplit_max),
+                3,
+                &[neg_one],
+            ))
+        }
         "strip" => {
             let none = MoltObject::none().bits();
             Some(builtin_func_bits_with_defaults_tuple(
@@ -1238,18 +1254,26 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
                 &[none, none],
             ))
         }
-        "split" => Some(builtin_func_bits(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_split,
-            fn_addr!(molt_bytearray_split_max),
-            3,
-        )),
-        "rsplit" => Some(builtin_func_bits(
-            _py,
-            &runtime_state(_py).method_cache.bytearray_rsplit,
-            fn_addr!(molt_bytearray_rsplit_max),
-            3,
-        )),
+        "split" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytearray_split,
+                fn_addr!(molt_bytearray_split_max),
+                3,
+                &[neg_one],
+            ))
+        }
+        "rsplit" => {
+            let neg_one = MoltObject::from_int(-1).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.bytearray_rsplit,
+                fn_addr!(molt_bytearray_rsplit_max),
+                3,
+                &[neg_one],
+            ))
+        }
         "strip" => {
             let none = MoltObject::none().bits();
             Some(builtin_func_bits_with_defaults_tuple(
@@ -1285,7 +1309,7 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &runtime_state(_py).method_cache.bytearray_startswith,
-                fn_addr!(molt_bytes_startswith_method),
+                fn_addr!(molt_bytearray_startswith_method),
                 4,
                 &[none, none],
             ))
@@ -1295,7 +1319,7 @@ pub(crate) fn bytearray_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
                 &runtime_state(_py).method_cache.bytearray_endswith,
-                fn_addr!(molt_bytes_endswith_method),
+                fn_addr!(molt_bytearray_endswith_method),
                 4,
                 &[none, none],
             ))
