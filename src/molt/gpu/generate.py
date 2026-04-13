@@ -2,12 +2,146 @@
 molt.gpu.generate — Text generation utilities.
 
 Provides greedy decoding, top-k sampling, top-p (nucleus) sampling,
-and temperature-controlled generation.
+temperature-controlled generation, and lossless block-speculative decoding.
 """
 
 import math
 import random
 from .tensor import Tensor
+
+
+class SpeculativeDecodeResult:
+    """Result payload for lossless block-speculative decoding."""
+
+    def __init__(
+        self,
+        tokens,
+        *,
+        drafted_tokens: int,
+        accepted_draft_tokens: int,
+        target_tokens_emitted: int,
+        verify_calls: int,
+    ) -> None:
+        self.tokens = list(tokens)
+        self.drafted_tokens = drafted_tokens
+        self.accepted_draft_tokens = accepted_draft_tokens
+        self.target_tokens_emitted = target_tokens_emitted
+        self.verify_calls = verify_calls
+
+    @property
+    def acceptance_rate(self) -> float:
+        if self.drafted_tokens == 0:
+            return 0.0
+        return float(self.accepted_draft_tokens) / float(self.drafted_tokens)
+
+
+def _normalize_token_sequence(values, source_name):
+    out = []
+    for value in values:
+        if isinstance(value, bool):
+            raise TypeError(f"{source_name} must return integer token ids")
+        token = int(value)
+        if token != value:
+            raise TypeError(f"{source_name} must return integer token ids")
+        out.append(token)
+    return out
+
+
+def speculative_decode_greedy(
+    verify_block,
+    draft_block,
+    prompt_tokens,
+    *,
+    max_new_tokens=100,
+    block_size=16,
+    eos_token_id=None,
+):
+    """Lossless block-speculative greedy decoding.
+
+    ``draft_block(prefix_tokens, requested_block_size)`` must return a proposed
+    block of at least one and at most ``requested_block_size`` token ids.
+
+    ``verify_block(prefix_tokens, drafted_tokens)`` must return the target
+    model's greedy next-token ids for each drafted position plus one extra next
+    token, i.e. ``len(drafted_tokens) + 1`` ids total.
+
+    This is the generic native verification loop needed by DFlash-style block
+    drafters, without assuming any specific draft-model architecture.
+    """
+    if max_new_tokens < 0:
+        raise ValueError("max_new_tokens must be non-negative")
+    if block_size <= 0:
+        raise ValueError("block_size must be positive")
+
+    prefix = _normalize_token_sequence(prompt_tokens, "prompt_tokens")
+    emitted = []
+    drafted_total = 0
+    accepted_total = 0
+    target_total = 0
+    verify_calls = 0
+
+    while len(emitted) < max_new_tokens:
+        remaining = max_new_tokens - len(emitted)
+        request_size = block_size if block_size < remaining else remaining
+
+        drafted = _normalize_token_sequence(
+            draft_block(prefix, request_size),
+            "draft_block",
+        )
+        if not drafted:
+            raise ValueError("draft_block must return at least one token")
+        if len(drafted) > request_size:
+            raise ValueError("draft_block returned more than the requested block size")
+        drafted_total += len(drafted)
+
+        verified = _normalize_token_sequence(
+            verify_block(prefix, drafted),
+            "verify_block",
+        )
+        verify_calls += 1
+        if len(verified) != len(drafted) + 1:
+            raise ValueError(
+                "verify_block must return len(drafted_tokens) + 1 target tokens"
+            )
+
+        mismatch = False
+        for idx, draft_token in enumerate(drafted):
+            target_token = verified[idx]
+            if draft_token == target_token:
+                accepted_total += 1
+            else:
+                mismatch = True
+            prefix.append(target_token)
+            emitted.append(target_token)
+            target_total += 1
+            if eos_token_id is not None and target_token == eos_token_id:
+                return SpeculativeDecodeResult(
+                    emitted,
+                    drafted_tokens=drafted_total,
+                    accepted_draft_tokens=accepted_total,
+                    target_tokens_emitted=target_total,
+                    verify_calls=verify_calls,
+                )
+            if len(emitted) >= max_new_tokens or mismatch:
+                break
+
+        if mismatch or len(emitted) >= max_new_tokens:
+            continue
+
+        extra_token = verified[len(drafted)]
+        prefix.append(extra_token)
+        emitted.append(extra_token)
+        target_total += 1
+        if eos_token_id is not None and extra_token == eos_token_id:
+            break
+
+    return SpeculativeDecodeResult(
+        emitted,
+        drafted_tokens=drafted_total,
+        accepted_draft_tokens=accepted_total,
+        target_tokens_emitted=target_total,
+        verify_calls=verify_calls,
+    )
 
 
 def greedy_decode(model, prompt_tokens, max_new_tokens=100, eos_token_id=None):
