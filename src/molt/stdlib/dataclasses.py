@@ -396,7 +396,8 @@ def _dataclass_init(self, *args, **kwargs):
         elif field_obj._field_type is _FIELD_INITVAR and field_obj.init:
             field_name = cast(str, field_obj.name)
             initvar_values.append(values[field_name])
-    _MOLT_DATACLASSES_POST_INIT(self, initvar_values)
+    if getattr(self.__class__, "__molt_dataclass_has_post_init__", False):
+        _MOLT_DATACLASSES_POST_INIT(self, initvar_values)
 
 
 @recursive_repr()
@@ -539,6 +540,9 @@ def _molt_apply_dataclass(
     )
     cls.__dataclass_fields__ = fields
     cls.__dataclass_params__ = params
+    cls.__molt_dataclass_has_post_init__ = callable(
+        getattr(cls, "__post_init__", None)
+    )
 
     user_init_marker = cls.__dict__.get("__molt_dataclass_user_init__", MISSING)
     from_make_dataclass = bool(cls.__dict__.get("__molt_make_dataclass__", False))
