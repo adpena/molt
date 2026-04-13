@@ -8109,6 +8109,8 @@ def _artifact_needs_rebuild(
         artifact.stat()
     except OSError:
         return True
+    if not _artifact_content_looks_valid(artifact):
+        return True
     if fingerprint is None or stored_fingerprint is None:
         return True
     if stored_fingerprint.get("hash") != fingerprint.get("hash"):
@@ -8118,6 +8120,24 @@ def _artifact_needs_rebuild(
         stored_rustc = stored_fingerprint.get("rustc")
         return stored_rustc is None or stored_rustc != rustc
     return False
+
+
+def _is_valid_static_library_artifact(path: Path) -> bool:
+    if path.suffix not in {".a", ".lib"}:
+        return True
+    try:
+        with path.open("rb") as handle:
+            return handle.read(8) == b"!<arch>\n"
+    except OSError:
+        return False
+
+
+def _artifact_content_looks_valid(path: Path) -> bool:
+    if path.suffix in {".a", ".lib"}:
+        return _is_valid_static_library_artifact(path)
+    if path.suffix == ".wasm":
+        return _is_valid_wasm_binary(path)
+    return True
 
 
 def _is_valid_wasm_binary(path: Path) -> bool:
@@ -22459,6 +22479,8 @@ def _artifact_newer_than_sources(
     try:
         lib_mtime = artifact.stat().st_mtime
     except OSError:
+        return False
+    if not _artifact_content_looks_valid(artifact):
         return False
     newest_src = 0.0
     for path in source_paths:
