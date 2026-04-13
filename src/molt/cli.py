@@ -110,9 +110,6 @@ BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
 STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
 STUB_PARENT_MODULES = {"molt"}
-# Noon UTC on 1980-01-01 keeps localtime-based ZIP writers inside the DOS date
-# range even on western timezones that would roll midnight UTC back into 1979.
-_ZIP_SAFE_SOURCE_DATE_EPOCH = "315576000"
 # Stdlib modules that rely on nested imports for required runtime semantics.
 STDLIB_NESTED_IMPORT_SCAN_MODULES = {
     "collections",
@@ -1231,7 +1228,6 @@ class _BackendCacheSetup:
     cache_hit: bool
     cache_hit_tier: str | None
     stdlib_module_symbols_json: str | None = None
-    stdlib_module_symbols: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -3783,6 +3779,12 @@ def _resolve_module_roots(
     lib_paths: list[str] | None = None,
 ) -> list[Path]:
     module_roots: list[Path] = []
+    hermetic_module_roots = os.environ.get("MOLT_HERMETIC_MODULE_ROOTS", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     extra_roots = os.environ.get("MOLT_MODULE_ROOTS", "")
     if extra_roots:
         for entry in extra_roots.split(os.pathsep):
@@ -3813,15 +3815,16 @@ def _resolve_module_roots(
         if lp_path.exists():
             module_roots.append(lp_path)
     # Auto-detect active venv site-packages when no explicit lib paths given
-    if not lib_paths:
+    if not lib_paths and not hermetic_module_roots:
         venv_path = project_root / ".venv"
         if venv_path.exists():
             for sp in sorted(venv_path.glob("lib/python*/site-packages")):
                 if sp.is_dir():
                     module_roots.append(sp)
     # Auto-detect .molt-venv site-packages (UV-managed venv)
-    for sp in _molt_venv_site_packages(project_root):
-        module_roots.append(sp)
+    if not hermetic_module_roots:
+        for sp in _molt_venv_site_packages(project_root):
+            module_roots.append(sp)
     return list(dict.fromkeys(root.resolve() for root in module_roots))
 
 
@@ -7504,19 +7507,23 @@ def _runtime_fingerprint(
 @functools.lru_cache(maxsize=32)
 def _runtime_cargo_features_cached(
     target_triple: str | None,
-    raw: str | None,
+    tk_raw: str | None,
     gpu_metal_raw: str | None,
     gpu_webgpu_raw: str | None,
 ) -> tuple[str, ...]:
-    if target_triple is not None and target_triple.startswith("wasm32"):
-        return ()
     features: list[str] = []
-    enabled = True if raw is None or raw.strip() == "" else _coerce_bool(raw, True)
-    if enabled:
+    if target_triple is not None and target_triple.startswith("wasm32"):
+        if True if gpu_webgpu_raw is None or gpu_webgpu_raw.strip() == "" else _coerce_bool(gpu_webgpu_raw, True):
+            pass
+        return tuple(features)
+    tk_enabled = True if tk_raw is None or tk_raw.strip() == "" else _coerce_bool(tk_raw, True)
+    if tk_enabled:
         features.append("molt_tk_native")
-    if _coerce_bool(gpu_metal_raw, False):
+    metal_enabled = False if gpu_metal_raw is None or gpu_metal_raw.strip() == "" else _coerce_bool(gpu_metal_raw, False)
+    if metal_enabled:
         features.append("molt_gpu_metal")
-    if _coerce_bool(gpu_webgpu_raw, False):
+    webgpu_enabled = False if gpu_webgpu_raw is None or gpu_webgpu_raw.strip() == "" else _coerce_bool(gpu_webgpu_raw, False)
+    if webgpu_enabled:
         features.append("molt_gpu_webgpu")
     return tuple(features)
 
@@ -8102,8 +8109,6 @@ def _artifact_needs_rebuild(
         artifact.stat()
     except OSError:
         return True
-    if not _artifact_content_looks_valid(artifact):
-        return True
     if fingerprint is None or stored_fingerprint is None:
         return True
     if stored_fingerprint.get("hash") != fingerprint.get("hash"):
@@ -8113,24 +8118,6 @@ def _artifact_needs_rebuild(
         stored_rustc = stored_fingerprint.get("rustc")
         return stored_rustc is None or stored_rustc != rustc
     return False
-
-
-def _is_valid_static_library_artifact(path: Path) -> bool:
-    if path.suffix not in {".a", ".lib"}:
-        return True
-    try:
-        with path.open("rb") as handle:
-            return handle.read(8) == b"!<arch>\n"
-    except OSError:
-        return False
-
-
-def _artifact_content_looks_valid(path: Path) -> bool:
-    if path.suffix in {".a", ".lib"}:
-        return _is_valid_static_library_artifact(path)
-    if path.suffix == ".wasm":
-        return _is_valid_wasm_binary(path)
-    return True
 
 
 def _is_valid_wasm_binary(path: Path) -> bool:
@@ -8252,76 +8239,6 @@ def _wasm_wasi_libc_archive(target_triple: str = "wasm32-wasip1") -> Path | None
     return libc_archive
 
 
-def _normalize_native_global_symbol_name(name: str) -> str:
-    normalized = name.strip()
-    if sys.platform == "darwin" and normalized.startswith("_"):
-        return normalized[1:]
-    return normalized
-
-
-def _native_global_symbol_sets(path: Path) -> tuple[set[str], set[str]] | None:
-    nm_bin = shutil.which("nm") or shutil.which("llvm-nm")
-    if nm_bin is None:
-        return None
-    try:
-        result = subprocess.run(
-            [nm_bin, "-g", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    defined: set[str] = set()
-    undefined: set[str] = set()
-    for raw_line in result.stdout.splitlines():
-        fields = raw_line.split()
-        if len(fields) < 2:
-            continue
-        sym_type, sym_name = fields[-2], fields[-1]
-        normalized = _normalize_native_global_symbol_name(sym_name)
-        if not normalized:
-            continue
-        if sym_type.upper() == "U":
-            undefined.add(normalized)
-        elif sym_type.isalpha():
-            defined.add(normalized)
-    return defined, undefined
-
-
-def _unresolved_native_module_chunk_symbols(
-    path: Path,
-    *,
-    stdlib_object_path: Path | None,
-    stdlib_module_symbols: Collection[str] | None,
-) -> set[str] | None:
-    symbol_sets = _native_global_symbol_sets(path)
-    if symbol_sets is None:
-        return None
-    defined, undefined = symbol_sets
-    stdlib_defined: set[str] = set()
-    if stdlib_object_path is not None and stdlib_object_path.exists():
-        stdlib_symbol_sets = _native_global_symbol_sets(stdlib_object_path)
-        if stdlib_symbol_sets is None:
-            return None
-        stdlib_defined, _ = stdlib_symbol_sets
-    unresolved: set[str] = set()
-    for name in undefined:
-        match = re.match(r"^(?P<module>.+)__molt_module_chunk_\d+$", name)
-        if match is None or name in defined:
-            continue
-        owner = match.group("module")
-        if stdlib_module_symbols is not None and owner in stdlib_module_symbols:
-            if name not in stdlib_defined:
-                unresolved.add(name)
-            continue
-        unresolved.add(name)
-    return unresolved
-
-
 def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
     if is_wasm:
         return _is_reusable_wasm_artifact(path)
@@ -8330,11 +8247,23 @@ def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
             return False
     except OSError:
         return False
-    symbol_sets = _native_global_symbol_sets(path)
-    if symbol_sets is None:
+    nm_bin = shutil.which("nm") or shutil.which("llvm-nm")
+    if nm_bin is None:
         return True
-    defined, undefined = symbol_sets
-    return bool(defined or undefined)
+    nm_cmd = [nm_bin, "-gU", str(path)] if sys.platform == "darwin" else [nm_bin, "-g", str(path)]
+    try:
+        result = subprocess.run(
+            nm_cmd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    return bool(result.stdout.strip())
 
 
 def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
@@ -9721,17 +9650,6 @@ def _effective_split_worker_table_base(
     return runtime_table_min
 
 
-@functools.lru_cache(maxsize=1)
-def _reserved_wasm_runtime_callable_count() -> int:
-    include_path = Path(__file__).resolve().parents[2] / "runtime" / "wasm_runtime_callables.inc"
-    pattern = re.compile(r"^\s*\((\d+),")
-    count = 0
-    for line in include_path.read_text().splitlines():
-        if pattern.match(line):
-            count += 1
-    return count
-
-
 def _generate_split_worker_js(
     *,
     shared_memory_initial_pages: int,
@@ -9759,11 +9677,6 @@ def _generate_split_worker_js(
     )
     runtime_table_ref_signatures_json = json.dumps(
         dict(runtime_table_ref_signatures or {}), sort_keys=True
-    )
-    legacy_wasm_table_base = 256
-    reserved_runtime_callable_base = 33
-    reserved_runtime_shared_prefix_len = (
-        reserved_runtime_callable_base + _reserved_wasm_runtime_callable_count() * 2
     )
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
@@ -9851,9 +9764,6 @@ export default {
     const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
     const appTableRefSignatures = __MOLT_APP_TABLE_REF_SIGNATURES__;
     const runtimeTableRefSignatures = __MOLT_RUNTIME_TABLE_REF_SIGNATURES__;
-    const LEGACY_WASM_TABLE_BASE = __MOLT_LEGACY_WASM_TABLE_BASE__;
-    const RESERVED_RUNTIME_CALLABLE_BASE = __MOLT_RESERVED_RUNTIME_CALLABLE_BASE__;
-    const RESERVED_RUNTIME_SHARED_PREFIX_LEN = __MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__;
     const WASI_FILETYPE_CHARACTER_DEVICE = 2;
     const WASI_FILETYPE_DIRECTORY = 3;
     const WASI_FILETYPE_REGULAR_FILE = 4;
@@ -10389,6 +10299,13 @@ export default {
       }
     };
 
+    const hasExportedTableRefs = (instance) => {
+      if (!instance || !instance.exports) {
+        return false;
+      }
+      return Object.keys(instance.exports).some((name) => /^__molt_table_ref_(\\d+)$/.test(name));
+    };
+
     const ensureTableCapacityForExportedRefs = (instance, table) => {
       if (!instance || !table) {
         return;
@@ -10408,19 +10325,6 @@ export default {
         return;
       }
       table.grow(maxIndex + 1 - table.length);
-    };
-
-    const remapLegacyRuntimeSharedIdx = (idx) => {
-      if (__MOLT_SHARED_TABLE_BASE__ === null || __MOLT_SHARED_TABLE_BASE__ <= LEGACY_WASM_TABLE_BASE) {
-        return idx;
-      }
-      if (
-        idx >= LEGACY_WASM_TABLE_BASE + RESERVED_RUNTIME_CALLABLE_BASE &&
-        idx < LEGACY_WASM_TABLE_BASE + RESERVED_RUNTIME_SHARED_PREFIX_LEN
-      ) {
-        return idx - LEGACY_WASM_TABLE_BASE + __MOLT_SHARED_TABLE_BASE__;
-      }
-      return idx;
     };
 
     const buildRuntimeImports = (module, runtimeInstance) => {
@@ -10584,7 +10488,6 @@ export default {
       molt_process_wait_host()   { return -1; },
       molt_process_spawn_host()  { return -1; },
       molt_process_stdio_host()  { return -1; },
-      molt_gpu_webgpu_dispatch_host() { return -38; },
       molt_socket_bind_host()    { return -1; },
       molt_socket_close_host()   { return 0; },
       molt_socket_connect_host() { return -1; },
@@ -10610,14 +10513,14 @@ export default {
       molt_db_host_poll()        { return 0; },
       molt_process_host_poll()   { return 0; },
       molt_ws_connect_host()     { return -1; },
+      molt_gpu_webgpu_dispatch_host() { return -38; },
     };
 
     for (let arity = 0; arity <= 13; arity++) {
       hostEnv[`molt_call_indirect${arity}`] = (fnIndex, ...args) => {
         const indirectName = `molt_call_indirect${arity}`;
         const idx = Number(fnIndex);
-        const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
-        const directName = `__molt_table_ref_${dispatchIdx}`;
+        const directName = `__molt_table_ref_${idx}`;
         const indirectFn = appInstance?.exports?.[indirectName];
         if (typeof indirectFn === "function") {
           try {
@@ -10627,27 +10530,28 @@ export default {
             throw new Error(`${indirectName} app export failed at idx=${idx}: ${detail}; fnLen=${indirectFn.length}; argsLen=${args.length}`);
           }
         }
-        const tableFn = sharedTable.get(dispatchIdx);
+        const tableFn = sharedTable.get(idx);
         if (typeof tableFn === "function") {
           try {
-            return tableFn(...args);
+            const signature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
+            return callWithSignature(tableFn, signature, args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             const fnName = tableFn.name || "<anon>";
-            throw new Error(`${indirectName} shared-table entry failed at idx=${dispatchIdx}: ${detail}; fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`);
+            throw new Error(`${indirectName} shared-table entry failed at idx=${idx}: ${detail}; fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`);
           }
         }
         const rtDirectFn = rtInstance?.exports?.[directName];
         if (typeof rtDirectFn === "function") {
           try {
-            return rtDirectFn(...args);
+            return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || null, args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             throw new Error(`${indirectName} runtime direct export ${directName} failed: ${detail}; fnLen=${rtDirectFn.length}; argsLen=${args.length}`);
           }
         }
         if (typeof tableFn !== "function") {
-          throw new Error(`${indirectName} missing table entry at ${dispatchIdx}`);
+          throw new Error(`${indirectName} missing table entry at ${idx}`);
         }
         return tableFn(...args);
       };
@@ -10691,7 +10595,8 @@ export default {
 
       // 3. Initialize and run
       if (rtInstance.exports._initialize) rtInstance.exports._initialize();
-      if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
+      const appHasTableRefs = hasExportedTableRefs(appInstance);
+      if (!appHasTableRefs && appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
       installTableRefs(appInstance, sharedTable);
       if (appInstance.exports.molt_main) appInstance.exports.molt_main();
       else if (appInstance.exports._start) appInstance.exports._start();
@@ -10748,18 +10653,6 @@ export default {
         .replace(
             "__MOLT_RUNTIME_TABLE_REF_SIGNATURES__",
             runtime_table_ref_signatures_json,
-        )
-        .replace(
-            "__MOLT_LEGACY_WASM_TABLE_BASE__",
-            str(legacy_wasm_table_base),
-        )
-        .replace(
-            "__MOLT_RESERVED_RUNTIME_CALLABLE_BASE__",
-            str(reserved_runtime_callable_base),
-        )
-        .replace(
-            "__MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__",
-            str(reserved_runtime_shared_prefix_len),
         )
         .replace(
             "__MOLT_SHARED_TABLE_BASE__",
@@ -11691,7 +11584,6 @@ def _try_cached_backend_candidates(
     cache_path: Path | None,
     stdlib_object_path: Path | None,
     stdlib_object_cache_key: str | None,
-    stdlib_module_symbols: Collection[str] | None = None,
     warnings: list[str],
 ) -> tuple[bool, str | None]:
     state_path = _artifact_sync_state_path(project_root, output_artifact)
@@ -11723,21 +11615,6 @@ def _try_cached_backend_candidates(
             with contextlib.suppress(OSError):
                 candidate.unlink()
             continue
-        if not is_wasm:
-            unresolved_module_chunks = _unresolved_native_module_chunk_symbols(
-                candidate,
-                stdlib_object_path=stdlib_object_path,
-                stdlib_module_symbols=stdlib_module_symbols,
-            )
-            if unresolved_module_chunks:
-                sample = ", ".join(sorted(unresolved_module_chunks)[:4])
-                warnings.append(
-                    "Ignoring native cache artifact with unresolved module chunk imports: "
-                    f"{candidate} [{sample}]"
-                )
-                with contextlib.suppress(OSError):
-                    candidate.unlink()
-                continue
         if _materialize_cached_backend_artifact(
             project_root,
             candidate,
@@ -11767,7 +11644,6 @@ def _backend_daemon_skip_output_sync_flags(
     function_cache_key: str | None,
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
-    stdlib_module_symbols: Collection[str] | None = None,
     state_path: Path | None = None,
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
@@ -11784,14 +11660,6 @@ def _backend_daemon_skip_output_sync_flags(
         try:
             output_stat = output_artifact.stat()
         except OSError:
-            return False, False
-    if not is_wasm_output:
-        unresolved_module_chunks = _unresolved_native_module_chunk_symbols(
-            output_artifact,
-            stdlib_object_path=stdlib_object_path,
-            stdlib_module_symbols=stdlib_module_symbols,
-        )
-        if unresolved_module_chunks:
             return False, False
     skip_module_output = bool(cache_key) and _artifact_sync_state_matches_stat(
         state,
@@ -13572,7 +13440,7 @@ def _module_frontend_payload(
     total_s: float,
 ) -> dict[str, Any]:
     return {
-        "functions": _normalize_backend_ir_functions(ir["functions"]),
+        "functions": ir["functions"],
         "func_code_ids": dict(gen.func_code_ids),
         "local_class_names": sorted(gen.local_class_names),
         "local_classes": {
@@ -13589,27 +13457,6 @@ def _module_frontend_payload(
             "total_s": total_s,
         },
     }
-
-
-def _normalize_backend_ir_functions(
-    functions: Sequence[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for func in functions:
-        copied = dict(func)
-        params = copied.get("params")
-        if isinstance(params, list) and params:
-            raw_param_types = copied.get("param_types")
-            param_types = (
-                list(raw_param_types)
-                if isinstance(raw_param_types, list)
-                else []
-            )
-            if len(param_types) < len(params):
-                param_types.extend(["i64"] * (len(params) - len(param_types)))
-            copied["param_types"] = param_types
-        normalized.append(copied)
-    return normalized
 
 
 def _module_frontend_generator(
@@ -15019,7 +14866,7 @@ def _finalize_backend_ir(
     pgo_profile_summary: Any | None,
     runtime_feedback_summary: Any | None,
 ) -> dict[str, Any]:
-    ir: dict[str, Any] = {"functions": _normalize_backend_ir_functions(functions)}
+    ir: dict[str, Any] = {"functions": list(functions)}
     if pgo_profile_summary is not None:
         profile_data: dict[str, Any] = {
             "version": pgo_profile_summary.version,
@@ -16156,7 +16003,7 @@ def _collect_cargo_native_link_deps(runtime_lib: Path) -> tuple[list[str], list[
                 # Skip static= linkages (those are baked into the .a already)
                 if raw.startswith("static=") or raw.startswith("static:"):
                     continue
-                kind = ""
+                kind = None
                 if "=" in raw:
                     kind, raw = raw.split("=", 1)
                 elif ":" in raw:
@@ -16232,7 +16079,6 @@ def _build_native_link_command(
             if suppress_linker_warnings:
                 link_cmd.append("-Wl,-w")
             link_cmd.append("-lc++")
-            _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
         elif "linux" in target_triple:
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
             link_cmd.append("-Wl,--gc-sections")
@@ -16257,7 +16103,6 @@ def _build_native_link_command(
             if suppress_linker_warnings:
                 link_cmd.append("-Wl,-w")
             link_cmd.append("-lc++")
-            _append_darwin_runtime_frameworks(link_cmd, target_triple=None)
         elif sys.platform.startswith("linux"):
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
             link_cmd.append("-Wl,--gc-sections")
@@ -16269,6 +16114,7 @@ def _build_native_link_command(
             link_cmd.append("-lm")
         elif sys.platform == "win32":
             link_cmd.extend(["-Wl,/OPT:REF", "-Wl,/OPT:ICF"])
+    _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
     # Forward native library dependencies emitted by cargo build scripts
     # (e.g. lzma-sys emitting -llzma) so the custom link step succeeds.
     cargo_search, cargo_libs = _collect_cargo_native_link_deps(runtime_lib)
@@ -16291,53 +16137,6 @@ def _run_native_link_command(
     )
 
 
-def _build_native_reloc_link_command(
-    *,
-    input_objects: Sequence[Path],
-    output_path: Path,
-    target_triple: str | None = None,
-) -> list[str]:
-    linker_cmd: list[str]
-    driver_style = False
-
-    if target_triple:
-        cross_cc = os.environ.get("MOLT_CROSS_CC")
-        if cross_cc:
-            linker_cmd = shlex.split(cross_cc)
-            linker_cmd.extend(["-target", target_triple])
-            driver_style = True
-        elif shutil.which("zig"):
-            linker_cmd = ["zig", "cc", "-target", _zig_target_query(target_triple)]
-            driver_style = True
-        else:
-            cc = os.environ.get("CC", "clang")
-            linker_cmd = shlex.split(cc)
-            linker_cmd.extend(["-target", target_triple])
-            driver_style = True
-    else:
-        raw = (
-            os.environ.get("MOLT_LINKER")
-            or os.environ.get("LD")
-            or os.environ.get("CC")
-            or "ld"
-        )
-        linker_cmd = shlex.split(raw)
-        executable = Path(linker_cmd[0]).name if linker_cmd else "ld"
-        driver_style = (
-            len(linker_cmd) > 1
-            or executable in {"cc", "c++", "gcc", "g++", "clang", "clang++", "zig"}
-            or "clang" in executable
-            or "gcc" in executable
-        )
-
-    if driver_style:
-        linker_cmd.extend(["-Wl,-r", "-o", str(output_path)])
-    else:
-        linker_cmd.extend(["-r", "-o", str(output_path)])
-    linker_cmd.extend(str(path) for path in input_objects)
-    return linker_cmd
-
-
 def _run_native_partial_link_command(
     *,
     input_objects: Sequence[Path],
@@ -16347,11 +16146,15 @@ def _run_native_partial_link_command(
     target_triple: str | None = None,
     sysroot_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    del sysroot_path
-    link_cmd = _build_native_reloc_link_command(
-        input_objects=input_objects,
-        output_path=output_path,
+    primary_object = input_objects[0] if input_objects else None
+    link_cmd, _linker_hint, _normalized_target = _build_native_link_driver_command(
+        output_obj=primary_object,
         target_triple=target_triple,
+        sysroot_path=sysroot_path,
+        profile="dev",
+    )
+    link_cmd.extend(
+        ["-r", *[str(path) for path in input_objects], "-o", str(output_path)]
     )
     return _run_native_link_command(
         link_cmd=link_cmd,
@@ -18017,7 +17820,7 @@ def _prepare_backend_dispatch(
     if os.environ.get("MOLT_BACKEND") == "llvm":
         backend_features = (*backend_features, "llvm")
     if deterministic or profile == "release":
-        os.environ.setdefault("SOURCE_DATE_EPOCH", _ZIP_SAFE_SOURCE_DATE_EPOCH)
+        os.environ.setdefault("SOURCE_DATE_EPOCH", "315532800")
     # Auto-set Cranelift optimization level based on profile for size-critical
     # builds.  speed_and_size balances code quality with binary density.
     if profile in ("release-size", "wasm-release"):
@@ -18311,7 +18114,6 @@ def _execute_backend_compile(
                 ),
                 stdlib_object_path=cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
-                stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                 state_path=output_sync_state_path,
                 state=output_sync_state,
                 output_stat=output_artifact_stat,
@@ -19149,7 +18951,6 @@ def _run_backend_pipeline(
                 ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
                 ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
                 molt_root=prepared_build_roots.molt_root,
-                runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
                 precompile=precompile,
             )
         )
@@ -19380,7 +19181,6 @@ def _prepare_non_native_build_result(
     ensure_runtime_wasm_shared: Callable[[], bool],
     ensure_runtime_wasm_reloc: Callable[[], bool],
     molt_root: Path,
-    runtime_cargo_profile: str,
     split_runtime: bool = False,
     precompile: bool = False,
 ) -> tuple[_PreparedNonNativeResult | None, dict[str, Any] | None]:
@@ -19446,10 +19246,10 @@ def _prepare_non_native_build_result(
                         json_output,
                         command="build",
                     )
-                # Split-runtime ships a shared runtime artifact that must remain
-                # cacheable across different programs. Do not specialize the
-                # shared runtime build/hydration to this app's import subset.
-                if not ensure_runtime_wasm_shared():
+                shared_runtime_required_exports = (
+                    None if _split_runtime else required_runtime_exports
+                )
+                if not ensure_runtime_wasm_shared(shared_runtime_required_exports):
                     return None, _fail(
                         "Runtime wasm build failed",
                         json_output,
@@ -19473,14 +19273,6 @@ def _prepare_non_native_build_result(
                 str(resolved_linked_output),
             ]
             if _split_runtime:
-                target_runtime_root = _cargo_target_root(molt_root)
-                target_runtime_profile = _cargo_profile_dir(
-                    _resolve_wasm_cargo_profile(runtime_cargo_profile)
-                )
-                deploy_runtime = _resolve_built_runtime_wasm_artifact(
-                    target_runtime_root,
-                    target_runtime_profile,
-                )
                 split_dir = output_wasm.parent
                 link_cmd.extend(
                     [
@@ -19493,13 +19285,9 @@ def _prepare_non_native_build_result(
                 link_cmd.append("--freestanding")
             if wasm_opt_enabled:
                 link_cmd.extend(["--optimize", "--optimize-level", wasm_opt_level])
-            link_env = os.environ.copy()
-            if _split_runtime:
-                link_env["MOLT_WASM_DEPLOY_RUNTIME"] = str(deploy_runtime)
             link_process = subprocess.run(
                 link_cmd,
                 cwd=molt_root,
-                env=link_env,
                 capture_output=True,
                 text=True,
             )
@@ -19643,10 +19431,7 @@ def _prepare_non_native_build_result(
                 rt_table_min or 0,
                 8192,
             )
-            # Keep runtime.wasm cacheable and size-stable. The runtime already
-            # seeds the shared imported table via active element segments, so
-            # exporting every runtime table slot here only bloats the emitted
-            # artifact and breaks the split-runtime size gate.
+            _export_wasm_table_refs(rt_wasm)
             app_table_ref_signatures = _wasm_export_function_signatures(
                 app_wasm, export_name_prefix="__molt_table_ref_"
             )
@@ -20705,7 +20490,6 @@ def _prepare_backend_cache_setup(
             cache_hit=False,
             cache_hit_tier=None,
             stdlib_module_symbols_json=stdlib_module_symbols_json,
-            stdlib_module_symbols=stdlib_module_symbols,
         )
     cache_variant = _build_cache_variant(
         profile=profile,
@@ -20748,7 +20532,6 @@ def _prepare_backend_cache_setup(
             cache_hit=False,
             cache_hit_tier=None,
             stdlib_module_symbols_json=stdlib_module_symbols_json,
-            stdlib_module_symbols=stdlib_module_symbols,
         )
     ext = "wasm" if is_wasm else "o"
     cache_path = cache_root / f"{cache_key}.{ext}"
@@ -20789,7 +20572,6 @@ def _prepare_backend_cache_setup(
         cache_path=cache_path,
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key=stdlib_object_cache_key,
-        stdlib_module_symbols=stdlib_module_symbols,
         warnings=warnings,
     )
     return _BackendCacheSetup(
@@ -20804,7 +20586,6 @@ def _prepare_backend_cache_setup(
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,
         stdlib_module_symbols_json=stdlib_module_symbols_json,
-        stdlib_module_symbols=stdlib_module_symbols,
     )
 
 
@@ -21854,13 +21635,7 @@ def _read_persisted_module_lowering(
     raw_result = payload.get("result")
     if not isinstance(raw_result, dict):
         return None
-    result = cast(dict[str, Any], copy.deepcopy(_decode_cached_json_value(raw_result)))
-    raw_functions = result.get("functions")
-    if isinstance(raw_functions, list):
-        result["functions"] = _normalize_backend_ir_functions(
-            [func for func in raw_functions if isinstance(func, dict)]
-        )
-    return result
+    return cast(dict[str, Any], copy.deepcopy(_decode_cached_json_value(raw_result)))
 
 
 def _write_persisted_module_lowering(
@@ -22685,8 +22460,6 @@ def _artifact_newer_than_sources(
         lib_mtime = artifact.stat().st_mtime
     except OSError:
         return False
-    if not _artifact_content_looks_valid(artifact):
-        return False
     newest_src = 0.0
     for path in source_paths:
         try:
@@ -22735,13 +22508,13 @@ def _ensure_runtime_lib(
         rustflags,
         fingerprint_features,
     )
-    if session_key in _RUNTIME_LIB_VERIFIED and _artifact_content_looks_valid(runtime_lib):
+    if session_key in _RUNTIME_LIB_VERIFIED:
         return True
     # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
     # Use when you have already run `cargo build` manually and want to avoid
     # the ~90s overhead of the CLI re-running cargo.
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
-        if runtime_lib.exists() and _artifact_content_looks_valid(runtime_lib):
+        if runtime_lib.exists():
             _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
     fingerprint_path = _runtime_fingerprint_path(
@@ -22918,6 +22691,21 @@ def _wasm_runtime_staticlib_path(target_root: Path, profile_dir: str) -> Path:
     return target_root / "wasm32-wasip1" / profile_dir / "libmolt_runtime.a"
 
 
+def _resolve_built_runtime_staticlib_artifact(target_root: Path, profile_dir: str) -> Path:
+    primary = _wasm_runtime_staticlib_path(target_root, profile_dir)
+    if primary.exists():
+        return primary
+    deps_dir = _wasm_runtime_deps_dir(target_root, profile_dir)
+    candidates = sorted(
+        deps_dir.glob("libmolt_runtime-*.a"),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        reverse=True,
+    )
+    if candidates:
+        return candidates[0]
+    return primary
+
+
 def _wasm_runtime_deps_dir(target_root: Path, profile_dir: str) -> Path:
     return target_root / "wasm32-wasip1" / profile_dir / "deps"
 
@@ -22985,13 +22773,14 @@ def _run_runtime_wasm_cargo_build(
             pass
         except OSError:
             pass
-    build_raw = _run_subprocess_captured_to_tempfiles(
-        cmd,
-        cwd=root,
-        env=build_env,
-        timeout=cargo_timeout,
-        progress_label=None if json_output else "Runtime wasm build",
-    )
+    with _build_slot() as _slot:
+        build_raw = _run_subprocess_captured_to_tempfiles(
+            cmd,
+            cwd=root,
+            env=build_env,
+            timeout=cargo_timeout,
+            progress_label=None if json_output else "Runtime wasm build",
+        )
     build = subprocess.CompletedProcess(
         build_raw.args,
         build_raw.returncode,
@@ -23007,13 +22796,14 @@ def _run_runtime_wasm_cargo_build(
                 "Runtime wasm build: sccache wrapper failure detected; retrying without sccache.",
                 file=sys.stderr,
             )
-        build_raw = _run_subprocess_captured_to_tempfiles(
-            cmd,
-            cwd=root,
-            env=retry_env,
-            timeout=cargo_timeout,
-            progress_label=None if json_output else "Runtime wasm build",
-        )
+        with _build_slot() as _slot:
+            build_raw = _run_subprocess_captured_to_tempfiles(
+                cmd,
+                cwd=root,
+                env=retry_env,
+                timeout=cargo_timeout,
+                progress_label=None if json_output else "Runtime wasm build",
+            )
         build = subprocess.CompletedProcess(
             build_raw.args,
             build_raw.returncode,
@@ -23021,7 +22811,7 @@ def _run_runtime_wasm_cargo_build(
             build_raw.stderr.decode("utf-8", errors="replace"),
         )
     if artifact_kind == "staticlib":
-        return build, _wasm_runtime_staticlib_path(target_root, profile_dir)
+        return build, _resolve_built_runtime_staticlib_artifact(target_root, profile_dir)
     return build, _resolve_built_runtime_wasm_artifact(target_root, profile_dir)
 
 
@@ -23235,7 +23025,10 @@ def _ensure_runtime_wasm(
                     )
                 return False
             return True
-        target_runtime_staticlib = _wasm_runtime_staticlib_path(target_root, profile_dir)
+        target_runtime_staticlib = _resolve_built_runtime_staticlib_artifact(
+            target_root,
+            profile_dir,
+        )
         target_runtime_staticlib_fingerprint_path = (
             _artifact_state_path_for_build_state_root(
                 target_build_state_root,
@@ -28592,7 +28385,7 @@ def extension_build(
     build_env = os.environ.copy()
     # Supply-chain: always set SOURCE_DATE_EPOCH for release builds for reproducibility
     if deterministic or profile == "release":
-        build_env.setdefault("SOURCE_DATE_EPOCH", _ZIP_SAFE_SOURCE_DATE_EPOCH)
+        build_env.setdefault("SOURCE_DATE_EPOCH", "315532800")
 
     module_rel = Path(
         *module_parts[:-1],

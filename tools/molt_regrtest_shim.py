@@ -98,8 +98,10 @@ def resolve_cpython_dir(parsed_dir: Path) -> Path | None:
 def build_env(cpython_dir: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = "0"
+    env["PYTHONNOUSERSITE"] = "1"
     env["MOLT_PROJECT_ROOT"] = str(REPO_ROOT)
     env["MOLT_REGRTEST_CPYTHON_DIR"] = str(cpython_dir)
+    env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
     repo_src = str(REPO_ROOT / "src")
     cpython_lib = Path(cpython_dir / "Lib").resolve()
     extra_roots = env.get("MOLT_MODULE_ROOTS", "")
