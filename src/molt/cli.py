@@ -58,7 +58,6 @@ from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
 from molt.compat import CompatibilityError
 from molt._wasm_runtime_exports import (
-    wasm_runtime_dynamic_export_names,
     wasm_runtime_export_link_args,
     wasm_runtime_missing_required_exports,
     wasm_runtime_required_import_names,
@@ -19497,13 +19496,6 @@ def _prepare_non_native_build_result(
             link_env = os.environ.copy()
             if _split_runtime:
                 link_env["MOLT_WASM_DEPLOY_RUNTIME"] = str(deploy_runtime)
-                dynamic_runtime_exports = wasm_runtime_dynamic_export_names(
-                    resolved_modules
-                )
-                if dynamic_runtime_exports:
-                    link_env["MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS"] = ",".join(
-                        dynamic_runtime_exports
-                    )
             link_process = subprocess.run(
                 link_cmd,
                 cwd=molt_root,
