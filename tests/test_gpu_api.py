@@ -1180,6 +1180,90 @@ def test_tensor_cat_nonzero_dim_routes_through_tensor_ops(monkeypatch):
     ]
 
 
+def test_tensor_stack_nonzero_dim_routes_through_tensor_ops(monkeypatch):
+    import molt.gpu.tensor as tensor_mod
+    from molt.gpu.tensor import Tensor
+
+    left = Tensor([[1.0, 2.0], [3.0, 4.0]])
+    right = Tensor([[5.0, 6.0], [7.0, 8.0]])
+    third = Tensor([[9.0, 10.0], [11.0, 12.0]])
+    left_u = Tensor([[[1.0], [2.0]], [[3.0], [4.0]]])
+    right_u = Tensor([[[5.0], [6.0]], [[7.0], [8.0]]])
+    third_u = Tensor([[[9.0], [10.0]], [[11.0], [12.0]]])
+    left_p = Tensor([[[1.0, 3.0], [2.0, 4.0]]])
+    right_p = Tensor([[[5.0, 7.0], [6.0, 8.0]]])
+    third_p = Tensor([[[9.0, 11.0], [10.0, 12.0]]])
+    concat_p = Tensor(
+        [
+            [[1.0, 3.0], [2.0, 4.0]],
+            [[5.0, 7.0], [6.0, 8.0]],
+            [[9.0, 11.0], [10.0, 12.0]],
+        ]
+    )
+    final = Tensor(
+        [
+            [[1.0, 5.0, 9.0], [2.0, 6.0, 10.0]],
+            [[3.0, 7.0, 11.0], [4.0, 8.0, 12.0]],
+        ]
+    )
+    seen = []
+
+    def fake_unsqueeze(self, dim):
+        seen.append(("unsqueeze", self.shape, dim))
+        if self is left:
+            assert dim == 2
+            return left_u
+        if self is right:
+            assert dim == 2
+            return right_u
+        if self is third:
+            assert dim == 2
+            return third_u
+        raise AssertionError(f"unexpected tensor passed to unsqueeze: {self.shape}")
+
+    def fake_permute(tensor, dims):
+        seen.append(("permute", tensor.shape, tuple(dims)))
+        if tensor is left_u:
+            assert tuple(dims) == (2, 0, 1)
+            return left_p
+        if tensor is right_u:
+            assert tuple(dims) == (2, 0, 1)
+            return right_p
+        if tensor is third_u:
+            assert tuple(dims) == (2, 0, 1)
+            return third_p
+        if tensor is concat_p:
+            assert tuple(dims) == (1, 2, 0)
+            return final
+        raise AssertionError(f"unexpected tensor passed to permute: {tensor.shape}")
+
+    def fake_concat(tensors):
+        seen.append(("concat", tuple(tensor.shape for tensor in tensors)))
+        assert tensors == (left_p, right_p, third_p)
+        return concat_p
+
+    monkeypatch.setattr(Tensor, "unsqueeze", fake_unsqueeze)
+    monkeypatch.setattr(tensor_mod, "tensor_permute_dims", fake_permute)
+    monkeypatch.setattr(tensor_mod, "tensor_concat_first_dim", fake_concat)
+
+    out = Tensor.stack(left, right, third, dim=-1)
+
+    assert out.to_list() == [
+        [[1.0, 5.0, 9.0], [2.0, 6.0, 10.0]],
+        [[3.0, 7.0, 11.0], [4.0, 8.0, 12.0]],
+    ]
+    assert seen == [
+        ("unsqueeze", (2, 2), 2),
+        ("unsqueeze", (2, 2), 2),
+        ("unsqueeze", (2, 2), 2),
+        ("permute", (2, 2, 1), (2, 0, 1)),
+        ("permute", (2, 2, 1), (2, 0, 1)),
+        ("permute", (2, 2, 1), (2, 0, 1)),
+        ("concat", ((1, 2, 2), (1, 2, 2), (1, 2, 2))),
+        ("permute", (3, 2, 2), (1, 2, 0)),
+    ]
+
+
 def test_embedding_lookup_avoids_full_weight_materialization(monkeypatch):
     from molt.gpu.nn import Embedding
     from molt.gpu.tensor import Tensor

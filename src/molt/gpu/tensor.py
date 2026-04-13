@@ -1220,11 +1220,31 @@ class Tensor:
             dim += ndim
         if dim < 0 or dim >= ndim:
             raise ValueError(f"stack dim {dim} out of range for ndim={first.ndim}")
+        for tensor in tensors:
+            if not isinstance(tensor, Tensor):
+                raise TypeError(f"Expected Tensor, got {type(tensor)!r}")
+            if tensor.shape != first.shape:
+                raise ValueError(f"stack shape mismatch: {tensor.shape} vs {first.shape}")
+            if tensor._dtype is not first._dtype:
+                raise ValueError("stack requires matching dtypes")
+            if tensor._buf.format_char != first._buf.format_char:
+                raise ValueError("stack requires matching buffer formats")
+
         expanded = [tensor.unsqueeze(dim) for tensor in tensors]
-        out = expanded[0]
-        for tensor in expanded[1:]:
-            out = out.cat(tensor, dim=dim)
-        return out
+        if dim == 0:
+            return tensor_concat_first_dim(tuple(expanded))
+
+        perm = [dim]
+        for axis in range(ndim):
+            if axis != dim:
+                perm.append(axis)
+        permuted = [tensor_permute_dims(tensor, perm) for tensor in expanded]
+        concatenated = tensor_concat_first_dim(tuple(permuted))
+
+        inverse = [0] * ndim
+        for axis, src in enumerate(perm):
+            inverse[src] = axis
+        return tensor_permute_dims(concatenated, inverse)
 
     @staticmethod
     def zeros(*shape) -> 'Tensor':
