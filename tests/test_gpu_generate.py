@@ -760,3 +760,65 @@ def test_greedy_decode_rejects_invalid_dflash_runtime_type(monkeypatch):
         raise AssertionError("expected invalid runtime type failure")
     except TypeError as exc:
         assert "DFlashRuntime" in str(exc)
+
+
+def test_build_dflash_runtime_constructs_runtime_from_explicit_adapter():
+    from molt.gpu.dflash import (
+        DFlashAdapterSpec,
+        DFlashRuntime,
+        build_dflash_runtime,
+        register_dflash_adapter,
+    )
+
+    def supports(context):
+        return context.backend == "webgpu"
+
+    def create_runtime(context):
+        assert context.prompt_tokens == [0]
+        assert context.backend == "webgpu"
+        return DFlashRuntime(
+            draft_step=lambda _request: None,
+            verify_step=lambda _request: None,
+            block_size=4,
+        )
+
+    class FakeModel:
+        pass
+
+    register_dflash_adapter(
+        DFlashAdapterSpec(
+            name="builder-adapter",
+            supports=supports,
+            create_runtime=create_runtime,
+        )
+    )
+
+    runtime = build_dflash_runtime(
+        FakeModel(),
+        [0],
+        backend="webgpu",
+        dflash_adapter="builder-adapter",
+        max_new_tokens=8,
+        block_size=4,
+    )
+
+    assert isinstance(runtime, DFlashRuntime)
+    assert runtime.block_size == 4
+
+
+def test_build_dflash_runtime_raises_for_missing_explicit_adapter():
+    from molt.gpu.dflash import build_dflash_runtime
+
+    class FakeModel:
+        pass
+
+    try:
+        build_dflash_runtime(
+            FakeModel(),
+            [0],
+            backend="webgpu",
+            dflash_adapter="missing-adapter",
+        )
+        raise AssertionError("expected missing explicit adapter failure")
+    except LookupError as exc:
+        assert "missing-adapter" in str(exc)
