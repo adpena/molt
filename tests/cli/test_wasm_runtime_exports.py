@@ -55,6 +55,19 @@ def test_wasm_runtime_export_link_args_does_not_widen_required_imports_with_reso
     assert " -C link-arg=--export-if-defined=molt_ssl_context_new" not in flags
 
 
+def test_wasm_runtime_export_link_args_keeps_runtime_owned_dynamic_intrinsics_in_minimal_mode() -> None:
+    flags = wasm_runtime_export_link_args(
+        {"runtime_init"},
+        resolved_modules={"molt.gpu.tensor"},
+    )
+    assert " -C link-arg=--export-if-defined=molt_runtime_init" in flags
+    assert " -C link-arg=--export-if-defined=molt_gpu_linear_contiguous" in flags
+    assert (
+        " -C link-arg=--export-if-defined="
+        "molt_gpu_linear_split_last_dim_contiguous" in flags
+    )
+
+
 def test_wasm_runtime_export_link_args_keeps_host_runtime_exports_in_minimal_mode() -> None:
     flags = wasm_runtime_export_link_args({"runtime_init"})
     assert " -C link-arg=--export-if-defined=molt_runtime_init" in flags
