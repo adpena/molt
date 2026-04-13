@@ -18,6 +18,7 @@ from __future__ import annotations
 import array
 import math
 import operator
+import os
 import struct
 import _intrinsics as _molt_intrinsics
 from . import Buffer, alloc, to_device, from_device
@@ -41,6 +42,14 @@ def _runtime_intrinsics_active() -> bool:
     if callable(runtime_active):
         return bool(runtime_active())
     return False
+
+
+def _requested_gpu_backend() -> str | None:
+    backend = os.environ.get("MOLT_GPU_BACKEND")
+    if backend is None:
+        return None
+    backend = backend.strip()
+    return backend or None
 
 
 _MOLT_GPU_BUFFER_TO_LIST = _load_optional_intrinsic("molt_gpu_buffer_to_list")
@@ -326,9 +335,6 @@ def tensor_linear_split_last_dim(
         result_format = x._buf.format_char
     prefix_shape = x_shape[:-1]
 
-    if _MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM is not None:
-        return _MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM(x, weight, sizes)
-
     if _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS is not None:
         out_parts = _MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS(
             x._buf._data,
@@ -353,6 +359,9 @@ def tensor_linear_split_last_dim(
             )
             for size, part_bits in zip(sizes, out_parts)
         )
+
+    if _MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM is not None:
+        return _MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM(x, weight, sizes)
 
     if _runtime_intrinsics_active():
         raise RuntimeError(
@@ -1731,15 +1740,13 @@ def tensor_scaled_dot_product_attention(
     mask: "Tensor | None" = None,
     scale: float = 1.0,
 ) -> "Tensor":
-    if _MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION is not None:
+    if (
+        _MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION is not None
+        and _requested_gpu_backend() in {"webgpu", "metal"}
+    ):
         return _MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION(q, k, v, mask, scale)
 
-    if _runtime_intrinsics_active():
-        raise RuntimeError(
-            "intrinsic unavailable: molt_gpu_tensor__tensor_scaled_dot_product_attention"
-        )
-
-    scores = (q @ tensor_permute_dims(k, (0, 1, 3, 2))) * Tensor(scale)
+    scores = (q @ tensor_permute_dims(k, (0, 1, 3, 2))) * scale
     if mask is not None:
         scores = scores + mask
     attn = tensor_softmax_last_axis(scores)

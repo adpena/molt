@@ -306,7 +306,7 @@ def test_tensor_functional_linear_family_preserves_f32_output_layout():
     assert gated.to_list() == [[2.0, 18.0], [36.0, 294.0]]
 
 
-def test_tensor_linear_split_last_dim_uses_tensor_level_intrinsic(
+def test_tensor_linear_split_last_dim_prefers_contiguous_intrinsic(
     monkeypatch,
 ):
     import array
@@ -322,21 +322,24 @@ def test_tensor_linear_split_last_dim_uses_tensor_level_intrinsic(
 
     calls = []
 
-    def fake_intrinsic(x_arg, w_arg, sizes_arg):
-        calls.append((x_arg.shape, w_arg.shape, tuple(sizes_arg)))
-        return (
-            Tensor(
-                to_device(array.array("f", [1.0, 2.0, 3.0, 4.0])),
-                shape=(2, 2),
-            ),
-            Tensor(
-                to_device(array.array("f", [3.0, 2.0, 4.0, 7.0, 6.0, 8.0])),
-                shape=(2, 3),
-            ),
-        )
+    def fake_contiguous(x_data, x_format, w_data, w_format, outer, in_features, sizes_arg, out_format):
+        calls.append((x.shape, w.shape, tuple(sizes_arg)))
+        del x_data, x_format, w_data, w_format, outer, in_features, out_format
+        left = array.array("f", [1.0, 2.0, 3.0, 4.0]).tobytes()
+        right = array.array("f", [3.0, 2.0, 4.0, 7.0, 6.0, 8.0]).tobytes()
+        return (left, right)
 
     monkeypatch.setattr(
-        tensor_mod, "_MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM", fake_intrinsic
+        tensor_mod,
+        "_MOLT_GPU_LINEAR_SPLIT_LAST_DIM_CONTIGUOUS",
+        fake_contiguous,
+    )
+    monkeypatch.setattr(
+        tensor_mod,
+        "_MOLT_GPU_TENSOR_LINEAR_SPLIT_LAST_DIM",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("tensor-level split intrinsic should not be used when contiguous primitive is available")
+        ),
     )
 
     left, right = tensor_linear_split_last_dim(x, w, (2, 3))
@@ -411,6 +414,7 @@ def test_tensor_scaled_dot_product_attention_uses_intrinsic_when_available(
         "_MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION",
         fake_intrinsic,
     )
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
 
     q = Tensor([1.0, 0.0, 0.0, 1.0], shape=(1, 1, 2, 2), dtype=float)
     k = Tensor([1.0, 0.0, 0.0, 1.0], shape=(1, 1, 2, 2), dtype=float)
@@ -420,6 +424,31 @@ def test_tensor_scaled_dot_product_attention_uses_intrinsic_when_available(
     out = tensor_scaled_dot_product_attention(q, k, v, mask, 1.0)
 
     assert calls == [((1, 1, 2, 2), (1, 1, 2, 2), (1, 1, 2, 2), (1, 1, 2, 2), 1.0)]
+    assert out.to_list() == [[[[10.0, 1.0], [2.0, 20.0]]]]
+
+
+def test_tensor_scaled_dot_product_attention_uses_composed_path_without_gpu_backend(
+    monkeypatch,
+):
+    import molt.gpu.tensor as tensor_mod
+    from molt.gpu.tensor import Tensor, tensor_scaled_dot_product_attention
+
+    monkeypatch.delenv("MOLT_GPU_BACKEND", raising=False)
+    monkeypatch.setattr(
+        tensor_mod,
+        "_MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fused attention intrinsic should not be used without explicit GPU backend")
+        ),
+    )
+
+    q = Tensor([1.0, 0.0, 0.0, 1.0], shape=(1, 1, 2, 2), dtype=float)
+    k = Tensor([1.0, 0.0, 0.0, 1.0], shape=(1, 1, 2, 2), dtype=float)
+    v = Tensor([10.0, 1.0, 2.0, 20.0], shape=(1, 1, 2, 2), dtype=float)
+    mask = Tensor([0.0, -1.0e9, -1.0e9, 0.0], shape=(1, 1, 2, 2), dtype=float)
+
+    out = tensor_scaled_dot_product_attention(q, k, v, mask, 1.0)
+
     assert out.to_list() == [[[[10.0, 1.0], [2.0, 20.0]]]]
 
 
