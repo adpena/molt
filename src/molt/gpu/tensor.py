@@ -554,6 +554,82 @@ def tensor_linear_squared_relu_gate_interleaved(
     return _tensor_from_buffer(out_buf, out_shape, result_dtype)
 
 
+def tensor_conv2d(
+    x: "Tensor",
+    weight: "Tensor",
+    bias: "Tensor | None" = None,
+    groups: int = 1,
+    stride=1,
+    dilation=1,
+    padding=0,
+) -> "Tensor":
+    if not isinstance(x, Tensor) or not isinstance(weight, Tensor):
+        return NotImplemented
+    if x.ndim == 3:
+        x = x.reshape(1, *x.shape)
+    if x.ndim != 4:
+        raise ValueError(f"conv2d input must be 3D or 4D, got {x.shape}")
+    if weight.ndim != 4:
+        raise ValueError(f"conv2d weight must be 4D, got {weight.shape}")
+    if bias is not None and not isinstance(bias, Tensor):
+        return NotImplemented
+
+    sh, sw = stride if isinstance(stride, tuple) else (stride, stride)
+    dh, dw = dilation if isinstance(dilation, tuple) else (dilation, dilation)
+    ph, pw = padding if isinstance(padding, tuple) else (padding, padding)
+
+    batch, in_c, in_h, in_w = x.shape
+    out_c, weight_in_c, kh, kw = weight.shape
+    if groups <= 0:
+        raise ValueError("conv2d groups must be positive")
+    if in_c % groups != 0 or out_c % groups != 0:
+        raise ValueError("conv2d channels must be divisible by groups")
+    if weight_in_c != in_c // groups:
+        raise ValueError(
+            f"conv2d weight input channels mismatch: {weight.shape} vs input {x.shape} groups={groups}"
+        )
+    if bias is not None and bias.shape != (out_c,):
+        raise ValueError(f"conv2d bias shape mismatch: {bias.shape} vs ({out_c},)")
+
+    out_h = (in_h + 2 * ph - dh * (kh - 1) - 1) // sh + 1
+    out_w = (in_w + 2 * pw - dw * (kw - 1) - 1) // sw + 1
+
+    x_data = x._data_list()
+    w_data = weight._data_list()
+    b_data = bias._data_list() if bias is not None else None
+    out = [0.0] * (batch * out_c * out_h * out_w)
+
+    out_channels_per_group = out_c // groups
+    in_channels_per_group = in_c // groups
+
+    for b in range(batch):
+        for oc in range(out_c):
+            group = oc // out_channels_per_group
+            ic_base = group * in_channels_per_group
+            for oh in range(out_h):
+                for ow in range(out_w):
+                    acc = 0.0
+                    for local_ic in range(weight_in_c):
+                        ic = ic_base + local_ic
+                        for fh in range(kh):
+                            ih = oh * sh - ph + fh * dh
+                            if ih < 0 or ih >= in_h:
+                                continue
+                            for fw in range(kw):
+                                iw = ow * sw - pw + fw * dw
+                                if iw < 0 or iw >= in_w:
+                                    continue
+                                x_idx = ((b * in_c + ic) * in_h + ih) * in_w + iw
+                                w_idx = ((oc * weight_in_c + local_ic) * kh + fh) * kw + fw
+                                acc += x_data[x_idx] * w_data[w_idx]
+                    if b_data is not None:
+                        acc += b_data[oc]
+                    out_idx = ((b * out_c + oc) * out_h + oh) * out_w + ow
+                    out[out_idx] = acc
+
+    return Tensor(out, shape=(batch, out_c, out_h, out_w), dtype=x._dtype)
+
+
 def tensor_permute_dims(x: "Tensor", dims) -> "Tensor":
     if not isinstance(x, Tensor):
         return NotImplemented
@@ -1557,6 +1633,25 @@ class Tensor:
     def linear_squared_relu_gate_interleaved(self, weight) -> 'Tensor':
         """Apply linear(weight) then interleaved squared-ReLU gating."""
         return tensor_linear_squared_relu_gate_interleaved(self, weight)
+
+    def conv2d(
+        self,
+        weight,
+        bias=None,
+        groups: int = 1,
+        stride=1,
+        dilation=1,
+        padding=0,
+    ) -> 'Tensor':
+        return tensor_conv2d(
+            self,
+            weight,
+            bias=bias,
+            groups=groups,
+            stride=stride,
+            dilation=dilation,
+            padding=padding,
+        )
 
     def split_last_dim(self, sizes) -> tuple['Tensor', ...]:
         """Split the last dimension into contiguous views copied into new buffers."""
