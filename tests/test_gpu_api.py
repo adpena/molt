@@ -1475,6 +1475,16 @@ def test_submodule_generate():
     from molt.gpu.generate import greedy_decode, top_k_sample
 
 
+def test_submodule_dflash():
+    from molt.gpu.dflash import (
+        SpeculativeConditioning,
+        SpeculativeDraftRequest,
+        SpeculativeDraftResult,
+        SpeculativeVerifyRequest,
+        SpeculativeVerifyResult,
+    )
+
+
 if __name__ == "__main__":
     # Run all tests manually
     import traceback
