@@ -323,6 +323,7 @@ fn compile_stdlib_cache_object(
         };
         let mut stdlib_backend = SimpleBackend::new_with_target(target_triple);
         stdlib_backend.skip_ir_passes = true;
+        stdlib_backend.skip_shared_stdlib_partition = true;
         let stdlib_bytes = stdlib_backend.compile(stdlib_ir);
         std::fs::write(stdlib_path, &stdlib_bytes)?;
         return Ok(());
@@ -349,6 +350,7 @@ fn compile_stdlib_cache_object(
             };
             let mut batch_backend = SimpleBackend::new_with_target(target_triple);
             batch_backend.skip_ir_passes = true;
+            batch_backend.skip_shared_stdlib_partition = true;
             batch_backend.external_function_names =
                 batch_external_function_names(&all_stdlib_names, &batch_ir.functions);
             batch_backend.set_module_context(stdlib_module_context.clone());
@@ -1209,7 +1211,10 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                     }
                 }
 
-                let backend = SimpleBackend::new_with_target(target_triple);
+                let mut backend = SimpleBackend::new_with_target(target_triple);
+                if stdlib_obj_path.is_some() {
+                    backend.skip_shared_stdlib_partition = true;
+                }
                 Arc::from(backend.compile(ir))
             }
             #[cfg(not(feature = "native-backend"))]
@@ -2029,7 +2034,10 @@ fn main() -> io::Result<()> {
 
             if func_count <= batch_size {
                 // Small IR (or user-only mode): compile in one shot
-                let backend = SimpleBackend::new_with_target(target_triple);
+                let mut backend = SimpleBackend::new_with_target(target_triple);
+                if stdlib_obj_path.is_some() {
+                    backend.skip_shared_stdlib_partition = true;
+                }
                 let obj_bytes = backend.compile(ir);
                 let mut file = create_backend_output_file(output_file).map_err(|err| {
                     io::Error::new(
@@ -2076,6 +2084,7 @@ fn main() -> io::Result<()> {
                     // for batched compilation — those were already run on the
                     // full IR above. Each batch only does Cranelift codegen.
                     backend.skip_ir_passes = true;
+                    backend.skip_shared_stdlib_partition = true;
                     backend.external_function_names =
                         batch_external_function_names(&all_func_names, &batch_ir.functions);
                     backend.set_module_context(module_context.clone());
@@ -3120,6 +3129,108 @@ mod tests {
             Some("demo")
         );
         assert!(std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").is_err());
+    }
+
+    #[test]
+    fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "molt-daemon-batch-chunk-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let output = tmp_dir.join("out.o");
+        let stdlib = tmp_dir.join("stdlib.o");
+        let request = serde_json::json!({
+            "version": BACKEND_DAEMON_PROTOCOL_VERSION,
+            "config_digest": "daemon-test",
+            "env": {
+                "MOLT_ENTRY_MODULE": "demo",
+                "MOLT_STDLIB_OBJ": stdlib.to_string_lossy(),
+                "MOLT_STDLIB_CACHE_KEY": "daemon-stdlib-key",
+                "MOLT_STDLIB_MODULE_SYMBOLS": "[\"sys\"]",
+                "MOLT_BACKEND_BATCH_SIZE": "1",
+            },
+            "jobs": [{
+                "id": "job0",
+                "is_wasm": false,
+                "output": output.to_string_lossy(),
+                "cache_key": "",
+                "function_cache_key": "",
+                "ir": {
+                    "functions": [
+                        {"name": "molt_main", "params": [], "ops": [
+                            {"kind": "call", "s_value": "molt_init_demo", "value": 0},
+                            {"kind": "ret_void"}
+                        ]},
+                        {"name": "molt_host_init", "params": [], "ops": [
+                            {"kind": "call", "s_value": "molt_init_demo", "value": 0},
+                            {"kind": "ret_void"}
+                        ]},
+                        {"name": "molt_init_demo", "params": [], "ops": [
+                            {"kind": "call", "s_value": "demo__molt_module_chunk_1", "value": 0},
+                            {"kind": "ret_void"}
+                        ]},
+                        {"name": "demo__molt_module_chunk_1", "params": [], "ops": [
+                            {"kind": "ret_void"}
+                        ]},
+                        {"name": "molt_isolate_bootstrap", "params": [], "ops": [{"kind": "ret_void"}]},
+                        {"name": "molt_isolate_import", "params": ["p0"], "ops": [{"kind": "ret_void"}]},
+                        {"name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
+                    ],
+                    "profile": null
+                }
+            }]
+        });
+
+        let request = DaemonRequest::from_json_bytes(
+            serde_json::to_string(&request)
+                .expect("serialize request")
+                .as_bytes(),
+        )
+        .expect("parse daemon request");
+        let job = request.jobs.expect("jobs").into_iter().next().expect("job");
+        let mut cache = DaemonCache::new(None);
+        let result = compile_single_job(job, &mut cache);
+
+        assert!(result.ok, "daemon compile failed: {:?}", result.message);
+        assert!(output.exists(), "output object missing");
+
+        let nm_output = std::process::Command::new("nm")
+            .args(["-g", output.to_str().expect("utf8 output path")])
+            .output()
+            .expect("run nm");
+        assert!(
+            nm_output.status.success(),
+            "nm failed: {}",
+            String::from_utf8_lossy(&nm_output.stderr)
+        );
+        let text = String::from_utf8_lossy(&nm_output.stdout);
+        let has_defined_chunk = text.lines().any(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 2 {
+                return false;
+            }
+            let sym = fields.last().copied().unwrap_or_default().trim_start_matches('_');
+            sym == "demo__molt_module_chunk_1"
+                && fields[fields.len().saturating_sub(2)] == "T"
+        });
+        let has_undefined_chunk = text.lines().any(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() != 2 {
+                return false;
+            }
+            let sym = fields.last().copied().unwrap_or_default().trim_start_matches('_');
+            sym == "demo__molt_module_chunk_1" && fields[0] == "U"
+        });
+
+        assert!(has_defined_chunk, "expected defined chunk symbol:\n{text}");
+        assert!(!has_undefined_chunk, "unexpected undefined chunk symbol:\n{text}");
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]

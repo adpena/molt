@@ -1986,6 +1986,7 @@ pub struct SimpleBackend {
     trampoline_ids: BTreeMap<TrampolineKey, cranelift_module::FuncId>,
     import_ids: BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     pub skip_ir_passes: bool,
+    pub skip_shared_stdlib_partition: bool,
     /// Function names that exist in other batches — use Linkage::Import, not trap stubs.
     pub external_function_names: std::collections::BTreeSet<String>,
     module_context: Option<NativeBackendModuleContext>,
@@ -2155,14 +2156,12 @@ fn externalize_shared_stdlib_partition(ir: &mut SimpleIR) {
         &entry_module,
         explicit_stdlib_module_symbols.as_ref(),
     );
-    let extern_count = stdlib_funcs.len();
     let mut retained = std::mem::take(&mut user_remaining);
-    for mut func in stdlib_funcs.drain(..) {
+    for mut func in std::mem::take(&mut stdlib_funcs) {
         func.is_extern = true;
         func.ops.clear();
         retained.push(func);
     }
-    let _ = extern_count;
     ir.functions = retained;
 }
 
@@ -2406,6 +2405,7 @@ impl SimpleBackend {
             trampoline_ids: BTreeMap::new(),
             import_ids: BTreeMap::new(),
             skip_ir_passes: false,
+            skip_shared_stdlib_partition: false,
             external_function_names: std::collections::BTreeSet::new(),
             module_context: None,
             data_pool: BTreeMap::new(),
@@ -3139,7 +3139,13 @@ impl SimpleBackend {
                 let _ = std::fs::write("tmp/rewritten_func_ir.txt", dump);
             }
         }
+<<<<<<< HEAD
         externalize_shared_stdlib_partition(&mut ir);
+=======
+        if !self.skip_shared_stdlib_partition {
+            externalize_shared_stdlib_partition(&mut ir);
+        }
+>>>>>>> 57fdd805 (native: keep module chunks defined across stdlib batches)
         if timing {
             let passes_elapsed = compile_start.elapsed();
             eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");

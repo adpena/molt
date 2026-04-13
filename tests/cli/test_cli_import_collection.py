@@ -24,6 +24,19 @@ from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _compile_c_object(tmp_path: Path, name: str, source: str) -> Path:
+    src = tmp_path / f"{name}.c"
+    obj = tmp_path / f"{name}.o"
+    src.write_text(source, encoding="utf-8")
+    subprocess.run(
+        ["clang", "-c", str(src), "-o", str(obj)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return obj
+
+
 def _install_fake_backend_compile(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -11621,6 +11634,97 @@ def test_cached_backend_artifact_validity_guard(tmp_path: Path) -> None:
         text=True,
     )
     assert cli._is_valid_cached_backend_artifact(native_nonempty, is_wasm=False)
+
+
+def test_try_cached_backend_candidates_rejects_native_hit_with_unresolved_user_module_chunks(
+    tmp_path: Path,
+) -> None:
+    candidate = _compile_c_object(
+        tmp_path,
+        "candidate",
+        """
+        extern void tkinter_phase0_core_semantics__molt_module_chunk_1(void);
+        void molt_init_tkinter_phase0_core_semantics(void) {
+            tkinter_phase0_core_semantics__molt_module_chunk_1();
+        }
+        """,
+    )
+    stdlib_object = _compile_c_object(
+        tmp_path,
+        "stdlib_shared",
+        """
+        void tkinter__molt_module_chunk_1(void) {}
+        """,
+    )
+    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+        "stdlib-key\n", encoding="utf-8"
+    )
+    output_artifact = tmp_path / "dist" / "output.o"
+    warnings: list[str] = []
+
+    ok, cache_hit_tier = cli._try_cached_backend_candidates(
+        project_root=tmp_path,
+        cache_candidates=[("module", candidate)],
+        output_artifact=output_artifact,
+        is_wasm=False,
+        cache_key="module-key",
+        function_cache_key=None,
+        cache_path=candidate,
+        stdlib_object_path=stdlib_object,
+        stdlib_object_cache_key="stdlib-key",
+        stdlib_module_symbols=None,
+        warnings=warnings,
+    )
+
+    assert ok is False
+    assert cache_hit_tier is None
+    assert not output_artifact.exists()
+
+
+def test_backend_daemon_skip_output_sync_flags_rejects_synced_native_output_with_unresolved_user_module_chunks(
+    tmp_path: Path,
+) -> None:
+    output_artifact = _compile_c_object(
+        tmp_path,
+        "synced_output",
+        """
+        extern void tkinter_phase0_core_semantics__molt_module_chunk_1(void);
+        void molt_init_tkinter_phase0_core_semantics(void) {
+            tkinter_phase0_core_semantics__molt_module_chunk_1();
+        }
+        """,
+    )
+    stdlib_object = _compile_c_object(
+        tmp_path,
+        "stdlib_shared",
+        """
+        void tkinter__molt_module_chunk_1(void) {}
+        """,
+    )
+    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+        "stdlib-key\n", encoding="utf-8"
+    )
+    state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    cli._write_artifact_sync_state(
+        state_path,
+        source_key="module-key|stdlib:stdlib-key",
+        tier="module",
+        artifact=output_artifact,
+    )
+
+    skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
+        tmp_path,
+        output_artifact,
+        cache_key="module-key",
+        function_cache_key=None,
+        stdlib_object_path=stdlib_object,
+        stdlib_object_cache_key="stdlib-key",
+        stdlib_module_symbols=None,
+    )
+
+    assert skip_module is False
+    assert skip_function is False
 
 
 def test_backend_daemon_health_from_response_parses_int_fields() -> None:
