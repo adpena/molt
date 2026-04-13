@@ -886,6 +886,12 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         eprintln!("LOWER_DEBUG_PRE_ELIM: {out:#?}");
     }
     eliminate_dead_labels(&mut out);
+    if let Err(detail) = validate_structured_if_markers(&out) {
+        panic!(
+            "[TIR] invalid structured if lowering for {}: {}",
+            func.name, detail
+        );
+    }
 
     // Validate: every label referenced by check_exception/jump/br_if must
     // have a corresponding label op. If validation fails, it means the
@@ -1011,10 +1017,12 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
                         current_block_started_at_live_label = false;
                     }
                 }
-                "else" | "end_if" => {
+                "if" | "else" | "end_if" => {
                     // Structured if markers remain live even when the
-                    // immediately preceding textual branch returned or raised,
-                    // because the alternate branch can still flow through them.
+                    // immediately preceding textual branch returned or raised.
+                    // If a dead labeled path falls into a structured `if`,
+                    // stripping only the opening `if` while preserving
+                    // `else` / `end_if` corrupts the control stack.
                     filled_state = FilledState::Open;
                     current_block_started_at_live_label = false;
                 }
@@ -1063,6 +1071,46 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
             break;
         }
     }
+}
+
+fn validate_structured_if_markers(ops: &[OpIR]) -> Result<(), String> {
+    #[derive(Clone, Copy)]
+    struct IfFrame {
+        if_idx: usize,
+        saw_else: bool,
+    }
+
+    let mut stack: Vec<IfFrame> = Vec::new();
+    for (idx, op) in ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "if" => stack.push(IfFrame {
+                if_idx: idx,
+                saw_else: false,
+            }),
+            "else" => {
+                let Some(frame) = stack.last_mut() else {
+                    return Err(format!("orphan else at op {idx}"));
+                };
+                if frame.saw_else {
+                    return Err(format!(
+                        "duplicate else at op {idx} for if starting at op {}",
+                        frame.if_idx
+                    ));
+                }
+                frame.saw_else = true;
+            }
+            "end_if" => {
+                let Some(_frame) = stack.pop() else {
+                    return Err(format!("orphan end_if at op {idx}"));
+                };
+            }
+            _ => {}
+        }
+    }
+    if let Some(frame) = stack.last() {
+        return Err(format!("unterminated if starting at op {}", frame.if_idx));
+    }
+    Ok(())
 }
 
 /// Validate that every label referenced by jump/br_if/check_exception exists
@@ -3862,6 +3910,81 @@ mod tests {
             ops.iter().any(|op| op.kind == "loop_end"),
             "loop_end must survive after a live labeled terminal block because it still closes the structured loop break path: {ops:?}"
         );
+    }
+
+    #[test]
+    fn eliminate_dead_labels_keeps_if_marker_after_dead_label_before_structured_if() {
+        let mut ops = vec![
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["_ret0".into()]),
+                var: Some("_ret0".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".into(),
+                value: Some(42),
+                args: Some(vec![]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "if".into(),
+                args: Some(vec!["cond".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_none".into(),
+                out: Some("_v0".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "else".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "raise".into(),
+                args: Some(vec!["exc".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "end_if".into(),
+                ..OpIR::default()
+            },
+        ];
+
+        eliminate_dead_labels(&mut ops);
+
+        let kinds: Vec<&str> = ops.iter().map(|op| op.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["ret", "if", "const_none", "else", "raise", "end_if"],
+            "dead-label elimination must not orphan structured if markers: {ops:?}"
+        );
+        assert!(
+            validate_structured_if_markers(&ops).is_ok(),
+            "structured if markers must remain balanced after dead-label elimination: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn validate_structured_if_markers_rejects_orphan_else() {
+        let ops = vec![
+            OpIR {
+                kind: "ret".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "else".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "end_if".into(),
+                ..OpIR::default()
+            },
+        ];
+
+        let err = validate_structured_if_markers(&ops).expect_err("must reject orphan else");
+        assert!(err.contains("orphan else"), "{err}");
     }
 
     #[test]
