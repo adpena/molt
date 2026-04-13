@@ -401,11 +401,10 @@ pub(crate) fn attr_error_with_obj_message(
 ) -> i64 {
     crate::gil_assert();
     let res = raise_exception(_py, "AttributeError", msg);
-    let exc_bits = molt_exception_last();
+    let exc_bits = exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
     if !obj_from_bits(exc_bits).is_none() {
         set_attribute_error_attrs(_py, exc_bits, attr_name, obj_bits);
     }
-    dec_ref_bits(_py, exc_bits);
     res
 }
 
