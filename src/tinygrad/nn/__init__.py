@@ -2,7 +2,7 @@
 
 import math
 
-from molt.gpu.nn import LayerNorm, Sequential
+from molt.gpu.nn import Sequential
 from molt.gpu.tensor import Tensor
 
 
@@ -162,6 +162,35 @@ class Embedding:
         return f"Embedding({self.vocab_sz}, {self.embed_sz})"
 
 
+class LayerNorm:
+    """tinygrad-compatible LayerNorm."""
+
+    def __init__(self, normalized_shape, eps: float = 1e-5, elementwise_affine: bool = True):
+        if isinstance(normalized_shape, int):
+            normalized_shape = (normalized_shape,)
+        self.normalized_shape = tuple(normalized_shape)
+        self.axis = tuple(-1 - i for i in range(len(self.normalized_shape)))
+        self.eps = eps
+        if elementwise_affine:
+            size = 1
+            for dim in self.normalized_shape:
+                size *= dim
+            self.weight = Tensor([1.0] * size, shape=self.normalized_shape)
+            self.bias = Tensor([0.0] * size, shape=self.normalized_shape)
+        else:
+            self.weight = None
+            self.bias = None
+
+    def __call__(self, x: Tensor) -> Tensor:
+        assert self.normalized_shape == x.shape[-len(self.normalized_shape):], (
+            f"last dimensions of {x.shape} must match {self.normalized_shape}"
+        )
+        out = x.layernorm(axis=self.axis, eps=self.eps)
+        if self.weight is None or self.bias is None:
+            return out
+        return out * self.weight + self.bias
+
+
 class RMSNorm:
     """tinygrad-compatible RMSNorm backed by Molt Tensor ops."""
 
@@ -171,7 +200,8 @@ class RMSNorm:
         self.weight = Tensor([1.0] * dim, shape=(dim,))
 
     def __call__(self, x: Tensor) -> Tensor:
-        return x.rms_norm(self.eps) * self.weight
+        out = x.float().rms_norm(self.eps).cast(x._dtype)
+        return out * self.weight
 
     def __repr__(self) -> str:
         return f"RMSNorm(dim={self.dim}, eps={self.eps})"
