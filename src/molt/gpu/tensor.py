@@ -1188,19 +1188,23 @@ class Tensor:
             a != b for axis, (a, b) in enumerate(zip(self._shape, other._shape)) if axis != dim
         ):
             raise ValueError(f"cat shape mismatch: {self._shape} vs {other._shape}")
+        if self._dtype is not other._dtype:
+            raise ValueError("cat requires matching dtypes")
+        if self._buf.format_char != other._buf.format_char:
+            raise ValueError("cat requires matching buffer formats")
 
-        out_shape = list(self._shape)
-        out_shape[dim] += other._shape[dim]
-        out = []
-        left = self.to_list()
-        right = other.to_list()
+        perm = [dim]
+        for axis in range(ndim):
+            if axis != dim:
+                perm.append(axis)
+        left = tensor_permute_dims(self, perm)
+        right = tensor_permute_dims(other, perm)
+        concatenated = tensor_concat_first_dim((left, right))
 
-        def _cat(a, b, axis):
-            if axis == 0:
-                return list(a) + list(b)
-            return [_cat(x, y, axis - 1) for x, y in zip(a, b)]
-
-        return Tensor(_cat(left, right, dim), dtype=self._dtype)
+        inverse = [0] * ndim
+        for axis, src in enumerate(perm):
+            inverse[src] = axis
+        return tensor_permute_dims(concatenated, inverse)
 
     @staticmethod
     def stack(*tensors, dim=0) -> 'Tensor':
