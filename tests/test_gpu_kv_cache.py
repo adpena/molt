@@ -225,6 +225,106 @@ def test_turboquant_attention_kv_cache_uses_intrinsic_when_available(monkeypatch
     }
 
 
+def test_turboquant_attention_intrinsic_does_not_call_python_reference(monkeypatch):
+    import _intrinsics as intr
+    from molt.gpu.kv_cache import TurboQuantAttentionKVCache
+    from molt.gpu.tensor import Tensor
+    from molt.gpu.turboquant import TurboQuantCodec
+
+    intrinsic = intr.load_intrinsic("molt_gpu_turboquant_attention_packed")
+    if intrinsic is None:
+        pytest.skip("runtime intrinsic unavailable in this lane")
+
+    codec = TurboQuantCodec(dim=8, bits=3, seed=5, qjl_seed=19)
+    cache = TurboQuantAttentionKVCache(codec)
+    cache.append(
+        Tensor(
+            [
+                0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,
+                0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,
+            ],
+            shape=(1, 1, 2, 8),
+        ),
+        Tensor(
+            [
+                0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,
+                -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,
+            ],
+            shape=(1, 1, 2, 8),
+        ),
+    )
+    q = Tensor([0.5, -0.1, 0.4, 0.2, -0.3, 0.6, -0.2, 0.1], shape=(1, 1, 1, 8))
+
+    monkeypatch.setattr(
+        cache,
+        "_attention_reference",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("runtime turboquant intrinsic should not call _attention_reference")
+        ),
+    )
+
+    monkeypatch.setattr(
+        __import__("molt.gpu.kv_cache", fromlist=["_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED"]),
+        "_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED",
+        intrinsic,
+    )
+
+    out = cache.attention(q, scale=1.0)
+
+    assert out.shape == (1, 1, 1, 8)
+
+
+def test_native_turboquant_intrinsic_does_not_call_python_reference(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "gpu_turboquant_intrinsic_native.py"
+    probe.write_text(
+        "from molt.gpu.kv_cache import TurboQuantAttentionKVCache\n"
+        "from molt.gpu.tensor import Tensor\n"
+        "from molt.gpu.turboquant import TurboQuantCodec\n"
+        "\n"
+        "codec = TurboQuantCodec(dim=8, bits=3, seed=5, qjl_seed=19)\n"
+        "cache = TurboQuantAttentionKVCache(codec)\n"
+        "cache.append(\n"
+        "    Tensor([\n"
+        "        0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,\n"
+        "        0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,\n"
+        "    ], shape=(1, 1, 2, 8)),\n"
+        "    Tensor([\n"
+        "        0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,\n"
+        "        -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,\n"
+        "    ], shape=(1, 1, 2, 8)),\n"
+        ")\n"
+        "def fail(*_args, **_kwargs):\n"
+        "    raise RuntimeError('python reference path should be bypassed')\n"
+        "cache._attention_reference = fail\n"
+        "q = Tensor([0.5, -0.1, 0.4, 0.2, -0.3, 0.6, -0.2, 0.1], shape=(1, 1, 1, 8))\n"
+        "out = cache.attention(q, scale=1.0)\n"
+        "print(out.shape)\n",
+        encoding="utf-8",
+    )
+
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=_native_molt_env(root),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["(1, 1, 1, 8)"]
+
+
 def test_turboquant_attention_kv_cache_reuses_decoded_values_across_attention_calls(monkeypatch):
     from molt.gpu.kv_cache import TurboQuantAttentionKVCache
     from molt.gpu.tensor import Tensor

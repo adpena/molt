@@ -1,5 +1,6 @@
 use crate::{
-    MoltObject, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE,
+    TYPE_ID_TYPE,
     alloc_bytearray, alloc_bytes, alloc_tuple, attr_name_bits_from_bytes, bytes_data, bytes_len,
     dec_ref_bits, molt_call_bind, molt_exception_clear, molt_exception_kind, molt_exception_last,
     obj_from_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64,
@@ -4948,6 +4949,208 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) 
     })
 }
 
+fn normalized_hadamard_in_place(values: &mut [f32]) {
+    let size = values.len();
+    let mut span = 1usize;
+    while span < size {
+        let step = span * 2;
+        let mut start = 0usize;
+        while start < size {
+            let stop = start + span;
+            let mut index = start;
+            while index < stop {
+                let left = values[index];
+                let right = values[index + span];
+                values[index] = left + right;
+                values[index + span] = left - right;
+                index += 1;
+            }
+            start += step;
+        }
+        span = step;
+    }
+    let scale = 1.0f32 / (size as f32).sqrt();
+    for value in values.iter_mut() {
+        *value *= scale;
+    }
+}
+
+fn hadamard_apply_with_signs(values: &[f32], signs: &[f32]) -> Vec<f32> {
+    let mut out: Vec<f32> = values
+        .iter()
+        .zip(signs.iter())
+        .map(|(value, sign)| *value * *sign)
+        .collect();
+    normalized_hadamard_in_place(out.as_mut_slice());
+    out
+}
+
+fn hadamard_invert_with_signs(values: &[f32], signs: &[f32]) -> Vec<f32> {
+    let mut out = values.to_vec();
+    normalized_hadamard_in_place(out.as_mut_slice());
+    for (value, sign) in out.iter_mut().zip(signs.iter()) {
+        *value *= *sign;
+    }
+    out
+}
+
+fn decode_float_sequence_bits(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<Vec<f32>, u64> {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            &format!("{label} must be a list or tuple"),
+        ));
+    };
+    let type_id = unsafe { object_type_id(ptr) };
+    if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            &format!("{label} must be a list or tuple"),
+        ));
+    }
+    let elems = unsafe { seq_vec_ref(ptr) };
+    let mut out = Vec::with_capacity(elems.len());
+    for &elem_bits in elems.iter() {
+        let elem = obj_from_bits(elem_bits);
+        let value = if let Some(value) = to_f64(elem) {
+            value as f32
+        } else if let Some(value) = to_i64(elem) {
+            value as f32
+        } else {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                &format!("{label} elements must be numbers"),
+            ));
+        };
+        out.push(value);
+    }
+    Ok(out)
+}
+
+fn decode_u64_sequence_bits(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<Vec<u64>, u64> {
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            &format!("{label} must be a list or tuple"),
+        ));
+    };
+    let type_id = unsafe { object_type_id(ptr) };
+    if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            &format!("{label} must be a list or tuple"),
+        ));
+    }
+    Ok(unsafe { seq_vec_ref(ptr) }.to_vec())
+}
+
+fn require_attr_bits(
+    _py: &PyToken<'_>,
+    target_bits: u64,
+    attr_name_bits: u64,
+    attr_name: &str,
+) -> Result<u64, u64> {
+    let missing = crate::missing_bits(_py);
+    let bits = crate::molt_getattr_builtin(target_bits, attr_name_bits, missing);
+    if bits == missing {
+        return Err(raise_exception::<u64>(
+            _py,
+            "AttributeError",
+            &format!("object is missing required attribute {attr_name}"),
+        ));
+    }
+    Ok(bits)
+}
+
+fn decode_i64_attr(
+    _py: &PyToken<'_>,
+    target_bits: u64,
+    attr_name_bits: u64,
+    attr_name: &str,
+) -> Result<i64, u64> {
+    let bits = require_attr_bits(_py, target_bits, attr_name_bits, attr_name)?;
+    let Some(value) = to_i64(obj_from_bits(bits)) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            &format!("{attr_name} must be an integer"),
+        ));
+    };
+    Ok(value)
+}
+
+fn decode_rotation_signs_from_codec(
+    _py: &PyToken<'_>,
+    codec_bits: u64,
+    rotation_attr_bits: u64,
+    signs_attr_bits: u64,
+    rotation_name: &str,
+) -> Result<Vec<f32>, u64> {
+    let rotation_bits = require_attr_bits(_py, codec_bits, rotation_attr_bits, rotation_name)?;
+    let signs_bits = require_attr_bits(_py, rotation_bits, signs_attr_bits, "signs")?;
+    decode_float_sequence_bits(_py, signs_bits, "rotation signs")
+}
+
+fn decode_mask_value(
+    mask: &(TensorRuntimeView, Vec<usize>, Vec<usize>),
+    batch_index: usize,
+    head_index: usize,
+    query_index: usize,
+    key_index: usize,
+) -> f32 {
+    let (mask_view, mask_shape, mask_strides) = mask;
+    let b = if mask_shape[0] == 1 { 0 } else { batch_index };
+    let h = if mask_shape[1] == 1 { 0 } else { head_index };
+    let q = if mask_shape[2] == 1 { 0 } else { query_index };
+    let k = if mask_shape[3] == 1 { 0 } else { key_index };
+    let elem_index =
+        b * mask_strides[0] + h * mask_strides[1] + q * mask_strides[2] + k * mask_strides[3];
+    read_float_buffer_value(mask_view.buffer.data_view, mask_view.buffer.format, elem_index)
+}
+
+fn read_float_buffer_value(view: ByteView, format: ScalarFormat, index: usize) -> f32 {
+    match format {
+        ScalarFormat::F32 => unsafe {
+            (view.ptr.add(index * 4) as *const f32).read_unaligned()
+        },
+        ScalarFormat::F64 => unsafe {
+            (view.ptr.add(index * 8) as *const f64).read_unaligned() as f32
+        },
+        ScalarFormat::I64 => unsafe {
+            (view.ptr.add(index * 8) as *const i64).read_unaligned() as f32
+        },
+    }
+}
+
+fn write_float_buffer_value(out: &mut [u8], format: ScalarFormat, index: usize, value: f32) {
+    match format {
+        ScalarFormat::F32 => unsafe {
+            (out.as_mut_ptr().add(index * 4) as *mut f32).write_unaligned(value);
+        },
+        ScalarFormat::F64 => unsafe {
+            (out.as_mut_ptr().add(index * 8) as *mut f64).write_unaligned(value as f64);
+        },
+        ScalarFormat::I64 => unsafe {
+            (out.as_mut_ptr().add(index * 8) as *mut i64).write_unaligned(value as i64);
+        },
+    }
+}
+
+fn kv_head_index(query_heads: usize, kv_heads: usize, query_head_index: usize) -> Result<usize, ()> {
+    if query_heads == kv_heads {
+        return Ok(query_head_index);
+    }
+    if query_heads < kv_heads || query_heads % kv_heads != 0 {
+        return Err(());
+    }
+    Ok(query_head_index / (query_heads / kv_heads))
+}
+
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
@@ -6445,10 +6648,30 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
     scale_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
-        let _ = match unsafe { tensor_runtime_view(_py, q_bits, "q") } {
+        let (q, q_shape) = match unsafe { tensor_runtime_view(_py, q_bits, "q") } {
             Ok(value) => value,
             Err(bits) => return bits,
         };
+        if q_shape.len() != 4
+            || !matches!(q.buffer.format, ScalarFormat::F32 | ScalarFormat::F64)
+        {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "turboquant attention expects a rank-4 float query tensor",
+            );
+        }
+        let batch = q_shape[0];
+        let query_heads = q_shape[1];
+        let query_seq = q_shape[2];
+        let dim = q_shape[3];
+        if dim == 0 || (dim & (dim - 1)) != 0 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "turboquant attention currently requires a power-of-two head dimension",
+            );
+        }
 
         let missing = crate::missing_bits(_py);
         let Some(kv_cache_name) = attr_name_bits_from_bytes(_py, b"_kv_cache") else {
@@ -6465,12 +6688,38 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 "failed to intern _kv_role attribute name",
             );
         };
-        let Some(attention_ref_name) = attr_name_bits_from_bytes(_py, b"_attention_reference") else {
-            return raise_exception::<_>(
-                _py,
-                "RuntimeError",
-                "failed to intern _attention_reference attribute name",
-            );
+        let Some(codec_name) = attr_name_bits_from_bytes(_py, b"codec") else {
+            return raise_exception::<_>(_py, "RuntimeError", "failed to intern codec attribute");
+        };
+        let Some(mse_rotation_name) = attr_name_bits_from_bytes(_py, b"mse_rotation") else {
+            return raise_exception::<_>(_py, "RuntimeError", "failed to intern mse_rotation attribute");
+        };
+        let Some(qjl_rotation_name) = attr_name_bits_from_bytes(_py, b"qjl_rotation") else {
+            return raise_exception::<_>(_py, "RuntimeError", "failed to intern qjl_rotation attribute");
+        };
+        let Some(signs_name) = attr_name_bits_from_bytes(_py, b"signs") else {
+            return raise_exception::<_>(_py, "RuntimeError", "failed to intern signs attribute");
+        };
+        let Some(key_vectors_name) = attr_name_bits_from_bytes(_py, b"_key_vectors") else {
+            return raise_exception::<_>(_py, "RuntimeError", "failed to intern _key_vectors attribute");
+        };
+        let Some(value_vectors_name) = attr_name_bits_from_bytes(_py, b"_value_vectors") else {
+            return raise_exception::<_>(_py, "RuntimeError", "failed to intern _value_vectors attribute");
+        };
+        let Some(heads_name) = attr_name_bits_from_bytes(_py, b"_heads") else {
+            return raise_exception::<_>(_py, "RuntimeError", "failed to intern _heads attribute");
+        };
+        let Some(batch_name) = attr_name_bits_from_bytes(_py, b"_batch") else {
+            return raise_exception::<_>(_py, "RuntimeError", "failed to intern _batch attribute");
+        };
+        let Some(mse_weights_name) = attr_name_bits_from_bytes(_py, b"mse_weights") else {
+            return raise_exception::<_>(_py, "RuntimeError", "failed to intern mse_weights attribute");
+        };
+        let Some(residual_signs_name) = attr_name_bits_from_bytes(_py, b"residual_signs") else {
+            return raise_exception::<_>(_py, "RuntimeError", "failed to intern residual_signs attribute");
+        };
+        let Some(residual_scale_name) = attr_name_bits_from_bytes(_py, b"residual_scale") else {
+            return raise_exception::<_>(_py, "RuntimeError", "failed to intern residual_scale attribute");
         };
 
         let k_cache_bits = crate::molt_getattr_builtin(k_bits, kv_cache_name, missing);
@@ -6506,18 +6755,391 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 "turboquant attention expects key/value cache view roles",
             );
         }
-
-        let attention_bits =
-            crate::molt_getattr_builtin(k_cache_bits, attention_ref_name, missing);
-        if attention_bits == missing {
+        let codec_bits = require_attr_bits(_py, k_cache_bits, codec_name, "codec").unwrap_or_else(|bits| return bits);
+        let mse_signs =
+            match decode_rotation_signs_from_codec(_py, codec_bits, mse_rotation_name, signs_name, "mse_rotation") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let qjl_signs =
+            match decode_rotation_signs_from_codec(_py, codec_bits, qjl_rotation_name, signs_name, "qjl_rotation") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        if mse_signs.len() != dim || qjl_signs.len() != dim {
             return raise_exception::<_>(
                 _py,
-                "AttributeError",
-                "turboquant cache object is missing _attention_reference",
+                "ValueError",
+                "turboquant attention rotation signs do not match query head dimension",
             );
         }
 
-        unsafe { crate::call::dispatch::call_callable3(_py, attention_bits, q_bits, mask_bits, scale_bits) }
+        let kv_heads = match decode_i64_attr(_py, k_cache_bits, heads_name, "_heads") {
+            Ok(value) => value as usize,
+            Err(bits) => return bits,
+        };
+        let cache_batch = match decode_i64_attr(_py, k_cache_bits, batch_name, "_batch") {
+            Ok(value) => value as usize,
+            Err(bits) => return bits,
+        };
+        if cache_batch != batch {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "turboquant attention query batch must match cache batch",
+            );
+        }
+        if query_heads < kv_heads || query_heads % kv_heads != 0 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "turboquant attention query heads are incompatible with cache heads",
+            );
+        }
+
+        let scale = if let Some(value) = to_f64(obj_from_bits(scale_bits)) {
+            value as f32
+        } else if let Some(value) = to_i64(obj_from_bits(scale_bits)) {
+            value as f32
+        } else {
+            return raise_exception::<_>(_py, "TypeError", "scale must be a float");
+        };
+
+        let mask_info = if obj_from_bits(mask_bits).is_none() {
+            None
+        } else {
+            let (mask, mask_shape) = match unsafe { tensor_runtime_view(_py, mask_bits, "mask") } {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+            if mask_shape.len() != 4
+                || !matches!(mask.buffer.format, ScalarFormat::F32 | ScalarFormat::F64)
+            {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "turboquant attention mask must be a rank-4 float tensor",
+                );
+            }
+            let expected = [batch, query_heads, query_seq, usize::MAX];
+            if mask_shape[0] != 1 && mask_shape[0] != expected[0] {
+                return raise_exception::<_>(_py, "ValueError", "turboquant attention mask batch mismatch");
+            }
+            if mask_shape[1] != 1 && mask_shape[1] != expected[1] {
+                return raise_exception::<_>(_py, "ValueError", "turboquant attention mask head mismatch");
+            }
+            if mask_shape[2] != 1 && mask_shape[2] != expected[2] {
+                return raise_exception::<_>(_py, "ValueError", "turboquant attention mask query mismatch");
+            }
+            Some((mask, mask_shape.clone(), strides(&mask_shape)))
+        };
+
+        let key_batches_bits = match require_attr_bits(_py, k_cache_bits, key_vectors_name, "_key_vectors") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let value_batches_bits = match require_attr_bits(_py, k_cache_bits, value_vectors_name, "_value_vectors") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let key_batches = match decode_u64_sequence_bits(_py, key_batches_bits, "_key_vectors") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let value_batches = match decode_u64_sequence_bits(_py, value_batches_bits, "_value_vectors") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if key_batches.len() != batch || value_batches.len() != batch {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "turboquant cache batch structure mismatch",
+            );
+        }
+
+        let out_format = q.buffer.format;
+        let out_elems = batch * query_heads * query_seq * dim;
+        let mut out = vec![0u8; out_elems * out_format.itemsize()];
+        let q_stride = query_seq * dim;
+        let out_stride = query_seq * dim;
+
+        for batch_index in 0..batch {
+            let key_heads = match decode_u64_sequence_bits(_py, key_batches[batch_index], "key head list") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+            let value_heads = match decode_u64_sequence_bits(_py, value_batches[batch_index], "value head list") {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+            if key_heads.len() != kv_heads || value_heads.len() != kv_heads {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "turboquant cache head structure mismatch",
+                );
+            }
+
+            for query_head_index in 0..query_heads {
+                let kv_head_index = match kv_head_index(query_heads, kv_heads, query_head_index) {
+                    Ok(value) => value,
+                    Err(()) => {
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "turboquant attention query heads are incompatible with cache heads",
+                        );
+                    }
+                };
+                let key_rows = match decode_u64_sequence_bits(_py, key_heads[kv_head_index], "encoded key rows") {
+                    Ok(value) => value,
+                    Err(bits) => return bits,
+                };
+                let value_rows = match decode_u64_sequence_bits(_py, value_heads[kv_head_index], "encoded value rows") {
+                    Ok(value) => value,
+                    Err(bits) => return bits,
+                };
+                if key_rows.len() != value_rows.len() {
+                    return raise_exception::<_>(
+                        _py,
+                        "ValueError",
+                        "turboquant key/value row count mismatch",
+                    );
+                }
+                let seq_k = key_rows.len();
+
+                for query_index in 0..query_seq {
+                    let q_base =
+                        ((batch_index * query_heads + query_head_index) * q_stride) + query_index * dim;
+                    let mut query_row = vec![0.0f32; dim];
+                    for dim_index in 0..dim {
+                        query_row[dim_index] = read_float_buffer_value(
+                            q.buffer.data_view,
+                            q.buffer.format,
+                            q_base + dim_index,
+                        );
+                    }
+                    let rotated_query = hadamard_apply_with_signs(query_row.as_slice(), mse_signs.as_slice());
+                    let query_sketch = hadamard_apply_with_signs(query_row.as_slice(), qjl_signs.as_slice());
+
+                    let mut logits = vec![0.0f32; seq_k];
+                    let mut max_logit = f32::NEG_INFINITY;
+                    for (row_index, &encoded_bits) in key_rows.iter().enumerate() {
+                        let mse_bits =
+                            match require_attr_bits(_py, encoded_bits, mse_weights_name, "mse_weights") {
+                                Ok(value) => value,
+                                Err(bits) => return bits,
+                            };
+                        let mse_weights = match decode_float_sequence_bits(_py, mse_bits, "mse_weights") {
+                            Ok(value) => value,
+                            Err(bits) => return bits,
+                        };
+                        let residual_sign_bits = match require_attr_bits(
+                            _py,
+                            encoded_bits,
+                            residual_signs_name,
+                            "residual_signs",
+                        ) {
+                            Ok(value) => value,
+                            Err(bits) => return bits,
+                        };
+                        let residual_signs = match decode_float_sequence_bits(
+                            _py,
+                            residual_sign_bits,
+                            "residual_signs",
+                        ) {
+                            Ok(value) => value,
+                            Err(bits) => return bits,
+                        };
+                        let residual_scale_bits = match require_attr_bits(
+                            _py,
+                            encoded_bits,
+                            residual_scale_name,
+                            "residual_scale",
+                        ) {
+                            Ok(value) => value,
+                            Err(bits) => return bits,
+                        };
+                        let residual_scale = if let Some(value) = to_f64(obj_from_bits(residual_scale_bits)) {
+                            value as f32
+                        } else if let Some(value) = to_i64(obj_from_bits(residual_scale_bits)) {
+                            value as f32
+                        } else {
+                            return raise_exception::<_>(
+                                _py,
+                                "TypeError",
+                                "residual_scale must be numeric",
+                            );
+                        };
+                        if mse_weights.len() != dim || residual_signs.len() != dim {
+                            return raise_exception::<_>(
+                                _py,
+                                "ValueError",
+                                "turboquant encoded row dimension mismatch",
+                            );
+                        }
+                        let mut score = 0.0f32;
+                        for dim_index in 0..dim {
+                            score += rotated_query[dim_index] * mse_weights[dim_index];
+                        }
+                        let mut residual = 0.0f32;
+                        for dim_index in 0..dim {
+                            residual += query_sketch[dim_index] * residual_signs[dim_index];
+                        }
+                        score += residual * residual_scale;
+                        if let Some(mask) = &mask_info {
+                            let mask_shape = &mask.1;
+                            if mask_shape[3] != 1 && mask_shape[3] != seq_k {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "ValueError",
+                                    "turboquant attention mask key width mismatch",
+                                );
+                            }
+                            score += decode_mask_value(mask, batch_index, query_head_index, query_index, row_index);
+                        }
+                        logits[row_index] = score * scale;
+                        if logits[row_index] > max_logit {
+                            max_logit = logits[row_index];
+                        }
+                    }
+
+                    let mut exp_sum = 0.0f32;
+                    let mut probs = vec![0.0f32; seq_k];
+                    for row_index in 0..seq_k {
+                        let value = (logits[row_index] - max_logit).exp();
+                        probs[row_index] = value;
+                        exp_sum += value;
+                    }
+                    if exp_sum == 0.0 {
+                        exp_sum = 1.0;
+                    }
+
+                    let mut out_row = vec![0.0f32; dim];
+                    for (row_index, &encoded_bits) in value_rows.iter().enumerate() {
+                        let mse_bits =
+                            match require_attr_bits(_py, encoded_bits, mse_weights_name, "mse_weights") {
+                                Ok(value) => value,
+                                Err(bits) => return bits,
+                            };
+                        let mse_weights = match decode_float_sequence_bits(_py, mse_bits, "mse_weights") {
+                            Ok(value) => value,
+                            Err(bits) => return bits,
+                        };
+                        let residual_sign_bits = match require_attr_bits(
+                            _py,
+                            encoded_bits,
+                            residual_signs_name,
+                            "residual_signs",
+                        ) {
+                            Ok(value) => value,
+                            Err(bits) => return bits,
+                        };
+                        let residual_signs = match decode_float_sequence_bits(
+                            _py,
+                            residual_sign_bits,
+                            "residual_signs",
+                        ) {
+                            Ok(value) => value,
+                            Err(bits) => return bits,
+                        };
+                        let residual_scale_bits = match require_attr_bits(
+                            _py,
+                            encoded_bits,
+                            residual_scale_name,
+                            "residual_scale",
+                        ) {
+                            Ok(value) => value,
+                            Err(bits) => return bits,
+                        };
+                        let residual_scale = if let Some(value) = to_f64(obj_from_bits(residual_scale_bits)) {
+                            value as f32
+                        } else if let Some(value) = to_i64(obj_from_bits(residual_scale_bits)) {
+                            value as f32
+                        } else {
+                            return raise_exception::<_>(
+                                _py,
+                                "TypeError",
+                                "residual_scale must be numeric",
+                            );
+                        };
+                        let base = hadamard_invert_with_signs(mse_weights.as_slice(), mse_signs.as_slice());
+                        let residual_rot: Vec<f32> = residual_signs
+                            .iter()
+                            .map(|value| *value * residual_scale)
+                            .collect();
+                        let residual =
+                            hadamard_invert_with_signs(residual_rot.as_slice(), qjl_signs.as_slice());
+                        let weight = probs[row_index] / exp_sum;
+                        for dim_index in 0..dim {
+                            out_row[dim_index] += weight * (base[dim_index] + residual[dim_index]);
+                        }
+                    }
+
+                    let out_base = ((batch_index * query_heads + query_head_index) * out_stride)
+                        + query_index * dim;
+                    for dim_index in 0..dim {
+                        write_float_buffer_value(
+                            out.as_mut_slice(),
+                            out_format,
+                            out_base + dim_index,
+                            out_row[dim_index],
+                        );
+                    }
+                }
+            }
+        }
+
+        let data_ptr = alloc_bytearray(_py, out.as_slice());
+        if data_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let data_bits = MoltObject::from_ptr(data_ptr).bits();
+        let format_bits = match alloc_string_bits(
+            _py,
+            match out_format {
+                ScalarFormat::F32 => b"f",
+                ScalarFormat::F64 => b"d",
+                ScalarFormat::I64 => b"q",
+            },
+        ) {
+            Ok(bits) => bits,
+            Err(bits) => {
+                crate::dec_ref_bits(_py, data_bits);
+                return bits;
+            }
+        };
+        let shape_bits =
+            match alloc_tuple_bits_from_usize(_py, &[batch, query_heads, query_seq, dim]) {
+                Ok(bits) => bits,
+                Err(bits) => {
+                    crate::dec_ref_bits(_py, data_bits);
+                    crate::dec_ref_bits(_py, format_bits);
+                    return bits;
+                }
+            };
+        let tensor_bits = match unsafe {
+            build_tensor_from_data_bits(
+                _py,
+                q.class_bits,
+                q.buffer.class_bits,
+                data_bits,
+                crate::builtins::classes::builtin_classes(_py).float,
+                out_elems,
+                format_bits,
+                out_format.itemsize(),
+                shape_bits,
+                crate::builtins::classes::builtin_classes(_py).float,
+            )
+        } {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        };
+        crate::dec_ref_bits(_py, data_bits);
+        crate::dec_ref_bits(_py, format_bits);
+        crate::dec_ref_bits(_py, shape_bits);
+        tensor_bits
     })
 }
 
