@@ -58,6 +58,15 @@ print("float_len", len(af))
 print("float_0", af[0])
 print("float_list", af.tolist())
 
+# slice get/set
+a_slice = array("i", [1, 2, 3, 4])
+print("slice_basic", a_slice[1:3].tolist())
+print("slice_step", a_slice[::2].tolist())
+a_slice[1:3] = array("i", [9, 10])
+print("slice_assign", a_slice.tolist())
+a_slice[::2] = array("i", [7, 8])
+print("slice_assign_step", a_slice.tolist())
+
 # tobytes / frombytes round-trip
 a5 = array("i", [10, 20, 30])
 raw = a5.tobytes()
@@ -87,3 +96,9 @@ try:
     a_empty.index(42)
 except ValueError:
     print("index_empty_err", "ValueError")
+
+# error: slice assignment requires array
+try:
+    a_slice[1:3] = [1, 2]
+except TypeError as exc:
+    print("slice_assign_list_err", type(exc).__name__, str(exc))
