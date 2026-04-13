@@ -1390,8 +1390,8 @@ impl LuauBackend {
             "bit_and" | "inplace_bit_and" => self.emit_bit_op(op, "band"),
             "bit_or" | "inplace_bit_or" => self.emit_bit_op(op, "bor"),
             "bit_xor" | "inplace_bit_xor" => self.emit_bit_op(op, "bxor"),
-            "lshift" => self.emit_bit_op(op, "lshift"),
-            "rshift" => self.emit_bit_op(op, "rshift"),
+            "lshift" | "shl" => self.emit_bit_op(op, "lshift"),
+            "rshift" | "shr" => self.emit_bit_op(op, "rshift"),
 
             // ================================================================
             // Unary ops (real IR op kinds)
