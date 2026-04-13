@@ -251,6 +251,22 @@ def test_native_types_prepare_class_honors_callable_metaclass_prepare(
     assert run.stdout.strip().splitlines() == ["ok", "MetaFactory", "True"]
 
 
+def test_native_generic_alias_subclass_propagates_classcell(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        "from types import GenericAlias\n"
+        "print('PRE')\n"
+        "class _CallableGenericAlias(GenericAlias):\n"
+        "    __slots__ = ()\n"
+        "    def __new__(cls, origin, args):\n"
+        "        return super().__new__(cls, origin, args)\n"
+        "print('POST', _CallableGenericAlias(list, (int,)).__args__)\n",
+        "generic_alias_classcell",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["PRE", "POST (<class 'int'>,)"]
+
+
 def test_native_false_guarded_raise_does_not_leak_pending_exception(
     tmp_path: Path,
 ) -> None:
