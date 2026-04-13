@@ -55,6 +55,26 @@ def test_turboquant_prod_mean_estimate_is_closer_to_exact_than_mse_only():
     assert abs(mean_prod_estimate - exact) < abs(mse_estimate - exact)
 
 
+def test_turboquant_prepared_query_matches_direct_estimates():
+    from molt.gpu.tensor import Tensor
+    from molt.gpu.turboquant import TurboQuantCodec
+
+    codec = TurboQuantCodec(dim=8, bits=3, seed=11, qjl_seed=19)
+    query = Tensor([0.6, 0.2, -0.5, 0.1, 0.3, -0.4, 0.2, 0.7])
+    vector = Tensor([0.7, -0.3, 0.2, 0.5, -0.1, 0.4, -0.2, 0.1])
+    mse_encoded = codec.quantize_mse(vector)
+    prod_encoded = codec.quantize_prod(vector)
+
+    prepared = codec.prepare_query(query)
+
+    assert codec.estimate_mse_inner_product_prepared(prepared, mse_encoded) == pytest.approx(
+        codec.estimate_mse_inner_product(query, mse_encoded)
+    )
+    assert codec.estimate_inner_product_prepared(prepared, prod_encoded) == pytest.approx(
+        codec.estimate_inner_product(query, prod_encoded)
+    )
+
+
 def test_turboquant_kv_cache_attention_output_matches_manual_reference():
     from molt.gpu.tensor import Tensor
     from molt.gpu.turboquant import TurboQuantCodec, TurboQuantKVCache
@@ -94,6 +114,79 @@ def test_turboquant_kv_cache_attention_output_matches_manual_reference():
         manual.append(acc)
 
     assert output.to_list() == pytest.approx(manual)
+
+
+def test_turboquant_kv_cache_prepares_query_once_per_logits_call(monkeypatch):
+    from molt.gpu.tensor import Tensor
+    from molt.gpu.turboquant import TurboQuantCodec, TurboQuantKVCache
+
+    codec = TurboQuantCodec(dim=8, bits=3, seed=5, qjl_seed=19)
+    cache = TurboQuantKVCache.from_tensors(
+        codec,
+        Tensor(
+            [
+                [0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1],
+                [0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4],
+            ]
+        ),
+        Tensor(
+            [
+                [0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1],
+                [-0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6],
+            ]
+        ),
+    )
+    query = Tensor([0.5, -0.1, 0.4, 0.2, -0.3, 0.6, -0.2, 0.1])
+    calls = {"count": 0}
+    original_prepare = codec.prepare_query
+
+    def tracked_prepare(query_arg):
+        calls["count"] += 1
+        return original_prepare(query_arg)
+
+    monkeypatch.setattr(codec, "prepare_query", tracked_prepare)
+
+    logits = cache.attention_logits(query)
+
+    assert logits.shape == (2,)
+    assert calls["count"] == 1
+
+
+def test_turboquant_kv_cache_reuses_decoded_values_across_attention_calls(monkeypatch):
+    from molt.gpu.tensor import Tensor
+    from molt.gpu.turboquant import TurboQuantCodec, TurboQuantKVCache
+
+    codec = TurboQuantCodec(dim=8, bits=3, seed=5, qjl_seed=19)
+    cache = TurboQuantKVCache.from_tensors(
+        codec,
+        Tensor(
+            [
+                [0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1],
+                [0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4],
+            ]
+        ),
+        Tensor(
+            [
+                [0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1],
+                [-0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6],
+            ]
+        ),
+    )
+    query = Tensor([0.5, -0.1, 0.4, 0.2, -0.3, 0.6, -0.2, 0.1])
+    calls = {"count": 0}
+    original_dequantize = codec.dequantize
+
+    def tracked_dequantize(encoded):
+        calls["count"] += 1
+        return original_dequantize(encoded)
+
+    monkeypatch.setattr(codec, "dequantize", tracked_dequantize)
+
+    first = cache.attention_output(query)
+    second = cache.attention_output(query)
+
+    assert first.to_list() == pytest.approx(second.to_list())
+    assert calls["count"] == len(cache.value_vectors)
 
 
 def test_turboquant_compiles_in_native_molt(tmp_path: Path) -> None:
