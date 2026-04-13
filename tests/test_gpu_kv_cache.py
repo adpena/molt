@@ -225,6 +225,46 @@ def test_turboquant_attention_kv_cache_uses_intrinsic_when_available(monkeypatch
     }
 
 
+def test_turboquant_attention_kv_cache_reuses_decoded_values_across_attention_calls(monkeypatch):
+    from molt.gpu.kv_cache import TurboQuantAttentionKVCache
+    from molt.gpu.tensor import Tensor
+    from molt.gpu.turboquant import TurboQuantCodec
+
+    codec = TurboQuantCodec(dim=8, bits=3, seed=5, qjl_seed=19)
+    cache = TurboQuantAttentionKVCache(codec)
+    cache.append(
+        Tensor(
+            [
+                0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,
+                0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,
+            ],
+            shape=(1, 1, 2, 8),
+        ),
+        Tensor(
+            [
+                0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,
+                -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,
+            ],
+            shape=(1, 1, 2, 8),
+        ),
+    )
+    query = Tensor([0.5, -0.1, 0.4, 0.2, -0.3, 0.6, -0.2, 0.1], shape=(1, 1, 1, 8))
+    calls = {"count": 0}
+    original_dequantize = codec.dequantize
+
+    def tracked_dequantize(encoded):
+        calls["count"] += 1
+        return original_dequantize(encoded)
+
+    monkeypatch.setattr(codec, "dequantize", tracked_dequantize)
+
+    first = cache._attention_reference(query, None, 1.0)
+    second = cache._attention_reference(query, None, 1.0)
+
+    assert first.reshape(8).to_list() == pytest.approx(second.reshape(8).to_list())
+    assert calls["count"] == 2
+
+
 def test_turboquant_attention_kv_cache_supports_grouped_query_attention():
     from molt.gpu.kv_cache import TurboQuantAttentionKVCache
     from molt.gpu.tensor import Tensor
