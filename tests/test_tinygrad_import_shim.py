@@ -183,6 +183,48 @@ def test_tinygrad_tensor_scalar_power_supports_rope_pattern() -> None:
     assert out.to_list() == [1.0, 100.0]
 
 
+def test_tinygrad_layernorm_and_rmsnorm_match_upstream_samples() -> None:
+    from tinygrad import Tensor, nn
+
+    x = Tensor.arange(6).reshape(2, 3).float()
+    assert _flatten_numeric(x.layernorm().to_list()) == pytest.approx(
+        [
+            -1.2247356176376343,
+            0.0,
+            1.2247356176376343,
+            -1.2247356176376343,
+            0.0,
+            1.2247356176376343,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+    assert _flatten_numeric(nn.LayerNorm(3)(x).to_list()) == pytest.approx(
+        [
+            -1.2247356176376343,
+            0.0,
+            1.2247356176376343,
+            -1.2247356176376343,
+            0.0,
+            1.2247356176376343,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+    assert _flatten_numeric(nn.RMSNorm(3)(x).to_list()) == pytest.approx(
+        [
+            0.0,
+            0.7745963931083679,
+            1.5491927862167358,
+            0.734846830368042,
+            0.9797958135604858,
+            1.2247447967529297,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+
+
 def test_tinygrad_random_surface_matches_upstream_samples() -> None:
     from tinygrad import Tensor
 
@@ -311,6 +353,60 @@ def test_tinygrad_random_surface_compiles_in_native_molt(tmp_path: Path) -> None
             0.5587908625602722,
             0.8887354731559753,
             0.7994185090065002,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+
+
+def test_tinygrad_norm_layers_compile_in_native_molt(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "tinygrad_norms_native.py"
+    probe.write_text(
+        "from tinygrad import Tensor, nn\n"
+        "x = Tensor.arange(6).reshape(2, 3).float()\n"
+        "print(x.layernorm().to_list())\n"
+        "print(nn.LayerNorm(3)(x).to_list())\n"
+        "print(nn.RMSNorm(3)(x).to_list())\n",
+        encoding="utf-8",
+    )
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=_native_molt_env(root, hermetic=True),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    lines = [ast.literal_eval(line) for line in run.stdout.strip().splitlines()]
+    expected = [
+        -1.2247356176376343,
+        0.0,
+        1.2247356176376343,
+        -1.2247356176376343,
+        0.0,
+        1.2247356176376343,
+    ]
+    assert _flatten_numeric(lines[0]) == pytest.approx(expected, abs=1e-7, rel=0.0)
+    assert _flatten_numeric(lines[1]) == pytest.approx(expected, abs=1e-7, rel=0.0)
+    assert _flatten_numeric(lines[2]) == pytest.approx(
+        [
+            0.0,
+            0.7745963931083679,
+            1.5491927862167358,
+            0.734846830368042,
+            0.9797958135604858,
+            1.2247447967529297,
         ],
         abs=1e-7,
         rel=0.0,
