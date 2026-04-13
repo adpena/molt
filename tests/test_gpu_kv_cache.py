@@ -381,10 +381,10 @@ def test_dense_kv_cache_defers_concat_until_materialization(monkeypatch):
     assert calls == []
 
     cache.attention(q, scale=1.0)
-    assert len(calls) == 2
+    assert calls == []
 
     cache.attention(q, scale=1.0)
-    assert len(calls) == 2
+    assert calls == []
 
 
 def test_dense_kv_cache_reuses_grouped_query_expansions(monkeypatch):
