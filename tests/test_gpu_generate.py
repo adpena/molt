@@ -822,3 +822,51 @@ def test_build_dflash_runtime_raises_for_missing_explicit_adapter():
         raise AssertionError("expected missing explicit adapter failure")
     except LookupError as exc:
         assert "missing-adapter" in str(exc)
+
+
+def test_build_dflash_runtime_passes_adapter_payload_into_context():
+    from molt.gpu.dflash import (
+        DFlashAdapterSpec,
+        DFlashRuntime,
+        build_dflash_runtime,
+        register_dflash_adapter,
+    )
+
+    seen = {}
+
+    def supports(context):
+        seen["payload"] = context.adapter_payload
+        return context.adapter_payload == {"patch_features": "patches"}
+
+    def create_runtime(context):
+        seen["runtime_payload"] = context.adapter_payload
+        return DFlashRuntime(
+            draft_step=lambda _request: None,
+            verify_step=lambda _request: None,
+            block_size=2,
+        )
+
+    class FakeModel:
+        pass
+
+    register_dflash_adapter(
+        DFlashAdapterSpec(
+            name="payload-adapter",
+            supports=supports,
+            create_runtime=create_runtime,
+        )
+    )
+
+    runtime = build_dflash_runtime(
+        FakeModel(),
+        [0],
+        backend="webgpu",
+        dflash_adapter="payload-adapter",
+        adapter_payload={"patch_features": "patches"},
+    )
+
+    assert isinstance(runtime, DFlashRuntime)
+    assert seen == {
+        "payload": {"patch_features": "patches"},
+        "runtime_payload": {"patch_features": "patches"},
+    }
