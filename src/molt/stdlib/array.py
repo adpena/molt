@@ -146,10 +146,21 @@ class array:
     def __len__(self) -> int:
         return _MOLT_ARRAY_LEN(self._handle)
 
-    def __getitem__(self, index: int):
-        return _MOLT_ARRAY_GETITEM(self._handle, index)
+    def __getitem__(self, index):
+        out = _MOLT_ARRAY_GETITEM(self._handle, index)
+        if isinstance(index, slice):
+            return type(self)._from_handle(out)
+        return out
 
-    def __setitem__(self, index: int, value) -> None:
+    def __setitem__(self, index, value) -> None:
+        if isinstance(index, slice):
+            if not isinstance(value, array):
+                name = type(value).__name__
+                raise TypeError(
+                    'can only assign array (not "' + name + '") to array slice'
+                )
+            _MOLT_ARRAY_SETITEM(self._handle, index, value._handle)
+            return
         _MOLT_ARRAY_SETITEM(self._handle, index, value)
 
     def __repr__(self) -> str:
