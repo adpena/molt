@@ -1059,6 +1059,9 @@ def _inject_output_export_aliases(
     if func_section_idx < 0:
         return output
     import_count = _count_func_imports(sections)
+    inc_ref_import_index = _find_func_import_index(
+        data, "molt_runtime", "molt_inc_ref_obj"
+    )
     original_func_count = len(func_type_indices)
 
     new_sections: list[tuple[int, bytes]] = []
@@ -1114,14 +1117,26 @@ def _inject_output_export_aliases(
             updated_payload.extend(_write_varuint(count + len(wrapper_specs)))
             updated_payload.extend(payload[offset:])
             for name, alias_name, type_idx, target_idx in wrapper_specs:
-                params, _results = types[type_idx]
+                params, results = types[type_idx]
                 body = bytearray()
-                body.extend(_write_varuint(0))
+                local_count = 1 if results and len(results) == 1 and inc_ref_import_index is not None else 0
+                body.extend(_write_varuint(local_count))
+                if local_count:
+                    body.extend(_write_varuint(1))
+                    body.append(0x7E)
                 for param_index in range(len(params)):
                     body.append(0x20)
                     body.extend(_write_varuint(param_index))
                 body.append(0x10)
                 body.extend(_write_varuint(target_idx))
+                if local_count:
+                    result_local = len(params)
+                    body.append(0x22)
+                    body.extend(_write_varuint(result_local))
+                    body.append(0x10)
+                    body.extend(_write_varuint(inc_ref_import_index))
+                    body.append(0x20)
+                    body.extend(_write_varuint(result_local))
                 body.append(0x0B)
                 updated_payload.extend(_write_varuint(len(body)))
                 updated_payload.extend(body)
@@ -1613,6 +1628,17 @@ def _collect_imports(data: bytes) -> list[tuple[str, str, int, bytes]]:
     return []
 
 
+def _find_func_import_index(data: bytes, module_name: str, import_name: str) -> int | None:
+    func_index = 0
+    for module, name, kind, _desc in _collect_imports(data):
+        if kind != 0:
+            continue
+        if module == module_name and name == import_name:
+            return func_index
+        func_index += 1
+    return None
+
+
 def _collect_custom_names(data: bytes) -> list[str]:
     names: list[str] = []
     for section_id, payload in _parse_sections(data):
@@ -2092,15 +2118,23 @@ def _tree_shake_runtime(
         required_exports
     )
     # Preserve the minimal exception-inspection surface used by the direct
-    # runner to turn pending runtime exceptions into actionable diagnostics.
+    # runner and browser host to marshal JS values and turn pending runtime
+    # exceptions into actionable diagnostics.
     normalized_required_exports.update(
         {
             "molt_alloc",
+            "molt_handle_resolve",
+            "molt_header_size",
+            "molt_scratch_alloc",
+            "molt_scratch_free",
+            "molt_bytes_from_bytes",
+            "molt_string_from_bytes",
             "molt_string_as_ptr",
             "molt_exception_last",
             "molt_exception_kind",
             "molt_exception_message",
             "molt_traceback_format_exc",
+            "molt_type_tag_of_bits",
             "molt_object_repr",
             "molt_dec_ref_obj",
         }
@@ -4647,6 +4681,25 @@ def _run_wasm_ld(
                 if env_deploy_runtime
                 else deploy_runtime_override or runtime
             )
+            if not deploy_runtime.exists():
+                fallback_candidates: list[Path] = []
+                if deploy_runtime_override is not None:
+                    fallback_candidates.append(deploy_runtime_override)
+                fallback_candidates.append(runtime)
+                if deploy_runtime.name.endswith("_reloc.wasm"):
+                    fallback_candidates.append(
+                        deploy_runtime.with_name(
+                            deploy_runtime.name.replace("_reloc.wasm", ".wasm")
+                        )
+                    )
+                for candidate in fallback_candidates:
+                    if candidate.exists():
+                        deploy_runtime = candidate
+                        break
+                else:
+                    raise FileNotFoundError(
+                        f"split deploy runtime not found: {deploy_runtime}"
+                    )
             if (
                 not env_deploy_runtime
                 and deploy_runtime_override is None

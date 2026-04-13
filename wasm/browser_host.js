@@ -565,30 +565,37 @@ const writeU64ToMemory = (memory, ptr, value) => {
   return true;
 };
 
-const runtimeHeaderSize = (runtime) => {
-  if (runtime && typeof runtime.exports?.molt_header_size === 'function') {
-    const raw = runtime.exports.molt_header_size();
-    const size = typeof raw === 'bigint' ? Number(raw) : Number(raw);
-    if (Number.isFinite(size) && size > 0) {
-      return size;
-    }
+const allocRuntimeTempBytes = (runtime, memory, bytes) => {
+  if (!runtime || !memory) {
+    throw new Error('runtime not initialized');
   }
-  return 40;
+  if (typeof runtime.exports?.molt_scratch_alloc !== 'function') {
+    throw new Error('runtime is missing required export: molt_scratch_alloc');
+  }
+  const size = bytes.length;
+  const ptr = runtime.exports.molt_scratch_alloc(BigInt(size));
+  if (!ptr || ptr === 0n) {
+    throw new Error('molt_scratch_alloc failed');
+  }
+  const payloadPtr = typeof ptr === 'bigint' ? ptr : BigInt(ptr);
+  new Uint8Array(memory.buffer, Number(payloadPtr), size).set(bytes);
+  return { allocPtr: payloadPtr, payloadPtr, size };
 };
 
-const allocRuntimeTempBytes = (runtime, memory, bytes) => {
-  if (!runtime || !memory || typeof runtime.exports?.molt_alloc !== 'function') {
-    throw new Error('molt runtime allocation is unavailable');
+const freeRuntimeTempBytes = (runtime, temp) => {
+  if (
+    !runtime ||
+    !runtime.exports ||
+    typeof runtime.exports.molt_scratch_free !== 'function' ||
+    !temp ||
+    temp.allocPtr === null ||
+    temp.allocPtr === undefined ||
+    temp.allocPtr === 0n ||
+    temp.allocPtr === 0
+  ) {
+    return;
   }
-  const allocBits = runtime.exports.molt_alloc(BigInt(bytes.length));
-  const ptr = runtime.exports.molt_handle_resolve(allocBits);
-  if (!ptr || ptr === 0n) {
-    throw new Error('molt_alloc failed');
-  }
-  const basePtr = typeof ptr === 'bigint' ? ptr : BigInt(ptr);
-  const payloadPtr = basePtr + BigInt(runtimeHeaderSize(runtime));
-  new Uint8Array(memory.buffer, Number(payloadPtr), bytes.length).set(bytes);
-  return { allocBits, payloadPtr };
+  runtime.exports.molt_scratch_free(temp.allocPtr, BigInt(temp.size ?? 0));
 };
 
 const readRuntimeStringBits = (runtime, memory, stringBits) => {
@@ -616,7 +623,7 @@ const readRuntimeStringBits = (runtime, memory, stringBits) => {
     const len = new DataView(memory.buffer).getBigUint64(Number(temp.payloadPtr), true);
     return readStringFromMemory(memory, ptr, len);
   } finally {
-    runtime.exports.molt_dec_ref_obj(temp.allocBits);
+    freeRuntimeTempBytes(runtime, temp);
   }
 };
 
@@ -770,8 +777,8 @@ const makeBytesObjectWithRuntime = (runtime, memory, bytes) => {
     }
     return new DataView(memory.buffer).getBigUint64(Number(tempOut.payloadPtr), true);
   } finally {
-    decRefMaybeWithRuntime(runtime, tempBytes.allocBits);
-    decRefMaybeWithRuntime(runtime, tempOut.allocBits);
+    freeRuntimeTempBytes(runtime, tempBytes);
+    freeRuntimeTempBytes(runtime, tempOut);
   }
 };
 
@@ -793,8 +800,8 @@ const makeStringObjectWithRuntime = (runtime, memory, text) => {
     }
     return new DataView(memory.buffer).getBigUint64(Number(tempOut.payloadPtr), true);
   } finally {
-    decRefMaybeWithRuntime(runtime, tempBytes.allocBits);
-    decRefMaybeWithRuntime(runtime, tempOut.allocBits);
+    freeRuntimeTempBytes(runtime, tempBytes);
+    freeRuntimeTempBytes(runtime, tempOut);
   }
 };
 
@@ -1592,31 +1599,13 @@ const createBrowserDbHost = (state, options) => {
   const responses = [];
   let nextId = 1;
   let lastCancelCheck = 0;
-  let headerSize = null;
-
   const getRuntime = () => state.runtimeInstance;
   const getMemory = () => state.memory;
-
-  const getHeaderSize = () => {
-    if (headerSize !== null) return headerSize;
-    headerSize = runtimeHeaderSize(getRuntime());
-    return headerSize;
-  };
 
   const allocTempBytes = (bytes) => {
     const runtime = getRuntime();
     const memory = getMemory();
-    if (!runtime || !memory) {
-      throw new Error('runtime not initialized');
-    }
-    const allocBits = runtime.exports.molt_alloc(BigInt(bytes.length));
-    const ptr = runtime.exports.molt_handle_resolve(allocBits);
-    if (!ptr || ptr === 0n) {
-      throw new Error('molt_alloc failed');
-    }
-    const payloadPtr = ptr + BigInt(getHeaderSize());
-    new Uint8Array(memory.buffer, Number(payloadPtr), bytes.length).set(bytes);
-    return { allocBits, payloadPtr };
+    return allocRuntimeTempBytes(runtime, memory, bytes);
   };
 
   const sendStreamFrame = (streamHandle, bytes) => {
@@ -1636,7 +1625,7 @@ const createBrowserDbHost = (state, options) => {
       );
       return res === 0n;
     } finally {
-      runtime.exports.molt_dec_ref_obj(temp.allocBits);
+      freeRuntimeTempBytes(runtime, temp);
     }
   };
 
@@ -2953,6 +2942,12 @@ const createWorkerWebGpuDispatcher = (options = {}) => {
     typeof Atomics.wait === 'function' &&
     typeof Worker === 'function' &&
     typeof document === 'undefined';
+  const timeoutRaw =
+    options.gpuKernelTimeoutMs ??
+    (typeof process !== 'undefined' ? process?.env?.MOLT_GPU_KERNEL_TIMEOUT_MS : undefined);
+  const dispatchTimeoutMs = Number.isFinite(Number(timeoutRaw))
+    ? Math.max(1, Number(timeoutRaw))
+    : 15000;
   let worker = null;
   let nextId = 1;
   const pending = new Map();
@@ -2969,6 +2964,9 @@ const createWorkerWebGpuDispatcher = (options = {}) => {
   const ensureWorker = () => {
     if (worker) {
       return worker;
+    }
+    if (typeof globalThis.navigator !== 'undefined' && !globalThis.navigator?.gpu) {
+      throw new Error('navigator.gpu is unavailable in the browser WebGPU host');
     }
     if (!canBlock) {
       throw new Error(
@@ -3035,12 +3033,10 @@ const createWorkerWebGpuDispatcher = (options = {}) => {
           })),
         },
       });
-      while (Atomics.load(waiter, 0) === 0) {
-        const res = Atomics.wait(waiter, 0, 0);
-        if (res === 'timed-out') {
-          pending.delete(id);
-          throw new Error('browser webgpu dispatch timed out');
-        }
+      const res = Atomics.wait(waiter, 0, 0, dispatchTimeoutMs);
+      if (res === 'timed-out') {
+        pending.delete(id);
+        throw new Error('browser webgpu dispatch timed out');
       }
       if (entry.error) {
         throw new Error(entry.error);
@@ -3892,6 +3888,14 @@ export const loadMoltWasm = async (options = {}) => {
     if (pending) {
       throw new Error(pending);
     }
+    if (
+      typeof process !== 'undefined' &&
+      process?.env?.MOLT_TRACE_EXPORT_RETURN_BITS === '1'
+    ) {
+      console.error(
+        `[molt export return] ${exportName} bits=${String(resultBits)}`
+      );
+    }
     const resultJson = tryDecodeResultJson(runtime, memory, resultBits);
     const resultRepr = reprObjectBitsWithRuntime(runtime, memory, resultBits);
     const fallbackJson = resultJson === null ? parseMoltJsonishRepr(resultRepr) : null;
@@ -4008,6 +4012,7 @@ export const loadMoltWasm = async (options = {}) => {
       memory: memoryExport || memory || env.memory || null,
       table: linkedTable,
       linked: true,
+      __debugState: state,
       invokeExport: makeExportInvoker(instance),
       run: () => {
         if (typeof instance.exports.molt_main !== 'function') {
@@ -4116,6 +4121,7 @@ export const loadMoltWasm = async (options = {}) => {
       memory,
       table,
       linked: false,
+      __debugState: state,
       invokeExport: makeExportInvoker(outputModule.instance),
       run: () => {
         ensureSplitRunBootstrap(outputModule.instance);
