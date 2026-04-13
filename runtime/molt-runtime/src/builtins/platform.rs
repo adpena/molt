@@ -368,6 +368,31 @@ fn split_nonempty_paths(raw: &str, sep: char) -> Vec<String> {
         .collect()
 }
 
+fn bootstrap_stdlib_root_from_module_file(module_file: &str, path_sep: char) -> Option<String> {
+    if module_file.is_empty() {
+        return None;
+    }
+    let module_dir = path_dirname_text(module_file, path_sep);
+    if module_dir.is_empty() {
+        return None;
+    }
+    let mut current = module_dir.clone();
+    loop {
+        if path_basename_text(&current, path_sep) == "stdlib" {
+            let parent = path_dirname_text(&current, path_sep);
+            if path_basename_text(&parent, path_sep) == "molt" {
+                return Some(current);
+            }
+        }
+        let parent = path_dirname_text(&current, path_sep);
+        if parent.is_empty() || parent == current {
+            break;
+        }
+        current = parent;
+    }
+    Some(module_dir)
+}
+
 fn resolve_bootstrap_pwd(raw_pwd: &str) -> String {
     if !raw_pwd.is_empty() {
         return raw_pwd.to_string();
@@ -489,15 +514,8 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
     let mut paths_seen: HashSet<String> = pythonpath_entries.iter().cloned().collect();
 
     let stdlib_root = module_file.and_then(|path| {
-        if path.is_empty() {
-            return None;
-        }
-        let dirname = path_dirname_text(&path, path_sep);
-        if dirname.is_empty() {
-            None
-        } else {
-            Some(bootstrap_resolve_path_entry(&dirname, &pwd, path_sep))
-        }
+        bootstrap_stdlib_root_from_module_file(&path, path_sep)
+            .map(|root| bootstrap_resolve_path_entry(&root, &pwd, path_sep))
     });
     if let Some(root) = &stdlib_root {
         append_unique_path_hashed(&mut paths, &mut paths_seen, root);
