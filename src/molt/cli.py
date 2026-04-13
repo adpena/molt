@@ -18991,6 +18991,7 @@ def _run_backend_pipeline(
                 runtime_reloc_wasm=runtime_reloc_wasm,
                 ensure_runtime_wasm_shared=ensure_runtime_wasm_shared,
                 ensure_runtime_wasm_reloc=ensure_runtime_wasm_reloc,
+                runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
                 molt_root=prepared_build_roots.molt_root,
                 precompile=precompile,
             )
