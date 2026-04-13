@@ -695,3 +695,68 @@ def test_greedy_decode_accepts_explicit_dflash_adapter_override(monkeypatch):
     )
 
     assert out == [0, 1, 2]
+
+
+def test_greedy_decode_rejects_non_boolean_dflash_supports_result(monkeypatch):
+    from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
+    from molt.gpu.generate import greedy_decode
+
+    def supports(_context):
+        return "yes"
+
+    def create_runtime(_context):
+        raise AssertionError("invalid supports result should fail before runtime creation")
+
+    class FakeModel:
+        dflash_adapter = "bad-supports"
+
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy model path should not execute")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+    register_dflash_adapter(
+        DFlashAdapterSpec(
+            name="bad-supports",
+            supports=supports,
+            create_runtime=create_runtime,
+        )
+    )
+
+    try:
+        greedy_decode(FakeModel(), [0], max_new_tokens=1)
+        raise AssertionError("expected boolean supports contract failure")
+    except TypeError as exc:
+        assert "supports" in str(exc)
+        assert "bool" in str(exc)
+
+
+def test_greedy_decode_rejects_invalid_dflash_runtime_type(monkeypatch):
+    from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
+    from molt.gpu.generate import greedy_decode
+
+    def supports(_context):
+        return True
+
+    def create_runtime(_context):
+        return object()
+
+    class FakeModel:
+        dflash_adapter = "bad-runtime"
+
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy model path should not execute")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+    register_dflash_adapter(
+        DFlashAdapterSpec(
+            name="bad-runtime",
+            supports=supports,
+            create_runtime=create_runtime,
+        )
+    )
+
+    try:
+        greedy_decode(FakeModel(), [0], max_new_tokens=1)
+        raise AssertionError("expected invalid runtime type failure")
+    except TypeError as exc:
+        assert "DFlashRuntime" in str(exc)
