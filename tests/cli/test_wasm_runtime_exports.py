@@ -1,4 +1,5 @@
 from molt._wasm_runtime_exports import (
+    wasm_runtime_dynamic_export_names,
     wasm_runtime_export_link_args,
     wasm_runtime_import_names,
     wasm_runtime_required_import_names,
@@ -66,6 +67,12 @@ def test_wasm_runtime_export_link_args_keeps_runtime_owned_dynamic_intrinsics_in
         " -C link-arg=--export-if-defined="
         "molt_gpu_linear_split_last_dim_contiguous" in flags
     )
+
+
+def test_wasm_runtime_dynamic_export_names_reports_runtime_owned_gpu_intrinsics() -> None:
+    names = set(wasm_runtime_dynamic_export_names({"molt.gpu.tensor"}))
+    assert "molt_gpu_linear_contiguous" in names
+    assert "molt_gpu_tensor__tensor_scaled_dot_product_attention" in names
 
 
 def test_wasm_runtime_export_link_args_keeps_host_runtime_exports_in_minimal_mode() -> None:

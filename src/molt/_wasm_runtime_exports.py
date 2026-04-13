@@ -139,6 +139,17 @@ def _resolved_dynamic_runtime_owned_intrinsic_exports(
     return _resolved_runtime_owned_intrinsic_exports(dynamic_modules)
 
 
+def wasm_runtime_dynamic_export_names(
+    resolved_modules: Iterable[str] | None,
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            canonical_intrinsic_runtime_name(name)
+            for name in _resolved_dynamic_runtime_owned_intrinsic_exports(resolved_modules)
+        )
+    )
+
+
 @lru_cache(maxsize=1)
 def intrinsic_runtime_symbol_names() -> dict[str, str]:
     repo_root = Path(__file__).resolve().parents[2]
@@ -222,10 +233,7 @@ def wasm_runtime_export_link_args(
         )
     else:
         export_names = set(wasm_runtime_required_export_names(required_runtime_imports))
-        export_names.update(
-            canonical_intrinsic_runtime_name(name)
-            for name in _resolved_dynamic_runtime_owned_intrinsic_exports(resolved_modules)
-        )
+        export_names.update(wasm_runtime_dynamic_export_names(resolved_modules))
     return "".join(
         f" -C link-arg=--export-if-defined={name}"
         for name in sorted(export_names)
