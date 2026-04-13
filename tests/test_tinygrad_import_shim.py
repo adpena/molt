@@ -6,6 +6,26 @@ import sys
 from pathlib import Path
 
 
+def _native_molt_env(
+    root: Path, *, hermetic: bool = False, module_roots: tuple[Path, ...] = ()
+) -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root / "src")
+    env["MOLT_EXT_ROOT"] = str(root)
+    env["CARGO_TARGET_DIR"] = str(root / "target")
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
+    env["MOLT_CACHE"] = str(root / ".molt_cache")
+    env["MOLT_DIFF_ROOT"] = str(root / "tmp" / "diff")
+    env["MOLT_DIFF_TMPDIR"] = str(root / "tmp")
+    env["UV_CACHE_DIR"] = str(root / ".uv-cache")
+    env["TMPDIR"] = str(root / "tmp")
+    if module_roots:
+        env["MOLT_MODULE_ROOTS"] = os.pathsep.join(str(path) for path in module_roots)
+    if hermetic:
+        env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
+    return env
+
+
 def test_tinygrad_import_exports_tensor_nn_and_dtypes() -> None:
     import tinygrad
     from tinygrad import Tensor, dtypes, nn
@@ -67,8 +87,7 @@ def test_tinygrad_import_shim_compiles_in_native_molt(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root / "src")
+    env = _native_molt_env(root, hermetic=True)
 
     run = subprocess.run(
         [
@@ -204,4 +223,92 @@ def test_tinygrad_falcon_main_runs_with_tiny_config_and_empty_weights() -> None:
         check=False,
     )
     assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.strip() == "[180]"
+    assert run.stdout.strip() == "[43]"
+
+
+def test_tinygrad_falcon_helper_modules_compile_in_native_molt(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "tinygrad_falcon_helper_probe.py"
+    probe.write_text(
+        "import rope\n"
+        "import mask\n"
+        "from tinygrad import Tensor, dtypes\n"
+        "f = rope.precompute_freqs_cis_1d(4, 3, 10000.0)\n"
+        "print('freqs', f.shape)\n"
+        "m = mask.build_hybrid_mask([229,244,245,246,247,248,227,230], 244, 230)\n"
+        "print('mask', m.shape)\n"
+        "a = Tensor.arange(3).float().unsqueeze(1)\n"
+        "print('a', a.shape)\n"
+        "print('dtype', dtypes.float32 is float)\n",
+        encoding="utf-8",
+    )
+    env = _native_molt_env(
+        root,
+        hermetic=True,
+        module_roots=(
+            Path("/Users/adpena/Projects/enjoice/experiments/tinygrad-molt/falcon-ocr"),
+        ),
+    )
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "freqs (3, 2, 2)",
+        "mask (1, 1, 8, 8)",
+        "a (3, 1)",
+        "dtype True",
+    ]
+
+
+def test_tinygrad_tensor_randn_and_linear_compile_in_native_molt(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "tinygrad_randn_linear_native.py"
+    probe.write_text(
+        "from tinygrad import Tensor, nn\n"
+        "print('before_randn')\n"
+        "x = Tensor.randn(2, 3, seed=7)\n"
+        "print('randn_shape', x.shape)\n"
+        "layer = nn.Linear(3, 4, bias=False)\n"
+        "y = layer(Tensor([[1.0, 2.0, 3.0]]))\n"
+        "print('linear_shape', y.shape)\n",
+        encoding="utf-8",
+    )
+    env = _native_molt_env(root, hermetic=True)
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "before_randn",
+        "randn_shape (2, 3)",
+        "linear_shape (1, 4)",
+    ]
