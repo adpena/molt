@@ -35,6 +35,13 @@ class DFlashAdapterSpec:
         self.priority = priority
 
 
+def _adapter_supports(spec: DFlashAdapterSpec, context) -> bool:
+    supported = spec.supports(context)
+    if not isinstance(supported, bool):
+        raise TypeError("dflash adapter supports() must return bool")
+    return supported
+
+
 def register_dflash_adapter(spec: DFlashAdapterSpec) -> None:
     if not isinstance(spec, DFlashAdapterSpec):
         raise TypeError("register_dflash_adapter expects DFlashAdapterSpec")
@@ -67,7 +74,7 @@ def resolve_dflash_adapter(context, preferred_name: str | None = None):
     adapter = get_dflash_adapter(preferred_name)
     if adapter is None:
         return None
-    return adapter if bool(adapter.supports(context)) else None
+    return adapter if _adapter_supports(adapter, context) else None
 
 
 def resolve_default_dflash_adapter(context):
@@ -76,7 +83,7 @@ def resolve_default_dflash_adapter(context):
     candidates = []
     for name in list_dflash_adapters():
         adapter = get_dflash_adapter(name)
-        if adapter is not None and bool(adapter.supports(context)):
+        if adapter is not None and _adapter_supports(adapter, context):
             candidates.append(adapter)
     if not candidates:
         return None
