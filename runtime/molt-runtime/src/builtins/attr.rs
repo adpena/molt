@@ -21,7 +21,7 @@ use crate::{
     classmethod_func_bits, clear_exception, dataclass_desc_ptr, dataclass_dict_bits,
     dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, dict_get_in_place, dict_order,
     dict_set_in_place, exception_class_bits, exception_dict_bits, exception_kind_bits,
-    exception_pending, exception_type_bits_from_name, inc_ref_bits, init_atomic_bits,
+    exception_last_bits_noinc, exception_pending, exception_type_bits_from_name, inc_ref_bits, init_atomic_bits,
     instance_dict_bits, instance_set_dict_bits, intern_static_name, is_builtin_class_bits,
     is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits, module_dict_bits,
     molt_awaitable_await, molt_bound_method_new, molt_exception_last, molt_function_get_code,
@@ -381,11 +381,10 @@ pub(crate) fn attr_error_with_obj(
         attr_name
     );
     let res = raise_exception(_py, "AttributeError", &msg);
-    let exc_bits = molt_exception_last();
+    let exc_bits = exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
     if !obj_from_bits(exc_bits).is_none() {
         set_attribute_error_attrs(_py, exc_bits, attr_name, obj_bits);
     }
-    dec_ref_bits(_py, exc_bits);
     res
 }
 
