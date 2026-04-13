@@ -220,6 +220,37 @@ def test_native_import_sys_is_clean(tmp_path: Path) -> None:
     assert run.stdout.strip() == "ok"
 
 
+def test_native_import_math_preserves_stdio_bootstrap(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        "print('PRE')\n__import__('math')\nprint('POST')\n",
+        "import_math_stdio",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["PRE", "POST"]
+
+
+def test_native_types_prepare_class_honors_callable_metaclass_prepare(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        "import types\n"
+        "class MetaFactory:\n"
+        "    def __prepare__(self, name, bases, **kw):\n"
+        "        return {'sentinel': 'ok'}\n"
+        "    def __call__(self, name, bases, namespace, **kw):\n"
+        "        return type(name, bases, dict(namespace))\n"
+        "meta, namespace, kwds = types.prepare_class('Box', (), {'metaclass': MetaFactory()})\n"
+        "print(namespace['sentinel'])\n"
+        "print(type(meta).__name__)\n"
+        "print(kwds == {})\n",
+        "types_prepare_callable_meta",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["ok", "MetaFactory", "True"]
+
+
 def test_native_false_guarded_raise_does_not_leak_pending_exception(
     tmp_path: Path,
 ) -> None:

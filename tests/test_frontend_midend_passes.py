@@ -190,6 +190,42 @@ def test_trivial_phi_elides_and_rewrites_users() -> None:
     assert add["args"][0] == "x"
 
 
+def test_dynamic_metaclass_strips_classdictcell_before_call_bind() -> None:
+    source = """
+class Meta(type):
+    pass
+
+class C(metaclass=Meta):
+    def f(self):
+        return 1
+"""
+    gen = SimpleTIRGenerator()
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+
+    classdict_key_idx = next(
+        idx
+        for idx, op in enumerate(ops)
+        if op.get("kind") == "const_str" and op.get("s_value") == "__classdictcell__"
+    )
+    del_idx = next(
+        idx
+        for idx, op in enumerate(ops[classdict_key_idx:], start=classdict_key_idx)
+        if op.get("kind") == "del_index"
+    )
+    call_bind_indices = [
+        idx for idx, op in enumerate(ops) if op.get("kind") == "call_bind"
+    ]
+    assert len(call_bind_indices) >= 2
+    metaclass_call_bind_idx = call_bind_indices[-1]
+
+    assert del_idx < metaclass_call_bind_idx, (
+        "__classdictcell__ must be stripped from the dynamic class namespace "
+        "before the metaclass call"
+    )
+
+
 def test_phi_edge_trim_collapses_duplicate_executable_inputs() -> None:
     gen = SimpleTIRGenerator()
     ops = [

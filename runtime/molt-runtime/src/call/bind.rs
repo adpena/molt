@@ -19,7 +19,7 @@ use crate::{
     call_callable1, call_class_init_with_args, call_function_obj_vec, class_attr_lookup,
     class_attr_lookup_raw_mro, class_dict_bits, class_layout_version_bits, class_name_bits,
     class_name_for_error, code_argcount, code_filename_bits, code_name_bits, dec_ref_bits,
-    dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_order, dict_pop_method,
+    dict_del_in_place, dict_fromkeys_method, dict_get_in_place, dict_get_method, dict_order, dict_pop_method,
     dict_setdefault_method, dict_update_apply, dict_update_method, dict_update_set_in_place,
     dict_update_set_via_store, exception_class_bits, exception_pending,
     exception_type_bits_from_name, function_arity, function_attr_bits, function_closure_bits,
@@ -932,6 +932,26 @@ unsafe fn build_class_from_args(
     kw_values: &[u64],
 ) -> u64 {
     unsafe {
+        let strip_internal_namespace_keys = |namespace_bits: u64| -> Result<(), u64> {
+            let Some(namespace_ptr) = obj_from_bits(namespace_bits).as_ptr() else {
+                return Ok(());
+            };
+            if object_type_id(namespace_ptr) != TYPE_ID_DICT {
+                return Ok(());
+            }
+            for key in [b"__classcell__".as_slice(), b"__classdictcell__".as_slice()] {
+                let Some(key_bits) = attr_name_bits_from_bytes(_py, key) else {
+                    return Err(MoltObject::none().bits());
+                };
+                dict_del_in_place(_py, namespace_ptr, key_bits);
+                dec_ref_bits(_py, key_bits);
+                if exception_pending(_py) {
+                    return Err(MoltObject::none().bits());
+                }
+            }
+            Ok(())
+        };
+
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "class name must be str");
@@ -1012,6 +1032,12 @@ unsafe fn build_class_from_args(
         }
 
         if winner_bits != metaclass_bits {
+            if let Err(err) = strip_internal_namespace_keys(namespace_bits) {
+                if bases_owned {
+                    dec_ref_bits(_py, bases_tuple_bits);
+                }
+                return err;
+            }
             let builder_bits =
                 molt_callargs_new((3 + kw_names.len()) as u64, kw_names.len() as u64);
             if builder_bits == 0 {
@@ -1043,6 +1069,13 @@ unsafe fn build_class_from_args(
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         object_set_class_bits(_py, class_ptr, metaclass_bits);
         inc_ref_bits(_py, metaclass_bits);
+
+        if let Err(err) = strip_internal_namespace_keys(namespace_bits) {
+            if bases_owned {
+                dec_ref_bits(_py, bases_tuple_bits);
+            }
+            return err;
+        }
 
         let dict_bits = class_dict_bits(class_ptr);
         let _ = dict_update_apply(_py, dict_bits, dict_update_set_in_place, namespace_bits);

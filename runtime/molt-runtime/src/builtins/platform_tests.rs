@@ -69,6 +69,14 @@ fn bootstrap_module_file() -> String {
     }
 }
 
+fn bootstrap_stdlib_submodule_file() -> String {
+    if sys_platform_str().starts_with("win") {
+        "C:\\repo\\src\\molt\\stdlib\\importlib\\util.py".to_string()
+    } else {
+        "/repo/src/molt/stdlib/importlib/util.py".to_string()
+    }
+}
+
 fn expected_stdlib_root() -> String {
     if sys_platform_str().starts_with("win") {
         "C:\\repo\\src\\molt\\stdlib".to_string()
@@ -308,6 +316,24 @@ fn sys_bootstrap_state_omits_cwd_when_dev_untrusted() {
             assert!(!state.include_cwd);
             assert!(!state.path.iter().any(|entry| entry.is_empty()));
             assert!(!state.path.iter().any(|entry| entry == "/tmp/molt_pwd"));
+        },
+    );
+}
+
+#[test]
+fn sys_bootstrap_state_normalizes_stdlib_root_for_stdlib_submodule() {
+    with_env_state(
+        &[
+            ("PYTHONPATH", ""),
+            ("MOLT_MODULE_ROOTS", ""),
+            ("MOLT_DEV_TRUSTED", "1"),
+            ("PWD", "/tmp/molt_pwd"),
+        ],
+        || {
+            let state =
+                sys_bootstrap_state_from_module_file(Some(bootstrap_stdlib_submodule_file()));
+            assert_eq!(state.stdlib_root, Some(expected_stdlib_root()));
+            assert!(state.path.iter().any(|entry| entry == &expected_stdlib_root()));
         },
     );
 }
@@ -1269,6 +1295,116 @@ fn extension_loader_boundary_records_cache_hits_and_misses() {
         );
 
         std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+    });
+}
+
+#[test]
+fn importlib_stabilize_module_state_ignores_missing_dunder_path_on_plain_module() {
+    with_trusted_runtime(|| {
+        crate::with_gil_entry!(_py, {
+            let name_bits = alloc_test_string_bits(_py, "math");
+            let module_bits = crate::molt_module_new(name_bits);
+            assert!(
+                !exception_pending(_py),
+                "failed to allocate plain module: {:?}",
+                pending_exception_kind_and_message(_py)
+            );
+
+            let origin_bits = alloc_test_string_bits(_py, "/repo/src/molt/stdlib/math.py");
+            let package_bits = alloc_test_string_bits(_py, "");
+            let result_bits = molt_importlib_stabilize_module_state(
+                module_bits,
+                MoltObject::none().bits(),
+                origin_bits,
+                MoltObject::from_bool(false).bits(),
+                package_bits,
+                MoltObject::none().bits(),
+            );
+            assert!(
+                !exception_pending(_py),
+                "unexpected stabilize exception: {:?}",
+                pending_exception_kind_and_message(_py)
+            );
+            assert!(obj_from_bits(result_bits).is_none());
+
+            let path_name_bits =
+                attr_name_bits_from_bytes(_py, b"__path__").expect("intern __path__");
+            let path_bits = getattr_optional_bits(_py, module_bits, path_name_bits)
+                .expect("raw __path__ lookup on plain module");
+            assert!(path_bits.is_none(), "plain module unexpectedly retained __path__");
+
+            dec_ref_bits(_py, path_name_bits);
+            dec_ref_bits(_py, package_bits);
+            dec_ref_bits(_py, origin_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+        });
+    });
+}
+
+#[test]
+fn importlib_stabilize_module_state_clears_internal_dunder_path_placeholder() {
+    with_trusted_runtime(|| {
+        crate::with_gil_entry!(_py, {
+            let name_bits = alloc_test_string_bits(_py, "math");
+            let module_bits = crate::molt_module_new(name_bits);
+            assert!(
+                !exception_pending(_py),
+                "failed to allocate plain module: {:?}",
+                pending_exception_kind_and_message(_py)
+            );
+            let module_ptr = obj_from_bits(module_bits)
+                .as_ptr()
+                .expect("plain module pointer");
+            let module_dict_bits = unsafe { module_dict_bits(module_ptr) };
+            let module_dict_ptr = obj_from_bits(module_dict_bits)
+                .as_ptr()
+                .expect("plain module dict pointer");
+            let path_name_bits =
+                attr_name_bits_from_bytes(_py, b"__path__").expect("intern __path__");
+            let placeholder_bits = unsafe { call_callable0(_py, builtin_classes(_py).object) };
+            assert!(
+                !exception_pending(_py),
+                "failed to allocate placeholder object: {:?}",
+                pending_exception_kind_and_message(_py)
+            );
+            unsafe {
+                dict_set_in_place(_py, module_dict_ptr, path_name_bits, placeholder_bits);
+            }
+            assert!(
+                !exception_pending(_py),
+                "failed to seed __path__ placeholder: {:?}",
+                pending_exception_kind_and_message(_py)
+            );
+
+            let origin_bits = alloc_test_string_bits(_py, "/repo/src/molt/stdlib/math.py");
+            let package_bits = alloc_test_string_bits(_py, "");
+            let result_bits = molt_importlib_stabilize_module_state(
+                module_bits,
+                MoltObject::none().bits(),
+                origin_bits,
+                MoltObject::from_bool(false).bits(),
+                package_bits,
+                MoltObject::none().bits(),
+            );
+            assert!(
+                !exception_pending(_py),
+                "unexpected stabilize exception with placeholder __path__: {:?}",
+                pending_exception_kind_and_message(_py)
+            );
+            assert!(obj_from_bits(result_bits).is_none());
+
+            let path_bits = getattr_optional_bits(_py, module_bits, path_name_bits)
+                .expect("raw __path__ lookup after stabilize");
+            assert!(path_bits.is_none(), "internal __path__ placeholder was not cleared");
+
+            dec_ref_bits(_py, placeholder_bits);
+            dec_ref_bits(_py, path_name_bits);
+            dec_ref_bits(_py, package_bits);
+            dec_ref_bits(_py, origin_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
+        });
     });
 }
 
