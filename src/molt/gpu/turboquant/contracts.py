@@ -38,9 +38,10 @@ class TurboQuantConfig:
 class TurboQuantMSEVector:
     """Encoded vector for the MSE stage of TurboQuant."""
 
-    def __init__(self, indices, *, norm: float) -> None:
+    def __init__(self, indices, *, norm: float, mse_weights=None) -> None:
         self.indices = list(indices)
         self.norm = float(norm)
+        self.mse_weights = None if mse_weights is None else list(mse_weights)
 
 
 class TurboQuantProdVector:
@@ -53,8 +54,12 @@ class TurboQuantProdVector:
         norm: float,
         residual_signs,
         residual_norm: float,
+        mse_weights=None,
+        residual_scale: float | None = None,
     ) -> None:
         self.indices = list(indices)
         self.norm = float(norm)
         self.residual_signs = list(residual_signs)
         self.residual_norm = float(residual_norm)
+        self.mse_weights = None if mse_weights is None else list(mse_weights)
+        self.residual_scale = None if residual_scale is None else float(residual_scale)

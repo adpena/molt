@@ -75,6 +75,29 @@ def test_turboquant_prepared_query_matches_direct_estimates():
     )
 
 
+def test_turboquant_prepared_estimates_do_not_depend_on_codec_codebook_after_encode():
+    from molt.gpu.tensor import Tensor
+    from molt.gpu.turboquant import TurboQuantCodec
+
+    codec = TurboQuantCodec(dim=8, bits=3, seed=11, qjl_seed=19)
+    query = Tensor([0.6, 0.2, -0.5, 0.1, 0.3, -0.4, 0.2, 0.7])
+    vector = Tensor([0.7, -0.3, 0.2, 0.5, -0.1, 0.4, -0.2, 0.1])
+    mse_encoded = codec.quantize_mse(vector)
+    prod_encoded = codec.quantize_prod(vector)
+    prepared = codec.prepare_query(query)
+    mse_expected = codec.estimate_mse_inner_product_prepared(prepared, mse_encoded)
+    prod_expected = codec.estimate_inner_product_prepared(prepared, prod_encoded)
+
+    codec.codebook = None
+
+    assert codec.estimate_mse_inner_product_prepared(prepared, mse_encoded) == pytest.approx(
+        mse_expected
+    )
+    assert codec.estimate_inner_product_prepared(prepared, prod_encoded) == pytest.approx(
+        prod_expected
+    )
+
+
 def test_turboquant_kv_cache_attention_output_matches_manual_reference():
     from molt.gpu.tensor import Tensor
     from molt.gpu.turboquant import TurboQuantCodec, TurboQuantKVCache
