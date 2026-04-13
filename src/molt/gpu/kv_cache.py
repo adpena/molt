@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .tensor import Tensor, tensor_scaled_dot_product_attention
+from .tensor import Tensor, tensor_permute_dims, tensor_softmax_last_axis
 from .turboquant import TurboQuantCodec
 
 
@@ -67,13 +67,11 @@ class DenseKVCache:
         _validate_projected_tensor("q", q)
         if self.key_tensor is None or self.value_tensor is None:
             raise RuntimeError("cannot attend with an empty KV cache")
-        return tensor_scaled_dot_product_attention(
-            q,
-            self.key_tensor,
-            self.value_tensor,
-            mask,
-            scale,
-        )
+        scores = (q @ tensor_permute_dims(self.key_tensor, (0, 1, 3, 2))) * scale
+        if mask is not None:
+            scores = scores + mask
+        attn = tensor_softmax_last_axis(scores)
+        return attn @ self.value_tensor
 
     def truncate(self, length: int) -> None:
         if length < 0:
@@ -95,6 +93,12 @@ class DenseKVCache:
         keep = batch * heads * length * head_dim
         self.key_tensor = Tensor(self.key_tensor._data_list()[:keep], shape=(batch, heads, length, head_dim))
         self.value_tensor = Tensor(self.value_tensor._data_list()[:keep], shape=(batch, heads, length, head_dim))
+
+    def keys(self):
+        return _KVCacheKeyView(self)
+
+    def values(self):
+        return _KVCacheValueView(self)
 
 
 class TurboQuantAttentionKVCache:
@@ -222,3 +226,21 @@ class TurboQuantAttentionKVCache:
             for head_index in range(self._heads):
                 del self._key_vectors[batch_index][head_index][length:]
                 del self._value_vectors[batch_index][head_index][length:]
+
+    def keys(self):
+        return _KVCacheKeyView(self)
+
+    def values(self):
+        return _KVCacheValueView(self)
+
+
+class _KVCacheKeyView:
+    def __init__(self, kv_cache) -> None:
+        self._kv_cache = kv_cache
+        self._kv_role = "key"
+
+
+class _KVCacheValueView:
+    def __init__(self, kv_cache) -> None:
+        self._kv_cache = kv_cache
+        self._kv_role = "value"

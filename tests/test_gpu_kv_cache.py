@@ -53,6 +53,55 @@ def test_dense_kv_cache_attention_matches_tensor_sdpa():
     assert out.reshape(4).to_list() == pytest.approx(manual.reshape(4).to_list())
 
 
+def test_tensor_sdpa_routes_cache_views_through_cache_backend():
+    from molt.gpu.kv_cache import DenseKVCache
+    from molt.gpu.tensor import Tensor, tensor_scaled_dot_product_attention
+
+    q = Tensor([0.5, -0.1, 0.4, 0.2], shape=(1, 1, 1, 4))
+    k = Tensor([0.6, -0.2, 0.1, 0.4], shape=(1, 1, 1, 4))
+    v = Tensor([0.2, 0.1, -0.3, 0.4], shape=(1, 1, 1, 4))
+
+    cache = DenseKVCache()
+    cache.append(k, v)
+
+    out = tensor_scaled_dot_product_attention(
+        q,
+        cache.keys(),
+        cache.values(),
+        None,
+        1.0,
+    )
+
+    manual = cache.attention(q, scale=1.0)
+
+    assert out.reshape(4).to_list() == pytest.approx(manual.reshape(4).to_list())
+
+
+def test_tensor_sdpa_cache_views_bypass_fused_intrinsic(monkeypatch):
+    import molt.gpu.tensor as tensor_mod
+    from molt.gpu.kv_cache import DenseKVCache
+    from molt.gpu.tensor import Tensor, tensor_scaled_dot_product_attention
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+    monkeypatch.setattr(
+        tensor_mod,
+        "_MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fused intrinsic should not run on cache views")
+        ),
+    )
+
+    q = Tensor([0.5, -0.1, 0.4, 0.2], shape=(1, 1, 1, 4))
+    k = Tensor([0.6, -0.2, 0.1, 0.4], shape=(1, 1, 1, 4))
+    v = Tensor([0.2, 0.1, -0.3, 0.4], shape=(1, 1, 1, 4))
+    cache = DenseKVCache()
+    cache.append(k, v)
+
+    out = tensor_scaled_dot_product_attention(q, cache.keys(), cache.values(), None, 1.0)
+
+    assert out.shape == (1, 1, 1, 4)
+
+
 def test_turboquant_attention_kv_cache_matches_rowwise_helper():
     from molt.gpu.kv_cache import TurboQuantAttentionKVCache
     from molt.gpu.tensor import Tensor
@@ -148,15 +197,23 @@ def test_transformer_multihead_attention_routes_through_cache(monkeypatch):
             self.count += k.shape[2]
 
         def attention(self, q, *, scale, mask=None):
+            raise AssertionError("transformer cache path should go through tensor sdpa")
+
+        def keys(self):
+            return "keys-view"
+
+        def values(self):
+            return "values-view"
+
+    def fake_sdpa(q, k, v, mask, scale):
             seen["q_shape"] = q.shape
+            seen["k_view"] = k
+            seen["v_view"] = v
             seen["scale"] = scale
             seen["mask"] = mask
             return q
 
-    def fail_sdpa(*_args, **_kwargs):
-        raise AssertionError("sdpa path should not run when kv_cache is provided")
-
-    monkeypatch.setattr(transformer_mod, "tensor_scaled_dot_product_attention", fail_sdpa)
+    monkeypatch.setattr(transformer_mod, "tensor_scaled_dot_product_attention", fake_sdpa)
 
     x = Tensor([[1.0, 2.0, 3.0, 4.0]])
     out = attn(x, kv_cache=FakeCache())
@@ -165,6 +222,8 @@ def test_transformer_multihead_attention_routes_through_cache(monkeypatch):
     assert seen["q_shape"] == (1, 2, 1, 2)
     assert seen["k_shape"] == (1, 2, 1, 2)
     assert seen["v_shape"] == (1, 2, 1, 2)
+    assert seen["k_view"] == "keys-view"
+    assert seen["v_view"] == "values-view"
     assert seen["scale"] == attn.scale
     assert seen["mask"].shape == (1, 1, 1, 1)
     assert seen["mask"].to_list() == [[[[0.0]]]]
@@ -195,6 +254,24 @@ def test_transformer_multihead_attention_rolls_back_cache_on_failure():
 
         def attention(self, q, *, scale, mask=None):
             raise RuntimeError("boom")
+
+        def keys(self):
+            class KeyView:
+                _kv_role = "key"
+
+                def __init__(self, cache):
+                    self._kv_cache = cache
+
+            return KeyView(self)
+
+        def values(self):
+            class ValueView:
+                _kv_role = "value"
+
+                def __init__(self, cache):
+                    self._kv_cache = cache
+
+            return ValueView(self)
 
     cache = FakeCache()
     x = Tensor([[1.0, 2.0, 3.0, 4.0]])
