@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import _intrinsics as _molt_intrinsics
 
+from . import Buffer
 from .tensor import Tensor, tensor_permute_dims, tensor_softmax_last_axis
 from .turboquant import TurboQuantCodec
 
@@ -66,6 +67,49 @@ def _kv_head_index(query_heads: int, kv_heads: int, query_head_index: int) -> in
     return query_head_index // group_size
 
 
+def _materialize_projected_chunks(chunks) -> Tensor:
+    first = chunks[0]
+    batch, heads, _seq, head_dim = first.shape
+    format_char = first._buf.format_char
+    element_type = first._buf.element_type
+    dtype = first._dtype
+    itemsize = first._buf.itemsize
+
+    total_seq = 0
+    for chunk in chunks:
+        if chunk.ndim != 4:
+            raise ValueError("KV cache materialization requires rank-4 chunk tensors")
+        if chunk.shape[:2] != (batch, heads) or chunk.shape[3] != head_dim:
+            raise ValueError("KV cache chunks must share batch/head/head_dim shape")
+        if chunk._buf.format_char != format_char or chunk._dtype is not dtype:
+            raise ValueError("KV cache chunks must share dtype and buffer format")
+        total_seq += chunk.shape[2]
+
+    outer = batch * heads
+    row_total_bytes = total_seq * head_dim * itemsize
+    out = bytearray(outer * row_total_bytes)
+    seq_offset = 0
+
+    for chunk in chunks:
+        chunk_seq = chunk.shape[2]
+        row_chunk_bytes = chunk_seq * head_dim * itemsize
+        src = chunk._buf._data
+        dst_row_offset = seq_offset * head_dim * itemsize
+        for outer_idx in range(outer):
+            src_base = outer_idx * row_chunk_bytes
+            dst_base = outer_idx * row_total_bytes + dst_row_offset
+            out[dst_base:dst_base + row_chunk_bytes] = src[src_base:src_base + row_chunk_bytes]
+        seq_offset += chunk_seq
+
+    out_buf = Buffer(
+        out,
+        element_type,
+        batch * heads * total_seq * head_dim,
+        format_char=format_char,
+    )
+    return Tensor(out_buf, shape=(batch, heads, total_seq, head_dim), dtype=dtype)
+
+
 class DenseKVCache:
     """Reference dense KV cache for projected multi-head attention tensors."""
 
@@ -109,14 +153,12 @@ class DenseKVCache:
             return self.key_tensor, self.value_tensor
         if not self._key_chunks or not self._value_chunks:
             raise RuntimeError("cannot materialize an empty KV cache")
-        key = self._key_chunks[0]
-        value = self._value_chunks[0]
-        for chunk in self._key_chunks[1:]:
-            key = key.cat(chunk, dim=2)
-        for chunk in self._value_chunks[1:]:
-            value = value.cat(chunk, dim=2)
+        key = _materialize_projected_chunks(self._key_chunks)
+        value = _materialize_projected_chunks(self._value_chunks)
         self.key_tensor = key
         self.value_tensor = value
+        self._key_chunks = [key]
+        self._value_chunks = [value]
         return key, value
 
     def attention(self, q: Tensor, *, scale: float, mask: Tensor | None = None) -> Tensor:

@@ -57,6 +57,8 @@ Current cache semantics:
   row and cache decoded value rows across repeated attention reads
 - dense grouped-query cache reads should reuse expanded key/value tensors and
   transposed key views across repeated attention calls until mutation
+- dense cache materialization should assemble projected chunks in one pass,
+  not via chained tensor concatenation
 
 Current TurboQuant backend boundary:
 - runtime/backend now own an explicit `molt_gpu_turboquant_attention_packed`
