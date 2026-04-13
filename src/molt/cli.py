@@ -14886,7 +14886,7 @@ def _finalize_backend_ir(
     pgo_profile_summary: Any | None,
     runtime_feedback_summary: Any | None,
 ) -> dict[str, Any]:
-    ir: dict[str, Any] = {"functions": list(functions)}
+    ir: dict[str, Any] = {"functions": _normalize_backend_ir_functions(functions)}
     if pgo_profile_summary is not None:
         profile_data: dict[str, Any] = {
             "version": pgo_profile_summary.version,
@@ -14907,6 +14907,27 @@ def _finalize_backend_ir(
             "hot_functions": runtime_feedback_summary.hot_functions,
         }
     return ir
+
+
+def _normalize_backend_ir_functions(
+    functions: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for func in functions:
+        copied = dict(func)
+        params = copied.get("params")
+        if isinstance(params, list) and params:
+            raw_param_types = copied.get("param_types")
+            param_types = (
+                list(raw_param_types)
+                if isinstance(raw_param_types, list)
+                else []
+            )
+            if len(param_types) < len(params):
+                param_types.extend(["i64"] * (len(params) - len(param_types)))
+            copied["param_types"] = param_types
+        normalized.append(copied)
+    return normalized
 
 
 def _normalize_ir_labels(ir: Mapping[str, Any]) -> dict[str, Any]:
@@ -21655,7 +21676,13 @@ def _read_persisted_module_lowering(
     raw_result = payload.get("result")
     if not isinstance(raw_result, dict):
         return None
-    return cast(dict[str, Any], copy.deepcopy(_decode_cached_json_value(raw_result)))
+    result = cast(dict[str, Any], copy.deepcopy(_decode_cached_json_value(raw_result)))
+    raw_functions = result.get("functions")
+    if isinstance(raw_functions, list):
+        result["functions"] = _normalize_backend_ir_functions(
+            [func for func in raw_functions if isinstance(func, dict)]
+        )
+    return result
 
 
 def _write_persisted_module_lowering(
