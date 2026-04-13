@@ -510,6 +510,159 @@ console.error(JSON.stringify({{ tokenizerUrl: session.tokenizerUrl }}));
         server.shutdown()
 
 
+def test_falcon_browser_driver_reuses_cached_weights_on_second_init(tmp_path: Path) -> None:
+    src = tmp_path / "main_molt.py"
+    src.write_text(
+        "_initialized = 0\n"
+        "def init(weights_bytes: bytes, config_json: str):\n"
+        "    global _initialized\n"
+        "    _initialized = 1\n"
+        "def ocr_tokens(width: int, height: int, rgb: bytes, prompt_ids: list[int], max_new_tokens: int):\n"
+        "    if not _initialized:\n"
+        "        raise RuntimeError('not initialized')\n"
+        "    return prompt_ids\n",
+        encoding="utf-8",
+    )
+    build_env = {
+        **dict(__import__("os").environ),
+        "PYTHONPATH": str(ROOT / "src"),
+        "MOLT_WASM_LINKED": "0",
+    }
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=ROOT,
+        env=build_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    weights_bin = tmp_path / "weights.bin"
+    weights_bin.write_bytes(b"weights")
+    config_json = tmp_path / "config.json"
+    config_json.write_text('{"dim":2}\n', encoding="utf-8")
+    tokenizer_json = tmp_path / "tokenizer.json"
+    tokenizer_json.write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+    manifest_json = tmp_path / "driver-manifest.base.json"
+    manifest_json.write_text(
+        json.dumps(
+            {
+                "target": "falcon.browser_webgpu",
+                "artifacts": {
+                    "app_wasm": {"url": "/output.wasm"},
+                    "runtime_wasm": {"url": "/molt_runtime.wasm"},
+                    "config_json": {"url": "/config.json"},
+                    "tokenizer_json": {"url": "/tokenizer.json"},
+                },
+                "weights": {
+                    "base_url": "/weights/falcon/test-hash",
+                    "files": [{"path": "model.safetensors", "url": "model.safetensors"}],
+                },
+                "exports": {
+                    "init": "main_molt__init",
+                    "ocrTokens": "main_molt__ocr_tokens",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    hits = {
+        "/weights/falcon/test-hash/model.safetensors": 0,
+    }
+
+    class _ArtifactHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def do_GET(self) -> None:  # noqa: N802
+            mapping = {
+                "/output.wasm": output_wasm,
+                "/molt_runtime.wasm": runtime_wasm,
+                "/weights/falcon/test-hash/model.safetensors": weights_bin,
+                "/config.json": config_json,
+                "/tokenizer.json": tokenizer_json,
+                "/driver-manifest.base.json": manifest_json,
+            }
+            target = mapping.get(self.path)
+            if target is None:
+                self.send_response(404)
+                self.end_headers()
+                return
+            if self.path in hits:
+                hits[self.path] += 1
+            payload = target.read_bytes()
+            ctype = "application/wasm" if target.suffix == ".wasm" else "application/octet-stream"
+            if target.suffix == ".json":
+                ctype = "application/json"
+            self.send_response(200)
+            self.send_header("content-type", ctype)
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _ArtifactHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        script = tmp_path / "driver_cache_roundtrip.mjs"
+        script.write_text(
+            f"""
+import {{ initFalconBrowserWebGpu }} from {BROWSER_JS.as_uri()!r};
+const store = new Map();
+globalThis.caches = {{
+  open: async () => ({{
+    match: async (key) => {{
+      const value = store.get(String(key));
+      return value ? value.clone() : undefined;
+    }},
+    put: async (key, response) => {{
+      store.set(String(key), response.clone());
+    }},
+  }}),
+}};
+await initFalconBrowserWebGpu({{
+  manifestUrl: {f"{base_url}/driver-manifest.base.json"!r},
+}});
+await initFalconBrowserWebGpu({{
+  manifestUrl: {f"{base_url}/driver-manifest.base.json"!r},
+}});
+console.log("done");
+""".lstrip(),
+            encoding="utf-8",
+        )
+        run = subprocess.run(
+            ["node", str(script)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert run.returncode == 0, run.stderr
+        assert hits["/weights/falcon/test-hash/model.safetensors"] == 1
+    finally:
+        server.shutdown()
+
+
 def test_falcon_browser_driver_init_from_manifest_roundtrip(tmp_path: Path) -> None:
     src = tmp_path / "main_molt.py"
     src.write_text(
