@@ -1484,6 +1484,7 @@ def test_submodule_dflash():
         SpeculativeDraftResult,
         SpeculativeVerifyRequest,
         SpeculativeVerifyResult,
+        build_dflash_runtime,
         speculative_decode_greedy,
         speculative_decode_greedy_conditioned,
     )
