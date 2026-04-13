@@ -118,6 +118,7 @@ def build_dflash_runtime(
     eos_token_id=None,
     max_new_tokens: int = 100,
     block_size: int = 16,
+    adapter_payload=None,
 ):
     context = DFlashSelectionContext(
         model=model,
@@ -126,6 +127,7 @@ def build_dflash_runtime(
         eos_token_id=eos_token_id,
         max_new_tokens=max_new_tokens,
         block_size=block_size,
+        adapter_payload=adapter_payload,
     )
     runtime = resolve_dflash_runtime(context, preferred_name=dflash_adapter)
     if runtime is not None:
