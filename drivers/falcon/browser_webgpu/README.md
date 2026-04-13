@@ -20,3 +20,9 @@ Target root contract:
 - split-runtime artifacts under `dist/browser_split/`
 - weight blobs under `weights/`
 - Falcon config at either `config.json` or `weights/config.json`
+
+Bootstrap contract:
+- `initFalconBrowserWebGpu()` always resolves the manifest and artifacts first.
+- WebGPU capability is enforced lazily by the browser host only if the loaded
+  application actually exercises GPU kernel dispatch, or when the caller
+  injects a `gpuKernelDispatcher`.

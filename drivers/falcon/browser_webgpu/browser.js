@@ -116,17 +116,6 @@ function manifestWeightUrl(manifest, manifestUrl) {
   return resolveArtifactUrl(normalizeDirectoryUrl(baseUrl), resolvedEntry.url);
 }
 
-function hasUsableWebGpu(browserHostOptions = {}) {
-  if (
-    browserHostOptions &&
-    typeof browserHostOptions === "object" &&
-    browserHostOptions.gpuKernelDispatcher
-  ) {
-    return true;
-  }
-  return Boolean(globalThis.navigator?.gpu);
-}
-
 export async function imageToRgbPatchAligned(blob, patchSize = DEFAULT_PATCH_SIZE) {
   const bitmap = await createImageBitmap(blob);
   const width = Math.floor(bitmap.width / patchSize) * patchSize;
@@ -160,11 +149,6 @@ export async function initFalconBrowserWebGpu({
 }) {
   if (!manifestUrl) {
     throw new Error("Falcon browser driver requires manifestUrl.");
-  }
-  if (!hasUsableWebGpu(browserHostOptions)) {
-    throw new Error(
-      "Falcon browser driver requires WebGPU support or an injected gpuKernelDispatcher.",
-    );
   }
   const resolvedManifestUrl = normalizeManifestUrl(manifestUrl);
   const manifest = await fetchRequiredJson(resolvedManifestUrl);
