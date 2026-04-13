@@ -107,6 +107,34 @@ def test_root_intrinsics_uses_builtins_registry(
     assert loader.require_intrinsic("molt_probe", None) is runtime_fn
 
 
+def test_root_intrinsics_registry_alone_does_not_activate_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loader = _load_root_intrinsics("_molt_test_root_intrinsics_registry_runtime_active")
+    monkeypatch.setattr(
+        builtins,
+        "_molt_intrinsics",
+        {"molt_probe": lambda: "runtime"},
+        raising=False,
+    )
+    assert loader.runtime_active() is False
+
+
+def test_stdlib_intrinsics_registry_alone_does_not_activate_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loader = _load_stdlib_intrinsics(
+        "_molt_test_stdlib_intrinsics_registry_runtime_active"
+    )
+    monkeypatch.setattr(
+        builtins,
+        "_molt_intrinsics",
+        {"molt_probe": lambda: "runtime"},
+        raising=False,
+    )
+    assert loader.runtime_active() is False
+
+
 def test_stdlib_intrinsics_uses_builtins_runtime_lookup_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
