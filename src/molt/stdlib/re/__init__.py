@@ -400,11 +400,29 @@ def _coerce_pattern(pattern: Any, flags: int) -> Pattern:
 def _subn_callable(
     pattern: Pattern, repl: object, string: str, *, count: int = 0
 ) -> tuple[str, int]:
-    """sub/subn with a callable replacement — delegate to Rust intrinsic."""
+    """sub/subn with a callable replacement.
+
+    The replacement callable must receive a real ``Match`` object, so this path
+    stays in the Python shim and iterates over the intrinsic-backed
+    ``Pattern.finditer`` results.
+    """
     if count < 0:
         raise ValueError("count must be non-negative")
     text = _ensure_text(string)
-    return _molt_re_sub_callable(pattern._handle, repl, text, count)
+    limit = None if count == 0 else count
+    out: list[str] = []
+    last = 0
+    replaced = 0
+    for match_obj in pattern.finditer(text):
+        if limit is not None and replaced >= limit:
+            break
+        start, end = match_obj.span()
+        out.append(text[last:start])
+        out.append(str(repl(match_obj)))
+        last = end
+        replaced += 1
+    out.append(text[last:])
+    return ("".join(out), replaced)
 
 
 # ---------------------------------------------------------------------------
