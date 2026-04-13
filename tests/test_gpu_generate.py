@@ -463,7 +463,6 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
 
     class FakeModel:
         kind = "fake-model"
-        dflash_adapter = "fake-adapter"
 
         def __call__(self, _tokens):
             raise AssertionError("plain greedy model path should not execute")
@@ -486,6 +485,106 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
     )
 
     assert out == [0, 1, 2]
+
+
+def test_greedy_decode_chooses_highest_priority_matching_dflash_adapter(monkeypatch):
+    from molt.gpu.dflash import (
+        DFlashAdapterSpec,
+        DFlashRuntime,
+        SpeculativeDraftResult,
+        SpeculativeVerifyResult,
+        register_dflash_adapter,
+    )
+    from molt.gpu.generate import greedy_decode
+
+    def low_supports(context):
+        return context.backend == "webgpu"
+
+    def high_supports(context):
+        return context.backend == "webgpu"
+
+    def low_create_runtime(_context):
+        raise AssertionError("lower-priority adapter should not win")
+
+    def high_create_runtime(_context):
+        def draft_step(request):
+            return SpeculativeDraftResult([1])
+
+        def verify_step(request):
+            return SpeculativeVerifyResult([1, 2])
+
+        return DFlashRuntime(
+            draft_step=draft_step,
+            verify_step=verify_step,
+            block_size=1,
+        )
+
+    class FakeModel:
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy model path should not execute")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+    register_dflash_adapter(
+        DFlashAdapterSpec(
+            name="priority-low-adapter",
+            supports=low_supports,
+            create_runtime=low_create_runtime,
+            priority=1,
+        )
+    )
+    register_dflash_adapter(
+        DFlashAdapterSpec(
+            name="priority-high-adapter",
+            supports=high_supports,
+            create_runtime=high_create_runtime,
+            priority=2,
+        )
+    )
+
+    out = greedy_decode(FakeModel(), [0], max_new_tokens=2)
+
+    assert out == [0, 1, 2]
+
+
+def test_greedy_decode_raises_when_top_priority_dflash_adapters_are_ambiguous(monkeypatch):
+    from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
+    from molt.gpu.generate import greedy_decode
+
+    def supports(context):
+        return context.backend == "webgpu"
+
+    def create_runtime(_context):
+        raise AssertionError("ambiguous adapters must raise before runtime creation")
+
+    class FakeModel:
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy model path should not execute")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+    register_dflash_adapter(
+        DFlashAdapterSpec(
+            name="ambiguous-a",
+            supports=supports,
+            create_runtime=create_runtime,
+            priority=5,
+        )
+    )
+    register_dflash_adapter(
+        DFlashAdapterSpec(
+            name="ambiguous-b",
+            supports=supports,
+            create_runtime=create_runtime,
+            priority=5,
+        )
+    )
+
+    try:
+        greedy_decode(FakeModel(), [0], max_new_tokens=1)
+        raise AssertionError("expected ambiguous dflash adapter failure")
+    except ValueError as exc:
+        assert "multiple dflash adapters match" in str(exc)
+        assert "ambiguous-a" in str(exc)
+        assert "ambiguous-b" in str(exc)
 
 
 def test_greedy_decode_skips_dflash_default_without_supported_gpu_backend(monkeypatch):
@@ -539,3 +638,60 @@ def test_register_dflash_adapter_rejects_duplicate_names():
         raise AssertionError("expected duplicate adapter registration failure")
     except ValueError as exc:
         assert "already registered" in str(exc)
+
+
+def test_greedy_decode_accepts_explicit_dflash_adapter_override(monkeypatch):
+    from molt.gpu.dflash import (
+        DFlashAdapterSpec,
+        DFlashRuntime,
+        SpeculativeConditioning,
+        SpeculativeDraftResult,
+        SpeculativeVerifyResult,
+        register_dflash_adapter,
+    )
+    from molt.gpu.generate import greedy_decode
+
+    def supports(context):
+        return context.backend == "webgpu"
+
+    def create_runtime(_context):
+        def draft_step(request):
+            return SpeculativeDraftResult([1])
+
+        def verify_step(request):
+            return SpeculativeVerifyResult(
+                [1, 2],
+                conditioning=SpeculativeConditioning(target_features="next"),
+            )
+
+        return DFlashRuntime(
+            draft_step=draft_step,
+            verify_step=verify_step,
+            initial_conditioning=SpeculativeConditioning(target_features="prefill"),
+            block_size=1,
+        )
+
+    class FakeModel:
+        kind = "fake-model"
+
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy model path should not execute")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+    register_dflash_adapter(
+        DFlashAdapterSpec(
+            name="explicit-adapter",
+            supports=supports,
+            create_runtime=create_runtime,
+        )
+    )
+
+    out = greedy_decode(
+        FakeModel(),
+        [0],
+        max_new_tokens=2,
+        eos_token_id=11,
+        dflash_adapter="explicit-adapter",
+    )
+
+    assert out == [0, 1, 2]

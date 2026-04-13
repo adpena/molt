@@ -72,6 +72,7 @@ def _resolve_default_dflash_runtime(
     model,
     prompt_tokens,
     *,
+    dflash_adapter: str | None = None,
     max_new_tokens: int,
     block_size: int,
     eos_token_id,
@@ -84,11 +85,11 @@ def _resolve_default_dflash_runtime(
         max_new_tokens=max_new_tokens,
         block_size=block_size,
     )
-    preferred_name = getattr(model, "dflash_adapter", None)
-    if preferred_name is not None and not isinstance(preferred_name, str):
-        raise TypeError("model.dflash_adapter must be a string when set")
+    preferred_name = dflash_adapter
     if preferred_name is None:
-        return None
+        preferred_name = getattr(model, "dflash_adapter", None)
+    if preferred_name is not None and not isinstance(preferred_name, str):
+        raise TypeError("dflash adapter name must be a string when set")
     return resolve_dflash_runtime(
         context,
         preferred_name=preferred_name,
@@ -319,6 +320,7 @@ def greedy_decode(
     verify_block=None,
     block_size=16,
     prefer_dflash: bool = True,
+    dflash_adapter: str | None = None,
 ):
     """Generate text by always picking the highest-probability token."""
     if draft_block is not None or verify_block is not None:
@@ -340,6 +342,7 @@ def greedy_decode(
         runtime = _resolve_default_dflash_runtime(
             model,
             prompt_tokens,
+            dflash_adapter=dflash_adapter,
             max_new_tokens=max_new_tokens,
             block_size=block_size,
             eos_token_id=eos_token_id,

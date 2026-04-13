@@ -7,6 +7,7 @@ from .adapters import (
     list_dflash_adapters,
     register_dflash_adapter,
     resolve_dflash_adapter,
+    resolve_default_dflash_adapter,
     resolve_dflash_runtime,
 )
 from .contracts import (
@@ -31,6 +32,7 @@ __all__ = [
     "register_dflash_adapter",
     "get_dflash_adapter",
     "resolve_dflash_adapter",
+    "resolve_default_dflash_adapter",
     "resolve_dflash_runtime",
     "has_dflash_backend",
     "list_dflash_adapters",
