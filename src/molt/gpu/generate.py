@@ -10,17 +10,14 @@ import os
 import random
 from .tensor import Tensor
 from .dflash import (
-    DFlashRuntime,
+    DFlashSelectionContext,
     SpeculativeConditioning,
     SpeculativeDraftRequest,
     SpeculativeDraftResult,
     SpeculativeVerifyRequest,
     SpeculativeVerifyResult,
-    resolve_dflash_adapter,
+    resolve_dflash_runtime,
 )
-
-
-_DFLASH_DEFAULT_ADAPTER_NAME = None
 
 
 class SpeculativeDecodeResult:
@@ -79,25 +76,23 @@ def _resolve_default_dflash_runtime(
     block_size: int,
     eos_token_id,
 ):
-    backend = _requested_gpu_backend()
-    adapter = resolve_dflash_adapter(
-        model,
-        backend,
-        preferred_name=_DFLASH_DEFAULT_ADAPTER_NAME,
-    )
-    if adapter is None:
-        return None
-    runtime = adapter.create_runtime(
-        model,
-        list(prompt_tokens),
+    context = DFlashSelectionContext(
+        model=model,
+        backend=_requested_gpu_backend(),
+        prompt_tokens=prompt_tokens,
         eos_token_id=eos_token_id,
         max_new_tokens=max_new_tokens,
         block_size=block_size,
-        backend=backend,
     )
-    if not isinstance(runtime, DFlashRuntime):
-        raise TypeError("dflash adapter create_runtime() must return DFlashRuntime")
-    return runtime
+    preferred_name = getattr(model, "dflash_adapter", None)
+    if preferred_name is not None and not isinstance(preferred_name, str):
+        raise TypeError("model.dflash_adapter must be a string when set")
+    if preferred_name is None:
+        return None
+    return resolve_dflash_runtime(
+        context,
+        preferred_name=preferred_name,
+    )
 
 
 def speculative_decode_greedy(

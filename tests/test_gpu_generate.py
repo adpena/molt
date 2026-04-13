@@ -475,12 +475,12 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
 
     class FakeModel:
         kind = "fake-model"
+        dflash_adapter = "fake-adapter"
 
         def __call__(self, _tokens):
             raise AssertionError("plain greedy model path should not execute")
 
     monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
-    monkeypatch.setattr(generate_mod, "_DFLASH_DEFAULT_ADAPTER_NAME", "fake-adapter")
     register_dflash_adapter("fake-adapter", FakeAdapter())
 
     out = greedy_decode(
