@@ -53,6 +53,19 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def discover_falcon_config_json(target_root: Path) -> Path:
+    root_config = target_root / DEFAULT_CONFIG_FILENAME
+    if root_config.exists():
+        return root_config
+    weights_config = target_root / DEFAULT_WEIGHTS_SUBDIR / DEFAULT_CONFIG_FILENAME
+    if weights_config.exists():
+        return weights_config
+    raise FileNotFoundError(
+        "missing Falcon config json: expected "
+        f"{root_config} or {weights_config}"
+    )
+
+
 def build_deploy_surface(config_path: Path, target_root: Path) -> dict[str, Any]:
     config = load_wrangler_config(config_path)
     entrypoint = (config_path.parent / str(config.get("main", ""))).resolve()
@@ -62,15 +75,13 @@ def build_deploy_surface(config_path: Path, target_root: Path) -> dict[str, Any]
     artifact_root = target_root / DEFAULT_ARTIFACT_SUBDIR
     app_wasm = artifact_root / "app.wasm"
     runtime_wasm = artifact_root / "molt_runtime.wasm"
-    config_json = target_root / DEFAULT_CONFIG_FILENAME
     weights_dir = target_root / DEFAULT_WEIGHTS_SUBDIR
+    config_json = discover_falcon_config_json(target_root)
     tokenizer_json = weights_dir / DEFAULT_TOKENIZER_FILENAME
     if not app_wasm.exists():
         raise FileNotFoundError(f"missing Falcon app wasm: {app_wasm}")
     if not runtime_wasm.exists():
         raise FileNotFoundError(f"missing Falcon runtime wasm: {runtime_wasm}")
-    if not config_json.exists():
-        raise FileNotFoundError(f"missing Falcon config json: {config_json}")
     if not weights_dir.exists():
         raise FileNotFoundError(f"missing Falcon weights dir: {weights_dir}")
 
@@ -250,8 +261,6 @@ def materialize_deploy_bundle(
     weights_base_url: str | None,
     bundle_root: Path | None = None,
 ) -> dict[str, Any]:
-    if not weights_base_url:
-        raise ValueError("weights_base_url is required for Cloudflare thin-adapter bundles")
     surface = build_deploy_surface(config_path=config_path, target_root=target_root)
     bundle_root = (bundle_root or (target_root / DEFAULT_BUNDLE_SUBDIR)).resolve()
     assets_root = bundle_root / "assets"
@@ -307,7 +316,10 @@ def main() -> int:
         "--target-root",
         type=Path,
         required=True,
-        help="Falcon application root containing dist/browser_split, config.json, and weights/",
+        help=(
+            "Falcon application root containing dist/browser_split and weights/ "
+            "(config may live at the root or under weights/config.json)."
+        ),
     )
     parser.add_argument(
         "--wrangler-config",
