@@ -70,6 +70,8 @@ Current TurboQuant backend boundary:
 - native runtime execution now reads the packed cache object graph directly for
   that symbol instead of calling back into the cache’s Python
   `_attention_reference` method
+- when runtime shadow tensors are present on the cache object, the packed
+  intrinsic should prefer those over traversing encoded Python object graphs
 - next backend work should replace that bridge with real packed CUDA/Metal/
   WebGPU/ROCm kernels behind the same symbol
 

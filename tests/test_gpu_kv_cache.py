@@ -325,6 +325,62 @@ def test_native_turboquant_intrinsic_does_not_call_python_reference(tmp_path: Pa
     assert run.stdout.strip().splitlines() == ["(1, 1, 1, 8)"]
 
 
+def test_native_turboquant_intrinsic_uses_runtime_shadow_rows(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "gpu_turboquant_intrinsic_shadow_native.py"
+    probe.write_text(
+        "from molt.gpu.kv_cache import TurboQuantAttentionKVCache\n"
+        "from molt.gpu.tensor import Tensor\n"
+        "from molt.gpu.turboquant import TurboQuantCodec\n"
+        "\n"
+        "codec = TurboQuantCodec(dim=8, bits=3, seed=5, qjl_seed=19)\n"
+        "cache = TurboQuantAttentionKVCache(codec)\n"
+        "cache.append(\n"
+        "    Tensor([\n"
+        "        0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,\n"
+        "        0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,\n"
+        "    ], shape=(1, 1, 2, 8)),\n"
+        "    Tensor([\n"
+        "        0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,\n"
+        "        -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,\n"
+        "    ], shape=(1, 1, 2, 8)),\n"
+        ")\n"
+        "cache.keys()\n"
+        "cache.values()\n"
+        "cache._key_vectors = None\n"
+        "cache._value_vectors = None\n"
+        "cache._decoded_value_rows = None\n"
+        "def fail(*_args, **_kwargs):\n"
+        "    raise RuntimeError('python reference path should be bypassed')\n"
+        "cache._attention_reference = fail\n"
+        "q = Tensor([0.5, -0.1, 0.4, 0.2, -0.3, 0.6, -0.2, 0.1], shape=(1, 1, 1, 8))\n"
+        "out = cache.attention(q, scale=1.0)\n"
+        "print(out.shape)\n",
+        encoding="utf-8",
+    )
+
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=_native_molt_env(root),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["(1, 1, 1, 8)"]
+
+
 def test_turboquant_attention_kv_cache_reuses_decoded_values_across_attention_calls(monkeypatch):
     from molt.gpu.kv_cache import TurboQuantAttentionKVCache
     from molt.gpu.tensor import Tensor

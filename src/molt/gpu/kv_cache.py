@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import _intrinsics as _molt_intrinsics
 
 from . import Buffer
@@ -254,6 +255,10 @@ class TurboQuantAttentionKVCache:
         self._batch = None
         self._heads = None
         self._decoded_value_rows = None
+        self._runtime_key_mse_weight_rows = None
+        self._runtime_key_residual_sign_rows = None
+        self._runtime_key_residual_scale_rows = None
+        self._runtime_value_rows = None
 
     def __len__(self) -> int:
         if self._key_vectors is None:
@@ -290,6 +295,7 @@ class TurboQuantAttentionKVCache:
                         self.codec.quantize_prod(v_rows[batch_index][head_index][seq_index])
                     )
         self._decoded_value_rows = None
+        self._invalidate_runtime_shadow_rows()
 
     def attention(self, q: Tensor, *, scale: float, mask: Tensor | None = None) -> Tensor:
         if _MOLT_GPU_TURBOQUANT_ATTENTION_PACKED is not None:
@@ -380,6 +386,68 @@ class TurboQuantAttentionKVCache:
         self._decoded_value_rows[batch_index][kv_head_index] = rows
         return rows
 
+    def _invalidate_runtime_shadow_rows(self) -> None:
+        self._runtime_key_mse_weight_rows = None
+        self._runtime_key_residual_sign_rows = None
+        self._runtime_key_residual_scale_rows = None
+        self._runtime_value_rows = None
+
+    def _ensure_runtime_shadow_rows(self) -> None:
+        if self._runtime_key_mse_weight_rows is not None:
+            return
+        if self._key_vectors is None or self._value_vectors is None:
+            raise RuntimeError("cannot build TurboQuant runtime shadow rows from an empty cache")
+
+        batch = self._batch
+        heads = self._heads
+        seq = len(self)
+        dim = self.codec.dim
+        key_mse = []
+        key_sign = []
+        key_scale = []
+        value_rows = []
+
+        for batch_index in range(batch):
+            for head_index in range(heads):
+                decoded_values = self._decoded_values_for_head(batch_index, head_index)
+                for seq_index in range(seq):
+                    key_encoded = self._key_vectors[batch_index][head_index][seq_index]
+                    if key_encoded.mse_weights is not None:
+                        key_mse.extend(key_encoded.mse_weights)
+                    else:
+                        key_mse.extend(
+                            key_encoded.norm * self.codec.codebook[int(index)]
+                            for index in key_encoded.indices
+                        )
+                    key_sign.extend(key_encoded.residual_signs)
+                    if key_encoded.residual_scale is not None:
+                        key_scale.append(key_encoded.residual_scale)
+                    else:
+                        key_scale.append(
+                            math.sqrt(math.pi / 2.0)
+                            / float(dim)
+                            * key_encoded.residual_norm
+                            * key_encoded.norm
+                        )
+                    value_rows.extend(decoded_values[seq_index])
+
+        self._runtime_key_mse_weight_rows = Tensor(
+            key_mse,
+            shape=(batch, heads, seq, dim),
+        )
+        self._runtime_key_residual_sign_rows = Tensor(
+            key_sign,
+            shape=(batch, heads, seq, dim),
+        )
+        self._runtime_key_residual_scale_rows = Tensor(
+            key_scale,
+            shape=(batch, heads, seq),
+        )
+        self._runtime_value_rows = Tensor(
+            value_rows,
+            shape=(batch, heads, seq, dim),
+        )
+
     def truncate(self, length: int) -> None:
         if length < 0:
             raise ValueError("KV cache length must be non-negative")
@@ -398,17 +466,21 @@ class TurboQuantAttentionKVCache:
             self._batch = None
             self._heads = None
             self._decoded_value_rows = None
+            self._invalidate_runtime_shadow_rows()
             return
         for batch_index in range(self._batch):
             for head_index in range(self._heads):
                 del self._key_vectors[batch_index][head_index][length:]
                 del self._value_vectors[batch_index][head_index][length:]
         self._decoded_value_rows = None
+        self._invalidate_runtime_shadow_rows()
 
     def keys(self):
+        self._ensure_runtime_shadow_rows()
         return _KVCacheKeyView(self)
 
     def values(self):
+        self._ensure_runtime_shadow_rows()
         return _KVCacheValueView(self)
 
 
