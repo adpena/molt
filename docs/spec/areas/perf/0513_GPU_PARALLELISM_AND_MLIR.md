@@ -59,6 +59,8 @@ Current cache semantics:
   transposed key views across repeated attention calls until mutation
 - dense cache materialization should assemble projected chunks in one pass,
   not via chained tensor concatenation
+- TurboQuant encoded vectors should precompute score-side weights/scales so
+  prepared-query scoring avoids repeated codebook indexing and scalar setup
 
 Current TurboQuant backend boundary:
 - runtime/backend now own an explicit `molt_gpu_turboquant_attention_packed`
