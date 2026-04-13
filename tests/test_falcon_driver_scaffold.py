@@ -89,6 +89,64 @@ def test_falcon_driver_deploy_surface_accepts_weights_config_layout(
     )
 
 
+def test_falcon_driver_deploy_surface_accepts_alternate_weights_root(
+    tmp_path: Path,
+) -> None:
+    target_root = tmp_path / "falcon-target"
+    artifact_dir = target_root / "dist" / "browser_split"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "app.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
+    (artifact_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
+    (target_root / "config.json").write_text('{"dim":2}\n', encoding="utf-8")
+
+    default_weights = target_root / "weights"
+    default_weights.mkdir()
+    (default_weights / "layer0.safetensors").write_bytes(b"old")
+    (default_weights / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+
+    alt_weights = tmp_path / "falcon-weights-f16"
+    alt_weights.mkdir()
+    (alt_weights / "model.safetensors").write_bytes(b"new-weights")
+    (alt_weights / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+
+    deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy_alt_weights")
+    surface = deploy.build_deploy_surface(
+        config_path=DRIVER_DIR / "wrangler.jsonc",
+        target_root=target_root,
+        weights_root=alt_weights,
+    )
+
+    assert surface["artifacts"]["weights_dir"] == str(alt_weights.resolve())
+    assert surface["artifacts"]["tokenizer_json"] == str((alt_weights / "tokenizer.json").resolve())
+    assert surface["artifact_manifest"]["weights"][0]["relative_path"] == "model.safetensors"
+
+
+def test_falcon_driver_deploy_surface_accepts_alternate_weights_root_config_layout(
+    tmp_path: Path,
+) -> None:
+    target_root = tmp_path / "falcon-target"
+    artifact_dir = target_root / "dist" / "browser_split"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "app.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
+    (artifact_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
+
+    alt_weights = tmp_path / "falcon-weights-f16"
+    alt_weights.mkdir()
+    (alt_weights / "config.json").write_text('{"dim":2}\n', encoding="utf-8")
+    (alt_weights / "model.safetensors").write_bytes(b"new-weights")
+    (alt_weights / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+
+    deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy_alt_weights_config")
+    surface = deploy.build_deploy_surface(
+        config_path=DRIVER_DIR / "wrangler.jsonc",
+        target_root=target_root,
+        weights_root=alt_weights,
+    )
+
+    assert surface["artifacts"]["config_json"] == str((alt_weights / "config.json").resolve())
+    assert surface["artifact_manifest"]["immutable"]["config_json"]["relative_path"] == "config.json"
+
+
 def test_falcon_driver_deploy_script_emits_json(tmp_path: Path) -> None:
     target_root = tmp_path / "falcon-target"
     artifact_dir = target_root / "dist" / "browser_split"
@@ -250,6 +308,50 @@ def test_falcon_driver_verify_wrapper_emits_json(tmp_path: Path) -> None:
     assert payload["bundle_contract"]["manifest_asset"]
     assert payload["wrangler_check"]["returncode"] == 0
     assert payload["wrangler_dry_run"]["returncode"] == 0
+
+
+def test_falcon_driver_verify_wrapper_accepts_alternate_weights_root(tmp_path: Path) -> None:
+    target_root = tmp_path / "falcon-target"
+    artifact_dir = target_root / "dist" / "browser_split"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "app.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
+    (artifact_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
+    (target_root / "config.json").write_text('{"dim":2}\n', encoding="utf-8")
+
+    weights_root = tmp_path / "falcon-weights-f16"
+    weights_root.mkdir()
+    (weights_root / "config.json").write_text('{"dim":2}\n', encoding="utf-8")
+    (weights_root / "model.safetensors").write_bytes(b"weights-f16")
+    (weights_root / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+
+    res = subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY_PY),
+            "--target-root",
+            str(target_root),
+            "--weights-root",
+            str(weights_root),
+            "--weights-base-url",
+            "https://weights.example.invalid/falcon-f16",
+            "--wrangler",
+            "true",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert res.returncode == 0, res.stderr
+    payload = json.loads(res.stdout)
+    manifest = json.loads(Path(payload["bundle"]["manifest_asset"]).read_text(encoding="utf-8"))
+    assert manifest["weights"]["base_url"] == "https://weights.example.invalid/falcon-f16"
+    model_record = next(
+        record
+        for record in manifest["weights"]["files"]
+        if record["path"] == "model.safetensors"
+    )
+    assert model_record["size_bytes"] == len(b"weights-f16")
 
 
 def test_falcon_browser_driver_init_and_ocr_tokens_roundtrip(tmp_path: Path) -> None:

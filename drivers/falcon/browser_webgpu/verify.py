@@ -28,6 +28,7 @@ def verify_materialized_bundle(
     *,
     target_root: Path,
     weights_base_url: str | None,
+    weights_root: Path | None,
     wrangler: str,
     wrangler_config: Path | None = None,
     bundle_root: Path | None = None,
@@ -41,6 +42,7 @@ def verify_materialized_bundle(
         config_path=config_path,
         target_root=target_root.resolve(),
         weights_base_url=weights_base_url,
+        weights_root=weights_root.resolve() if weights_root else None,
         bundle_root=bundle_root,
     )
     project_root = (project_root or REPO_ROOT).resolve()
@@ -92,6 +94,7 @@ def main() -> int:
     )
     parser.add_argument("--target-root", type=Path, required=True)
     parser.add_argument("--weights-base-url", type=str, default=None)
+    parser.add_argument("--weights-root", type=Path, default=None)
     parser.add_argument("--wrangler", type=str, default="wrangler")
     parser.add_argument("--wrangler-config", type=Path, default=None)
     parser.add_argument("--bundle-root", type=Path, default=None)
@@ -102,6 +105,7 @@ def main() -> int:
     payload = verify_materialized_bundle(
         target_root=args.target_root,
         weights_base_url=args.weights_base_url,
+        weights_root=args.weights_root,
         wrangler=args.wrangler,
         wrangler_config=args.wrangler_config,
         bundle_root=args.bundle_root,
