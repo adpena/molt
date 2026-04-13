@@ -939,7 +939,7 @@ unsafe fn build_class_from_args(
             if object_type_id(namespace_ptr) != TYPE_ID_DICT {
                 return Ok(());
             }
-            for key in [b"__classcell__".as_slice(), b"__classdictcell__".as_slice()] {
+            for key in [b"__classdictcell__".as_slice()] {
                 let Some(key_bits) = attr_name_bits_from_bytes(_py, key) else {
                     return Err(MoltObject::none().bits());
                 };
@@ -4196,7 +4196,7 @@ unsafe fn bind_builtin_splitlines(_py: &PyToken<'_>, args: &CallArgs) -> Option<
         let name_obj = obj_from_bits(name_bits);
         let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
         if name_str != "keepends" {
-            let msg = format!("'{name_str}' is an invalid keyword argument for splitlines()");
+            let msg = format!("splitlines() got an unexpected keyword argument '{name_str}'");
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
         if saw_keepends {
