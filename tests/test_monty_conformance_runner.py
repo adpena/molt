@@ -9,6 +9,25 @@ sys.path.insert(0, "tests/harness")
 import run_molt_conformance
 
 
+def test_find_molt_prefers_repo_checkout_cli(monkeypatch, tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    cli_path = repo_root / "src" / "molt" / "cli.py"
+    cli_path.parent.mkdir(parents=True)
+    cli_path.write_text("print('ok')\n", encoding="utf-8")
+
+    monkeypatch.delenv("MOLT_BIN", raising=False)
+    monkeypatch.setattr(run_molt_conformance, "SRC_ROOT", repo_root / "src")
+    monkeypatch.setattr(run_molt_conformance.shutil, "which", lambda *_: None)
+
+    assert run_molt_conformance.find_molt() == [sys.executable, "-m", "molt.cli"]
+
+
+def test_find_molt_parses_molt_bin_override(monkeypatch):
+    monkeypatch.setenv("MOLT_BIN", "custom-molt --flag")
+
+    assert run_molt_conformance.find_molt() == ["custom-molt", "--flag"]
+
+
 def test_molt_build_env_sets_canonical_defaults(monkeypatch):
     repo_root = Path("/tmp/molt-repo")
     for key in (
