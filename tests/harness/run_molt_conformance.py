@@ -91,7 +91,8 @@ def find_molt() -> list[str] | None:
 def _molt_build_env(repo_root: Path = REPO_ROOT) -> dict[str, str]:
     """Return canonical build env defaults for conformance runs."""
     env = os.environ.copy()
-    env.update(build_molt_conformance_env(repo_root, "monty-conformance"))
+    session_id = env.get("MOLT_SESSION_ID") or "monty-conformance"
+    env.update(build_molt_conformance_env(repo_root, session_id))
     return env
 
 

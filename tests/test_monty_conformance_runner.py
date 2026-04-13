@@ -71,7 +71,7 @@ def test_molt_build_env_overrides_ambient_roots(monkeypatch):
     assert env["CARGO_TARGET_DIR"] == str(repo_root / "target")
     assert env["TMPDIR"] == str(repo_root / "tmp")
     assert env["PYTHONPATH"] == str(repo_root / "src")
-    assert env["MOLT_SESSION_ID"] == "monty-conformance"
+    assert env["MOLT_SESSION_ID"] == "ambient-session"
     assert env["KEEP_ME"] == "1"
 
 
