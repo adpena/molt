@@ -62,6 +62,33 @@ def test_falcon_driver_deploy_surface_is_target_root_driven(tmp_path: Path) -> N
     assert surface["artifact_manifest"]["weights"][0]["relative_path"] == "layer0.safetensors"
 
 
+def test_falcon_driver_deploy_surface_accepts_weights_config_layout(
+    tmp_path: Path,
+) -> None:
+    target_root = tmp_path / "falcon-target"
+    artifact_dir = target_root / "dist" / "browser_split"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "app.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
+    (artifact_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\x00\x00\x00")
+    weights_dir = target_root / "weights"
+    weights_dir.mkdir()
+    (weights_dir / "config.json").write_text('{"dim":2}\n', encoding="utf-8")
+    (weights_dir / "layer0.safetensors").write_bytes(b"weights")
+    (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
+
+    deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy_weights_config")
+    surface = deploy.build_deploy_surface(
+        config_path=DRIVER_DIR / "wrangler.jsonc",
+        target_root=target_root,
+    )
+
+    assert surface["artifacts"]["config_json"] == str(weights_dir / "config.json")
+    assert (
+        surface["artifact_manifest"]["immutable"]["config_json"]["relative_path"]
+        == "weights/config.json"
+    )
+
+
 def test_falcon_driver_deploy_script_emits_json(tmp_path: Path) -> None:
     target_root = tmp_path / "falcon-target"
     artifact_dir = target_root / "dist" / "browser_split"
@@ -143,7 +170,7 @@ def test_falcon_driver_materialize_bundle_emits_manifest_and_assets(
         assert check.returncode == 0, check.stdout + check.stderr
 
 
-def test_falcon_driver_materialize_bundle_requires_weights_base_url(
+def test_falcon_driver_materialize_bundle_allows_same_origin_weights(
     tmp_path: Path,
 ) -> None:
     target_root = tmp_path / "falcon-target"
@@ -158,16 +185,22 @@ def test_falcon_driver_materialize_bundle_requires_weights_base_url(
     (weights_dir / "tokenizer.json").write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
 
     deploy = _load_module(DEPLOY_PY, "falcon_driver_deploy_require_base_url")
-    try:
-        deploy.materialize_deploy_bundle(
-            config_path=DRIVER_DIR / "wrangler.jsonc",
-            target_root=target_root,
-            weights_base_url=None,
+    bundle = deploy.materialize_deploy_bundle(
+        config_path=DRIVER_DIR / "wrangler.jsonc",
+        target_root=target_root,
+        weights_base_url=None,
+    )
+
+    manifest = json.loads(
+        (Path(bundle["bundle_root"]) / "assets" / "driver-manifest.base.json").read_text(
+            encoding="utf-8"
         )
-    except ValueError as exc:
-        assert "weights_base_url" in str(exc)
-    else:
-        raise AssertionError("expected materialize_deploy_bundle to reject missing weights_base_url")
+    )
+    assert manifest["weights"]["base_url"] is None
+    wrangler = json.loads(
+        (Path(bundle["bundle_root"]) / "wrangler.jsonc").read_text(encoding="utf-8")
+    )
+    assert "WEIGHTS_BASE_URL" not in wrangler.get("vars", {})
 
 
 def test_falcon_driver_bench_script_help() -> None:
