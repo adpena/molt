@@ -123,3 +123,19 @@ def test_tinygrad_tensor_methods_cover_rope_style_surface() -> None:
     assert Tensor([1.0, 3.0, 2.0]).argmax().item() == 1.0
     assert Tensor([[1.0], [2.0]]).squeeze(-1).shape == (2,)
     assert Tensor([1.0, 2.0]).cast(dtypes.float32).shape == (2,)
+
+
+def test_tinygrad_tensor_indexing_covers_falcon_patterns() -> None:
+    from tinygrad import Tensor, dtypes
+
+    x = Tensor(list(range(24))).reshape(2, 3, 4).cast(dtypes.float32)
+    assert x[..., :2].shape == (2, 3, 2)
+    assert x[0, 1:3].to_list() == [[4.0, 5.0, 6.0, 7.0], [8.0, 9.0, 10.0, 11.0]]
+
+    y = Tensor(list(range(12))).reshape(3, 4).cast(dtypes.float32)
+    idx = Tensor([0, 2])
+    assert y[idx].to_list() == [[0.0, 1.0, 2.0, 3.0], [8.0, 9.0, 10.0, 11.0]]
+
+    packed = Tensor(list(range(8))).reshape(2, 4).cast(dtypes.float32)
+    assert packed[..., 0::2].to_list() == [[0.0, 2.0], [4.0, 6.0]]
+    assert packed[..., 1::2].to_list() == [[1.0, 3.0], [5.0, 7.0]]
