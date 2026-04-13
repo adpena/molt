@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _native_molt_env(
     root: Path, *, hermetic: bool = False, module_roots: tuple[Path, ...] = ()
@@ -24,6 +26,16 @@ def _native_molt_env(
     if hermetic:
         env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
     return env
+
+
+def _flatten_numeric(values):
+    out = []
+    for value in values:
+        if isinstance(value, list):
+            out.extend(_flatten_numeric(value))
+        else:
+            out.append(float(value))
+    return out
 
 
 def test_tinygrad_import_exports_tensor_nn_and_dtypes() -> None:
@@ -170,12 +182,112 @@ def test_tinygrad_tensor_scalar_power_supports_rope_pattern() -> None:
     assert out.to_list() == [1.0, 100.0]
 
 
+def test_tinygrad_random_surface_matches_upstream_samples() -> None:
+    from tinygrad import Tensor
+
+    Tensor.manual_seed(42)
+    rand_vals = _flatten_numeric(Tensor.rand(2, 3).to_list())
+    assert rand_vals == pytest.approx(
+        [
+            0.9970332384109497,
+            0.5899163484573364,
+            0.2225480079650879,
+            0.7550519704818726,
+            0.9056503772735596,
+            0.8648829460144043,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+
+    Tensor.manual_seed(42)
+    uniform_vals = _flatten_numeric(Tensor.uniform(2, 3, low=-1.0, high=1.0).to_list())
+    assert uniform_vals == pytest.approx(
+        [
+            0.9940664768218994,
+            0.17983269691467285,
+            -0.5549039840698242,
+            0.5101039409637451,
+            0.8113007545471191,
+            0.7297658920288086,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+
+    Tensor.manual_seed(42)
+    glorot_vals = _flatten_numeric(Tensor.glorot_uniform(2, 3).to_list())
+    assert glorot_vals == pytest.approx(
+        [
+            1.0889452695846558,
+            0.19699685275554657,
+            -0.6078668832778931,
+            0.5587908625602722,
+            0.8887354731559753,
+            0.7994185090065002,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+
+
+def test_tinygrad_nn_initializers_match_upstream_samples() -> None:
+    from tinygrad import Tensor, nn
+
+    Tensor.manual_seed(42)
+    linear = nn.Linear(3, 4, bias=False)
+    assert _flatten_numeric(linear.weight.to_list()) == pytest.approx(
+        [
+            -0.5485392212867737,
+            0.39442524313926697,
+            0.37015819549560547,
+            -0.1927901804447174,
+            0.14214147627353668,
+            -0.37743058800697327,
+            -0.13001607358455658,
+            -0.2206762135028839,
+            0.07370937615633011,
+            -0.3515026271343231,
+            0.01237936969846487,
+            -0.3913246691226959,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+
+    Tensor.manual_seed(42)
+    embedding = nn.Embedding(5, 3)
+    assert _flatten_numeric(embedding.weight.to_list()) == pytest.approx(
+        [
+            0.09517453610897064,
+            -0.7437633872032166,
+            -0.011449949815869331,
+            -0.5758479833602905,
+            -0.6063239574432373,
+            0.6935641765594482,
+            0.44023483991622925,
+            -0.3650517761707306,
+            0.5532074570655823,
+            0.5130081176757812,
+            0.15388986468315125,
+            0.5957281589508057,
+            -0.16496628522872925,
+            -0.17185786366462708,
+            0.3912637531757355,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+
+
 def test_tinygrad_falcon_main_runs_with_tiny_config_and_empty_weights() -> None:
     root = Path(__file__).resolve().parents[1]
     probe = root / "tmp" / "tinygrad_falcon_main_probe_test.py"
     probe.write_text(
         "import struct\n"
         "from main import init, ocr_tokens\n"
+        "from tinygrad import Tensor\n"
+        "Tensor.manual_seed(42)\n"
         "config_json = '''{\\n"
         '  "dim": 8,\\n'
         '  "n_layers": 1,\\n'
@@ -223,7 +335,7 @@ def test_tinygrad_falcon_main_runs_with_tiny_config_and_empty_weights() -> None:
         check=False,
     )
     assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.strip() == "[43]"
+    assert run.stdout.strip() == "[44]"
 
 
 def test_tinygrad_falcon_helper_modules_compile_in_native_molt(tmp_path: Path) -> None:
@@ -280,8 +392,9 @@ def test_tinygrad_tensor_randn_and_linear_compile_in_native_molt(tmp_path: Path)
     probe = tmp_path / "tinygrad_randn_linear_native.py"
     probe.write_text(
         "from tinygrad import Tensor, nn\n"
+        "Tensor.manual_seed(7)\n"
         "print('before_randn')\n"
-        "x = Tensor.randn(2, 3, seed=7)\n"
+        "x = Tensor.randn(2, 3)\n"
         "print('randn_shape', x.shape)\n"
         "layer = nn.Linear(3, 4, bias=False)\n"
         "y = layer(Tensor([[1.0, 2.0, 3.0]]))\n"
