@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -68,14 +69,22 @@ class Stats:
 # ---------------------------------------------------------------------------
 
 
-def find_molt() -> str | None:
-    """Return the path to the molt CLI, or None."""
+def _normalize_molt_cmd(cmd: str | list[str]) -> list[str]:
+    if isinstance(cmd, list):
+        return cmd
+    return shlex.split(cmd)
+
+
+def find_molt() -> list[str] | None:
+    """Return the command used to invoke the Molt CLI, or None."""
     if os.environ.get("MOLT_BIN"):
-        return os.environ["MOLT_BIN"]
+        return _normalize_molt_cmd(os.environ["MOLT_BIN"])
+    if (SRC_ROOT / "molt" / "cli.py").exists():
+        return [sys.executable, "-m", "molt.cli"]
     for candidate in ("molt", "/opt/homebrew/bin/molt", "/usr/local/bin/molt"):
         found = shutil.which(candidate)
         if found:
-            return found
+            return [found]
     return None
 
 
@@ -168,7 +177,7 @@ def _pick_preflight_files(test_files: list[Path], n: int = 5) -> list[Path]:
     return success_files
 
 
-def preflight(molt: str, test_files: list[Path], tmpdir: Path) -> bool:
+def preflight(molt_cmd: list[str], test_files: list[Path], tmpdir: Path) -> bool:
     """Compile a handful of trivial files to verify Molt works.
 
     The very first compilation may trigger a full Rust recompile of the
@@ -190,7 +199,7 @@ def preflight(molt: str, test_files: list[Path], tmpdir: Path) -> bool:
         try:
             t0 = time.monotonic()
             r = subprocess.run(
-                [molt, "build", str(f), "--output", str(out)],
+                [*molt_cmd, "build", str(f), "--output", str(out)],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -221,13 +230,13 @@ def preflight(molt: str, test_files: list[Path], tmpdir: Path) -> bool:
     return ok > 0
 
 
-def compile_file(molt: str, src: Path, out: Path) -> tuple[bool, str]:
+def compile_file(molt_cmd: list[str], src: Path, out: Path) -> tuple[bool, str]:
     """Compile *src* to a native binary at *out*. Returns (success, detail)."""
     env = _molt_build_env()
     _ensure_build_dirs(env)
     try:
         r = subprocess.run(
-            [molt, "build", str(src), "--output", str(out)],
+            [*molt_cmd, "build", str(src), "--output", str(out)],
             capture_output=True,
             text=True,
             timeout=COMPILE_TIMEOUT,
@@ -327,7 +336,8 @@ def main(argv: list[str] | None = None) -> int:
             "ERROR: molt CLI not found. Install Molt or set MOLT_BIN.", file=sys.stderr
         )
         return 1
-    print(f"Using Molt at: {molt}")
+    molt_cmd = _normalize_molt_cmd(molt)
+    print(f"Using Molt at: {shlex.join(molt_cmd)}")
 
     if not CORPUS_DIR.exists():
         print(f"ERROR: corpus not found: {CORPUS_DIR}", file=sys.stderr)
@@ -360,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
             "Running preflight (first build may take minutes if runtime "
             "needs recompilation)..."
         )
-        if not preflight(molt, test_files, tmp):
+        if not preflight(molt_cmd, test_files, tmp):
             print(
                 "ERROR: preflight failed -- Molt cannot compile any files.",
                 file=sys.stderr,
@@ -380,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
 
             binary = tmp / filepath.stem
-            ok, detail = compile_file(molt, filepath, binary)
+            ok, detail = compile_file(molt_cmd, filepath, binary)
 
             if not ok:
                 if "timeout" in detail:
