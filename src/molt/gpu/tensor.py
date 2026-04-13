@@ -1872,6 +1872,14 @@ class Tensor:
             self._shape,
         )
 
+    def rsqrt(self) -> 'Tensor':
+        """Element-wise reciprocal square root."""
+        data = self._data_list()
+        return self._from_flat(
+            [1.0 / math.sqrt(x) if x > 0 else float('inf') if x == 0 else float('nan') for x in data],
+            self._shape,
+        )
+
     def abs(self) -> 'Tensor':
         """Element-wise absolute value."""
         data = self._data_list()
