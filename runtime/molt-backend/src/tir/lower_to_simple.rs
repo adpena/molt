@@ -530,19 +530,16 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
         if if_inlined_blocks.contains(&then_bid) || if_inlined_blocks.contains(&else_bid) {
             continue;
         }
-        // No check_exception in successors — those need labels for implicit edges.
-        if then_blk
-            .ops
-            .iter()
-            .any(|op| op.opcode == OpCode::CheckException)
-        {
+        // Successors that carry exception-region ops need explicit labels.
+        let successor_needs_label = |block: &TirBlock| {
+            block.ops.iter().any(|op| {
+                matches!(op.opcode, OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd)
+            })
+        };
+        if successor_needs_label(then_blk) {
             continue;
         }
-        if else_blk
-            .ops
-            .iter()
-            .any(|op| op.opcode == OpCode::CheckException)
-        {
+        if successor_needs_label(else_blk) {
             continue;
         }
         // Only straight-line successors are safe to inline as structured
@@ -3661,6 +3658,91 @@ mod tests {
             !ops.iter()
                 .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
             "successors containing nested SCF must stay label-based instead of inlining to structured if/else: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn structured_if_skips_successor_with_try_region_markers() {
+        let mut func = TirFunction::new(
+            "branch_with_try_region_successor".into(),
+            vec![TirType::Bool],
+            TirType::None,
+        );
+
+        let then_blk = func.fresh_block();
+        let else_blk = func.fresh_block();
+        let join_blk = func.fresh_block();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.terminator = Terminator::CondBranch {
+            cond: ValueId(0),
+            then_block: then_blk,
+            then_args: vec![],
+            else_block: else_blk,
+            else_args: vec![],
+        };
+
+        let mut try_attrs = AttrDict::new();
+        try_attrs.insert("value".into(), AttrValue::Int(100));
+        func.blocks.insert(
+            then_blk,
+            TirBlock {
+                id: then_blk,
+                args: vec![],
+                ops: vec![
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::TryStart,
+                        operands: vec![],
+                        results: vec![],
+                        attrs: try_attrs.clone(),
+                        source_span: None,
+                    },
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::TryEnd,
+                        operands: vec![],
+                        results: vec![],
+                        attrs: try_attrs,
+                        source_span: None,
+                    },
+                ],
+                terminator: Terminator::Branch {
+                    target: join_blk,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            else_blk,
+            TirBlock {
+                id: else_blk,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: join_blk,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            join_blk,
+            TirBlock {
+                id: join_blk,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        assert!(
+            validate_labels(&ops),
+            "try-region successor lowering must keep valid labels after lower_to_simple: {ops:?}"
+        );
+        assert!(
+            !ops.iter()
+                .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
+            "successors containing try_start/try_end must stay label-based instead of inlining to structured if/else: {ops:?}"
         );
     }
 
