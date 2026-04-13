@@ -94,3 +94,32 @@ def test_tinygrad_import_shim_compiles_in_native_molt(tmp_path: Path) -> None:
         "True",
         "RMSNorm",
     ]
+
+
+def test_tinygrad_tensor_methods_cover_rope_style_surface() -> None:
+    from tinygrad import Tensor, dtypes
+
+    t = Tensor.arange(4).float().unsqueeze(1).expand(4, 2)
+    assert t.shape == (4, 2)
+
+    freqs = (Tensor.arange(0, 4, 2).float() / 4).unsqueeze(0)
+    angles = Tensor.arange(3).float().unsqueeze(1) * freqs
+    cos = angles.cos()
+    sin = angles.sin()
+    stacked = Tensor.stack(cos, sin, dim=-1)
+
+    assert stacked.shape == (3, 2, 2)
+
+    left = Tensor([[1.0, 2.0]])
+    right = Tensor([[3.0, 4.0]])
+    cat = left.cat(right, dim=0)
+    assert cat.to_list() == [[1.0, 2.0], [3.0, 4.0]]
+
+    transposed = cat.unsqueeze(0).transpose(-2, -1)
+    assert transposed.shape == (1, 2, 2)
+
+    x = Tensor([[-1.0, 2.0, 0.5]])
+    assert x.maximum(0.0).to_list() == [[0.0, 2.0, 0.5]]
+    assert Tensor([1.0, 3.0, 2.0]).argmax().item() == 1.0
+    assert Tensor([[1.0], [2.0]]).squeeze(-1).shape == (2,)
+    assert Tensor([1.0, 2.0]).cast(dtypes.float32).shape == (2,)
