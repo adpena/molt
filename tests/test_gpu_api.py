@@ -1129,6 +1129,57 @@ def test_transformer_multihead_attention_uses_tensor_sdpa(monkeypatch):
     assert seen["mask"].to_list() == [[[[0.0, float("-inf")], [0.0, 0.0]]]]
 
 
+def test_tensor_cat_nonzero_dim_routes_through_tensor_ops(monkeypatch):
+    import molt.gpu.tensor as tensor_mod
+    from molt.gpu.tensor import Tensor
+
+    x = Tensor([[1.0, 2.0], [3.0, 4.0]])
+    y = Tensor([[5.0], [6.0]])
+    x.to_list = lambda: (_ for _ in ()).throw(
+        AssertionError("cat(dim!=0) should not materialize lhs via to_list")
+    )
+    y.to_list = lambda: (_ for _ in ()).throw(
+        AssertionError("cat(dim!=0) should not materialize rhs via to_list")
+    )
+
+    x_perm = Tensor([[1.0, 3.0], [2.0, 4.0]])
+    y_perm = Tensor([[5.0, 6.0]])
+    concat_perm = Tensor([[1.0, 3.0], [2.0, 4.0], [5.0, 6.0]])
+    final = Tensor([[1.0, 2.0, 5.0], [3.0, 4.0, 6.0]])
+    seen = []
+
+    def fake_permute(tensor, dims):
+        seen.append(("permute", tensor.shape, tuple(dims)))
+        if tensor is x:
+            assert tuple(dims) == (1, 0)
+            return x_perm
+        if tensor is y:
+            assert tuple(dims) == (1, 0)
+            return y_perm
+        if tensor is concat_perm:
+            assert tuple(dims) == (1, 0)
+            return final
+        raise AssertionError(f"unexpected tensor passed to permute: {tensor.shape}")
+
+    def fake_concat(tensors):
+        seen.append(("concat", tuple(tensor.shape for tensor in tensors)))
+        assert tensors == (x_perm, y_perm)
+        return concat_perm
+
+    monkeypatch.setattr(tensor_mod, "tensor_permute_dims", fake_permute)
+    monkeypatch.setattr(tensor_mod, "tensor_concat_first_dim", fake_concat)
+
+    out = x.cat(y, dim=1)
+
+    assert out.to_list() == [[1.0, 2.0, 5.0], [3.0, 4.0, 6.0]]
+    assert seen == [
+        ("permute", (2, 2), (1, 0)),
+        ("permute", (2, 1), (1, 0)),
+        ("concat", ((2, 2), (1, 2))),
+        ("permute", (3, 2), (1, 0)),
+    ]
+
+
 def test_embedding_lookup_avoids_full_weight_materialization(monkeypatch):
     from molt.gpu.nn import Embedding
     from molt.gpu.tensor import Tensor
