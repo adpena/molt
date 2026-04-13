@@ -183,6 +183,16 @@ def test_tinygrad_tensor_scalar_power_supports_rope_pattern() -> None:
     assert out.to_list() == [1.0, 100.0]
 
 
+def test_tinygrad_argmax_matches_upstream_surface() -> None:
+    from tinygrad import Tensor
+
+    t = Tensor([[1.0, 0.0, 2.0], [5.0, 4.0, 3.0]])
+    assert t.argmax().item() == 3.0
+    assert t.argmax(axis=0).to_list() == [1.0, 1.0, 1.0]
+    assert t.argmax(axis=1).to_list() == [2.0, 0.0]
+    assert t.argmax(axis=1, keepdim=True).to_list() == [[2.0], [0.0]]
+
+
 def test_tinygrad_layernorm_and_rmsnorm_match_upstream_samples() -> None:
     from tinygrad import Tensor, nn
 
@@ -357,6 +367,43 @@ def test_tinygrad_random_surface_compiles_in_native_molt(tmp_path: Path) -> None
         abs=1e-7,
         rel=0.0,
     )
+
+
+def test_tinygrad_argmax_compiles_in_native_molt(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "tinygrad_argmax_native.py"
+    probe.write_text(
+        "from tinygrad import Tensor\n"
+        "t = Tensor([[1.0, 0.0, 2.0], [5.0, 4.0, 3.0]])\n"
+        "print(t.argmax().item())\n"
+        "print(t.argmax(axis=0).to_list())\n"
+        "print(t.argmax(axis=1).to_list())\n"
+        "print(t.argmax(axis=1, keepdim=True).to_list())\n",
+        encoding="utf-8",
+    )
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=_native_molt_env(root, hermetic=True),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    lines = [ast.literal_eval(line) for line in run.stdout.strip().splitlines()]
+    assert lines[0] == 3.0
+    assert lines[1] == [1.0, 1.0, 1.0]
+    assert lines[2] == [2.0, 0.0]
+    assert lines[3] == [[2.0], [0.0]]
 
 
 def test_tinygrad_norm_layers_compile_in_native_molt(tmp_path: Path) -> None:
