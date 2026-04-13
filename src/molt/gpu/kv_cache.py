@@ -76,6 +76,7 @@ class DenseKVCache:
         self._heads = None
         self._head_dim = None
         self._length = 0
+        self._prepared_dense_views = {}
         self.key_tensor = None
         self.value_tensor = None
 
@@ -99,6 +100,7 @@ class DenseKVCache:
         self._key_chunks.append(k)
         self._value_chunks.append(v)
         self._length += seq
+        self._prepared_dense_views.clear()
         self.key_tensor = None
         self.value_tensor = None
 
@@ -133,16 +135,30 @@ class DenseKVCache:
         if heads == self._heads:
             expanded_key = key_tensor
             expanded_value = value_tensor
+            expanded_key_t = self._prepared_dense_views.get(("permute", heads))
+            if expanded_key_t is None:
+                expanded_key_t = tensor_permute_dims(expanded_key, (0, 1, 3, 2))
+                self._prepared_dense_views[("permute", heads)] = expanded_key_t
         else:
-            repeats = heads // self._heads if self._heads else 0
-            if heads < self._heads or heads % self._heads != 0:
-                raise ValueError(
-                    f"query head count {heads} is incompatible with kv head count {self._heads}"
+            prepared = self._prepared_dense_views.get(("gqa", heads))
+            if prepared is None:
+                repeats = heads // self._heads if self._heads else 0
+                if heads < self._heads or heads % self._heads != 0:
+                    raise ValueError(
+                        f"query head count {heads} is incompatible with kv head count {self._heads}"
+                    )
+                expanded_key = key_tensor.repeat_axis(1, repeats)
+                expanded_value = value_tensor.repeat_axis(1, repeats)
+                expanded_key_t = tensor_permute_dims(expanded_key, (0, 1, 3, 2))
+                self._prepared_dense_views[("gqa", heads)] = (
+                    expanded_key,
+                    expanded_value,
+                    expanded_key_t,
                 )
-            expanded_key = key_tensor.repeat_axis(1, repeats)
-            expanded_value = value_tensor.repeat_axis(1, repeats)
+            else:
+                expanded_key, expanded_value, expanded_key_t = prepared
 
-        scores = (q @ tensor_permute_dims(expanded_key, (0, 1, 3, 2))) * scale
+        scores = (q @ expanded_key_t) * scale
         if mask is not None:
             scores = scores + mask
         attn = tensor_softmax_last_axis(scores)
@@ -167,6 +183,7 @@ class DenseKVCache:
             self._heads = None
             self._head_dim = None
             self._length = 0
+            self._prepared_dense_views.clear()
             self.key_tensor = None
             self.value_tensor = None
             return
@@ -176,6 +193,7 @@ class DenseKVCache:
         self._key_chunks = [self.key_tensor]
         self._value_chunks = [self.value_tensor]
         self._length = length
+        self._prepared_dense_views.clear()
 
     def keys(self):
         return _KVCacheKeyView(self)
