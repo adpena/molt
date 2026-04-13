@@ -1095,6 +1095,40 @@ def test_nn_layernorm_uses_tensor_layernorm(monkeypatch):
     assert seen["eps"] == layer.eps
 
 
+def test_transformer_multihead_attention_uses_tensor_sdpa(monkeypatch):
+    import molt.gpu.transformer as transformer_mod
+    from molt.gpu.tensor import Tensor
+
+    attn = transformer_mod.MultiHeadAttention(embed_dim=4, num_heads=2, causal=True)
+    attn.q_proj = lambda x: x
+    attn.k_proj = lambda x: x
+    attn.v_proj = lambda x: x
+    attn.out_proj = lambda x: x
+
+    seen = {}
+
+    def fake_sdpa(q, k, v, mask, scale):
+        seen["q_shape"] = q.shape
+        seen["k_shape"] = k.shape
+        seen["v_shape"] = v.shape
+        seen["mask"] = mask
+        seen["scale"] = scale
+        return q
+
+    monkeypatch.setattr(transformer_mod, "tensor_scaled_dot_product_attention", fake_sdpa)
+
+    x = Tensor([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+    out = attn(x)
+
+    assert out.shape == (2, 4)
+    assert seen["q_shape"] == (1, 2, 2, 2)
+    assert seen["k_shape"] == (1, 2, 2, 2)
+    assert seen["v_shape"] == (1, 2, 2, 2)
+    assert seen["scale"] == attn.scale
+    assert seen["mask"].shape == (1, 1, 2, 2)
+    assert seen["mask"].to_list() == [[[[0.0, float("-inf")], [0.0, 0.0]]]]
+
+
 def test_embedding_lookup_avoids_full_weight_materialization(monkeypatch):
     from molt.gpu.nn import Embedding
     from molt.gpu.tensor import Tensor
