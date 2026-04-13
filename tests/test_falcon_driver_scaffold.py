@@ -890,7 +890,7 @@ try {{
     assert "requires manifestUrl" in run.stdout
 
 
-def test_falcon_browser_driver_requires_webgpu_or_injected_dispatcher(
+def test_falcon_browser_driver_fetches_manifest_before_gpu_capability_is_needed(
     tmp_path: Path,
 ) -> None:
     script = tmp_path / "missing_webgpu.mjs"
@@ -898,7 +898,7 @@ def test_falcon_browser_driver_requires_webgpu_or_injected_dispatcher(
         f"""
 import {{ initFalconBrowserWebGpu }} from {BROWSER_JS.as_uri()!r};
 globalThis.fetch = async () => {{
-  throw new Error("fetch should not run");
+  throw new Error("manifest fetch reached");
 }};
 try {{
   await initFalconBrowserWebGpu({{ manifestUrl: "https://example.invalid/driver-manifest.base.json" }});
@@ -916,5 +916,5 @@ try {{
         check=False,
     )
     assert run.returncode == 0, run.stderr
-    assert "requires WebGPU support or an injected gpuKernelDispatcher" in run.stdout
-    assert "fetch should not run" not in run.stdout
+    assert "manifest fetch reached" in run.stdout
+    assert "requires WebGPU support or an injected gpuKernelDispatcher" not in run.stdout
