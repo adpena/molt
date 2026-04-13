@@ -1324,7 +1324,7 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
                     }
                     return MoltObject::from_int(memoryview_len(ptr) as i64).bits();
                 }
-                if type_id == TYPE_ID_LIST {
+                if type_id == TYPE_ID_LIST || type_id == TYPE_ID_LIST_INT {
                     return MoltObject::from_int(list_len(ptr) as i64).bits();
                 }
                 if type_id == TYPE_ID_TUPLE {
