@@ -145,6 +145,29 @@ def _apply_dev_trusted(env: dict[str, str]) -> None:
     env.setdefault("MOLT_TRUSTED", "1")
 
 
+def _parse_test_runner_flags(args: list[str]) -> tuple[list[str], bool, str | None]:
+    remaining: list[str] = []
+    random_order = False
+    random_seed: str | None = None
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--random-order":
+            random_order = True
+            i += 1
+            continue
+        if arg == "--random-seed":
+            if i + 1 >= len(args):
+                raise RuntimeError("--random-seed requires a value")
+            random_order = True
+            random_seed = args[i + 1]
+            i += 2
+            continue
+        remaining.append(arg)
+        i += 1
+    return remaining, random_order, random_seed
+
+
 def main() -> None:
     cmd = sys.argv[1:] or ["help"]
     use_tty = "--tty" in cmd or os.environ.get("MOLT_TTY") == "1"
@@ -208,6 +231,12 @@ def main() -> None:
     elif cmd[0] == "test":
         env = os.environ.copy()
         _apply_dev_trusted(env)
+        test_cmd_args, random_order, random_seed = _parse_test_runner_flags(cmd[1:])
+        if test_cmd_args:
+            raise RuntimeError(
+                "Unrecognized tools/dev.py test arguments: "
+                + " ".join(test_cmd_args)
+            )
         src_path = str(ROOT / "src")
         existing = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = (
@@ -220,6 +249,10 @@ def main() -> None:
             batch_cmd = ["python3", "tools/dev_test_runner.py"]
             if python == TEST_PYTHONS[0]:
                 batch_cmd.append("--verified-subset")
+            if random_order:
+                batch_cmd.append("--random-order")
+            if random_seed is not None:
+                batch_cmd.extend(["--random-seed", random_seed])
             run_uv(batch_cmd, python=python, env=env, tty=use_tty)
             _log(f"tests done (python {python}) in {time.monotonic() - start:.2f}s")
     elif cmd[0] == "doctor":

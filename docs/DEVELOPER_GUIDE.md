@@ -310,6 +310,12 @@ If you want to modify Molt, follow these steps:
     uv run --python 3.12 python3 tools/dev.py test
     ```
     ```bash
+    # Run the full dev suite in seeded randomized order
+    uv run --python 3.12 python3 tools/dev.py test --random-order --random-seed 17
+    ```
+    Randomized order is opt-in for developer DX only. The canonical full-suite
+    proof lanes remain deterministic so failures stay reproducible.
+    ```bash
     # Run CPython regrtest against Molt (logs under logs/cpython_regrtest/)
     uv run --python 3.12 python3 tools/cpython_regrtest.py --clone
     ```
@@ -349,6 +355,8 @@ If you want to modify Molt, follow these steps:
     ```bash
     UV_NO_SYNC=1 UV_CACHE_DIR=$PWD/.uv-cache uv run --python 3.12 python3 tools/dev.py test
     ```
+    You can also enable randomized order through the runner environment:
+    `MOLT_PYTEST_RANDOM_ORDER=1 MOLT_PYTEST_RANDOM_SEED=<seed>`.
     If you need to install or update deps, run `uv sync` locally outside the
     sandbox, then re-run commands with `UV_NO_SYNC=1`.
 4.  **Explore**:
