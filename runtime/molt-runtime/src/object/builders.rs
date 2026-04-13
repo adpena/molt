@@ -18,7 +18,7 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
     })
 }
 
-unsafe fn alloc_dataclass_for_class_ptr(
+pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
     class_bits: u64,

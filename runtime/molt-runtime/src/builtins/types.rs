@@ -3642,9 +3642,7 @@ fn dataclasses_class_bits(_py: &PyToken<'_>, obj_bits: u64) -> u64 {
 }
 
 fn dataclasses_fields_dict_bits(_py: &PyToken<'_>, cls_bits: u64, missing: u64) -> Option<u64> {
-    let fields_name_bits = attr_name_bits_from_bytes(_py, b"__dataclass_fields__")?;
-    let fields_bits = molt_getattr_builtin(cls_bits, fields_name_bits, missing);
-    dec_ref_bits(_py, fields_name_bits);
+    let fields_bits = dc_getattr_default_bits(_py, cls_bits, b"__dataclass_fields__", missing)?;
     if exception_pending(_py) {
         clear_exception(_py);
         return None;
@@ -3667,7 +3665,6 @@ fn dataclasses_collect_fields_by_tag(
     field_tag_bits: u64,
 ) -> Option<Vec<u64>> {
     let fields_dict_ptr = obj_from_bits(fields_dict_bits).as_ptr()?;
-    let field_type_name_bits = attr_name_bits_from_bytes(_py, b"_field_type")?;
     let missing = missing_bits(_py);
     let mut out: Vec<u64> = Vec::new();
     let order = unsafe { dict_order(fields_dict_ptr) }.clone();
@@ -3676,16 +3673,17 @@ fn dataclasses_collect_fields_by_tag(
             continue;
         }
         let field_obj_bits = pair[1];
-        let tag_bits = molt_getattr_builtin(field_obj_bits, field_type_name_bits, missing);
+        let Some(tag_bits) = dc_getattr_default_bits(_py, field_obj_bits, b"_field_type", missing)
+        else {
+            return None;
+        };
         if exception_pending(_py) {
-            dec_ref_bits(_py, field_type_name_bits);
             return None;
         }
         if tag_bits == field_tag_bits {
             out.push(field_obj_bits);
         }
     }
-    dec_ref_bits(_py, field_type_name_bits);
     Some(out)
 }
 
@@ -5377,15 +5375,29 @@ fn dc_fields_ordered(_py: &PyToken<'_>, self_bits: u64) -> Option<Vec<(u64, u64)
     Some(result)
 }
 
+fn dc_getattr_default_bits(
+    _py: &PyToken<'_>,
+    obj_bits: u64,
+    attr: &[u8],
+    default_bits: u64,
+) -> Option<u64> {
+    let name_bits = attr_name_bits_from_bytes(_py, attr)?;
+    let val = crate::builtins::attributes::molt_get_attr_name_default(
+        obj_bits,
+        name_bits,
+        default_bits,
+    );
+    dec_ref_bits(_py, name_bits);
+    Some(val)
+}
+
 /// Helper: read the `_field_type` attribute from a field object and check
 /// whether it matches a given tag.
 fn dc_field_has_tag(_py: &PyToken<'_>, field_bits: u64, tag_name: &[u8]) -> bool {
-    let Some(ft_name_bits) = attr_name_bits_from_bytes(_py, b"_field_type") else {
+    let missing = missing_bits(_py);
+    let Some(ft_bits) = dc_getattr_default_bits(_py, field_bits, b"_field_type", missing) else {
         return false;
     };
-    let missing = missing_bits(_py);
-    let ft_bits = molt_getattr_builtin(field_bits, ft_name_bits, missing);
-    dec_ref_bits(_py, ft_name_bits);
     if exception_pending(_py) {
         clear_exception(_py);
         return false;
@@ -5394,11 +5406,9 @@ fn dc_field_has_tag(_py: &PyToken<'_>, field_bits: u64, tag_name: &[u8]) -> bool
         return false;
     }
     // Compare the field_type's name attribute to the tag_name string
-    let Some(name_attr_bits) = attr_name_bits_from_bytes(_py, b"name") else {
+    let Some(name_bits) = dc_getattr_default_bits(_py, ft_bits, b"name", missing) else {
         return false;
     };
-    let name_bits = molt_getattr_builtin(ft_bits, name_attr_bits, missing);
-    dec_ref_bits(_py, name_attr_bits);
     if exception_pending(_py) {
         clear_exception(_py);
         return false;
@@ -5419,10 +5429,8 @@ fn dc_is_field(_py: &PyToken<'_>, field_bits: u64) -> bool {
 
 /// Helper: read a bool-ish attribute from a field object.
 fn dc_field_bool_attr(_py: &PyToken<'_>, field_bits: u64, attr: &[u8]) -> Option<bool> {
-    let name_bits = attr_name_bits_from_bytes(_py, attr)?;
     let missing = missing_bits(_py);
-    let val = molt_getattr_builtin(field_bits, name_bits, missing);
-    dec_ref_bits(_py, name_bits);
+    let val = dc_getattr_default_bits(_py, field_bits, attr, missing)?;
     if exception_pending(_py) {
         clear_exception(_py);
         return None;
@@ -5435,10 +5443,8 @@ fn dc_field_bool_attr(_py: &PyToken<'_>, field_bits: u64, attr: &[u8]) -> Option
 
 /// Helper: read the "name" string attribute from a field object.
 fn dc_field_name_str(_py: &PyToken<'_>, field_bits: u64) -> Option<String> {
-    let name_bits = attr_name_bits_from_bytes(_py, b"name")?;
     let missing = missing_bits(_py);
-    let val = molt_getattr_builtin(field_bits, name_bits, missing);
-    dec_ref_bits(_py, name_bits);
+    let val = dc_getattr_default_bits(_py, field_bits, b"name", missing)?;
     if exception_pending(_py) {
         clear_exception(_py);
         return None;
@@ -5471,7 +5477,11 @@ pub extern "C" fn molt_dataclasses_repr(self_bits: u64) -> u64 {
             let qname_key = attr_name_bits_from_bytes(_py, b"__qualname__");
             let mut name = String::new();
             if let Some(qk) = qname_key {
-                let qv = molt_getattr_builtin(cls_bits, qk, missing);
+                let qv = crate::builtins::attributes::molt_get_attr_name_default(
+                    cls_bits,
+                    qk,
+                    missing,
+                );
                 dec_ref_bits(_py, qk);
                 if !exception_pending(_py) && qv != missing {
                     if let Some(s) = string_obj_to_owned(obj_from_bits(qv)) {
@@ -5484,7 +5494,11 @@ pub extern "C" fn molt_dataclasses_repr(self_bits: u64) -> u64 {
             if name.is_empty()
                 && let Some(nk) = attr_name_bits_from_bytes(_py, b"__name__")
             {
-                let nv = molt_getattr_builtin(cls_bits, nk, missing);
+                let nv = crate::builtins::attributes::molt_get_attr_name_default(
+                    cls_bits,
+                    nk,
+                    missing,
+                );
                 dec_ref_bits(_py, nk);
                 if !exception_pending(_py) && nv != missing {
                     if let Some(s) = string_obj_to_owned(obj_from_bits(nv)) {
@@ -5516,7 +5530,11 @@ pub extern "C" fn molt_dataclasses_repr(self_bits: u64) -> u64 {
             let Some(fname_key) = attr_name_bits_from_bytes(_py, fname.as_bytes()) else {
                 continue;
             };
-            let val = molt_getattr_builtin(self_bits, fname_key, missing);
+            let val = crate::builtins::attributes::molt_get_attr_name_default(
+                self_bits,
+                fname_key,
+                missing,
+            );
             dec_ref_bits(_py, fname_key);
             if exception_pending(_py) {
                 clear_exception(_py);
@@ -5568,8 +5586,16 @@ pub extern "C" fn molt_dataclasses_eq(self_bits: u64, other_bits: u64) -> u64 {
             let Some(fname_key) = attr_name_bits_from_bytes(_py, fname.as_bytes()) else {
                 continue;
             };
-            let self_val = molt_getattr_builtin(self_bits, fname_key, missing);
-            let other_val = molt_getattr_builtin(other_bits, fname_key, missing);
+            let self_val = crate::builtins::attributes::molt_get_attr_name_default(
+                self_bits,
+                fname_key,
+                missing,
+            );
+            let other_val = crate::builtins::attributes::molt_get_attr_name_default(
+                other_bits,
+                fname_key,
+                missing,
+            );
             dec_ref_bits(_py, fname_key);
             if exception_pending(_py) {
                 clear_exception(_py);
@@ -5604,7 +5630,11 @@ pub extern "C" fn molt_dataclasses_hash_fn(self_bits: u64) -> u64 {
                 let Some(hash_attr_name) = attr_name_bits_from_bytes(_py, b"hash") else {
                     continue;
                 };
-                let hash_val = molt_getattr_builtin(*field_bits, hash_attr_name, missing);
+                let hash_val = crate::builtins::attributes::molt_get_attr_name_default(
+                    *field_bits,
+                    hash_attr_name,
+                    missing,
+                );
                 dec_ref_bits(_py, hash_attr_name);
                 if exception_pending(_py) {
                     clear_exception(_py);
@@ -5626,7 +5656,11 @@ pub extern "C" fn molt_dataclasses_hash_fn(self_bits: u64) -> u64 {
             let Some(fname_key) = attr_name_bits_from_bytes(_py, fname.as_bytes()) else {
                 continue;
             };
-            let val = molt_getattr_builtin(self_bits, fname_key, missing);
+            let val = crate::builtins::attributes::molt_get_attr_name_default(
+                self_bits,
+                fname_key,
+                missing,
+            );
             dec_ref_bits(_py, fname_key);
             if exception_pending(_py) {
                 clear_exception(_py);
@@ -5685,7 +5719,11 @@ pub extern "C" fn molt_dataclasses_check_default_order(fields_dict_bits: u64) ->
                 let mut has = false;
                 for attr_name in &[b"default" as &[u8], b"default_factory"] {
                     if let Some(ak) = attr_name_bits_from_bytes(_py, attr_name) {
-                        let val = molt_getattr_builtin(field_bits, ak, missing);
+                        let val = crate::builtins::attributes::molt_get_attr_name_default(
+                            field_bits,
+                            ak,
+                            missing,
+                        );
                         dec_ref_bits(_py, ak);
                         if exception_pending(_py) {
                             clear_exception(_py);
@@ -5757,7 +5795,11 @@ pub extern "C" fn molt_dataclasses_field_flags(fields_dict_bits: u64) -> u64 {
             let hash_flag = {
                 let missing = missing_bits(_py);
                 if let Some(ak) = attr_name_bits_from_bytes(_py, b"hash") {
-                    let val = molt_getattr_builtin(field_bits, ak, missing);
+                    let val = crate::builtins::attributes::molt_get_attr_name_default(
+                        field_bits,
+                        ak,
+                        missing,
+                    );
                     dec_ref_bits(_py, ak);
                     if exception_pending(_py) {
                         clear_exception(_py);
@@ -5805,7 +5847,12 @@ pub extern "C" fn molt_dataclasses_post_init(instance_bits: u64, initvar_values_
         let Some(post_init_name_bits) = attr_name_bits_from_bytes(_py, b"__post_init__") else {
             return MoltObject::none().bits();
         };
-        let method_bits = molt_getattr_builtin(instance_bits, post_init_name_bits, missing);
+        let method_bits =
+            crate::builtins::attributes::molt_get_attr_name_default(
+                instance_bits,
+                post_init_name_bits,
+                missing,
+            );
         dec_ref_bits(_py, post_init_name_bits);
 
         if exception_pending(_py) {
@@ -5954,7 +6001,11 @@ pub extern "C" fn molt_dataclasses_is_initvar(obj_bits: u64) -> u64 {
 
         // Check for __molt_initvar__ marker attribute.
         if let Some(marker_bits) = attr_name_bits_from_bytes(_py, b"__molt_initvar__") {
-            let val = molt_getattr_builtin(obj_bits, marker_bits, missing);
+            let val = crate::builtins::attributes::molt_get_attr_name_default(
+                obj_bits,
+                marker_bits,
+                missing,
+            );
             dec_ref_bits(_py, marker_bits);
             if exception_pending(_py) {
                 clear_exception(_py);
@@ -5966,7 +6017,11 @@ pub extern "C" fn molt_dataclasses_is_initvar(obj_bits: u64) -> u64 {
         // Fall back: check class name.
         let cls_bits = type_of_bits(_py, obj_bits);
         if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__name__") {
-            let name_val = molt_getattr_builtin(cls_bits, name_bits, missing);
+            let name_val = crate::builtins::attributes::molt_get_attr_name_default(
+                cls_bits,
+                name_bits,
+                missing,
+            );
             dec_ref_bits(_py, name_bits);
             if !exception_pending(_py)
                 && name_val != missing
@@ -5995,7 +6050,11 @@ pub extern "C" fn molt_dataclasses_is_kw_only_sentinel(obj_bits: u64) -> u64 {
 
         // Check for __molt_kw_only__ marker attribute.
         if let Some(marker_bits) = attr_name_bits_from_bytes(_py, b"__molt_kw_only__") {
-            let val = molt_getattr_builtin(obj_bits, marker_bits, missing);
+            let val = crate::builtins::attributes::molt_get_attr_name_default(
+                obj_bits,
+                marker_bits,
+                missing,
+            );
             dec_ref_bits(_py, marker_bits);
             if exception_pending(_py) {
                 clear_exception(_py);
@@ -6007,7 +6066,11 @@ pub extern "C" fn molt_dataclasses_is_kw_only_sentinel(obj_bits: u64) -> u64 {
         // Fall back: check class name.
         let cls_bits = type_of_bits(_py, obj_bits);
         if let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__name__") {
-            let name_val = molt_getattr_builtin(cls_bits, name_bits, missing);
+            let name_val = crate::builtins::attributes::molt_get_attr_name_default(
+                cls_bits,
+                name_bits,
+                missing,
+            );
             dec_ref_bits(_py, name_bits);
             if !exception_pending(_py)
                 && name_val != missing
