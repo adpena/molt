@@ -8,9 +8,10 @@ use crate::object::ops::string_obj_to_owned;
 use crate::{
     MoltObject, PyToken, alloc_bytes, alloc_list, alloc_string, alloc_tuple, bits_from_ptr,
     dec_ref_bits, int_bits_from_i64, obj_from_bits, ptr_from_bits, raise_exception, release_ptr,
-    to_f64, to_i64,
+    slice_start_bits, slice_step_bits, slice_stop_bits, to_f64, to_i64, TYPE_ID_SLICE,
 };
 use crate::builtins::numbers::index_i64_with_overflow;
+use crate::object::ops_sys::{collect_slice_indices, normalize_slice_indices, slice_error};
 
 // ---------------------------------------------------------------------------
 // Typecode metadata
@@ -331,6 +332,10 @@ fn array_handle_from_bits(bits: u64) -> Option<&'static mut ArrayHandle> {
     Some(unsafe { &mut *(ptr as *mut ArrayHandle) })
 }
 
+fn array_handle_ptr_from_bits(bits: u64) -> *mut ArrayHandle {
+    ptr_from_bits(bits) as *mut ArrayHandle
+}
+
 fn array_bits(handle: ArrayHandle) -> u64 {
     bits_from_ptr(Box::into_raw(Box::new(handle)) as *mut u8)
 }
@@ -620,7 +625,38 @@ pub extern "C" fn molt_array_getitem(handle_bits: u64, index_bits: u64) -> u64 {
         let Some(handle) = array_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
         };
-        let Some(idx_raw) = to_i64(obj_from_bits(index_bits)) else {
+        let index_obj = obj_from_bits(index_bits);
+        if let Some(slice_ptr) = index_obj.as_ptr() {
+            unsafe {
+                if crate::object_type_id(slice_ptr) == TYPE_ID_SLICE {
+                    let len = handle.len() as isize;
+                    let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                    let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                    let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                    let (start, stop, step) = match normalize_slice_indices(
+                        _py, len, start_obj, stop_obj, step_obj,
+                    ) {
+                        Ok(value) => value,
+                        Err(err) => return slice_error(_py, err),
+                    };
+                    let itemsize = handle.typecode.itemsize();
+                    let mut out = ArrayHandle::new(handle.typecode);
+                    if step == 1 {
+                        let start_byte = start as usize * itemsize;
+                        let stop_byte = stop as usize * itemsize;
+                        out.data.extend_from_slice(&handle.data[start_byte..stop_byte]);
+                    } else {
+                        for idx in collect_slice_indices(start, stop, step) {
+                            let start_byte = idx * itemsize;
+                            let end_byte = start_byte + itemsize;
+                            out.data.extend_from_slice(&handle.data[start_byte..end_byte]);
+                        }
+                    }
+                    return array_bits(out);
+                }
+            }
+        }
+        let Some(idx_raw) = to_i64(index_obj) else {
             return raise_exception::<u64>(_py, "TypeError", "array indices must be integers");
         };
         let len = handle.len() as i64;
@@ -638,11 +674,82 @@ pub extern "C" fn molt_array_getitem(handle_bits: u64, index_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let Some(handle) = array_handle_from_bits(handle_bits) else {
+        let handle_ptr = array_handle_ptr_from_bits(handle_bits);
+        if handle_ptr.is_null() {
             return raise_exception::<u64>(_py, "TypeError", "invalid array handle");
-        };
+        }
+        let index_obj = obj_from_bits(index_bits);
+        unsafe {
+            if let Some(slice_ptr) = index_obj.as_ptr()
+                && crate::object_type_id(slice_ptr) == TYPE_ID_SLICE
+            {
+                let tc = (*handle_ptr).typecode;
+                let value_ptr = array_handle_ptr_from_bits(value_bits);
+                if value_ptr.is_null() {
+                    return raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        &format!(
+                            "can only assign array (not \"{}\") to array slice",
+                            crate::class_name_for_error(crate::type_of_bits(_py, value_bits))
+                        ),
+                    );
+                }
+                if (*value_ptr).typecode != tc {
+                    return raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        "bad argument type for built-in operation",
+                    );
+                }
+                let replacement = (*value_ptr).data.clone();
+                let replacement_len = replacement.len() / tc.itemsize();
+                let len = (*handle_ptr).len() as isize;
+                let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                let (start, stop, step) = match normalize_slice_indices(
+                    _py, len, start_obj, stop_obj, step_obj,
+                ) {
+                    Ok(value) => value,
+                    Err(err) => return slice_error(_py, err),
+                };
+                let itemsize = tc.itemsize();
+                if step == 1 {
+                    let start_byte = start as usize * itemsize;
+                    let stop_byte = stop as usize * itemsize;
+                    (*handle_ptr)
+                        .data
+                        .splice(start_byte..stop_byte, replacement);
+                    return MoltObject::none().bits();
+                }
+                let indices = collect_slice_indices(start, stop, step);
+                if indices.len() != replacement_len {
+                    return raise_exception::<u64>(
+                        _py,
+                        "ValueError",
+                        &format!(
+                            "attempt to assign array of size {} to extended slice of size {}",
+                            replacement_len,
+                            indices.len()
+                        ),
+                    );
+                }
+                let handle = &mut *handle_ptr;
+                for (slot_idx, idx) in indices.iter().copied().enumerate() {
+                    let src_start = slot_idx * itemsize;
+                    let src_end = src_start + itemsize;
+                    let dst_start = idx * itemsize;
+                    let dst_end = dst_start + itemsize;
+                    handle.data[dst_start..dst_end]
+                        .copy_from_slice(&replacement[src_start..src_end]);
+                }
+                return MoltObject::none().bits();
+            }
+        }
+        let handle = unsafe { &mut *handle_ptr };
         let tc = handle.typecode;
-        let Some(idx_raw) = to_i64(obj_from_bits(index_bits)) else {
+        let Some(idx_raw) = to_i64(index_obj) else {
             return raise_exception::<u64>(_py, "TypeError", "array indices must be integers");
         };
         let len = handle.len() as i64;

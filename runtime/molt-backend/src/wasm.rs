@@ -2482,24 +2482,21 @@ impl WasmBackend {
             ids.insert(name.to_string(), import_idx);
             import_idx += 1;
         };
-        let simple_i64_import_type = |arity: usize| -> u32 {
-            match arity {
-                0 => 0,
-                1 => 2,
-                2 => 3,
-                3 => 5,
-                4 => 7,
-                5 => 12,
-                6 => 9,
-                7 => 10,
-                8 => 28,
-                9 => 35,
-                10 => 36,
-                11 => 37,
-                12 => 38,
-                _ => panic!("unsupported simple i64 import arity {arity}"),
-            }
-        };
+        let mut simple_i64_import_type_map: BTreeMap<usize, u32> = BTreeMap::from([
+            (0, 0),
+            (1, 2),
+            (2, 3),
+            (3, 5),
+            (4, 7),
+            (5, 12),
+            (6, 9),
+            (7, 10),
+            (8, 28),
+            (9, 35),
+            (10, 36),
+            (11, 37),
+            (12, 38),
+        ]);
 
         // Host Imports — driven by static registry (see wasm_imports.rs).
         for &(name, type_idx) in crate::wasm_imports::IMPORT_REGISTRY {
@@ -2658,10 +2655,25 @@ impl WasmBackend {
         }
         auto_import_names.sort_by(|a, b| a.0.cmp(&b.0));
         auto_import_names.dedup_by(|a, b| a.0 == b.0);
+        let mut next_type_idx = STATIC_TYPE_COUNT;
+        for &arity in auto_import_names.iter().map(|(_, arity)| arity) {
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                simple_i64_import_type_map.entry(arity)
+            {
+                self.types.function(
+                    std::iter::repeat_n(ValType::I64, arity),
+                    std::iter::once(ValType::I64),
+                );
+                entry.insert(next_type_idx);
+                next_type_idx += 1;
+            }
+        }
         for (import_name, arity) in auto_import_names {
             add_import(
                 import_name.as_str(),
-                simple_i64_import_type(arity),
+                *simple_i64_import_type_map
+                    .get(&arity)
+                    .unwrap_or_else(|| panic!("missing simple i64 import type for arity {arity}")),
                 &mut self.import_ids,
             );
         }
@@ -2715,9 +2727,8 @@ impl WasmBackend {
             self.add_data_segment_mutable(reloc_enabled, &const_str_scratch_bytes);
 
         let mut user_type_map: BTreeMap<usize, u32> = BTreeMap::new();
-        // Types 0-38 are defined above (0-30 single-return, 31-34 multi-value, 35-38 high-arity);
-        // start new dynamic signatures after them.
-        let mut next_type_idx = STATIC_TYPE_COUNT;
+        // Types 0-40 are static above; additional simple-i64 import signatures
+        // may have extended the type section before user arity signatures.
         for func_ir in &ir.functions {
             if func_ir.name.ends_with("_poll") {
                 continue;
