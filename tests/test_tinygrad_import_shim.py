@@ -428,6 +428,63 @@ def test_tinygrad_conv2d_compiles_in_native_molt(tmp_path: Path) -> None:
         rel=0.0,
     )
 
+
+def test_tinygrad_tensor_conv2d_matches_upstream_sample() -> None:
+    from tinygrad import Tensor, nn
+
+    Tensor.manual_seed(42)
+    conv = nn.Conv2d(1, 1, 3)
+    x = Tensor.arange(16).reshape(1, 1, 4, 4).float()
+    assert _flatten_numeric(
+        x.conv2d(conv.weight, conv.bias, 1, conv.stride, conv.dilation, conv.padding).to_list()
+    ) == pytest.approx(
+        [-0.32956963777542114, -0.4648566246032715, -0.8707174062728882, -1.0060044527053833],
+        abs=1e-7,
+        rel=0.0,
+    )
+
+
+def test_tinygrad_tensor_conv2d_compiles_in_native_molt(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "tinygrad_tensor_conv2d_native.py"
+    probe.write_text(
+        "from tinygrad import Tensor, nn\n"
+        "Tensor.manual_seed(42)\n"
+        "conv = nn.Conv2d(1, 1, 3)\n"
+        "x = Tensor.arange(16).reshape(1, 1, 4, 4).float()\n"
+        "print(x.conv2d(conv.weight, conv.bias, 1, conv.stride, conv.dilation, conv.padding).to_list())\n",
+        encoding="utf-8",
+    )
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=_native_molt_env(root, hermetic=True),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    lines = [ast.literal_eval(line) for line in run.stdout.strip().splitlines()]
+    assert _flatten_numeric(lines[0]) == pytest.approx(
+        [
+            -0.32956963777542114,
+            -0.4648566246032715,
+            -0.8707174062728882,
+            -1.0060044527053833,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+
 def test_tinygrad_falcon_main_runs_with_tiny_config_and_empty_weights() -> None:
     root = Path(__file__).resolve().parents[1]
     probe = root / "tmp" / "tinygrad_falcon_main_probe_test.py"
