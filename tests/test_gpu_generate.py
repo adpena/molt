@@ -870,3 +870,21 @@ def test_build_dflash_runtime_passes_adapter_payload_into_context():
         "payload": {"patch_features": "patches"},
         "runtime_payload": {"patch_features": "patches"},
     }
+
+
+def test_speculative_conditioning_carries_multimodal_payload_fields():
+    from molt.gpu.dflash import SpeculativeConditioning
+
+    conditioning = SpeculativeConditioning(
+        target_features={"hidden": [1, 2]},
+        target_kv={"layer0": "kv"},
+        patch_features="patches",
+        position_ids=[0, 1, 1, 2],
+        aux={"source": "falcon"},
+    )
+
+    assert conditioning.target_features == {"hidden": [1, 2]}
+    assert conditioning.target_kv == {"layer0": "kv"}
+    assert conditioning.patch_features == "patches"
+    assert conditioning.position_ids == [0, 1, 1, 2]
+    assert conditioning.aux == {"source": "falcon"}

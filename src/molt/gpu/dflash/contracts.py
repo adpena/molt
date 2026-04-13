@@ -11,9 +11,20 @@ from __future__ import annotations
 class SpeculativeConditioning:
     """Opaque target-owned conditioning payload for speculative drafters."""
 
-    def __init__(self, *, target_features=None, target_kv=None) -> None:
+    def __init__(
+        self,
+        *,
+        target_features=None,
+        target_kv=None,
+        patch_features=None,
+        position_ids=None,
+        aux=None,
+    ) -> None:
         self.target_features = target_features
         self.target_kv = target_kv
+        self.patch_features = patch_features
+        self.position_ids = position_ids
+        self.aux = aux
 
 
 class SpeculativeDraftRequest:
