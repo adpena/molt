@@ -339,9 +339,10 @@ Notes:
 - The shim sets `MOLT_PROJECT_ROOT` to the Molt repo so compiled runs link
   against `target/<profile>/libmolt_runtime.a` even when test sources live
   under `third_party/`.
-- The shim sets `MOLT_MODULE_ROOTS` and `MOLT_REGRTEST_CPYTHON_DIR` to the
-  CPython `Lib` directory so `test.*` resolves without polluting host
-  `PYTHONPATH`.
+- The shim sets `MOLT_MODULE_ROOTS`, `MOLT_REGRTEST_CPYTHON_DIR`, and
+  `MOLT_HERMETIC_MODULE_ROOTS=1` so `test.*` resolves against the CPython
+  `Lib` tree without ambient `.venv` / `.molt-venv` site-packages polluting
+  the conformance lane.
 - `--coverage` combines host regrtest coverage with Molt subprocess coverage;
   use a Python-based `--molt-cmd` to capture Molt coverage.
 - The shim forwards interpreter flags from regrtest to the Molt command.
