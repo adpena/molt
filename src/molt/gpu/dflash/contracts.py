@@ -63,3 +63,20 @@ class SpeculativeVerifyResult:
     def __init__(self, verified_tokens, *, conditioning: SpeculativeConditioning | None = None) -> None:
         self.verified_tokens = list(verified_tokens)
         self.conditioning = conditioning
+
+
+class DFlashRuntime:
+    """Fully bound speculative runtime produced by a model-specific adapter."""
+
+    def __init__(
+        self,
+        *,
+        draft_step,
+        verify_step,
+        initial_conditioning: SpeculativeConditioning | None = None,
+        block_size: int | None = None,
+    ) -> None:
+        self.draft_step = draft_step
+        self.verify_step = verify_step
+        self.initial_conditioning = initial_conditioning
+        self.block_size = block_size

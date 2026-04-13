@@ -418,3 +418,110 @@ def test_conditioned_speculative_decode_compiles_in_native_molt(tmp_path: Path) 
         "[0, 1, 2, 3, 4]",
         "[1, 2, 3, 4]",
     ]
+
+
+def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
+    monkeypatch,
+):
+    import molt.gpu.generate as generate_mod
+    from molt.gpu.dflash import (
+        DFlashRuntime,
+        SpeculativeConditioning,
+        SpeculativeDraftResult,
+        SpeculativeVerifyResult,
+        register_dflash_adapter,
+    )
+    from molt.gpu.generate import greedy_decode
+
+    class FakeAdapter:
+        supported_backends = ("webgpu",)
+
+        def matches(self, model, backend):
+            return backend == "webgpu" and getattr(model, "kind", None) == "fake-model"
+
+        def create_runtime(
+            self,
+            model,
+            prompt_tokens,
+            *,
+            eos_token_id,
+            max_new_tokens,
+            block_size,
+            backend,
+        ):
+            assert prompt_tokens == [0]
+            assert eos_token_id == 11
+            assert max_new_tokens == 2
+            assert block_size == 4
+            assert backend == "webgpu"
+
+            def draft_step(request):
+                if request.step_index == 0:
+                    return SpeculativeDraftResult([1])
+                raise AssertionError(f"unexpected draft step {request.step_index}")
+
+            def verify_step(request):
+                return SpeculativeVerifyResult(
+                    [1, 2],
+                    conditioning=SpeculativeConditioning(target_features="next"),
+                )
+
+            return DFlashRuntime(
+                draft_step=draft_step,
+                verify_step=verify_step,
+                initial_conditioning=SpeculativeConditioning(target_features="prefill"),
+                block_size=1,
+            )
+
+    class FakeModel:
+        kind = "fake-model"
+
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy model path should not execute")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+    monkeypatch.setattr(generate_mod, "_DFLASH_DEFAULT_ADAPTER_NAME", "fake-adapter")
+    register_dflash_adapter("fake-adapter", FakeAdapter())
+
+    out = greedy_decode(
+        FakeModel(),
+        [0],
+        max_new_tokens=2,
+        eos_token_id=11,
+        block_size=4,
+    )
+
+    assert out == [0, 1, 2]
+
+
+def test_greedy_decode_skips_dflash_default_without_supported_gpu_backend(monkeypatch):
+    from molt.gpu.dflash import register_dflash_adapter
+    from molt.gpu.generate import greedy_decode
+    from molt.gpu.tensor import Tensor
+
+    calls = []
+
+    class FakeAdapter:
+        supported_backends = ("webgpu",)
+
+        def matches(self, model, backend):
+            calls.append((getattr(model, "kind", None), backend))
+            return True
+
+        def create_runtime(self, *args, **kwargs):
+            raise AssertionError("adapter runtime should not be created without supported gpu backend")
+
+    class FakeModel:
+        kind = "fake-model"
+
+        def __call__(self, tokens):
+            calls.append(("plain", list(tokens)))
+            return Tensor([0.0, 1.0, 2.0])
+
+    monkeypatch.delenv("MOLT_GPU_BACKEND", raising=False)
+    register_dflash_adapter("fake-adapter-no-gpu", FakeAdapter())
+
+    out = greedy_decode(FakeModel(), [0], max_new_tokens=1)
+
+    assert out == [0, 2]
+    assert calls == [("plain", [0])]
