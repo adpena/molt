@@ -1,0 +1,316 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+
+def _native_molt_env(root: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root / "src")
+    env["MOLT_EXT_ROOT"] = str(root)
+    env["CARGO_TARGET_DIR"] = str(root / "target")
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
+    env["MOLT_CACHE"] = str(root / ".molt_cache")
+    env["MOLT_DIFF_ROOT"] = str(root / "tmp" / "diff")
+    env["MOLT_DIFF_TMPDIR"] = str(root / "tmp")
+    env["UV_CACHE_DIR"] = str(root / ".uv-cache")
+    env["TMPDIR"] = str(root / "tmp")
+    env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
+    env["MOLT_BACKEND_DAEMON"] = "0"
+    return env
+
+
+def test_dense_kv_cache_attention_matches_tensor_sdpa():
+    from molt.gpu.kv_cache import DenseKVCache
+    from molt.gpu.tensor import Tensor, tensor_scaled_dot_product_attention
+
+    q = Tensor([0.5, -0.1, 0.4, 0.2], shape=(1, 1, 1, 4))
+    k0 = Tensor([0.6, -0.2, 0.1, 0.4], shape=(1, 1, 1, 4))
+    v0 = Tensor([0.2, 0.1, -0.3, 0.4], shape=(1, 1, 1, 4))
+    k1 = Tensor([0.1, 0.5, -0.3, -0.2], shape=(1, 1, 1, 4))
+    v1 = Tensor([-0.5, 0.2, 0.4, -0.1], shape=(1, 1, 1, 4))
+
+    cache = DenseKVCache()
+    cache.append(k0, v0)
+    cache.append(k1, v1)
+
+    out = cache.attention(q, scale=1.0)
+
+    manual = tensor_scaled_dot_product_attention(
+        q,
+        Tensor([0.6, -0.2, 0.1, 0.4, 0.1, 0.5, -0.3, -0.2], shape=(1, 1, 2, 4)),
+        Tensor([0.2, 0.1, -0.3, 0.4, -0.5, 0.2, 0.4, -0.1], shape=(1, 1, 2, 4)),
+        None,
+        1.0,
+    )
+
+    assert len(cache) == 2
+    assert out.shape == (1, 1, 1, 4)
+    assert out.reshape(4).to_list() == pytest.approx(manual.reshape(4).to_list())
+
+
+def test_turboquant_attention_kv_cache_matches_rowwise_helper():
+    from molt.gpu.kv_cache import TurboQuantAttentionKVCache
+    from molt.gpu.tensor import Tensor
+    from molt.gpu.turboquant import TurboQuantCodec, TurboQuantKVCache
+
+    codec = TurboQuantCodec(dim=8, bits=3, seed=5, qjl_seed=19)
+    keys = Tensor(
+        [
+            [0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1],
+            [0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4],
+            [-0.2, 0.3, 0.5, -0.6, 0.1, 0.2, -0.4, 0.7],
+        ]
+    )
+    values = Tensor(
+        [
+            [0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1],
+            [-0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6],
+            [0.3, -0.4, 0.2, 0.1, -0.6, 0.5, 0.4, -0.3],
+        ]
+    )
+    query = Tensor([0.5, -0.1, 0.4, 0.2, -0.3, 0.6, -0.2, 0.1], shape=(1, 1, 1, 8))
+
+    helper = TurboQuantKVCache.from_tensors(codec, keys, values)
+    cache = TurboQuantAttentionKVCache(codec)
+    cache.append(keys.reshape(1, 1, 3, 8), values.reshape(1, 1, 3, 8))
+
+    out = cache.attention(query, scale=1.0)
+
+    assert len(cache) == 3
+    assert out.shape == (1, 1, 1, 8)
+    assert out.reshape(8).to_list() == pytest.approx(
+        helper.attention_output(query.reshape(8)).to_list()
+    )
+
+
+def test_turboquant_attention_kv_cache_broadcasts_singleton_mask_width():
+    from molt.gpu.kv_cache import TurboQuantAttentionKVCache
+    from molt.gpu.tensor import Tensor
+    from molt.gpu.turboquant import TurboQuantCodec
+
+    codec = TurboQuantCodec(dim=8, bits=3, seed=5, qjl_seed=19)
+    cache = TurboQuantAttentionKVCache(codec)
+    cache.append(
+        Tensor(
+            [
+                0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,
+                0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,
+            ],
+            shape=(1, 1, 2, 8),
+        ),
+        Tensor(
+            [
+                0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,
+                -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,
+            ],
+            shape=(1, 1, 2, 8),
+        ),
+    )
+    query = Tensor([0.5, -0.1, 0.4, 0.2, -0.3, 0.6, -0.2, 0.1], shape=(1, 1, 1, 8))
+
+    unmasked = cache.attention(query, scale=1.0)
+    masked = cache.attention(
+        query,
+        scale=1.0,
+        mask=Tensor([0.0], shape=(1, 1, 1, 1)),
+    )
+
+    assert masked.reshape(8).to_list() == pytest.approx(unmasked.reshape(8).to_list())
+
+
+def test_transformer_multihead_attention_routes_through_cache(monkeypatch):
+    import molt.gpu.transformer as transformer_mod
+    from molt.gpu.tensor import Tensor
+
+    attn = transformer_mod.MultiHeadAttention(embed_dim=4, num_heads=2, causal=True)
+    attn.q_proj = lambda x: x
+    attn.k_proj = lambda x: x
+    attn.v_proj = lambda x: x
+    attn.out_proj = lambda x: x
+
+    seen = {}
+
+    class FakeCache:
+        def __init__(self):
+            self.count = 0
+
+        def __len__(self):
+            return self.count
+
+        def append(self, k, v):
+            seen["k_shape"] = k.shape
+            seen["v_shape"] = v.shape
+            self.count += k.shape[2]
+
+        def attention(self, q, *, scale, mask=None):
+            seen["q_shape"] = q.shape
+            seen["scale"] = scale
+            seen["mask"] = mask
+            return q
+
+    def fail_sdpa(*_args, **_kwargs):
+        raise AssertionError("sdpa path should not run when kv_cache is provided")
+
+    monkeypatch.setattr(transformer_mod, "tensor_scaled_dot_product_attention", fail_sdpa)
+
+    x = Tensor([[1.0, 2.0, 3.0, 4.0]])
+    out = attn(x, kv_cache=FakeCache())
+
+    assert out.shape == (1, 4)
+    assert seen["q_shape"] == (1, 2, 1, 2)
+    assert seen["k_shape"] == (1, 2, 1, 2)
+    assert seen["v_shape"] == (1, 2, 1, 2)
+    assert seen["scale"] == attn.scale
+    assert seen["mask"].shape == (1, 1, 1, 1)
+    assert seen["mask"].to_list() == [[[[0.0]]]]
+
+
+def test_transformer_multihead_attention_rolls_back_cache_on_failure():
+    import molt.gpu.transformer as transformer_mod
+    from molt.gpu.tensor import Tensor
+
+    attn = transformer_mod.MultiHeadAttention(embed_dim=4, num_heads=2, causal=True)
+    attn.q_proj = lambda x: x
+    attn.k_proj = lambda x: x
+    attn.v_proj = lambda x: x
+    attn.out_proj = lambda x: x
+
+    class FakeCache:
+        def __init__(self):
+            self.count = 3
+
+        def __len__(self):
+            return self.count
+
+        def append(self, k, v):
+            self.count += k.shape[2]
+
+        def truncate(self, length):
+            self.count = length
+
+        def attention(self, q, *, scale, mask=None):
+            raise RuntimeError("boom")
+
+    cache = FakeCache()
+    x = Tensor([[1.0, 2.0, 3.0, 4.0]])
+
+    with pytest.raises(RuntimeError, match="boom"):
+        attn(x, kv_cache=cache)
+
+    assert len(cache) == 3
+
+
+def test_transformer_decoder_offsets_position_ids_by_cache_prefix():
+    import molt.gpu.transformer as transformer_mod
+    from molt.gpu.tensor import Tensor
+
+    decoder = transformer_mod.TransformerDecoder(
+        vocab_size=8,
+        embed_dim=4,
+        num_heads=2,
+        num_layers=1,
+        max_seq_len=16,
+    )
+
+    seen = {}
+
+    decoder.token_embedding = lambda token_ids: Tensor([[1.0, 1.0, 1.0, 1.0]])
+
+    def fake_position_embedding(indices):
+        seen["pos_ids"] = list(indices)
+        return Tensor([[0.0, 0.0, 0.0, 0.0]])
+
+    class IdentityBlock:
+        def __call__(self, x, kv_cache=None):
+            seen["block_cache"] = kv_cache
+            return x
+
+    decoder.position_embedding = fake_position_embedding
+    decoder.blocks = [IdentityBlock()]
+    decoder.ln_final = lambda x: x
+    decoder.lm_head = lambda x: x
+
+    class FakeCache:
+        def __len__(self):
+            return 3
+
+    out = decoder([7], kv_caches=[FakeCache()])
+
+    assert out.shape == (1, 4)
+    assert seen["pos_ids"] == [3]
+    assert seen["block_cache"] is not None
+
+
+def test_transformer_decoder_rejects_inconsistent_cache_prefix_lengths():
+    import molt.gpu.transformer as transformer_mod
+
+    decoder = transformer_mod.TransformerDecoder(
+        vocab_size=8,
+        embed_dim=4,
+        num_heads=2,
+        num_layers=2,
+        max_seq_len=16,
+    )
+
+    class Cache3:
+        def __len__(self):
+            return 3
+
+    class Cache4:
+        def __len__(self):
+            return 4
+
+    with pytest.raises(ValueError, match="same prefix length"):
+        decoder([7], kv_caches=[Cache3(), Cache4()])
+
+
+def test_dense_kv_cache_compiles_in_native_molt(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "gpu_kv_cache_native.py"
+    probe.write_text(
+        "from molt.gpu.kv_cache import DenseKVCache\n"
+        "from molt.gpu.tensor import Tensor\n"
+        "\n"
+        "cache = DenseKVCache()\n"
+        "cache.append(\n"
+        "    Tensor([0.6, -0.2, 0.1, 0.4], shape=(1, 1, 1, 4)),\n"
+        "    Tensor([0.2, 0.1, -0.3, 0.4], shape=(1, 1, 1, 4)),\n"
+        ")\n"
+        "cache.append(\n"
+        "    Tensor([0.1, 0.5, -0.3, -0.2], shape=(1, 1, 1, 4)),\n"
+        "    Tensor([-0.5, 0.2, 0.4, -0.1], shape=(1, 1, 1, 4)),\n"
+        ")\n"
+        "out = cache.attention(Tensor([0.5, -0.1, 0.4, 0.2], shape=(1, 1, 1, 4)), scale=1.0)\n"
+        "print(len(cache))\n"
+        "print(out.shape)\n",
+        encoding="utf-8",
+    )
+
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=_native_molt_env(root),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "2",
+        "(1, 1, 1, 4)",
+    ]

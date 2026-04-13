@@ -40,6 +40,17 @@ Rules:
 - no silent fallback between compression schemes; enablement must be explicit
   and capability-aware
 
+Current reference cache split:
+- `molt.gpu.kv_cache`: projected-attention cache backends (`DenseKVCache`,
+  TurboQuant-backed cache) and cache append/attend contracts
+- `molt.gpu.transformer`: optional cache plumbing for transformer attention and
+  decoder blocks
+
+Near-term direction:
+- keep cache semantics generic at the tensor/attention layer
+- move toward tensor-level cache-backed attention dispatch, so tinygrad-shaped
+  model code can benefit without model-specific API forks
+
 ## Two-Lane Architecture
 
 ### Lane 1: Arrow-first + libcudf Routing (90% Win)

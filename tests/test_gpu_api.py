@@ -1490,6 +1490,10 @@ def test_submodule_dflash():
     )
 
 
+def test_submodule_kv_cache():
+    from molt.gpu.kv_cache import DenseKVCache, TurboQuantAttentionKVCache
+
+
 def test_submodule_turboquant():
     from molt.gpu.turboquant import (
         TurboQuantCodec,
