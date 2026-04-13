@@ -397,6 +397,7 @@ fn is_user_owned_symbol(
 ) -> bool {
     let entry_init = format!("molt_init_{entry_module}");
     if name == "molt_main"
+        || name == "molt_host_init"
         || name.starts_with(&format!("{entry_module}__"))
         || name == entry_init
         || name == "molt_init___main__"
@@ -1924,6 +1925,8 @@ fn main() -> io::Result<()> {
                     eprintln!("MOLT_BACKEND: warning: failed to create stdlib parent: {e}");
                 });
                 if have_entry_module && stdlib_path.exists() {
+                    // Cached stdlib exists — only reuse it when the CLI and
+                    // backend agree on the exact stdlib IR identity.
                     let current_stdlib_count = stdlib_funcs.len();
                     let count_path = stdlib_cache_count_sidecar_path(stdlib_path);
                     let cached_count: usize = std::fs::read_to_string(&count_path)
@@ -1931,33 +1934,40 @@ fn main() -> io::Result<()> {
                         .and_then(|s| s.trim().parse().ok())
                         .unwrap_or(0);
                     let cached_key = read_stdlib_cache_key(stdlib_path);
-                    if !shared_stdlib_cache_matches(
+                    if shared_stdlib_cache_matches(
                         stdlib_path,
                         expected_stdlib_cache_key.as_deref(),
                     ) {
+                        // Cache exactly matches the requested stdlib IR — mark
+                        // stdlib functions as extern stubs so the backend declares
+                        // them as Import.  The linker resolves from stdlib_shared.o.
+                        let mut retained = std::mem::take(&mut user_remaining);
+                        let mut extern_count = 0usize;
+                        for mut func in stdlib_funcs.drain(..) {
+                            func.is_extern = true;
+                            func.ops.clear();
+                            extern_count += 1;
+                            retained.push(func);
+                        }
+                        let user_count = retained.len().saturating_sub(extern_count);
+                        ir.functions = retained;
                         eprintln!(
-                            "MOLT_BACKEND: stdlib cache key mismatch (cached key {}, expected key {}; cached {} functions, need {}) — honoring explicit stdlib object {}",
+                            "MOLT_BACKEND: incremental — compiling {user_count} user functions ({extern_count} stdlib extern from {})",
+                            stdlib_path.display()
+                        );
+                    } else {
+                        // Cache is stale or from a different stdlib IR topology.
+                        eprintln!(
+                            "MOLT_BACKEND: stdlib cache key mismatch (cached key {}, expected key {}; cached {} functions, need {}) — rebuilding",
                             cached_key.as_deref().unwrap_or("<missing>"),
                             expected_stdlib_cache_key.as_deref().unwrap_or("<missing>"),
                             cached_count,
                             current_stdlib_count,
-                            stdlib_path.display()
                         );
+                        let _ = std::fs::remove_file(stdlib_path);
+                        let _ = std::fs::remove_file(&count_path);
+                        let _ = std::fs::remove_file(stdlib_cache_key_sidecar_path(stdlib_path));
                     }
-                    let mut retained = std::mem::take(&mut user_remaining);
-                    let mut extern_count = 0usize;
-                    for mut func in stdlib_funcs.drain(..) {
-                        func.is_extern = true;
-                        func.ops.clear();
-                        extern_count += 1;
-                        retained.push(func);
-                    }
-                    let user_count = retained.len().saturating_sub(extern_count);
-                    ir.functions = retained;
-                    eprintln!(
-                        "MOLT_BACKEND: incremental — compiling {user_count} user functions ({extern_count} stdlib extern from {})",
-                        stdlib_path.display()
-                    );
                 } else {
                     // First build — compile stdlib separately, cache it
                     // Ensure the parent directory exists — it may have been
@@ -2359,6 +2369,11 @@ mod tests {
 
         assert!(is_user_owned_symbol(
             "molt_main",
+            "app",
+            Some(&stdlib_modules)
+        ));
+        assert!(is_user_owned_symbol(
+            "molt_host_init",
             "app",
             Some(&stdlib_modules)
         ));
