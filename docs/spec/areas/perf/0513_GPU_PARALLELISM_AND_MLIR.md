@@ -67,6 +67,9 @@ Current TurboQuant backend boundary:
   intrinsic surface for packed-cache attention dispatch
 - current implementation is a runtime-owned reference bridge through the cache
   object model, not a fused kernel yet
+- native runtime execution now reads the packed cache object graph directly for
+  that symbol instead of calling back into the cache’s Python
+  `_attention_reference` method
 - next backend work should replace that bridge with real packed CUDA/Metal/
   WebGPU/ROCm kernels behind the same symbol
 
