@@ -819,6 +819,11 @@ class Tensor:
             self._buf = to_device([float(data)])
             self._shape = ()
             self._dtype = dtype
+        elif isinstance(data, (bytes, bytearray, memoryview)):
+            raw = bytes(data)
+            self._buf = Buffer(raw, int, len(raw), format_char="B")
+            self._shape = (len(raw),)
+            self._dtype = int
         elif isinstance(data, (list, tuple)):
             if shape is not None:
                 # Flat list + explicit shape
