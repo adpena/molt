@@ -124,8 +124,7 @@ class Linear:
             x = x.reshape(1, x.size)
             squeezed = True
 
-        # x @ W^T
-        out = x @ self.weight.T
+        out = x.linear(self.weight)
 
         if self.has_bias and self.bias is not None:
             out = out + self.bias
@@ -194,49 +193,14 @@ class Conv2d:
         self.bias = zeros(out_channels) * 0.0
 
     def __call__(self, x: Tensor) -> Tensor:
-        """Forward pass for 2D convolution.
-
-        Uses direct convolution (no im2col) for simplicity.
-        GPU compilation will optimize this.
-        """
-        if x.ndim == 3:
-            # Add batch dimension
-            x = x.reshape(1, *x.shape)
-
-        batch, in_c, in_h, in_w = x.shape
-        kh, kw = self.kernel_size
-        sh, sw = self.stride
-        ph, pw = self.padding
-
-        out_h = (in_h + 2 * ph - kh) // sh + 1
-        out_w = (in_w + 2 * pw - kw) // sw + 1
-
-        x_data = x._data_list()
-        w_data = self.weight._data_list()
-        b_data = self.bias._data_list() if self.bias is not None else None
-
-        result = [0.0] * (batch * self.out_channels * out_h * out_w)
-
-        for b in range(batch):
-            for oc in range(self.out_channels):
-                for oh in range(out_h):
-                    for ow in range(out_w):
-                        val = 0.0
-                        for ic in range(in_c):
-                            for fh in range(kh):
-                                for fw in range(kw):
-                                    ih = oh * sh - ph + fh
-                                    iw = ow * sw - pw + fw
-                                    if 0 <= ih < in_h and 0 <= iw < in_w:
-                                        x_idx = ((b * in_c + ic) * in_h + ih) * in_w + iw
-                                        w_idx = ((oc * in_c + ic) * kh + fh) * kw + fw
-                                        val += x_data[x_idx] * w_data[w_idx]
-                        if b_data is not None:
-                            val += b_data[oc]
-                        r_idx = ((b * self.out_channels + oc) * out_h + oh) * out_w + ow
-                        result[r_idx] = val
-
-        return Tensor(result, shape=(batch, self.out_channels, out_h, out_w))
+        return x.conv2d(
+            self.weight,
+            self.bias,
+            1,
+            self.stride,
+            1,
+            self.padding,
+        )
 
     def load_weights(self, weight, bias=None):
         """Load pre-trained convolution weights."""
@@ -435,23 +399,9 @@ class LayerNorm:
         self.bias_param = Tensor([0.0] * norm_size, shape=self.normalized_shape)
 
     def __call__(self, x: Tensor) -> Tensor:
-        data = x._data_list()
-        norm_size = _product(self.normalized_shape)
-        outer = x.size // norm_size
-        gamma = self.weight._data_list()
-        beta = self.bias_param._data_list()
-
-        result = [0.0] * len(data)
-        for o in range(outer):
-            base = o * norm_size
-            chunk = data[base:base + norm_size]
-            mean = sum(chunk) / norm_size
-            var = sum((v - mean) ** 2 for v in chunk) / norm_size
-            inv_std = 1.0 / math.sqrt(var + self.eps)
-            for i in range(norm_size):
-                result[base + i] = gamma[i] * (chunk[i] - mean) * inv_std + beta[i]
-
-        return Tensor(result, shape=x.shape)
+        axes = tuple(-1 - i for i in range(len(self.normalized_shape)))
+        out = x.layernorm(axis=axes, eps=self.eps)
+        return out * self.weight + self.bias_param
 
     def load_weights(self, weight=None, bias=None):
         if weight is not None:
