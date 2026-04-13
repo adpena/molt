@@ -8286,6 +8286,67 @@ def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
     return bool(result.stdout.strip())
 
 
+def _normalize_native_symbol_name(name: str) -> str:
+    return name[1:] if name.startswith("_") else name
+
+
+def _native_object_global_symbol_sets(path: Path) -> tuple[set[str], set[str]] | None:
+    nm_bin = shutil.which("nm") or shutil.which("llvm-nm")
+    if nm_bin is None:
+        return None
+    try:
+        result = subprocess.run(
+            [nm_bin, "-g", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    defined: set[str] = set()
+    undefined: set[str] = set()
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            if len(parts) == 2:
+                kind, name = parts
+            else:
+                _, kind, name = parts[0], parts[1], parts[2]
+            symbol = _normalize_native_symbol_name(name)
+            if kind.upper() == "U":
+                undefined.add(symbol)
+            else:
+                defined.add(symbol)
+    return defined, undefined
+
+
+def _native_object_has_unresolved_module_chunks(
+    candidate: Path,
+    stdlib_object_path: Path | None,
+) -> bool:
+    candidate_symbols = _native_object_global_symbol_sets(candidate)
+    if candidate_symbols is None:
+        return False
+    _, undefined = candidate_symbols
+    unresolved_chunks = {
+        symbol for symbol in undefined if "__molt_module_chunk_" in symbol
+    }
+    if not unresolved_chunks:
+        return False
+    stdlib_defined: set[str] = set()
+    if stdlib_object_path is not None:
+        stdlib_symbols = _native_object_global_symbol_sets(stdlib_object_path)
+        if stdlib_symbols is not None:
+            stdlib_defined, _ = stdlib_symbols
+    return any(symbol not in stdlib_defined for symbol in unresolved_chunks)
+
+
 def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
     """Enable target-cpu=native for the Rust runtime compilation.
 
@@ -11604,8 +11665,10 @@ def _try_cached_backend_candidates(
     cache_path: Path | None,
     stdlib_object_path: Path | None,
     stdlib_object_cache_key: str | None,
+    stdlib_module_symbols: Collection[str] | None = None,
     warnings: list[str],
 ) -> tuple[bool, str | None]:
+    del stdlib_module_symbols
     state_path = _artifact_sync_state_path(project_root, output_artifact)
     state = _read_artifact_sync_state(state_path)
     try:
@@ -11634,6 +11697,15 @@ def _try_cached_backend_candidates(
             warnings.append(f"Ignoring invalid cache artifact: {candidate}")
             with contextlib.suppress(OSError):
                 candidate.unlink()
+            continue
+        if not is_wasm and _native_object_has_unresolved_module_chunks(
+            candidate,
+            stdlib_object_path,
+        ):
+            warnings.append(
+                "Ignoring native cache artifact with unresolved user module chunks: "
+                f"{candidate}"
+            )
             continue
         if _materialize_cached_backend_artifact(
             project_root,
@@ -11664,11 +11736,18 @@ def _backend_daemon_skip_output_sync_flags(
     function_cache_key: str | None,
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
+    stdlib_module_symbols: Collection[str] | None = None,
     state_path: Path | None = None,
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
 ) -> tuple[bool, bool]:
+    del stdlib_module_symbols
     is_wasm_output = output_artifact.suffix == ".wasm"
+    if not is_wasm_output and _native_object_has_unresolved_module_chunks(
+        output_artifact,
+        stdlib_object_path,
+    ):
+        return False, False
     if stdlib_object_path is not None and not _shared_stdlib_cache_matches_key(
         stdlib_object_path, stdlib_object_cache_key
     ):
