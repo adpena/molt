@@ -708,17 +708,20 @@ const pendingRuntimeExceptionMessage = (runtime, memory) => {
     }
     if (
       typeof runtime.exports.molt_traceback_format_exc === 'function' &&
-      typeof runtime.exports.molt_object_repr === 'function'
+      typeof runtime.exports.molt_dec_ref_obj === 'function'
     ) {
       const tbBits = runtime.exports.molt_traceback_format_exc(0n);
       if (tbBits && tbBits !== 0n) {
         try {
-          const tbRepr = reprObjectBitsWithRuntime(runtime, memory, tbBits);
-          if (tbRepr && tbRepr !== 'None' && tbRepr !== '[]') {
-            return `Unhandled Molt exception: ${tbRepr}`;
+          const formatted = readRuntimeStringBits(runtime, memory, tbBits);
+          if (formatted) {
+            const trimmed = formatted.trimEnd();
+            if (trimmed && trimmed !== 'NoneType: None') {
+              return `Unhandled Molt exception:\n${trimmed}`;
+            }
           }
         } finally {
-          decRefMaybeWithRuntime(runtime, tbBits);
+          runtime.exports.molt_dec_ref_obj(tbBits);
         }
       }
     }
