@@ -1144,6 +1144,52 @@ def test_load_safetensors_f16_entries_use_intrinsic_when_available(tmp_path, mon
     assert from_device(tensor._buf) == [1.0, -3.5]
 
 
+def test_tensor_concat_first_dim_preserves_f32_layout():
+    from molt.gpu import Buffer, from_device
+    from molt.gpu.tensor import Tensor, tensor_concat_first_dim
+
+    a = Tensor(
+        Buffer(struct.pack("<2f", 1.0, 2.0), float, 2, format_char="f"),
+        shape=(1, 2),
+        dtype=float,
+    )
+    b = Tensor(
+        Buffer(struct.pack("<4f", 3.0, 4.0, 5.0, 6.0), float, 4, format_char="f"),
+        shape=(2, 2),
+        dtype=float,
+    )
+
+    out = tensor_concat_first_dim((a, b))
+
+    assert out.shape == (3, 2)
+    assert out._buf.format_char == "f"
+    assert out._buf.itemsize == 4
+    assert from_device(out._buf) == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
+def test_tensor_scatter_rows_preserves_f32_layout():
+    from molt.gpu import Buffer, from_device
+    from molt.gpu.tensor import Tensor, tensor_scatter_rows
+
+    base = Tensor(
+        Buffer(struct.pack("<6f", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), float, 6, format_char="f"),
+        shape=(3, 2),
+        dtype=float,
+    )
+    updates = Tensor(
+        Buffer(struct.pack("<4f", 7.0, 8.0, 9.0, 10.0), float, 4, format_char="f"),
+        shape=(2, 2),
+        dtype=float,
+    )
+
+    out = tensor_scatter_rows(base, [0, 2], updates)
+
+    assert out.shape == (3, 2)
+    assert out._buf.format_char == "f"
+    assert out._buf.itemsize == 4
+    assert from_device(out._buf) == [7.0, 8.0, 0.0, 0.0, 9.0, 10.0]
+
+
 def test_submodule_numpy_io():
     from molt.gpu.numpy_io import load_numpy, load_npz
 

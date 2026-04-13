@@ -213,6 +213,7 @@ pub mod ffi_bridge {
 pub(crate) use crate::async_rt::*;
 pub use crate::builtins::gpu::molt_gpu_broadcast_binary_contiguous;
 pub use crate::builtins::gpu::molt_gpu_buffer_to_list;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_concat_first_dim;
 pub use crate::builtins::gpu::molt_gpu_interop_decode_bf16_bytes_to_f32;
 pub use crate::builtins::gpu::molt_gpu_interop_decode_f16_bytes_to_f32;
 pub use crate::builtins::gpu::molt_gpu_interop__load_safetensors;
@@ -225,6 +226,7 @@ pub use crate::builtins::gpu::molt_gpu_repeat_axis_contiguous;
 pub use crate::builtins::gpu::molt_gpu_rms_norm_last_axis_contiguous;
 pub use crate::builtins::gpu::molt_gpu_rope_apply_contiguous;
 pub use crate::builtins::gpu::molt_gpu_softmax_last_axis_contiguous;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_scatter_rows;
 pub use crate::builtins::gpu::molt_gpu_squared_relu_gate_interleaved_contiguous;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_data_list;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_linear;
