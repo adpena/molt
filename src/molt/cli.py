@@ -15202,6 +15202,22 @@ def _prepare_backend_ir(
 
     entry_call_idx = _entry_call_index(entry_ops, entry_init)
     entry_ops[entry_call_idx:entry_call_idx] = entry_module_code_ops
+    host_init_ops = _build_entry_main_ops(
+        entry_init=entry_init,
+        version_ops=version_ops,
+        register_global_code_id=register_global_code_id,
+    )
+    if _inject_sys_init:
+        _append_entry_sys_init_op(
+            host_init_ops,
+            entry_init=entry_init,
+            register_global_code_id=register_global_code_id,
+            next_var=next_var,
+            lazy=False,
+        )
+    host_init_call_idx = _entry_call_index(host_init_ops, entry_init)
+    host_init_ops[host_init_call_idx:host_init_call_idx] = entry_module_code_ops
+    host_init_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
     if spawn_enabled:
         _replace_entry_call_with_spawn_override(
             entry_ops,
@@ -15210,6 +15226,7 @@ def _prepare_backend_ir(
             next_var=next_var,
         )
     entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
+    functions.append({"name": "molt_host_init", "params": [], "ops": host_init_ops})
     functions.append({"name": "molt_main", "params": [], "ops": entry_ops})
     isolate_bootstrap_ops = _build_isolate_bootstrap_ops(
         code_slot_count=len(global_code_ids),
@@ -15318,6 +15335,7 @@ def _is_user_owned_symbol(
     entry_init = f"molt_init_{entry_module}"
     if (
         name == "molt_main"
+        or name == "molt_host_init"
         or name.startswith(f"{entry_module}__")
         or name == entry_init
         or name == "molt_init___main__"
@@ -15338,7 +15356,7 @@ def _is_stdlib_owned_symbol(
     *,
     stdlib_module_symbols: Collection[str],
 ) -> bool:
-    if name in {"molt_main", "molt_init___main__", "molt_isolate_import", "molt_isolate_bootstrap"}:
+    if name in {"molt_main", "molt_host_init", "molt_init___main__", "molt_isolate_import", "molt_isolate_bootstrap"}:
         return False
     return any(
         _emitted_name_matches_module_symbol(name, module_symbol)
@@ -15380,7 +15398,7 @@ _DEAD_FUNCTION_ELIM_REFERENCE_KINDS = frozenset(
 
 
 def _is_protected_runtime_entrypoint(name: str) -> bool:
-    return name in {"molt_main", "_start"} or name.startswith("molt_isolate_")
+    return name in {"molt_main", "molt_host_init", "_start"} or name.startswith("molt_isolate_")
 
 
 def _reachable_function_names_for_stdlib_cache(

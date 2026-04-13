@@ -4283,6 +4283,7 @@ def _run_wasm_ld(
     freestanding: bool = False,
     split_runtime: bool = False,
     split_output_dir: Path | None = None,
+    deploy_runtime_override: Path | None = None,
 ) -> int:
     try:
         runtime_exports = _collect_exports(runtime.read_bytes())
@@ -4771,6 +4772,7 @@ def main() -> int:
         freestanding=args.freestanding,
         split_runtime=args.split_runtime,
         split_output_dir=args.split_output_dir,
+        deploy_runtime_override=deploy_runtime_override,
     )
 
 

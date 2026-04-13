@@ -1579,7 +1579,7 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
 }
 
 fn is_protected_runtime_entrypoint(name: &str) -> bool {
-    const RUNTIME_ENTRYPOINTS: &[&str] = &["molt_main", "_start"];
+    const RUNTIME_ENTRYPOINTS: &[&str] = &["molt_main", "molt_host_init", "_start"];
     const RUNTIME_ENTRYPOINT_PREFIXES: &[&str] = &["molt_isolate_"];
 
     RUNTIME_ENTRYPOINTS.contains(&name)
@@ -2424,6 +2424,7 @@ mod tests {
     #[test]
     fn protected_runtime_entrypoint_detection_is_explicit() {
         assert!(is_protected_runtime_entrypoint("molt_main"));
+        assert!(is_protected_runtime_entrypoint("molt_host_init"));
         assert!(is_protected_runtime_entrypoint("_start"));
         assert!(is_protected_runtime_entrypoint("molt_isolate_import"));
         assert!(is_protected_runtime_entrypoint("molt_isolate_bootstrap"));
@@ -2491,6 +2492,69 @@ mod tests {
                 .iter()
                 .any(|op| op.s_value.as_deref() == Some("molt_init_math")),
             "runtime dispatch body must keep its transitive module-init references",
+        );
+    }
+
+    #[test]
+    fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
+        let mut ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "entry".to_string(),
+                    params: vec![],
+                    ops: vec![make_op("ret_void")],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "molt_host_init".to_string(),
+                    params: vec![],
+                    ops: vec![
+                        OpIR {
+                            kind: "call".to_string(),
+                            s_value: Some("host_init_helper".to_string()),
+                            out: Some("v0".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".to_string(),
+                            args: Some(vec!["v0".to_string()]),
+                            ..OpIR::default()
+                        },
+                    ],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "host_init_helper".to_string(),
+                    params: vec![],
+                    ops: vec![make_op("ret_void")],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            profile: None,
+        };
+
+        eliminate_dead_functions(&mut ir);
+
+        let retained: BTreeSet<&str> = ir.functions.iter().map(|func| func.name.as_str()).collect();
+        assert!(retained.contains("molt_host_init"));
+        assert!(retained.contains("host_init_helper"));
+        let host_init = ir
+            .functions
+            .iter()
+            .find(|func| func.name == "molt_host_init")
+            .expect("molt_host_init must remain");
+        assert!(
+            host_init
+                .ops
+                .iter()
+                .any(|op| op.s_value.as_deref() == Some("host_init_helper")),
+            "molt_host_init must keep its transitive references",
         );
     }
 
