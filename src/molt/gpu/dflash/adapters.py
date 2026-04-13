@@ -6,7 +6,7 @@ over time. Molt core only keeps a lightweight registry boundary here.
 
 from __future__ import annotations
 
-from .contracts import DFlashRuntime
+from .contracts import DFlashRuntime, DFlashSelectionContext
 
 
 _DFLASH_ADAPTERS = {}
@@ -107,3 +107,29 @@ def resolve_dflash_runtime(context, preferred_name: str | None = None):
     if not isinstance(runtime, DFlashRuntime):
         raise TypeError("dflash adapter create_runtime() must return DFlashRuntime")
     return runtime
+
+
+def build_dflash_runtime(
+    model,
+    prompt_tokens,
+    *,
+    backend: str | None,
+    dflash_adapter: str | None = None,
+    eos_token_id=None,
+    max_new_tokens: int = 100,
+    block_size: int = 16,
+):
+    context = DFlashSelectionContext(
+        model=model,
+        backend=backend,
+        prompt_tokens=prompt_tokens,
+        eos_token_id=eos_token_id,
+        max_new_tokens=max_new_tokens,
+        block_size=block_size,
+    )
+    runtime = resolve_dflash_runtime(context, preferred_name=dflash_adapter)
+    if runtime is not None:
+        return runtime
+    if dflash_adapter is not None:
+        raise LookupError(f"dflash adapter '{dflash_adapter}' is unavailable for this context")
+    return None
