@@ -519,16 +519,18 @@ def test_tree_shake_runtime_preserves_dynamic_required_exports(monkeypatch) -> N
             "molt_exception_pending",
             "molt_gpu_linear_contiguous",
             "molt_gpu_tensor__tensor_scaled_dot_product_attention",
+            "molt_gpu_turboquant_attention_packed",
         ]
     )
     monkeypatch.setenv(
         "MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS",
-        "molt_gpu_linear_contiguous,molt_gpu_tensor__tensor_scaled_dot_product_attention",
+        "molt_gpu_linear_contiguous,molt_gpu_tensor__tensor_scaled_dot_product_attention,molt_gpu_turboquant_attention_packed",
     )
     shaken = wasm_link._tree_shake_runtime(module, {"exception_pending"})
     exports = wasm_link._collect_function_exports(shaken)
     assert "molt_gpu_linear_contiguous" in exports
     assert "molt_gpu_tensor__tensor_scaled_dot_product_attention" in exports
+    assert "molt_gpu_turboquant_attention_packed" in exports
 
 
 def test_tree_shake_runtime_reuses_cached_result(

@@ -54,6 +54,14 @@ Current cache semantics:
 - dense cache append should avoid per-token concat churn and materialize lazily
   for attention reads
 
+Current TurboQuant backend boundary:
+- runtime/backend now own an explicit `molt_gpu_turboquant_attention_packed`
+  intrinsic surface for packed-cache attention dispatch
+- current implementation is a runtime-owned reference bridge through the cache
+  object model, not a fused kernel yet
+- next backend work should replace that bridge with real packed CUDA/Metal/
+  WebGPU/ROCm kernels behind the same symbol
+
 Near-term direction:
 - keep cache semantics generic at the tensor/attention layer
 - move toward tensor-level cache-backed attention dispatch, so tinygrad-shaped

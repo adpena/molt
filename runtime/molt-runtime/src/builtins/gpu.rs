@@ -6435,6 +6435,92 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
     })
 }
 
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn molt_gpu_turboquant_attention_packed(
+    q_bits: u64,
+    k_bits: u64,
+    v_bits: u64,
+    mask_bits: u64,
+    scale_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let _ = match unsafe { tensor_runtime_view(_py, q_bits, "q") } {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+
+        let missing = crate::missing_bits(_py);
+        let Some(kv_cache_name) = attr_name_bits_from_bytes(_py, b"_kv_cache") else {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "failed to intern _kv_cache attribute name",
+            );
+        };
+        let Some(role_name) = attr_name_bits_from_bytes(_py, b"_kv_role") else {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "failed to intern _kv_role attribute name",
+            );
+        };
+        let Some(attention_ref_name) = attr_name_bits_from_bytes(_py, b"_attention_reference") else {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "failed to intern _attention_reference attribute name",
+            );
+        };
+
+        let k_cache_bits = crate::molt_getattr_builtin(k_bits, kv_cache_name, missing);
+        let v_cache_bits = crate::molt_getattr_builtin(v_bits, kv_cache_name, missing);
+        if k_cache_bits == missing || v_cache_bits == missing || k_cache_bits != v_cache_bits {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "turboquant attention expects matching key/value cache views",
+            );
+        }
+
+        let k_role_bits = crate::molt_getattr_builtin(k_bits, role_name, missing);
+        let v_role_bits = crate::molt_getattr_builtin(v_bits, role_name, missing);
+        let Some(k_role) = string_obj_to_owned(obj_from_bits(k_role_bits)) else {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "turboquant attention key view is missing _kv_role",
+            );
+        };
+        let Some(v_role) = string_obj_to_owned(obj_from_bits(v_role_bits)) else {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "turboquant attention value view is missing _kv_role",
+            );
+        };
+        if k_role != "key" || v_role != "value" {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "turboquant attention expects key/value cache view roles",
+            );
+        }
+
+        let attention_bits =
+            crate::molt_getattr_builtin(k_cache_bits, attention_ref_name, missing);
+        if attention_bits == missing {
+            return raise_exception::<_>(
+                _py,
+                "AttributeError",
+                "turboquant cache object is missing _attention_reference",
+            );
+        }
+
+        unsafe { crate::call::dispatch::call_callable3(_py, attention_bits, q_bits, mask_bits, scale_bits) }
+    })
+}
+
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_interop__load_safetensors(path_bits: u64) -> u64 {

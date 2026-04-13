@@ -12,7 +12,8 @@ def _native_molt_env(root: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
     env["MOLT_EXT_ROOT"] = str(root)
-    env["CARGO_TARGET_DIR"] = str(root / "target")
+    env["MOLT_SESSION_ID"] = "test-gpu-kv-cache"
+    env["CARGO_TARGET_DIR"] = str(root / "target" / "test-gpu-kv-cache")
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
     env["MOLT_CACHE"] = str(root / ".molt_cache")
     env["MOLT_DIFF_ROOT"] = str(root / "tmp" / "diff")
@@ -184,6 +185,44 @@ def test_turboquant_attention_kv_cache_matches_rowwise_helper():
     assert out.reshape(8).to_list() == pytest.approx(
         helper.attention_output(query.reshape(8)).to_list()
     )
+
+
+def test_turboquant_attention_kv_cache_uses_intrinsic_when_available(monkeypatch):
+    import molt.gpu.kv_cache as kv_cache_mod
+    from molt.gpu.tensor import Tensor
+    from molt.gpu.turboquant import TurboQuantCodec
+
+    codec = TurboQuantCodec(dim=2, bits=3, seed=5, qjl_seed=19)
+    cache = kv_cache_mod.TurboQuantAttentionKVCache(codec)
+    cache.append(
+        Tensor([0.6, -0.2, 0.1, 0.4], shape=(1, 1, 2, 2)),
+        Tensor([0.2, 0.1, -0.3, 0.4], shape=(1, 1, 2, 2)),
+    )
+    q = Tensor([0.5, -0.1], shape=(1, 1, 1, 2))
+    seen = {}
+
+    def fake_intrinsic(q_arg, k_arg, v_arg, mask_arg, scale_arg):
+        seen["q_shape"] = q_arg.shape
+        seen["k_role"] = k_arg._kv_role
+        seen["v_role"] = v_arg._kv_role
+        seen["same_cache"] = k_arg._kv_cache is v_arg._kv_cache
+        seen["mask"] = mask_arg
+        seen["scale"] = scale_arg
+        return Tensor([1.0, 2.0], shape=(1, 1, 1, 2))
+
+    monkeypatch.setattr(kv_cache_mod, "_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED", fake_intrinsic)
+
+    out = cache.attention(q, scale=1.0)
+
+    assert out.to_list() == [[[[1.0, 2.0]]]]
+    assert seen == {
+        "q_shape": (1, 1, 1, 2),
+        "k_role": "key",
+        "v_role": "value",
+        "same_cache": True,
+        "mask": None,
+        "scale": 1.0,
+    }
 
 
 def test_turboquant_attention_kv_cache_supports_grouped_query_attention():
