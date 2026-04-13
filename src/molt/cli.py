@@ -16270,11 +16270,11 @@ def _run_native_partial_link_command(
     link_cmd, _linker_hint, _normalized_target = _build_native_link_driver_command(
         output_obj=primary_object,
         target_triple=target_triple,
-        sysroot_path=sysroot_path,
+        sysroot_path=None,
         profile="dev",
     )
     link_cmd.extend(
-        ["-r", *[str(path) for path in input_objects], "-o", str(output_path)]
+        ["-Wl,-r", "-o", str(output_path), *[str(path) for path in input_objects]]
     )
     return _run_native_link_command(
         link_cmd=link_cmd,
