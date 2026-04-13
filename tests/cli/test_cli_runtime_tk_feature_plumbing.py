@@ -11,12 +11,33 @@ import molt.cli as cli
 def test_runtime_cargo_features_native_vs_wasm(monkeypatch) -> None:
     cli._runtime_cargo_features_cached.cache_clear()
     monkeypatch.delenv("MOLT_RUNTIME_TK_NATIVE", raising=False)
+    monkeypatch.delenv("MOLT_RUNTIME_GPU_METAL", raising=False)
+    monkeypatch.delenv("MOLT_RUNTIME_GPU_WEBGPU", raising=False)
     assert cli._runtime_cargo_features(None) == ("molt_tk_native",)
     monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "0")
+    cli._runtime_cargo_features_cached.cache_clear()
     assert cli._runtime_cargo_features(None) == ()
     monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "1")
+    cli._runtime_cargo_features_cached.cache_clear()
     assert cli._runtime_cargo_features(None) == ("molt_tk_native",)
     assert cli._runtime_cargo_features("aarch64-apple-darwin") == ("molt_tk_native",)
+    assert cli._runtime_cargo_features("wasm32-wasip1") == ()
+
+
+def test_runtime_cargo_features_include_gpu_backend_flags(monkeypatch) -> None:
+    cli._runtime_cargo_features_cached.cache_clear()
+    monkeypatch.delenv("MOLT_RUNTIME_TK_NATIVE", raising=False)
+    monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
+    monkeypatch.delenv("MOLT_RUNTIME_GPU_WEBGPU", raising=False)
+    assert cli._runtime_cargo_features(None) == ("molt_tk_native", "molt_gpu_metal")
+
+    monkeypatch.setenv("MOLT_RUNTIME_GPU_WEBGPU", "1")
+    cli._runtime_cargo_features_cached.cache_clear()
+    assert cli._runtime_cargo_features(None) == (
+        "molt_tk_native",
+        "molt_gpu_metal",
+        "molt_gpu_webgpu",
+    )
     assert cli._runtime_cargo_features("wasm32-wasip1") == ()
 
 
@@ -360,3 +381,90 @@ def test_ensure_runtime_lib_does_not_probe_fingerprint_exists(
         cargo_timeout=0.1,
     )
     assert seen_cmds
+
+
+def test_ensure_runtime_lib_rebuilds_when_stored_fingerprint_conflicts_with_requested_gpu_features(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
+    runtime_lib.parent.mkdir(parents=True, exist_ok=True)
+    runtime_lib.write_bytes(b"!<arch>\nfake-staticlib")
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    fingerprint_path = tmp_path / "runtime.fingerprint.json"
+    source = tmp_path / "runtime_source.rs"
+    source.write_text("pub fn marker() {}\n")
+    stale_fingerprint = {
+        "version": 2,
+        "hash": "stale",
+        "rustc": "rustc-test",
+        "inputs_digest": "digest",
+        "meta_digest": "stale-meta",
+    }
+    seen_cmds: list[list[str]] = []
+
+    monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
+    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _project_root: [source], raising=True)
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: {
+            "hash": "new",
+            "rustc": "rustc-test",
+            "inputs_digest": "digest",
+            "meta_digest": "new-meta",
+        },
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: fingerprint_path,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_read_runtime_fingerprint",
+        lambda path: dict(stale_fingerprint) if path == fingerprint_path else None,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+    monkeypatch.setattr(cli, "_maybe_enable_sccache", lambda _env: None, raising=True)
+    monkeypatch.setattr(
+        cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+    )
+
+    def fake_run_cargo(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout: float | None,
+        json_output: bool,
+        label: str,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, timeout, json_output, label
+        seen_cmds.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        cli, "_run_cargo_with_sccache_retry", fake_run_cargo, raising=True
+    )
+
+    assert cli._ensure_runtime_lib(
+        runtime_lib,
+        target_triple=None,
+        json_output=True,
+        cargo_profile="dev-fast",
+        project_root=project_root,
+        cargo_timeout=1.0,
+    )
+    assert seen_cmds
+    feature_index = seen_cmds[0].index("--features")
+    features_str = seen_cmds[0][feature_index + 1]
+    assert "molt_gpu_metal" in features_str.split(",")

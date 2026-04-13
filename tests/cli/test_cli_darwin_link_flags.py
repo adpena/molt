@@ -98,6 +98,37 @@ def test_collect_cargo_native_link_deps_preserves_framework_link_kinds(
     assert "-lc++" in link_libs
 
 
+def test_build_native_link_command_includes_metal_frameworks_when_runtime_gpu_metal_enabled(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
+    runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
+    runtime_lib.parent.mkdir(parents=True)
+    runtime_lib.write_bytes(b"!<arch>\nfake-staticlib")
+    output_obj = tmp_path / "output.o"
+    output_obj.write_bytes(b"\x7fELFobject")
+    stub_path = tmp_path / "main_stub.c"
+    stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    output_binary = tmp_path / "app"
+
+    cmd, _, _ = cli._build_native_link_command(
+        output_obj=output_obj,
+        stub_path=stub_path,
+        runtime_lib=runtime_lib,
+        output_binary=output_binary,
+        target_triple=None,
+        sysroot_path=None,
+        profile="dev",
+        stdlib_obj_path=None,
+    )
+
+    assert "-framework" in cmd
+    assert "Metal" in cmd
+    assert "-lobjc" in cmd
+
+
 def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:
     args = ["zig", "cc", "-target", "x86_64-unknown-linux-gnu"]
     cli._append_darwin_runtime_frameworks(
