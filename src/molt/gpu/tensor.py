@@ -2162,15 +2162,45 @@ class Tensor:
             )
         return self._data_list()[0]
 
-    def argmax(self) -> 'Tensor':
+    def argmax(self, axis=None, keepdim: bool = False) -> 'Tensor':
         data = self._data_list()
         if not data:
             raise ValueError("argmax() requires a non-empty tensor")
-        best = 0
-        for idx in range(1, len(data)):
-            if data[idx] > data[best]:
-                best = idx
-        return Tensor(float(best))
+        if axis is None:
+            best = 0
+            for idx in range(1, len(data)):
+                if data[idx] > data[best]:
+                    best = idx
+            return Tensor(float(best))
+
+        if axis < 0:
+            axis = self.ndim + axis
+        if axis < 0 or axis >= self.ndim:
+            raise ValueError(f"Invalid axis {axis} for tensor with {self.ndim} dims")
+
+        axis_len = self._shape[axis]
+        outer = _product(self._shape[:axis]) if axis > 0 else 1
+        inner = _product(self._shape[axis + 1:]) if axis + 1 < self.ndim else 1
+        result = [0.0] * (outer * inner)
+
+        for o in range(outer):
+            for inn in range(inner):
+                best_idx = 0
+                best_val = data[o * axis_len * inner + inn]
+                for a in range(1, axis_len):
+                    idx = o * axis_len * inner + a * inner + inn
+                    if data[idx] > best_val:
+                        best_val = data[idx]
+                        best_idx = a
+                result[o * inner + inn] = float(best_idx)
+
+        if keepdim:
+            out_shape = self._shape[:axis] + (1,) + self._shape[axis + 1:]
+        else:
+            out_shape = self._shape[:axis] + self._shape[axis + 1:]
+        if not out_shape:
+            return Tensor(result[0])
+        return Tensor(result, shape=out_shape)
 
     def maximum(self, other) -> 'Tensor':
         if isinstance(other, (int, float)):
