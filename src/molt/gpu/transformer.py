@@ -55,7 +55,13 @@ class MultiHeadAttention:
                     and attn_mask.ndim == 2
                 ):
                     attn_mask = attn_mask.reshape(1, 1, attn_mask.shape[0], attn_mask.shape[1])
-                out = kv_cache.attention(q, scale=self.scale, mask=attn_mask)
+                out = tensor_scaled_dot_product_attention(
+                    q,
+                    kv_cache.keys(),
+                    kv_cache.values(),
+                    attn_mask,
+                    self.scale,
+                )
             except Exception:
                 truncate = getattr(kv_cache, "truncate", None)
                 if callable(truncate):

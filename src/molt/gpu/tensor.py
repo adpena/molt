@@ -2339,6 +2339,15 @@ def tensor_scaled_dot_product_attention(
     mask: "Tensor | None" = None,
     scale: float = 1.0,
 ) -> "Tensor":
+    cache = getattr(k, "_kv_cache", None)
+    if (
+        cache is not None
+        and cache is getattr(v, "_kv_cache", None)
+        and getattr(k, "_kv_role", None) == "key"
+        and getattr(v, "_kv_role", None) == "value"
+    ):
+        return cache.attention(q, scale=scale, mask=mask)
+
     if (
         _MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION is not None
         and _requested_gpu_backend() in {"webgpu", "metal"}
