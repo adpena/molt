@@ -1,7 +1,9 @@
 import base64
+import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import socketserver
 import subprocess
@@ -20,13 +22,27 @@ import molt.cli as cli
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _smoke_session_id() -> str:
+    raw = os.environ.get("PYTEST_CURRENT_TEST", "").strip()
+    if not raw:
+        return "tests-cli-smoke"
+    nodeid = raw.split(" ", 1)[0]
+    test_name = nodeid.rsplit("::", 1)[-1]
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", test_name).strip("-").lower()
+    if not slug:
+        slug = "case"
+    slug = slug[:32]
+    digest = hashlib.sha1(nodeid.encode("utf-8")).hexdigest()[:12]
+    return f"tests-cli-smoke-{slug}-{digest}"
+
+
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
-    # Route nested CLI calls through one deterministic smoke-test session so
-    # they do not inherit a developer session's daemon/target state while still
-    # reusing the same isolated build artifacts across smoke cases.
-    env["MOLT_SESSION_ID"] = "tests-cli-smoke"
+    # Route nested CLI calls through a deterministic per-test session so
+    # one long-running smoke case cannot block unrelated cases on the same
+    # Cargo artifact directory lock.
+    env["MOLT_SESSION_ID"] = _smoke_session_id()
     env.pop("CARGO_TARGET_DIR", None)
     env.pop("MOLT_DIFF_CARGO_TARGET_DIR", None)
     return env
@@ -496,6 +512,19 @@ def test_cli_run_json(tmp_path: Path) -> None:
     payload = json.loads(res.stdout)
     assert payload["data"]["returncode"] == 0
     assert "ok" in payload["data"].get("stdout", "")
+
+
+def test_base_env_uses_deterministic_per_test_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "PYTEST_CURRENT_TEST",
+        "tests/cli/test_cli_smoke.py::test_cli_run_json (call)",
+    )
+
+    env = _base_env()
+
+    assert env["MOLT_SESSION_ID"].startswith("tests-cli-smoke-test-cli-run-json-")
 
 
 @pytest.mark.parametrize("profile", ["dev", "release"])
