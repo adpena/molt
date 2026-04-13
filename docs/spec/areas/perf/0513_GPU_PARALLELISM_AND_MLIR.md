@@ -22,6 +22,24 @@ Implication:
   primitive stack, prefer the canonical path and treat the wrapper as an
   optimization problem, not a semantic dependency
 
+## Compression Package Boundaries
+
+Quantization and speculative-decode infrastructure belong under `molt.gpu`
+as first-class packages with narrow responsibilities:
+
+- `molt.gpu.dflash`: speculative decode contracts, adapter selection, and
+  runtime orchestration
+- `molt.gpu.turboquant`: KV-cache/vector compression contracts, codebooks,
+  structured-rotation reference codecs, and cache helpers
+
+Rules:
+- model-specific logic stays outside these core packages
+- core packages define reusable contracts and reference semantics first
+- fused backend kernels (`cuda`, `metal`, `webgpu`, `rocm`) are acceleration
+  lanes layered under these package boundaries, not alternate public APIs
+- no silent fallback between compression schemes; enablement must be explicit
+  and capability-aware
+
 ## Two-Lane Architecture
 
 ### Lane 1: Arrow-first + libcudf Routing (90% Win)

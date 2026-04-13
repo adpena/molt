@@ -1490,6 +1490,16 @@ def test_submodule_dflash():
     )
 
 
+def test_submodule_turboquant():
+    from molt.gpu.turboquant import (
+        TurboQuantCodec,
+        TurboQuantConfig,
+        TurboQuantKVCache,
+        TurboQuantMSEVector,
+        TurboQuantProdVector,
+    )
+
+
 if __name__ == "__main__":
     # Run all tests manually
     import traceback
