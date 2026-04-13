@@ -960,12 +960,18 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
             let needle_ptr = match needle.as_ptr() {
                 Some(ptr) => ptr,
                 None => {
-                    let msg = format!("must be str, not {}", type_name(_py, needle));
+                    let msg = format!(
+                        "count() argument 1 must be str, not {}",
+                        type_name(_py, needle)
+                    );
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             };
             if object_type_id(needle_ptr) != TYPE_ID_STRING {
-                let msg = format!("must be str, not {}", type_name(_py, needle));
+                let msg = format!(
+                    "count() argument 1 must be str, not {}",
+                    type_name(_py, needle)
+                );
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
