@@ -885,7 +885,20 @@ class Tensor:
         """
         return tensor_reshape_view(self, shape)
 
-    def transpose(self) -> 'Tensor':
+    def transpose(self, dim0=None, dim1=None) -> 'Tensor':
+        """Transpose a 2D tensor or swap two explicit axes."""
+        if dim0 is not None or dim1 is not None:
+            if dim0 is None or dim1 is None:
+                raise TypeError("transpose expects either zero args or two dims")
+            ndim = self.ndim
+            a = dim0 + ndim if dim0 < 0 else dim0
+            b = dim1 + ndim if dim1 < 0 else dim1
+            if a < 0 or a >= ndim or b < 0 or b >= ndim:
+                raise ValueError(f"transpose dims {(dim0, dim1)} out of range for ndim={ndim}")
+            dims = list(range(ndim))
+            dims[a], dims[b] = dims[b], dims[a]
+            return tensor_permute_dims(self, tuple(dims))
+
         """Transpose a 2D tensor (swap rows and columns)."""
         if self.ndim < 2:
             return Tensor(self._buf, shape=self._shape, dtype=self._dtype)
@@ -909,6 +922,152 @@ class Tensor:
     def permute(self, *dims) -> 'Tensor':
         """Reorder tensor dimensions."""
         return tensor_permute_dims(self, dims)
+
+    def unsqueeze(self, dim: int) -> 'Tensor':
+        ndim = self.ndim + 1
+        if dim < 0:
+            dim += ndim
+        if dim < 0 or dim >= ndim:
+            raise ValueError(f"unsqueeze dim {dim} out of range for ndim={self.ndim}")
+        shape = list(self._shape)
+        shape.insert(dim, 1)
+        return Tensor(self._buf, shape=tuple(shape), dtype=self._dtype)
+
+    def squeeze(self, dim=None) -> 'Tensor':
+        if dim is None:
+            shape = tuple(size for size in self._shape if size != 1)
+            return Tensor(self._buf, shape=shape, dtype=self._dtype)
+        if self.ndim == 0:
+            return Tensor(self._buf, shape=self._shape, dtype=self._dtype)
+        if dim < 0:
+            dim += self.ndim
+        if dim < 0 or dim >= self.ndim:
+            raise ValueError(f"squeeze dim {dim} out of range for ndim={self.ndim}")
+        if self._shape[dim] != 1:
+            return Tensor(self._buf, shape=self._shape, dtype=self._dtype)
+        shape = list(self._shape)
+        del shape[dim]
+        return Tensor(self._buf, shape=tuple(shape), dtype=self._dtype)
+
+    def expand(self, *shape) -> 'Tensor':
+        if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
+            shape = tuple(shape[0])
+        else:
+            shape = tuple(shape)
+        if len(shape) < self.ndim:
+            raise ValueError(f"cannot expand {self._shape} to {shape}")
+        padded = (1,) * (len(shape) - self.ndim) + self._shape
+        for src, dst in zip(padded, shape):
+            if src != 1 and src != dst:
+                raise ValueError(f"cannot expand {self._shape} to {shape}")
+        if not shape:
+            return Tensor(self._buf, shape=(), dtype=self._dtype)
+        src_data = self._data_list()
+        src_strides = _strides(padded) if padded else ()
+        out = []
+        total = _product(shape)
+        for flat_idx in range(total):
+            rem = flat_idx
+            coords = []
+            for stride, axis in zip(_strides(shape), shape):
+                coord = rem // stride
+                rem %= stride
+                coords.append(coord)
+            src_index = 0
+            for coord, axis_size, stride in zip(coords, padded, src_strides):
+                src_index += (0 if axis_size == 1 else coord) * stride
+            out.append(src_data[src_index])
+        return self._from_flat(out, shape)
+
+    def cast(self, dtype) -> 'Tensor':
+        if dtype in {float}:
+            format_char = "f" if self._buf.format_char == "f" else "d"
+            out_buf = alloc(self.size, float, format_char=format_char)
+            for idx, value in enumerate(self._data_list()):
+                out_buf[idx] = float(value)
+            return Tensor(out_buf, shape=self._shape, dtype=float)
+        if dtype in {int}:
+            out_buf = alloc(self.size, int, format_char="q")
+            for idx, value in enumerate(self._data_list()):
+                out_buf[idx] = int(value)
+            return Tensor(out_buf, shape=self._shape, dtype=int)
+        raise TypeError(f"unsupported cast dtype {dtype!r}")
+
+    def float(self) -> 'Tensor':
+        return self.cast(float)
+
+    def cat(self, other, dim=0) -> 'Tensor':
+        if not isinstance(other, Tensor):
+            raise TypeError(f"Expected Tensor, got {type(other)!r}")
+        ndim = self.ndim
+        if ndim != other.ndim:
+            raise ValueError(f"cat rank mismatch: {self._shape} vs {other._shape}")
+        if dim < 0:
+            dim += ndim
+        if dim < 0 or dim >= ndim:
+            raise ValueError(f"cat dim {dim} out of range for ndim={ndim}")
+        if dim == 0:
+            return tensor_concat_first_dim((self, other))
+
+        if any(
+            a != b for axis, (a, b) in enumerate(zip(self._shape, other._shape)) if axis != dim
+        ):
+            raise ValueError(f"cat shape mismatch: {self._shape} vs {other._shape}")
+
+        out_shape = list(self._shape)
+        out_shape[dim] += other._shape[dim]
+        out = []
+        left = self.to_list()
+        right = other.to_list()
+
+        def _cat(a, b, axis):
+            if axis == 0:
+                return list(a) + list(b)
+            return [_cat(x, y, axis - 1) for x, y in zip(a, b)]
+
+        return Tensor(_cat(left, right, dim), dtype=self._dtype)
+
+    @staticmethod
+    def stack(*tensors, dim=0) -> 'Tensor':
+        if not tensors:
+            raise ValueError("stack requires at least one tensor")
+        if len(tensors) == 1 and isinstance(tensors[0], (list, tuple)):
+            tensors = tuple(tensors[0])
+        first = tensors[0]
+        if not isinstance(first, Tensor):
+            raise TypeError(f"Expected Tensor, got {type(first)!r}")
+        ndim = first.ndim + 1
+        if dim < 0:
+            dim += ndim
+        if dim < 0 or dim >= ndim:
+            raise ValueError(f"stack dim {dim} out of range for ndim={first.ndim}")
+        expanded = [tensor.unsqueeze(dim) for tensor in tensors]
+        out = expanded[0]
+        for tensor in expanded[1:]:
+            out = out.cat(tensor, dim=dim)
+        return out
+
+    @staticmethod
+    def zeros(*shape) -> 'Tensor':
+        return zeros(*shape)
+
+    @staticmethod
+    def arange(start, stop=None, step=1) -> 'Tensor':
+        if stop is None:
+            start, stop = 0, start
+        values = []
+        cur = start
+        if step == 0:
+            raise ValueError("step must not be zero")
+        if step > 0:
+            while cur < stop:
+                values.append(cur)
+                cur += step
+        else:
+            while cur > stop:
+                values.append(cur)
+                cur += step
+        return Tensor(values, shape=(len(values),), dtype=float)
 
     @property
     def T(self) -> 'Tensor':
@@ -1474,6 +1633,14 @@ class Tensor:
         data = self._data_list()
         return self._from_flat([math.tanh(x) for x in data], self._shape)
 
+    def sin(self) -> 'Tensor':
+        data = self._data_list()
+        return self._from_flat([math.sin(x) for x in data], self._shape)
+
+    def cos(self) -> 'Tensor':
+        data = self._data_list()
+        return self._from_flat([math.cos(x) for x in data], self._shape)
+
     def softmax(self, axis=-1) -> 'Tensor':
         """Softmax along an axis (default: last axis).
 
@@ -1703,6 +1870,29 @@ class Tensor:
                 f"item() requires a single-element tensor, got size {self.size}"
             )
         return self._data_list()[0]
+
+    def argmax(self) -> 'Tensor':
+        data = self._data_list()
+        if not data:
+            raise ValueError("argmax() requires a non-empty tensor")
+        best = 0
+        for idx in range(1, len(data)):
+            if data[idx] > data[best]:
+                best = idx
+        return Tensor(float(best))
+
+    def maximum(self, other) -> 'Tensor':
+        if isinstance(other, (int, float)):
+            data = self._data_list()
+            val = float(other)
+            return self._from_flat([x if x >= val else val for x in data], self._shape)
+        if isinstance(other, Tensor):
+            if self.shape != other.shape:
+                raise ValueError(f"maximum shape mismatch: {self.shape} vs {other.shape}")
+            a = self._data_list()
+            b = other._data_list()
+            return self._from_flat([x if x >= y else y for x, y in zip(a, b)], self._shape)
+        return NotImplemented
 
     def __repr__(self) -> str:
         if self.size <= 20:
