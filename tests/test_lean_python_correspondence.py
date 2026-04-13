@@ -106,9 +106,27 @@ def _parse_lean_inductive_variants(text: str, type_name: str) -> list[str]:
             break
         for vm in re.finditer(r"\|\s*\.?(\w+)", stripped):
             name = vm.group(1)
+            if name.endswith("_"):
+                name = name[:-1]
             if name not in variants:
                 variants.append(name)
     return variants
+
+
+def _lean_binop_python_name(name: str) -> str | None:
+    normalized = name[:-1] if name.endswith("_") else name
+    direct_map = {
+        "and": "AND",
+        "or": "OR",
+        "is": "IS",
+    }
+    if normalized in direct_map:
+        return direct_map[normalized]
+    # These Lean binops are lowered compositionally in the Python frontend
+    # rather than emitted as a single pure op kind.
+    if normalized in {"is_not", "in", "not_in"}:
+        return None
+    return normalized.upper()
 
 
 # ── Effect classification tests ──────────────────────────────────────
@@ -187,7 +205,9 @@ class TestPureOpAlignment:
         # These are the Lean BinOp names that should be in the Python pure set
         # (uppercase in Python)
         for op in lean_binops:
-            upper = op.upper()
+            upper = _lean_binop_python_name(op)
+            if upper is None:
+                continue
             # Some ops may not be in the Python IR (e.g. bitwise handled differently)
             if upper in pure_ops:
                 continue
