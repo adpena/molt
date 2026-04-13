@@ -78,8 +78,27 @@ def wasm_runtime_import_names() -> tuple[str, ...]:
     return tuple(sorted(set(names)))
 
 
-def _stdlib_module_path(repo_root: Path, module_name: str) -> Path | None:
+def _runtime_owned_module_path(repo_root: Path, module_name: str) -> Path | None:
     stdlib_root = repo_root / "src" / "molt" / "stdlib"
+    if module_name.startswith("molt.stdlib."):
+        rel = Path(*module_name[len("molt.stdlib.") :].split("."))
+        py_path = (stdlib_root / rel).with_suffix(".py")
+        if py_path.exists():
+            return py_path
+        package_init = stdlib_root / rel / "__init__.py"
+        if package_init.exists():
+            return package_init
+        return None
+    if module_name.startswith("molt."):
+        package_root = repo_root / "src" / "molt"
+        rel = Path(*module_name[len("molt.") :].split("."))
+        py_path = (package_root / rel).with_suffix(".py")
+        if py_path.exists():
+            return py_path
+        package_init = package_root / rel / "__init__.py"
+        if package_init.exists():
+            return package_init
+        return None
     rel = Path(*module_name.split("."))
     py_path = (stdlib_root / rel).with_suffix(".py")
     if py_path.exists():
@@ -90,7 +109,7 @@ def _stdlib_module_path(repo_root: Path, module_name: str) -> Path | None:
     return None
 
 
-def _resolved_stdlib_intrinsic_exports(
+def _resolved_runtime_owned_intrinsic_exports(
     resolved_modules: Iterable[str] | None,
 ) -> tuple[str, ...]:
     if not resolved_modules:
@@ -98,7 +117,7 @@ def _resolved_stdlib_intrinsic_exports(
     repo_root = Path(__file__).resolve().parents[2]
     names: set[str] = set()
     for module_name in resolved_modules:
-        module_path = _stdlib_module_path(repo_root, module_name)
+        module_path = _runtime_owned_module_path(repo_root, module_name)
         if module_path is None:
             continue
         text = module_path.read_text(encoding="utf-8")
@@ -139,7 +158,7 @@ def wasm_runtime_required_import_names(
 ) -> tuple[str, ...]:
     raw_names = {
         canonical_intrinsic_runtime_name(name).removeprefix("molt_")
-        for name in _resolved_stdlib_intrinsic_exports(resolved_modules)
+        for name in _resolved_runtime_owned_intrinsic_exports(resolved_modules)
     }
     known = set(wasm_runtime_import_names())
     return tuple(sorted(raw_names & known))
@@ -186,7 +205,7 @@ def wasm_runtime_export_link_args(
         export_names.update(_HOST_RUNTIME_EXPORTS)
         export_names.update(
             canonical_intrinsic_runtime_name(name)
-            for name in _resolved_stdlib_intrinsic_exports(resolved_modules)
+            for name in _resolved_runtime_owned_intrinsic_exports(resolved_modules)
         )
     else:
         export_names = set(wasm_runtime_required_export_names(required_runtime_imports))
