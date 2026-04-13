@@ -9,6 +9,7 @@ import json
 import math
 import struct
 import array
+import _intrinsics as _molt_intrinsics
 from . import Buffer
 from .tensor import Tensor
 
@@ -26,6 +27,27 @@ _SAFETENSOR_DTYPES = {
     "U8": ("B", 1),
     "BOOL": ("?", 1),
 }
+
+
+def _load_optional_intrinsic(name: str):
+    loader = getattr(_molt_intrinsics, "load_intrinsic", None)
+    if callable(loader):
+        return loader(name)
+    require = getattr(_molt_intrinsics, "require_intrinsic", None)
+    if callable(require):
+        try:
+            return require(name)
+        except RuntimeError:
+            return None
+    return None
+
+
+_MOLT_GPU_INTEROP_DECODE_F16_BYTES_TO_F32 = _load_optional_intrinsic(
+    "molt_gpu_interop_decode_f16_bytes_to_f32"
+)
+_MOLT_GPU_INTEROP_DECODE_BF16_BYTES_TO_F32 = _load_optional_intrinsic(
+    "molt_gpu_interop_decode_bf16_bytes_to_f32"
+)
 
 
 class _SafeTensorMap:
@@ -130,6 +152,14 @@ def _load_safetensor_entry(data: bytes, data_start: int, meta: dict):
     if dtype_str == "F32":
         count = len(raw) // 4
         return Tensor(Buffer(raw, float, count, format_char="f"), shape=shape)
+    if dtype_str == "F16" and callable(_MOLT_GPU_INTEROP_DECODE_F16_BYTES_TO_F32):
+        converted = _MOLT_GPU_INTEROP_DECODE_F16_BYTES_TO_F32(raw)
+        count = len(raw) // 2
+        return Tensor(Buffer(converted, float, count, format_char="f"), shape=shape)
+    if dtype_str == "BF16" and callable(_MOLT_GPU_INTEROP_DECODE_BF16_BYTES_TO_F32):
+        converted = _MOLT_GPU_INTEROP_DECODE_BF16_BYTES_TO_F32(raw)
+        count = len(raw) // 2
+        return Tensor(Buffer(converted, float, count, format_char="f"), shape=shape)
     values = _decode_safetensor_values(raw, dtype_str)
     return Tensor(values, shape=shape)
 

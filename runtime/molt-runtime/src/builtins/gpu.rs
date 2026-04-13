@@ -1,6 +1,6 @@
 use crate::{
     MoltObject, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE, TYPE_ID_TYPE,
-    alloc_bytearray, alloc_tuple, attr_name_bits_from_bytes, bytes_data, bytes_len,
+    alloc_bytearray, alloc_bytes, alloc_tuple, attr_name_bits_from_bytes, bytes_data, bytes_len,
     dec_ref_bits, molt_call_bind, molt_exception_clear, molt_exception_kind, molt_exception_last,
     obj_from_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64,
     to_i64,
@@ -125,6 +125,97 @@ fn requested_gpu_backend() -> Option<String> {
     } else {
         Some(name)
     }
+}
+
+fn decode_f16_to_f32_bits(bits: u16) -> u32 {
+    let sign = ((bits & 0x8000) as u32) << 16;
+    let exp = (bits >> 10) & 0x1F;
+    let frac = (bits & 0x03FF) as u32;
+    match exp {
+        0 => {
+            if frac == 0 {
+                sign
+            } else {
+                let mut mant = frac;
+                let mut exp32 = 113u32;
+                while (mant & 0x0400) == 0 {
+                    mant <<= 1;
+                    exp32 -= 1;
+                }
+                mant &= 0x03FF;
+                sign | (exp32 << 23) | (mant << 13)
+            }
+        }
+        0x1F => sign | 0x7F80_0000 | (frac << 13),
+        _ => {
+            let exp32 = (exp as u32) + 112;
+            sign | (exp32 << 23) | (frac << 13)
+        }
+    }
+}
+
+fn decode_f16_payload_to_f32_bytes(raw: &[u8]) -> Result<Vec<u8>, &'static str> {
+    if raw.len() % 2 != 0 {
+        return Err("F16 payload length must be even");
+    }
+    let mut out = Vec::with_capacity((raw.len() / 2) * 4);
+    for chunk in raw.chunks_exact(2) {
+        let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+        out.extend_from_slice(&decode_f16_to_f32_bits(bits).to_le_bytes());
+    }
+    Ok(out)
+}
+
+fn decode_bf16_payload_to_f32_bytes(raw: &[u8]) -> Result<Vec<u8>, &'static str> {
+    if raw.len() % 2 != 0 {
+        return Err("BF16 payload length must be even");
+    }
+    let mut out = Vec::with_capacity((raw.len() / 2) * 4);
+    for chunk in raw.chunks_exact(2) {
+        let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+        let widened = (bits as u32) << 16;
+        out.extend_from_slice(&widened.to_le_bytes());
+    }
+    Ok(out)
+}
+
+fn decode_half_bytes_to_f32_object(
+    _py: &crate::PyToken<'_>,
+    data_bits: u64,
+    decode: fn(&[u8]) -> Result<Vec<u8>, &'static str>,
+) -> u64 {
+    let Some(ptr) = obj_from_bits(data_bits).as_ptr() else {
+        return raise_exception::<_>(_py, "TypeError", "expected bytes-like object");
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
+            return raise_exception::<_>(_py, "TypeError", "expected bytes-like object");
+        }
+        let raw = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
+        let Ok(decoded) = decode(raw) else {
+            return raise_exception::<_>(_py, "ValueError", "invalid half-float payload length");
+        };
+        let out_ptr = alloc_bytes(_py, &decoded);
+        if out_ptr.is_null() {
+            return raise_exception::<_>(_py, "MemoryError", "failed to allocate decoded bytes");
+        }
+        MoltObject::from_ptr(out_ptr).bits()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_interop_decode_f16_bytes_to_f32(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        decode_half_bytes_to_f32_object(_py, data_bits, decode_f16_payload_to_f32_bytes)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_gpu_interop_decode_bf16_bytes_to_f32(data_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        decode_half_bytes_to_f32_object(_py, data_bits, decode_bf16_payload_to_f32_bytes)
+    })
 }
 
 fn parse_i64_launch_arg(_py: &crate::PyToken<'_>, bits: u64, role: &str) -> Result<i64, u64> {
@@ -7734,6 +7825,7 @@ mod tests {
     ))]
     use super::{linear_gate_up4_store_unaligned, linear_rows4_store_ptrs_unaligned};
     use super::{
+        decode_bf16_payload_to_f32_bytes, decode_f16_payload_to_f32_bytes,
         molt_gpu_broadcast_binary_contiguous, molt_gpu_buffer_to_list, molt_gpu_linear_contiguous,
         molt_gpu_linear_split_last_dim_contiguous,
         molt_gpu_linear_squared_relu_gate_interleaved_contiguous, molt_gpu_matmul_contiguous,
@@ -7755,6 +7847,28 @@ mod tests {
             out.extend_from_slice(&value.to_ne_bytes());
         }
         out
+    }
+
+    #[test]
+    fn decode_f16_payload_to_f32_bytes_matches_expected_values() {
+        let raw = [0x00_u8, 0x3c_u8, 0x00_u8, 0xc3_u8];
+        let decoded = decode_f16_payload_to_f32_bytes(&raw).expect("decode should succeed");
+        let values: [f32; 2] = [
+            f32::from_le_bytes(decoded[0..4].try_into().expect("first f32")),
+            f32::from_le_bytes(decoded[4..8].try_into().expect("second f32")),
+        ];
+        assert_eq!(values, [1.0, -3.5]);
+    }
+
+    #[test]
+    fn decode_bf16_payload_to_f32_bytes_matches_expected_values() {
+        let raw = [0x80_u8, 0x3f_u8, 0x60_u8, 0xc0_u8];
+        let decoded = decode_bf16_payload_to_f32_bytes(&raw).expect("decode should succeed");
+        let values: [f32; 2] = [
+            f32::from_le_bytes(decoded[0..4].try_into().expect("first f32")),
+            f32::from_le_bytes(decoded[4..8].try_into().expect("second f32")),
+        ];
+        assert_eq!(values, [1.0, -3.5]);
     }
 
     fn make_tensor_from_f32(
