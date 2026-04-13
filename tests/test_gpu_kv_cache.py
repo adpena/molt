@@ -387,6 +387,70 @@ def test_dense_kv_cache_defers_concat_until_materialization(monkeypatch):
     assert len(calls) == 2
 
 
+def test_dense_kv_cache_reuses_grouped_query_expansions(monkeypatch):
+    import molt.gpu.kv_cache as kv_cache_mod
+    from molt.gpu.kv_cache import DenseKVCache
+    from molt.gpu.tensor import Tensor
+
+    cache = DenseKVCache()
+    cache.append(
+        Tensor(
+            [
+                0.6, -0.2,
+                0.1, 0.4,
+                -0.3, 0.5,
+                0.2, -0.1,
+            ],
+            shape=(1, 2, 2, 2),
+        ),
+        Tensor(
+            [
+                0.2, 0.1,
+                -0.3, 0.4,
+                -0.5, 0.2,
+                0.4, -0.1,
+            ],
+            shape=(1, 2, 2, 2),
+        ),
+    )
+    q = Tensor(
+        [
+            0.5, -0.1,
+            0.2, 0.3,
+            -0.4, 0.6,
+            0.1, -0.2,
+        ],
+        shape=(1, 4, 1, 2),
+    )
+    repeat_calls = []
+    permute_calls = []
+    original_repeat = Tensor.repeat_axis
+    original_permute = kv_cache_mod.tensor_permute_dims
+
+    def tracked_repeat(self, axis, repeats):
+        repeat_calls.append((self.shape, axis, repeats))
+        return original_repeat(self, axis, repeats)
+
+    def tracked_permute(tensor, dims):
+        permute_calls.append((tensor.shape, tuple(dims)))
+        return original_permute(tensor, dims)
+
+    monkeypatch.setattr(Tensor, "repeat_axis", tracked_repeat)
+    monkeypatch.setattr(kv_cache_mod, "tensor_permute_dims", tracked_permute)
+
+    first = cache.attention(q, scale=1.0)
+    second = cache.attention(q, scale=1.0)
+
+    assert first.reshape(8).to_list() == pytest.approx(second.reshape(8).to_list())
+    assert repeat_calls == [
+        ((1, 2, 2, 2), 1, 2),
+        ((1, 2, 2, 2), 1, 2),
+    ]
+    assert permute_calls == [
+        ((1, 4, 2, 2), (0, 1, 3, 2)),
+    ]
+
+
 def test_transformer_multihead_attention_routes_through_cache(monkeypatch):
     import molt.gpu.transformer as transformer_mod
     from molt.gpu.tensor import Tensor

@@ -55,6 +55,8 @@ Current cache semantics:
   for attention reads
 - TurboQuant reference paths should precompute query transforms once per query
   row and cache decoded value rows across repeated attention reads
+- dense grouped-query cache reads should reuse expanded key/value tensors and
+  transposed key views across repeated attention calls until mutation
 
 Current TurboQuant backend boundary:
 - runtime/backend now own an explicit `molt_gpu_turboquant_attention_packed`
