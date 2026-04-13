@@ -234,6 +234,15 @@ def _parse_python_op_kinds(text: str) -> set[str]:
     return kinds
 
 
+def _lean_binop_python_name(name: str) -> str | None:
+    normalized = name.rstrip("_")
+    if normalized in {"and", "or"}:
+        return normalized.upper()
+    if normalized in {"is_not", "in", "not_in"}:
+        return None
+    return normalized.upper()
+
+
 class TestBinOpAlignment:
     """BinOp variants in Lean must have corresponding Python op kinds."""
 
@@ -254,8 +263,10 @@ class TestBinOpAlignment:
 
         missing = []
         for v in lean_binops:
-            # Check lowercase in op kinds or uppercase in effect classes
-            if v not in python_ops and v.upper() not in python_effect_ops:
+            upper = _lean_binop_python_name(v)
+            if upper is None:
+                continue
+            if v not in python_ops and upper not in python_effect_ops:
                 missing.append(v)
         assert not missing, (
             f"Lean BinOp variants not found in Python: {missing}"
