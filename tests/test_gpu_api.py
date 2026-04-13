@@ -1024,6 +1024,77 @@ def test_submodule_nn():
     assert out.shape == (1, 2)
 
 
+def test_nn_linear_uses_tensor_linear(monkeypatch):
+    from molt.gpu.nn import Linear
+    from molt.gpu.tensor import Tensor
+
+    linear = Linear(2, 3, bias=False)
+    x = Tensor([[1.0, 2.0]])
+    sentinel = Tensor([[7.0, 8.0, 9.0]])
+    seen = {}
+
+    def fake_linear(self, weight):
+        seen["shape"] = self.shape
+        seen["weight"] = weight
+        return sentinel
+
+    monkeypatch.setattr(Tensor, "linear", fake_linear)
+    out = linear(x)
+    assert out is sentinel
+    assert seen["shape"] == (1, 2)
+    assert seen["weight"] is linear.weight
+
+
+def test_nn_conv2d_uses_tensor_conv2d(monkeypatch):
+    from molt.gpu.nn import Conv2d
+    from molt.gpu.tensor import Tensor
+
+    conv = Conv2d(1, 1, 3)
+    x = Tensor.arange(16).reshape(1, 1, 4, 4).float()
+    sentinel = Tensor([1.0], shape=(1, 1, 1, 1))
+    seen = {}
+
+    def fake_conv2d(self, weight, bias=None, groups=1, stride=1, dilation=1, padding=0):
+        seen["weight"] = weight
+        seen["bias"] = bias
+        seen["groups"] = groups
+        seen["stride"] = stride
+        seen["dilation"] = dilation
+        seen["padding"] = padding
+        return sentinel
+
+    monkeypatch.setattr(Tensor, "conv2d", fake_conv2d)
+    out = conv(x)
+    assert out is sentinel
+    assert seen["weight"] is conv.weight
+    assert seen["bias"] is conv.bias
+    assert seen["groups"] == 1
+    assert seen["stride"] == conv.stride
+    assert seen["dilation"] == 1
+    assert seen["padding"] == conv.padding
+
+
+def test_nn_layernorm_uses_tensor_layernorm(monkeypatch):
+    from molt.gpu.nn import LayerNorm
+    from molt.gpu.tensor import Tensor
+
+    layer = LayerNorm(3)
+    x = Tensor.arange(6).reshape(2, 3).float()
+    sentinel = Tensor([[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]])
+    seen = {}
+
+    def fake_layernorm(self, axis=-1, eps=1e-5):
+        seen["axis"] = axis
+        seen["eps"] = eps
+        return sentinel
+
+    monkeypatch.setattr(Tensor, "layernorm", fake_layernorm)
+    out = layer(x)
+    assert out.to_list() == [[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]]
+    assert seen["axis"] == (-1,)
+    assert seen["eps"] == layer.eps
+
+
 def test_embedding_lookup_avoids_full_weight_materialization(monkeypatch):
     from molt.gpu.nn import Embedding
     from molt.gpu.tensor import Tensor
