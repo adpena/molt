@@ -37,6 +37,22 @@ def _write_safetensors_fixture(path: Path) -> None:
         handle.write(header_bytes)
         handle.write(payload)
 
+
+def _write_f16_safetensors_fixture(path: Path) -> None:
+    raw = struct.pack("<2e", 1.0, -3.5)
+    header = {
+        "t0": {
+            "dtype": "F16",
+            "shape": [2],
+            "data_offsets": [0, len(raw)],
+        }
+    }
+    header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
+    with path.open("wb") as handle:
+        handle.write(struct.pack("<Q", len(header_bytes)))
+        handle.write(header_bytes)
+        handle.write(raw)
+
 def test_core_imports():
     from molt.gpu import Buffer, kernel, to_device, from_device, alloc
     from molt.gpu import thread_id, block_id, block_dim, grid_dim, barrier
@@ -1105,6 +1121,27 @@ def test_load_safetensors_f32_entries_stay_f32_buffer_backed(tmp_path):
     assert tensor._buf.format_char == "f"
     assert tensor._buf.itemsize == 4
     assert from_device(tensor._buf) == [1.0, 2.0]
+
+
+def test_load_safetensors_f16_entries_use_intrinsic_when_available(tmp_path, monkeypatch):
+    import molt.gpu.interop as interop
+    from molt.gpu import from_device
+
+    safetensors_path = tmp_path / "weights_f16.safetensors"
+    _write_f16_safetensors_fixture(safetensors_path)
+
+    monkeypatch.setattr(
+        interop,
+        "_MOLT_GPU_INTEROP_DECODE_F16_BYTES_TO_F32",
+        lambda raw: struct.pack("<2f", 1.0, -3.5),
+    )
+
+    weights = interop.load_safetensors_bytes(safetensors_path.read_bytes())
+    tensor = weights["t0"]
+
+    assert tensor._buf.format_char == "f"
+    assert tensor._buf.itemsize == 4
+    assert from_device(tensor._buf) == [1.0, -3.5]
 
 
 def test_submodule_numpy_io():
