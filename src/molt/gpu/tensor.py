@@ -1284,6 +1284,26 @@ class Tensor:
             return self._from_flat([_safe_rdiv(x) for x in data], self._shape)
         return NotImplemented
 
+    def __pow__(self, other) -> 'Tensor':
+        if isinstance(other, (int, float)):
+            data = self._data_list()
+            exp = float(other)
+            return self._from_flat([math.pow(x, exp) for x in data], self._shape)
+        if isinstance(other, Tensor):
+            if self.shape != other.shape:
+                raise ValueError(f"pow shape mismatch: {self.shape} vs {other.shape}")
+            a = self._data_list()
+            b = other._data_list()
+            return self._from_flat([math.pow(x, y) for x, y in zip(a, b)], self._shape)
+        return NotImplemented
+
+    def __rpow__(self, other) -> 'Tensor':
+        if isinstance(other, (int, float)):
+            data = self._data_list()
+            base = float(other)
+            return self._from_flat([math.pow(base, x) for x in data], self._shape)
+        return NotImplemented
+
     def __neg__(self) -> 'Tensor':
         data = self._data_list()
         return self._from_flat([-x for x in data], self._shape)

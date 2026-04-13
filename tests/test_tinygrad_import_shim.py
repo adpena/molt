@@ -139,3 +139,13 @@ def test_tinygrad_tensor_indexing_covers_falcon_patterns() -> None:
     packed = Tensor(list(range(8))).reshape(2, 4).cast(dtypes.float32)
     assert packed[..., 0::2].to_list() == [[0.0, 2.0], [4.0, 6.0]]
     assert packed[..., 1::2].to_list() == [[1.0, 3.0], [5.0, 7.0]]
+
+
+def test_tinygrad_tensor_scalar_power_supports_rope_pattern() -> None:
+    from tinygrad import Tensor
+
+    exponents = Tensor.arange(0, 4, 2).float() / 4
+    out = 10000.0 ** exponents
+
+    assert out.shape == (2,)
+    assert out.to_list() == [1.0, 100.0]
