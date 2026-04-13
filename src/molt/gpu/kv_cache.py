@@ -2,8 +2,28 @@
 
 from __future__ import annotations
 
+import _intrinsics as _molt_intrinsics
+
 from .tensor import Tensor, tensor_permute_dims, tensor_softmax_last_axis
 from .turboquant import TurboQuantCodec
+
+
+def _load_optional_intrinsic(name: str):
+    loader = getattr(_molt_intrinsics, "load_intrinsic", None)
+    if callable(loader):
+        return loader(name)
+    require = getattr(_molt_intrinsics, "require_intrinsic", None)
+    if callable(require):
+        try:
+            return require(name)
+        except RuntimeError:
+            return None
+    return None
+
+
+_MOLT_GPU_TURBOQUANT_ATTENTION_PACKED = _load_optional_intrinsic(
+    "molt_gpu_turboquant_attention_packed"
+)
 
 
 def _validate_projected_tensor(name: str, tensor: Tensor) -> None:
@@ -98,6 +118,11 @@ class DenseKVCache:
         return key, value
 
     def attention(self, q: Tensor, *, scale: float, mask: Tensor | None = None) -> Tensor:
+        return self._attention_reference(q, mask, scale)
+
+    def _attention_reference(
+        self, q: Tensor, mask: Tensor | None, scale: float
+    ) -> Tensor:
         _validate_projected_tensor("q", q)
         if not self._key_chunks or not self._value_chunks:
             raise RuntimeError("cannot attend with an empty KV cache")
@@ -205,6 +230,19 @@ class TurboQuantAttentionKVCache:
                     )
 
     def attention(self, q: Tensor, *, scale: float, mask: Tensor | None = None) -> Tensor:
+        if _MOLT_GPU_TURBOQUANT_ATTENTION_PACKED is not None:
+            return _MOLT_GPU_TURBOQUANT_ATTENTION_PACKED(
+                q,
+                self.keys(),
+                self.values(),
+                mask,
+                scale,
+            )
+        return self._attention_reference(q, mask, scale)
+
+    def _attention_reference(
+        self, q: Tensor, mask: Tensor | None, scale: float
+    ) -> Tensor:
         _validate_projected_tensor("q", q)
         if self._key_vectors is None or self._value_vectors is None:
             raise RuntimeError("cannot attend with an empty KV cache")
