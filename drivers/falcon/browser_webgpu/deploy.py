@@ -53,11 +53,11 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def discover_falcon_config_json(target_root: Path) -> Path:
+def discover_falcon_config_json(target_root: Path, *, weights_root: Path) -> Path:
     root_config = target_root / DEFAULT_CONFIG_FILENAME
     if root_config.exists():
         return root_config
-    weights_config = target_root / DEFAULT_WEIGHTS_SUBDIR / DEFAULT_CONFIG_FILENAME
+    weights_config = weights_root / DEFAULT_CONFIG_FILENAME
     if weights_config.exists():
         return weights_config
     raise FileNotFoundError(
@@ -66,7 +66,12 @@ def discover_falcon_config_json(target_root: Path) -> Path:
     )
 
 
-def build_deploy_surface(config_path: Path, target_root: Path) -> dict[str, Any]:
+def build_deploy_surface(
+    config_path: Path,
+    target_root: Path,
+    *,
+    weights_root: Path | None = None,
+) -> dict[str, Any]:
     config = load_wrangler_config(config_path)
     entrypoint = (config_path.parent / str(config.get("main", ""))).resolve()
     if not entrypoint.exists():
@@ -75,8 +80,8 @@ def build_deploy_surface(config_path: Path, target_root: Path) -> dict[str, Any]
     artifact_root = target_root / DEFAULT_ARTIFACT_SUBDIR
     app_wasm = artifact_root / "app.wasm"
     runtime_wasm = artifact_root / "molt_runtime.wasm"
-    weights_dir = target_root / DEFAULT_WEIGHTS_SUBDIR
-    config_json = discover_falcon_config_json(target_root)
+    weights_dir = (weights_root or (target_root / DEFAULT_WEIGHTS_SUBDIR)).expanduser().resolve()
+    config_json = discover_falcon_config_json(target_root, weights_root=weights_dir)
     tokenizer_json = weights_dir / DEFAULT_TOKENIZER_FILENAME
     if not app_wasm.exists():
         raise FileNotFoundError(f"missing Falcon app wasm: {app_wasm}")
@@ -95,6 +100,10 @@ def build_deploy_surface(config_path: Path, target_root: Path) -> dict[str, Any]
     if not browser_loader.exists():
         raise FileNotFoundError(f"browser loader not found: {browser_loader}")
 
+    config_root = target_root.resolve()
+    if not config_json.is_relative_to(config_root):
+        config_root = weights_dir
+
     artifact_manifest = {
         "immutable": {
             "app_wasm": artifact_record(
@@ -110,7 +119,7 @@ def build_deploy_surface(config_path: Path, target_root: Path) -> dict[str, Any]
             "config_json": artifact_record(
                 kind="config_json",
                 path=config_json,
-                root=target_root,
+                root=config_root,
             ),
             **(
                 {
@@ -259,9 +268,14 @@ def materialize_deploy_bundle(
     config_path: Path,
     target_root: Path,
     weights_base_url: str | None,
+    weights_root: Path | None = None,
     bundle_root: Path | None = None,
 ) -> dict[str, Any]:
-    surface = build_deploy_surface(config_path=config_path, target_root=target_root)
+    surface = build_deploy_surface(
+        config_path=config_path,
+        target_root=target_root,
+        weights_root=weights_root,
+    )
     bundle_root = (bundle_root or (target_root / DEFAULT_BUNDLE_SUBDIR)).resolve()
     assets_root = bundle_root / "assets"
     falcon_worker_dst = bundle_root / "drivers" / "falcon" / "browser_webgpu" / "worker.ts"
@@ -334,6 +348,12 @@ def main() -> int:
         help="Optional public immutable base URL for Falcon weight blobs.",
     )
     parser.add_argument(
+        "--weights-root",
+        type=Path,
+        default=None,
+        help="Optional alternate local weights root used for manifest weight metadata.",
+    )
+    parser.add_argument(
         "--bundle-root",
         type=Path,
         default=None,
@@ -352,10 +372,15 @@ def main() -> int:
             config_path=config_path,
             target_root=args.target_root.resolve(),
             weights_base_url=args.weights_base_url,
+            weights_root=args.weights_root.resolve() if args.weights_root else None,
             bundle_root=args.bundle_root,
         )
     else:
-        payload = build_deploy_surface(config_path, args.target_root.resolve())
+        payload = build_deploy_surface(
+            config_path,
+            args.target_root.resolve(),
+            weights_root=args.weights_root.resolve() if args.weights_root else None,
+        )
     print(json.dumps(payload, indent=2))
     return 0
 
