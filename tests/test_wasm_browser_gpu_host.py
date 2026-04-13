@@ -286,6 +286,114 @@ console.log(JSON.stringify(fakeState));
         server.shutdown()
 
 
+def test_browser_host_direct_mode_tensor_linear_without_webgpu_fails_fast(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser host GPU direct-mode test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser host GPU direct-mode test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_host_tensor_linear_no_gpu.py"
+    src.write_text(
+        "from molt.gpu.tensor import Tensor\n"
+        "\n"
+        "x = Tensor([[1.0, 2.0], [3.0, 4.0]])\n"
+        "w = Tensor([[5.0, 6.0], [7.0, 8.0], [9.0, 10.0]])\n"
+        "print(x.linear(w).to_list())\n",
+        encoding="utf-8",
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    class _WasmHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/output.wasm":
+                payload = output_wasm.read_bytes()
+            elif self.path == "/molt_runtime.wasm":
+                payload = runtime_wasm.read_bytes()
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("content-type", "application/wasm")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _WasmHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        browser_host_uri = (root / "wasm" / "browser_host.js").as_uri()
+        script = tmp_path / "run_browser_tensor_linear_no_gpu.mjs"
+        script.write_text(
+            f"""
+import {{ loadMoltWasm }} from {browser_host_uri!r};
+
+const baseUrl = {base_url!r};
+const host = await loadMoltWasm({{
+  wasmUrl: `${{baseUrl}}/output.wasm`,
+  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  preferLinked: false,
+  env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
+}});
+host.run();
+""".lstrip(),
+            encoding="utf-8",
+        )
+        run = subprocess.run(
+            ["node", str(script)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert run.returncode != 0
+        assert (
+            "browser webgpu dispatch is unavailable" in run.stderr
+            or "navigator.gpu is unavailable in the browser WebGPU host" in run.stderr
+        )
+    finally:
+        server.shutdown()
+
+
 def test_browser_host_direct_mode_tensor_linear_split_last_dim_uses_webgpu_dispatch(
     tmp_path: Path,
 ) -> None:

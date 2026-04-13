@@ -480,22 +480,36 @@ def test_tree_shake_runtime_preserves_direct_runner_exception_debug_exports() ->
         [
             "molt_exception_pending",
             "molt_alloc",
+            "molt_handle_resolve",
+            "molt_header_size",
+            "molt_scratch_alloc",
+            "molt_scratch_free",
+            "molt_bytes_from_bytes",
+            "molt_string_from_bytes",
             "molt_string_as_ptr",
             "molt_exception_kind",
             "molt_exception_message",
             "molt_exception_last",
             "molt_traceback_format_exc",
+            "molt_type_tag_of_bits",
             "molt_dec_ref_obj",
         ]
     )
     shaken = wasm_link._tree_shake_runtime(module, {"exception_pending"})
     exports = wasm_link._collect_function_exports(shaken)
     assert "molt_alloc" in exports
+    assert "molt_handle_resolve" in exports
+    assert "molt_header_size" in exports
+    assert "molt_scratch_alloc" in exports
+    assert "molt_scratch_free" in exports
+    assert "molt_bytes_from_bytes" in exports
+    assert "molt_string_from_bytes" in exports
     assert "molt_string_as_ptr" in exports
     assert "molt_exception_kind" in exports
     assert "molt_exception_message" in exports
     assert "molt_exception_last" in exports
     assert "molt_traceback_format_exc" in exports
+    assert "molt_type_tag_of_bits" in exports
     assert "molt_dec_ref_obj" in exports
 
 
@@ -560,6 +574,52 @@ def test_tree_shake_runtime_reuses_cached_result(
     second = wasm_link._tree_shake_runtime(module, {"exception_pending"})
 
     assert second == final_runtime
+
+
+def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output_bytes = _build_minimal_module(b"")
+    runtime_bytes = _build_exported_runtime_module("molt_exception_pending")
+    runtime = tmp_path / "runtime.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    split_dir = tmp_path / "split"
+    stale_runtime = tmp_path / "missing-runtime.wasm"
+
+    runtime.write_bytes(runtime_bytes)
+    output.write_bytes(output_bytes)
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        linked.write_bytes(output_bytes)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return Result()
+
+    monkeypatch.setenv("MOLT_WASM_DEPLOY_RUNTIME", str(stale_runtime))
+    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
+    monkeypatch.setattr(wasm_link, "_append_table_ref_elements", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda data: (True, None))
+    monkeypatch.setattr(wasm_link, "_collect_module_imports", lambda *_args: set())
+    monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_kwargs: data)
+
+    rc = wasm_link._run_wasm_ld(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        split_runtime=True,
+        split_output_dir=split_dir,
+    )
+
+    assert rc == 0
+    assert (split_dir / "molt_runtime.wasm").read_bytes() == runtime.read_bytes()
 
 
 def test_canonical_split_runtime_required_exports_uses_runtime_export_surface() -> None:

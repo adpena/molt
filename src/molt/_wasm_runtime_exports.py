@@ -15,6 +15,15 @@ _INTRINSIC_SYMBOL_RE = re.compile(
 )
 _HOST_RUNTIME_EXPORTS = frozenset(
     {
+        "molt_alloc",
+        "molt_handle_resolve",
+        "molt_header_size",
+        "molt_scratch_alloc",
+        "molt_scratch_free",
+        "molt_bytes_from_bytes",
+        "molt_string_from_bytes",
+        "molt_string_as_ptr",
+        "molt_dec_ref_obj",
         "molt_runtime_shutdown",
         "molt_set_wasm_table_base",
         "molt_exception_last",

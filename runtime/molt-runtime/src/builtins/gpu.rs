@@ -5449,6 +5449,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
     allow_negative_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        let trace_take_rows = std::env::var("MOLT_TRACE_GPU_TAKE_ROWS").as_deref() == Ok("1");
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -5496,11 +5497,36 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
         };
         let width = row_size * x.buffer.format.itemsize();
         let expected_bytes = x.buffer.size * x.buffer.format.itemsize();
+        if trace_take_rows {
+            eprintln!(
+                "molt gpu take_rows x_shape={:?} indices_shape={:?} row_count={} row_size={} width={} x_size={} x_bytes={}",
+                x_shape,
+                indices_shape,
+                row_count,
+                row_size,
+                width,
+                x.buffer.size,
+                expected_bytes
+            );
+        }
         if x.buffer.data_view.len < expected_bytes {
             return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
         }
         let allow_negative = crate::is_truthy(_py, obj_from_bits(allow_negative_bits));
         let rows = unsafe { seq_vec_ref(rows_list_ptr) };
+        if trace_take_rows {
+            let preview: Vec<i64> = rows
+                .iter()
+                .take(8)
+                .map(|&bits| crate::to_i64(obj_from_bits(bits)).unwrap_or(i64::MIN))
+                .collect();
+            eprintln!(
+                "molt gpu take_rows rows_len={} rows_preview={:?} allow_negative={}",
+                rows.len(),
+                preview,
+                allow_negative
+            );
+        }
         let src = unsafe { std::slice::from_raw_parts(x.buffer.data_view.ptr, expected_bytes) };
         let mut out = vec![0u8; rows.len() * width];
         for (out_row, &raw_idx_bits) in rows.iter().enumerate() {
@@ -5541,6 +5567,13 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
             let src_start = resolved as usize * width;
             let dst_start = out_row * width;
             out[dst_start..dst_start + width].copy_from_slice(&src[src_start..src_start + width]);
+        }
+        if trace_take_rows {
+            eprintln!(
+                "molt gpu take_rows copied_rows={} out_bytes={}",
+                rows.len(),
+                out.len()
+            );
         }
         let out_data_ptr = alloc_bytearray(_py, out.as_slice());
         if out_data_ptr.is_null() {
@@ -5686,6 +5719,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
     allow_negative_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        let trace_scatter_rows =
+            std::env::var("MOLT_TRACE_GPU_SCATTER_ROWS").as_deref() == Ok("1");
         let (base, base_shape) = match unsafe { tensor_runtime_view(_py, base_bits, "base") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -5766,6 +5801,19 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
         let width = row_size * base.buffer.format.itemsize();
         let base_required = base.buffer.size * base.buffer.format.itemsize();
         let updates_required = updates.buffer.size * updates.buffer.format.itemsize();
+        if trace_scatter_rows {
+            eprintln!(
+                "molt gpu scatter_rows base_shape={:?} updates_shape={:?} indices_shape={:?} row_count={} row_size={} width={} base_size={} updates_size={}",
+                base_shape,
+                updates_shape,
+                indices_shape,
+                row_count,
+                row_size,
+                width,
+                base.buffer.size,
+                updates.buffer.size
+            );
+        }
         if base.buffer.data_view.len < base_required {
             return raise_exception::<_>(_py, "ValueError", "base buffer is too small");
         }
@@ -5774,6 +5822,19 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
         }
         let allow_negative = crate::is_truthy(_py, obj_from_bits(allow_negative_bits));
         let rows = unsafe { seq_vec_ref(rows_list_ptr) };
+        if trace_scatter_rows {
+            let preview: Vec<i64> = rows
+                .iter()
+                .take(8)
+                .map(|&bits| crate::to_i64(obj_from_bits(bits)).unwrap_or(i64::MIN))
+                .collect();
+            eprintln!(
+                "molt gpu scatter_rows rows_len={} rows_preview={:?} allow_negative={}",
+                rows.len(),
+                preview,
+                allow_negative
+            );
+        }
         let base_src = unsafe { std::slice::from_raw_parts(base.buffer.data_view.ptr, base_required) };
         let updates_src =
             unsafe { std::slice::from_raw_parts(updates.buffer.data_view.ptr, updates_required) };
@@ -5817,6 +5878,13 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
             let src_start = src_row * width;
             out[dst_start..dst_start + width]
                 .copy_from_slice(&updates_src[src_start..src_start + width]);
+        }
+        if trace_scatter_rows {
+            eprintln!(
+                "molt gpu scatter_rows copied_rows={} out_bytes={}",
+                rows.len(),
+                out.len()
+            );
         }
         let out_data_ptr = alloc_bytearray(_py, out.as_slice());
         if out_data_ptr.is_null() {
@@ -6075,6 +6143,12 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
         else {
             return raise_exception::<_>(_py, "OverflowError", "attention output shape overflow");
         };
+        if std::env::var("MOLT_TRACE_GPU_SDPA").as_deref() == Ok("1") {
+            eprintln!(
+                "molt gpu sdpa batch={} heads={} seq_q={} seq_k={} dim={} value_dim={} out_elems={}",
+                batch, heads, seq_q, seq_k, dim, value_dim, out_elems
+            );
+        }
 
         #[cfg(target_arch = "wasm32")]
         if requested_gpu_backend().as_deref() == Some("webgpu") {
@@ -6610,6 +6684,9 @@ pub extern "C" fn molt_gpu_buffer_to_list(buffer_bits: u64, count_bits: u64) -> 
             Ok(value) => value,
             Err(bits) => return bits,
         };
+        if std::env::var("MOLT_TRACE_GPU_BUFFER_TO_LIST").as_deref() == Ok("1") {
+            eprintln!("molt gpu buffer_to_list count={}", count);
+        }
         let data_bits = match unsafe { object_attr_bits(_py, buffer_bits, b"_data", "_data") } {
             Ok(bits) => bits,
             Err(bits) => return bits,
@@ -6672,6 +6749,7 @@ pub extern "C" fn molt_gpu_linear_contiguous(
     out_format_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        let trace_linear = std::env::var("MOLT_TRACE_GPU_LINEAR").as_deref() == Ok("1");
         let x_format = match parse_format(_py, x_format_bits, "x_format") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -6725,6 +6803,20 @@ pub extern "C" fn molt_gpu_linear_contiguous(
         else {
             return raise_exception::<_>(_py, "OverflowError", "output shape overflow");
         };
+        if trace_linear {
+            eprintln!(
+                "molt gpu linear outer={} in_features={} out_features={} x_itemsize={} weight_itemsize={} out_itemsize={} x_bytes={} weight_bytes={} out_bytes={}",
+                outer,
+                in_features,
+                out_features,
+                x_format.itemsize(),
+                weight_format.itemsize(),
+                out_format.itemsize(),
+                x_view.len,
+                weight_view.len,
+                out_len
+            );
+        }
 
         if x_view.len < x_required {
             return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
@@ -6839,6 +6931,9 @@ pub extern "C" fn molt_gpu_linear_contiguous(
         let out_ptr = alloc_bytearray(_py, &out);
         if out_ptr.is_null() {
             return MoltObject::none().bits();
+        }
+        if trace_linear {
+            eprintln!("molt gpu linear done out_bytes={}", out.len());
         }
         MoltObject::from_ptr(out_ptr).bits()
     })

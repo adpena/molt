@@ -1,6 +1,7 @@
 use crate::PyToken;
 use crate::*;
 
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_header_size() -> u64 {
     crate::with_gil_entry!(_py, { std::mem::size_of::<MoltHeader>() as u64 })
 }
@@ -16,6 +17,27 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
         }
         MoltObject::from_ptr(obj_ptr).bits()
     })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_scratch_alloc(size_bits: u64) -> u64 {
+    let size = usize_from_bits(size_bits).max(1);
+    let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() { 0 } else { ptr as u64 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_scratch_free(ptr_bits: u64, size_bits: u64) {
+    let ptr = usize_from_bits(ptr_bits) as *mut u8;
+    if ptr.is_null() {
+        return;
+    }
+    let size = usize_from_bits(size_bits).max(1);
+    let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
+    unsafe {
+        std::alloc::dealloc(ptr, layout);
+    }
 }
 
 pub(crate) unsafe fn alloc_dataclass_for_class_ptr(

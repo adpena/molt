@@ -410,21 +410,6 @@ const PROCESS_STDIO_STDOUT = 1;
 const PROCESS_STDIO_STDERR = 2;
 const WS_BUFFER_MAX = Number.parseInt(process.env.MOLT_WASM_WS_BUFFER_MAX || '1048576', 10);
 
-let wasmHeaderSize = null;
-
-const getHeaderSize = () => {
-  if (wasmHeaderSize === null) {
-    if (runtimeInstance && runtimeInstance.exports.molt_header_size) {
-      const raw = runtimeInstance.exports.molt_header_size();
-      const size = typeof raw === 'bigint' ? Number(raw) : Number(BigInt(raw));
-      wasmHeaderSize = Number.isFinite(size) && size > 0 ? size : 40;
-    } else {
-      wasmHeaderSize = 40;
-    }
-  }
-  return wasmHeaderSize;
-};
-
 const boxInt = (value) => {
   let v = BigInt(value);
   if (v < 0n) {
@@ -473,15 +458,32 @@ const allocTempBytes = (bytes) => {
   if (!runtimeInstance) {
     throw new Error('molt_runtime not initialized');
   }
-  const allocBits = runtimeInstance.exports.molt_alloc(BigInt(bytes.length));
-  const ptr = BigInt(runtimeInstance.exports.molt_handle_resolve(allocBits));
-  if (!ptr || ptr === 0n) {
-    throw new Error('molt_alloc failed');
+  if (typeof runtimeInstance.exports.molt_scratch_alloc !== 'function') {
+    throw new Error('runtime is missing required export: molt_scratch_alloc');
   }
-  // molt_handle_resolve already returns the object payload pointer.
+  const size = bytes.length;
+  const ptr = BigInt(runtimeInstance.exports.molt_scratch_alloc(BigInt(size)));
+  if (!ptr || ptr === 0n) {
+    throw new Error('molt_scratch_alloc failed');
+  }
   const payloadPtr = ptr;
-  new Uint8Array(wasmMemory.buffer, Number(payloadPtr), bytes.length).set(bytes);
-  return { allocBits, payloadPtr };
+  new Uint8Array(wasmMemory.buffer, Number(payloadPtr), size).set(bytes);
+  return { allocPtr: payloadPtr, payloadPtr, size };
+};
+
+const freeTempBytes = (temp) => {
+  if (
+    !runtimeInstance ||
+    typeof runtimeInstance.exports?.molt_scratch_free !== 'function' ||
+    !temp ||
+    temp.allocPtr === null ||
+    temp.allocPtr === undefined ||
+    temp.allocPtr === 0n ||
+    temp.allocPtr === 0
+  ) {
+    return;
+  }
+  runtimeInstance.exports.molt_scratch_free(temp.allocPtr, BigInt(temp.size ?? 0));
 };
 
 const readU64 = (addr) => {
@@ -535,7 +537,7 @@ const readRuntimeStringBits = (instance, stringBits) => {
     }
     return readUtf8(ptr, Number(readU64(temp.payloadPtr)));
   } finally {
-    exports.molt_dec_ref_obj(temp.allocBits);
+    freeTempBytes(temp);
   }
 };
 
@@ -720,10 +722,7 @@ const makeBytesObject = (bytes) => {
     const bits = readU64At(tempOut.payloadPtr);
     if (traceRun) {
       console.error(
-        `[molt wasm] host-call: bytes temp allocs src=${String(tempBytes.allocBits)} out=${String(tempOut.allocBits)} result=${String(bits)}`,
-      );
-      console.error(
-        `[molt wasm] host-call: bytes headers src=${JSON.stringify(readHeaderDebug(tempBytes.allocBits))} out=${JSON.stringify(readHeaderDebug(tempOut.allocBits))} result=${JSON.stringify(readHeaderDebug(bits))}`,
+        `[molt wasm] host-call: bytes temp scratch src=${String(tempBytes.allocPtr)} out=${String(tempOut.allocPtr)} result=${String(bits)}`,
       );
       try {
         console.error(
@@ -748,13 +747,13 @@ const makeBytesObject = (bytes) => {
           `[molt wasm] host-call: bytes object bits=${String(bits)} len=${len} preview=${JSON.stringify(preview)}`,
         );
       } finally {
-        decRefMaybe(outLen.allocBits);
+        freeTempBytes(outLen);
       }
     }
     return bits;
   } finally {
-    decRefMaybe(tempBytes.allocBits);
-    decRefMaybe(tempOut.allocBits);
+    freeTempBytes(tempBytes);
+    freeTempBytes(tempOut);
   }
 };
 
@@ -776,8 +775,8 @@ const makeStringObject = (text) => {
     }
     return readU64At(tempOut.payloadPtr);
   } finally {
-    decRefMaybe(tempBytes.allocBits);
-    decRefMaybe(tempOut.allocBits);
+    freeTempBytes(tempBytes);
+    freeTempBytes(tempOut);
   }
 };
 
@@ -969,7 +968,7 @@ const sendStreamFrame = (streamHandle, bytes) => {
     );
     return res === 0n;
   } finally {
-    runtimeInstance.exports.molt_dec_ref_obj(temp.allocBits);
+    freeTempBytes(temp);
   }
 };
 
