@@ -1,6 +1,7 @@
 """DFlash adapter and contract surface for Molt GPU generation."""
 
 from .adapters import (
+    DFlashAdapterSpec,
     get_dflash_adapter,
     has_dflash_backend,
     list_dflash_adapters,
@@ -22,6 +23,7 @@ __all__ = [
     "SpeculativeConditioning",
     "DFlashRuntime",
     "DFlashSelectionContext",
+    "DFlashAdapterSpec",
     "SpeculativeDraftRequest",
     "SpeculativeDraftResult",
     "SpeculativeVerifyRequest",
