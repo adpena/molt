@@ -1785,7 +1785,7 @@ impl RustBackend {
                     &self.hoisted_vars.clone(),
                 ));
             }
-            "lshift" => {
+            "lshift" | "shl" => {
                 let o = out();
                 let (a, b) = args2(op);
                 self.emit_line(&declare(
@@ -1794,7 +1794,7 @@ impl RustBackend {
                     &self.hoisted_vars.clone(),
                 ));
             }
-            "rshift" => {
+            "rshift" | "shr" => {
                 let o = out();
                 let (a, b) = args2(op);
                 self.emit_line(&declare(
