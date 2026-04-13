@@ -230,6 +230,21 @@ def test_tinygrad_random_surface_matches_upstream_samples() -> None:
         rel=0.0,
     )
 
+    Tensor.manual_seed(42)
+    randn_vals = _flatten_numeric(Tensor.randn(2, 3).to_list())
+    assert randn_vals == pytest.approx(
+        [
+            0.9778566956520081,
+            0.4677884578704834,
+            0.5526347160339355,
+            -0.32882529497146606,
+            -0.8555141687393188,
+            0.27526429295539856,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+
 
 def test_tinygrad_nn_initializers_match_upstream_samples() -> None:
     from tinygrad import Tensor, nn

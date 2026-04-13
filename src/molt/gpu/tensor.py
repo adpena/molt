@@ -2196,17 +2196,13 @@ def randn(*shape, seed=None) -> Tensor:
     """Create a tensor with tinygrad-style Box-Muller normal samples."""
     if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
         shape = tuple(shape[0])
-    if seed is None:
-        u0 = rand(*shape)._data_list()
-        u1 = rand(*shape)._data_list()
-        result = []
-        for a, b in zip(u0, u1):
-            result.append(math.cos(2.0 * math.pi * a) * math.sqrt(-2.0 * math.log(1.0 - b)))
-        return Tensor(result, shape=shape)
-
     size = _product(shape)
-    u0 = _tinygrad_seeded_rand_values(size, seed, 0)
-    u1 = _tinygrad_seeded_rand_values(size, seed, size)
+    if seed is None:
+        src = rand((2,) + shape)._data_list()
+    else:
+        src = _tinygrad_seeded_rand_values(size * 2, seed, 0)
+    u0 = src[:size]
+    u1 = src[size:size * 2]
     result = []
     for a, b in zip(u0, u1):
         result.append(math.cos(2.0 * math.pi * a) * math.sqrt(-2.0 * math.log(1.0 - b)))
