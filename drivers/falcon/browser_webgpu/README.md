@@ -15,3 +15,8 @@ Files:
 - `deploy.py`: deployment-surface discovery plus bundle materialization and immutable artifact manifest/hashes
 - `verify.py`: materialize + `wrangler check` + `deploy --dry-run` verifier
 - `bench_hostfed.py`: host-fed benchmark wrapper using Molt's generic helper
+
+Target root contract:
+- split-runtime artifacts under `dist/browser_split/`
+- weight blobs under `weights/`
+- Falcon config at either `config.json` or `weights/config.json`
