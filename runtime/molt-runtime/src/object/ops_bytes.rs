@@ -655,6 +655,8 @@ bytes_slice_method_wrapper!(molt_bytearray_rfind_method, molt_bytearray_rfind_sl
 bytes_slice_method_wrapper!(molt_bytearray_index_method, molt_bytearray_index_slice);
 bytes_slice_method_wrapper!(molt_bytearray_rindex_method, molt_bytearray_rindex_slice);
 bytes_slice_method_wrapper!(molt_bytearray_count_method, molt_bytearray_count_slice);
+bytes_slice_method_wrapper!(molt_bytearray_startswith_method, molt_bytearray_startswith_slice);
+bytes_slice_method_wrapper!(molt_bytearray_endswith_method, molt_bytearray_endswith_slice);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_find_slice(
