@@ -630,9 +630,14 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
             .get(bid)
             .cloned()
             .unwrap_or(super::blocks::LoopRole::None);
-        // Skip LoopEnd blocks -- structural markers from the original
-        // SimpleIR that have no meaning in linearised output.
-        if loop_role == super::blocks::LoopRole::LoopEnd {
+        // Skip LoopEnd blocks only when nothing still branches to them.
+        // Some loop-end blocks survive optimization as explicit CFG targets,
+        // and dropping their labels leaves dangling jump targets in the
+        // round-tripped SimpleIR.
+        let has_explicit_predecessor = predecessors
+            .get(bid)
+            .is_some_and(|preds| !preds.is_empty());
+        if loop_role == super::blocks::LoopRole::LoopEnd && !has_explicit_predecessor {
             continue;
         }
 
@@ -3812,6 +3817,60 @@ mod tests {
             !ops.iter()
                 .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
             "join blocks that are loop headers must stay label-based instead of inlining to structured if/else: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn loop_end_block_target_must_keep_its_label() {
+        let mut func = TirFunction::new(
+            "loop_end_block_target_must_keep_its_label".into(),
+            vec![],
+            TirType::None,
+        );
+
+        let target_block = func.fresh_block();
+        let exit_block = func.fresh_block();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.terminator = Terminator::Branch {
+            target: target_block,
+            args: vec![],
+        };
+
+        func.blocks.insert(
+            target_block,
+            TirBlock {
+                id: target_block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: exit_block,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit_block,
+            TirBlock {
+                id: exit_block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles
+            .insert(target_block, crate::tir::blocks::LoopRole::LoopEnd);
+
+        let ops = lower_to_simple_ir(&func, &HashMap::new());
+        assert!(
+            validate_labels(&ops),
+            "loop-end block labels must survive when explicit branches still target them: {ops:?}"
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op.kind.as_str(), "label" | "state_label")
+                    && op.value.is_some()),
+            "expected a materialized target label for the loop-end block: {ops:?}"
         );
     }
 
