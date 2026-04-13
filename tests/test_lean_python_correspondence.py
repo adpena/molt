@@ -129,6 +129,13 @@ def _lean_binop_python_name(name: str) -> str | None:
     return normalized.upper()
 
 
+def _lean_unop_python_name(name: str) -> str | None:
+    normalized = name[:-1] if name.endswith("_") else name
+    if normalized in {"invert", "neg", "guard", "pos"}:
+        return None
+    return normalized.upper()
+
+
 # ── Effect classification tests ──────────────────────────────────────
 
 
@@ -233,11 +240,8 @@ class TestPureOpAlignment:
         pure_ops = python_effect_classes["pure"]
 
         for op in lean_unops:
-            upper = op.upper()
-            # INVERT is bitwise; NEG is inlined in Python (e.g. SUB from 0)
-            # GUARD is a Lean-side type-narrowing primitive not yet surfaced
-            acceptable_gaps = {"INVERT", "NEG", "GUARD"}
-            if upper in acceptable_gaps:
+            upper = _lean_unop_python_name(op)
+            if upper is None:
                 continue
             assert upper in pure_ops, (
                 f"Lean UnOp.{op} (Python: {upper}) not in Python pure ops"
