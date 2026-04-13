@@ -53,6 +53,55 @@ def test_dense_kv_cache_attention_matches_tensor_sdpa():
     assert out.reshape(4).to_list() == pytest.approx(manual.reshape(4).to_list())
 
 
+def test_dense_kv_cache_supports_grouped_query_attention():
+    from molt.gpu.kv_cache import DenseKVCache
+    from molt.gpu.tensor import Tensor, tensor_scaled_dot_product_attention
+
+    q = Tensor(
+        [
+            0.5, -0.1,
+            0.2, 0.3,
+            -0.4, 0.6,
+            0.1, -0.2,
+        ],
+        shape=(1, 4, 1, 2),
+    )
+    k = Tensor(
+        [
+            0.6, -0.2,
+            0.1, 0.4,
+            -0.3, 0.5,
+            0.2, -0.1,
+        ],
+        shape=(1, 2, 2, 2),
+    )
+    v = Tensor(
+        [
+            0.2, 0.1,
+            -0.3, 0.4,
+            -0.5, 0.2,
+            0.4, -0.1,
+        ],
+        shape=(1, 2, 2, 2),
+    )
+
+    cache = DenseKVCache()
+    cache.append(k, v)
+
+    out = cache.attention(q, scale=1.0)
+
+    manual = tensor_scaled_dot_product_attention(
+        q,
+        k.repeat_axis(1, 2),
+        v.repeat_axis(1, 2),
+        None,
+        1.0,
+    )
+
+    assert out.shape == (1, 4, 1, 2)
+    assert out.reshape(8).to_list() == pytest.approx(manual.reshape(8).to_list())
+
+
 def test_tensor_sdpa_routes_cache_views_through_cache_backend():
     from molt.gpu.kv_cache import DenseKVCache
     from molt.gpu.tensor import Tensor, tensor_scaled_dot_product_attention
@@ -137,6 +186,61 @@ def test_turboquant_attention_kv_cache_matches_rowwise_helper():
     )
 
 
+def test_turboquant_attention_kv_cache_supports_grouped_query_attention():
+    from molt.gpu.kv_cache import TurboQuantAttentionKVCache
+    from molt.gpu.tensor import Tensor
+    from molt.gpu.turboquant import TurboQuantCodec, TurboQuantKVCache
+
+    codec = TurboQuantCodec(dim=2, bits=3, seed=5, qjl_seed=19)
+    k = Tensor(
+        [
+            0.6, -0.2,
+            0.1, 0.4,
+            -0.3, 0.5,
+            0.2, -0.1,
+        ],
+        shape=(1, 2, 2, 2),
+    )
+    v = Tensor(
+        [
+            0.2, 0.1,
+            -0.3, 0.4,
+            -0.5, 0.2,
+            0.4, -0.1,
+        ],
+        shape=(1, 2, 2, 2),
+    )
+    q = Tensor(
+        [
+            0.5, -0.1,
+            0.2, 0.3,
+            -0.4, 0.6,
+            0.1, -0.2,
+        ],
+        shape=(1, 4, 1, 2),
+    )
+
+    cache = TurboQuantAttentionKVCache(codec)
+    cache.append(k, v)
+    out = cache.attention(q, scale=1.0)
+
+    q_rows = q.to_list()[0]
+    k_rows = k.to_list()[0]
+    v_rows = v.to_list()[0]
+    manual = []
+    for head_index, q_head in enumerate(q_rows):
+        shared_head = head_index // 2
+        helper = TurboQuantKVCache.from_tensors(
+            codec,
+            Tensor(k_rows[shared_head]),
+            Tensor(v_rows[shared_head]),
+        )
+        manual.append([helper.attention_output(Tensor(q_head[0])).to_list()])
+
+    assert out.shape == (1, 4, 1, 2)
+    assert out.reshape(8).to_list() == pytest.approx(Tensor(manual).reshape(8).to_list())
+
+
 def test_turboquant_attention_kv_cache_broadcasts_singleton_mask_width():
     from molt.gpu.kv_cache import TurboQuantAttentionKVCache
     from molt.gpu.tensor import Tensor
@@ -170,6 +274,38 @@ def test_turboquant_attention_kv_cache_broadcasts_singleton_mask_width():
     )
 
     assert masked.reshape(8).to_list() == pytest.approx(unmasked.reshape(8).to_list())
+
+
+def test_dense_kv_cache_defers_concat_until_materialization(monkeypatch):
+    from molt.gpu.kv_cache import DenseKVCache
+    from molt.gpu.tensor import Tensor
+
+    cache = DenseKVCache()
+    left = Tensor([0.6, -0.2, 0.1, 0.4], shape=(1, 1, 1, 4))
+    right = Tensor([0.1, 0.5, -0.3, -0.2], shape=(1, 1, 1, 4))
+    value_left = Tensor([0.2, 0.1, -0.3, 0.4], shape=(1, 1, 1, 4))
+    value_right = Tensor([-0.5, 0.2, 0.4, -0.1], shape=(1, 1, 1, 4))
+    q = Tensor([0.5, -0.1, 0.4, 0.2], shape=(1, 1, 1, 4))
+
+    calls = []
+    original_cat = Tensor.cat
+
+    def tracked_cat(self, other, dim=0):
+        calls.append((self.shape, other.shape, dim))
+        return original_cat(self, other, dim=dim)
+
+    monkeypatch.setattr(Tensor, "cat", tracked_cat)
+
+    cache.append(left, value_left)
+    cache.append(right, value_right)
+
+    assert calls == []
+
+    cache.attention(q, scale=1.0)
+    assert len(calls) == 2
+
+    cache.attention(q, scale=1.0)
+    assert len(calls) == 2
 
 
 def test_transformer_multihead_attention_routes_through_cache(monkeypatch):
@@ -355,14 +491,28 @@ def test_dense_kv_cache_compiles_in_native_molt(tmp_path: Path) -> None:
         "\n"
         "cache = DenseKVCache()\n"
         "cache.append(\n"
-        "    Tensor([0.6, -0.2, 0.1, 0.4], shape=(1, 1, 1, 4)),\n"
-        "    Tensor([0.2, 0.1, -0.3, 0.4], shape=(1, 1, 1, 4)),\n"
+        "    Tensor([\n"
+        "        0.6, -0.2,\n"
+        "        0.1, 0.4,\n"
+        "        -0.3, 0.5,\n"
+        "        0.2, -0.1,\n"
+        "    ], shape=(1, 2, 2, 2)),\n"
+        "    Tensor([\n"
+        "        0.2, 0.1,\n"
+        "        -0.3, 0.4,\n"
+        "        -0.5, 0.2,\n"
+        "        0.4, -0.1,\n"
+        "    ], shape=(1, 2, 2, 2)),\n"
         ")\n"
-        "cache.append(\n"
-        "    Tensor([0.1, 0.5, -0.3, -0.2], shape=(1, 1, 1, 4)),\n"
-        "    Tensor([-0.5, 0.2, 0.4, -0.1], shape=(1, 1, 1, 4)),\n"
+        "out = cache.attention(\n"
+        "    Tensor([\n"
+        "        0.5, -0.1,\n"
+        "        0.2, 0.3,\n"
+        "        -0.4, 0.6,\n"
+        "        0.1, -0.2,\n"
+        "    ], shape=(1, 4, 1, 2)),\n"
+        "    scale=1.0,\n"
         ")\n"
-        "out = cache.attention(Tensor([0.5, -0.1, 0.4, 0.2], shape=(1, 1, 1, 4)), scale=1.0)\n"
         "print(len(cache))\n"
         "print(out.shape)\n",
         encoding="utf-8",
@@ -389,5 +539,5 @@ def test_dense_kv_cache_compiles_in_native_molt(tmp_path: Path) -> None:
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
         "2",
-        "(1, 1, 1, 4)",
+        "(1, 4, 1, 2)",
     ]

@@ -46,6 +46,14 @@ Current reference cache split:
 - `molt.gpu.transformer`: optional cache plumbing for transformer attention and
   decoder blocks
 
+Current cache semantics:
+- cache backends must preserve tensor-SDPA-visible semantics for masks and
+  causal decode
+- grouped-query attention is supported when query heads are an integer multiple
+  of KV heads
+- dense cache append should avoid per-token concat churn and materialize lazily
+  for attention reads
+
 Near-term direction:
 - keep cache semantics generic at the tensor/attention layer
 - move toward tensor-level cache-backed attention dispatch, so tinygrad-shaped
