@@ -1051,9 +1051,17 @@ def _resolve_stdio_handle(intrinsic: object, name: str) -> object:
 # If an intrinsic returns None (e.g. during early bootstrap before the runtime
 # registers stdio handles), fall back to a minimal file-like wrapper around
 # the raw C file descriptors so that print() and sys.stdout.write() still work.
-stdin = _BOOT_SYS_STDIN()
-stdout = _BOOT_SYS_STDOUT()
-stderr = _BOOT_SYS_STDERR()
+_existing_stdin = globals().get("stdin")
+_existing_stdout = globals().get("stdout")
+_existing_stderr = globals().get("stderr")
+
+_boot_stdin = _BOOT_SYS_STDIN()
+_boot_stdout = _BOOT_SYS_STDOUT()
+_boot_stderr = _BOOT_SYS_STDERR()
+
+stdin = _boot_stdin if _boot_stdin is not None else _existing_stdin
+stdout = _boot_stdout if _boot_stdout is not None else _existing_stdout
+stderr = _boot_stderr if _boot_stderr is not None else _existing_stderr
 
 if stdout is None or stderr is None or stdin is None:
     class _StdioFallback:

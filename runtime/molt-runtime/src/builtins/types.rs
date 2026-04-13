@@ -274,6 +274,22 @@ pub extern "C" fn molt_type_new(
                     return MoltObject::none().bits();
                 }
             }
+            if let Some(classdictcell_bits) = attr_name_bits_from_bytes(_py, b"__classdictcell__")
+            {
+                unsafe {
+                    dict_del_in_place(_py, dict_ptr, classdictcell_bits);
+                }
+                dec_ref_bits(_py, classdictcell_bits);
+                if exception_pending(_py) {
+                    if qualname_owned {
+                        dec_ref_bits(_py, qualname_bits);
+                    }
+                    if bases_owned {
+                        dec_ref_bits(_py, bases_tuple_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
         }
         if qualname_bits == 0 {
             qualname_bits = name_bits;

@@ -7417,6 +7417,47 @@ pub extern "C" fn molt_importlib_set_module_state(
     })
 }
 
+fn importlib_module_dict_ptr_for_state(
+    _py: &PyToken<'_>,
+    module_bits: u64,
+) -> Result<*mut u8, u64> {
+    let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "module state expects module object",
+        ));
+    };
+    if unsafe { object_type_id(module_ptr) } != TYPE_ID_MODULE {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "module state expects module object",
+        ));
+    }
+    let dict_bits = unsafe { module_dict_bits(module_ptr) };
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return Err(raise_exception::<_>(_py, "TypeError", "module dict missing"));
+    };
+    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+        return Err(raise_exception::<_>(_py, "TypeError", "module dict missing"));
+    }
+    Ok(dict_ptr)
+}
+
+fn importlib_module_dict_get_optional_bits(
+    _py: &PyToken<'_>,
+    module_bits: u64,
+    attr_bits: u64,
+) -> Result<Option<u64>, u64> {
+    let dict_ptr = importlib_module_dict_ptr_for_state(_py, module_bits)?;
+    let out = unsafe { dict_get_in_place(_py, dict_ptr, attr_bits) };
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    Ok(out.filter(|bits| !obj_from_bits(*bits).is_none()))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_stabilize_module_state(
     module_bits: u64,
@@ -7471,7 +7512,7 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
                 importlib_require_package_root_bits(_py, package_root_bits)?;
                 let dunder_path_name = intern_static_name(_py, &DUNDER_PATH_NAME, b"__path__");
                 if let Some(existing_path_bits) =
-                    getattr_optional_bits(_py, module_bits, dunder_path_name)?
+                    importlib_module_dict_get_optional_bits(_py, module_bits, dunder_path_name)?
                 {
                     if importlib_is_str_list_bits(existing_path_bits) {
                         module_path_bits = existing_path_bits;
@@ -7528,19 +7569,19 @@ pub extern "C" fn molt_importlib_stabilize_module_state(
             } else {
                 let dunder_path_name = intern_static_name(_py, &DUNDER_PATH_NAME, b"__path__");
                 if let Some(module_path_attr_bits) =
-                    getattr_optional_bits(_py, module_bits, dunder_path_name)?
+                    importlib_module_dict_get_optional_bits(_py, module_bits, dunder_path_name)?
                 {
                     let should_delete = match obj_from_bits(module_path_attr_bits).as_ptr() {
                         Some(path_ptr) => unsafe { object_type_id(path_ptr) == TYPE_ID_OBJECT },
                         None => false,
                     };
                     if should_delete {
-                        let result_bits = crate::molt_object_delattr(module_bits, dunder_path_name);
-                        if !obj_from_bits(result_bits).is_none() {
-                            dec_ref_bits(_py, result_bits);
+                        let module_dict_ptr = importlib_module_dict_ptr_for_state(_py, module_bits)?;
+                        unsafe {
+                            dict_del_in_place(_py, module_dict_ptr, dunder_path_name);
                         }
                         if exception_pending(_py) {
-                            clear_exception(_py);
+                            return Err(MoltObject::none().bits());
                         }
                     }
                     if !obj_from_bits(module_path_attr_bits).is_none() {
