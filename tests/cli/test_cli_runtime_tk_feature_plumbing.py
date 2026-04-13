@@ -41,6 +41,14 @@ def test_runtime_cargo_features_include_gpu_backend_flags(monkeypatch) -> None:
     assert cli._runtime_cargo_features("wasm32-wasip1") == ()
 
 
+def test_builtin_features_from_import_graph_enable_tk_for_tkinter_submodules() -> None:
+    features = cli._builtin_features_from_import_graph(
+        {"tkinter.constants", "tkinter._support"},
+        "micro",
+    )
+    assert "stdlib_tk" in features
+
+
 def test_runtime_cargo_features_is_cached(monkeypatch) -> None:
     cli._runtime_cargo_features_cached.cache_clear()
     monkeypatch.setenv("MOLT_RUNTIME_TK_NATIVE", "1")

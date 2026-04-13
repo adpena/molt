@@ -7643,6 +7643,7 @@ _STDLIB_DOMAIN_FEATURE_MAP: dict[str, str] = {
 # Prefix-based domain feature mapping: module names that start with
 # these prefixes imply the corresponding feature.
 _STDLIB_DOMAIN_PREFIX_MAP: tuple[tuple[str, str], ...] = (
+    ("tkinter.", "stdlib_tk"),
     ("asyncio.", "stdlib_asyncio"),
     ("email.", "stdlib_email"),
     ("http.", "stdlib_net"),
