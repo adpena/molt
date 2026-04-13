@@ -235,6 +235,7 @@ pub use crate::builtins::gpu::molt_gpu_tensor__tensor_linear_squared_relu_gate_i
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_permute_dims;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_reshape_view;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_scaled_dot_product_attention;
+pub use crate::builtins::gpu::molt_gpu_turboquant_attention_packed;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_softmax_last_axis;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_take_rows;
 pub use crate::builtins::gpu::molt_gpu_tensor__zeros;

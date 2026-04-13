@@ -1034,12 +1034,14 @@ def test_native_intrinsics_module_exports_module_form_api(tmp_path: Path) -> Non
             "print(intr.load_intrinsic('molt_gpu_buffer_to_list') is not None)\n"
             "print(intr.load_intrinsic('molt_gpu_tensor__zeros') is not None)\n"
             "print(intr.load_intrinsic('molt_gpu_tensor__tensor_scaled_dot_product_attention') is not None)\n"
+            "print(intr.load_intrinsic('molt_gpu_turboquant_attention_packed') is not None)\n"
             "print(intr.load_intrinsic('molt_missing_intrinsic') is None)\n"
         ),
         "intrinsics_module_api",
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
+        "True",
         "True",
         "True",
         "True",

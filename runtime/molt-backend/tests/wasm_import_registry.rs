@@ -263,3 +263,19 @@ fn auto_profile_registers_direct_runtime_call_targets_as_imports() {
         "direct runtime call targets must be imported into wasm modules"
     );
 }
+
+#[test]
+fn auto_profile_registers_turboquant_runtime_call_targets_as_imports() {
+    let wasm = compile_with_profile(
+        ir_with_direct_runtime_call("molt_gpu_turboquant_attention_packed", 5),
+        WasmProfile::Auto,
+    );
+    let import_names: BTreeSet<String> = extract_func_imports(&wasm)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        import_names.contains("gpu_turboquant_attention_packed"),
+        "turboquant direct runtime call targets must be imported into wasm modules"
+    );
+}
