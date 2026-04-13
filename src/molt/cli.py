@@ -1231,6 +1231,7 @@ class _BackendCacheSetup:
     cache_hit: bool
     cache_hit_tier: str | None
     stdlib_module_symbols_json: str | None = None
+    stdlib_module_symbols: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -8251,6 +8252,76 @@ def _wasm_wasi_libc_archive(target_triple: str = "wasm32-wasip1") -> Path | None
     return libc_archive
 
 
+def _normalize_native_global_symbol_name(name: str) -> str:
+    normalized = name.strip()
+    if sys.platform == "darwin" and normalized.startswith("_"):
+        return normalized[1:]
+    return normalized
+
+
+def _native_global_symbol_sets(path: Path) -> tuple[set[str], set[str]] | None:
+    nm_bin = shutil.which("nm") or shutil.which("llvm-nm")
+    if nm_bin is None:
+        return None
+    try:
+        result = subprocess.run(
+            [nm_bin, "-g", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    defined: set[str] = set()
+    undefined: set[str] = set()
+    for raw_line in result.stdout.splitlines():
+        fields = raw_line.split()
+        if len(fields) < 2:
+            continue
+        sym_type, sym_name = fields[-2], fields[-1]
+        normalized = _normalize_native_global_symbol_name(sym_name)
+        if not normalized:
+            continue
+        if sym_type.upper() == "U":
+            undefined.add(normalized)
+        elif sym_type.isalpha():
+            defined.add(normalized)
+    return defined, undefined
+
+
+def _unresolved_native_module_chunk_symbols(
+    path: Path,
+    *,
+    stdlib_object_path: Path | None,
+    stdlib_module_symbols: Collection[str] | None,
+) -> set[str] | None:
+    symbol_sets = _native_global_symbol_sets(path)
+    if symbol_sets is None:
+        return None
+    defined, undefined = symbol_sets
+    stdlib_defined: set[str] = set()
+    if stdlib_object_path is not None and stdlib_object_path.exists():
+        stdlib_symbol_sets = _native_global_symbol_sets(stdlib_object_path)
+        if stdlib_symbol_sets is None:
+            return None
+        stdlib_defined, _ = stdlib_symbol_sets
+    unresolved: set[str] = set()
+    for name in undefined:
+        match = re.match(r"^(?P<module>.+)__molt_module_chunk_\d+$", name)
+        if match is None or name in defined:
+            continue
+        owner = match.group("module")
+        if stdlib_module_symbols is not None and owner in stdlib_module_symbols:
+            if name not in stdlib_defined:
+                unresolved.add(name)
+            continue
+        unresolved.add(name)
+    return unresolved
+
+
 def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
     if is_wasm:
         return _is_reusable_wasm_artifact(path)
@@ -8259,23 +8330,11 @@ def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
             return False
     except OSError:
         return False
-    nm_bin = shutil.which("nm") or shutil.which("llvm-nm")
-    if nm_bin is None:
+    symbol_sets = _native_global_symbol_sets(path)
+    if symbol_sets is None:
         return True
-    nm_cmd = [nm_bin, "-gU", str(path)] if sys.platform == "darwin" else [nm_bin, "-g", str(path)]
-    try:
-        result = subprocess.run(
-            nm_cmd,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    if result.returncode != 0:
-        return False
-    return bool(result.stdout.strip())
+    defined, undefined = symbol_sets
+    return bool(defined or undefined)
 
 
 def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
@@ -11632,6 +11691,7 @@ def _try_cached_backend_candidates(
     cache_path: Path | None,
     stdlib_object_path: Path | None,
     stdlib_object_cache_key: str | None,
+    stdlib_module_symbols: Collection[str] | None = None,
     warnings: list[str],
 ) -> tuple[bool, str | None]:
     state_path = _artifact_sync_state_path(project_root, output_artifact)
@@ -11663,6 +11723,21 @@ def _try_cached_backend_candidates(
             with contextlib.suppress(OSError):
                 candidate.unlink()
             continue
+        if not is_wasm:
+            unresolved_module_chunks = _unresolved_native_module_chunk_symbols(
+                candidate,
+                stdlib_object_path=stdlib_object_path,
+                stdlib_module_symbols=stdlib_module_symbols,
+            )
+            if unresolved_module_chunks:
+                sample = ", ".join(sorted(unresolved_module_chunks)[:4])
+                warnings.append(
+                    "Ignoring native cache artifact with unresolved module chunk imports: "
+                    f"{candidate} [{sample}]"
+                )
+                with contextlib.suppress(OSError):
+                    candidate.unlink()
+                continue
         if _materialize_cached_backend_artifact(
             project_root,
             candidate,
@@ -11692,6 +11767,7 @@ def _backend_daemon_skip_output_sync_flags(
     function_cache_key: str | None,
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
+    stdlib_module_symbols: Collection[str] | None = None,
     state_path: Path | None = None,
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
@@ -11708,6 +11784,14 @@ def _backend_daemon_skip_output_sync_flags(
         try:
             output_stat = output_artifact.stat()
         except OSError:
+            return False, False
+    if not is_wasm_output:
+        unresolved_module_chunks = _unresolved_native_module_chunk_symbols(
+            output_artifact,
+            stdlib_object_path=stdlib_object_path,
+            stdlib_module_symbols=stdlib_module_symbols,
+        )
+        if unresolved_module_chunks:
             return False, False
     skip_module_output = bool(cache_key) and _artifact_sync_state_matches_stat(
         state,
@@ -18227,6 +18311,7 @@ def _execute_backend_compile(
                 ),
                 stdlib_object_path=cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
+                stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                 state_path=output_sync_state_path,
                 state=output_sync_state,
                 output_stat=output_artifact_stat,
@@ -20620,6 +20705,7 @@ def _prepare_backend_cache_setup(
             cache_hit=False,
             cache_hit_tier=None,
             stdlib_module_symbols_json=stdlib_module_symbols_json,
+            stdlib_module_symbols=stdlib_module_symbols,
         )
     cache_variant = _build_cache_variant(
         profile=profile,
@@ -20662,6 +20748,7 @@ def _prepare_backend_cache_setup(
             cache_hit=False,
             cache_hit_tier=None,
             stdlib_module_symbols_json=stdlib_module_symbols_json,
+            stdlib_module_symbols=stdlib_module_symbols,
         )
     ext = "wasm" if is_wasm else "o"
     cache_path = cache_root / f"{cache_key}.{ext}"
@@ -20702,6 +20789,7 @@ def _prepare_backend_cache_setup(
         cache_path=cache_path,
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key=stdlib_object_cache_key,
+        stdlib_module_symbols=stdlib_module_symbols,
         warnings=warnings,
     )
     return _BackendCacheSetup(
@@ -20716,6 +20804,7 @@ def _prepare_backend_cache_setup(
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,
         stdlib_module_symbols_json=stdlib_module_symbols_json,
+        stdlib_module_symbols=stdlib_module_symbols,
     )
 
 
