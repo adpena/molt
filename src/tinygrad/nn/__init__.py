@@ -137,7 +137,7 @@ class Linear:
         if x.ndim == 1:
             x = x.reshape(1, x.size)
             squeezed = True
-        out = x @ self.weight.T
+        out = x.linear(self.weight)
         if self.bias is not None:
             out = out + self.bias
         if squeezed:
