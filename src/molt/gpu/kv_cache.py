@@ -35,48 +35,98 @@ def _expanded_mask_row(mask_row, width: int) -> list[float]:
     )
 
 
+def _kv_head_index(query_heads: int, kv_heads: int, query_head_index: int) -> int:
+    if query_heads == kv_heads:
+        return query_head_index
+    if query_heads < kv_heads or query_heads % kv_heads != 0:
+        raise ValueError(
+            f"query head count {query_heads} is incompatible with kv head count {kv_heads}"
+        )
+    group_size = query_heads // kv_heads
+    return query_head_index // group_size
+
+
 class DenseKVCache:
     """Reference dense KV cache for projected multi-head attention tensors."""
 
     def __init__(self) -> None:
+        self._key_chunks = []
+        self._value_chunks = []
+        self._batch = None
+        self._heads = None
+        self._head_dim = None
+        self._length = 0
         self.key_tensor = None
         self.value_tensor = None
 
     def __len__(self) -> int:
-        if self.key_tensor is None:
-            return 0
-        return int(self.key_tensor.shape[2])
+        return self._length
 
     def append(self, k: Tensor, v: Tensor) -> None:
         _validate_projected_tensor("k", k)
         _validate_projected_tensor("v", v)
         if k.shape != v.shape:
             raise ValueError(f"k and v must have identical shapes, got {k.shape} and {v.shape}")
-        if self.key_tensor is None:
-            self.key_tensor = k
-            self.value_tensor = v
-            return
-        if self.key_tensor.shape[:2] != k.shape[:2] or self.key_tensor.shape[3] != k.shape[3]:
+        batch, heads, seq, head_dim = k.shape
+        if self._batch is None:
+            self._batch = batch
+            self._heads = heads
+            self._head_dim = head_dim
+        elif self._batch != batch or self._heads != heads or self._head_dim != head_dim:
             raise ValueError(
                 "KV cache append requires matching batch, heads, and head_dim"
             )
-        self.key_tensor = Tensor.cat(self.key_tensor, k, dim=2)
-        self.value_tensor = Tensor.cat(self.value_tensor, v, dim=2)
+        self._key_chunks.append(k)
+        self._value_chunks.append(v)
+        self._length += seq
+        self.key_tensor = None
+        self.value_tensor = None
+
+    def _materialize(self) -> tuple[Tensor, Tensor]:
+        if self.key_tensor is not None and self.value_tensor is not None:
+            return self.key_tensor, self.value_tensor
+        if not self._key_chunks or not self._value_chunks:
+            raise RuntimeError("cannot materialize an empty KV cache")
+        key = self._key_chunks[0]
+        value = self._value_chunks[0]
+        for chunk in self._key_chunks[1:]:
+            key = key.cat(chunk, dim=2)
+        for chunk in self._value_chunks[1:]:
+            value = value.cat(chunk, dim=2)
+        self.key_tensor = key
+        self.value_tensor = value
+        return key, value
 
     def attention(self, q: Tensor, *, scale: float, mask: Tensor | None = None) -> Tensor:
         _validate_projected_tensor("q", q)
-        if self.key_tensor is None or self.value_tensor is None:
+        if not self._key_chunks or not self._value_chunks:
             raise RuntimeError("cannot attend with an empty KV cache")
-        scores = (q @ tensor_permute_dims(self.key_tensor, (0, 1, 3, 2))) * scale
+        key_tensor, value_tensor = self._materialize()
+        batch, heads, _query_seq, _head_dim = q.shape
+        if batch != self._batch:
+            raise ValueError("query batch shape must match the KV cache")
+        if heads == self._heads:
+            expanded_key = key_tensor
+            expanded_value = value_tensor
+        else:
+            repeats = heads // self._heads if self._heads else 0
+            if heads < self._heads or heads % self._heads != 0:
+                raise ValueError(
+                    f"query head count {heads} is incompatible with kv head count {self._heads}"
+                )
+            expanded_key = key_tensor.repeat_axis(1, repeats)
+            expanded_value = value_tensor.repeat_axis(1, repeats)
+
+        scores = (q @ tensor_permute_dims(expanded_key, (0, 1, 3, 2))) * scale
         if mask is not None:
             scores = scores + mask
         attn = tensor_softmax_last_axis(scores)
-        return attn @ self.value_tensor
+        return attn @ expanded_value
 
     def truncate(self, length: int) -> None:
         if length < 0:
             raise ValueError("KV cache length must be non-negative")
-        if self.key_tensor is None or self.value_tensor is None:
+        if not self._key_chunks or not self._value_chunks:
             if length != 0:
                 raise ValueError("cannot truncate an empty KV cache to a non-zero length")
             return
@@ -86,13 +136,21 @@ class DenseKVCache:
         if length == current:
             return
         if length == 0:
+            self._key_chunks = []
+            self._value_chunks = []
+            self._batch = None
+            self._heads = None
+            self._head_dim = None
+            self._length = 0
             self.key_tensor = None
             self.value_tensor = None
             return
-        batch, heads, _seq, head_dim = self.key_tensor.shape
-        keep = batch * heads * length * head_dim
-        self.key_tensor = Tensor(self.key_tensor._data_list()[:keep], shape=(batch, heads, length, head_dim))
-        self.value_tensor = Tensor(self.value_tensor._data_list()[:keep], shape=(batch, heads, length, head_dim))
+        key_tensor, value_tensor = self._materialize()
+        self.key_tensor = key_tensor[:, :, :length, :]
+        self.value_tensor = value_tensor[:, :, :length, :]
+        self._key_chunks = [self.key_tensor]
+        self._value_chunks = [self.value_tensor]
+        self._length = length
 
     def keys(self):
         return _KVCacheKeyView(self)
@@ -152,8 +210,8 @@ class TurboQuantAttentionKVCache:
             raise RuntimeError("cannot attend with an empty KV cache")
 
         batch, heads, query_seq, head_dim = q.shape
-        if batch != self._batch or heads != self._heads:
-            raise ValueError("query batch/head shape must match the KV cache")
+        if batch != self._batch:
+            raise ValueError("query batch shape must match the KV cache")
         if head_dim != self.codec.dim:
             raise ValueError(
                 f"TurboQuant codec dim {self.codec.dim} does not match query head_dim {head_dim}"
@@ -164,16 +222,17 @@ class TurboQuantAttentionKVCache:
 
         for batch_index in range(batch):
             batch_out = []
-            for head_index in range(heads):
+            for query_head_index in range(heads):
+                kv_head_index = _kv_head_index(heads, self._heads, query_head_index)
                 decoded_values = [
                     self.codec.dequantize(encoded).to_list()
-                    for encoded in self._value_vectors[batch_index][head_index]
+                    for encoded in self._value_vectors[batch_index][kv_head_index]
                 ]
                 head_out = []
                 for query_index in range(query_seq):
-                    query_row = q_rows[batch_index][head_index][query_index]
+                    query_row = q_rows[batch_index][query_head_index][query_index]
                     logits = []
-                    for encoded in self._key_vectors[batch_index][head_index]:
+                    for encoded in self._key_vectors[batch_index][kv_head_index]:
                         logits.append(
                             self.codec.estimate_inner_product(query_row, encoded) * scale
                         )
@@ -182,7 +241,7 @@ class TurboQuantAttentionKVCache:
                             _broadcast_mask_row(
                                 mask,
                                 batch_index,
-                                head_index,
+                                query_head_index,
                                 query_index,
                             ),
                             len(logits),
