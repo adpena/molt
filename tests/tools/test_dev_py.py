@@ -40,3 +40,57 @@ def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
             False,
         )
     ]
+
+
+def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
+    module = _load_dev_py()
+    calls: list[tuple[list[str], str | None, bool]] = []
+
+    def fake_run_uv(args, python=None, env=None, tty=False):
+        calls.append((list(args), python, tty))
+
+    monkeypatch.setattr(module, "run_uv", fake_run_uv, raising=True)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        ["tools/dev.py", "test", "--random-order", "--random-seed", "17"],
+        raising=True,
+    )
+    module.main()
+
+    assert calls == [
+        (
+            [
+                "python3",
+                "tools/dev_test_runner.py",
+                "--verified-subset",
+                "--random-order",
+                "--random-seed",
+                "17",
+            ],
+            module.TEST_PYTHONS[0],
+            False,
+        ),
+        (
+            [
+                "python3",
+                "tools/dev_test_runner.py",
+                "--random-order",
+                "--random-seed",
+                "17",
+            ],
+            module.TEST_PYTHONS[1],
+            False,
+        ),
+        (
+            [
+                "python3",
+                "tools/dev_test_runner.py",
+                "--random-order",
+                "--random-seed",
+                "17",
+            ],
+            module.TEST_PYTHONS[2],
+            False,
+        ),
+    ]
