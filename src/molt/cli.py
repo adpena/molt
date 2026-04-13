@@ -23152,7 +23152,7 @@ def _ensure_runtime_wasm(
                     )
                 return False
             return True
-        target_runtime_staticlib = _resolve_built_runtime_staticlib_artifact(
+        target_runtime_staticlib = _wasm_runtime_staticlib_path(
             target_root,
             profile_dir,
         )
