@@ -101,6 +101,9 @@ _OP_SUB = 1
 _OP_MUL = 2
 _OP_DIV = 3
 
+_TINYGRAD_FIRST_DEVICE_KEY0 = 347607321  # sha256((0).to_bytes(4,"big")) low 32 bits
+_TINYGRAD_RNG_STATE = [0, 0]
+
 
 def _product(seq):
     """Product of a sequence of integers."""
@@ -108,6 +111,79 @@ def _product(seq):
     for x in seq:
         result *= x
     return result
+
+
+def _u32(value):
+    return (value or 0) & 0xFFFFFFFF
+
+
+def _rotl32(value, bits):
+    value = _u32(value)
+    return _u32((value << bits) | (value >> (32 - bits)))
+
+
+def _uint32_to_unit_float(value):
+    # tinygrad constructs a float in [1, 2) by fixing exponent=127 and using
+    # the top 23 random bits as the mantissa, then subtracts 1.0. That is
+    # exactly mantissa / 2**23, which avoids a boxed struct.unpack path and
+    # lowers cleanly in compiled Molt.
+    mantissa = (value >> 9) & 0x7FFFFF
+    return float(mantissa) / float(1 << 23)
+
+
+def _tinygrad_rand_values_seeded(count, seed_value, counter_base):
+    if count <= 0:
+        return []
+    mask = 0xFFFFFFFF
+    key0 = _TINYGRAD_FIRST_DEVICE_KEY0
+    seed_bits = (seed_value or 0) & mask
+    key1 = (key0 ^ seed_bits ^ 0x1BD11BDA) & mask
+    base = counter_base
+
+    num_pairs = (count + 1) // 2
+    low = []
+    high = []
+    for idx in range(num_pairs):
+        x0 = (base + idx + key0) & mask
+        x1 = (base + num_pairs + idx + seed_bits) & mask
+        for round_idx in range(5):
+            if round_idx % 2 == 0:
+                rots = (13, 15, 26, 6)
+            else:
+                rots = (17, 29, 16, 24)
+            for rot in rots:
+                x0 = (x0 + x1) & mask
+                rotated = ((x1 << rot) | (x1 >> (32 - rot))) & mask
+                x1 = (x0 ^ rotated) & mask
+            if round_idx % 3 == 0:
+                k_add0 = seed_bits
+                k_add1 = key1
+            elif round_idx % 3 == 1:
+                k_add0 = key1
+                k_add1 = key0
+            else:
+                k_add0 = key0
+                k_add1 = seed_bits
+            x0 = (x0 + k_add0) & mask
+            x1 = (x1 + k_add1 + round_idx + 1) & mask
+        lo_bits, hi_bits = x0, x1
+        low.append(_uint32_to_unit_float(lo_bits))
+        high.append(_uint32_to_unit_float(hi_bits))
+    return (low + high)[:count]
+
+
+def _tinygrad_current_seed():
+    return _u32(_TINYGRAD_RNG_STATE[0])
+
+
+def _tinygrad_consume_rand_values(count):
+    counter_root = _TINYGRAD_RNG_STATE[1]
+    _TINYGRAD_RNG_STATE[1] = counter_root + count
+    return _tinygrad_rand_values_seeded(count, _tinygrad_current_seed(), counter_root)
+
+
+def _tinygrad_seeded_rand_values(count, seed, counter_base=0):
+    return _tinygrad_rand_values_seeded(count, _u32(seed), counter_base)
 
 
 def _strides(shape):
@@ -1075,12 +1151,43 @@ class Tensor:
         return zeros(*shape)
 
     @staticmethod
-    def rand(*shape, seed=None) -> 'Tensor':
-        return rand(*shape, seed=seed)
+    def manual_seed(seed=0) -> None:
+        _TINYGRAD_RNG_STATE[0] = _u32(seed)
+        _TINYGRAD_RNG_STATE[1] = 0
 
     @staticmethod
-    def randn(*shape, seed=None) -> 'Tensor':
-        return randn(*shape, seed=seed)
+    def rand(*shape) -> 'Tensor':
+        return rand(*shape)
+
+    @staticmethod
+    def randn(*shape) -> 'Tensor':
+        return randn(*shape)
+
+    @staticmethod
+    def uniform(*shape, low=0.0, high=1.0, dtype=None, requires_grad=None) -> 'Tensor':
+        return uniform(
+            *shape,
+            low=low,
+            high=high,
+            dtype=dtype,
+            requires_grad=requires_grad,
+        )
+
+    @staticmethod
+    def scaled_uniform(*shape, dtype=None, requires_grad=None) -> 'Tensor':
+        return scaled_uniform(
+            *shape,
+            dtype=dtype,
+            requires_grad=requires_grad,
+        )
+
+    @staticmethod
+    def glorot_uniform(*shape, dtype=None, requires_grad=None) -> 'Tensor':
+        return glorot_uniform(
+            *shape,
+            dtype=dtype,
+            requires_grad=requires_grad,
+        )
 
     @staticmethod
     def arange(start, stop=None, step=1) -> 'Tensor':
@@ -2086,58 +2193,58 @@ def ones(*shape, dtype=float) -> Tensor:
 
 
 def randn(*shape, seed=None) -> Tensor:
-    """Create a tensor with random normal values (Box-Muller transform).
-
-    Uses a simple LCG PRNG for reproducibility without importing random.
-    """
+    """Create a tensor with tinygrad-style Box-Muller normal samples."""
     if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
         shape = tuple(shape[0])
-    size = _product(shape)
-
-    # Deterministic 31-bit LCG PRNG (no external deps). Keep the state in a
-    # conservative integer domain so compiled native Molt does not depend on
-    # bigint/large-shift behavior during model initialization.
     if seed is None:
-        import time as _time
+        u0 = rand(*shape)._data_list()
+        u1 = rand(*shape)._data_list()
+        result = []
+        for a, b in zip(u0, u1):
+            result.append(math.cos(2.0 * math.pi * a) * math.sqrt(-2.0 * math.log(1.0 - b)))
+        return Tensor(result, shape=shape)
 
-        seed = int(_time.time() * 1000) % (2**31)
-    state = int(seed) & 0x7FFFFFFF
-    TWO_PI = 2.0 * math.pi
-    scale = 1.0 / 2147483648.0
-
+    size = _product(shape)
+    u0 = _tinygrad_seeded_rand_values(size, seed, 0)
+    u1 = _tinygrad_seeded_rand_values(size, seed, size)
     result = []
-    for i in range(0, size, 2):
-        state = (state * 1103515245 + 12345) & 0x7FFFFFFF
-        u1 = state * scale
-        if u1 == 0.0:
-            u1 = 1e-10
-        state = (state * 1103515245 + 12345) & 0x7FFFFFFF
-        u2 = state * scale
-
-        z0 = math.sqrt(-2.0 * math.log(u1)) * math.cos(TWO_PI * u2)
-        z1 = math.sqrt(-2.0 * math.log(u1)) * math.sin(TWO_PI * u2)
-        result.append(z0)
-        if i + 1 < size:
-            result.append(z1)
-
-    return Tensor(result[:size], shape=shape)
+    for a, b in zip(u0, u1):
+        result.append(math.cos(2.0 * math.pi * a) * math.sqrt(-2.0 * math.log(1.0 - b)))
+    return Tensor(result, shape=shape)
 
 
 def rand(*shape, seed=None) -> Tensor:
-    """Create a tensor with uniform random values in [0, 1)."""
+    """Create a tensor with tinygrad-style uniform random values in [0, 1)."""
     if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
         shape = tuple(shape[0])
     size = _product(shape)
+    values = _tinygrad_consume_rand_values(size) if seed is None else _tinygrad_seeded_rand_values(size, seed)
+    return Tensor(values, shape=shape)
 
-    if seed is None:
-        import time as _time
 
-        seed = int(_time.time() * 1000) % (2**31)
-    state = int(seed) & 0x7FFFFFFF
-    scale = 1.0 / 2147483648.0
-    result = []
-    for _ in range(size):
-        state = (state * 1103515245 + 12345) & 0x7FFFFFFF
-        result.append(state * scale)
+def uniform(*shape, low=0.0, high=1.0, dtype=None, requires_grad=None, seed=None) -> Tensor:
+    if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
+        shape = tuple(shape[0])
+    size = _product(shape)
+    base = _tinygrad_consume_rand_values(size) if seed is None else _tinygrad_seeded_rand_values(size, seed)
+    values = [((high - low) * value) + low for value in base]
+    out = Tensor(values, shape=shape, dtype=dtype or float)
+    if dtype is not None:
+        out = out.cast(dtype)
+    return out
 
-    return Tensor(result, shape=shape)
+
+def scaled_uniform(*shape, dtype=None, requires_grad=None, seed=None) -> Tensor:
+    if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
+        shape = tuple(shape[0])
+    scale = _product(shape) ** -0.5
+    return uniform(*shape, low=-1.0, high=1.0, dtype=dtype, requires_grad=requires_grad, seed=seed) * scale
+
+
+def glorot_uniform(*shape, dtype=None, requires_grad=None, seed=None) -> Tensor:
+    if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
+        shape = tuple(shape[0])
+    if not shape:
+        raise ValueError("glorot_uniform requires at least one dimension")
+    scale = (6.0 / (shape[0] + _product(shape[1:]))) ** 0.5
+    return uniform(*shape, low=-1.0, high=1.0, dtype=dtype, requires_grad=requires_grad, seed=seed) * scale
