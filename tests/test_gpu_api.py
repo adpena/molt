@@ -1479,10 +1479,13 @@ def test_submodule_dflash():
     from molt.gpu.dflash import (
         DFlashAdapterSpec,
         SpeculativeConditioning,
+        SpeculativeDecodeResult,
         SpeculativeDraftRequest,
         SpeculativeDraftResult,
         SpeculativeVerifyRequest,
         SpeculativeVerifyResult,
+        speculative_decode_greedy,
+        speculative_decode_greedy_conditioned,
     )
 
 
