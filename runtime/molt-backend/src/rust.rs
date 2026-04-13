@@ -24,6 +24,12 @@ enum AliasBinding {
     Indexed { obj: String, key: String },
 }
 
+#[derive(Clone)]
+struct JumpReturnCandidate {
+    expr: String,
+    min_scope_depth: i32,
+}
+
 /// Transpiles Molt `SimpleIR` into Rust source text.
 pub struct RustBackend {
     output: String,
@@ -1201,6 +1207,12 @@ impl RustBackend {
         // Scope-escape hoisting
         collect_scope_escapes(&ops, func, &mut self.hoisted_vars);
 
+        let mut stable_return_vars: BTreeSet<String> = self.current_params.iter().cloned().collect();
+        stable_return_vars.extend(loop_idx_vars.iter().cloned());
+        stable_return_vars.extend(closure_slots.iter().cloned());
+        stable_return_vars.extend(named_storage_vars.iter().cloned());
+        stable_return_vars.extend(self.hoisted_vars.iter().cloned());
+
         if is_main {
             self.emit_line("fn molt_main() {");
         } else {
@@ -1248,7 +1260,8 @@ impl RustBackend {
         // Two patterns (tree_shake_luau decides which):
         //   - store_local(var, val): after optimization, `var` holds the return value
         //   - store_index(frame, slot, val): unoptimized, must molt_get_item to recover
-        let mut last_jump_return: Option<String> = None; // the Rust expr to return at `jump`
+        let mut last_jump_return: Option<JumpReturnCandidate> = None; // the Rust expr to return at `jump`
+        let mut scope_depth: i32 = 0;
         let mut i = 0;
         while i < ops.len() {
             if let Some(injects) = phi_inject_before_else.get(&i) {
@@ -1267,17 +1280,35 @@ impl RustBackend {
                 "store_local" | "store" | "store_init" => {
                     // store_local(var, val) → var holds the return value directly
                     if let Some(ref v) = ops[i].var {
-                        last_jump_return = Some(format!("{}.clone()", rust_ident(v)));
+                        let dst = rust_ident(v);
+                        let min_scope_depth = if stable_return_vars.contains(&dst) {
+                            0
+                        } else {
+                            scope_depth
+                        };
+                        last_jump_return = Some(JumpReturnCandidate {
+                            expr: format!("{dst}.clone()"),
+                            min_scope_depth,
+                        });
                     }
                 }
                 "store_index" | "set_item" | "store_subscript" => {
-                    // store_index(frame, slot, val) → need molt_get_item to recover
+                    // store_index(frame, slot, val) returns the stored source value.
+                    // Tracking frame/slot references directly leaks block-scoped
+                    // temps when the eventual jump is emitted after the scope closes.
                     if let Some(args) = ops[i].args.as_deref()
-                        && args.len() >= 2
+                        && args.len() >= 3
                     {
-                        let frame = rust_ident(&args[0]);
-                        let slot = rust_ident(&args[1]);
-                        last_jump_return = Some(format!("molt_get_item(&{frame}, &{slot})"));
+                        let src = rust_ident(&args[2]);
+                        let min_scope_depth = if stable_return_vars.contains(&src) {
+                            0
+                        } else {
+                            scope_depth
+                        };
+                        last_jump_return = Some(JumpReturnCandidate {
+                            expr: format!("{src}.clone()"),
+                            min_scope_depth,
+                        });
                     }
                 }
                 _ => {}
@@ -1289,9 +1320,9 @@ impl RustBackend {
                 if self.current_is_main {
                     self.emit_param_writeback();
                     self.emit_line("return;");
-                } else if let Some(ref expr) = last_jump_return.clone() {
+                } else if let Some(candidate) = last_jump_return.clone() {
                     self.emit_param_writeback();
-                    self.emit_line(&format!("return {expr};"));
+                    self.emit_line(&format!("return {};", candidate.expr));
                 } else {
                     self.emit_param_writeback();
                     self.emit_line("return MoltValue::None; /* jump: no prior store */");
@@ -1306,7 +1337,7 @@ impl RustBackend {
                 continue;
             }
 
-            if ops[i].kind == "loop_start"
+            let processed_kind = if ops[i].kind == "loop_start"
                 && i + 1 < ops.len()
                 && ops[i + 1].kind == "loop_index_start"
             {
@@ -1322,9 +1353,36 @@ impl RustBackend {
                 }
                 self.emit_op(&ops[i]);
                 i += 2;
+                "loop_start"
             } else {
+                let kind = ops[i].kind.as_str();
                 self.emit_op(&ops[i]);
                 i += 1;
+                kind
+            };
+
+            match processed_kind {
+                "if" | "if_not" | "loop_start" | "while_start" | "for_range" | "for_iter" => {
+                    scope_depth += 1;
+                }
+                "else" => {
+                    if last_jump_return
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.min_scope_depth >= scope_depth)
+                    {
+                        last_jump_return = None;
+                    }
+                }
+                "end_if" | "loop_end" | "while_end" | "end_for" => {
+                    scope_depth = (scope_depth - 1).max(0);
+                    if last_jump_return
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.min_scope_depth > scope_depth)
+                    {
+                        last_jump_return = None;
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -3593,6 +3651,65 @@ mod tests {
         assert!(source.contains("let mut tmp: MoltValue = rows.clone();"));
         assert!(!source.contains("MOLT_STUB: store_var"));
         assert!(!source.contains("MOLT_STUB: load_var"));
+    }
+
+    #[test]
+    fn jump_after_loop_does_not_capture_scoped_set_item_temps() {
+        let mut backend = RustBackend::new();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "helper".to_string(),
+                params: vec!["frame".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "loop_start".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("answer".to_string()),
+                        out: Some("key".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        value: Some(42),
+                        out: Some("val".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "set_item".to_string(),
+                        args: Some(vec![
+                            "frame".to_string(),
+                            "key".to_string(),
+                            "val".to_string(),
+                        ]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "loop_break".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "loop_end".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "jump".to_string(),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            profile: None,
+        };
+
+        let source = backend.compile(&ir);
+        assert!(!source.contains("return molt_get_item(&frame, &key);"));
+        assert!(source.contains("return MoltValue::None; /* jump: no prior store */"));
     }
 
     #[test]
