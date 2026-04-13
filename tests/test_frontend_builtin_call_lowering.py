@@ -275,6 +275,54 @@ def test_module_chunking_starts_new_chunk_before_large_multiline_assignment() ->
     assert [3] in [op.args for op in second_chunk if op.kind == "LINE"]
 
 
+def test_function_metadata_uses_runtime_helper_instead_of_attr_storm() -> None:
+    source = (
+        "class Box:\n"
+        "    def first(self, x, y=1):\n"
+        "        return x + y\n"
+        "    def second(self):\n"
+        "        return 2\n"
+    )
+    gen = SimpleTIRGenerator(
+        module_name="meta_probe",
+        module_chunking=True,
+        module_chunk_max_ops=400,
+    )
+    gen.visit(ast.parse(source))
+
+    ops = [
+        op
+        for func in gen.funcs_map.values()
+        for op in func["ops"]
+    ]
+    assert any(
+        op.kind == "BUILTIN_FUNC" and op.args == ["molt_function_init_metadata", 14]
+        for op in ops
+    )
+    metadata_attrs = {
+        "__name__",
+        "__qualname__",
+        "__module__",
+        "__molt_arg_names__",
+        "__molt_posonly__",
+        "__molt_kwonly_names__",
+        "__molt_vararg__",
+        "__molt_varkw__",
+        "__defaults__",
+        "__kwdefaults__",
+        "__doc__",
+        "__code__",
+        "__molt_bind_kind__",
+    }
+    assert not any(
+        op.kind == "SETATTR_GENERIC_OBJ"
+        and len(op.args) >= 2
+        and isinstance(op.args[1], str)
+        and op.args[1] in metadata_attrs
+        for op in ops
+    )
+
+
 def test_non_phi_or_with_call_avoids_list_cell_result_plumbing() -> None:
     source = (
         "def left():\n"
@@ -346,6 +394,18 @@ def test_nested_listcomp_function_does_not_capture_comprehension_target() -> Non
     outer_ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "__main____outer"
     )
+    data_literal_var = next(
+        op["out"]
+        for op in outer_ops
+        if op.get("kind") == "tuple_new" and len(op.get("args", [])) == 2
+    )
+    data_cell_var = next(
+        op["args"][0]
+        for op in outer_ops
+        if op.get("kind") == "store_index"
+        and len(op.get("args", [])) == 3
+        and op["args"][2] == data_literal_var
+    )
     for idx, op in enumerate(outer_ops):
         if op["kind"] != "func_new_closure" or op.get("s_value") != "__main____inner":
             continue
@@ -355,7 +415,7 @@ def test_nested_listcomp_function_does_not_capture_comprehension_target() -> Non
             for candidate in outer_ops[:idx]
             if candidate.get("kind") == "tuple_new" and candidate.get("out") == closure_tuple_var
         )
-        assert tuple_op["args"] == ["v84"]
+        assert tuple_op["args"] == [data_cell_var]
         break
     else:
         raise AssertionError("missing inner func_new_closure")
