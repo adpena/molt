@@ -19,16 +19,24 @@ from .contracts import (
     SpeculativeVerifyRequest,
     SpeculativeVerifyResult,
 )
+from .runtime import (
+    SpeculativeDecodeResult,
+    speculative_decode_greedy,
+    speculative_decode_greedy_conditioned,
+)
 
 __all__ = [
     "SpeculativeConditioning",
     "DFlashRuntime",
     "DFlashSelectionContext",
     "DFlashAdapterSpec",
+    "SpeculativeDecodeResult",
     "SpeculativeDraftRequest",
     "SpeculativeDraftResult",
     "SpeculativeVerifyRequest",
     "SpeculativeVerifyResult",
+    "speculative_decode_greedy",
+    "speculative_decode_greedy_conditioned",
     "register_dflash_adapter",
     "get_dflash_adapter",
     "resolve_dflash_adapter",
