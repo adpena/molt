@@ -15,6 +15,10 @@ function resolveArtifactUrl(baseUrl, relativeOrAbsoluteUrl) {
   return new URL(relativeOrAbsoluteUrl, baseUrl).toString();
 }
 
+function normalizeDirectoryUrl(url) {
+  return url.endsWith("/") ? url : `${url}/`;
+}
+
 function normalizeManifestUrl(manifestUrl) {
   try {
     return new URL(manifestUrl).toString();
@@ -48,13 +52,24 @@ function optionalManifestArtifactUrl(manifest, manifestUrl, key) {
 
 function manifestWeightUrl(manifest, manifestUrl) {
   const weights = manifest?.weights;
-  const first = Array.isArray(weights?.files) ? weights.files[0] : null;
-  if (!first || typeof first.url !== "string" || !first.url) {
-    throw new Error("Falcon manifest is missing weights.files[0].url");
+  const files = Array.isArray(weights?.files) ? weights.files : [];
+  const modelWeights =
+    files.find(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        ((typeof entry.path === "string" && entry.path.endsWith("model.safetensors")) ||
+          (typeof entry.url === "string" && entry.url.endsWith("model.safetensors"))),
+    ) ?? null;
+  const resolvedEntry = modelWeights ?? (files.length === 1 ? files[0] : null);
+  if (!resolvedEntry || typeof resolvedEntry.url !== "string" || !resolvedEntry.url) {
+    throw new Error("Falcon manifest is missing weights model.safetensors url");
   }
   const baseUrl =
-    typeof weights?.base_url === "string" && weights.base_url ? weights.base_url : manifestUrl;
-  return resolveArtifactUrl(baseUrl, first.url);
+    typeof weights?.base_url === "string" && weights.base_url
+      ? resolveArtifactUrl(manifestUrl, weights.base_url)
+      : manifestUrl;
+  return resolveArtifactUrl(normalizeDirectoryUrl(baseUrl), resolvedEntry.url);
 }
 
 export async function imageToRgbPatchAligned(blob, patchSize = DEFAULT_PATCH_SIZE) {

@@ -305,34 +305,13 @@ def test_falcon_browser_driver_init_and_ocr_tokens_roundtrip(tmp_path: Path) -> 
     runtime_wasm = tmp_path / "molt_runtime.wasm"
     weights_bin = tmp_path / "weights.bin"
     weights_bin.write_bytes(b"weights")
+    weights_config = tmp_path / "weights-config.json"
+    weights_config.write_text('{"ignored":true}\n', encoding="utf-8")
     config_json = tmp_path / "config.json"
     config_json.write_text('{"dim":2}\n', encoding="utf-8")
     tokenizer_json = tmp_path / "tokenizer.json"
     tokenizer_json.write_text('{"model":{"vocab":{}}}\n', encoding="utf-8")
     manifest_json = tmp_path / "driver-manifest.base.json"
-    manifest_json.write_text(
-        json.dumps(
-            {
-                "target": "falcon.browser_webgpu",
-                "artifacts": {
-                    "app_wasm": {"url": "/output.wasm"},
-                    "runtime_wasm": {"url": "/molt_runtime.wasm"},
-                    "config_json": {"url": "/config.json"},
-                    "tokenizer_json": {"url": "/tokenizer.json"},
-                },
-                "weights": {
-                    "base_url": None,
-                    "files": [{"path": "weights.bin", "url": "/weights.bin"}],
-                },
-                "exports": {
-                    "init": "main_molt__init",
-                    "ocrTokens": "main_molt__ocr_tokens",
-                },
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
 
     class _ArtifactHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: object) -> None:
@@ -342,7 +321,8 @@ def test_falcon_browser_driver_init_and_ocr_tokens_roundtrip(tmp_path: Path) -> 
             mapping = {
                 "/output.wasm": output_wasm,
                 "/molt_runtime.wasm": runtime_wasm,
-                "/weights.bin": weights_bin,
+                "/weights/falcon-ocr/test-hash/config.json": weights_config,
+                "/weights/falcon-ocr/test-hash/model.safetensors": weights_bin,
                 "/config.json": config_json,
                 "/tokenizer.json": tokenizer_json,
                 "/driver-manifest.base.json": manifest_json,
@@ -367,6 +347,32 @@ def test_falcon_browser_driver_init_and_ocr_tokens_roundtrip(tmp_path: Path) -> 
     thread.start()
     try:
         base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        manifest_json.write_text(
+            json.dumps(
+                {
+                    "target": "falcon.browser_webgpu",
+                    "artifacts": {
+                        "app_wasm": {"url": "/output.wasm"},
+                        "runtime_wasm": {"url": "/molt_runtime.wasm"},
+                        "config_json": {"url": "/config.json"},
+                        "tokenizer_json": {"url": "/tokenizer.json"},
+                    },
+                    "weights": {
+                        "base_url": f"{base_url}/weights/falcon-ocr/test-hash",
+                        "files": [
+                            {"path": "config.json", "url": "config.json"},
+                            {"path": "model.safetensors", "url": "model.safetensors"},
+                        ],
+                    },
+                    "exports": {
+                        "init": "main_molt__init",
+                        "ocrTokens": "main_molt__ocr_tokens",
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         script = tmp_path / "driver_roundtrip.mjs"
         script.write_text(
             f"""
