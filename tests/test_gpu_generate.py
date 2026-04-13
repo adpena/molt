@@ -18,6 +18,7 @@ def _native_molt_env(root: Path) -> dict[str, str]:
     env["UV_CACHE_DIR"] = str(root / ".uv-cache")
     env["TMPDIR"] = str(root / "tmp")
     env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
+    env["MOLT_BACKEND_DAEMON"] = "0"
     return env
 
 
@@ -270,4 +271,150 @@ def test_speculative_decode_greedy_compiles_in_native_molt(tmp_path: Path) -> No
         "[0, 1, 2, 3, 4, 5]",
         "[1, 2, 3, 4, 5]",
         "4 2",
+    ]
+
+
+def test_conditioned_speculative_decode_propagates_target_conditioning():
+    from molt.gpu.dflash import (
+        SpeculativeConditioning,
+        SpeculativeDraftRequest,
+        SpeculativeDraftResult,
+        SpeculativeVerifyRequest,
+        SpeculativeVerifyResult,
+    )
+    from molt.gpu.generate import (
+        speculative_decode_greedy_conditioned,
+    )
+
+    draft_seen = []
+    verify_seen = []
+
+    def draft_step(request):
+        assert isinstance(request, SpeculativeDraftRequest)
+        draft_seen.append(
+            (
+                list(request.prefix_tokens),
+                request.max_block_size,
+                request.step_index,
+                request.conditioning.target_features,
+                request.conditioning.target_kv,
+            )
+        )
+        if request.step_index == 0:
+            return SpeculativeDraftResult([1, 2])
+        return SpeculativeDraftResult([4])
+
+    def verify_step(request):
+        assert isinstance(request, SpeculativeVerifyRequest)
+        verify_seen.append(
+            (
+                list(request.prefix_tokens),
+                list(request.draft_tokens),
+                request.conditioning.target_features,
+                request.conditioning.target_kv,
+            )
+        )
+        if request.prefix_tokens == [0]:
+            return SpeculativeVerifyResult(
+                [1, 2, 3],
+                conditioning=SpeculativeConditioning(
+                    target_features="verify-1",
+                    target_kv="kv-1",
+                ),
+            )
+        return SpeculativeVerifyResult(
+            [4, 5],
+            conditioning=SpeculativeConditioning(
+                target_features="verify-2",
+                target_kv="kv-2",
+            ),
+        )
+
+    result = speculative_decode_greedy_conditioned(
+        verify_step,
+        draft_step,
+        [0],
+        initial_conditioning=SpeculativeConditioning(
+            target_features="prefill",
+            target_kv="prefill-kv",
+        ),
+        max_new_tokens=4,
+        block_size=2,
+    )
+
+    assert result.tokens == [0, 1, 2, 3, 4]
+    assert draft_seen == [
+        ([0], 2, 0, "prefill", "prefill-kv"),
+        ([0, 1, 2, 3], 1, 1, "verify-1", "kv-1"),
+    ]
+    assert verify_seen == [
+        ([0], [1, 2], "prefill", "prefill-kv"),
+        ([0, 1, 2, 3], [4], "verify-1", "kv-1"),
+    ]
+
+
+def test_conditioned_speculative_decode_compiles_in_native_molt(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "gpu_speculative_conditioned_native.py"
+    probe.write_text(
+        "from molt.gpu.dflash import (\n"
+        "    SpeculativeConditioning,\n"
+        "    SpeculativeDraftResult,\n"
+        "    SpeculativeVerifyResult,\n"
+        ")\n"
+        "from molt.gpu.generate import (\n"
+        "    speculative_decode_greedy_conditioned,\n"
+        ")\n"
+        "\n"
+        "def draft_step(request):\n"
+        "    if request.step_index == 0:\n"
+        "        return SpeculativeDraftResult([1, 2])\n"
+        "    return SpeculativeDraftResult([4])\n"
+        "\n"
+        "def verify_step(request):\n"
+        "    if request.prefix_tokens == [0]:\n"
+        "        return SpeculativeVerifyResult(\n"
+        "            [1, 2, 3],\n"
+        "            conditioning=SpeculativeConditioning(target_features=10, target_kv=20),\n"
+        "        )\n"
+        "    return SpeculativeVerifyResult(\n"
+        "        [4, 5],\n"
+        "        conditioning=SpeculativeConditioning(target_features=30, target_kv=40),\n"
+        "    )\n"
+        "\n"
+        "result = speculative_decode_greedy_conditioned(\n"
+        "    verify_step,\n"
+        "    draft_step,\n"
+        "    [0],\n"
+        "    initial_conditioning=SpeculativeConditioning(target_features=1, target_kv=2),\n"
+        "    max_new_tokens=4,\n"
+        "    block_size=2,\n"
+        ")\n"
+        "print(result.tokens)\n"
+        "print(result.generated_tokens)\n",
+        encoding="utf-8",
+    )
+
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=_native_molt_env(root),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "[0, 1, 2, 3, 4]",
+        "[1, 2, 3, 4]",
     ]
