@@ -1,5 +1,15 @@
 # Claude Code Instructions
 
+## Top Priority: Tinygrad + DFlash Fidelity
+
+This is a turn-blocking policy.
+
+- Exact tinygrad semantics and API shape are the public ML contract. No drift is acceptable.
+- Exact DFlash algorithmic fidelity is non-negotiable when implementing DFlash support. Do not ship generic speculative decoding under a DFlash label.
+- `molt.gpu` and `molt.gpu.dflash` are implementation layers, not excuses to diverge from tinygrad or the DFlash paper/project.
+- If the official DFlash design requires target-conditioned draft behavior, verifier/drafter separation, hidden-feature conditioning, KV injection, or a trained drafter, preserve those requirements. If a model lacks a real trained DFlash drafter, say so explicitly and do not fake support.
+- If you detect existing drift from tinygrad or DFlash source-of-truth behavior, clean that drift up before adding more code.
+
 ## ABSOLUTE NON-NEGOTIABLE: Zero Workarounds Policy
 
 This is an early alpha project. We are the sole users and developers. There is ZERO tolerance for:

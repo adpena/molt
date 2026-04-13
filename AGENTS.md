@@ -1,5 +1,12 @@
 # Repository Guidelines
 
+## Top Priority: Tinygrad + DFlash Fidelity (Non-Negotiable, Turn Blocker)
+- Exact tinygrad semantics and API shape are the public ML contract. No drift is acceptable.
+- Exact DFlash algorithmic fidelity is non-negotiable when implementing DFlash support. Do not substitute generic speculative decoding and call it DFlash.
+- `molt.gpu` and `molt.gpu.dflash` may provide the implementation substrate, but user-facing tensor/model behavior must stay 1:1 with tinygrad where tinygrad is the source of truth.
+- DFlash implementations must remain faithful to the paper and official project requirements, including target-conditioned draft behavior, verifier/drafter separation, and any required conditioning/KV contracts. If a required trained drafter does not exist for a model, raise that limitation explicitly rather than faking support.
+- If current code drifts from tinygrad or DFlash source-of-truth behavior, stop and clean up the drift before adding more surface area.
+
 ## ABSOLUTE NON-NEGOTIABLE: Zero Workarounds Policy (Turn Blocker)
 - This is an early alpha project. We are the sole users and developers.
 - ZERO tolerance for workarounds, hacky fixes, partial fixes, TODO-as-excuse, "simpler fix" that avoids the real problem, technical debt, code smell, silent failures, or divergences.
