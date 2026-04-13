@@ -120,6 +120,29 @@ def _strides(shape):
     return tuple(strides)
 
 
+def _normalize_tensor_index(shape, idx):
+    if not isinstance(idx, tuple):
+        idx = (idx,)
+    if idx.count(Ellipsis) > 1:
+        raise IndexError("an index can only have a single ellipsis")
+    result = []
+    expanded = False
+    for item in idx:
+        if item is Ellipsis:
+            remaining = len(shape) - (len(idx) - 1)
+            if remaining < 0:
+                raise IndexError("too many indices for tensor")
+            result.extend(slice(None) for _ in range(remaining))
+            expanded = True
+        else:
+            result.append(item)
+    if not expanded and len(result) < len(shape):
+        result.extend(slice(None) for _ in range(len(shape) - len(result)))
+    if len(result) > len(shape):
+        raise IndexError("too many indices for tensor")
+    return tuple(result)
+
+
 def _preferred_float_format(*tensors: "Tensor") -> str:
     formats = []
     for tensor in tensors:
@@ -1907,9 +1930,11 @@ class Tensor:
         return self._shape[0]
 
     def __getitem__(self, idx):
-        """Basic indexing: t[i] returns a sub-tensor along the first axis."""
+        """tinygrad-style indexing subset: ints, slices, tuples, ellipsis, axis-0 tensor gather."""
         if not self._shape:
             raise IndexError("Cannot index a 0-d tensor")
+        if isinstance(idx, Tensor):
+            return tensor_take_rows(self, idx)
         if isinstance(idx, int):
             if idx < 0:
                 idx += self._shape[0]
@@ -1925,6 +1950,63 @@ class Tensor:
                 shape=sub_shape,
                 dtype=self._dtype,
             )
+        if isinstance(idx, slice):
+            start, stop, step = idx.indices(self._shape[0])
+            indices = list(range(start, stop, step))
+            if not indices:
+                return Tensor([], shape=(0,) + self._shape[1:], dtype=self._dtype)
+            if step == 1:
+                sub_shape = (len(indices),) + self._shape[1:]
+                sub_size = _product(self._shape[1:]) if len(self._shape) > 1 else 1
+                start_elem = start * sub_size
+                elem_count = len(indices) * sub_size
+                return Tensor(
+                    self._copy_contiguous_buffer(start_elem, elem_count),
+                    shape=sub_shape,
+                    dtype=self._dtype,
+                )
+            return tensor_take_rows(self, indices, allow_negative=False)
+        if isinstance(idx, tuple):
+            normalized = _normalize_tensor_index(self._shape, idx)
+            data = self._data_list()
+            strides = _strides(self._shape)
+            axis_indices = []
+            out_shape = []
+            scalar = True
+            for axis, selector in enumerate(normalized):
+                size = self._shape[axis]
+                if isinstance(selector, int):
+                    sel = selector + size if selector < 0 else selector
+                    if sel < 0 or sel >= size:
+                        raise IndexError(
+                            f"Index {selector} out of range for axis {axis} with size {size}"
+                        )
+                    axis_indices.append([sel])
+                elif isinstance(selector, slice):
+                    scalar = False
+                    vals = list(range(*selector.indices(size)))
+                    axis_indices.append(vals)
+                    out_shape.append(len(vals))
+                else:
+                    raise TypeError(f"Tensor indexing with {type(selector)} not supported")
+
+            if any(len(vals) == 0 for vals in axis_indices):
+                return Tensor([], shape=tuple(out_shape), dtype=self._dtype)
+
+            out = []
+
+            def _walk(axis, offset):
+                if axis == len(axis_indices):
+                    out.append(data[offset])
+                    return
+                stride = strides[axis]
+                for coord in axis_indices[axis]:
+                    _walk(axis + 1, offset + coord * stride)
+
+            _walk(0, 0)
+            if scalar:
+                return Tensor(out[0], dtype=self._dtype)
+            return self._from_flat(out, tuple(out_shape))
         raise TypeError(f"Tensor indexing with {type(idx)} not supported")
 
 
