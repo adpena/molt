@@ -70,8 +70,30 @@ def resolve_dflash_adapter(context, preferred_name: str | None = None):
     return adapter if bool(adapter.supports(context)) else None
 
 
+def resolve_default_dflash_adapter(context):
+    if not has_dflash_backend(context.backend):
+        return None
+    candidates = []
+    for name in list_dflash_adapters():
+        adapter = get_dflash_adapter(name)
+        if adapter is not None and bool(adapter.supports(context)):
+            candidates.append(adapter)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda adapter: (-adapter.priority, adapter.name))
+    top = candidates[0]
+    tied = [adapter for adapter in candidates if adapter.priority == top.priority]
+    if len(tied) > 1:
+        names = ", ".join(adapter.name for adapter in tied)
+        raise ValueError(f"multiple dflash adapters match with the same priority: {names}")
+    return top
+
+
 def resolve_dflash_runtime(context, preferred_name: str | None = None):
-    adapter = resolve_dflash_adapter(context, preferred_name=preferred_name)
+    if preferred_name is None:
+        adapter = resolve_default_dflash_adapter(context)
+    else:
+        adapter = resolve_dflash_adapter(context, preferred_name=preferred_name)
     if adapter is None:
         return None
     runtime = adapter.create_runtime(context)
