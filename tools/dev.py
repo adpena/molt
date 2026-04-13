@@ -58,6 +58,57 @@ def _run_with_pty(cmd: list[str], env: dict[str, str]) -> None:
         raise subprocess.CalledProcessError(rc, cmd)
 
 
+def _uv_project_env_dir() -> Path:
+    return ROOT / ".venv"
+
+
+def _uv_project_python() -> Path:
+    if os.name == "nt":
+        return _uv_project_env_dir() / "Scripts" / "python.exe"
+    return _uv_project_env_dir() / "bin" / "python3"
+
+
+def _uv_project_env_matches_python(requested: str | None) -> bool:
+    project_python = _uv_project_python()
+    if not project_python.exists():
+        return False
+    if not requested:
+        return True
+    try:
+        proc = subprocess.run(
+            [
+                str(project_python),
+                "-c",
+                (
+                    "import sys; "
+                    "print(f'{sys.version_info[0]}.{sys.version_info[1]}')"
+                ),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return proc.stdout.strip() == requested
+
+
+def _normalized_uv_run_env(
+    env: dict[str, str],
+    *,
+    python: str | None,
+) -> dict[str, str]:
+    run_env = env.copy()
+    run_env.setdefault("PYTHONUNBUFFERED", "1")
+    run_env["UV_PROJECT_ENVIRONMENT"] = str(_uv_project_env_dir())
+    for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
+        run_env.pop(name, None)
+    if run_env.get("UV_NO_SYNC") == "1" and not _uv_project_env_matches_python(python):
+        run_env.pop("UV_NO_SYNC", None)
+    return run_env
+
+
 def run_uv(
     args: list[str],
     python: str | None = None,
@@ -80,8 +131,7 @@ def run_uv(
                     "or remove 3.14 from the test matrix."
                 )
     cmd.extend(args)
-    run_env = (env or os.environ).copy()
-    run_env.setdefault("PYTHONUNBUFFERED", "1")
+    run_env = _normalized_uv_run_env(env or os.environ, python=python)
     if tty and os.name == "posix":
         _run_with_pty(cmd, run_env)
     else:
