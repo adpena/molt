@@ -576,21 +576,21 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
       return null;
     }
     if (
-      typeof exports.molt_object_repr === 'function' &&
+      typeof exports.molt_traceback_format_exc === 'function' &&
       typeof exports.molt_dec_ref_obj === 'function'
     ) {
-      const reprBits = exports.molt_object_repr(excBits);
-      if (reprBits && reprBits !== 0n) {
+      const tbBits = exports.molt_traceback_format_exc(0n);
+      if (tbBits && tbBits !== 0n) {
         try {
-          const repr = readRuntimeStringBits(instance, reprBits);
-          if (repr) {
-            if (repr === 'None') {
-              return null;
+          const formatted = readRuntimeStringBits(instance, tbBits);
+          if (formatted) {
+            const trimmed = formatted.trimEnd();
+            if (trimmed && trimmed !== 'NoneType: None') {
+              return `Unhandled Molt exception:\n${trimmed}`;
             }
-            return `Unhandled Molt exception: ${repr}`;
           }
         } finally {
-          exports.molt_dec_ref_obj(reprBits);
+          exports.molt_dec_ref_obj(tbBits);
         }
       }
     }
@@ -623,21 +623,21 @@ const pendingRuntimeExceptionMessage = (instance = runtimeInstance) => {
       }
     }
     if (
-      typeof exports.molt_traceback_format_exc === 'function' &&
+      typeof exports.molt_object_repr === 'function' &&
       typeof exports.molt_dec_ref_obj === 'function'
     ) {
-      const tbBits = exports.molt_traceback_format_exc(0n);
-      if (tbBits && tbBits !== 0n) {
+      const reprBits = exports.molt_object_repr(excBits);
+      if (reprBits && reprBits !== 0n) {
         try {
-          const formatted = readRuntimeStringBits(instance, tbBits);
-          if (formatted) {
-            const trimmed = formatted.trimEnd();
-            if (trimmed && trimmed !== 'NoneType: None') {
-              return `Unhandled Molt exception:\n${trimmed}`;
+          const repr = readRuntimeStringBits(instance, reprBits);
+          if (repr) {
+            if (repr === 'None') {
+              return null;
             }
+            return `Unhandled Molt exception: ${repr}`;
           }
         } finally {
-          exports.molt_dec_ref_obj(tbBits);
+          exports.molt_dec_ref_obj(reprBits);
         }
       }
     }

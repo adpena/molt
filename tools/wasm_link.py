@@ -2100,6 +2100,7 @@ def _tree_shake_runtime(
             "molt_exception_last",
             "molt_exception_kind",
             "molt_exception_message",
+            "molt_traceback_format_exc",
             "molt_object_repr",
             "molt_dec_ref_obj",
         }
