@@ -697,6 +697,9 @@ This section standardizes parallel agent work on Molt.
 - Use `molt validate --suite smoke` for fast local proof and `molt validate`
   for the heavier full matrix, plus any targeted `cargo` checks required by the
   touched lane.
+- `tools/dev.py test --random-order --random-seed <seed>` is an opt-in DX lane
+  for flushing out order dependence. Keep the canonical proof/CI sweeps
+  deterministic.
 - Do not merge if tests are failing unless explicitly approved.
 
 ### Merge discipline
