@@ -767,6 +767,38 @@ def test_tinygrad_tensor_cat_nonzero_dim_compiles_in_native_molt(tmp_path: Path)
     assert run.stdout.strip() == "[[1.0, 2.0, 5.0], [3.0, 4.0, 6.0]]"
 
 
+def test_tinygrad_tensor_stack_nonzero_dim_compiles_in_native_molt(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "tinygrad_stack_nonzero_dim_probe.py"
+    probe.write_text(
+        "from tinygrad import Tensor\n"
+        "x = Tensor([[1.0, 2.0], [3.0, 4.0]])\n"
+        "y = Tensor([[5.0, 6.0], [7.0, 8.0]])\n"
+        "print(Tensor.stack(x, y, dim=-1).to_list())\n",
+        encoding="utf-8",
+    )
+    env = _native_molt_env(root, hermetic=True)
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "[[[1.0, 5.0], [2.0, 6.0]], [[3.0, 7.0], [4.0, 8.0]]]"
+
+
 def test_tinygrad_tensor_randn_and_linear_compile_in_native_molt(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     probe = tmp_path / "tinygrad_randn_linear_native.py"
