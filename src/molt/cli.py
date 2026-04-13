@@ -7504,19 +7504,28 @@ def _runtime_fingerprint(
 def _runtime_cargo_features_cached(
     target_triple: str | None,
     raw: str | None,
+    gpu_metal_raw: str | None,
+    gpu_webgpu_raw: str | None,
 ) -> tuple[str, ...]:
     if target_triple is not None and target_triple.startswith("wasm32"):
         return ()
+    features: list[str] = []
     enabled = True if raw is None or raw.strip() == "" else _coerce_bool(raw, True)
-    if not enabled:
-        return ()
-    return ("molt_tk_native",)
+    if enabled:
+        features.append("molt_tk_native")
+    if _coerce_bool(gpu_metal_raw, False):
+        features.append("molt_gpu_metal")
+    if _coerce_bool(gpu_webgpu_raw, False):
+        features.append("molt_gpu_webgpu")
+    return tuple(features)
 
 
 def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
     return _runtime_cargo_features_cached(
         target_triple,
         os.environ.get("MOLT_RUNTIME_TK_NATIVE"),
+        os.environ.get("MOLT_RUNTIME_GPU_METAL"),
+        os.environ.get("MOLT_RUNTIME_GPU_WEBGPU"),
     )
 
 
@@ -16121,6 +16130,7 @@ def _build_native_link_command(
             if suppress_linker_warnings:
                 link_cmd.append("-Wl,-w")
             link_cmd.append("-lc++")
+            _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
         elif "linux" in target_triple:
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
             link_cmd.append("-Wl,--gc-sections")
@@ -16145,6 +16155,7 @@ def _build_native_link_command(
             if suppress_linker_warnings:
                 link_cmd.append("-Wl,-w")
             link_cmd.append("-lc++")
+            _append_darwin_runtime_frameworks(link_cmd, target_triple=None)
         elif sys.platform.startswith("linux"):
             link_cmd.extend(["-fdata-sections", "-ffunction-sections"])
             link_cmd.append("-Wl,--gc-sections")
@@ -22650,7 +22661,7 @@ def _ensure_runtime_lib(
         # file that contributes to the fingerprint, skip the expensive cargo
         # build and just update the stored fingerprint.  This handles the
         # common case of running `cargo build` manually before `molt build`.
-        if _artifact_newer_than_sources(
+        if stored_fingerprint is None and _artifact_newer_than_sources(
             runtime_lib, _runtime_source_paths(project_root)
         ):
             _write_runtime_fingerprint(fingerprint_path, fingerprint)
