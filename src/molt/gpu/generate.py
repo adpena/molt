@@ -6,15 +6,21 @@ temperature-controlled generation, and lossless block-speculative decoding.
 """
 
 import math
+import os
 import random
 from .tensor import Tensor
 from .dflash import (
+    DFlashRuntime,
     SpeculativeConditioning,
     SpeculativeDraftRequest,
     SpeculativeDraftResult,
     SpeculativeVerifyRequest,
     SpeculativeVerifyResult,
+    resolve_dflash_adapter,
 )
+
+
+_DFLASH_DEFAULT_ADAPTER_NAME = None
 
 
 class SpeculativeDecodeResult:
@@ -55,6 +61,43 @@ def _normalize_token_sequence(values, source_name):
             raise TypeError(f"{source_name} must return integer token ids")
         out.append(token)
     return out
+
+
+def _requested_gpu_backend() -> str | None:
+    backend = os.environ.get("MOLT_GPU_BACKEND")
+    if backend is None:
+        return None
+    backend = backend.strip().lower()
+    return backend or None
+
+
+def _resolve_default_dflash_runtime(
+    model,
+    prompt_tokens,
+    *,
+    max_new_tokens: int,
+    block_size: int,
+    eos_token_id,
+):
+    backend = _requested_gpu_backend()
+    adapter = resolve_dflash_adapter(
+        model,
+        backend,
+        preferred_name=_DFLASH_DEFAULT_ADAPTER_NAME,
+    )
+    if adapter is None:
+        return None
+    runtime = adapter.create_runtime(
+        model,
+        list(prompt_tokens),
+        eos_token_id=eos_token_id,
+        max_new_tokens=max_new_tokens,
+        block_size=block_size,
+        backend=backend,
+    )
+    if not isinstance(runtime, DFlashRuntime):
+        raise TypeError("dflash adapter create_runtime() must return DFlashRuntime")
+    return runtime
 
 
 def speculative_decode_greedy(
@@ -280,6 +323,7 @@ def greedy_decode(
     draft_block=None,
     verify_block=None,
     block_size=16,
+    prefer_dflash: bool = True,
 ):
     """Generate text by always picking the highest-probability token."""
     if draft_block is not None or verify_block is not None:
@@ -296,6 +340,26 @@ def greedy_decode(
             eos_token_id=eos_token_id,
         )
         return speculative.tokens
+
+    if prefer_dflash:
+        runtime = _resolve_default_dflash_runtime(
+            model,
+            prompt_tokens,
+            max_new_tokens=max_new_tokens,
+            block_size=block_size,
+            eos_token_id=eos_token_id,
+        )
+        if runtime is not None:
+            speculative = speculative_decode_greedy_conditioned(
+                runtime.verify_step,
+                runtime.draft_step,
+                prompt_tokens,
+                initial_conditioning=runtime.initial_conditioning,
+                max_new_tokens=max_new_tokens,
+                block_size=runtime.block_size or block_size,
+                eos_token_id=eos_token_id,
+            )
+            return speculative.tokens
 
     tokens = list(prompt_tokens)
     for _ in range(max_new_tokens):
