@@ -3139,13 +3139,9 @@ impl SimpleBackend {
                 let _ = std::fs::write("tmp/rewritten_func_ir.txt", dump);
             }
         }
-<<<<<<< HEAD
-        externalize_shared_stdlib_partition(&mut ir);
-=======
         if !self.skip_shared_stdlib_partition {
             externalize_shared_stdlib_partition(&mut ir);
         }
->>>>>>> 57fdd805 (native: keep module chunks defined across stdlib batches)
         if timing {
             let passes_elapsed = compile_start.elapsed();
             eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");
