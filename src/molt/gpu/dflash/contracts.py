@@ -94,6 +94,7 @@ class DFlashSelectionContext:
         eos_token_id,
         max_new_tokens: int,
         block_size: int,
+        adapter_payload=None,
     ) -> None:
         self.model = model
         self.backend = backend
@@ -101,3 +102,4 @@ class DFlashSelectionContext:
         self.eos_token_id = eos_token_id
         self.max_new_tokens = max_new_tokens
         self.block_size = block_size
+        self.adapter_payload = adapter_payload
