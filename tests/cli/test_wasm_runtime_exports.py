@@ -23,6 +23,19 @@ def test_wasm_runtime_export_link_args_adds_stdlib_intrinsics() -> None:
     assert " -C link-arg=--export-if-defined=molt_ssl_context_new" in flags
 
 
+def test_wasm_runtime_export_link_args_adds_runtime_owned_gpu_intrinsics() -> None:
+    flags = wasm_runtime_export_link_args(resolved_modules={"molt.gpu.tensor"})
+    assert " -C link-arg=--export-if-defined=molt_gpu_linear_contiguous" in flags
+    assert (
+        " -C link-arg=--export-if-defined="
+        "molt_gpu_linear_split_last_dim_contiguous" in flags
+    )
+    assert (
+        " -C link-arg=--export-if-defined="
+        "molt_gpu_tensor__tensor_scaled_dot_product_attention" in flags
+    )
+
+
 def test_wasm_runtime_export_link_args_adds_required_runtime_imports() -> None:
     flags = wasm_runtime_export_link_args({"ssl_cert_none", "ssl_context_new"})
     assert " -C link-arg=--export-if-defined=molt_ssl_cert_none" in flags
