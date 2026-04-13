@@ -192,6 +192,8 @@ def _parse_lean_inductive_variants(text: str, type_name: str) -> list[str]:
             break
         for vm in re.finditer(r"\|\s*\.?(\w+)", stripped):
             name = vm.group(1)
+            if name.endswith("_"):
+                name = name[:-1]
             if name not in variants:
                 variants.append(name)
     return variants

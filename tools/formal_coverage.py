@@ -145,6 +145,7 @@ def parse_lean_binops() -> set[str]:
             ):
                 break
             matches = re.findall(r"\|\s+(\w+)", line)
+            matches = [name[:-1] if name.endswith("_") else name for name in matches]
             ops.update(matches)
     return ops
 
@@ -167,6 +168,7 @@ def parse_lean_unops() -> set[str]:
             ):
                 break
             matches = re.findall(r"\|\s+(\w+)", line)
+            matches = [name[:-1] if name.endswith("_") else name for name in matches]
             ops.update(matches)
     return ops
 
