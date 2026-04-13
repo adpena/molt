@@ -80,3 +80,24 @@ class DFlashRuntime:
         self.verify_step = verify_step
         self.initial_conditioning = initial_conditioning
         self.block_size = block_size
+
+
+class DFlashSelectionContext:
+    """Selection-time context for choosing and instantiating an adapter."""
+
+    def __init__(
+        self,
+        *,
+        model,
+        backend: str | None,
+        prompt_tokens,
+        eos_token_id,
+        max_new_tokens: int,
+        block_size: int,
+    ) -> None:
+        self.model = model
+        self.backend = backend
+        self.prompt_tokens = list(prompt_tokens)
+        self.eos_token_id = eos_token_id
+        self.max_new_tokens = max_new_tokens
+        self.block_size = block_size

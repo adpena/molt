@@ -2,13 +2,15 @@
 
 from .adapters import (
     get_dflash_adapter,
-    is_supported_dflash_backend,
+    has_dflash_backend,
     list_dflash_adapters,
     register_dflash_adapter,
     resolve_dflash_adapter,
+    resolve_dflash_runtime,
 )
 from .contracts import (
     DFlashRuntime,
+    DFlashSelectionContext,
     SpeculativeConditioning,
     SpeculativeDraftRequest,
     SpeculativeDraftResult,
@@ -19,6 +21,7 @@ from .contracts import (
 __all__ = [
     "SpeculativeConditioning",
     "DFlashRuntime",
+    "DFlashSelectionContext",
     "SpeculativeDraftRequest",
     "SpeculativeDraftResult",
     "SpeculativeVerifyRequest",
@@ -26,6 +29,7 @@ __all__ = [
     "register_dflash_adapter",
     "get_dflash_adapter",
     "resolve_dflash_adapter",
-    "is_supported_dflash_backend",
+    "resolve_dflash_runtime",
+    "has_dflash_backend",
     "list_dflash_adapters",
 ]

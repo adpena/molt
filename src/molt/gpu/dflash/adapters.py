@@ -1,4 +1,4 @@
-"""Registry for DFlash-compatible draft adapters.
+"""Registry and resolver for DFlash-compatible draft adapters.
 
 Adapters are intentionally model-specific and may come from external sources
 over time. Molt core only keeps a lightweight registry boundary here.
@@ -6,9 +6,10 @@ over time. Molt core only keeps a lightweight registry boundary here.
 
 from __future__ import annotations
 
+from .contracts import DFlashRuntime
+
 
 _DFLASH_ADAPTERS = {}
-_SUPPORTED_GPU_BACKENDS = {"webgpu", "metal", "cuda", "hip", "amd"}
 
 
 def register_dflash_adapter(name: str, adapter) -> None:
@@ -25,24 +26,25 @@ def list_dflash_adapters():
     return sorted(_DFLASH_ADAPTERS)
 
 
-def is_supported_dflash_backend(backend: str | None) -> bool:
+def has_dflash_backend(backend: str | None) -> bool:
     if backend is None:
         return False
-    return backend.strip().lower() in _SUPPORTED_GPU_BACKENDS
+    return backend.strip() != ""
 
 
-def resolve_dflash_adapter(model, backend: str | None, preferred_name: str | None = None):
-    if not is_supported_dflash_backend(backend):
+def resolve_dflash_adapter(context, preferred_name: str | None = None):
+    backend = context.backend
+    if not has_dflash_backend(backend):
         return None
     resolved_backend = backend.strip().lower()
 
     def _adapter_matches(adapter) -> bool:
-        supported = getattr(adapter, "supported_backends", None)
-        if supported is not None and resolved_backend not in supported:
-            return False
+        supports = getattr(adapter, "supports", None)
+        if callable(supports):
+            return bool(supports(context))
         matcher = getattr(adapter, "matches", None)
         if callable(matcher):
-            return bool(matcher(model, resolved_backend))
+            return bool(matcher(context.model, resolved_backend))
         return True
 
     if preferred_name is not None:
@@ -50,9 +52,23 @@ def resolve_dflash_adapter(model, backend: str | None, preferred_name: str | Non
         if adapter is None:
             return None
         return adapter if _adapter_matches(adapter) else None
-
-    for name in list_dflash_adapters():
-        adapter = get_dflash_adapter(name)
-        if adapter is not None and _adapter_matches(adapter):
-            return adapter
     return None
+
+
+def resolve_dflash_runtime(context, preferred_name: str | None = None):
+    adapter = resolve_dflash_adapter(context, preferred_name=preferred_name)
+    if adapter is None:
+        return None
+    if not hasattr(adapter, "create_runtime"):
+        raise TypeError("dflash adapter must define create_runtime()")
+    runtime = adapter.create_runtime(
+        context.model,
+        list(context.prompt_tokens),
+        eos_token_id=context.eos_token_id,
+        max_new_tokens=context.max_new_tokens,
+        block_size=context.block_size,
+        backend=context.backend,
+    )
+    if not isinstance(runtime, DFlashRuntime):
+        raise TypeError("dflash adapter create_runtime() must return DFlashRuntime")
+    return runtime
