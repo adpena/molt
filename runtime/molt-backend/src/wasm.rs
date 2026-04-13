@@ -6503,7 +6503,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "lshift" => {
+                    "lshift" | "shl" => {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
@@ -6569,7 +6569,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "rshift" => {
+                    "rshift" | "shr" => {
                         let args = op.args.as_ref().unwrap();
                         let lhs = locals[&args[0]];
                         let rhs = locals[&args[1]];
