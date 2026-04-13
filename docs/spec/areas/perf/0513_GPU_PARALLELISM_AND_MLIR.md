@@ -4,6 +4,24 @@ Status: **Backlog** (ROADMAP item 16, no milestone assigned)
 Owner: runtime
 Prerequisites: TC2 (type coverage), SL2 (stdlib coverage), TL2 (tooling)
 
+## Public API Contract
+
+The public ML/tensor surface should converge on **tinygrad-compatible API
+shape**, not a parallel Molt-specific tensor dialect.
+
+Rules:
+- user-facing imports should prefer `tinygrad`-compatible names and behavior
+- lower-level `molt_gpu_*` and `tensor__*` wrapper intrinsics are internal
+  lowering machinery, not the compatibility contract
+- composed tensor formulations are the canonical correctness path
+- fused wrapper intrinsics are optional acceleration lanes and must never be
+  the only semantically correct implementation path
+
+Implication:
+- when a high-level wrapper intrinsic diverges from the lower canonical
+  primitive stack, prefer the canonical path and treat the wrapper as an
+  optimization problem, not a semantic dependency
+
 ## Two-Lane Architecture
 
 ### Lane 1: Arrow-first + libcudf Routing (90% Win)
