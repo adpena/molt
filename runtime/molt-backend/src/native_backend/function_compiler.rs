@@ -53,7 +53,7 @@ fn infer_scalar_lane(
     float_like_vars: &BTreeSet<String>,
     str_like_vars: &BTreeSet<String>,
 ) -> Option<ScalarLane> {
-    let shift_op = matches!(op.kind.as_str(), "lshift" | "rshift");
+    let shift_op = matches!(op.kind.as_str(), "lshift" | "rshift" | "shl" | "shr");
     if !shift_op && let Some(type_hint) = op.type_hint.as_deref() {
         match type_hint {
             "bool" => return Some(ScalarLane::Bool),
@@ -146,7 +146,7 @@ fn infer_scalar_lane(
                 None
             }
         }
-        "lshift" | "rshift" => None,
+        "lshift" | "rshift" | "shl" | "shr" => None,
         "neg" | "pos" | "abs" | "builtin_abs" => first_source().and_then(|src| {
             if float_like_vars.contains(src) {
                 Some(ScalarLane::Float)
@@ -877,6 +877,7 @@ fn preanalyze_function_ir(
                 | "is_truthy" | "is" | "not" => bool_like_vars.insert(out.clone()),
                 "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul"
                 | "floordiv" | "mod" | "bit_and" | "bit_or" | "bit_xor" | "lshift" | "rshift"
+                | "shl" | "shr"
                 | "neg" | "abs" | "invert" | "builtin_abs" => {
                     match infer_scalar_lane(
                         op,
@@ -4775,278 +4776,38 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
-                "lshift" => {
+                "lshift" | "shl" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op_prefers_int_lane(&op) {
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_lshift",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let range_block = builder.create_block();
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-
-                        // Guard: verify both operands are inline TAG_INT.
-                        // Heap bigints have type_hint="int" but unbox_int
-                        // on a pointer extracts garbage.
-                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
-                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
-                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
-                        let inline_guard_block = builder.create_block();
-                        builder
-                            .ins()
-                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        switch_to_block_materialized(&mut builder, inline_guard_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
-
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        let max_shift = builder.ins().iconst(types::I64, 64);
-                        let rhs_non_negative =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedGreaterThanOrEqual, rhs_val, zero);
-                        let rhs_lt_limit =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThan, rhs_val, max_shift);
-                        let rhs_in_range = builder.ins().band(rhs_non_negative, rhs_lt_limit);
-                        builder
-                            .ins()
-                            .brif(rhs_in_range, range_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, range_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, range_block);
-                        let shifted = builder.ins().ishl(lhs_val, rhs_val);
-                        let reversed = builder.ins().sshr(shifted, rhs_val);
-                        let no_overflow = builder.ins().icmp(IntCC::Equal, reversed, lhs_val);
-                        let fits_inline = int_value_fits_inline(&mut builder, shifted);
-                        let can_inline = builder.ins().band(no_overflow, fits_inline);
-                        builder
-                            .ins()
-                            .brif(can_inline, fast_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let shifted = builder.ins().ishl(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, shifted, &nbc);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
-
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
-                    } else {
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_lshift",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let int_block = builder.create_block();
-                        let range_block = builder.create_block();
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-
-                        let (lhs_xored, lhs_val) =
-                            fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
-                        let (rhs_xored, rhs_val) =
-                            fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int =
-                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
-                        builder
-                            .ins()
-                            .brif(both_int, int_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, int_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, int_block);
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        let max_shift = builder.ins().iconst(types::I64, 64);
-                        let rhs_non_negative =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedGreaterThanOrEqual, rhs_val, zero);
-                        let rhs_lt_limit =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThan, rhs_val, max_shift);
-                        let rhs_in_range = builder.ins().band(rhs_non_negative, rhs_lt_limit);
-                        builder
-                            .ins()
-                            .brif(rhs_in_range, range_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, range_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, range_block);
-                        let shifted = builder.ins().ishl(lhs_val, rhs_val);
-                        let reversed = builder.ins().sshr(shifted, rhs_val);
-                        let no_overflow = builder.ins().icmp(IntCC::Equal, reversed, lhs_val);
-                        let fits_inline = int_value_fits_inline(&mut builder, shifted);
-                        let can_inline = builder.ins().band(no_overflow, fits_inline);
-                        builder
-                            .ins()
-                            .brif(can_inline, fast_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let shifted = builder.ins().ishl(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, shifted, &nbc);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
-
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
-                    };
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_lshift",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                    let res = builder.inst_results(call)[0];
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
-                "rshift" => {
+                "rshift" | "shr" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
                     let lhs = var_get(&mut builder, &vars, &args[0]).expect("LHS not found");
                     let rhs = var_get(&mut builder, &vars, &args[1]).expect("RHS not found");
-                    let res = if op_prefers_int_lane(&op) {
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_rshift",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-                        // Guard: verify both operands are inline TAG_INT.
-                        // Heap bigints have type_hint="int" but unbox_int
-                        // on a pointer extracts garbage.
-                        let lhs_is_int = is_inline_int_value(&mut builder, *lhs, &nbc);
-                        let rhs_is_int = is_inline_int_value(&mut builder, *rhs, &nbc);
-                        let both_inline = builder.ins().band(lhs_is_int, rhs_is_int);
-                        let inline_guard_block = builder.create_block();
-                        builder
-                            .ins()
-                            .brif(both_inline, inline_guard_block, &[], slow_block, &[]);
-                        switch_to_block_materialized(&mut builder, inline_guard_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, inline_guard_block);
-
-                        let lhs_val = unbox_int(&mut builder, *lhs, &nbc);
-                        let rhs_val = unbox_int(&mut builder, *rhs, &nbc);
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        let max_shift = builder.ins().iconst(types::I64, 64);
-                        let rhs_non_negative =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedGreaterThanOrEqual, rhs_val, zero);
-                        let rhs_lt_limit =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThan, rhs_val, max_shift);
-                        let rhs_in_range = builder.ins().band(rhs_non_negative, rhs_lt_limit);
-                        builder
-                            .ins()
-                            .brif(rhs_in_range, fast_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let shifted = builder.ins().sshr(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, shifted, &nbc);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
-
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
-                    } else {
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_rshift",
-                            &[types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let int_block = builder.create_block();
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        builder.set_cold_block(slow_block);
-                        let merge_block = builder.create_block();
-                        builder.append_block_param(merge_block, types::I64);
-                        let (lhs_xored, lhs_val) =
-                            fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
-                        let (rhs_xored, rhs_val) =
-                            fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int =
-                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
-                        builder
-                            .ins()
-                            .brif(both_int, int_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, int_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, int_block);
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        let max_shift = builder.ins().iconst(types::I64, 64);
-                        let rhs_non_negative =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedGreaterThanOrEqual, rhs_val, zero);
-                        let rhs_lt_limit =
-                            builder
-                                .ins()
-                                .icmp(IntCC::SignedLessThan, rhs_val, max_shift);
-                        let rhs_in_range = builder.ins().band(rhs_non_negative, rhs_lt_limit);
-                        builder
-                            .ins()
-                            .brif(rhs_in_range, fast_block, &[], slow_block, &[]);
-
-                        switch_to_block_materialized(&mut builder, fast_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                        let shifted = builder.ins().sshr(lhs_val, rhs_val);
-                        let fast_res = box_int_value(&mut builder, shifted, &nbc);
-                        jump_block(&mut builder, merge_block, &[fast_res]);
-
-                        switch_to_block_materialized(&mut builder, slow_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
-                        let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
-                        let slow_res = builder.inst_results(call)[0];
-                        jump_block(&mut builder, merge_block, &[slow_res]);
-
-                        switch_to_block_materialized(&mut builder, merge_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, merge_block);
-                        builder.block_params(merge_block)[0]
-                    };
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_rshift",
+                        &[types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
+                    let res = builder.inst_results(call)[0];
                     if let Some(out__) = op.out {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
