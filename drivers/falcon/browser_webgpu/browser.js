@@ -2,6 +2,8 @@ import { loadMoltWasm } from "../../../wasm/browser_host.js";
 
 const DEFAULT_PATCH_SIZE = 16;
 const DEFAULT_MAX_NEW_TOKENS = 512;
+const DEFAULT_IMMUTABLE_CACHE_NAME = "molt-driver-immutable-v1";
+const immutableArrayBufferInflight = new Map();
 
 async function fetchRequiredJson(url) {
   const response = await fetch(url);
@@ -9,6 +11,48 @@ async function fetchRequiredJson(url) {
     throw new Error(`Failed to load manifest: ${response.status}`);
   }
   return response.json();
+}
+
+function cacheStorage() {
+  const candidate = globalThis.caches;
+  if (!candidate || typeof candidate.open !== "function") {
+    return null;
+  }
+  return candidate;
+}
+
+async function fetchImmutableArrayBuffer(url, cacheName = DEFAULT_IMMUTABLE_CACHE_NAME) {
+  const inflight = immutableArrayBufferInflight.get(url);
+  if (inflight) {
+    return inflight;
+  }
+  const task = (async () => {
+    const storage = cacheStorage();
+    if (storage) {
+      const cache = await storage.open(cacheName);
+      const cached = await cache.match(url);
+      if (cached) {
+        return cached.arrayBuffer();
+      }
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to load weights: ${response.status}`);
+      }
+      await cache.put(url, response.clone());
+      return response.arrayBuffer();
+    }
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to load weights: ${response.status}`);
+    }
+    return response.arrayBuffer();
+  })();
+  immutableArrayBufferInflight.set(url, task);
+  try {
+    return await task;
+  } finally {
+    immutableArrayBufferInflight.delete(url);
+  }
 }
 
 function resolveArtifactUrl(baseUrl, relativeOrAbsoluteUrl) {
@@ -126,10 +170,7 @@ export async function initFalconBrowserWebGpu({
       env: { MOLT_GPU_BACKEND: "webgpu" },
       ...browserHostOptions,
     }),
-    fetch(resolvedWeightsUrl).then((r) => {
-      if (!r.ok) throw new Error(`Failed to load weights: ${r.status}`);
-      return r.arrayBuffer();
-    }),
+    fetchImmutableArrayBuffer(resolvedWeightsUrl),
     fetch(resolvedConfigUrl).then((r) => {
       if (!r.ok) throw new Error(`Failed to load config: ${r.status}`);
       return r.text();
