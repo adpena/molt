@@ -1075,6 +1075,14 @@ class Tensor:
         return zeros(*shape)
 
     @staticmethod
+    def rand(*shape, seed=None) -> 'Tensor':
+        return rand(*shape, seed=seed)
+
+    @staticmethod
+    def randn(*shape, seed=None) -> 'Tensor':
+        return randn(*shape, seed=seed)
+
+    @staticmethod
     def arange(start, stop=None, step=1) -> 'Tensor':
         if stop is None:
             start, stop = 0, start
@@ -1288,20 +1296,20 @@ class Tensor:
         if isinstance(other, (int, float)):
             data = self._data_list()
             exp = float(other)
-            return self._from_flat([math.pow(x, exp) for x in data], self._shape)
+            return self._from_flat([x ** exp for x in data], self._shape)
         if isinstance(other, Tensor):
             if self.shape != other.shape:
                 raise ValueError(f"pow shape mismatch: {self.shape} vs {other.shape}")
             a = self._data_list()
             b = other._data_list()
-            return self._from_flat([math.pow(x, y) for x, y in zip(a, b)], self._shape)
+            return self._from_flat([x ** y for x, y in zip(a, b)], self._shape)
         return NotImplemented
 
     def __rpow__(self, other) -> 'Tensor':
         if isinstance(other, (int, float)):
             data = self._data_list()
             base = float(other)
-            return self._from_flat([math.pow(base, x) for x in data], self._shape)
+            return self._from_flat([base ** x for x in data], self._shape)
         return NotImplemented
 
     def __neg__(self) -> 'Tensor':
@@ -2086,23 +2094,25 @@ def randn(*shape, seed=None) -> Tensor:
         shape = tuple(shape[0])
     size = _product(shape)
 
-    # Simple LCG PRNG (no external deps)
+    # Deterministic 31-bit LCG PRNG (no external deps). Keep the state in a
+    # conservative integer domain so compiled native Molt does not depend on
+    # bigint/large-shift behavior during model initialization.
     if seed is None:
         import time as _time
 
         seed = int(_time.time() * 1000) % (2**31)
-    state = seed
+    state = int(seed) & 0x7FFFFFFF
     TWO_PI = 2.0 * math.pi
+    scale = 1.0 / 2147483648.0
 
     result = []
     for i in range(0, size, 2):
-        # LCG step
-        state = (state * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
-        u1 = (state >> 11) / (1 << 53)
+        state = (state * 1103515245 + 12345) & 0x7FFFFFFF
+        u1 = state * scale
         if u1 == 0.0:
             u1 = 1e-10
-        state = (state * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
-        u2 = (state >> 11) / (1 << 53)
+        state = (state * 1103515245 + 12345) & 0x7FFFFFFF
+        u2 = state * scale
 
         z0 = math.sqrt(-2.0 * math.log(u1)) * math.cos(TWO_PI * u2)
         z1 = math.sqrt(-2.0 * math.log(u1)) * math.sin(TWO_PI * u2)
@@ -2123,10 +2133,11 @@ def rand(*shape, seed=None) -> Tensor:
         import time as _time
 
         seed = int(_time.time() * 1000) % (2**31)
-    state = seed
+    state = int(seed) & 0x7FFFFFFF
+    scale = 1.0 / 2147483648.0
     result = []
     for _ in range(size):
-        state = (state * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
-        result.append((state >> 11) / (1 << 53))
+        state = (state * 1103515245 + 12345) & 0x7FFFFFFF
+        result.append(state * scale)
 
     return Tensor(result, shape=shape)
