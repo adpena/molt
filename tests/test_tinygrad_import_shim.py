@@ -271,6 +271,29 @@ def test_tinygrad_nn_initializers_match_upstream_samples() -> None:
     )
 
     Tensor.manual_seed(42)
+    conv = nn.Conv2d(1, 1, 3)
+    assert _flatten_numeric(conv.weight.to_list()) == pytest.approx(
+        [
+            -0.21733888983726501,
+            -0.22886650264263153,
+            0.20126104354858398,
+            0.2851662039756775,
+            -0.2365218847990036,
+            0.19731943309307098,
+            0.005402088165283203,
+            -0.004575650207698345,
+            -0.13713280856609344,
+        ],
+        abs=1e-7,
+        rel=0.0,
+    )
+    assert _flatten_numeric(conv.bias.to_list()) == pytest.approx(
+        [-0.27590489387512207],
+        abs=1e-7,
+        rel=0.0,
+    )
+
+    Tensor.manual_seed(42)
     embedding = nn.Embedding(5, 3)
     assert _flatten_numeric(embedding.weight.to_list()) == pytest.approx(
         [
@@ -440,3 +463,72 @@ def test_tinygrad_tensor_randn_and_linear_compile_in_native_molt(tmp_path: Path)
         "randn_shape (2, 3)",
         "linear_shape (1, 4)",
     ]
+
+
+def test_tinygrad_falcon_main_compiles_in_native_molt(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "tinygrad_falcon_main_native.py"
+    probe.write_text(
+        "import struct\n"
+        "from main import init, ocr_tokens\n"
+        "from tinygrad import Tensor\n"
+        "Tensor.manual_seed(42)\n"
+        "config_json = '''{\\n"
+        '  "dim": 8,\\n'
+        '  "n_layers": 1,\\n'
+        '  "n_heads": 2,\\n'
+        '  "head_dim": 4,\\n'
+        '  "n_kv_heads": 1,\\n'
+        '  "ffn_dim": 16,\\n'
+        '  "vocab_size": 300,\\n'
+        '  "max_seq_len": 32,\\n'
+        '  "rope_theta": 10000.0,\\n'
+        '  "norm_eps": 1e-5,\\n'
+        '  "channel_size": 3,\\n'
+        '  "spatial_patch_size": 16,\\n'
+        '  "temporal_patch_size": 1,\\n'
+        '  "eos_id": 11,\\n'
+        '  "img_id": 227,\\n'
+        '  "img_row_sep_id": 228,\\n'
+        '  "img_start_id": 229,\\n'
+        '  "img_end_id": 230,\\n'
+        '  "coord_token_id": 240,\\n'
+        '  "size_token_id": 241,\\n'
+        '  "image_cls_token_id": 244,\\n'
+        '  "image_reg_1_token_id": 245,\\n'
+        '  "image_reg_2_token_id": 246,\\n'
+        '  "image_reg_3_token_id": 247,\\n'
+        '  "image_reg_4_token_id": 248,\\n'
+        '  "seg_token_id": 262\\n'
+        "}'''\n"
+        "weights = struct.pack('<Q', 2) + b'{}'\n"
+        "init(weights, config_json)\n"
+        "print(ocr_tokens(16, 16, bytes(16*16*3), [229], 1))\n",
+        encoding="utf-8",
+    )
+    env = _native_molt_env(
+        root,
+        hermetic=True,
+        module_roots=(
+            Path("/Users/adpena/Projects/enjoice/experiments/tinygrad-molt/falcon-ocr"),
+        ),
+    )
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "[44]"
