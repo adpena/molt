@@ -15,14 +15,17 @@ class SpeculativeDecodeResult:
 
     def __init__(
         self,
-        tokens,
+        prompt_tokens,
+        generated_tokens,
         *,
         drafted_tokens: int,
         accepted_draft_tokens: int,
         target_tokens_emitted: int,
         verify_calls: int,
     ) -> None:
-        self.tokens = list(tokens)
+        self.prompt_tokens = list(prompt_tokens)
+        self.generated_tokens = list(generated_tokens)
+        self.tokens = self.prompt_tokens + self.generated_tokens
         self.drafted_tokens = drafted_tokens
         self.accepted_draft_tokens = accepted_draft_tokens
         self.target_tokens_emitted = target_tokens_emitted
@@ -73,7 +76,8 @@ def speculative_decode_greedy(
     if block_size <= 0:
         raise ValueError("block_size must be positive")
 
-    prefix = _normalize_token_sequence(prompt_tokens, "prompt_tokens")
+    prompt = _normalize_token_sequence(prompt_tokens, "prompt_tokens")
+    prefix = list(prompt)
     emitted = []
     drafted_total = 0
     accepted_total = 0
@@ -111,17 +115,18 @@ def speculative_decode_greedy(
                 accepted_total += 1
             else:
                 mismatch = True
-            prefix.append(target_token)
-            emitted.append(target_token)
-            target_total += 1
             if eos_token_id is not None and target_token == eos_token_id:
                 return SpeculativeDecodeResult(
+                    prompt,
                     emitted,
                     drafted_tokens=drafted_total,
                     accepted_draft_tokens=accepted_total,
                     target_tokens_emitted=target_total,
                     verify_calls=verify_calls,
                 )
+            prefix.append(target_token)
+            emitted.append(target_token)
+            target_total += 1
             if len(emitted) >= max_new_tokens or mismatch:
                 break
 
@@ -129,13 +134,14 @@ def speculative_decode_greedy(
             continue
 
         extra_token = verified[len(drafted)]
+        if eos_token_id is not None and extra_token == eos_token_id:
+            break
         prefix.append(extra_token)
         emitted.append(extra_token)
         target_total += 1
-        if eos_token_id is not None and extra_token == eos_token_id:
-            break
 
     return SpeculativeDecodeResult(
+        prompt,
         emitted,
         drafted_tokens=drafted_total,
         accepted_draft_tokens=accepted_total,
@@ -144,8 +150,32 @@ def speculative_decode_greedy(
     )
 
 
-def greedy_decode(model, prompt_tokens, max_new_tokens=100, eos_token_id=None):
+def greedy_decode(
+    model,
+    prompt_tokens,
+    max_new_tokens=100,
+    eos_token_id=None,
+    *,
+    draft_block=None,
+    verify_block=None,
+    block_size=16,
+):
     """Generate text by always picking the highest-probability token."""
+    if draft_block is not None or verify_block is not None:
+        if draft_block is None or verify_block is None:
+            raise ValueError(
+                "greedy_decode speculative mode requires both draft_block and verify_block"
+            )
+        speculative = speculative_decode_greedy(
+            verify_block,
+            draft_block,
+            prompt_tokens,
+            max_new_tokens=max_new_tokens,
+            block_size=block_size,
+            eos_token_id=eos_token_id,
+        )
+        return speculative.tokens
+
     tokens = list(prompt_tokens)
     for _ in range(max_new_tokens):
         logits = model(tokens)
