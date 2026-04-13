@@ -63,6 +63,12 @@ _MOLT_GPU_TENSOR_SCALED_DOT_PRODUCT_ATTENTION = _load_optional_intrinsic(
 _MOLT_GPU_TENSOR_TAKE_ROWS = _load_optional_intrinsic(
     "molt_gpu_tensor__tensor_take_rows"
 )
+_MOLT_GPU_TENSOR_CONCAT_FIRST_DIM = _load_optional_intrinsic(
+    "molt_gpu_tensor__tensor_concat_first_dim"
+)
+_MOLT_GPU_TENSOR_SCATTER_ROWS = _load_optional_intrinsic(
+    "molt_gpu_tensor__tensor_scatter_rows"
+)
 _MOLT_GPU_LINEAR_SQUARED_RELU_GATE_INTERLEAVED_CONTIGUOUS = _load_optional_intrinsic(
     "molt_gpu_linear_squared_relu_gate_interleaved_contiguous"
 )
@@ -644,6 +650,108 @@ def tensor_take_rows(
         format_char=x._buf.format_char,
     )
     return _tensor_from_buffer(out_buf, indices.shape + row_shape, x._dtype)
+
+
+def tensor_concat_first_dim(tensors) -> "Tensor":
+    if not tensors:
+        raise ValueError("concat_first_dim requires at least one tensor")
+    if len(tensors) == 1:
+        return tensors[0]
+    first = tensors[0]
+    if not isinstance(first, Tensor):
+        raise TypeError(f"Expected Tensor, got {type(first)!r}")
+    if first.ndim == 0:
+        raise ValueError("concat_first_dim requires tensors with at least 1 dimension")
+    tail_shape = first._shape[1:]
+    if len(tensors) == 2 and _MOLT_GPU_TENSOR_CONCAT_FIRST_DIM is not None:
+        return _MOLT_GPU_TENSOR_CONCAT_FIRST_DIM(tensors[0], tensors[1])
+    if _runtime_intrinsics_active():
+        raise RuntimeError("intrinsic unavailable: molt_gpu_tensor__tensor_concat_first_dim")
+    total_rows = 0
+    total_bytes = 0
+    for tensor in tensors:
+        if not isinstance(tensor, Tensor):
+            raise TypeError(f"Expected Tensor, got {type(tensor)!r}")
+        if tensor.ndim != first.ndim:
+            raise ValueError(
+                f"concat_first_dim rank mismatch: {tensor.ndim} vs {first.ndim}"
+            )
+        if tensor._shape[1:] != tail_shape:
+            raise ValueError(
+                f"concat_first_dim shape mismatch: {tensor._shape} vs {(None,) + tail_shape}"
+            )
+        if tensor._dtype is not first._dtype:
+            raise ValueError("concat_first_dim requires matching dtypes")
+        if tensor._buf.format_char != first._buf.format_char:
+            raise ValueError("concat_first_dim requires matching buffer formats")
+        total_rows += tensor._shape[0]
+        total_bytes += tensor.size * tensor._buf.itemsize
+    out = bytearray(total_bytes)
+    cursor = 0
+    for tensor in tensors:
+        width = tensor.size * tensor._buf.itemsize
+        out[cursor:cursor + width] = tensor._buf._data[:width]
+        cursor += width
+    row_size = _product(tail_shape) if tail_shape else 1
+    out_buf = Buffer(
+        out,
+        first._buf.element_type,
+        total_rows * row_size,
+        format_char=first._buf.format_char,
+    )
+    return _tensor_from_buffer(out_buf, (total_rows,) + tail_shape, first._dtype)
+
+
+def tensor_scatter_rows(
+    base: "Tensor", indices, updates: "Tensor", *, allow_negative: bool = True
+) -> "Tensor":
+    if not isinstance(base, Tensor) or not isinstance(updates, Tensor):
+        return NotImplemented
+    if base.ndim == 0 or updates.ndim == 0:
+        raise ValueError("scatter_rows requires tensors with at least 1 dimension")
+    if base._shape[1:] != updates._shape[1:]:
+        raise ValueError(
+            f"scatter_rows trailing shape mismatch: {base._shape} vs {updates._shape}"
+        )
+    if base._dtype is not updates._dtype:
+        raise ValueError("scatter_rows requires matching dtypes")
+    if base._buf.format_char != updates._buf.format_char:
+        raise ValueError("scatter_rows requires matching buffer formats")
+    if not isinstance(indices, Tensor):
+        indices = Tensor(indices)
+    if _MOLT_GPU_TENSOR_SCATTER_ROWS is not None:
+        return _MOLT_GPU_TENSOR_SCATTER_ROWS(base, indices, updates, allow_negative)
+    if _runtime_intrinsics_active():
+        raise RuntimeError("intrinsic unavailable: molt_gpu_tensor__tensor_scatter_rows")
+    rows = tensor_data_list(indices)
+    if len(rows) != updates._shape[0]:
+        raise ValueError(
+            f"scatter_rows update row count mismatch: {len(rows)} vs {updates._shape[0]}"
+        )
+    row_shape = base._shape[1:]
+    row_size = _product(row_shape) if row_shape else 1
+    width = row_size * base._buf.itemsize
+    out = bytearray(base._buf._data[: base.size * base._buf.itemsize])
+    for src_row, raw_idx in enumerate(rows):
+        idx = int(raw_idx)
+        if idx != raw_idx:
+            raise TypeError(f"scatter_rows indices must be integers, got {raw_idx!r}")
+        if idx < 0 and allow_negative:
+            idx += base._shape[0]
+        if idx < 0 or idx >= base._shape[0]:
+            raise IndexError(
+                f"Index {raw_idx} out of range for axis 0 with size {base._shape[0]}"
+            )
+        dst_start = idx * width
+        src_start = src_row * width
+        out[dst_start:dst_start + width] = updates._buf._data[src_start:src_start + width]
+    out_buf = Buffer(
+        out,
+        base._buf.element_type,
+        base.size,
+        format_char=base._buf.format_char,
+    )
+    return _tensor_from_buffer(out_buf, base._shape, base._dtype)
 
 
 def _flatten_nested(data):

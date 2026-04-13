@@ -5581,6 +5581,272 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
 
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
+pub extern "C" fn molt_gpu_tensor__tensor_concat_first_dim(a_bits: u64, b_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (a, a_shape) = match unsafe { tensor_runtime_view(_py, a_bits, "a") } {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let (b, b_shape) = match unsafe { tensor_runtime_view(_py, b_bits, "b") } {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if a_shape.is_empty() || b_shape.is_empty() {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "concat_first_dim requires tensors with at least 1 dimension",
+            );
+        }
+        if a_shape.len() != b_shape.len() {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "concat_first_dim rank mismatch",
+            );
+        }
+        if a_shape[1..] != b_shape[1..] {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "concat_first_dim trailing shape mismatch",
+            );
+        }
+        if a.dtype_bits != b.dtype_bits {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "concat_first_dim requires matching dtypes",
+            );
+        }
+        if a.buffer.format != b.buffer.format {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "concat_first_dim requires matching buffer formats",
+            );
+        }
+        let a_required = a.buffer.size * a.buffer.format.itemsize();
+        let b_required = b.buffer.size * b.buffer.format.itemsize();
+        if a.buffer.data_view.len < a_required {
+            return raise_exception::<_>(_py, "ValueError", "a buffer is too small");
+        }
+        if b.buffer.data_view.len < b_required {
+            return raise_exception::<_>(_py, "ValueError", "b buffer is too small");
+        }
+        let mut out = vec![0u8; a_required + b_required];
+        let a_src = unsafe { std::slice::from_raw_parts(a.buffer.data_view.ptr, a_required) };
+        let b_src = unsafe { std::slice::from_raw_parts(b.buffer.data_view.ptr, b_required) };
+        out[..a_required].copy_from_slice(a_src);
+        out[a_required..].copy_from_slice(b_src);
+        let out_data_ptr = alloc_bytearray(_py, out.as_slice());
+        if out_data_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let mut out_shape = a_shape[..1].to_vec();
+        out_shape[0] += b_shape[0];
+        out_shape.extend_from_slice(&a_shape[1..]);
+        let out_shape_bits = match alloc_tuple_bits_from_usize(_py, out_shape.as_slice()) {
+            Ok(bits) => bits,
+            Err(bits) => {
+                crate::dec_ref_bits(_py, MoltObject::from_ptr(out_data_ptr).bits());
+                return bits;
+            }
+        };
+        let out_data_bits = MoltObject::from_ptr(out_data_ptr).bits();
+        let tensor_bits = match unsafe {
+            build_tensor_from_data_bits(
+                _py,
+                a.class_bits,
+                a.buffer.class_bits,
+                out_data_bits,
+                a.buffer.element_type_bits,
+                a.buffer.size + b.buffer.size,
+                a.buffer.format_bits,
+                a.buffer.format.itemsize(),
+                out_shape_bits,
+                a.dtype_bits,
+            )
+        } {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        };
+        crate::dec_ref_bits(_py, out_data_bits);
+        crate::dec_ref_bits(_py, out_shape_bits);
+        tensor_bits
+    })
+}
+
+#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
+#[allow(non_snake_case)]
+pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
+    base_bits: u64,
+    indices_bits: u64,
+    updates_bits: u64,
+    allow_negative_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let (base, base_shape) = match unsafe { tensor_runtime_view(_py, base_bits, "base") } {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let (updates, updates_shape) =
+            match unsafe { tensor_runtime_view(_py, updates_bits, "updates") } {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        if base_shape.is_empty() || updates_shape.is_empty() {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "scatter_rows requires tensors with at least 1 dimension",
+            );
+        }
+        if base_shape.len() != updates_shape.len() {
+            return raise_exception::<_>(_py, "ValueError", "scatter_rows rank mismatch");
+        }
+        if base_shape[1..] != updates_shape[1..] {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "scatter_rows trailing shape mismatch",
+            );
+        }
+        if base.dtype_bits != updates.dtype_bits {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "scatter_rows requires matching dtypes",
+            );
+        }
+        if base.buffer.format != updates.buffer.format {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "scatter_rows requires matching buffer formats",
+            );
+        }
+        let indices_tensor_bits = match unsafe { ensure_tensor_object_bits(_py, indices_bits) } {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let (indices, indices_shape) =
+            match unsafe { tensor_runtime_view(_py, indices_tensor_bits, "indices") } {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+        let row_count = if indices_shape.is_empty() {
+            1
+        } else {
+            product(&indices_shape)
+        };
+        if row_count != updates_shape[0] {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "scatter_rows update row count mismatch",
+            );
+        }
+        let rows_list_bits = molt_gpu_buffer_to_list(
+            indices.buffer_bits,
+            MoltObject::from_int(row_count as i64).bits(),
+        );
+        if crate::exception_pending(_py) {
+            return rows_list_bits;
+        }
+        let Some(rows_list_ptr) = obj_from_bits(rows_list_bits).as_ptr() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "indices tensor did not materialize to a list",
+            );
+        };
+        let row_shape = &base_shape[1..];
+        let row_size = if row_shape.is_empty() { 1 } else { product(row_shape) };
+        let width = row_size * base.buffer.format.itemsize();
+        let base_required = base.buffer.size * base.buffer.format.itemsize();
+        let updates_required = updates.buffer.size * updates.buffer.format.itemsize();
+        if base.buffer.data_view.len < base_required {
+            return raise_exception::<_>(_py, "ValueError", "base buffer is too small");
+        }
+        if updates.buffer.data_view.len < updates_required {
+            return raise_exception::<_>(_py, "ValueError", "updates buffer is too small");
+        }
+        let allow_negative = crate::is_truthy(_py, obj_from_bits(allow_negative_bits));
+        let rows = unsafe { seq_vec_ref(rows_list_ptr) };
+        let base_src = unsafe { std::slice::from_raw_parts(base.buffer.data_view.ptr, base_required) };
+        let updates_src =
+            unsafe { std::slice::from_raw_parts(updates.buffer.data_view.ptr, updates_required) };
+        let mut out = base_src.to_vec();
+        for (src_row, &raw_idx_bits) in rows.iter().enumerate() {
+            let raw_idx_obj = obj_from_bits(raw_idx_bits);
+            let idx = if let Some(value) = to_i64(raw_idx_obj) {
+                value
+            } else if let Some(value) = to_f64(raw_idx_obj) {
+                let idx = value as i64;
+                if (idx as f64) != value {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        &format!("scatter_rows indices must be integers, got {:?}", value),
+                    );
+                }
+                idx
+            } else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "scatter_rows indices must be integers",
+                );
+            };
+            let mut resolved = idx;
+            if resolved < 0 && allow_negative {
+                resolved += base_shape[0] as i64;
+            }
+            if resolved < 0 || resolved >= base_shape[0] as i64 {
+                return raise_exception::<_>(
+                    _py,
+                    "IndexError",
+                    &format!(
+                        "Index {} out of range for axis 0 with size {}",
+                        idx, base_shape[0]
+                    ),
+                );
+            }
+            let dst_start = resolved as usize * width;
+            let src_start = src_row * width;
+            out[dst_start..dst_start + width]
+                .copy_from_slice(&updates_src[src_start..src_start + width]);
+        }
+        let out_data_ptr = alloc_bytearray(_py, out.as_slice());
+        if out_data_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let out_data_bits = MoltObject::from_ptr(out_data_ptr).bits();
+        let tensor_bits = match unsafe {
+            build_tensor_from_data_bits(
+                _py,
+                base.class_bits,
+                base.buffer.class_bits,
+                out_data_bits,
+                base.buffer.element_type_bits,
+                base.buffer.size,
+                base.buffer.format_bits,
+                base.buffer.format.itemsize(),
+                base.shape_bits,
+                base.dtype_bits,
+            )
+        } {
+            Ok(bits) => bits,
+            Err(bits) => bits,
+        };
+        crate::dec_ref_bits(_py, out_data_bits);
+        tensor_bits
+    })
+}
+
+#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
+#[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let tensor_class_bits =

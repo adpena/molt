@@ -208,6 +208,13 @@ def molt_gpu_tensor__tensor_scaled_dot_product_attention(
     mask: Any,
     scale: Any,
 ) -> Any: ...
+def molt_gpu_tensor__tensor_concat_first_dim(a: Any, b: Any) -> Any: ...
+def molt_gpu_tensor__tensor_scatter_rows(
+    base: Any,
+    indices: Any,
+    updates: Any,
+    allow_negative: Any,
+) -> Any: ...
 def molt_gpu_tensor__tensor_take_rows(
     x: Any,
     indices: Any,
