@@ -105,10 +105,11 @@ class TurboQuantCodec:
         values = _coerce_vector(vector, dim=self.dim)
         norm = _vector_norm(values)
         if norm == 0.0:
-            return TurboQuantMSEVector([0] * self.dim, norm=0.0)
+            return TurboQuantMSEVector([0] * self.dim, norm=0.0, mse_weights=[0.0] * self.dim)
         unit = [value / norm for value in values]
         indices = self._encode_direction(unit)
-        return TurboQuantMSEVector(indices, norm=norm)
+        mse_weights = [norm * self.codebook[int(index)] for index in indices]
+        return TurboQuantMSEVector(indices, norm=norm, mse_weights=mse_weights)
 
     def quantize_prod(self, vector) -> TurboQuantProdVector:
         values = _coerce_vector(vector, dim=self.dim)
@@ -119,6 +120,8 @@ class TurboQuantCodec:
                 norm=0.0,
                 residual_signs=[1.0] * self.dim,
                 residual_norm=0.0,
+                mse_weights=[0.0] * self.dim,
+                residual_scale=0.0,
             )
         unit = [value / norm for value in values]
         indices = self._encode_direction(unit)
@@ -127,11 +130,20 @@ class TurboQuantCodec:
         residual_norm = _vector_norm(residual)
         residual_sketch = self.qjl_rotation.apply(residual)
         residual_signs = [1.0 if value >= 0.0 else -1.0 for value in residual_sketch]
+        mse_weights = [norm * self.codebook[int(index)] for index in indices]
+        residual_scale = (
+            math.sqrt(math.pi / 2.0)
+            / float(self.dim)
+            * residual_norm
+            * norm
+        )
         return TurboQuantProdVector(
             indices,
             norm=norm,
             residual_signs=residual_signs,
             residual_norm=residual_norm,
+            mse_weights=mse_weights,
+            residual_scale=residual_scale,
         )
 
     def dequantize(self, encoded) -> Tensor:
@@ -158,6 +170,10 @@ class TurboQuantCodec:
         encoded: TurboQuantMSEVector,
     ) -> float:
         estimate = 0.0
+        if encoded.mse_weights is not None:
+            for index, weight in enumerate(encoded.mse_weights):
+                estimate += prepared.rotated_query[index] * weight
+            return estimate
         for index, code_index in enumerate(encoded.indices):
             estimate += prepared.rotated_query[index] * self.codebook[int(code_index)]
         return encoded.norm * estimate
@@ -175,8 +191,11 @@ class TurboQuantCodec:
         if not isinstance(encoded, TurboQuantProdVector):
             return mse_estimate
         residual_term = _dot(prepared.query_sketch, encoded.residual_signs)
-        residual_term *= math.sqrt(math.pi / 2.0) / float(self.dim)
-        residual_term *= encoded.residual_norm * encoded.norm
+        if encoded.residual_scale is not None:
+            residual_term *= encoded.residual_scale
+        else:
+            residual_term *= math.sqrt(math.pi / 2.0) / float(self.dim)
+            residual_term *= encoded.residual_norm * encoded.norm
         return mse_estimate + residual_term
 
     def estimate_inner_product(self, query, encoded) -> float:
