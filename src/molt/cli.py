@@ -16273,6 +16273,7 @@ def _run_native_partial_link_command(
         sysroot_path=None,
         profile="dev",
     )
+    link_cmd = [arg for arg in link_cmd if not arg.startswith("-fuse-ld=")]
     link_cmd.extend(
         ["-Wl,-r", "-o", str(output_path), *[str(path) for path in input_objects]]
     )
