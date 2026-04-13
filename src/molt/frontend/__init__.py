@@ -5077,22 +5077,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
-    def _emit_function_defaults(
+    def _emit_function_default_values(
         self,
         func_val: MoltValue,
         default_exprs: list[ast.expr],
         kw_default_exprs: list[ast.expr | None],
         kwonly_params: list[str],
-    ) -> MoltValue:
-        def set_attr(attr: str, value: MoltValue) -> None:
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[func_val, attr, value],
-                    result=MoltValue("none"),
-                )
-            )
-
+    ) -> tuple[MoltValue, MoltValue, MoltValue]:
         yield_in_defaults = False
         yield_in_kwdefaults = False
         func_spill: int | None = None
@@ -5122,13 +5113,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(
                 MoltOp(kind="TUPLE_NEW", args=default_vals, result=defaults_tuple)
             )
-            if func_spill is not None and yield_in_defaults:
-                func_val = self._reload_async_value(func_spill, func_val.type_hint)
-            set_attr("__defaults__", defaults_tuple)
+            defaults_val = defaults_tuple
         else:
-            defaults_none = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=defaults_none))
-            set_attr("__defaults__", defaults_none)
+            defaults_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=defaults_val))
 
         if kw_default_exprs and kwonly_params:
             kw_pairs: list[MoltValue] = []
@@ -5143,23 +5131,43 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
                 kw_pairs.extend([key_val, val])
             if kw_pairs:
-                kw_defaults = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(MoltOp(kind="DICT_NEW", args=kw_pairs, result=kw_defaults))
-                if func_spill is not None and yield_in_kwdefaults:
-                    func_val = self._reload_async_value(func_spill, func_val.type_hint)
-                set_attr("__kwdefaults__", kw_defaults)
+                kwdefaults_val = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(MoltOp(kind="DICT_NEW", args=kw_pairs, result=kwdefaults_val))
             else:
-                kw_defaults_none = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=kw_defaults_none))
-                if func_spill is not None and yield_in_kwdefaults:
-                    func_val = self._reload_async_value(func_spill, func_val.type_hint)
-                set_attr("__kwdefaults__", kw_defaults_none)
+                kwdefaults_val = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=kwdefaults_val))
         else:
-            kw_defaults_none = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=kw_defaults_none))
-            set_attr("__kwdefaults__", kw_defaults_none)
+            kwdefaults_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=kwdefaults_val))
+
         if func_spill is not None and (yield_in_defaults or yield_in_kwdefaults):
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
+        return func_val, defaults_val, kwdefaults_val
+
+    def _emit_function_defaults(
+        self,
+        func_val: MoltValue,
+        default_exprs: list[ast.expr],
+        kw_default_exprs: list[ast.expr | None],
+        kwonly_params: list[str],
+    ) -> MoltValue:
+        func_val, defaults_val, kwdefaults_val = self._emit_function_default_values(
+            func_val,
+            default_exprs,
+            kw_default_exprs,
+            kwonly_params,
+        )
+        defaults_helper = self._emit_runtime_builtin_function(
+            "molt_function_set_defaults", 3
+        )
+        defaults_res = MoltValue(self.next_var(), type_hint="None")
+        self.emit(
+            MoltOp(
+                kind="CALL_FUNC",
+                args=[defaults_helper, func_val, defaults_val, kwdefaults_val],
+                result=defaults_res,
+            )
+        )
         return func_val
 
     def _emit_function_metadata(
@@ -5188,27 +5196,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         emit_code: bool = True,
         varnames: list[str] | None = None,
     ) -> None:
-        def set_attr(attr: str, value: MoltValue) -> None:
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[func_val, attr, value],
-                    result=MoltValue("none"),
-                )
-            )
-
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        set_attr("__name__", name_val)
 
         qual_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[qualname], result=qual_val))
-        set_attr("__qualname__", qual_val)
 
         module_name = module_override or self.module_name
         module_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_val))
-        set_attr("__module__", module_val)
 
         arg_name_vals: list[MoltValue] = []
         for param in posonly_params + pos_or_kw_params:
@@ -5217,11 +5213,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             arg_name_vals.append(param_val)
         arg_names_tuple = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=arg_name_vals, result=arg_names_tuple))
-        set_attr("__molt_arg_names__", arg_names_tuple)
 
         posonly_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[len(posonly_params)], result=posonly_val))
-        set_attr("__molt_posonly__", posonly_val)
 
         kwonly_name_vals: list[MoltValue] = []
         for param in kwonly_params:
@@ -5230,7 +5224,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             kwonly_name_vals.append(param_val)
         kwonly_tuple = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=kwonly_name_vals, result=kwonly_tuple))
-        set_attr("__molt_kwonly_names__", kwonly_tuple)
 
         if vararg is None:
             vararg_val = MoltValue(self.next_var(), type_hint="None")
@@ -5238,7 +5231,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             vararg_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[vararg], result=vararg_val))
-        set_attr("__molt_vararg__", vararg_val)
 
         if varkw is None:
             varkw_val = MoltValue(self.next_var(), type_hint="None")
@@ -5246,15 +5238,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             varkw_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[varkw], result=varkw_val))
-        set_attr("__molt_varkw__", varkw_val)
-        func_val = self._emit_function_defaults(
+        func_val, defaults_val, kwdefaults_val = self._emit_function_default_values(
             func_val, default_exprs, kw_default_exprs, kwonly_params
         )
-
+        bind_kind_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=bind_kind_val))
         if bind_kind is not None:
             bind_kind_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[bind_kind], result=bind_kind_val))
-            set_attr("__molt_bind_kind__", bind_kind_val)
 
         if docstring is None:
             doc_val = MoltValue(self.next_var(), type_hint="None")
@@ -5262,7 +5253,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             doc_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[docstring], result=doc_val))
-        set_attr("__doc__", doc_val)
+
+        code_arg = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=code_arg))
 
         if emit_code:
             filename = trace_filename or self.source_path or "<unknown>"
@@ -5332,7 +5325,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=code_val,
                 )
             )
-            set_attr("__code__", code_val)
+            code_arg = code_val
             code_symbol = self._code_symbol_for_value(func_val)
             if code_symbol is not None:
                 code_id = self._register_code_symbol(code_symbol)
@@ -5353,18 +5346,64 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
 
+        metadata_helper = self._emit_runtime_builtin_function(
+            "molt_function_init_metadata", 14
+        )
+        metadata_res = MoltValue(self.next_var(), type_hint="None")
+        self.emit(
+            MoltOp(
+                kind="CALL_FUNC",
+                args=[
+                    metadata_helper,
+                    func_val,
+                    name_val,
+                    qual_val,
+                    module_val,
+                    arg_names_tuple,
+                    posonly_val,
+                    kwonly_tuple,
+                    vararg_val,
+                    varkw_val,
+                    defaults_val,
+                    kwdefaults_val,
+                    doc_val,
+                    code_arg,
+                    bind_kind_val,
+                ],
+                result=metadata_res,
+            )
+        )
+
         if is_coroutine:
             coro_val = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=coro_val))
-            set_attr("__molt_is_coroutine__", coro_val)
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[func_val, "__molt_is_coroutine__", coro_val],
+                    result=MoltValue("none"),
+                )
+            )
         if is_generator:
             gen_val = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=gen_val))
-            set_attr("__molt_is_generator__", gen_val)
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[func_val, "__molt_is_generator__", gen_val],
+                    result=MoltValue("none"),
+                )
+            )
         if is_async_generator:
             gen_val = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=gen_val))
-            set_attr("__molt_is_async_generator__", gen_val)
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[func_val, "__molt_is_async_generator__", gen_val],
+                    result=MoltValue("none"),
+                )
+            )
 
     def _build_gpu_kernel_descriptor_json(
         self, *, func_symbol: str, func_name: str
@@ -6483,6 +6522,19 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             bind_kind=MOLT_BIND_KIND_OPEN if func_id == "open" else None,
             module_override="builtins",
             emit_code=False,
+        )
+        return func_val
+
+    def _emit_runtime_builtin_function(
+        self, runtime_name: str, arity: int, *, type_hint: str = "function"
+    ) -> MoltValue:
+        func_val = MoltValue(self.next_var(), type_hint=type_hint)
+        self.emit(
+            MoltOp(
+                kind="BUILTIN_FUNC",
+                args=[runtime_name, arity],
+                result=func_val,
+            )
         )
         return func_val
 

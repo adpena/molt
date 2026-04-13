@@ -33,7 +33,7 @@ use crate::builtins::types::{
     molt_types_method_new, molt_types_new_class, molt_types_prepare_class,
     molt_types_resolve_bases, molt_types_simplenamespace_init,
 };
-use crate::object::layout::function_set_call_target_ptr;
+use crate::object::layout::{function_set_call_target_ptr, function_set_code_bits};
 use crate::object::ops_builtins::{molt_object_init, molt_object_init_subclass, molt_type_call};
 use molt_obj_model::MoltObject;
 #[cfg(feature = "stdlib_ast")]
@@ -4683,6 +4683,125 @@ pub extern "C" fn molt_function_set_builtin(func_bits: u64) -> u64 {
                 inc_ref_bits(_py, builtin_bits);
             }
         }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_function_init_metadata(
+    func_bits: u64,
+    name_bits: u64,
+    qualname_bits: u64,
+    module_bits: u64,
+    arg_names_bits: u64,
+    posonly_bits: u64,
+    kwonly_bits: u64,
+    vararg_bits: u64,
+    varkw_bits: u64,
+    defaults_bits: u64,
+    kwdefaults_bits: u64,
+    doc_bits: u64,
+    code_bits: u64,
+    bind_kind_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "expected function");
+        };
+        unsafe {
+            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+                return raise_exception::<_>(_py, "TypeError", "expected function");
+            }
+        }
+
+        let set_attr = |name: &'static [u8], value_bits: u64| -> Result<(), u64> {
+            let Some(attr_bits) = attr_name_bits_from_bytes(_py, name) else {
+                return Err(MoltObject::none().bits());
+            };
+            unsafe {
+                crate::call::class_init::function_set_attr_bits(
+                    _py, func_ptr, attr_bits, value_bits,
+                );
+            }
+            dec_ref_bits(_py, attr_bits);
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            Ok(())
+        };
+
+        if set_attr(b"__name__", name_bits).is_err()
+            || set_attr(b"__qualname__", qualname_bits).is_err()
+            || set_attr(b"__module__", module_bits).is_err()
+            || set_attr(b"__molt_arg_names__", arg_names_bits).is_err()
+            || set_attr(b"__molt_posonly__", posonly_bits).is_err()
+            || set_attr(b"__molt_kwonly_names__", kwonly_bits).is_err()
+            || set_attr(b"__molt_vararg__", vararg_bits).is_err()
+            || set_attr(b"__molt_varkw__", varkw_bits).is_err()
+            || set_attr(b"__defaults__", defaults_bits).is_err()
+            || set_attr(b"__kwdefaults__", kwdefaults_bits).is_err()
+            || set_attr(b"__doc__", doc_bits).is_err()
+        {
+            return MoltObject::none().bits();
+        }
+
+        if !obj_from_bits(code_bits).is_none() {
+            unsafe {
+                function_set_code_bits(_py, func_ptr, code_bits);
+            }
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+        }
+
+        if !obj_from_bits(bind_kind_bits).is_none()
+            && set_attr(b"__molt_bind_kind__", bind_kind_bits).is_err()
+        {
+            return MoltObject::none().bits();
+        }
+
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_function_set_defaults(
+    func_bits: u64,
+    defaults_bits: u64,
+    kwdefaults_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "expected function");
+        };
+        unsafe {
+            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+                return raise_exception::<_>(_py, "TypeError", "expected function");
+            }
+        }
+
+        let set_attr = |name: &'static [u8], value_bits: u64| -> Result<(), u64> {
+            let Some(attr_bits) = attr_name_bits_from_bytes(_py, name) else {
+                return Err(MoltObject::none().bits());
+            };
+            unsafe {
+                crate::call::class_init::function_set_attr_bits(
+                    _py, func_ptr, attr_bits, value_bits,
+                );
+            }
+            dec_ref_bits(_py, attr_bits);
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            Ok(())
+        };
+
+        if set_attr(b"__defaults__", defaults_bits).is_err()
+            || set_attr(b"__kwdefaults__", kwdefaults_bits).is_err()
+        {
+            return MoltObject::none().bits();
+        }
+
         MoltObject::none().bits()
     })
 }
