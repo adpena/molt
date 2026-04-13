@@ -5,7 +5,7 @@ Provides: MultiHeadAttention, TransformerBlock, PositionalEncoding,
 CausalMask, and a complete TransformerDecoder for text generation.
 """
 
-from .tensor import Tensor
+from .tensor import Tensor, tensor_scaled_dot_product_attention
 from .nn import Linear, LayerNorm, Dropout, Sequential, GELU
 import math
 
@@ -30,63 +30,30 @@ class MultiHeadAttention:
         self.out_proj = Linear(embed_dim, embed_dim, bias=False)
 
     def __call__(self, x: Tensor, mask=None) -> Tensor:
-        # x: (seq_len, embed_dim) — 2D tensor
-        seq_len = x.shape[-2] if x.ndim >= 2 else x.shape[0]
+        squeezed = False
+        if x.ndim == 2:
+            x = x.reshape(1, *x.shape)
+            squeezed = True
+        if x.ndim != 3:
+            raise ValueError(f"attention input must be 2D or 3D, got {x.shape}")
 
-        # Project Q, K, V — each is (seq_len, embed_dim)
-        q = self.q_proj(x)
-        k = self.k_proj(x)
-        v = self.v_proj(x)
+        batch, seq_len, _ = x.shape
+        q = self.q_proj(x).reshape(batch, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        k = self.k_proj(x).reshape(batch, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        v = self.v_proj(x).reshape(batch, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
 
-        # Multi-head attention via chunking along embed_dim.
-        # Split each (seq_len, embed_dim) into num_heads chunks of head_dim,
-        # compute attention per head, then concatenate.
-        q_data = q._data_list()
-        k_data = k._data_list()
-        v_data = v._data_list()
+        attn_mask = mask
+        if self.causal and attn_mask is None:
+            attn_mask = _causal_attention_mask(seq_len)
+        elif attn_mask is not None and isinstance(attn_mask, Tensor) and attn_mask.ndim == 2:
+            attn_mask = attn_mask.reshape(1, 1, seq_len, seq_len)
 
-        head_outputs = []  # will collect (seq_len, head_dim) per head
-
-        for h in range(self.num_heads):
-            hd = self.head_dim
-            # Extract head slice: columns [h*hd : (h+1)*hd] from (seq_len, embed_dim)
-            q_head = []
-            k_head = []
-            v_head = []
-            for s in range(seq_len):
-                row_start = s * self.embed_dim + h * hd
-                q_head.extend(q_data[row_start:row_start + hd])
-                k_head.extend(k_data[row_start:row_start + hd])
-                v_head.extend(v_data[row_start:row_start + hd])
-
-            # q_head, k_head, v_head are each (seq_len, head_dim)
-            q_h = Tensor(q_head, shape=(seq_len, hd))
-            k_h = Tensor(k_head, shape=(seq_len, hd))
-            v_h = Tensor(v_head, shape=(seq_len, hd))
-
-            # Scaled dot-product attention: softmax(Q @ K.T / sqrt(d)) @ V
-            scores = q_h @ k_h.T  # (seq_len, seq_len)
-            scores = scores * self.scale
-
-            if self.causal:
-                scores = apply_causal_mask(scores, seq_len)
-
-            attn_weights = scores.softmax(axis=-1)
-            attn_out = attn_weights @ v_h  # (seq_len, head_dim)
-            head_outputs.append(attn_out._data_list())
-
-        # Concatenate heads: interleave head_dim columns back to embed_dim
-        concat = [0.0] * (seq_len * self.embed_dim)
-        for s in range(seq_len):
-            for h in range(self.num_heads):
-                hd = self.head_dim
-                src_start = s * hd
-                dst_start = s * self.embed_dim + h * hd
-                for d in range(hd):
-                    concat[dst_start + d] = head_outputs[h][src_start + d]
-
-        concat_tensor = Tensor(concat, shape=(seq_len, self.embed_dim))
-        return self.out_proj(concat_tensor)
+        out = tensor_scaled_dot_product_attention(q, k, v, attn_mask, self.scale)
+        out = out.permute(0, 2, 1, 3).reshape(batch, seq_len, self.embed_dim)
+        out = self.out_proj(out)
+        if squeezed:
+            out = out.reshape(seq_len, self.embed_dim)
+        return out
 
     def load_weights(self, prefix, weights):
         self.q_proj.load_weights(
@@ -118,6 +85,14 @@ def apply_causal_mask(scores: Tensor, seq_len: int) -> Tensor:
         return Tensor(flat, shape=scores.shape)
     else:
         return scores
+
+
+def _causal_attention_mask(seq_len: int) -> Tensor:
+    flat = []
+    for i in range(seq_len):
+        for j in range(seq_len):
+            flat.append(0.0 if j <= i else float("-inf"))
+    return Tensor(flat, shape=(1, 1, seq_len, seq_len))
 
 
 class TransformerBlock:
