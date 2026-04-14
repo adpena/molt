@@ -266,7 +266,22 @@ pub extern "C" fn molt_enum_verify_member(members_bits: u64, value_bits: u64) ->
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_is_descriptor(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let missing = missing_bits(_py);
+        if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
+            let type_id = unsafe { object_type_id(obj_ptr) };
+            if matches!(
+                type_id,
+                TYPE_ID_PROPERTY | TYPE_ID_CLASSMETHOD | TYPE_ID_STATICMETHOD
+            ) {
+                return MoltObject::from_bool(true).bits();
+            }
+        }
+        let owner_bits = type_of_bits(_py, obj_bits);
+        let Some(owner_ptr) = obj_from_bits(owner_bits).as_ptr() else {
+            return MoltObject::from_bool(false).bits();
+        };
+        if unsafe { object_type_id(owner_ptr) } != TYPE_ID_TYPE {
+            return MoltObject::from_bool(false).bits();
+        }
         for attr_name in &[
             b"__get__" as &[u8],
             b"__set__",
@@ -276,13 +291,10 @@ pub extern "C" fn molt_enum_is_descriptor(obj_bits: u64) -> u64 {
             b"fdel",
         ] {
             if let Some(name_key) = attr_name_bits_from_bytes(_py, attr_name) {
-                let val = molt_getattr_builtin(obj_bits, name_key, missing);
+                let val =
+                    unsafe { crate::builtins::attr::class_attr_lookup_raw_mro(_py, owner_ptr, name_key) };
                 dec_ref_bits(_py, name_key);
-                if exception_pending(_py) {
-                    clear_exception(_py);
-                    continue;
-                }
-                if val != missing {
+                if val.is_some() {
                     return MoltObject::from_bool(true).bits();
                 }
             }
@@ -297,20 +309,22 @@ pub extern "C" fn molt_enum_is_descriptor(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_is_auto(obj_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        let missing = missing_bits(_py);
+        let owner_bits = type_of_bits(_py, obj_bits);
+        let Some(owner_ptr) = obj_from_bits(owner_bits).as_ptr() else {
+            return MoltObject::from_bool(false).bits();
+        };
+        if unsafe { object_type_id(owner_ptr) } != TYPE_ID_TYPE {
+            return MoltObject::from_bool(false).bits();
+        }
         let Some(name_key) = attr_name_bits_from_bytes(_py, b"_molt_auto") else {
             return MoltObject::from_bool(false).bits();
         };
-        let val = molt_getattr_builtin(obj_bits, name_key, missing);
+        let val = unsafe { crate::builtins::attr::class_attr_lookup_raw_mro(_py, owner_ptr, name_key) };
         dec_ref_bits(_py, name_key);
-        if exception_pending(_py) {
-            clear_exception(_py);
+        let Some(val_bits) = val else {
             return MoltObject::from_bool(false).bits();
-        }
-        if val == missing {
-            return MoltObject::from_bool(false).bits();
-        }
-        MoltObject::from_bool(is_truthy(_py, obj_from_bits(val))).bits()
+        };
+        MoltObject::from_bool(is_truthy(_py, obj_from_bits(val_bits))).bits()
     })
 }
 

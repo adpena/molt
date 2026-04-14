@@ -391,6 +391,31 @@ def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_suppor
     assert prepared.needs_runtime_import_support
 
 
+def test_prepare_entry_module_graph_collects_literal_dunder_import_targets(
+    tmp_path: Path,
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("value = __import__('math')\n")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target="native",
+    )
+
+    assert error is None
+    assert prepared is not None
+    assert prepared.needs_runtime_import_support
+    assert "math" in prepared.module_graph
+
+
 def test_prepare_entry_module_graph_marks_generated_importer_references_explicitly(
     tmp_path: Path,
 ) -> None:

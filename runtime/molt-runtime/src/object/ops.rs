@@ -9316,6 +9316,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     use molt_obj_model::MoltObject;
 
     let none = MoltObject::none().bits();
+    let debug_class_def = std::env::var("MOLT_DEBUG_CLASS_DEF").as_deref() == Ok("1");
     let class_bits = molt_class_new(name_bits);
     if class_bits == none {
         return class_bits;
@@ -9365,63 +9366,52 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         crate::dec_ref_bits(_py, size_obj);
     });
 
+    if debug_class_def {
+        eprintln!("molt class_def before apply_set_name");
+    }
     molt_class_apply_set_name(class_bits);
+    if debug_class_def {
+        eprintln!("molt class_def after apply_set_name");
+    }
 
     if (flags & 1) != 0 && nb > 0 {
-        crate::with_gil_entry!(_py, {
-            let init_name = crate::intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.init_subclass_name,
-                b"__init_subclass__",
-            );
-            for &base in &bases_vec {
-                // Snapshot `bases_vec`/`attrs_vec` before any nested call:
-                // linked wasm class lowering passes pointers into a shared
-                // scratch region, and reentrant compiled calls can overwrite
-                // that storage if we keep borrowing it directly.
-                let base_obj = obj_from_bits(base);
-                let Some(base_ptr) = base_obj.as_ptr() else {
-                    continue;
-                };
-                if unsafe { object_type_id(base_ptr) } != TYPE_ID_TYPE {
-                    continue;
-                }
-                let init_attr =
-                    crate::builtins::attributes::molt_get_attr_name_default(base, init_name, none);
-                if init_attr != none {
-                    if unsafe { crate::call::type_policy::callable_function_addr(Some(init_attr)) }
-                        == Some(fn_addr!(crate::molt_object_init_subclass))
-                    {
-                        crate::dec_ref_bits(_py, init_attr);
-                        continue;
-                    }
-                    let init_obj = obj_from_bits(init_attr);
-                    let needs_kwargs = unsafe {
-                        match init_obj.as_ptr() {
-                            Some(ptr) if object_type_id(ptr) == TYPE_ID_FUNCTION => {
-                                function_arity(ptr) > 1
-                            }
-                            _ => false,
-                        }
-                    };
-                    if needs_kwargs {
-                        let empty_dict = crate::builtins::containers_alloc::molt_dict_new(0);
-                        let _ = unsafe {
-                            crate::call::dispatch::call_callable2(
-                                _py, init_attr, class_bits, empty_dict,
-                            )
-                        };
-                        crate::dec_ref_bits(_py, empty_dict);
-                    } else {
-                        let _ = unsafe {
-                            crate::call::dispatch::call_callable1(_py, init_attr, class_bits)
-                        };
-                    }
-                    crate::dec_ref_bits(_py, init_attr);
+        let init_subclass_ok = crate::with_gil_entry!(_py, {
+            if debug_class_def {
+                let class_name = string_obj_to_owned(obj_from_bits(name_bits))
+                    .unwrap_or_else(|| "<class>".to_string());
+                eprintln!(
+                    "molt class_def init_subclass name={} nbases={} nattrs={} flags={}",
+                    class_name, nb, na, flags
+                );
+                for pair in attrs_vec.chunks_exact(2) {
+                    eprintln!(
+                        "molt class_def attr key_type={} val_type={} val_bits=0x{:x}",
+                        type_name(_py, obj_from_bits(pair[0])),
+                        type_name(_py, obj_from_bits(pair[1])),
+                        pair[1]
+                    );
                 }
             }
-            // init_name is globally interned — do NOT dec_ref it.
+            if debug_class_def {
+                eprintln!("molt class_def before init_subclass dispatch");
+            }
+            let ok = unsafe {
+                crate::call::bind::dispatch_init_subclass_hooks(
+                    _py,
+                    &bases_vec,
+                    class_bits,
+                    &[],
+                    &[],
+                )
+            };
+            if debug_class_def {
+                eprintln!("molt class_def after init_subclass dispatch");
+            }
+            ok
         });
+        if !init_subclass_ok {
+            return MoltObject::none().bits();
+        }
     }
 
     let version_obj = MoltObject::from_int(layout_version).bits();

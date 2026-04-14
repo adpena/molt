@@ -4,10 +4,29 @@ use crate::{
     TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_TYPE, bound_method_func_bits,
     call_builtin_type_if_needed, call_function_obj0, call_function_obj1, call_function_obj2,
     call_function_obj3, class_attr_lookup_raw_mro, class_name_for_error, exception_pending,
-    function_arity, generic_alias_origin_bits, intern_static_name, lookup_call_attr,
-    molt_call_bind, molt_callargs_new, molt_callargs_push_pos, obj_from_bits, object_type_id,
-    raise_exception, raise_not_callable, runtime_state, try_call_generator,
+    exception_stack_baseline_get, exception_stack_baseline_set, function_arity,
+    generic_alias_origin_bits, intern_static_name, lookup_call_attr, molt_call_bind,
+    molt_callargs_new, molt_callargs_push_pos, obj_from_bits, object_type_id, raise_exception,
+    raise_not_callable, runtime_state, try_call_generator,
 };
+
+struct ExceptionBaselineGuard {
+    prev: usize,
+}
+
+impl ExceptionBaselineGuard {
+    fn new() -> Self {
+        Self {
+            prev: exception_stack_baseline_get(),
+        }
+    }
+}
+
+impl Drop for ExceptionBaselineGuard {
+    fn drop(&mut self) {
+        exception_stack_baseline_set(self.prev);
+    }
+}
 
 unsafe fn call_type_via_bind(_py: &PyToken<'_>, call_bits: u64, args: &[u64]) -> u64 {
     unsafe {
@@ -102,6 +121,7 @@ unsafe fn call_generic_alias_via_bind(_py: &PyToken<'_>, alias_ptr: *mut u8, arg
 
 pub(crate) unsafe fn call_callable0(_py: &PyToken<'_>, call_bits: u64) -> u64 {
     unsafe {
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let call_obj = obj_from_bits(call_bits);
         let Some(call_ptr) = call_obj.as_ptr() else {
             return raise_not_callable(_py, call_obj);
@@ -132,6 +152,7 @@ pub(crate) unsafe fn call_callable0(_py: &PyToken<'_>, call_bits: u64) -> u64 {
 
 pub(crate) unsafe fn call_callable1(_py: &PyToken<'_>, call_bits: u64, arg0_bits: u64) -> u64 {
     unsafe {
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let call_obj = obj_from_bits(call_bits);
         let Some(call_ptr) = call_obj.as_ptr() else {
             return raise_not_callable(_py, call_obj);
@@ -195,6 +216,7 @@ pub(crate) unsafe fn call_callable2(
     arg1_bits: u64,
 ) -> u64 {
     unsafe {
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let call_obj = obj_from_bits(call_bits);
         let Some(call_ptr) = call_obj.as_ptr() else {
             return raise_not_callable(_py, call_obj);
@@ -235,6 +257,7 @@ pub(crate) unsafe fn call_callable3(
     arg2_bits: u64,
 ) -> u64 {
     unsafe {
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let call_obj = obj_from_bits(call_bits);
         let Some(call_ptr) = call_obj.as_ptr() else {
             return raise_not_callable(_py, call_obj);

@@ -1526,6 +1526,16 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     if class_bits == 0 || obj_from_bits(class_bits).is_none() {
         return false;
     }
+    if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+        let class_name = unsafe { crate::string_obj_to_owned(obj_from_bits(layout::class_name_bits(class_ptr))) };
+        if class_bits == crate::builtin_classes(py).traceback
+            || class_name.as_deref() == Some("traceback")
+            || class_bits == crate::builtin_classes(py).frame
+            || class_name.as_deref() == Some("frame")
+        {
+            return false;
+        }
+    }
     let Some(del_name_bits) = crate::attr_name_bits_from_bytes(py, b"__del__") else {
         return false;
     };

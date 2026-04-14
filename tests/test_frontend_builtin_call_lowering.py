@@ -296,7 +296,8 @@ def test_function_metadata_uses_runtime_helper_instead_of_attr_storm() -> None:
         for op in func["ops"]
     ]
     assert any(
-        op.kind == "BUILTIN_FUNC" and op.args == ["molt_function_init_metadata", 14]
+        op.kind == "BUILTIN_FUNC"
+        and op.args == ["molt_function_init_metadata_packed", 4]
         for op in ops
     )
     metadata_attrs = {
@@ -706,3 +707,54 @@ def test_module_optional_intrinsic_global_call_lowers_directly() -> None:
         and op.get("s_value") == "molt_gpu_linear_contiguous"
         for op in func_ops
     ), func_ops
+
+
+def test_module_optional_intrinsic_call_avoids_python_symbol_collision() -> None:
+    import ast
+
+    source = (
+        "def _load_optional_intrinsic(name):\n"
+        "    return None\n"
+        "_MOLT_GPU = _load_optional_intrinsic('molt_gpu_tensor__tensor_linear_split_last_dim')\n"
+        "def tensor_linear_split_last_dim(a, b, c):\n"
+        "    if _MOLT_GPU is not None:\n"
+        "        return _MOLT_GPU(a, b, c)\n"
+        "    return None\n"
+    )
+    tree = ast.parse(source, filename="molt/gpu/tensor.py")
+    gen = SimpleTIRGenerator(
+        source_path="molt/gpu/tensor.py",
+        module_name="molt.gpu.tensor",
+        entry_module="molt.gpu.tensor",
+    )
+    gen.visit(tree)
+    ir = gen.to_json()
+
+    function_names = [func["name"] for func in ir["functions"]]
+    assert "molt_gpu_tensor__tensor_linear_split_last_dim" not in function_names
+    assert any(
+        name.startswith("molt_gpu_tensor__tensor_linear_split_last_dim_")
+        for name in function_names
+    ), function_names
+
+    func_ops = next(
+        func["ops"]
+        for func in ir["functions"]
+        if func["name"].startswith("molt_gpu_tensor__tensor_linear_split_last_dim_")
+    )
+    assert any(
+        op.get("kind") == "call"
+        and op.get("s_value") == "molt_gpu_tensor__tensor_linear_split_last_dim"
+        for op in func_ops
+    ), func_ops
+
+
+def test_getattr_without_default_lowers_via_missing_default_path() -> None:
+    ir = compile_to_tir(
+        "def f(obj):\n"
+        "    return getattr(obj, 'missing_attr')\n"
+    )
+    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "__main____f")
+    assert any(op.get("kind") == "missing" for op in func_ops), func_ops
+    assert any(op.get("kind") == "get_attr_name_default" for op in func_ops), func_ops
+    assert not any(op.get("kind") == "get_attr_name" for op in func_ops), func_ops
