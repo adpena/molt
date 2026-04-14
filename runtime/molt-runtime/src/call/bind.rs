@@ -62,6 +62,47 @@ pub(crate) struct CallArgs {
     kw_seen: HashSet<String>,
 }
 
+pub(crate) unsafe fn dispatch_init_subclass_hooks(
+    _py: &PyToken<'_>,
+    bases: &[u64],
+    class_bits: u64,
+    kw_names: &[u64],
+    kw_values: &[u64],
+) -> bool {
+    unsafe {
+        let init_name_bits = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.init_subclass_name,
+            b"__init_subclass__",
+        );
+        for base_bits in bases.iter().copied() {
+            let Some(base_ptr) = obj_from_bits(base_bits).as_ptr() else {
+                continue;
+            };
+            let Some(init_bits) = attr_lookup_ptr_allow_missing(_py, base_ptr, init_name_bits)
+            else {
+                continue;
+            };
+            let builder_bits =
+                molt_callargs_new((1 + kw_names.len()) as u64, kw_names.len() as u64);
+            if builder_bits == 0 {
+                dec_ref_bits(_py, init_bits);
+                return false;
+            }
+            let _ = molt_callargs_push_pos(builder_bits, class_bits);
+            for (&name_bits, &val_bits) in kw_names.iter().zip(kw_values.iter()) {
+                let _ = molt_callargs_push_kw(builder_bits, name_bits, val_bits);
+            }
+            let _ = molt_call_bind(init_bits, builder_bits);
+            dec_ref_bits(_py, init_bits);
+            if exception_pending(_py) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 fn trace_callargs_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_CALLARGS").as_deref() == Ok("1"))
@@ -700,6 +741,9 @@ unsafe fn call_type_with_builder(
             let new_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
             if let Some(new_bits) = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits) {
+                if obj_from_bits(new_bits).as_ptr().is_some() {
+                    inc_ref_bits(_py, new_bits);
+                }
                 // Detect whether __new__ is the default Exception.__new__
                 // (molt_exception_new_bound).  The default __new__ only
                 // accepts positional args (cls, *args); keyword args must be
@@ -789,11 +833,14 @@ unsafe fn call_type_with_builder(
                     molt_call_bind(new_bits, new_builder_bits)
                 };
                 if exception_pending(_py) {
+                    dec_ref_bits(_py, new_bits);
                     return MoltObject::none().bits();
                 }
                 if !isinstance_bits(_py, inst_bits, class_bits) {
+                    dec_ref_bits(_py, new_bits);
                     return inst_bits;
                 }
+                dec_ref_bits(_py, new_bits);
                 inst_bits
             } else {
                 let args_bits = if builder_ptr.is_null() {
@@ -825,10 +872,29 @@ unsafe fn call_type_with_builder(
             let new_name_bits =
                 intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
             if let Some(new_bits) = class_attr_lookup_raw_mro(_py, call_ptr, new_name_bits) {
+                if trace_call_type_builder_enabled() {
+                    let new_obj = obj_from_bits(new_bits);
+                    let new_type = type_name(_py, new_obj);
+                    let fn_ptr = new_obj.as_ptr().and_then(|ptr| {
+                        if object_type_id(ptr) == TYPE_ID_FUNCTION {
+                            Some(function_fn_ptr(ptr) as usize)
+                        } else {
+                            None
+                        }
+                    });
+                    eprintln!(
+                        "[DEBUG] call_type_with_builder __new__ type={} bits=0x{:x} fn_ptr={:?}",
+                        new_type, new_bits, fn_ptr
+                    );
+                }
+                if obj_from_bits(new_bits).as_ptr().is_some() {
+                    inc_ref_bits(_py, new_bits);
+                }
                 resolved_new_bits = Some(new_bits);
                 let default_new = resolved_new_is_default_object_new(resolved_new_bits);
                 if default_new {
                     let inst_bits = alloc_instance_for_default_object_new(_py, call_ptr);
+                    dec_ref_bits(_py, new_bits);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
@@ -869,6 +935,7 @@ unsafe fn call_type_with_builder(
                         }
                     }
                     let inst_bits = molt_call_bind(new_bits, new_builder_bits);
+                    dec_ref_bits(_py, new_bits);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
@@ -886,6 +953,24 @@ unsafe fn call_type_with_builder(
         let Some(init_bits) = class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits) else {
             return inst_bits;
         };
+        if trace_call_type_builder_enabled() {
+            let init_obj = obj_from_bits(init_bits);
+            let init_type = type_name(_py, init_obj);
+            let fn_ptr = init_obj.as_ptr().and_then(|ptr| {
+                if object_type_id(ptr) == TYPE_ID_FUNCTION {
+                    Some(function_fn_ptr(ptr) as usize)
+                } else {
+                    None
+                }
+            });
+            eprintln!(
+                "[DEBUG] call_type_with_builder __init__ type={} bits=0x{:x} fn_ptr={:?}",
+                init_type, init_bits, fn_ptr
+            );
+        }
+        if obj_from_bits(init_bits).as_ptr().is_some() {
+            inc_ref_bits(_py, init_bits);
+        }
         let init_policy = if is_exc_subclass {
             InitArgPolicy::ForwardArgs
         } else {
@@ -899,15 +984,18 @@ unsafe fn call_type_with_builder(
                 {
                     let class_name = class_name_for_error(class_bits);
                     let msg = format!("{class_name}() takes no arguments");
+                    dec_ref_bits(_py, init_bits);
                     return raise_exception::<_>(_py, "TypeError", &msg);
                 }
             }
             InitArgPolicy::RejectConstructorArgs | InitArgPolicy::SkipObjectInit => {
+                dec_ref_bits(_py, init_bits);
                 return inst_bits;
             }
             InitArgPolicy::ForwardArgs => {}
         }
         if builder_ptr.is_null() {
+            dec_ref_bits(_py, init_bits);
             return inst_bits;
         }
         builder_guard.release();
@@ -918,6 +1006,7 @@ unsafe fn call_type_with_builder(
             (*args_ptr).pos.insert(0, inst_bits);
         }
         let _ = molt_call_bind(init_bits, builder_bits);
+        dec_ref_bits(_py, init_bits);
         inst_bits
     }
 }
@@ -1100,40 +1189,11 @@ unsafe fn build_class_from_args(
             return MoltObject::none().bits();
         }
 
-        let init_name_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.init_subclass_name,
-            b"__init_subclass__",
-        );
-        for base_bits in bases_vec.iter().copied() {
-            let Some(base_ptr) = obj_from_bits(base_bits).as_ptr() else {
-                continue;
-            };
-            let Some(init_bits) = attr_lookup_ptr_allow_missing(_py, base_ptr, init_name_bits)
-            else {
-                continue;
-            };
-            let builder_bits =
-                molt_callargs_new((1 + kw_names.len()) as u64, kw_names.len() as u64);
-            if builder_bits == 0 {
-                dec_ref_bits(_py, init_bits);
-                if bases_owned {
-                    dec_ref_bits(_py, bases_tuple_bits);
-                }
-                return MoltObject::none().bits();
+        if !dispatch_init_subclass_hooks(_py, &bases_vec, class_bits, &kw_names, &kw_values) {
+            if bases_owned {
+                dec_ref_bits(_py, bases_tuple_bits);
             }
-            let _ = molt_callargs_push_pos(builder_bits, class_bits);
-            for (&name_bits, &val_bits) in kw_names.iter().zip(kw_values.iter()) {
-                let _ = molt_callargs_push_kw(builder_bits, name_bits, val_bits);
-            }
-            let _ = molt_call_bind(init_bits, builder_bits);
-            dec_ref_bits(_py, init_bits);
-            if exception_pending(_py) {
-                if bases_owned {
-                    dec_ref_bits(_py, bases_tuple_bits);
-                }
-                return MoltObject::none().bits();
-            }
+            return MoltObject::none().bits();
         }
 
         if bases_owned {

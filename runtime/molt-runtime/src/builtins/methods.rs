@@ -2080,6 +2080,12 @@ pub(crate) fn type_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_type_init),
             5,
         )),
+        "__prepare__" => Some(builtin_classmethod_bits(
+            _py,
+            &runtime_state(_py).method_cache.type_prepare,
+            fn_addr!(molt_type_prepare),
+            3,
+        )),
         "__instancecheck__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.type_instancecheck,

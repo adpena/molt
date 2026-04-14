@@ -2982,6 +2982,13 @@ impl WasmBackend {
             ("molt_future_features", "future_features", 0),
             ("molt_exception_last", "exception_last", 0),
             ("molt_exception_active", "exception_active", 0),
+            ("molt_exception_current", "exception_current", 0),
+            ("molt_exception_enter_handler", "exception_enter_handler", 1),
+            (
+                "molt_exception_resolve_captured",
+                "exception_resolve_captured",
+                1,
+            ),
             ("molt_asyncgen_hooks_get", "asyncgen_hooks_get", 0),
             ("molt_asyncgen_hooks_set", "asyncgen_hooks_set", 2),
             ("molt_asyncgen_locals", "asyncgen_locals", 1),
@@ -12256,6 +12263,48 @@ impl WasmBackend {
                     }
                     "exception_last" => {
                         emit_call(func, reloc_enabled, import_ids["exception_last"]);
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "exception_active" => {
+                        emit_call(func, reloc_enabled, import_ids["exception_active"]);
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "exception_current" => {
+                        emit_call(func, reloc_enabled, import_ids["exception_current"]);
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "exception_enter_handler" => {
+                        let args = op.args.as_ref().unwrap();
+                        let captured = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(captured));
+                        emit_call(func, reloc_enabled, import_ids["exception_enter_handler"]);
+                        if let Some(out) = op.out.as_ref() {
+                            func.instruction(&Instruction::LocalSet(locals[out]));
+                        } else {
+                            func.instruction(&Instruction::Drop);
+                        }
+                    }
+                    "exception_resolve_captured" => {
+                        let args = op.args.as_ref().unwrap();
+                        let captured = locals[&args[0]];
+                        func.instruction(&Instruction::LocalGet(captured));
+                        emit_call(
+                            func,
+                            reloc_enabled,
+                            import_ids["exception_resolve_captured"],
+                        );
                         if let Some(out) = op.out.as_ref() {
                             func.instruction(&Instruction::LocalSet(locals[out]));
                         } else {

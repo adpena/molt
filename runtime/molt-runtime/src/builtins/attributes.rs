@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::async_rt::generators::{generator_locals_dict, generator_yieldfrom_bits};
 use crate::builtins::annotations::pep649_enabled;
@@ -42,9 +43,40 @@ struct AttrICEntry {
 }
 
 static ATTR_IC_RESULT_CACHE: OnceLock<Mutex<HashMap<u64, AttrICEntry>>> = OnceLock::new();
+static ATTR_LOOKUP_TRACE_DEPTH: AtomicUsize = AtomicUsize::new(0);
+static ATTR_LOOKUP_TRACE_LINES: AtomicUsize = AtomicUsize::new(0);
 
 fn attr_ic_result_cache() -> &'static Mutex<HashMap<u64, AttrICEntry>> {
     ATTR_IC_RESULT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+struct AttrLookupTraceGuard {
+    enabled: bool,
+}
+
+impl AttrLookupTraceGuard {
+    fn new(enabled: bool) -> Self {
+        if enabled {
+            ATTR_LOOKUP_TRACE_DEPTH.fetch_add(1, Ordering::Relaxed);
+        }
+        Self { enabled }
+    }
+
+    fn depth(&self) -> usize {
+        if self.enabled {
+            ATTR_LOOKUP_TRACE_DEPTH.load(Ordering::Relaxed)
+        } else {
+            0
+        }
+    }
+}
+
+impl Drop for AttrLookupTraceGuard {
+    fn drop(&mut self) {
+        if self.enabled {
+            ATTR_LOOKUP_TRACE_DEPTH.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
 }
 
 fn is_task_trampoline_attr_name(attr_name: &str) -> bool {
@@ -879,6 +911,24 @@ pub(crate) unsafe fn attr_lookup_ptr(
     attr_bits: u64,
 ) -> Option<u64> {
     unsafe {
+        let trace_attr_lookup =
+            std::env::var("MOLT_TRACE_ATTR_LOOKUP").as_deref() == Ok("1");
+        let trace_guard = AttrLookupTraceGuard::new(trace_attr_lookup);
+        if trace_attr_lookup {
+            let line_no = ATTR_LOOKUP_TRACE_LINES.fetch_add(1, Ordering::Relaxed);
+            if line_no < 400 {
+                let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
+                    .unwrap_or_else(|| "<non-str>".to_string());
+                let owner_bits = MoltObject::from_ptr(obj_ptr).bits();
+                eprintln!(
+                    "MOLT_TRACE_ATTR_LOOKUP depth={} type={} owner=0x{:x} attr={}",
+                    trace_guard.depth(),
+                    type_name(_py, obj_from_bits(owner_bits)),
+                    owner_bits,
+                    attr_name,
+                );
+            }
+        }
         profile_hit(_py, &ATTR_LOOKUP_COUNT);
         let type_id = object_type_id(obj_ptr);
         if type_id == TYPE_ID_MODULE {
@@ -5115,7 +5165,8 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                     return val;
                 }
                 if exception_pending(_py) {
-                    let exc_bits = molt_exception_last();
+                    let exc_bits =
+                        exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
                     molt_exception_clear();
                     let _ = molt_raise(exc_bits);
                     dec_ref_bits(_py, exc_bits);
@@ -5206,12 +5257,16 @@ pub extern "C" fn molt_get_attr_name_default(
     default_bits: u64,
 ) -> u64 {
     crate::with_gil_entry!(_py, {
+        if is_missing_bits(_py, default_bits) {
+            return molt_get_attr_name(obj_bits, name_bits);
+        }
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_attr_name_type_error(_py, name_bits);
         };
         if exception_pending(_py) {
-            let exc_bits = molt_exception_last();
+            let exc_bits =
+                exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
             if exception_is_attribute_error(_py, exc_bits) {
                 clear_exception(_py);
                 dec_ref_bits(_py, exc_bits);
@@ -5248,7 +5303,8 @@ pub extern "C" fn molt_get_attr_name_default(
                     return val;
                 }
                 if exception_pending(_py) {
-                    let exc_bits = molt_exception_last();
+                    let exc_bits =
+                        exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
                     if exception_is_attribute_error(_py, exc_bits) {
                         clear_exception(_py);
                         dec_ref_bits(_py, exc_bits);

@@ -4198,6 +4198,8 @@ def _collect_imports(
     ] = []
 
     def _importlib_target(func: ast.expr) -> str | None:
+        if isinstance(func, ast.Name):
+            return func.id
         if isinstance(func, ast.Attribute):
             parts: list[str] = []
             current: ast.expr | None = func
@@ -4341,6 +4343,8 @@ def _collect_imports(
                     continue
                 target = _importlib_target(node.func)
                 if target not in {
+                    "__import__",
+                    "builtins.__import__",
                     "importlib.import_module",
                     "importlib.util.find_spec",
                 }:
@@ -4431,7 +4435,12 @@ def _collect_imports(
             continue
         if isinstance(node, ast.Call) and node.args:
             target = _importlib_target(node.func)
-            if target in {"importlib.import_module", "importlib.util.find_spec"}:
+            if target in {
+                "__import__",
+                "builtins.__import__",
+                "importlib.import_module",
+                "importlib.util.find_spec",
+            }:
                 resolved = _resolve_string_constant(node.args[0])
                 if resolved is not None:
                     imports.append(resolved)
@@ -17287,6 +17296,37 @@ def _prepare_entry_module_graph(
         entry_path=source_path,
         entry_tree=entry_tree,
     )
+    if runtime_import_support_policy.needs_runtime_import_support:
+        import_support_paths: list[Path] = []
+        for module_name in ("importlib", "importlib.util", "importlib.machinery"):
+            module_path = _resolve_module_path(module_name, [stdlib_root])
+            if module_path is None:
+                return None, {
+                    "kind": "runtime_import_support_missing",
+                    "message": f"Missing required stdlib support module: {module_name}",
+                }
+            import_support_paths.append(module_path)
+        before_support = set(module_graph)
+        _extend_module_graph_with_closure(
+            module_graph,
+            entry_paths=import_support_paths,
+            roots=[stdlib_root],
+            module_roots=[stdlib_root],
+            stdlib_root=stdlib_root,
+            project_root=None,
+            stdlib_allowlist=stdlib_allowlist,
+            resolver_cache=module_resolution_cache,
+            diagnostics_enabled=diagnostics_enabled,
+            module_reasons=module_reasons,
+            reason="runtime_import_support",
+        )
+        if diagnostics_enabled:
+            _record_new_module_reasons(
+                module_graph,
+                before_support,
+                module_reasons,
+                "runtime_import_support",
+            )
     return _PreparedEntryModuleGraph(
         stdlib_allowlist=stdlib_allowlist,
         roots=roots,

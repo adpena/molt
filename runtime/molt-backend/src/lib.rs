@@ -2062,6 +2062,30 @@ fn compute_function_has_ret(functions: &[FunctionIR]) -> BTreeMap<String, bool> 
         .collect()
 }
 
+#[cfg(feature = "native-backend")]
+fn merge_function_arities(
+    module_context: Option<&NativeBackendModuleContext>,
+    local_function_arities: BTreeMap<String, usize>,
+) -> BTreeMap<String, usize> {
+    let mut merged = module_context
+        .map(|context| context.function_arities.clone())
+        .unwrap_or_default();
+    merged.extend(local_function_arities);
+    merged
+}
+
+#[cfg(feature = "native-backend")]
+fn merge_function_has_ret(
+    module_context: Option<&NativeBackendModuleContext>,
+    local_function_has_ret: BTreeMap<String, bool>,
+) -> BTreeMap<String, bool> {
+    let mut merged = module_context
+        .map(|context| context.function_has_ret.clone())
+        .unwrap_or_default();
+    merged.extend(local_function_has_ret);
+    merged
+}
+
 pub(crate) fn env_setting(var: &str) -> Option<String> {
     std::env::var(var)
         .ok()
@@ -3328,10 +3352,8 @@ impl SimpleBackend {
         let local_return_alias_summaries =
             crate::passes::compute_return_alias_summaries(&ir.functions);
         let module_context = self.module_context.clone();
-        let effective_function_arities = module_context
-            .as_ref()
-            .map(|context| context.function_arities.clone())
-            .unwrap_or(local_function_arities);
+        let effective_function_arities =
+            merge_function_arities(module_context.as_ref(), local_function_arities);
         let effective_closure_functions = module_context
             .as_ref()
             .map(|context| context.closure_functions.clone())
@@ -3353,10 +3375,8 @@ impl SimpleBackend {
             .map(|context| context.return_alias_summaries.clone())
             .unwrap_or(local_return_alias_summaries);
         let local_function_has_ret = compute_function_has_ret(&ir.functions);
-        let effective_function_has_ret = module_context
-            .as_ref()
-            .map(|context| context.function_has_ret.clone())
-            .unwrap_or(local_function_has_ret);
+        let effective_function_has_ret =
+            merge_function_has_ret(module_context.as_ref(), local_function_has_ret);
         let mut module_known_functions = ir_analysis.defined_functions.clone();
         module_known_functions.extend(self.external_function_names.iter().cloned());
         let mut compiled = 0u32;
@@ -3885,12 +3905,14 @@ impl SimpleBackend {
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
     use super::{
-        FunctionIR, OpIR, SimpleBackend, SimpleIR, TrampolineKind, analyze_native_backend_ir,
-        compute_function_has_ret,
+        FunctionIR, NativeBackendModuleContext, OpIR, SimpleBackend, SimpleIR,
+        TrampolineKind, analyze_native_backend_ir, compute_function_has_ret,
+        merge_function_arities, merge_function_has_ret,
     };
     use crate::passes::ReturnAliasSummary;
     use crate::rewrite_phi_to_store_load;
     use cranelift_codegen::ir::types;
+    use std::collections::BTreeMap;
     use std::sync::{Mutex, OnceLock};
 
     fn backend_env_lock() -> &'static Mutex<()> {
@@ -4378,6 +4400,41 @@ mod tests {
 
         assert_eq!(result.get("user_func"), Some(&false));
         assert_eq!(result.get("demo__molt_module_chunk_1"), Some(&false));
+    }
+
+    #[test]
+    fn local_function_metadata_overrides_stale_module_context_after_split() {
+        let context = NativeBackendModuleContext {
+            function_arities: BTreeMap::from([
+                ("__molt_chunk_builtins__molt_module_chunk_3_0".to_string(), 1usize),
+            ]),
+            function_has_ret: BTreeMap::from([
+                ("__molt_chunk_builtins__molt_module_chunk_3_0".to_string(), false),
+            ]),
+            ..NativeBackendModuleContext::default()
+        };
+
+        let merged_arities = merge_function_arities(
+            Some(&context),
+            BTreeMap::from([
+                ("__molt_chunk_builtins__molt_module_chunk_3_0".to_string(), 1usize),
+            ]),
+        );
+        let merged_has_ret = merge_function_has_ret(
+            Some(&context),
+            BTreeMap::from([
+                ("__molt_chunk_builtins__molt_module_chunk_3_0".to_string(), true),
+            ]),
+        );
+
+        assert_eq!(
+            merged_arities.get("__molt_chunk_builtins__molt_module_chunk_3_0"),
+            Some(&1usize)
+        );
+        assert_eq!(
+            merged_has_ret.get("__molt_chunk_builtins__molt_module_chunk_3_0"),
+            Some(&true)
+        );
     }
 
     #[test]

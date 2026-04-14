@@ -4765,6 +4765,102 @@ pub extern "C" fn molt_function_init_metadata(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_function_init_metadata_packed(
+    func_bits: u64,
+    metadata_bits: u64,
+    code_bits: u64,
+    bind_kind_bits: u64,
+) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "expected function");
+        };
+        unsafe {
+            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+                return raise_exception::<_>(_py, "TypeError", "expected function");
+            }
+        }
+
+        let Some(metadata_ptr) = obj_from_bits(metadata_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "expected metadata tuple");
+        };
+        unsafe {
+            if object_type_id(metadata_ptr) != TYPE_ID_TUPLE {
+                return raise_exception::<_>(_py, "TypeError", "expected metadata tuple");
+            }
+        }
+        let metadata = unsafe { seq_vec_ref(metadata_ptr) };
+        if metadata.len() != 11 {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "metadata tuple must contain 11 items",
+            );
+        }
+
+        let set_attr = |name: &'static [u8], value_bits: u64| -> Result<(), u64> {
+            let Some(attr_bits) = attr_name_bits_from_bytes(_py, name) else {
+                return Err(MoltObject::none().bits());
+            };
+            unsafe {
+                crate::call::class_init::function_set_attr_bits(
+                    _py, func_ptr, attr_bits, value_bits,
+                );
+            }
+            dec_ref_bits(_py, attr_bits);
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            Ok(())
+        };
+
+        let name_bits = metadata[0];
+        let qualname_bits = metadata[1];
+        let module_bits = metadata[2];
+        let arg_names_bits = metadata[3];
+        let posonly_bits = metadata[4];
+        let kwonly_bits = metadata[5];
+        let vararg_bits = metadata[6];
+        let varkw_bits = metadata[7];
+        let defaults_bits = metadata[8];
+        let kwdefaults_bits = metadata[9];
+        let doc_bits = metadata[10];
+
+        if set_attr(b"__name__", name_bits).is_err()
+            || set_attr(b"__qualname__", qualname_bits).is_err()
+            || set_attr(b"__module__", module_bits).is_err()
+            || set_attr(b"__molt_arg_names__", arg_names_bits).is_err()
+            || set_attr(b"__molt_posonly__", posonly_bits).is_err()
+            || set_attr(b"__molt_kwonly_names__", kwonly_bits).is_err()
+            || set_attr(b"__molt_vararg__", vararg_bits).is_err()
+            || set_attr(b"__molt_varkw__", varkw_bits).is_err()
+            || set_attr(b"__defaults__", defaults_bits).is_err()
+            || set_attr(b"__kwdefaults__", kwdefaults_bits).is_err()
+            || set_attr(b"__doc__", doc_bits).is_err()
+        {
+            return MoltObject::none().bits();
+        }
+
+        if !obj_from_bits(code_bits).is_none() {
+            unsafe {
+                function_set_code_bits(_py, func_ptr, code_bits);
+            }
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+        }
+
+        if !obj_from_bits(bind_kind_bits).is_none()
+            && set_attr(b"__molt_bind_kind__", bind_kind_bits).is_err()
+        {
+            return MoltObject::none().bits();
+        }
+
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_function_set_defaults(
     func_bits: u64,
     defaults_bits: u64,
