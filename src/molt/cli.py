@@ -7510,6 +7510,8 @@ def _runtime_cargo_features_cached(
     tk_raw: str | None,
     gpu_metal_raw: str | None,
     gpu_webgpu_raw: str | None,
+    gpu_cuda_raw: str | None,
+    gpu_hip_raw: str | None,
 ) -> tuple[str, ...]:
     features: list[str] = []
     if target_triple is not None and target_triple.startswith("wasm32"):
@@ -7525,6 +7527,12 @@ def _runtime_cargo_features_cached(
     webgpu_enabled = False if gpu_webgpu_raw is None or gpu_webgpu_raw.strip() == "" else _coerce_bool(gpu_webgpu_raw, False)
     if webgpu_enabled:
         features.append("molt_gpu_webgpu")
+    cuda_enabled = False if gpu_cuda_raw is None or gpu_cuda_raw.strip() == "" else _coerce_bool(gpu_cuda_raw, False)
+    if cuda_enabled:
+        features.append("molt_gpu_cuda")
+    hip_enabled = False if gpu_hip_raw is None or gpu_hip_raw.strip() == "" else _coerce_bool(gpu_hip_raw, False)
+    if hip_enabled:
+        features.append("molt_gpu_hip")
     return tuple(features)
 
 
@@ -7534,6 +7542,8 @@ def _runtime_cargo_features(target_triple: str | None) -> tuple[str, ...]:
         os.environ.get("MOLT_RUNTIME_TK_NATIVE"),
         os.environ.get("MOLT_RUNTIME_GPU_METAL"),
         os.environ.get("MOLT_RUNTIME_GPU_WEBGPU"),
+        os.environ.get("MOLT_RUNTIME_GPU_CUDA"),
+        os.environ.get("MOLT_RUNTIME_GPU_HIP"),
     )
 
 
