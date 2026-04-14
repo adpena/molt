@@ -87,6 +87,8 @@ Current TurboQuant backend boundary:
 - native TurboQuant codebook generation is now stabilized on explicit float
   locals, and the packed-attention symbol also has a native Metal execution
   lane on the same shadow-tensor ABI
+- current real GPU execution lanes for the packed-attention symbol are:
+  browser WebGPU and native Metal
 - next backend work should replace that bridge with real packed CUDA/Metal/
   WebGPU/ROCm kernels behind the same symbol
 

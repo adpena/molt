@@ -707,6 +707,7 @@ fn buffer_host_bytes_for_gpu_compute(
 
 #[cfg(any(
     target_arch = "wasm32",
+    all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
 fn encode_webgpu_buffer_bytes(raw: &[u8], format: ScalarFormat) -> Result<Vec<u8>, String> {
@@ -735,6 +736,7 @@ fn encode_webgpu_buffer_bytes(raw: &[u8], format: ScalarFormat) -> Result<Vec<u8
 
 #[cfg(any(
     target_arch = "wasm32",
+    all(target_os = "macos", feature = "molt_gpu_metal"),
     all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
 ))]
 fn bytes_like_view_to_webgpu_bytes(
@@ -1391,6 +1393,83 @@ fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
     )
 }
 
+#[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+fn render_metal_turboquant_attention_source(entry: &str) -> String {
+    format!(
+        "#include <metal_stdlib>\n\
+using namespace metal;\n\
+\n\
+kernel void {entry}(\n\
+    device const float* rotated_q [[buffer(0)]],\n\
+    device const float* query_sketch [[buffer(1)]],\n\
+    device const float* key_mse [[buffer(2)]],\n\
+    device const float* key_sign [[buffer(3)]],\n\
+    device const float* key_scale [[buffer(4)]],\n\
+    device const float* value_rows [[buffer(5)]],\n\
+    device float* out [[buffer(6)]],\n\
+    device const float* mask [[buffer(7)]],\n\
+    constant int& batch [[buffer(8)]],\n\
+    constant int& query_heads [[buffer(9)]],\n\
+    constant int& kv_heads [[buffer(10)]],\n\
+    constant int& seq_q [[buffer(11)]],\n\
+    constant int& seq_k [[buffer(12)]],\n\
+    constant int& dim [[buffer(13)]],\n\
+    constant float& scale [[buffer(14)]],\n\
+    constant int& has_mask [[buffer(15)]],\n\
+    uint tid [[thread_position_in_grid]]\n\
+) {{\n\
+    int idx = int(tid);\n\
+    int total = batch * query_heads * seq_q * dim;\n\
+    if (idx >= total) {{\n\
+        return;\n\
+    }}\n\
+    int d = idx % dim;\n\
+    int q_idx = (idx / dim) % seq_q;\n\
+    int q_head = (idx / (dim * seq_q)) % query_heads;\n\
+    int b = idx / (dim * seq_q * query_heads);\n\
+    int kv_head = (query_heads == kv_heads) ? q_head : (q_head / (query_heads / kv_heads));\n\
+    int q_base = ((b * query_heads + q_head) * seq_q + q_idx) * dim;\n\
+    float max_score = -1.0e30f;\n\
+    for (int k_idx = 0; k_idx < seq_k; k_idx += 1) {{\n\
+        int key_base = ((b * kv_heads + kv_head) * seq_k + k_idx) * dim;\n\
+        float score = 0.0f;\n\
+        float residual = 0.0f;\n\
+        for (int i = 0; i < dim; i += 1) {{\n\
+            score += rotated_q[q_base + i] * key_mse[key_base + i];\n\
+            residual += query_sketch[q_base + i] * key_sign[key_base + i];\n\
+        }}\n\
+        score = (score + residual * key_scale[(b * kv_heads + kv_head) * seq_k + k_idx]) * scale;\n\
+        if (has_mask != 0) {{\n\
+            score += mask[((b * query_heads + q_head) * seq_q + q_idx) * seq_k + k_idx];\n\
+        }}\n\
+        if (score > max_score) {{\n\
+            max_score = score;\n\
+        }}\n\
+    }}\n\
+    float sum = 0.0f;\n\
+    float acc = 0.0f;\n\
+    for (int k_idx = 0; k_idx < seq_k; k_idx += 1) {{\n\
+        int key_base = ((b * kv_heads + kv_head) * seq_k + k_idx) * dim;\n\
+        float score = 0.0f;\n\
+        float residual = 0.0f;\n\
+        for (int i = 0; i < dim; i += 1) {{\n\
+            score += rotated_q[q_base + i] * key_mse[key_base + i];\n\
+            residual += query_sketch[q_base + i] * key_sign[key_base + i];\n\
+        }}\n\
+        score = (score + residual * key_scale[(b * kv_heads + kv_head) * seq_k + k_idx]) * scale;\n\
+        if (has_mask != 0) {{\n\
+            score += mask[((b * query_heads + q_head) * seq_q + q_idx) * seq_k + k_idx];\n\
+        }}\n\
+        float weight = exp(score - max_score);\n\
+        sum += weight;\n\
+        int v_base = ((b * kv_heads + kv_head) * seq_k + k_idx) * dim;\n\
+        acc += weight * value_rows[v_base + d];\n\
+    }}\n\
+    out[idx] = (sum != 0.0f) ? (acc / sum) : 0.0f;\n\
+}}\n"
+    )
+}
+
 #[cfg(target_arch = "wasm32")]
 fn render_webgpu_turboquant_attention_source(entry: &str, workgroup_size: u32) -> String {
     format!(
@@ -1472,7 +1551,7 @@ fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
     )
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", all(target_os = "macos", feature = "molt_gpu_metal")))]
 fn expand_attention_mask_to_webgpu_bytes(
     mask: &TensorRuntimeView,
     mask_shape: &[usize],
@@ -7048,6 +7127,281 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             && runtime_key_scale_bits != missing
             && runtime_value_bits != missing
         {
+            #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
+            if requested_gpu_backend().as_deref() == Some("metal")
+                && runtime_mse_signs_bits != missing
+                && runtime_qjl_signs_bits != missing
+            {
+                if trace_gpu_backend_enabled() {
+                    eprintln!("[molt gpu backend] metal turboquant_attention_packed");
+                }
+                let metal_result: Result<u64, u64> = (|| {
+                    let (mse_signs_tensor, mse_signs_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_mse_signs_bits, "_runtime_mse_signs")
+                    }
+                    .map_err(|bits| bits)?;
+                    let (qjl_signs_tensor, qjl_signs_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_qjl_signs_bits, "_runtime_qjl_signs")
+                    }
+                    .map_err(|bits| bits)?;
+                    let (key_mse, key_mse_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_key_mse_bits, "_runtime_key_mse_weight_rows")
+                    }
+                    .map_err(|bits| bits)?;
+                    let (key_sign, key_sign_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_key_sign_bits, "_runtime_key_residual_sign_rows")
+                    }
+                    .map_err(|bits| bits)?;
+                    let (key_scale, key_scale_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_key_scale_bits, "_runtime_key_residual_scale_rows")
+                    }
+                    .map_err(|bits| bits)?;
+                    let (value_rows, value_rows_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_value_bits, "_runtime_value_rows")
+                    }
+                    .map_err(|bits| bits)?;
+                    if mse_signs_shape != vec![dim]
+                        || qjl_signs_shape != vec![dim]
+                        || key_mse_shape.len() != 4
+                        || key_sign_shape.len() != 4
+                        || key_scale_shape.len() != 3
+                        || value_rows_shape.len() != 4
+                    {
+                        return Err(raise_exception::<u64>(
+                            _py,
+                            "ValueError",
+                            "turboquant metal shadow tensor shape mismatch",
+                        ));
+                    }
+                    let seq_k = key_mse_shape[2];
+
+                    let q_total = batch * query_heads * query_seq * dim;
+                    let mut rotated_q_bytes = vec![0u8; q_total * 4];
+                    let mut query_sketch_bytes = vec![0u8; q_total * 4];
+                    let mut query_row = vec![0.0f32; dim];
+                    let mse_signs: Vec<f32> = (0..dim)
+                        .map(|index| {
+                            read_float_buffer_value(
+                                mse_signs_tensor.buffer.data_view,
+                                mse_signs_tensor.buffer.format,
+                                index,
+                            )
+                        })
+                        .collect();
+                    let qjl_signs: Vec<f32> = (0..dim)
+                        .map(|index| {
+                            read_float_buffer_value(
+                                qjl_signs_tensor.buffer.data_view,
+                                qjl_signs_tensor.buffer.format,
+                                index,
+                            )
+                        })
+                        .collect();
+                    let q_stride = query_seq * dim;
+                    for batch_index in 0..batch {
+                        for query_head_index in 0..query_heads {
+                            for query_index in 0..query_seq {
+                                let q_base =
+                                    ((batch_index * query_heads + query_head_index) * q_stride)
+                                        + query_index * dim;
+                                for dim_index in 0..dim {
+                                    query_row[dim_index] = read_float_buffer_value(
+                                        q.buffer.data_view,
+                                        q.buffer.format,
+                                        q_base + dim_index,
+                                    );
+                                }
+                                let rotated_q =
+                                    hadamard_apply_with_signs(query_row.as_slice(), mse_signs.as_slice());
+                                let query_sketch =
+                                    hadamard_apply_with_signs(query_row.as_slice(), qjl_signs.as_slice());
+                                for dim_index in 0..dim {
+                                    write_float_buffer_value(
+                                        rotated_q_bytes.as_mut_slice(),
+                                        ScalarFormat::F32,
+                                        q_base + dim_index,
+                                        rotated_q[dim_index],
+                                    );
+                                    write_float_buffer_value(
+                                        query_sketch_bytes.as_mut_slice(),
+                                        ScalarFormat::F32,
+                                        q_base + dim_index,
+                                        query_sketch[dim_index],
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    let key_mse_bytes = bytes_like_view_to_webgpu_bytes(
+                        key_mse.buffer.data_view,
+                        key_mse.buffer.format,
+                    )
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    let key_sign_bytes = bytes_like_view_to_webgpu_bytes(
+                        key_sign.buffer.data_view,
+                        key_sign.buffer.format,
+                    )
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    let key_scale_bytes = bytes_like_view_to_webgpu_bytes(
+                        key_scale.buffer.data_view,
+                        key_scale.buffer.format,
+                    )
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    let value_rows_bytes = bytes_like_view_to_webgpu_bytes(
+                        value_rows.buffer.data_view,
+                        value_rows.buffer.format,
+                    )
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    let q_rotated_bytes = rotated_q_bytes;
+                    let q_sketch_bytes = query_sketch_bytes;
+                    let (mask_bytes, has_mask_i32): (Vec<u8>, i32) = if let Some((mask, mask_shape, mask_strides)) = &mask_info
+                    {
+                        (
+                            expand_attention_mask_to_webgpu_bytes(
+                                mask,
+                                mask_shape.as_slice(),
+                                mask_strides.as_slice(),
+                                batch,
+                                query_heads,
+                                query_seq,
+                                seq_k,
+                            )
+                            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+                            1i32,
+                        )
+                    } else {
+                        (vec![0u8; 4], 0i32)
+                    };
+                    let out_elems = batch * query_heads * query_seq * dim;
+                    let mut out_gpu = vec![0u8; out_elems * 4];
+                    let batch_bytes = i32::try_from(batch)
+                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32"))?
+                        .to_le_bytes();
+                    let query_heads_bytes = i32::try_from(query_heads)
+                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "query_heads exceeds i32"))?
+                        .to_le_bytes();
+                    let kv_heads_bytes = i32::try_from(kv_heads)
+                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "kv_heads exceeds i32"))?
+                        .to_le_bytes();
+                    let seq_q_bytes = i32::try_from(query_seq)
+                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32"))?
+                        .to_le_bytes();
+                    let seq_k_bytes = i32::try_from(seq_k)
+                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32"))?
+                        .to_le_bytes();
+                    let dim_bytes = i32::try_from(dim)
+                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32"))?
+                        .to_le_bytes();
+                    let scale_bytes = scale.to_le_bytes();
+                    let has_mask_bytes = has_mask_i32.to_le_bytes();
+
+                    let device = RuntimeMetalDevice::new()
+                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    let pipeline = device
+                        .compile_pipeline(
+                            "turboquant_attention_packed",
+                            &render_metal_turboquant_attention_source("turboquant_attention_packed"),
+                        )
+                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+
+                    let buffer_payloads: [&[u8]; 16] = [
+                        q_rotated_bytes.as_slice(),
+                        q_sketch_bytes.as_slice(),
+                        key_mse_bytes.as_slice(),
+                        key_sign_bytes.as_slice(),
+                        key_scale_bytes.as_slice(),
+                        value_rows_bytes.as_slice(),
+                        out_gpu.as_slice(),
+                        mask_bytes.as_slice(),
+                        batch_bytes.as_slice(),
+                        query_heads_bytes.as_slice(),
+                        kv_heads_bytes.as_slice(),
+                        seq_q_bytes.as_slice(),
+                        seq_k_bytes.as_slice(),
+                        dim_bytes.as_slice(),
+                        scale_bytes.as_slice(),
+                        has_mask_bytes.as_slice(),
+                    ];
+                    let mut owned_buffers: Vec<MetalBuffer> = Vec::new();
+                    for data in buffer_payloads {
+                        let metal_buf = device.alloc_buffer(data.len().max(1));
+                        if !data.is_empty() {
+                            device.copy_to_buffer(&metal_buf, data);
+                        }
+                        owned_buffers.push(metal_buf);
+                    }
+                    let refs: Vec<&MetalBuffer> = owned_buffers.iter().collect();
+                    device
+                        .dispatch(&pipeline, out_elems, &refs)
+                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    out_gpu = device.copy_from_buffer(&owned_buffers[6], out_elems * 4);
+
+                    let data_ptr = alloc_bytearray(_py, out_gpu.as_slice());
+                    if data_ptr.is_null() {
+                        return Err(MoltObject::none().bits());
+                    }
+                    let data_bits = MoltObject::from_ptr(data_ptr).bits();
+                    let format_bits = match alloc_string_bits(
+                        _py,
+                        match q.buffer.format {
+                            ScalarFormat::F32 => b"f",
+                            ScalarFormat::F64 => b"d",
+                            ScalarFormat::I64 => b"q",
+                        },
+                    ) {
+                        Ok(bits) => bits,
+                        Err(bits) => {
+                            crate::dec_ref_bits(_py, data_bits);
+                            return Err(bits);
+                        }
+                    };
+                    let shape_bits =
+                        alloc_tuple_bits_from_usize(_py, &[batch, query_heads, query_seq, dim])?;
+                    let out_format = q.buffer.format;
+                    let rebuilt = rebuild_host_bytes_from_gpu32_output(
+                        _py,
+                        out_format,
+                        out_elems,
+                        out_gpu.as_slice(),
+                    )?;
+                    let rebuilt_ptr = alloc_bytearray(_py, rebuilt.as_slice());
+                    if rebuilt_ptr.is_null() {
+                        crate::dec_ref_bits(_py, data_bits);
+                        crate::dec_ref_bits(_py, format_bits);
+                        crate::dec_ref_bits(_py, shape_bits);
+                        return Err(MoltObject::none().bits());
+                    }
+                    let rebuilt_bits = MoltObject::from_ptr(rebuilt_ptr).bits();
+                    let tensor_bits = match unsafe {
+                        build_tensor_from_data_bits(
+                            _py,
+                            q.class_bits,
+                            q.buffer.class_bits,
+                            rebuilt_bits,
+                            crate::builtins::classes::builtin_classes(_py).float,
+                            out_elems,
+                            format_bits,
+                            out_format.itemsize(),
+                            shape_bits,
+                            q.dtype_bits,
+                        )
+                    } {
+                        Ok(bits) => bits,
+                        Err(bits) => bits,
+                    };
+                    crate::dec_ref_bits(_py, data_bits);
+                    crate::dec_ref_bits(_py, rebuilt_bits);
+                    crate::dec_ref_bits(_py, format_bits);
+                    crate::dec_ref_bits(_py, shape_bits);
+                    Ok(tensor_bits)
+                })();
+                return match metal_result {
+                    Ok(bits) => bits,
+                    Err(bits) => bits,
+                };
+            }
+
             #[cfg(target_arch = "wasm32")]
             if requested_gpu_backend().as_deref() == Some("webgpu")
                 && runtime_mse_signs_bits != missing
