@@ -1122,3 +1122,191 @@ console.log(JSON.stringify(fakeState));
         assert json.loads(lines[1]) == {"dispatchCount": 1}
     finally:
         server.shutdown()
+
+
+def test_browser_host_direct_mode_turboquant_attention_uses_webgpu_dispatch(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser host GPU direct-mode test")
+    if shutil.which("cargo") is None:
+        pytest.skip("cargo is required for browser host GPU direct-mode test")
+
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "browser_host_turboquant_attention.py"
+    src.write_text(
+        "from molt.gpu.kv_cache import TurboQuantAttentionKVCache\n"
+        "from molt.gpu.tensor import Tensor\n"
+        "from molt.gpu.turboquant import TurboQuantCodec\n"
+        "\n"
+        "codec = TurboQuantCodec(dim=2, bits=3, seed=5, qjl_seed=19)\n"
+        "cache = TurboQuantAttentionKVCache(codec)\n"
+        "cache.append(\n"
+        "    Tensor([0.6, -0.2, 0.1, 0.4], shape=(1, 1, 2, 2)),\n"
+        "    Tensor([0.2, 0.1, -0.3, 0.4], shape=(1, 1, 2, 2)),\n"
+        ")\n"
+        "q = Tensor([0.5, -0.1], shape=(1, 1, 1, 2))\n"
+        "print(cache.attention(q, scale=1.0).to_list())\n",
+        encoding="utf-8",
+    )
+
+    build_env = os.environ.copy()
+    build_env["PYTHONPATH"] = str(root / "src")
+    build_env["MOLT_WASM_LINKED"] = "0"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(src),
+            "--build-profile",
+            "dev",
+            "--profile",
+            "browser",
+            "--target",
+            "wasm",
+            "--out-dir",
+            str(tmp_path),
+        ],
+        cwd=root,
+        env=build_env,
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    assert build.returncode == 0, build.stderr
+
+    output_wasm = tmp_path / "output.wasm"
+    runtime_wasm = tmp_path / "molt_runtime.wasm"
+    assert output_wasm.exists()
+    assert runtime_wasm.exists()
+
+    class _WasmHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: object) -> None:
+            return None
+
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/output.wasm":
+                payload = output_wasm.read_bytes()
+            elif self.path == "/molt_runtime.wasm":
+                payload = runtime_wasm.read_bytes()
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("content-type", "application/wasm")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _WasmHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        browser_host_uri = (root / "wasm" / "browser_host.js").as_uri()
+        script = tmp_path / "run_browser_turboquant_attention.mjs"
+        script.write_text(
+            f"""
+import {{ loadMoltWasm }} from {browser_host_uri!r};
+
+const baseUrl = {base_url!r};
+const fakeState = {{ dispatchCount: 0 }};
+const view = (bytes) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+const readF32 = (bytes, index) => view(bytes).getFloat32(index * 4, true);
+const writeF32 = (bytes, index, value) => view(bytes).setFloat32(index * 4, value, true);
+const readI32 = (bytes, index) => view(bytes).getInt32(index * 4, true);
+
+const host = await loadMoltWasm({{
+  wasmUrl: `${{baseUrl}}/output.wasm`,
+  runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
+  preferLinked: false,
+  env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
+  gpuKernelDispatcher: {{
+    dispatchKernel(request) {{
+      fakeState.dispatchCount += 1;
+      const bindings = new Map(request.bindings.map((binding) => [binding.name, binding]));
+      const rotatedQ = bindings.get('rotated_q').bytes;
+      const querySketch = bindings.get('query_sketch').bytes;
+      const keyMse = bindings.get('key_mse').bytes;
+      const keySign = bindings.get('key_sign').bytes;
+      const keyScale = bindings.get('key_scale').bytes;
+      const valueRows = bindings.get('value_rows').bytes;
+      const out = bindings.get('out').bytes;
+      const mask = bindings.get('mask')?.bytes || null;
+      const batch = readI32(bindings.get('batch').bytes, 0);
+      const queryHeads = readI32(bindings.get('query_heads').bytes, 0);
+      const kvHeads = readI32(bindings.get('kv_heads').bytes, 0);
+      const seqQ = readI32(bindings.get('seq_q').bytes, 0);
+      const seqK = readI32(bindings.get('seq_k').bytes, 0);
+      const dim = readI32(bindings.get('dim').bytes, 0);
+      const scale = readF32(bindings.get('scale').bytes, 0);
+      const hasMask = readI32(bindings.get('has_mask').bytes, 0) !== 0;
+      const total = batch * queryHeads * seqQ * dim;
+      for (let idx = 0; idx < total; idx += 1) {{
+        const d = idx % dim;
+        const qIdx = Math.floor(idx / dim) % seqQ;
+        const h = Math.floor(idx / (dim * seqQ)) % queryHeads;
+        const b = Math.floor(idx / (dim * seqQ * queryHeads));
+        const kvH = queryHeads === kvHeads ? h : Math.floor(h / (queryHeads / kvHeads));
+        const qBase = ((b * queryHeads + h) * seqQ + qIdx) * dim;
+        let maxScore = -Infinity;
+        for (let kIdx = 0; kIdx < seqK; kIdx += 1) {{
+          const keyBase = ((b * kvHeads + kvH) * seqK + kIdx) * dim;
+          let score = 0.0;
+          let residual = 0.0;
+          for (let i = 0; i < dim; i += 1) {{
+            score += readF32(rotatedQ, qBase + i) * readF32(keyMse, keyBase + i);
+            residual += readF32(querySketch, qBase + i) * readF32(keySign, keyBase + i);
+          }}
+          score = (score + residual * readF32(keyScale, ((b * kvHeads + kvH) * seqK + kIdx))) * scale;
+          if (hasMask) {{
+            score += readF32(mask, ((b * queryHeads + h) * seqQ + qIdx) * seqK + kIdx);
+          }}
+          if (score > maxScore) maxScore = score;
+        }}
+        let sum = 0.0;
+        let acc = 0.0;
+        for (let kIdx = 0; kIdx < seqK; kIdx += 1) {{
+          const keyBase = ((b * kvHeads + kvH) * seqK + kIdx) * dim;
+          let score = 0.0;
+          let residual = 0.0;
+          for (let i = 0; i < dim; i += 1) {{
+            score += readF32(rotatedQ, qBase + i) * readF32(keyMse, keyBase + i);
+            residual += readF32(querySketch, qBase + i) * readF32(keySign, keyBase + i);
+          }}
+          score = (score + residual * readF32(keyScale, ((b * kvHeads + kvH) * seqK + kIdx))) * scale;
+          if (hasMask) {{
+            score += readF32(mask, ((b * queryHeads + h) * seqQ + qIdx) * seqK + kIdx);
+          }}
+          const weight = Math.exp(score - maxScore);
+          sum += weight;
+          const vBase = ((b * kvHeads + kvH) * seqK + kIdx) * dim;
+          acc += weight * readF32(valueRows, vBase + d);
+        }}
+        writeF32(out, idx, sum !== 0.0 ? acc / sum : 0.0);
+      }}
+    }},
+  }},
+}});
+host.run();
+console.log(JSON.stringify(fakeState));
+""".lstrip(),
+            encoding="utf-8",
+        )
+        run = subprocess.run(
+            ["node", str(script)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert run.returncode == 0, run.stderr
+        lines = [line.strip() for line in run.stdout.splitlines() if line.strip()]
+        values = json.loads(lines[0])
+        assert values[0][0][0] == pytest.approx([0.019662416654559325, 0.2214766675114854])
+        assert json.loads(lines[1]) == {"dispatchCount": 1}
+    finally:
+        server.shutdown()
