@@ -1470,36 +1470,32 @@ kernel void {entry}(\n\
     )
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(
+    target_arch = "wasm32",
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 fn render_webgpu_turboquant_attention_source(entry: &str, workgroup_size: u32) -> String {
     format!(
-        "@group(0) @binding(0) var<storage, read> rotated_q: array<f32>;\n\
-@group(0) @binding(1) var<storage, read> query_sketch: array<f32>;\n\
-@group(0) @binding(2) var<storage, read> key_mse: array<f32>;\n\
-@group(0) @binding(3) var<storage, read> key_sign: array<f32>;\n\
-@group(0) @binding(4) var<storage, read> key_scale: array<f32>;\n\
-@group(0) @binding(5) var<storage, read> value_rows: array<f32>;\n\
-@group(0) @binding(6) var<storage, read_write> out: array<f32>;\n\
-@group(0) @binding(7) var<storage, read> mask: array<f32>;\n\
-@group(0) @binding(8) var<storage, read> batch: array<i32>;\n\
-@group(0) @binding(9) var<storage, read> query_heads: array<i32>;\n\
-@group(0) @binding(10) var<storage, read> kv_heads: array<i32>;\n\
-@group(0) @binding(11) var<storage, read> seq_q: array<i32>;\n\
-@group(0) @binding(12) var<storage, read> seq_k: array<i32>;\n\
-@group(0) @binding(13) var<storage, read> dim: array<i32>;\n\
-@group(0) @binding(14) var<storage, read> scale: array<f32>;\n\
-@group(0) @binding(15) var<storage, read> has_mask: array<i32>;\n\
+        "@group(0) @binding(0) var<storage, read> query_pair: array<f32>;\n\
+@group(0) @binding(1) var<storage, read> key_mse: array<f32>;\n\
+@group(0) @binding(2) var<storage, read> key_sign: array<f32>;\n\
+@group(0) @binding(3) var<storage, read> key_scale: array<f32>;\n\
+@group(0) @binding(4) var<storage, read> value_rows: array<f32>;\n\
+@group(0) @binding(5) var<storage, read_write> out: array<f32>;\n\
+@group(0) @binding(6) var<storage, read> mask: array<f32>;\n\
+@group(0) @binding(7) var<storage, read> params: array<u32>;\n\
 \n\
 @compute @workgroup_size({workgroup_size})\n\
 fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
     let idx = i32(gid.x);\n\
-    let batch_val = batch[0];\n\
-    let query_heads_val = query_heads[0];\n\
-    let kv_heads_val = kv_heads[0];\n\
-    let seq_q_val = seq_q[0];\n\
-    let seq_k_val = seq_k[0];\n\
-    let dim_val = dim[0];\n\
-    let has_mask_val = has_mask[0] != 0;\n\
+    let batch_val = i32(params[0]);\n\
+    let query_heads_val = i32(params[1]);\n\
+    let kv_heads_val = i32(params[2]);\n\
+    let seq_q_val = i32(params[3]);\n\
+    let seq_k_val = i32(params[4]);\n\
+    let dim_val = i32(params[5]);\n\
+    let scale_val = bitcast<f32>(params[6]);\n\
+    let has_mask_val = params[7] != 0u;\n\
     let total = batch_val * query_heads_val * seq_q_val * dim_val;\n\
     if (idx >= total) {{\n\
         return;\n\
@@ -1510,16 +1506,17 @@ fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
     let b = idx / (dim_val * seq_q_val * query_heads_val);\n\
     let kv_head = select(q_head / (query_heads_val / kv_heads_val), q_head, query_heads_val == kv_heads_val);\n\
     let q_base = ((b * query_heads_val + q_head) * seq_q_val + q_idx) * dim_val;\n\
+    let query_total = batch_val * query_heads_val * seq_q_val * dim_val;\n\
     var max_score: f32 = -1.0e30;\n\
     for (var k_idx: i32 = 0; k_idx < seq_k_val; k_idx = k_idx + 1) {{\n\
         let key_base = ((b * kv_heads_val + kv_head) * seq_k_val + k_idx) * dim_val;\n\
         var score: f32 = 0.0;\n\
         var residual: f32 = 0.0;\n\
         for (var i: i32 = 0; i < dim_val; i = i + 1) {{\n\
-            score = score + rotated_q[q_base + i] * key_mse[key_base + i];\n\
-            residual = residual + query_sketch[q_base + i] * key_sign[key_base + i];\n\
+            score = score + query_pair[q_base + i] * key_mse[key_base + i];\n\
+            residual = residual + query_pair[query_total + q_base + i] * key_sign[key_base + i];\n\
         }}\n\
-        score = (score + residual * key_scale[(b * kv_heads_val + kv_head) * seq_k_val + k_idx]) * scale[0];\n\
+        score = (score + residual * key_scale[(b * kv_heads_val + kv_head) * seq_k_val + k_idx]) * scale_val;\n\
         if (has_mask_val) {{\n\
             score = score + mask[((b * query_heads_val + q_head) * seq_q_val + q_idx) * seq_k_val + k_idx];\n\
         }}\n\
@@ -1534,10 +1531,10 @@ fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
         var score: f32 = 0.0;\n\
         var residual: f32 = 0.0;\n\
         for (var i: i32 = 0; i < dim_val; i = i + 1) {{\n\
-            score = score + rotated_q[q_base + i] * key_mse[key_base + i];\n\
-            residual = residual + query_sketch[q_base + i] * key_sign[key_base + i];\n\
+            score = score + query_pair[q_base + i] * key_mse[key_base + i];\n\
+            residual = residual + query_pair[query_total + q_base + i] * key_sign[key_base + i];\n\
         }}\n\
-        score = (score + residual * key_scale[(b * kv_heads_val + kv_head) * seq_k_val + k_idx]) * scale[0];\n\
+        score = (score + residual * key_scale[(b * kv_heads_val + kv_head) * seq_k_val + k_idx]) * scale_val;\n\
         if (has_mask_val) {{\n\
             score = score + mask[((b * query_heads_val + q_head) * seq_q_val + q_idx) * seq_k_val + k_idx];\n\
         }}\n\
@@ -1551,7 +1548,11 @@ fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
     )
 }
 
-#[cfg(any(target_arch = "wasm32", all(target_os = "macos", feature = "molt_gpu_metal")))]
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "molt_gpu_metal"),
+    all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu")
+))]
 fn expand_attention_mask_to_webgpu_bytes(
     mask: &TensorRuntimeView,
     mask_shape: &[usize],
@@ -7127,6 +7128,302 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             && runtime_key_scale_bits != missing
             && runtime_value_bits != missing
         {
+            #[cfg(all(not(target_arch = "wasm32"), feature = "molt_gpu_webgpu"))]
+            if requested_gpu_backend().as_deref() == Some("webgpu")
+                && runtime_mse_signs_bits != missing
+                && runtime_qjl_signs_bits != missing
+            {
+                if trace_gpu_backend_enabled() {
+                    eprintln!("[molt gpu backend] webgpu turboquant_attention_packed");
+                }
+                let native_webgpu_result: Result<u64, u64> = (|| {
+                    let (mse_signs_tensor, mse_signs_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_mse_signs_bits, "_runtime_mse_signs")
+                    }
+                    .map_err(|bits| bits)?;
+                    let (qjl_signs_tensor, qjl_signs_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_qjl_signs_bits, "_runtime_qjl_signs")
+                    }
+                    .map_err(|bits| bits)?;
+                    let (key_mse, key_mse_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_key_mse_bits, "_runtime_key_mse_weight_rows")
+                    }
+                    .map_err(|bits| bits)?;
+                    let (key_sign, key_sign_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_key_sign_bits, "_runtime_key_residual_sign_rows")
+                    }
+                    .map_err(|bits| bits)?;
+                    let (key_scale, key_scale_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_key_scale_bits, "_runtime_key_residual_scale_rows")
+                    }
+                    .map_err(|bits| bits)?;
+                    let (value_rows, value_rows_shape) = unsafe {
+                        tensor_runtime_view(_py, runtime_value_bits, "_runtime_value_rows")
+                    }
+                    .map_err(|bits| bits)?;
+                    if mse_signs_shape != vec![dim]
+                        || qjl_signs_shape != vec![dim]
+                        || key_mse_shape.len() != 4
+                        || key_sign_shape.len() != 4
+                        || key_scale_shape.len() != 3
+                        || value_rows_shape.len() != 4
+                    {
+                        return Err(raise_exception::<u64>(
+                            _py,
+                            "ValueError",
+                            "turboquant native webgpu shadow tensor shape mismatch",
+                        ));
+                    }
+                    let seq_k = key_mse_shape[2];
+
+                    let q_total = batch * query_heads * query_seq * dim;
+                    let mut rotated_q_bytes = vec![0u8; q_total * 4];
+                    let mut query_sketch_bytes = vec![0u8; q_total * 4];
+                    let mut query_row = vec![0.0f32; dim];
+                    let mse_signs: Vec<f32> = (0..dim)
+                        .map(|index| {
+                            read_float_buffer_value(
+                                mse_signs_tensor.buffer.data_view,
+                                mse_signs_tensor.buffer.format,
+                                index,
+                            )
+                        })
+                        .collect();
+                    let qjl_signs: Vec<f32> = (0..dim)
+                        .map(|index| {
+                            read_float_buffer_value(
+                                qjl_signs_tensor.buffer.data_view,
+                                qjl_signs_tensor.buffer.format,
+                                index,
+                            )
+                        })
+                        .collect();
+                    let q_stride = query_seq * dim;
+                    for batch_index in 0..batch {
+                        for query_head_index in 0..query_heads {
+                            for query_index in 0..query_seq {
+                                let q_base =
+                                    ((batch_index * query_heads + query_head_index) * q_stride)
+                                        + query_index * dim;
+                                for dim_index in 0..dim {
+                                    query_row[dim_index] = read_float_buffer_value(
+                                        q.buffer.data_view,
+                                        q.buffer.format,
+                                        q_base + dim_index,
+                                    );
+                                }
+                                let rotated_q =
+                                    hadamard_apply_with_signs(query_row.as_slice(), mse_signs.as_slice());
+                                let query_sketch =
+                                    hadamard_apply_with_signs(query_row.as_slice(), qjl_signs.as_slice());
+                                for dim_index in 0..dim {
+                                    write_float_buffer_value(
+                                        rotated_q_bytes.as_mut_slice(),
+                                        ScalarFormat::F32,
+                                        q_base + dim_index,
+                                        rotated_q[dim_index],
+                                    );
+                                    write_float_buffer_value(
+                                        query_sketch_bytes.as_mut_slice(),
+                                        ScalarFormat::F32,
+                                        q_base + dim_index,
+                                        query_sketch[dim_index],
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    let query_pair_len = q_total * 4;
+                    let mut query_pair_bytes = vec![0u8; query_pair_len * 2];
+                    query_pair_bytes[..query_pair_len].copy_from_slice(rotated_q_bytes.as_slice());
+                    query_pair_bytes[query_pair_len..].copy_from_slice(query_sketch_bytes.as_slice());
+                    let key_mse_bytes = bytes_like_view_to_webgpu_bytes(
+                        key_mse.buffer.data_view,
+                        key_mse.buffer.format,
+                    )
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    let key_sign_bytes = bytes_like_view_to_webgpu_bytes(
+                        key_sign.buffer.data_view,
+                        key_sign.buffer.format,
+                    )
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    let key_scale_bytes = bytes_like_view_to_webgpu_bytes(
+                        key_scale.buffer.data_view,
+                        key_scale.buffer.format,
+                    )
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    let value_rows_bytes = bytes_like_view_to_webgpu_bytes(
+                        value_rows.buffer.data_view,
+                        value_rows.buffer.format,
+                    )
+                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    let (mask_bytes, has_mask_i32): (Vec<u8>, i32) = if let Some((mask, mask_shape, mask_strides)) = &mask_info
+                    {
+                        (
+                            expand_attention_mask_to_webgpu_bytes(
+                                mask,
+                                mask_shape.as_slice(),
+                                mask_strides.as_slice(),
+                                batch,
+                                query_heads,
+                                query_seq,
+                                seq_k,
+                            )
+                            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+                            1i32,
+                        )
+                    } else {
+                        (vec![0u8; 4], 0i32)
+                    };
+                    let out_elems = batch * query_heads * query_seq * dim;
+                    let mut out_gpu = vec![0u8; out_elems * 4];
+                    let batch_bytes = i32::try_from(batch)
+                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32"))?
+                        .to_le_bytes();
+                    let query_heads_bytes = i32::try_from(query_heads)
+                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "query_heads exceeds i32"))?
+                        .to_le_bytes();
+                    let kv_heads_bytes = i32::try_from(kv_heads)
+                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "kv_heads exceeds i32"))?
+                        .to_le_bytes();
+                    let seq_q_bytes = i32::try_from(query_seq)
+                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32"))?
+                        .to_le_bytes();
+                    let seq_k_bytes = i32::try_from(seq_k)
+                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32"))?
+                        .to_le_bytes();
+                    let dim_bytes = i32::try_from(dim)
+                        .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32"))?
+                        .to_le_bytes();
+                    let scale_bytes = scale.to_le_bytes();
+                    let has_mask_bytes = has_mask_i32.to_le_bytes();
+                    let mut params_bytes = Vec::with_capacity(8 * 4);
+                    params_bytes.extend_from_slice(&batch_bytes);
+                    params_bytes.extend_from_slice(&query_heads_bytes);
+                    params_bytes.extend_from_slice(&kv_heads_bytes);
+                    params_bytes.extend_from_slice(&seq_q_bytes);
+                    params_bytes.extend_from_slice(&seq_k_bytes);
+                    params_bytes.extend_from_slice(&dim_bytes);
+                    params_bytes.extend_from_slice(&scale_bytes);
+                    params_bytes.extend_from_slice(&has_mask_bytes);
+                    let workgroup_size = 64u32;
+                    let grid = if out_elems == 0 {
+                        0
+                    } else {
+                        u32::try_from((out_elems + workgroup_size as usize - 1) / workgroup_size as usize)
+                            .map_err(|_| {
+                                raise_exception::<u64>(
+                                    _py,
+                                    "OverflowError",
+                                    "turboquant attention grid exceeds u32",
+                                )
+                            })?
+                    };
+
+                    let device = RuntimeWebGpuDevice::new()
+                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    let pipeline = device
+                        .compile_pipeline(
+                            "turboquant_attention_packed",
+                            &render_webgpu_turboquant_attention_source(
+                                "turboquant_attention_packed",
+                                workgroup_size,
+                            ),
+                        )
+                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+
+                    let buffer_payloads: [&[u8]; 8] = [
+                        query_pair_bytes.as_slice(),
+                        key_mse_bytes.as_slice(),
+                        key_sign_bytes.as_slice(),
+                        key_scale_bytes.as_slice(),
+                        value_rows_bytes.as_slice(),
+                        out_gpu.as_slice(),
+                        mask_bytes.as_slice(),
+                        params_bytes.as_slice(),
+                    ];
+                    let mut owned_buffers: Vec<wgpu::Buffer> = Vec::new();
+                    for data in buffer_payloads {
+                        let (_, gpu_buf) = device.alloc_buffer(data.len().max(1));
+                        if !data.is_empty() {
+                            device.copy_to_buffer(&gpu_buf, data);
+                        }
+                        owned_buffers.push(gpu_buf);
+                    }
+                    let refs: Vec<&wgpu::Buffer> = owned_buffers.iter().collect();
+                    device
+                        .dispatch(&pipeline, grid, &refs)
+                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    out_gpu = device
+                        .copy_from_buffer(&owned_buffers[5], out_elems * 4)
+                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+
+                    let data_ptr = alloc_bytearray(_py, out_gpu.as_slice());
+                    if data_ptr.is_null() {
+                        return Err(MoltObject::none().bits());
+                    }
+                    let data_bits = MoltObject::from_ptr(data_ptr).bits();
+                    let format_bits = match alloc_string_bits(
+                        _py,
+                        match q.buffer.format {
+                            ScalarFormat::F32 => b"f",
+                            ScalarFormat::F64 => b"d",
+                            ScalarFormat::I64 => b"q",
+                        },
+                    ) {
+                        Ok(bits) => bits,
+                        Err(bits) => {
+                            crate::dec_ref_bits(_py, data_bits);
+                            return Err(bits);
+                        }
+                    };
+                    let shape_bits =
+                        alloc_tuple_bits_from_usize(_py, &[batch, query_heads, query_seq, dim])?;
+                    let out_format = q.buffer.format;
+                    let rebuilt = rebuild_host_bytes_from_gpu32_output(
+                        _py,
+                        out_format,
+                        out_elems,
+                        out_gpu.as_slice(),
+                    )?;
+                    let rebuilt_ptr = alloc_bytearray(_py, rebuilt.as_slice());
+                    if rebuilt_ptr.is_null() {
+                        crate::dec_ref_bits(_py, data_bits);
+                        crate::dec_ref_bits(_py, format_bits);
+                        crate::dec_ref_bits(_py, shape_bits);
+                        return Err(MoltObject::none().bits());
+                    }
+                    let rebuilt_bits = MoltObject::from_ptr(rebuilt_ptr).bits();
+                    let tensor_bits = match unsafe {
+                        build_tensor_from_data_bits(
+                            _py,
+                            q.class_bits,
+                            q.buffer.class_bits,
+                            rebuilt_bits,
+                            crate::builtins::classes::builtin_classes(_py).float,
+                            out_elems,
+                            format_bits,
+                            out_format.itemsize(),
+                            shape_bits,
+                            q.dtype_bits,
+                        )
+                    } {
+                        Ok(bits) => bits,
+                        Err(bits) => bits,
+                    };
+                    crate::dec_ref_bits(_py, data_bits);
+                    crate::dec_ref_bits(_py, rebuilt_bits);
+                    crate::dec_ref_bits(_py, format_bits);
+                    crate::dec_ref_bits(_py, shape_bits);
+                    Ok(tensor_bits)
+                })();
+                return match native_webgpu_result {
+                    Ok(bits) => bits,
+                    Err(bits) => bits,
+                };
+            }
+
             #[cfg(all(target_os = "macos", feature = "molt_gpu_metal"))]
             if requested_gpu_backend().as_deref() == Some("metal")
                 && runtime_mse_signs_bits != missing
@@ -7499,8 +7796,10 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         }
                     }
 
-                    let rotated_q_binding = rotated_q_bytes;
-                    let query_sketch_binding = query_sketch_bytes;
+                    let query_pair_len = q_total * 4;
+                    let mut query_pair_bytes = vec![0u8; query_pair_len * 2];
+                    query_pair_bytes[..query_pair_len].copy_from_slice(rotated_q_bytes.as_slice());
+                    query_pair_bytes[query_pair_len..].copy_from_slice(query_sketch_bytes.as_slice());
                     let key_mse_bytes = bytes_like_view_to_webgpu_bytes(
                         key_mse.buffer.data_view,
                         key_mse.buffer.format,
@@ -7561,6 +7860,15 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         .to_le_bytes();
                     let scale_bytes = scale.to_le_bytes();
                     let has_mask_bytes = has_mask_i32.to_le_bytes();
+                    let mut params_bytes = Vec::with_capacity(8 * 4);
+                    params_bytes.extend_from_slice(&batch_bytes);
+                    params_bytes.extend_from_slice(&query_heads_bytes);
+                    params_bytes.extend_from_slice(&kv_heads_bytes);
+                    params_bytes.extend_from_slice(&seq_q_bytes);
+                    params_bytes.extend_from_slice(&seq_k_bytes);
+                    params_bytes.extend_from_slice(&dim_bytes);
+                    params_bytes.extend_from_slice(&scale_bytes);
+                    params_bytes.extend_from_slice(&has_mask_bytes);
                     let workgroup_size = 64u32;
                     let grid = if out_elems == 0 {
                         0
@@ -7583,22 +7891,14 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         source.as_str(),
                         "turboquant_attention_packed",
                         vec![
-                            serde_json::json!({"binding": 0, "name": "rotated_q", "kind": "buffer", "access": "read", "ptr": rotated_q_binding.as_ptr() as usize as u32, "len": rotated_q_binding.len() as u32}),
-                            serde_json::json!({"binding": 1, "name": "query_sketch", "kind": "buffer", "access": "read", "ptr": query_sketch_binding.as_ptr() as usize as u32, "len": query_sketch_binding.len() as u32}),
-                            serde_json::json!({"binding": 2, "name": "key_mse", "kind": "buffer", "access": "read", "ptr": key_mse_bytes.as_ptr() as usize as u32, "len": key_mse_bytes.len() as u32}),
-                            serde_json::json!({"binding": 3, "name": "key_sign", "kind": "buffer", "access": "read", "ptr": key_sign_bytes.as_ptr() as usize as u32, "len": key_sign_bytes.len() as u32}),
-                            serde_json::json!({"binding": 4, "name": "key_scale", "kind": "buffer", "access": "read", "ptr": key_scale_bytes.as_ptr() as usize as u32, "len": key_scale_bytes.len() as u32}),
-                            serde_json::json!({"binding": 5, "name": "value_rows", "kind": "buffer", "access": "read", "ptr": value_rows_bytes.as_ptr() as usize as u32, "len": value_rows_bytes.len() as u32}),
-                            serde_json::json!({"binding": 6, "name": "out", "kind": "buffer", "access": "read_write", "ptr": out_webgpu.as_mut_ptr() as usize as u32, "len": out_webgpu.len() as u32}),
-                            serde_json::json!({"binding": 7, "name": "mask", "kind": "buffer", "access": "read", "ptr": mask_bytes.as_ptr() as usize as u32, "len": mask_bytes.len() as u32}),
-                            serde_json::json!({"binding": 8, "name": "batch", "kind": "scalar", "access": "read", "ptr": batch_bytes.as_ptr() as usize as u32, "len": batch_bytes.len() as u32}),
-                            serde_json::json!({"binding": 9, "name": "query_heads", "kind": "scalar", "access": "read", "ptr": query_heads_bytes.as_ptr() as usize as u32, "len": query_heads_bytes.len() as u32}),
-                            serde_json::json!({"binding": 10, "name": "kv_heads", "kind": "scalar", "access": "read", "ptr": kv_heads_bytes.as_ptr() as usize as u32, "len": kv_heads_bytes.len() as u32}),
-                            serde_json::json!({"binding": 11, "name": "seq_q", "kind": "scalar", "access": "read", "ptr": seq_q_bytes.as_ptr() as usize as u32, "len": seq_q_bytes.len() as u32}),
-                            serde_json::json!({"binding": 12, "name": "seq_k", "kind": "scalar", "access": "read", "ptr": seq_k_bytes.as_ptr() as usize as u32, "len": seq_k_bytes.len() as u32}),
-                            serde_json::json!({"binding": 13, "name": "dim", "kind": "scalar", "access": "read", "ptr": dim_bytes.as_ptr() as usize as u32, "len": dim_bytes.len() as u32}),
-                            serde_json::json!({"binding": 14, "name": "scale", "kind": "scalar", "access": "read", "ptr": scale_bytes.as_ptr() as usize as u32, "len": scale_bytes.len() as u32}),
-                            serde_json::json!({"binding": 15, "name": "has_mask", "kind": "scalar", "access": "read", "ptr": has_mask_bytes.as_ptr() as usize as u32, "len": has_mask_bytes.len() as u32}),
+                            serde_json::json!({"binding": 0, "name": "query_pair", "kind": "buffer", "access": "read", "ptr": query_pair_bytes.as_ptr() as usize as u32, "len": query_pair_bytes.len() as u32}),
+                            serde_json::json!({"binding": 1, "name": "key_mse", "kind": "buffer", "access": "read", "ptr": key_mse_bytes.as_ptr() as usize as u32, "len": key_mse_bytes.len() as u32}),
+                            serde_json::json!({"binding": 2, "name": "key_sign", "kind": "buffer", "access": "read", "ptr": key_sign_bytes.as_ptr() as usize as u32, "len": key_sign_bytes.len() as u32}),
+                            serde_json::json!({"binding": 3, "name": "key_scale", "kind": "buffer", "access": "read", "ptr": key_scale_bytes.as_ptr() as usize as u32, "len": key_scale_bytes.len() as u32}),
+                            serde_json::json!({"binding": 4, "name": "value_rows", "kind": "buffer", "access": "read", "ptr": value_rows_bytes.as_ptr() as usize as u32, "len": value_rows_bytes.len() as u32}),
+                            serde_json::json!({"binding": 5, "name": "out", "kind": "buffer", "access": "read_write", "ptr": out_webgpu.as_mut_ptr() as usize as u32, "len": out_webgpu.len() as u32}),
+                            serde_json::json!({"binding": 6, "name": "mask", "kind": "buffer", "access": "read", "ptr": mask_bytes.as_ptr() as usize as u32, "len": mask_bytes.len() as u32}),
+                            serde_json::json!({"binding": 7, "name": "params", "kind": "buffer", "access": "read", "ptr": params_bytes.as_ptr() as usize as u32, "len": params_bytes.len() as u32}),
                         ],
                         grid,
                         workgroup_size,
