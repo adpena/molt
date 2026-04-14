@@ -686,6 +686,7 @@ def test_native_turboquant_attention_uses_webgpu_backend(tmp_path: Path) -> None
     env = _native_molt_env(root)
     env["MOLT_GPU_BACKEND"] = "webgpu"
     env["MOLT_RUNTIME_GPU_WEBGPU"] = "1"
+    env["MOLT_TRACE_GPU_BACKEND"] = "1"
 
     run = subprocess.run(
         [
@@ -709,6 +710,7 @@ def test_native_turboquant_attention_uses_webgpu_backend(tmp_path: Path) -> None
     assert ast.literal_eval(run.stdout.strip().splitlines()[0])[0][0][0] == pytest.approx(
         [0.019662419334053993, 0.22147667407989502]
     )
+    assert "[molt gpu backend] webgpu turboquant_attention_packed" in run.stderr
 
 
 def test_turboquant_attention_kv_cache_reuses_decoded_values_across_attention_calls(monkeypatch):

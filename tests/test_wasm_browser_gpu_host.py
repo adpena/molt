@@ -1233,62 +1233,63 @@ const host = await loadMoltWasm({{
   runtimeUrl: `${{baseUrl}}/molt_runtime.wasm`,
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
-  gpuKernelDispatcher: {{
-    dispatchKernel(request) {{
-      fakeState.dispatchCount += 1;
-      const bindings = new Map(request.bindings.map((binding) => [binding.name, binding]));
-      const rotatedQ = bindings.get('rotated_q').bytes;
-      const querySketch = bindings.get('query_sketch').bytes;
-      const keyMse = bindings.get('key_mse').bytes;
-      const keySign = bindings.get('key_sign').bytes;
-      const keyScale = bindings.get('key_scale').bytes;
-      const valueRows = bindings.get('value_rows').bytes;
-      const out = bindings.get('out').bytes;
-      const mask = bindings.get('mask')?.bytes || null;
-      const batch = readI32(bindings.get('batch').bytes, 0);
-      const queryHeads = readI32(bindings.get('query_heads').bytes, 0);
-      const kvHeads = readI32(bindings.get('kv_heads').bytes, 0);
-      const seqQ = readI32(bindings.get('seq_q').bytes, 0);
-      const seqK = readI32(bindings.get('seq_k').bytes, 0);
-      const dim = readI32(bindings.get('dim').bytes, 0);
-      const scale = readF32(bindings.get('scale').bytes, 0);
-      const hasMask = readI32(bindings.get('has_mask').bytes, 0) !== 0;
-      const total = batch * queryHeads * seqQ * dim;
-      for (let idx = 0; idx < total; idx += 1) {{
-        const d = idx % dim;
-        const qIdx = Math.floor(idx / dim) % seqQ;
-        const h = Math.floor(idx / (dim * seqQ)) % queryHeads;
+      gpuKernelDispatcher: {{
+        dispatchKernel(request) {{
+          fakeState.dispatchCount += 1;
+          const bindings = new Map(request.bindings.map((binding) => [binding.name, binding]));
+          const queryPair = bindings.get('query_pair').bytes;
+          const keyMse = bindings.get('key_mse').bytes;
+          const keySign = bindings.get('key_sign').bytes;
+          const keyScale = bindings.get('key_scale').bytes;
+          const valueRows = bindings.get('value_rows').bytes;
+          const out = bindings.get('out').bytes;
+          const mask = bindings.get('mask')?.bytes || null;
+          const params = bindings.get('params').bytes;
+          const batch = readI32(params, 0);
+          const queryHeads = readI32(params, 1);
+          const kvHeads = readI32(params, 2);
+          const seqQ = readI32(params, 3);
+          const seqK = readI32(params, 4);
+          const dim = readI32(params, 5);
+          const scale = readF32(params, 6);
+          const hasMask = readI32(params, 7) !== 0;
+          const queryTotal = batch * queryHeads * seqQ * dim;
+          const total = batch * queryHeads * seqQ * dim;
+          for (let idx = 0; idx < total; idx += 1) {{
+            const d = idx % dim;
+            const qIdx = Math.floor(idx / dim) % seqQ;
+            const h = Math.floor(idx / (dim * seqQ)) % queryHeads;
         const b = Math.floor(idx / (dim * seqQ * queryHeads));
         const kvH = queryHeads === kvHeads ? h : Math.floor(h / (queryHeads / kvHeads));
         const qBase = ((b * queryHeads + h) * seqQ + qIdx) * dim;
         let maxScore = -Infinity;
-        for (let kIdx = 0; kIdx < seqK; kIdx += 1) {{
-          const keyBase = ((b * kvHeads + kvH) * seqK + kIdx) * dim;
-          let score = 0.0;
-          let residual = 0.0;
-          for (let i = 0; i < dim; i += 1) {{
-            score += readF32(rotatedQ, qBase + i) * readF32(keyMse, keyBase + i);
-            residual += readF32(querySketch, qBase + i) * readF32(keySign, keyBase + i);
-          }}
-          score = (score + residual * readF32(keyScale, ((b * kvHeads + kvH) * seqK + kIdx))) * scale;
-          if (hasMask) {{
-            score += readF32(mask, ((b * queryHeads + h) * seqQ + qIdx) * seqK + kIdx);
+            for (let kIdx = 0; kIdx < seqK; kIdx += 1) {{
+              const keyBase = ((b * kvHeads + kvH) * seqK + kIdx) * dim;
+              let score = 0.0;
+              let residual = 0.0;
+              for (let i = 0; i < dim; i += 1) {{
+                score += readF32(queryPair, qBase + i) * readF32(keyMse, keyBase + i);
+                residual += readF32(queryPair, queryTotal + qBase + i) * readF32(keySign, keyBase + i);
+              }}
+              score = (score + residual * readF32(keyScale, ((b * kvHeads + kvH) * seqK + kIdx))) * scale;
+              if (hasMask) {{
+                score += readF32(mask, ((b * queryHeads + h) * seqQ + qIdx) * seqK + kIdx);
           }}
           if (score > maxScore) maxScore = score;
         }}
         let sum = 0.0;
         let acc = 0.0;
-        for (let kIdx = 0; kIdx < seqK; kIdx += 1) {{
-          const keyBase = ((b * kvHeads + kvH) * seqK + kIdx) * dim;
-          let score = 0.0;
-          let residual = 0.0;
-          for (let i = 0; i < dim; i += 1) {{
-            score += readF32(rotatedQ, qBase + i) * readF32(keyMse, keyBase + i);
-            residual += readF32(querySketch, qBase + i) * readF32(keySign, keyBase + i);
-          }}
-          score = (score + residual * readF32(keyScale, ((b * kvHeads + kvH) * seqK + kIdx))) * scale;
-          if (hasMask) {{
-            score += readF32(mask, ((b * queryHeads + h) * seqQ + qIdx) * seqK + kIdx);
+            for (let kIdx = 0; kIdx < seqK; kIdx += 1) {{
+              const keyBase = ((b * kvHeads + kvH) * seqK + kIdx) * dim;
+              let score = 0.0;
+              let residual = 0.0;
+              for (let i = 0; i < dim; i += 1) {{
+                score += readF32(queryPair, qBase + i) * readF32(keyMse, keyBase + i);
+                residual += readF32(queryPair, queryTotal + qBase + i) * readF32(keySign, keyBase + i);
+              }}
+              score = (score + residual * readF32(keyScale, ((b * kvHeads + kvH) * seqK + kIdx))) * scale;
+              if (hasMask) {{
+                score += readF32(mask, ((b * queryHeads + h) * seqQ + qIdx) * seqK + kIdx);
           }}
           const weight = Math.exp(score - maxScore);
           sum += weight;
