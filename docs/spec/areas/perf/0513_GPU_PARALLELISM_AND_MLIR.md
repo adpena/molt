@@ -72,6 +72,9 @@ Current TurboQuant backend boundary:
   `_attention_reference` method
 - when runtime shadow tensors are present on the cache object, the packed
   intrinsic should prefer those over traversing encoded Python object graphs
+- those runtime shadows now include both packed row tensors and rotation-sign
+  tensors, so native execution can bypass both encoded rows and codec
+  structure reads on the hot path
 - next backend work should replace that bridge with real packed CUDA/Metal/
   WebGPU/ROCm kernels behind the same symbol
 
