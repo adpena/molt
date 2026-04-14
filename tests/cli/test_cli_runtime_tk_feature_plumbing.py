@@ -29,6 +29,8 @@ def test_runtime_cargo_features_include_gpu_backend_flags(monkeypatch) -> None:
     monkeypatch.delenv("MOLT_RUNTIME_TK_NATIVE", raising=False)
     monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
     monkeypatch.delenv("MOLT_RUNTIME_GPU_WEBGPU", raising=False)
+    monkeypatch.delenv("MOLT_RUNTIME_GPU_CUDA", raising=False)
+    monkeypatch.delenv("MOLT_RUNTIME_GPU_HIP", raising=False)
     assert cli._runtime_cargo_features(None) == ("molt_tk_native", "molt_gpu_metal")
 
     monkeypatch.setenv("MOLT_RUNTIME_GPU_WEBGPU", "1")
@@ -37,6 +39,17 @@ def test_runtime_cargo_features_include_gpu_backend_flags(monkeypatch) -> None:
         "molt_tk_native",
         "molt_gpu_metal",
         "molt_gpu_webgpu",
+    )
+
+    monkeypatch.setenv("MOLT_RUNTIME_GPU_CUDA", "1")
+    monkeypatch.setenv("MOLT_RUNTIME_GPU_HIP", "1")
+    cli._runtime_cargo_features_cached.cache_clear()
+    assert cli._runtime_cargo_features(None) == (
+        "molt_tk_native",
+        "molt_gpu_metal",
+        "molt_gpu_webgpu",
+        "molt_gpu_cuda",
+        "molt_gpu_hip",
     )
     assert cli._runtime_cargo_features("wasm32-wasip1") == ()
 

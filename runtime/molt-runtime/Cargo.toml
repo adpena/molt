@@ -125,6 +125,8 @@ audit = []
 refcount_verify = []
 molt_gpu_metal = ["dep:metal", "dep:objc"]
 molt_gpu_webgpu = ["dep:wgpu", "dep:pollster"]
+molt_gpu_cuda = []
+molt_gpu_hip = []
 
 [dependencies]
 # Core runtime (always required)
