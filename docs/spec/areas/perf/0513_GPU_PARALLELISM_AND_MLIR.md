@@ -75,6 +75,8 @@ Current TurboQuant backend boundary:
 - those runtime shadows now include both packed row tensors and rotation-sign
   tensors, so native execution can bypass both encoded rows and codec
   structure reads on the hot path
+- the Python/reference fallback should also be able to consume the same shadow
+  metadata when encoded rows are unavailable, so the two paths stay aligned
 - next backend work should replace that bridge with real packed CUDA/Metal/
   WebGPU/ROCm kernels behind the same symbol
 

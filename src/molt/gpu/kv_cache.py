@@ -111,6 +111,29 @@ def _materialize_projected_chunks(chunks) -> Tensor:
     return Tensor(out_buf, shape=(batch, heads, total_seq, head_dim), dtype=dtype)
 
 
+def _normalized_hadamard(values) -> list[float]:
+    out = [float(value) for value in values]
+    size = len(out)
+    span = 1
+    while span < size:
+        step = span * 2
+        for start in range(0, size, step):
+            stop = start + span
+            for index in range(start, stop):
+                left = out[index]
+                right = out[index + span]
+                out[index] = left + right
+                out[index + span] = left - right
+        span = step
+    scale = 1.0 / math.sqrt(size)
+    return [value * scale for value in out]
+
+
+def _hadamard_apply_with_signs(values, signs) -> list[float]:
+    signed = [float(value) * float(sign) for value, sign in zip(values, signs)]
+    return _normalized_hadamard(signed)
+
+
 class DenseKVCache:
     """Reference dense KV cache for projected multi-head attention tensors."""
 
@@ -314,35 +337,86 @@ class TurboQuantAttentionKVCache:
         self, q: Tensor, mask: Tensor | None, scale: float
     ) -> Tensor:
         _validate_projected_tensor("q", q)
-        if self._key_vectors is None or self._value_vectors is None:
+        use_shadow = (
+            self._runtime_mse_signs is not None
+            and self._runtime_qjl_signs is not None
+            and self._runtime_key_mse_weight_rows is not None
+            and self._runtime_key_residual_sign_rows is not None
+            and self._runtime_key_residual_scale_rows is not None
+            and self._runtime_value_rows is not None
+        )
+        if not use_shadow and (self._key_vectors is None or self._value_vectors is None):
             raise RuntimeError("cannot attend with an empty KV cache")
 
         batch, heads, query_seq, head_dim = q.shape
         if batch != self._batch:
             raise ValueError("query batch shape must match the KV cache")
-        if head_dim != self.codec.dim:
+        codec_dim = (
+            self.codec.dim
+            if self.codec is not None
+            else (self._runtime_mse_signs.shape[0] if self._runtime_mse_signs is not None else None)
+        )
+        if head_dim != codec_dim:
             raise ValueError(
-                f"TurboQuant codec dim {self.codec.dim} does not match query head_dim {head_dim}"
+                f"TurboQuant codec dim {codec_dim} does not match query head_dim {head_dim}"
             )
 
         q_rows = q.to_list()
         result = []
+        shadow_mse_signs = (
+            [float(value) for value in self._runtime_mse_signs.to_list()]
+            if use_shadow
+            else None
+        )
+        shadow_qjl_signs = (
+            [float(value) for value in self._runtime_qjl_signs.to_list()]
+            if use_shadow
+            else None
+        )
 
         for batch_index in range(batch):
             batch_out = []
             for query_head_index in range(heads):
                 kv_head_index = _kv_head_index(heads, self._heads, query_head_index)
-                decoded_values = self._decoded_values_for_head(batch_index, kv_head_index)
+                decoded_values = (
+                    self._decoded_values_for_head(batch_index, kv_head_index)
+                    if not use_shadow
+                    else None
+                )
                 head_out = []
                 for query_index in range(query_seq):
                     query_row = q_rows[batch_index][query_head_index][query_index]
-                    prepared = self.codec.prepare_query(query_row)
                     logits = []
-                    for encoded in self._key_vectors[batch_index][kv_head_index]:
-                        logits.append(
-                            self.codec.estimate_inner_product_prepared(prepared, encoded)
-                            * scale
-                        )
+                    if use_shadow:
+                        rotated_query = _hadamard_apply_with_signs(query_row, shadow_mse_signs)
+                        query_sketch = _hadamard_apply_with_signs(query_row, shadow_qjl_signs)
+                        seq_k = self._runtime_key_mse_weight_rows.shape[2]
+                        for seq_index in range(seq_k):
+                            mse_weights = self._runtime_key_mse_weight_rows[
+                                batch_index, kv_head_index, seq_index, :
+                            ].to_list()
+                            residual_signs = self._runtime_key_residual_sign_rows[
+                                batch_index, kv_head_index, seq_index, :
+                            ].to_list()
+                            residual_scale = float(
+                                self._runtime_key_residual_scale_rows[
+                                    batch_index, kv_head_index, seq_index
+                                ].item()
+                            )
+                            score = 0.0
+                            for dim_index in range(head_dim):
+                                score += rotated_query[dim_index] * float(mse_weights[dim_index])
+                            residual = 0.0
+                            for dim_index in range(head_dim):
+                                residual += query_sketch[dim_index] * float(residual_signs[dim_index])
+                            logits.append((score + residual * residual_scale) * scale)
+                    else:
+                        prepared = self.codec.prepare_query(query_row)
+                        for encoded in self._key_vectors[batch_index][kv_head_index]:
+                            logits.append(
+                                self.codec.estimate_inner_product_prepared(prepared, encoded)
+                                * scale
+                            )
                     if mask is not None:
                         mask_row = _expanded_mask_row(
                             _broadcast_mask_row(
@@ -359,11 +433,23 @@ class TurboQuantAttentionKVCache:
                         ]
                     weights = Tensor(logits, shape=(len(logits),)).softmax().to_list()
                     out_row = []
-                    for dim_index in range(head_dim):
-                        acc = 0.0
-                        for value_index, value_row in enumerate(decoded_values):
-                            acc += weights[value_index] * float(value_row[dim_index])
-                        out_row.append(acc)
+                    if use_shadow:
+                        for dim_index in range(head_dim):
+                            acc = 0.0
+                            for value_index in range(len(weights)):
+                                value = float(
+                                    self._runtime_value_rows[
+                                        batch_index, kv_head_index, value_index, dim_index
+                                    ].item()
+                                )
+                                acc += weights[value_index] * value
+                            out_row.append(acc)
+                    else:
+                        for dim_index in range(head_dim):
+                            acc = 0.0
+                            for value_index, value_row in enumerate(decoded_values):
+                                acc += weights[value_index] * float(value_row[dim_index])
+                            out_row.append(acc)
                     head_out.append(out_row)
                 batch_out.append(head_out)
             result.append(batch_out)
