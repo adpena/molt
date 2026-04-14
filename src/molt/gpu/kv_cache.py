@@ -255,6 +255,8 @@ class TurboQuantAttentionKVCache:
         self._batch = None
         self._heads = None
         self._decoded_value_rows = None
+        self._runtime_mse_signs = None
+        self._runtime_qjl_signs = None
         self._runtime_key_mse_weight_rows = None
         self._runtime_key_residual_sign_rows = None
         self._runtime_key_residual_scale_rows = None
@@ -387,13 +389,22 @@ class TurboQuantAttentionKVCache:
         return rows
 
     def _invalidate_runtime_shadow_rows(self) -> None:
+        self._runtime_mse_signs = None
+        self._runtime_qjl_signs = None
         self._runtime_key_mse_weight_rows = None
         self._runtime_key_residual_sign_rows = None
         self._runtime_key_residual_scale_rows = None
         self._runtime_value_rows = None
 
     def _ensure_runtime_shadow_rows(self) -> None:
-        if self._runtime_key_mse_weight_rows is not None:
+        if (
+            self._runtime_mse_signs is not None
+            and self._runtime_qjl_signs is not None
+            and self._runtime_key_mse_weight_rows is not None
+            and self._runtime_key_residual_sign_rows is not None
+            and self._runtime_key_residual_scale_rows is not None
+            and self._runtime_value_rows is not None
+        ):
             return
         if self._key_vectors is None or self._value_vectors is None:
             raise RuntimeError("cannot build TurboQuant runtime shadow rows from an empty cache")
@@ -434,6 +445,14 @@ class TurboQuantAttentionKVCache:
         self._runtime_key_mse_weight_rows = Tensor(
             key_mse,
             shape=(batch, heads, seq, dim),
+        )
+        self._runtime_mse_signs = Tensor(
+            list(self.codec.mse_rotation.signs),
+            shape=(dim,),
+        )
+        self._runtime_qjl_signs = Tensor(
+            list(self.codec.qjl_rotation.signs),
+            shape=(dim,),
         )
         self._runtime_key_residual_sign_rows = Tensor(
             key_sign,
