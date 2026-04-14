@@ -202,6 +202,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
             "molt_exception_pending",
             "molt_exception_clear",
             "molt_exception_last",
+            "molt_exception_current",
             "molt_exception_push",
             "molt_exception_pop",
             "molt_exception_stack_enter",
@@ -215,8 +216,10 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
             );
         }
         for name in &[
+            "molt_exception_enter_handler",
             "molt_exception_stack_exit",
             "molt_exception_stack_set_depth",
+            "molt_exception_resolve_captured",
         ] {
             module.add_function(
                 name,

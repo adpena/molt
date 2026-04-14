@@ -573,6 +573,13 @@ fn abc_subclasscheck_impl(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
     crate::with_gil_entry!(_py, {
+        let debug = std::env::var("MOLT_DEBUG_COLLECTIONS_ABC_TYPES").as_deref() == Ok("1");
+        let trace_stage = |stage: &str| {
+            if debug {
+                eprintln!("molt collections_abc runtime types stage={stage}");
+            }
+        };
+        trace_stage("start");
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         if dict_ptr.is_null() {
             return MoltObject::none().bits();
@@ -588,6 +595,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
+        trace_stage("bytes_iterator");
         dec_ref_bits(_py, bytes_bits);
 
         let bytearray_ptr = alloc_bytearray(_py, &[]);
@@ -599,6 +607,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
+        trace_stage("bytearray_iterator");
         dec_ref_bits(_py, bytearray_bits);
 
         let empty_dict_ptr = alloc_dict_with_pairs(_py, &[]);
@@ -633,6 +642,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
         let dict_keys = type_of_bits(_py, dict_keys_bits);
         let dict_values = type_of_bits(_py, dict_values_bits);
         let dict_items = type_of_bits(_py, dict_items_bits);
+        trace_stage("dict_views");
         dec_ref_bits(_py, dict_keys_bits);
         dec_ref_bits(_py, dict_values_bits);
         dec_ref_bits(_py, dict_items_bits);
@@ -652,6 +662,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             return MoltObject::none().bits();
         }
         let list_reverseiterator = type_of_bits(_py, reversed_bits);
+        trace_stage("list_iterators");
         dec_ref_bits(_py, reversed_bits);
         dec_ref_bits(_py, empty_list_bits);
 
@@ -665,6 +676,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
+        trace_stage("range_iterator");
         dec_ref_bits(_py, range_bits);
 
         let thousand_bits = int_bits_from_i64(_py, 1000);
@@ -683,6 +695,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
+        trace_stage("longrange_iterator");
         dec_ref_bits(_py, long_range_bits);
         if !obj_from_bits(long_stop_bits).is_none() {
             dec_ref_bits(_py, long_stop_bits);
@@ -696,6 +709,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
+        trace_stage("set_iterator");
         dec_ref_bits(_py, empty_set_bits);
 
         let empty_str_ptr = alloc_string(_py, b"");
@@ -707,6 +721,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
+        trace_stage("str_iterator");
         dec_ref_bits(_py, empty_str_bits);
 
         let empty_tuple_ptr = alloc_tuple(_py, &[]);
@@ -724,11 +739,13 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             return MoltObject::none().bits();
         }
         let zip_iterator = type_of_bits(_py, zip_bits);
+        trace_stage("tuple_zip_iterators");
         dec_ref_bits(_py, zip_bits);
         dec_ref_bits(_py, empty_tuple_bits);
 
         let builtins = builtin_classes(_py);
         let mappingproxy = crate::builtins::types::mappingproxy_class_bits(_py);
+        trace_stage("mappingproxy");
         if obj_from_bits(mappingproxy).is_none() || !is_type_object(mappingproxy) {
             return raise_exception::<_>(
                 _py,
@@ -737,30 +754,12 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             );
         }
 
-        let frame_bits = crate::molt_getframe(int_bits_from_i64(_py, 0));
-        if exception_pending(_py) {
-            // Clear the exception — _getframe failure is non-fatal during
-            // compiled binary bootstrap where the frame stack may be empty.
-            crate::builtins::exceptions::clear_exception(_py);
-        }
-        let framelocalsproxy = if obj_from_bits(frame_bits).is_none() {
-            // Frame unavailable (compiled binary bootstrap). Use the mappingproxy
-            // type already resolved above as a safe fallback.
-            mappingproxy
-        } else {
-            let fl_bits = get_attr_default(_py, frame_bits, b"f_locals", MoltObject::none().bits());
-            dec_ref_bits(_py, frame_bits);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if obj_from_bits(fl_bits).is_none() {
-                mappingproxy
-            } else {
-                let proxy = type_of_bits(_py, fl_bits);
-                dec_ref_bits(_py, fl_bits);
-                proxy
-            }
-        };
+        // Keep frame locals deterministic and bootstrap-safe. In the current
+        // runtime, `frame.f_locals` exposes a dict-backed snapshot surface, so
+        // collections.abc should register the concrete dict type instead of
+        // reflectively probing a live frame object during bootstrap.
+        let framelocalsproxy = builtins.dict;
+        trace_stage("framelocalsproxy");
 
         let entries: [(&[u8], u64); 20] = [
             (b"bytes_iterator", bytes_iterator),
@@ -796,6 +795,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
                 return bits;
             }
         }
+        trace_stage("dict_populated");
         if !is_type_object(builtins.async_generator) {
             return raise_exception::<_>(
                 _py,
@@ -808,6 +808,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
         {
             return bits;
         }
+        trace_stage("done");
 
         dict_bits
     })

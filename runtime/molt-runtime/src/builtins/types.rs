@@ -403,6 +403,18 @@ pub extern "C" fn molt_type_init(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_type_prepare(_cls_bits: u64, _name_bits: u64, _bases_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, {
+        let dict_ptr = alloc_dict_with_pairs(_py, &[]);
+        if dict_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(dict_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_type_mro(cls_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let cls_obj = obj_from_bits(cls_bits);
@@ -4657,7 +4669,11 @@ fn prepare_class_impl(
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
         };
-        let mut lookup_bits = molt_getattr_builtin(winner_bits, prepare_name_bits, missing);
+        let mut lookup_bits = crate::builtins::attributes::molt_get_attr_name_default(
+            winner_bits,
+            prepare_name_bits,
+            missing,
+        );
         dec_ref_bits(_py, prepare_name_bits);
         if exception_pending(_py) {
             if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
@@ -4669,7 +4685,7 @@ fn prepare_class_impl(
         }
         lookup_bits
     };
-    let namespace_bits = if prepare_bits == missing {
+    let namespace_bits = if crate::is_missing_bits(_py, prepare_bits) {
         let ptr = alloc_dict_with_pairs(_py, &[]);
         if ptr.is_null() {
             dec_ref_bits(_py, kwds_copy_bits);
@@ -5058,49 +5074,6 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
     })
 }
 
-fn type_from_class_attr(_py: &PyToken<'_>, class_bits: u64, name: &str) -> Option<u64> {
-    let class_ptr = obj_from_bits(class_bits).as_ptr()?;
-    unsafe {
-        if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            return None;
-        }
-    }
-    let dict_bits = unsafe { class_dict_bits(class_ptr) };
-    let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
-    unsafe {
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return None;
-        }
-    }
-    let name_bits = attr_name_bits_from_bytes(_py, name.as_bytes())?;
-    let val_bits = unsafe { dict_get_in_place(_py, dict_ptr, name_bits) }?;
-    dec_ref_bits(_py, name_bits);
-    Some(type_of_bits(_py, val_bits))
-}
-
-fn type_from_instance_attr(_py: &PyToken<'_>, class_bits: u64, name: &str) -> Option<u64> {
-    let class_ptr = obj_from_bits(class_bits).as_ptr()?;
-    let inst_bits = unsafe { alloc_instance_for_class(_py, class_ptr) };
-    if obj_from_bits(inst_bits).is_none() {
-        return None;
-    }
-    let missing = missing_bits(_py);
-    let name_bits = attr_name_bits_from_bytes(_py, name.as_bytes())?;
-    let attr_bits = molt_getattr_builtin(inst_bits, name_bits, missing);
-    dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) || attr_bits == missing {
-        if exception_pending(_py) {
-            let _ = crate::builtins::attr::clear_attribute_error_if_pending(_py);
-        }
-        dec_ref_bits(_py, inst_bits);
-        return None;
-    }
-    let type_bits = type_of_bits(_py, attr_bits);
-    dec_ref_bits(_py, attr_bits);
-    dec_ref_bits(_py, inst_bits);
-    Some(type_bits)
-}
-
 fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
     let class_bits = types_class(
         _py,
@@ -5168,60 +5141,49 @@ fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_types_bootstrap() -> u64 {
     crate::with_gil_entry!(_py, {
+        let debug_bootstrap = std::env::var("MOLT_DEBUG_TYPES_BOOTSTRAP").as_deref() == Ok("1");
+        let trace_stage = |stage: &str| {
+            if debug_bootstrap {
+                eprintln!("molt types bootstrap stage={stage}");
+            }
+        };
+        trace_stage("start");
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         if dict_ptr.is_null() {
             return MoltObject::none().bits();
         }
         let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
         let builtins = builtin_classes(_py);
+        trace_stage("builtins");
         let mappingproxy_bits = mappingproxy_class(_py);
+        trace_stage("mappingproxy");
         let simplenamespace_bits = simplenamespace_class(_py);
+        trace_stage("simplenamespace");
         let capsule_bits = capsule_class(_py);
+        trace_stage("capsule");
         let cell_bits = cell_class(_py);
+        trace_stage("cell");
         let dynamic_class_attr_bits = dynamic_class_attribute_class(_py);
+        trace_stage("dynamic_class_attribute");
 
-        let method_type_bits = {
-            let func_ptr = alloc_function_obj(
-                _py,
-                crate::molt_types_coroutine as *const () as usize as u64,
-                1,
-            );
-            if func_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            let func_bits = MoltObject::from_ptr(func_ptr).bits();
-            let inst_bits = unsafe {
-                alloc_instance_for_class(_py, obj_from_bits(builtins.object).as_ptr().unwrap())
-            };
-            if obj_from_bits(inst_bits).is_none() {
-                dec_ref_bits(_py, func_bits);
-                return MoltObject::none().bits();
-            }
-            let bound_bits = crate::molt_bound_method_new(func_bits, inst_bits);
-            if obj_from_bits(bound_bits).is_none() {
-                dec_ref_bits(_py, func_bits);
-                dec_ref_bits(_py, inst_bits);
-                return MoltObject::none().bits();
-            }
-            let type_bits = type_of_bits(_py, bound_bits);
-            dec_ref_bits(_py, bound_bits);
-            dec_ref_bits(_py, func_bits);
-            dec_ref_bits(_py, inst_bits);
-            type_bits
-        };
+        let method_type_bits = method_class(_py);
+        trace_stage("method_type_done");
 
-        let wrapper_descriptor_bits =
-            type_from_class_attr(_py, builtins.object, "__init__").unwrap_or(builtins.object);
-        let method_wrapper_bits =
-            type_from_instance_attr(_py, builtins.object, "__str__").unwrap_or(builtins.object);
-        let method_descriptor_bits =
-            type_from_class_attr(_py, builtins.str, "join").unwrap_or(builtins.object);
-        let classmethod_descriptor_bits =
-            type_from_class_attr(_py, builtins.dict, "fromkeys").unwrap_or(builtins.object);
-        let getset_descriptor_bits =
-            type_from_class_attr(_py, builtins.function, "__code__").unwrap_or(builtins.object);
-        let member_descriptor_bits =
-            type_from_class_attr(_py, builtins.function, "__globals__").unwrap_or(builtins.object);
+        // Bootstrap-critical descriptor exports must come from stable runtime
+        // type objects, not reflective attribute probing that can recurse back
+        // into the still-initializing attribute/type machinery.
+        let wrapper_descriptor_bits = builtins.builtin_function_or_method;
+        trace_stage("wrapper_descriptor");
+        let method_wrapper_bits = builtins.builtin_function_or_method;
+        trace_stage("method_wrapper");
+        let method_descriptor_bits = builtins.builtin_function_or_method;
+        trace_stage("method_descriptor");
+        let classmethod_descriptor_bits = builtins.builtin_function_or_method;
+        trace_stage("classmethod_descriptor");
+        let getset_descriptor_bits = builtins.property;
+        trace_stage("getset_descriptor");
+        let member_descriptor_bits = builtins.property;
+        trace_stage("member_descriptor");
 
         let coroutine_func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
@@ -5232,6 +5194,7 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
             return MoltObject::none().bits();
         }
         let coroutine_bits = MoltObject::from_ptr(coroutine_func_ptr).bits();
+        trace_stage("coroutine_bits");
 
         let get_original_bases_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
@@ -5243,6 +5206,7 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
             return MoltObject::none().bits();
         }
         let get_original_bases_bits = MoltObject::from_ptr(get_original_bases_ptr).bits();
+        trace_stage("get_original_bases");
 
         let prepare_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
@@ -5256,6 +5220,7 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         }
         let prepare_bits = MoltObject::from_ptr(prepare_ptr).bits();
         mark_vararg_method(_py, prepare_bits, false);
+        trace_stage("prepare_bits");
 
         let resolve_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
@@ -5270,6 +5235,7 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         }
         let resolve_bits = MoltObject::from_ptr(resolve_ptr).bits();
         mark_vararg_method(_py, resolve_bits, false);
+        trace_stage("resolve_bits");
 
         let new_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
@@ -5285,6 +5251,7 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         }
         let new_bits = MoltObject::from_ptr(new_ptr).bits();
         mark_vararg_method(_py, new_bits, false);
+        trace_stage("new_bits");
 
         let names = [
             ("AsyncGeneratorType", builtins.async_generator),
@@ -5332,11 +5299,13 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
             }
             dec_ref_bits(_py, key_bits);
         }
+        trace_stage("dict_populated");
         dec_ref_bits(_py, coroutine_bits);
         dec_ref_bits(_py, get_original_bases_bits);
         dec_ref_bits(_py, prepare_bits);
         dec_ref_bits(_py, resolve_bits);
         dec_ref_bits(_py, new_bits);
+        trace_stage("done");
         dict_bits
     })
 }

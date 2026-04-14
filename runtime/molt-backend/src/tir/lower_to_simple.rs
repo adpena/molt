@@ -404,7 +404,9 @@ pub fn lower_to_simple_ir(func: &TirFunction, types: &HashMap<ValueId, TirType>)
                 .cloned()
                 .unwrap_or(super::blocks::LoopRole::None)
                 != super::blocks::LoopRole::LoopEnd
+                && !exception_handler_blocks.contains(b)
         });
+        guard_raise_blocks.retain(|b| !exception_handler_blocks.contains(b));
         // Mark body blocks, header chain, guard chain, cond block, AND
         // guard raise-path blocks as consumed.
         loop_consumed.extend(body_set.iter().copied());

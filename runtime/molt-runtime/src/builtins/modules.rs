@@ -4273,6 +4273,9 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                 }
                 return val;
             }
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
                 .unwrap_or_default();
             let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
@@ -4305,6 +4308,8 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
 pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let trace = trace_name_error();
+        let debug_try_globals =
+            std::env::var("MOLT_DEBUG_TRY_GLOBALS").as_deref() == Ok("1");
         let module_obj = obj_from_bits(module_bits);
         let Some(module_ptr) = module_obj.as_ptr() else {
             // On exception handler paths, SSA variables may resolve to
@@ -4342,7 +4347,22 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                 Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
                 _ => return raise_exception::<_>(_py, "TypeError", "module dict missing"),
             };
+            let debug_name = if debug_try_globals {
+                string_obj_to_owned(obj_from_bits(name_bits))
+            } else {
+                None
+            };
             if let Some(val) = dict_get_in_place(_py, dict_ptr, name_bits) {
+                if let Some(name) = debug_name.as_deref()
+                    && debug_try_global_name(name)
+                {
+                    eprintln!(
+                        "molt module_get_global name={} from=dict type={} bits=0x{:x}",
+                        name,
+                        type_name(_py, obj_from_bits(val)),
+                        val
+                    );
+                }
                 inc_ref_bits(_py, val);
                 return val;
             }
@@ -4366,6 +4386,16 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                     if !builtins_dict_ptr.is_null()
                         && let Some(val) = dict_get_in_place(_py, builtins_dict_ptr, name_bits)
                     {
+                        if let Some(name) = debug_name.as_deref()
+                            && debug_try_global_name(name)
+                        {
+                            eprintln!(
+                                "molt module_get_global name={} from=builtins type={} bits=0x{:x}",
+                                name,
+                                type_name(_py, obj_from_bits(val)),
+                                val
+                            );
+                        }
                         inc_ref_bits(_py, val);
                         return val;
                     }
@@ -4462,6 +4492,14 @@ Use static modules or pre-generated code paths instead."
     })
 }
 
+#[inline]
+fn debug_try_global_name(name: &str) -> bool {
+    name.starts_with("__molt_exc_capture_")
+        || name.starts_with("__molt_ctx_mark_")
+        || name == "__molt_module_obj__"
+        || name == "exc"
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_del_global(module_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -4533,6 +4571,7 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
     crate::with_gil_entry!(_py, {
         let trace_attrs = trace_module_attrs();
         let trace_attrs_verbose = trace_module_attrs_verbose();
+        let debug_try_globals = std::env::var("MOLT_DEBUG_TRY_GLOBALS").as_deref() == Ok("1");
         let module_obj = obj_from_bits(module_bits);
         let Some(module_ptr) = module_obj.as_ptr() else {
             if exception_pending(_py) {
@@ -4571,6 +4610,17 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
                         module_name, attr_name
                     );
                 }
+            }
+            if debug_try_globals
+                && let Some(attr_name) = string_obj_to_owned(obj_from_bits(attr_bits))
+                && debug_try_global_name(&attr_name)
+            {
+                eprintln!(
+                    "molt module_set_attr name={} type={} bits=0x{:x}",
+                    attr_name,
+                    type_name(_py, obj_from_bits(val_bits)),
+                    val_bits
+                );
             }
             let annotations_bits = intern_static_name(
                 _py,

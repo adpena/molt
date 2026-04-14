@@ -6765,6 +6765,83 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "exception_active" => {
+                let active_fn = self.ensure_runtime_i64_fn("molt_exception_active", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(active_fn, &[], "exception_active")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_current" => {
+                let current_fn = self.ensure_runtime_i64_fn("molt_exception_current", 0);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(current_fn, &[], "exception_current")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_enter_handler" => {
+                let Some(&captured_id) = op.operands.first() else {
+                    return false;
+                };
+                let enter_fn = self.ensure_runtime_i64_fn("molt_exception_enter_handler", 1);
+                let captured_bits = self.ensure_i64(self.resolve(captured_id));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        enter_fn,
+                        &[captured_bits.into()],
+                        "exception_enter_handler",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "exception_resolve_captured" => {
+                let Some(&captured_id) = op.operands.first() else {
+                    return false;
+                };
+                let resolve_fn =
+                    self.ensure_runtime_i64_fn("molt_exception_resolve_captured", 1);
+                let captured_bits = self.ensure_i64(self.resolve(captured_id));
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        resolve_fn,
+                        &[captured_bits.into()],
+                        "exception_resolve_captured",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "exception_clear" => {
                 let clear_fn = self.ensure_runtime_i64_fn("molt_exception_clear", 0);
                 let result = self

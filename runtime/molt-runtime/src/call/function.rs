@@ -4,8 +4,9 @@ use crate::object::ops::string_obj_to_owned;
 use crate::{
     CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
     HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, PyToken, TYPE_ID_FUNCTION, TYPE_ID_TUPLE,
-    ensure_function_code_bits, exception_pending, frame_stack_pop, frame_stack_push,
-    function_arity, function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
+    ensure_function_code_bits, exception_pending, exception_stack_baseline_get,
+    exception_stack_baseline_set, frame_stack_pop, frame_stack_push, function_arity,
+    function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
     function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy,
     molt_exception_clear, obj_from_bits, object_type_id, profile_hit, raise_exception,
     recursion_guard_enter, recursion_guard_exit, runtime_state, seq_vec_ref, type_name,
@@ -192,6 +193,24 @@ fn assert_no_pending_on_success_enabled() -> bool {
     })
 }
 
+struct ExceptionBaselineGuard {
+    prev: usize,
+}
+
+impl ExceptionBaselineGuard {
+    fn new() -> Self {
+        Self {
+            prev: exception_stack_baseline_get(),
+        }
+    }
+}
+
+impl Drop for ExceptionBaselineGuard {
+    fn drop(&mut self) {
+        exception_stack_baseline_set(self.prev);
+    }
+}
+
 unsafe fn enforce_no_pending_on_success(_py: &PyToken<'_>, result: u64, context: &str) -> u64 {
     if !assert_no_pending_on_success_enabled() || !exception_pending(_py) {
         return result;
@@ -297,6 +316,7 @@ unsafe fn maybe_call_function_obj_trampoline(
 pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_bits: u64) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -504,6 +524,7 @@ unsafe fn compute_function_task_trampoline_needed(_py: &PyToken<'_>, func_ptr: *
 pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -658,6 +679,7 @@ pub(crate) unsafe fn call_function_obj2(
 ) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -765,6 +787,7 @@ pub(crate) unsafe fn call_function_obj3(
 ) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -869,6 +892,7 @@ pub(crate) unsafe fn call_function_obj4(
 ) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -976,6 +1000,7 @@ unsafe fn call_function_obj5(
 ) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -1101,6 +1126,7 @@ unsafe fn call_function_obj6(
 ) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -1233,6 +1259,7 @@ unsafe fn call_function_obj7(
 ) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -1368,6 +1395,7 @@ unsafe fn call_function_obj8(
 ) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -1511,6 +1539,7 @@ unsafe fn call_function_obj9(
 ) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -1669,6 +1698,7 @@ unsafe fn call_function_obj10(
 ) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -1854,6 +1884,7 @@ unsafe fn call_function_obj11(
 ) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -2058,6 +2089,7 @@ unsafe fn call_function_obj12(
 ) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");
@@ -2258,6 +2290,7 @@ pub(crate) unsafe fn call_function_obj_trampoline(
 ) -> u64 {
     unsafe {
         profile_hit(_py, &CALL_DISPATCH_COUNT);
+        let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "call expects function object");

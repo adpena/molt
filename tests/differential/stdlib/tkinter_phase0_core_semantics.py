@@ -51,6 +51,12 @@ def _import_signature(
         return "spec_error", None, exc
     if spec is None:
         return "spec_missing", None, None
+    if module_name.endswith(".__main__"):
+        # Entry-point modules like `tkinter.__main__` intentionally execute
+        # interactive/demo code on import in CPython. For this differential we
+        # only care that the module resolves through importlib, not that its
+        # side-effectful entrypoint runs.
+        return "spec_only", None, None
     try:
         module = importlib.import_module(module_name)
     except BaseException as exc:  # noqa: BLE001
@@ -59,7 +65,7 @@ def _import_signature(
 
 
 def _import_contract_ok(status: str, exc: BaseException | None) -> bool:
-    if status in {"imported", "spec_missing"}:
+    if status in {"imported", "spec_missing", "spec_only"}:
         return True
     if exc is None:
         return False

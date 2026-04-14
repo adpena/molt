@@ -12312,6 +12312,7 @@ impl SimpleBackend {
                         || matches!(linkage, Linkage::Import))
                         && !closure_functions.contains(target_name.as_str())
                         && args.len() == sig_arity
+                        && !has_exc_handling
                         && !emit_traces;
 
                     if std::env::var("MOLT_DEBUG_DIRECT_CALL").is_ok() {
@@ -12461,59 +12462,6 @@ impl SimpleBackend {
                             &[fn_ptr_val, args_ptr_val, nargs_val, code_id_val],
                         );
                         builder.inst_results(gc_call)[0]
-                    };
-
-                    // --- Post-call exception propagation check ---
-                    // For non-leaf calls the callee may have set a pending
-                    // exception (RecursionError, NameError, etc.) and returned
-                    // None.  Without this check the caller continues with the
-                    // None value, producing misleading TypeErrors downstream
-                    // instead of surfacing the real exception.  Leaf functions
-                    // cannot raise, so they are exempt.
-                    //
-                    // IMPORTANT: Skip this check when the function has its own
-                    // exception handling (try/except/with).  Those functions
-                    // already have IR-level check_exception ops emitted by the
-                    // frontend that route exceptions to the correct handler.
-                    // Returning early here would bypass the handler, causing
-                    // the exception to propagate uncaught and leading to
-                    // use-after-free / SIGSEGV when cleanup code dec_refs the
-                    // NaN-boxed None sentinel as a raw pointer.
-                    let res = if !is_leaf_call && !has_exc_handling {
-                        let exc_check = builder.ins().call(local_exc_pending_fast, &[]);
-                        let exc_pending = builder.inst_results(exc_check)[0];
-                        let has_exc = builder.ins().icmp_imm(IntCC::NotEqual, exc_pending, 0);
-
-                        let continue_block = builder.create_block();
-                        builder.append_block_param(continue_block, types::I64);
-                        let exc_return_block = builder.create_block();
-                        reachable_blocks.insert(continue_block);
-                        reachable_blocks.insert(exc_return_block);
-
-                        brif_block(
-                            &mut builder,
-                            has_exc,
-                            exc_return_block,
-                            &[],
-                            continue_block,
-                            &[res],
-                        );
-
-                        // Exception pending: return None immediately so the
-                        // exception propagates to the caller.
-                        switch_to_block_materialized(&mut builder, exc_return_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, exc_return_block);
-                        if has_ret {
-                            let none_val = builder.ins().iconst(types::I64, box_none());
-                            builder.ins().return_(&[none_val]);
-                        } else {
-                            builder.ins().return_(&[]);
-                        }
-
-                        switch_to_block_materialized(&mut builder, continue_block);
-                        builder.block_params(continue_block)[0]
-                    } else {
-                        res
                     };
 
                     if let Some(crate::passes::ReturnAliasSummary::Param(param_idx)) =
@@ -14629,6 +14577,72 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
+                "exception_active" => {
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_active",
+                        &[],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
+                "exception_current" => {
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_current",
+                        &[],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
+                "exception_enter_handler" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let captured =
+                        var_get(&mut builder, &vars, &args[0]).expect("Captured exception not found");
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_enter_handler",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*captured]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
+                "exception_resolve_captured" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let captured =
+                        var_get(&mut builder, &vars, &args[0]).expect("Captured exception not found");
+                    let callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_exception_resolve_captured",
+                        &[types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                    let call = builder.ins().call(local_callee, &[*captured]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out {
+                        def_var_named(&mut builder, &vars, out__, res);
+                    }
+                }
                 "getargv" => {
                     let callee = Self::import_func_id_split(
                         &mut self.module,
@@ -15048,12 +15062,6 @@ impl SimpleBackend {
                             tracked_list.retain(|n| !scrubbed_names.contains(n));
                         }
                     }
-                    // Inline exception check: load the pending flag byte directly
-                    // instead of calling molt_exception_pending_fast() for each
-                    // check_exception site.  The flag pointer is fetched once per
-                    // block and the byte load is ~1 cycle vs ~15-40 cycles for the
-                    // function call.
-                    //
                     let fallthrough = builder.create_block();
                     reachable_blocks.insert(target_block);
                     reachable_blocks.insert(fallthrough);
@@ -15063,54 +15071,15 @@ impl SimpleBackend {
                         &first_defined_at,
                         op_idx,
                     );
-                    let flag_ptr_val: Option<Value> =
-                        exc_flag_ptr_slot.map(|slot| builder.ins().stack_load(types::I64, slot, 0));
-                    if let Some(flag_ptr) = flag_ptr_val {
-                        let pending_byte =
-                            builder.ins().load(types::I8, MemFlags::new(), flag_ptr, 0);
-                        let pending_i64 = builder.ins().uextend(types::I64, pending_byte);
-                        let is_pending = builder.ins().icmp_imm(IntCC::NotEqual, pending_i64, 0);
-                        // On positive read, validate with full function before branching
-                        let validate_block = builder.create_block();
-                        reachable_blocks.insert(validate_block);
-                        brif_block(
-                            &mut builder,
-                            is_pending,
-                            validate_block,
-                            &[],
-                            fallthrough,
-                            &[],
-                        );
-                        switch_to_block_with_rebind(
-                            &mut builder,
-                            validate_block,
-                            &mut is_block_filled,
-                            true,
-                            &BTreeMap::new(),
-                            &raw_int_shadow,
-                            &int_store_target_names,
-                        );
-                        let call = builder.ins().call(local_exc_pending_fast, &[]);
-                        let confirmed = builder.inst_results(call)[0];
-                        let cond2 = builder.ins().icmp_imm(IntCC::NotEqual, confirmed, 0);
-                        brif_block(&mut builder, cond2, target_block, &[], fallthrough, &[]);
-                        if exception_label_ids.is_empty() && sealed_blocks.insert(validate_block) {
-                            maybe_debug_seal("check_exception_validate", op_idx, validate_block);
-                            seal_block_once(&mut builder, &mut sealed_blocks, validate_block);
-                        }
-                    } else {
-                        // Fallback: direct function call (no flag pointer available)
-                        let call = builder.ins().call(local_exc_pending_fast, &[]);
-                        let pending = builder.inst_results(call)[0];
-                        let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
-                        brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
-                    }
+                    let call = builder.ins().call(local_exc_pending_fast, &[]);
+                    let pending = builder.inst_results(call)[0];
+                    let cond = builder.ins().icmp_imm(IntCC::NotEqual, pending, 0);
+                    brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
                     // The fallthrough block is always fresh and both of its
-                    // predecessors are emitted here: the direct negative edge
-                    // and, on the fast-path probe, the validate block's
-                    // negative edge. Seal it now so later `use_var` calls in
-                    // the fallthrough block cannot synthesize placeholder
-                    // predecessors with zero-valued block params.
+                    // predecessors are emitted here. Seal it now so later
+                    // `use_var` calls in the fallthrough block cannot
+                    // synthesize placeholder predecessors with zero-valued
+                    // block params.
                     if exception_label_ids.is_empty() && sealed_blocks.insert(fallthrough) {
                         maybe_debug_seal("check_exception_fallthrough", op_idx, fallthrough);
                         seal_block_once(&mut builder, &mut sealed_blocks, fallthrough);
@@ -15134,24 +15103,22 @@ impl SimpleBackend {
                     // may access objects that were only passed to the fallthrough,
                     // causing use-after-free when the exception handler dec-refs them.
                     // Propagate tracked values ONLY to the fallthrough block.
-                    // Previously these were cloned to both fallthrough AND the
-                    // exception handler, causing the same value to accumulate
-                    // in multiple blocks.  When successive check_exception sites
-                    // each picked up and re-propagated the values, the dec_ref
-                    // count multiplied, resulting in double-free (tuple type_id=206
-                    // during stdlib module init).  The exception handler does its
-                    // own cleanup via the exception handling path.
+                    // Exception labels now get the SSA names they need via
+                    // `exception_label_rebind_names`, but tracked-value cloning
+                    // to both sides reintroduces refcount multiplication in import
+                    // heavy code. Keep handler rooting separate from tracked
+                    // cleanup transport.
                     if !carry_obj.is_empty() {
                         block_tracked_obj
                             .entry(fallthrough)
                             .or_default()
-                            .extend(carry_obj);
+                            .extend(carry_obj.iter().cloned());
                     }
                     if !carry_ptr.is_empty() {
                         block_tracked_ptr
                             .entry(fallthrough)
                             .or_default()
-                            .extend(carry_ptr);
+                            .extend(carry_ptr.iter().cloned());
                     }
                 }
                 "file_open" => {

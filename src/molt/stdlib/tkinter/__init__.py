@@ -3,12 +3,12 @@
 import re
 import sys
 import warnings
+import _tkinter as _tk_runtime
 
 # On WASM targets without GUI support, fail at import time like CPython.
 if sys.platform in ("emscripten", "wasi"):
     raise ImportError("No module named '_tkinter'")
 
-import _tkinter as _tkimpl
 from _intrinsics import require_intrinsic as _require_intrinsic
 from .constants import *  # noqa: F403
 
@@ -23,8 +23,28 @@ def _lazy_intrinsic(name):
     return _call
 
 
+def _tk_runtime_export(name):
+    def _call(*args, **kwargs):
+        return getattr(_tk_runtime, name)(*args, **kwargs)
+
+    return _call
+
+
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 _MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available")
+_MOLT_TK_APP_NEW = _require_intrinsic("molt_tk_app_new")
+_MOLT_TK_MAINLOOP = _require_intrinsic("molt_tk_mainloop")
+_MOLT_TK_DO_ONE_EVENT = _require_intrinsic("molt_tk_do_one_event")
+_MOLT_TK_QUIT = _require_intrinsic("molt_tk_quit")
+_MOLT_TK_AFTER = _require_intrinsic("molt_tk_after")
+_MOLT_TK_AFTER_IDLE = _require_intrinsic("molt_tk_after_idle")
+_MOLT_TK_AFTER_CANCEL = _require_intrinsic("molt_tk_after_cancel")
+_MOLT_TK_AFTER_INFO = _require_intrinsic("molt_tk_after_info")
+_MOLT_TK_BIND_COMMAND = _require_intrinsic("molt_tk_bind_command")
+_MOLT_TK_UNBIND_COMMAND = _require_intrinsic("molt_tk_unbind_command")
+_MOLT_TK_GETBOOLEAN = _require_intrinsic("molt_tk_getboolean")
+_MOLT_TK_GETDOUBLE = _require_intrinsic("molt_tk_getdouble")
+_MOLT_TK_SPLITLIST = _require_intrinsic("molt_tk_splitlist")
 _MOLT_TK_EVENT_SUBST_PARSE = _require_intrinsic("molt_tk_event_subst_parse")
 _molt_tk_event_int = _require_intrinsic("molt_tk_event_int")
 _molt_tk_event_build_from_args = _require_intrinsic(
@@ -71,55 +91,61 @@ _MAGIC_RE = re.compile(r"([\\{}])")
 _SPACE_RE = re.compile(r"([\s])", re.ASCII)
 
 
-def _require_tk_callable(attr):
-    def _call(*args, **kwargs):
-        value = getattr(_tkimpl, attr, None)
-        if value is None:
-            raise RuntimeError(
-                f"tkinter requires _tkinter.{attr} in the intrinsic runtime surface"
-            )
-        if not callable(value):
-            raise RuntimeError(
-                f"tkinter requires callable _tkinter.{attr} in the intrinsic runtime surface"
-            )
-        return value(*args, **kwargs)
-
-    return _call
+class TclError(RuntimeError):
+    """Tk/Tcl operation error."""
 
 
-_TK_AVAILABLE = _require_tk_callable("tk_available")
-_HAS_GUI_CAPABILITY = _require_tk_callable("has_gui_capability")
-_HAS_PROCESS_SPAWN_CAPABILITY = _require_tk_callable("has_process_spawn_capability")
-_TK_CREATE = _require_tk_callable("create")
-_TK_MAINLOOP = _require_tk_callable("mainloop")
-_TK_DO_ONE_EVENT = _require_tk_callable("dooneevent")
-_TK_QUIT = _require_tk_callable("quit")
-_TK_AFTER = _require_tk_callable("after")
-_TK_CALL = _require_tk_callable("call")
-_TK_BIND_COMMAND = _require_tk_callable("bind_command")
-_TK_BIND_REGISTER = _require_tk_callable("bind_register")
-_TK_BIND_UNREGISTER = _require_tk_callable("bind_unregister")
-_TK_WIDGET_BIND_REGISTER = _require_tk_callable("widget_bind_register")
-_TK_WIDGET_BIND_UNREGISTER = _require_tk_callable("widget_bind_unregister")
-_TK_TEXT_TAG_BIND_REGISTER = _require_tk_callable("text_tag_bind_register")
-_TK_TEXT_TAG_BIND_UNREGISTER = _require_tk_callable("text_tag_bind_unregister")
-_TK_DESTROY_WIDGET = _require_tk_callable("destroy_widget")
-_TK_LAST_ERROR = _require_tk_callable("last_error")
-_TK_TRACE_ADD = _require_tk_callable("trace_add")
-_TK_TRACE_REMOVE = _require_tk_callable("trace_remove")
-_TK_TRACE_CLEAR = _require_tk_callable("trace_clear")
-_TK_TRACE_INFO = _require_tk_callable("trace_info")
-_TK_WAIT_VARIABLE = _require_tk_callable("wait_variable")
-_TK_WAIT_WINDOW = _require_tk_callable("wait_window")
-_TK_WAIT_VISIBILITY = _require_tk_callable("wait_visibility")
+def _has_gui_capability():
+    return bool(_MOLT_CAPABILITIES_HAS("gui.window")) or bool(
+        _MOLT_CAPABILITIES_HAS("gui")
+    )
 
-TclError = _tkimpl.TclError
-wantobjects = 1 if bool(_tkimpl.wantobjects()) else 0
-TkVersion = float(_tkimpl.TK_VERSION)
-TclVersion = float(_tkimpl.TCL_VERSION)
-READABLE = _tkimpl.READABLE
-WRITABLE = _tkimpl.WRITABLE
-EXCEPTION = _tkimpl.EXCEPTION
+
+def _has_process_spawn_capability():
+    return bool(_MOLT_CAPABILITIES_HAS("process.spawn")) or bool(
+        _MOLT_CAPABILITIES_HAS("process")
+    )
+
+
+_TK_AVAILABLE = _tk_runtime_export("_MOLT_TK_AVAILABLE")
+_HAS_GUI_CAPABILITY = _has_gui_capability
+_HAS_PROCESS_SPAWN_CAPABILITY = _has_process_spawn_capability
+_TK_CREATE = _tk_runtime_export("_MOLT_TK_APP_NEW")
+_TK_MAINLOOP = _tk_runtime_export("_MOLT_TK_MAINLOOP")
+_TK_DO_ONE_EVENT = _tk_runtime_export("_MOLT_TK_DO_ONE_EVENT")
+_TK_QUIT = _tk_runtime_export("_MOLT_TK_QUIT")
+_TK_AFTER = _tk_runtime_export("_MOLT_TK_AFTER")
+_TK_CALL = _tk_runtime_export("_MOLT_TK_CALL")
+_TK_BIND_REGISTER = _tk_runtime_export("_MOLT_TK_BIND_CALLBACK_REGISTER")
+_TK_BIND_UNREGISTER = _tk_runtime_export("_MOLT_TK_BIND_CALLBACK_UNREGISTER")
+_TK_WIDGET_BIND_REGISTER = _tk_runtime_export(
+    "_MOLT_TK_WIDGET_BIND_CALLBACK_REGISTER"
+)
+_TK_WIDGET_BIND_UNREGISTER = _tk_runtime_export(
+    "_MOLT_TK_WIDGET_BIND_CALLBACK_UNREGISTER"
+)
+_TK_TEXT_TAG_BIND_REGISTER = _tk_runtime_export(
+    "_MOLT_TK_TEXT_TAG_BIND_CALLBACK_REGISTER"
+)
+_TK_TEXT_TAG_BIND_UNREGISTER = _tk_runtime_export(
+    "_MOLT_TK_TEXT_TAG_BIND_CALLBACK_UNREGISTER"
+)
+_TK_DESTROY_WIDGET = _tk_runtime_export("_MOLT_TK_DESTROY_WIDGET")
+_TK_LAST_ERROR = _tk_runtime_export("_MOLT_TK_LAST_ERROR")
+_TK_TRACE_ADD = _tk_runtime_export("_MOLT_TK_TRACE_ADD")
+_TK_TRACE_REMOVE = _tk_runtime_export("_MOLT_TK_TRACE_REMOVE")
+_TK_TRACE_CLEAR = _tk_runtime_export("_MOLT_TK_TRACE_CLEAR")
+_TK_TRACE_INFO = _tk_runtime_export("_MOLT_TK_TRACE_INFO")
+_TK_WAIT_VARIABLE = _tk_runtime_export("_MOLT_TK_TKWAIT_VARIABLE")
+_TK_WAIT_WINDOW = _tk_runtime_export("_MOLT_TK_TKWAIT_WINDOW")
+_TK_WAIT_VISIBILITY = _tk_runtime_export("_MOLT_TK_TKWAIT_VISIBILITY")
+
+wantobjects = 1
+TkVersion = 8.6
+TclVersion = 8.6
+READABLE = 2
+WRITABLE = 4
+EXCEPTION = 8
 
 
 def _has_any_capability(*names):
@@ -755,8 +781,8 @@ class Misc:
             def wrapped():
                 return callback(*args)
 
-            return _tkimpl.after_idle(self._tk_app, wrapped)
-        return _tkimpl.after_idle(self._tk_app, callback)
+            return _MOLT_TK_AFTER_IDLE(self._tk_app, wrapped)
+        return _MOLT_TK_AFTER_IDLE(self._tk_app, callback)
 
     def after_cancel(self, identifier):
         _require_gui_window_capability()
@@ -771,12 +797,12 @@ class Misc:
             return None
 
         token = getattr(identifier, "_token", identifier)
-        _tkimpl.after_cancel(self._tk_app, token)
+        _MOLT_TK_AFTER_CANCEL(self._tk_app, token)
         return None
 
     def after_info(self, identifier=None):
         _require_gui_window_capability()
-        return _tkimpl.after_info(self._tk_app, identifier)
+        return _MOLT_TK_AFTER_INFO(self._tk_app, identifier)
 
     def bind_command(self, name, callback):
         _require_gui_window_capability()
@@ -786,13 +812,13 @@ class Misc:
 
     def createcommand(self, name, callback):
         _require_gui_window_capability()
-        _tkimpl.createcommand(self._tk_app, name, callback)
+        _MOLT_TK_BIND_COMMAND(self._tk_app, str(name), callback)
         root = getattr(self, "tk", None)
         if root is not None and hasattr(root, "_registered_commands"):
             root._registered_commands.add(str(name))
 
     def deletecommand(self, name):
-        value = _tkimpl.deletecommand(self._tk_app, name)
+        value = _MOLT_TK_UNBIND_COMMAND(self._tk_app, str(name))
         root = getattr(self, "tk", None)
         if root is not None and hasattr(root, "_registered_commands"):
             root._registered_commands.discard(str(name))
@@ -914,34 +940,34 @@ class Misc:
         return _TK_LAST_ERROR(self._tk_app)
 
     def getboolean(self, value):
-        return _tkimpl.getboolean(value)
+        return bool(_MOLT_TK_GETBOOLEAN(value))
 
     def getint(self, value):
-        return _tkimpl.getint(value)
+        return int(value)
 
     def getdouble(self, value):
-        return _tkimpl.getdouble(value)
+        return float(_MOLT_TK_GETDOUBLE(value))
 
     def splitlist(self, value):
-        return _tkimpl.splitlist(value)
+        return tuple(_MOLT_TK_SPLITLIST(value))
 
     def getvar(self, name="PY_VAR"):
-        return _tkimpl.getvar(self._tk_app, name)
+        return _TK_CALL(self._tk_app, "set", name)
 
     def setvar(self, name="PY_VAR", value="1"):
-        return _tkimpl.setvar(self._tk_app, name, value)
+        return _TK_CALL(self._tk_app, "set", name, value)
 
     def unsetvar(self, name="PY_VAR"):
-        return _tkimpl.unsetvar(self._tk_app, name)
+        return _TK_CALL(self._tk_app, "unset", name)
 
     def globalgetvar(self, name="PY_VAR"):
-        return _tkimpl.globalgetvar(self._tk_app, name)
+        return self.getvar(name)
 
     def globalsetvar(self, name="PY_VAR", value="1"):
-        return _tkimpl.globalsetvar(self._tk_app, name, value)
+        return self.setvar(name, value)
 
     def globalunsetvar(self, name="PY_VAR"):
-        return _tkimpl.globalunsetvar(self._tk_app, name)
+        return self.unsetvar(name)
 
     def wait_variable(self, name="PY_VAR"):
         _require_gui_window_capability()
@@ -3875,19 +3901,19 @@ def tk_available():
 
 
 def getboolean(value):
-    return _tkimpl.getboolean(value)
+    return bool(_MOLT_TK_GETBOOLEAN(value))
 
 
 def getint(value):
-    return _tkimpl.getint(value)
+    return int(value)
 
 
 def getdouble(value):
-    return _tkimpl.getdouble(value)
+    return float(_MOLT_TK_GETDOUBLE(value))
 
 
 def splitlist(value):
-    return _tkimpl.splitlist(value)
+    return tuple(_MOLT_TK_SPLITLIST(value))
 
 
 def _print_command(cmd, *, file=sys.stderr):

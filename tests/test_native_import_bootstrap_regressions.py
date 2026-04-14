@@ -66,6 +66,7 @@ def _build_and_run_with_env(
     source_relpath: str | None = None,
     extra_files: dict[str, str] | None = None,
     extra_env: dict[str, str] | None = None,
+    run_timeout_secs: int = 60,
 ) -> subprocess.CompletedProcess[str]:
     src_path = tmp_path / source_relpath if source_relpath is not None else tmp_path / f"{name}.py"
     out_path = tmp_path / name
@@ -124,7 +125,7 @@ def _build_and_run_with_env(
         env=env,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=run_timeout_secs,
     )
     return run
 
@@ -220,6 +221,54 @@ def test_native_import_sys_is_clean(tmp_path: Path) -> None:
     assert run.stdout.strip() == "ok"
 
 
+def test_native_globals_builtin_is_callable(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        "print(type(globals).__name__)\nprint(callable(globals))\nprint(type(globals()).__name__)\n",
+        "globals_builtin_callable",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "builtin_function_or_method",
+        "True",
+        "dict",
+    ]
+
+
+def test_native_dynamic_metaclass_class_bootstrap_is_clean(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class ABCMeta(type):\n"
+            "    pass\n"
+            "class ABC(metaclass=ABCMeta):\n"
+            "    __slots__ = ()\n"
+            "print('OK')\n"
+        ),
+        "dynamic_metaclass_bootstrap",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "OK"
+
+
+def test_native_metaclass_inherits_type_prepare(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class ABCMeta(type):\n"
+            "    pass\n"
+            "print(type(ABCMeta.__prepare__).__name__)\n"
+            "print(callable(ABCMeta.__prepare__))\n"
+        ),
+        "metaclass_inherits_type_prepare",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "builtin_function_or_method",
+        "True",
+    ]
+
+
 def test_native_import_math_preserves_stdio_bootstrap(tmp_path: Path) -> None:
     run = _build_and_run(
         tmp_path,
@@ -228,6 +277,327 @@ def test_native_import_math_preserves_stdio_bootstrap(tmp_path: Path) -> None:
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == ["PRE", "POST"]
+
+
+def test_native_types_bootstrap_payload_is_callable(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "from _intrinsics import require_intrinsic\n"
+            "boot = require_intrinsic('molt_types_bootstrap')\n"
+            "payload = boot()\n"
+            "print(type(payload).__name__)\n"
+            "print(type(payload['resolve_bases']).__name__)\n"
+            "print(callable(payload['resolve_bases']))\n"
+            "print(type(payload['prepare_class']).__name__)\n"
+            "print(callable(payload['prepare_class']))\n"
+        ),
+        "types_bootstrap_payload_callable",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-types-bootstrap-payload",
+        cache_dir=ROOT / ".molt_cache-types-bootstrap-payload",
+        backend="cranelift",
+        run_timeout_secs=20,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "dict",
+        "function",
+        "True",
+        "function",
+        "True",
+    ]
+
+
+def test_native_types_bootstrap_descriptor_types_match_runtime_carriers(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "from _intrinsics import require_intrinsic\n"
+            "data = require_intrinsic('molt_types_bootstrap')()\n"
+            "checks = [\n"
+            "    data['WrapperDescriptorType'] is type(object.__init__),\n"
+            "    data['MethodWrapperType'] is type(object().__str__),\n"
+            "    data['MethodDescriptorType'] is type(str.join),\n"
+            "    data['ClassMethodDescriptorType'] is type(dict.fromkeys),\n"
+            "    data['GetSetDescriptorType'] is type(type.__getattribute__(type(lambda: None), '__code__')),\n"
+            "    data['MemberDescriptorType'] is type(type.__getattribute__(type(lambda: None), '__globals__')),\n"
+            "]\n"
+            "for item in checks:\n"
+            "    print(item)\n"
+        ),
+        "types_bootstrap_descriptor_types",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-types-bootstrap-descriptors",
+        cache_dir=ROOT / ".molt_cache-types-bootstrap-descriptors",
+        backend="cranelift",
+        run_timeout_secs=20,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["True"] * 6
+
+
+def test_native_importlib_import_module_tkinter_after_find_spec_is_clean(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import importlib\n"
+            "import importlib.util\n"
+            "import _tkinter\n"
+            "print('PRE')\n"
+            "print(importlib.util.find_spec('tkinter') is not None)\n"
+            "mod = importlib.import_module('tkinter')\n"
+            "print(mod.__name__)\n"
+        ),
+        "importlib_import_module_tkinter_after_find_spec",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-importlib-tkinter",
+        cache_dir=ROOT / ".molt_cache-importlib-tkinter",
+        backend="cranelift",
+        run_timeout_secs=20,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["PRE", "True", "tkinter"]
+
+
+def test_native_builtin_import_tkinter_after_find_spec_is_clean(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import builtins\n"
+            "import importlib.util\n"
+            "import _tkinter\n"
+            "print('PRE')\n"
+            "print(importlib.util.find_spec('tkinter') is not None)\n"
+            "mod = builtins.__import__('tkinter', globals(), locals(), (), 0)\n"
+            "print(mod.__name__)\n"
+        ),
+        "builtin_import_tkinter_after_find_spec",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-builtin-tkinter",
+        cache_dir=ROOT / ".molt_cache-builtin-tkinter",
+        backend="cranelift",
+        run_timeout_secs=20,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["PRE", "True", "tkinter"]
+
+
+def test_native_imported_module_dunder_getattr_handles_missing_attr(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import probe_mod\n"
+            "try:\n"
+            "    getattr(probe_mod, 'sentinel_missing')\n"
+            "except BaseException as exc:\n"
+            "    print(type(exc).__name__)\n"
+            "    print(str(exc))\n"
+        ),
+        "module_dunder_getattr_missing_attr",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-module-dunder-getattr",
+        cache_dir=ROOT / ".molt_cache-module-dunder-getattr",
+        backend="cranelift",
+        extra_files={
+            "probe_mod.py": (
+                "def __getattr__(name):\n"
+                "    raise AttributeError(f'HOOK::{name}')\n"
+            )
+        },
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["AttributeError", "HOOK::sentinel_missing"]
+
+
+def test_native_local_function_raise_is_caught_by_try_except(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "print('START')\n"
+            "def boom():\n"
+            "    raise AttributeError('HOOK::local')\n"
+            "value = 'UNSET'\n"
+            "try:\n"
+            "    value = boom()\n"
+            "    print('AFTER_CALL')\n"
+            "except BaseException as exc:\n"
+            "    print('EXC', type(exc).__name__, str(exc))\n"
+            "print('END', type(value).__name__, repr(value))\n"
+        ),
+        "local_try_raise_caught",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-local-try-raise",
+        cache_dir=ROOT / ".molt_cache-local-try-raise",
+        backend="cranelift",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "START",
+        "EXC AttributeError HOOK::local",
+        "END str 'UNSET'",
+    ]
+
+
+def test_native_plain_function_metadata_survives_try_scope(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "try:\n"
+            "    def f(a, **kwargs):\n"
+            "        return a\n"
+            "    print(type(f.__kwdefaults__).__name__)\n"
+            "    print(repr(f.__kwdefaults__))\n"
+            "    print(f(1))\n"
+            "except BaseException as e:\n"
+            "    print('CAUGHT', type(e).__name__, str(e))\n"
+            "    raise\n"
+        ),
+        "plain_function_metadata_inside_try",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-plain-function-metadata-inside-try",
+        cache_dir=ROOT / ".molt_cache-plain-function-metadata-inside-try",
+        backend="cranelift",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "NoneType",
+        "None",
+        "1",
+    ]
+
+
+def test_native_plain_method_in_try_scope_is_callable(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "try:\n"
+            "    class C:\n"
+            "        def f(self):\n"
+            "            return 1\n"
+            "    print(type(C.f).__name__)\n"
+            "    print(callable(C.f))\n"
+            "    print(C.f(C()))\n"
+            "except BaseException as e:\n"
+            "    print('CAUGHT', type(e).__name__, str(e))\n"
+            "    raise\n"
+        ),
+        "plain_method_inside_try_callable",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-plain-method-inside-try",
+        cache_dir=ROOT / ".molt_cache-plain-method-inside-try",
+        backend="cranelift",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "function",
+        "True",
+        "1",
+    ]
+
+
+def test_native_direct_raise_is_caught_by_try_except(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "print('START')\n"
+            "try:\n"
+            "    raise AttributeError('HOOK::direct')\n"
+            "except BaseException as exc:\n"
+            "    print('EXC', type(exc).__name__, str(exc))\n"
+        ),
+        "direct_try_raise_caught",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-direct-try-raise",
+        cache_dir=ROOT / ".molt_cache-direct-try-raise",
+        backend="cranelift",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "START",
+        "EXC AttributeError HOOK::direct",
+    ]
+
+
+def test_native_try_multibase_class_statement_preserves_namespace(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "try:\n"
+            "    class EnumType(type):\n"
+            "        def __new__(mcls, name, bases, namespace, **kwargs):\n"
+            "            print('NEW_START', name, type(namespace).__name__)\n"
+            "            members = []\n"
+            "            for key, value in list(namespace.items()):\n"
+            "                if key.startswith('_'):\n"
+            "                    continue\n"
+            "                if callable(value):\n"
+            "                    continue\n"
+            "                members.append((key, value))\n"
+            "                namespace.pop(key, None)\n"
+            "            cls = super().__new__(mcls, name, bases, dict(namespace))\n"
+            "            for member_name, raw_value in members:\n"
+            "                member = cls.__new__(cls, raw_value)\n"
+            "                member._name_ = member_name\n"
+            "                member._value_ = raw_value\n"
+            "                setattr(cls, member_name, member)\n"
+            "            return cls\n"
+            "    class Enum(metaclass=EnumType):\n"
+            "        def __new__(cls, value):\n"
+            "            obj = object.__new__(cls)\n"
+            "            obj._value_ = value\n"
+            "            return obj\n"
+            "    class IntEnum(int, Enum):\n"
+            "        A = 1\n"
+            "        B = 2\n"
+            "    print('INTENUM_OK', IntEnum.A, IntEnum.B)\n"
+            "except BaseException as e:\n"
+            "    print('CAUGHT', type(e).__name__, str(e))\n"
+            "    raise\n"
+        ),
+        "try_multibase_class_statement_namespace",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-multibase-class-namespace",
+        cache_dir=ROOT / ".molt_cache-multibase-class-namespace",
+        backend="cranelift",
+        run_timeout_secs=20,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    lines = run.stdout.strip().splitlines()
+    assert lines[:2] == [
+        "NEW_START Enum dict",
+        "NEW_START IntEnum dict",
+    ]
+    assert len(lines) == 3, lines
+    assert lines[2].startswith("INTENUM_OK "), lines
+
+
+def test_native_try_metaclass_preserves_namespace_dict(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "def f():\n"
+            "    try:\n"
+            "        class Meta(type):\n"
+            "            def __new__(mcls, name, bases, namespace):\n"
+            "                print('NS_TYPE', type(namespace).__name__)\n"
+            "                print('NS_ITEMS', list(namespace.items()))\n"
+            "                return super().__new__(mcls, name, bases, dict(namespace))\n"
+            "        class Box(metaclass=Meta):\n"
+            "            value = 1\n"
+            "        print('BOX_OK', Box.value)\n"
+            "    except BaseException as e:\n"
+            "        print('CAUGHT', type(e).__name__, str(e))\n"
+            "        raise\n"
+            "f()\n"
+        ),
+        "try_metaclass_preserves_namespace",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-try-metaclass-namespace",
+        cache_dir=ROOT / ".molt_cache-try-metaclass-namespace",
+        backend="cranelift",
+        run_timeout_secs=20,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "NS_TYPE dict",
+        "NS_ITEMS [('__module__', '__main__'), ('__qualname__', 'f.<locals>.Box'), ('__firstlineno__', 8), ('value', 1), ('__static_attributes__', ())]",
+        "BOX_OK 1",
+    ]
 
 
 def test_native_types_prepare_class_honors_callable_metaclass_prepare(

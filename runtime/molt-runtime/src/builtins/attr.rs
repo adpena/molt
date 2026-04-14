@@ -653,7 +653,25 @@ pub(crate) unsafe fn module_attr_lookup(
             inc_ref_bits(_py, none_bits);
             return Some(none_bits);
         }
-        dict_get_in_place(_py, dict_ptr, attr_bits).inspect(|val| inc_ref_bits(_py, *val))
+        if let Some(val) = dict_get_in_place(_py, dict_ptr, attr_bits) {
+            inc_ref_bits(_py, val);
+            return Some(val);
+        }
+        let getattr_name_bits = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.getattr_name,
+            b"__getattr__",
+        );
+        if !obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(getattr_name_bits))
+            && let Some(getattr_bits) = dict_get_in_place(_py, dict_ptr, getattr_name_bits)
+        {
+            let res_bits = call_callable1(_py, getattr_bits, attr_bits);
+            if exception_pending(_py) {
+                return None;
+            }
+            return Some(res_bits);
+        }
+        None
     }
 }
 
