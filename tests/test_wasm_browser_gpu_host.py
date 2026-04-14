@@ -42,6 +42,15 @@ def test_browser_host_direct_mode_compiled_gpu_kernel_uses_webgpu_dispatch(
     build_env = os.environ.copy()
     build_env["PYTHONPATH"] = str(root / "src")
     build_env["MOLT_WASM_LINKED"] = "0"
+    build_env["MOLT_SESSION_ID"] = "test-browser-turboquant-webgpu"
+    build_env["CARGO_TARGET_DIR"] = str(root / "target" / "test-browser-turboquant-webgpu")
+    build_env["MOLT_DIFF_CARGO_TARGET_DIR"] = build_env["CARGO_TARGET_DIR"]
+    build_env["MOLT_CACHE"] = str(root / ".molt_cache")
+    build_env["MOLT_DIFF_ROOT"] = str(root / "tmp" / "diff")
+    build_env["MOLT_DIFF_TMPDIR"] = str(root / "tmp")
+    build_env["UV_CACHE_DIR"] = str(root / ".uv-cache")
+    build_env["TMPDIR"] = str(root / "tmp")
+    build_env["MOLT_BACKEND_DAEMON"] = "0"
     build = subprocess.run(
         [
             sys.executable,

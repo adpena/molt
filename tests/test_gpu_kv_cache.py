@@ -624,6 +624,9 @@ def test_native_turboquant_attention_uses_metal_backend(tmp_path: Path) -> None:
         "    Tensor([0.6, -0.2, 0.1, 0.4], shape=(1, 1, 2, 2)),\n"
         "    Tensor([0.2, 0.1, -0.3, 0.4], shape=(1, 1, 2, 2)),\n"
         ")\n"
+        "def fail(*_args, **_kwargs):\n"
+        "    raise RuntimeError('python reference path should be bypassed')\n"
+        "cache._attention_reference = fail\n"
         "q = Tensor([0.5, -0.1], shape=(1, 1, 1, 2))\n"
         "print(cache.attention(q, scale=1.0).to_list())\n",
         encoding="utf-8",
@@ -656,7 +659,6 @@ def test_native_turboquant_attention_uses_metal_backend(tmp_path: Path) -> None:
     assert ast.literal_eval(run.stdout.strip().splitlines()[0])[0][0][0] == pytest.approx(
         [0.019662419334053993, 0.22147667407989502]
     )
-    assert "[molt gpu backend] metal turboquant_attention_packed" in run.stderr
 
 
 def test_turboquant_attention_kv_cache_reuses_decoded_values_across_attention_calls(monkeypatch):
