@@ -6858,6 +6858,39 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         }
 
+        #[cfg(not(feature = "molt_gpu_cuda"))]
+        if requested_gpu_backend().as_deref() == Some("cuda") {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "cuda gpu backend requested but runtime was built without molt_gpu_cuda",
+            );
+        }
+        #[cfg(feature = "molt_gpu_cuda")]
+        if requested_gpu_backend().as_deref() == Some("cuda") {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "cuda turboquant attention path is not yet implemented",
+            );
+        }
+        #[cfg(not(feature = "molt_gpu_hip"))]
+        if requested_gpu_backend().as_deref() == Some("hip") {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "hip gpu backend requested but runtime was built without molt_gpu_hip",
+            );
+        }
+        #[cfg(feature = "molt_gpu_hip")]
+        if requested_gpu_backend().as_deref() == Some("hip") {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "hip turboquant attention path is not yet implemented",
+            );
+        }
+
         let missing = crate::missing_bits(_py);
         let Some(kv_cache_name) = attr_name_bits_from_bytes(_py, b"_kv_cache") else {
             return raise_exception::<_>(
