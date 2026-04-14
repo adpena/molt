@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import array
 import math
 import _intrinsics as _molt_intrinsics
 
-from . import Buffer
+from . import Buffer, to_device
 from .tensor import Tensor, tensor_permute_dims, tensor_softmax_last_axis
 from .turboquant import TurboQuantCodec
 
@@ -132,6 +133,10 @@ def _normalized_hadamard(values) -> list[float]:
 def _hadamard_apply_with_signs(values, signs) -> list[float]:
     signed = [float(value) * float(sign) for value, sign in zip(values, signs)]
     return _normalized_hadamard(signed)
+
+
+def _tensor_f32(flat, shape) -> Tensor:
+    return Tensor(to_device(array.array("f", [float(value) for value in flat])), shape=shape)
 
 
 class DenseKVCache:
@@ -355,19 +360,19 @@ class TurboQuantAttentionKVCache:
                             )
                         value_rows.extend(v_rows[batch_index][head_index][seq_index])
             self._runtime_key_mse_weight_rows = self._runtime_key_mse_weight_rows.cat(
-                Tensor(key_mse, shape=(batch, heads, seq, self.codec.dim)),
+                _tensor_f32(key_mse, (batch, heads, seq, self.codec.dim)),
                 dim=2,
             )
             self._runtime_key_residual_sign_rows = self._runtime_key_residual_sign_rows.cat(
-                Tensor(key_sign, shape=(batch, heads, seq, self.codec.dim)),
+                _tensor_f32(key_sign, (batch, heads, seq, self.codec.dim)),
                 dim=2,
             )
             self._runtime_key_residual_scale_rows = self._runtime_key_residual_scale_rows.cat(
-                Tensor(key_scale, shape=(batch, heads, seq)),
+                _tensor_f32(key_scale, (batch, heads, seq)),
                 dim=2,
             )
             self._runtime_value_rows = self._runtime_value_rows.cat(
-                Tensor(value_rows, shape=(batch, heads, seq, self.codec.dim)),
+                _tensor_f32(value_rows, (batch, heads, seq, self.codec.dim)),
                 dim=2,
             )
         else:
@@ -579,29 +584,29 @@ class TurboQuantAttentionKVCache:
                         )
                     value_rows.extend(decoded_values[seq_index])
 
-        self._runtime_key_mse_weight_rows = Tensor(
+        self._runtime_key_mse_weight_rows = _tensor_f32(
             key_mse,
-            shape=(batch, heads, seq, dim),
+            (batch, heads, seq, dim),
         )
-        self._runtime_mse_signs = Tensor(
+        self._runtime_mse_signs = _tensor_f32(
             list(self.codec.mse_rotation.signs),
-            shape=(dim,),
+            (dim,),
         )
-        self._runtime_qjl_signs = Tensor(
+        self._runtime_qjl_signs = _tensor_f32(
             list(self.codec.qjl_rotation.signs),
-            shape=(dim,),
+            (dim,),
         )
-        self._runtime_key_residual_sign_rows = Tensor(
+        self._runtime_key_residual_sign_rows = _tensor_f32(
             key_sign,
-            shape=(batch, heads, seq, dim),
+            (batch, heads, seq, dim),
         )
-        self._runtime_key_residual_scale_rows = Tensor(
+        self._runtime_key_residual_scale_rows = _tensor_f32(
             key_scale,
-            shape=(batch, heads, seq),
+            (batch, heads, seq),
         )
-        self._runtime_value_rows = Tensor(
+        self._runtime_value_rows = _tensor_f32(
             value_rows,
-            shape=(batch, heads, seq, dim),
+            (batch, heads, seq, dim),
         )
 
     def truncate(self, length: int) -> None:
