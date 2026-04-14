@@ -260,6 +260,51 @@ def test_turboquant_cache_builds_runtime_shadow_metadata():
     assert cache._runtime_value_rows.shape == (1, 1, 2, 8)
 
 
+def test_turboquant_append_extends_runtime_shadow_metadata():
+    from molt.gpu.kv_cache import TurboQuantAttentionKVCache
+    from molt.gpu.tensor import Tensor
+    from molt.gpu.turboquant import TurboQuantCodec
+
+    codec = TurboQuantCodec(dim=8, bits=3, seed=5, qjl_seed=19)
+    cache = TurboQuantAttentionKVCache(codec)
+    cache.append(
+        Tensor(
+            [
+                0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,
+                0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,
+            ],
+            shape=(1, 1, 2, 8),
+        ),
+        Tensor(
+            [
+                0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,
+                -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,
+            ],
+            shape=(1, 1, 2, 8),
+        ),
+    )
+    cache.keys()
+    cache.values()
+    baseline_signs = cache._runtime_mse_signs
+
+    cache.append(
+        Tensor(
+            [0.3, -0.4, 0.2, 0.1, -0.6, 0.5, 0.4, -0.3],
+            shape=(1, 1, 1, 8),
+        ),
+        Tensor(
+            [0.7, -0.2, 0.1, -0.4, 0.2, 0.3, -0.5, 0.6],
+            shape=(1, 1, 1, 8),
+        ),
+    )
+
+    assert cache._runtime_mse_signs is baseline_signs
+    assert cache._runtime_key_mse_weight_rows.shape == (1, 1, 3, 8)
+    assert cache._runtime_key_residual_sign_rows.shape == (1, 1, 3, 8)
+    assert cache._runtime_key_residual_scale_rows.shape == (1, 1, 3)
+    assert cache._runtime_value_rows.shape == (1, 1, 3, 8)
+
+
 def test_turboquant_attention_reference_uses_runtime_shadow_metadata():
     from molt.gpu.kv_cache import TurboQuantAttentionKVCache
     from molt.gpu.tensor import Tensor
@@ -296,6 +341,50 @@ def test_turboquant_attention_reference_uses_runtime_shadow_metadata():
     shadow = cache._attention_reference(q, None, 1.0)
 
     assert shadow.reshape(8).to_list() == pytest.approx(baseline.reshape(8).to_list())
+
+
+def test_turboquant_truncate_keeps_runtime_shadow_metadata_usable():
+    from molt.gpu.kv_cache import TurboQuantAttentionKVCache
+    from molt.gpu.tensor import Tensor
+    from molt.gpu.turboquant import TurboQuantCodec
+
+    codec = TurboQuantCodec(dim=8, bits=3, seed=5, qjl_seed=19)
+    cache = TurboQuantAttentionKVCache(codec)
+    cache.append(
+        Tensor(
+            [
+                0.6, -0.2, 0.1, 0.4, -0.5, 0.3, 0.2, 0.1,
+                0.1, 0.5, -0.3, -0.2, 0.6, -0.1, 0.4, -0.4,
+                0.3, -0.4, 0.2, 0.1, -0.6, 0.5, 0.4, -0.3,
+            ],
+            shape=(1, 1, 3, 8),
+        ),
+        Tensor(
+            [
+                0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.6, -0.1,
+                -0.5, 0.2, 0.4, -0.1, 0.3, 0.7, -0.2, 0.6,
+                0.7, -0.2, 0.1, -0.4, 0.2, 0.3, -0.5, 0.6,
+            ],
+            shape=(1, 1, 3, 8),
+        ),
+    )
+    q = Tensor([0.5, -0.1, 0.4, 0.2, -0.3, 0.6, -0.2, 0.1], shape=(1, 1, 1, 8))
+    cache.keys()
+    cache.values()
+    cache.truncate(1)
+
+    assert cache._runtime_key_mse_weight_rows.shape == (1, 1, 1, 8)
+    assert cache._runtime_key_residual_sign_rows.shape == (1, 1, 1, 8)
+    assert cache._runtime_key_residual_scale_rows.shape == (1, 1, 1)
+    assert cache._runtime_value_rows.shape == (1, 1, 1, 8)
+
+    cache.codec = None
+    cache._key_vectors = None
+    cache._value_vectors = None
+    cache._decoded_value_rows = None
+
+    out = cache._attention_reference(q, None, 1.0)
+    assert out.shape == (1, 1, 1, 8)
 
 
 def test_turboquant_attention_intrinsic_does_not_call_python_reference(monkeypatch):

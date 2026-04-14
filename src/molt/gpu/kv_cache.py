@@ -320,7 +320,58 @@ class TurboQuantAttentionKVCache:
                         self.codec.quantize_prod(v_rows[batch_index][head_index][seq_index])
                     )
         self._decoded_value_rows = None
-        self._invalidate_runtime_shadow_rows()
+        if (
+            self._runtime_mse_signs is not None
+            and self._runtime_qjl_signs is not None
+            and self._runtime_key_mse_weight_rows is not None
+            and self._runtime_key_residual_sign_rows is not None
+            and self._runtime_key_residual_scale_rows is not None
+            and self._runtime_value_rows is not None
+        ):
+            key_mse = []
+            key_sign = []
+            key_scale = []
+            value_rows = []
+            for batch_index in range(batch):
+                for head_index in range(heads):
+                    for seq_index in range(seq):
+                        key_encoded = self._key_vectors[batch_index][head_index][-seq + seq_index]
+                        if key_encoded.mse_weights is not None:
+                            key_mse.extend(key_encoded.mse_weights)
+                        else:
+                            key_mse.extend(
+                                key_encoded.norm * self.codec.codebook[int(index)]
+                                for index in key_encoded.indices
+                            )
+                        key_sign.extend(key_encoded.residual_signs)
+                        if key_encoded.residual_scale is not None:
+                            key_scale.append(key_encoded.residual_scale)
+                        else:
+                            key_scale.append(
+                                math.sqrt(math.pi / 2.0)
+                                / float(self.codec.dim)
+                                * key_encoded.residual_norm
+                                * key_encoded.norm
+                            )
+                        value_rows.extend(v_rows[batch_index][head_index][seq_index])
+            self._runtime_key_mse_weight_rows = self._runtime_key_mse_weight_rows.cat(
+                Tensor(key_mse, shape=(batch, heads, seq, self.codec.dim)),
+                dim=2,
+            )
+            self._runtime_key_residual_sign_rows = self._runtime_key_residual_sign_rows.cat(
+                Tensor(key_sign, shape=(batch, heads, seq, self.codec.dim)),
+                dim=2,
+            )
+            self._runtime_key_residual_scale_rows = self._runtime_key_residual_scale_rows.cat(
+                Tensor(key_scale, shape=(batch, heads, seq)),
+                dim=2,
+            )
+            self._runtime_value_rows = self._runtime_value_rows.cat(
+                Tensor(value_rows, shape=(batch, heads, seq, self.codec.dim)),
+                dim=2,
+            )
+        else:
+            self._invalidate_runtime_shadow_rows()
 
     def attention(self, q: Tensor, *, scale: float, mask: Tensor | None = None) -> Tensor:
         if _MOLT_GPU_TURBOQUANT_ATTENTION_PACKED is not None:
@@ -578,7 +629,18 @@ class TurboQuantAttentionKVCache:
                 del self._key_vectors[batch_index][head_index][length:]
                 del self._value_vectors[batch_index][head_index][length:]
         self._decoded_value_rows = None
-        self._invalidate_runtime_shadow_rows()
+        if (
+            self._runtime_key_mse_weight_rows is not None
+            and self._runtime_key_residual_sign_rows is not None
+            and self._runtime_key_residual_scale_rows is not None
+            and self._runtime_value_rows is not None
+        ):
+            self._runtime_key_mse_weight_rows = self._runtime_key_mse_weight_rows[:, :, :length, :]
+            self._runtime_key_residual_sign_rows = self._runtime_key_residual_sign_rows[:, :, :length, :]
+            self._runtime_key_residual_scale_rows = self._runtime_key_residual_scale_rows[:, :, :length]
+            self._runtime_value_rows = self._runtime_value_rows[:, :, :length, :]
+        else:
+            self._invalidate_runtime_shadow_rows()
 
     def keys(self):
         self._ensure_runtime_shadow_rows()
