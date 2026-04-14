@@ -79,6 +79,9 @@ Current TurboQuant backend boundary:
   metadata when encoded rows are unavailable, so the two paths stay aligned
 - cache mutation should preserve and incrementally update TurboQuant shadow
   metadata when possible, instead of invalidating and rebuilding it
+- the packed-attention symbol now also has a browser WebGPU execution lane on
+  the shadow-tensor fast path, while non-browser targets still use the runtime
+  reference implementation
 - next backend work should replace that bridge with real packed CUDA/Metal/
   WebGPU/ROCm kernels behind the same symbol
 

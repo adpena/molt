@@ -258,6 +258,12 @@ def test_turboquant_cache_builds_runtime_shadow_metadata():
     assert cache._runtime_key_residual_sign_rows.shape == (1, 1, 2, 8)
     assert cache._runtime_key_residual_scale_rows.shape == (1, 1, 2)
     assert cache._runtime_value_rows.shape == (1, 1, 2, 8)
+    assert cache._runtime_mse_signs._buf.format_char == "f"
+    assert cache._runtime_qjl_signs._buf.format_char == "f"
+    assert cache._runtime_key_mse_weight_rows._buf.format_char == "f"
+    assert cache._runtime_key_residual_sign_rows._buf.format_char == "f"
+    assert cache._runtime_key_residual_scale_rows._buf.format_char == "f"
+    assert cache._runtime_value_rows._buf.format_char == "f"
 
 
 def test_turboquant_append_extends_runtime_shadow_metadata():
