@@ -82,6 +82,8 @@ Current TurboQuant backend boundary:
 - the packed-attention symbol now also has a browser WebGPU execution lane on
   the shadow-tensor fast path, while non-browser targets still use the runtime
   reference implementation
+- those runtime shadow tensors are now intentionally `f32` GPU-facing metadata,
+  so both browser WebGPU and native reference fast paths consume the same layout
 - next backend work should replace that bridge with real packed CUDA/Metal/
   WebGPU/ROCm kernels behind the same symbol
 
