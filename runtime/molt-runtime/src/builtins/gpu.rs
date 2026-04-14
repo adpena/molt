@@ -6715,6 +6715,24 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         let Some(codec_name) = attr_name_bits_from_bytes(_py, b"codec") else {
             return raise_exception::<_>(_py, "RuntimeError", "failed to intern codec attribute");
         };
+        let Some(runtime_mse_signs_name) =
+            attr_name_bits_from_bytes(_py, b"_runtime_mse_signs")
+        else {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "failed to intern _runtime_mse_signs attribute",
+            );
+        };
+        let Some(runtime_qjl_signs_name) =
+            attr_name_bits_from_bytes(_py, b"_runtime_qjl_signs")
+        else {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "failed to intern _runtime_qjl_signs attribute",
+            );
+        };
         let Some(mse_rotation_name) = attr_name_bits_from_bytes(_py, b"mse_rotation") else {
             return raise_exception::<_>(_py, "RuntimeError", "failed to intern mse_rotation attribute");
         };
@@ -6815,17 +6833,58 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 "turboquant attention expects key/value cache view roles",
             );
         }
-        let codec_bits = require_attr_bits(_py, k_cache_bits, codec_name, "codec").unwrap_or_else(|bits| return bits);
-        let mse_signs =
-            match decode_rotation_signs_from_codec(_py, codec_bits, mse_rotation_name, signs_name, "mse_rotation") {
-                Ok(value) => value,
-                Err(bits) => return bits,
-            };
-        let qjl_signs =
-            match decode_rotation_signs_from_codec(_py, codec_bits, qjl_rotation_name, signs_name, "qjl_rotation") {
-                Ok(value) => value,
-                Err(bits) => return bits,
-            };
+        let runtime_mse_signs_bits =
+            crate::molt_getattr_builtin(k_cache_bits, runtime_mse_signs_name, missing);
+        let runtime_qjl_signs_bits =
+            crate::molt_getattr_builtin(k_cache_bits, runtime_qjl_signs_name, missing);
+        let (mse_signs, qjl_signs) = if runtime_mse_signs_bits != missing && runtime_qjl_signs_bits != missing {
+            let (mse_signs_tensor, mse_signs_shape) =
+                match unsafe { tensor_runtime_view(_py, runtime_mse_signs_bits, "_runtime_mse_signs") } {
+                    Ok(value) => value,
+                    Err(bits) => return bits,
+                };
+            let (qjl_signs_tensor, qjl_signs_shape) =
+                match unsafe { tensor_runtime_view(_py, runtime_qjl_signs_bits, "_runtime_qjl_signs") } {
+                    Ok(value) => value,
+                    Err(bits) => return bits,
+                };
+            if mse_signs_shape != vec![dim] || qjl_signs_shape != vec![dim] {
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "turboquant runtime sign shadow tensors do not match query head dimension",
+                );
+            }
+            let mut mse = vec![0.0f32; dim];
+            let mut qjl = vec![0.0f32; dim];
+            for dim_index in 0..dim {
+                mse[dim_index] = read_float_buffer_value(
+                    mse_signs_tensor.buffer.data_view,
+                    mse_signs_tensor.buffer.format,
+                    dim_index,
+                );
+                qjl[dim_index] = read_float_buffer_value(
+                    qjl_signs_tensor.buffer.data_view,
+                    qjl_signs_tensor.buffer.format,
+                    dim_index,
+                );
+            }
+            (mse, qjl)
+        } else {
+            let codec_bits =
+                require_attr_bits(_py, k_cache_bits, codec_name, "codec").unwrap_or_else(|bits| return bits);
+            let mse =
+                match decode_rotation_signs_from_codec(_py, codec_bits, mse_rotation_name, signs_name, "mse_rotation") {
+                    Ok(value) => value,
+                    Err(bits) => return bits,
+                };
+            let qjl =
+                match decode_rotation_signs_from_codec(_py, codec_bits, qjl_rotation_name, signs_name, "qjl_rotation") {
+                    Ok(value) => value,
+                    Err(bits) => return bits,
+                };
+            (mse, qjl)
+        };
         if mse_signs.len() != dim || qjl_signs.len() != dim {
             return raise_exception::<_>(
                 _py,
