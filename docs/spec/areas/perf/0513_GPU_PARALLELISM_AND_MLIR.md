@@ -88,7 +88,7 @@ Current TurboQuant backend boundary:
   locals, and the packed-attention symbol also has a native Metal execution
   lane on the same shadow-tensor ABI
 - current real GPU execution lanes for the packed-attention symbol are:
-  browser WebGPU and native Metal
+  browser WebGPU, native Metal, and native WebGPU
 - next backend work should replace that bridge with real packed CUDA/Metal/
   WebGPU/ROCm kernels behind the same symbol
 
