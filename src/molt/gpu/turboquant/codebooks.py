@@ -9,14 +9,16 @@ _CODEBOOK_CACHE = {}
 
 
 def _coordinate_density(value: float, dim: int) -> float:
+    value = float(value)
+    dim = float(dim)
     base = 1.0 - (value * value)
     if base <= 0.0:
         base = 1e-12
-    exponent = 0.5 * float(dim - 3)
+    exponent = 0.5 * (dim - 3.0)
     log_norm = (
         math.lgamma(0.5 * dim)
         - 0.5 * math.log(math.pi)
-        - math.lgamma(0.5 * float(dim - 1))
+        - math.lgamma(0.5 * (dim - 1.0))
     )
     return math.exp(log_norm + (exponent * math.log(base)))
 
