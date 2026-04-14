@@ -84,6 +84,9 @@ Current TurboQuant backend boundary:
   reference implementation
 - those runtime shadow tensors are now intentionally `f32` GPU-facing metadata,
   so both browser WebGPU and native reference fast paths consume the same layout
+- native TurboQuant codebook generation is now stabilized on explicit float
+  locals, and the packed-attention symbol also has a native Metal execution
+  lane on the same shadow-tensor ABI
 - next backend work should replace that bridge with real packed CUDA/Metal/
   WebGPU/ROCm kernels behind the same symbol
 
