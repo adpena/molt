@@ -77,6 +77,8 @@ Current TurboQuant backend boundary:
   structure reads on the hot path
 - the Python/reference fallback should also be able to consume the same shadow
   metadata when encoded rows are unavailable, so the two paths stay aligned
+- cache mutation should preserve and incrementally update TurboQuant shadow
+  metadata when possible, instead of invalidating and rebuilding it
 - next backend work should replace that bridge with real packed CUDA/Metal/
   WebGPU/ROCm kernels behind the same symbol
 
