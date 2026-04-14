@@ -661,6 +661,56 @@ def test_native_turboquant_attention_uses_metal_backend(tmp_path: Path) -> None:
     )
 
 
+def test_native_turboquant_attention_uses_webgpu_backend(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    probe = tmp_path / "gpu_turboquant_webgpu_native.py"
+    probe.write_text(
+        "from molt.gpu.kv_cache import TurboQuantAttentionKVCache\n"
+        "from molt.gpu.tensor import Tensor\n"
+        "from molt.gpu.turboquant import TurboQuantCodec\n"
+        "\n"
+        "codec = TurboQuantCodec(dim=2, bits=3, seed=5, qjl_seed=19)\n"
+        "cache = TurboQuantAttentionKVCache(codec)\n"
+        "cache.append(\n"
+        "    Tensor([0.6, -0.2, 0.1, 0.4], shape=(1, 1, 2, 2)),\n"
+        "    Tensor([0.2, 0.1, -0.3, 0.4], shape=(1, 1, 2, 2)),\n"
+        ")\n"
+        "def fail(*_args, **_kwargs):\n"
+        "    raise RuntimeError('python reference path should be bypassed')\n"
+        "cache._attention_reference = fail\n"
+        "q = Tensor([0.5, -0.1], shape=(1, 1, 1, 2))\n"
+        "print(cache.attention(q, scale=1.0).to_list())\n",
+        encoding="utf-8",
+    )
+
+    env = _native_molt_env(root)
+    env["MOLT_GPU_BACKEND"] = "webgpu"
+    env["MOLT_RUNTIME_GPU_WEBGPU"] = "1"
+
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(probe),
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert ast.literal_eval(run.stdout.strip().splitlines()[0])[0][0][0] == pytest.approx(
+        [0.019662419334053993, 0.22147667407989502]
+    )
+
+
 def test_turboquant_attention_kv_cache_reuses_decoded_values_across_attention_calls(monkeypatch):
     from molt.gpu.kv_cache import TurboQuantAttentionKVCache
     from molt.gpu.tensor import Tensor
