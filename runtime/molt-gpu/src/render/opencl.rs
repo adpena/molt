@@ -202,6 +202,43 @@ impl OpenClRenderer {
         }
     }
 
+    /// Detect FMA pattern: ADD(MUL(a, b), c) or ADD(c, MUL(a, b)).
+    fn detect_fma(&self, op: &FusedOp, op_idx: usize, kernel: &FusedKernel) -> Option<(String, String, String)> {
+        if op.op != PrimitiveOp::Add {
+            return None;
+        }
+        if !op.dst_dtype.narrow_opencl(self.has_fp64).is_float() {
+            return None;
+        }
+
+        for (mul_src_pos, add_src_pos) in [(0, 1), (1, 0)] {
+            if let FusedSrc::Op(prior_idx) = &op.srcs[mul_src_pos] {
+                if *prior_idx < op_idx {
+                    let prior_op = &kernel.ops[*prior_idx];
+                    if prior_op.op == PrimitiveOp::Mul {
+                        let a = match &prior_op.srcs[0] {
+                            FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], "gid"),
+                            FusedSrc::Op(p) => format!("v{}", p),
+                            FusedSrc::Const { val, dtype } => self.format_const(*val, *dtype),
+                        };
+                        let b = match &prior_op.srcs[1] {
+                            FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], "gid"),
+                            FusedSrc::Op(p) => format!("v{}", p),
+                            FusedSrc::Const { val, dtype } => self.format_const(*val, *dtype),
+                        };
+                        let c = match &op.srcs[add_src_pos] {
+                            FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], "gid"),
+                            FusedSrc::Op(p) => format!("v{}", p),
+                            FusedSrc::Const { val, dtype } => self.format_const(*val, *dtype),
+                        };
+                        return Some((a, b, c));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Check whether any buffer in the kernel uses Float64 (pre-narrowing).
     fn needs_fp64(kernel: &FusedKernel) -> bool {
         kernel.bufs.iter().any(|b| b.dtype == DType::Float64)
@@ -248,7 +285,11 @@ impl Renderer for OpenClRenderer {
         if !has_reduce {
             for (i, op) in kernel.ops.iter().enumerate() {
                 let dtype_str = op.dst_dtype.narrow_opencl(self.has_fp64).opencl_type();
-                let expr = self.render_op(op, i, kernel, "gid");
+                let expr = if let Some((a, b, c)) = self.detect_fma(op, i, kernel) {
+                    format!("fma({}, {}, {})", a, b, c)
+                } else {
+                    self.render_op(op, i, kernel, "gid")
+                };
                 writeln!(out, "    {} v{} = {};", dtype_str, i, expr).unwrap();
             }
             let last_op = kernel.ops.len() - 1;
@@ -283,6 +324,9 @@ impl Renderer for OpenClRenderer {
             writeln!(out, "    {} acc = {};", reduce_type, init_val).unwrap();
 
             if reduce_idx > 0 {
+                if reduce_size <= 16 {
+                    writeln!(out, "    __attribute__((opencl_unroll_hint))").unwrap();
+                }
                 writeln!(out, "    for (unsigned int rid = 0; rid < {}u; rid++) {{", reduce_size).unwrap();
                 writeln!(out, "        unsigned int eidx = gid * {}u + rid;", reduce_size).unwrap();
 
@@ -301,6 +345,9 @@ impl Renderer for OpenClRenderer {
                 }
                 writeln!(out, "    }}").unwrap();
             } else {
+                if reduce_size <= 16 {
+                    writeln!(out, "    __attribute__((opencl_unroll_hint))").unwrap();
+                }
                 writeln!(out, "    for (unsigned int rid = 0; rid < {}u; rid++) {{", reduce_size).unwrap();
                 writeln!(out, "        unsigned int eidx = gid * {}u + rid;", reduce_size).unwrap();
                 let src_expr = match reduce_src {

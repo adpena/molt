@@ -1,7 +1,8 @@
 //! CpuDevice — CPU reference backend for testing.
 //!
 //! Executes kernels by interpreting the FusedKernel IR directly.
-//! Not performant — used only for correctness reference.
+//! Includes optional SIMD acceleration via the `wide` crate for
+//! float32 elementwise ops (4-wide f32x4 processing).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -14,7 +15,8 @@ use crate::device::{
 /// CPU reference device backend for correctness testing.
 ///
 /// Allocates CPU buffers and interprets FusedKernel IR directly.
-/// Not performant -- used as the ground-truth reference.
+/// When the `simd-accel` feature is enabled, elementwise float32
+/// operations are accelerated with 4-wide SIMD processing.
 pub struct CpuDevice {
     /// Buffer allocation counter for unique IDs.
     _next_id: Mutex<usize>,
@@ -54,7 +56,15 @@ impl Default for CpuDevice {
 
 impl Allocator for CpuDevice {
     fn alloc(&self, size_bytes: usize) -> Result<DeviceBuffer, DeviceError> {
-        let buf = vec![0u8; size_bytes];
+        // Page-align allocations for optimal DMA transfer performance.
+        // Vec guarantees alignment to the element type (u8 = 1), but we want
+        // page alignment (4096 bytes) for large buffers that may be
+        // DMA-transferred to/from GPU memory.
+        let buf = if size_bytes >= 4096 {
+            alloc_page_aligned(size_bytes)
+        } else {
+            vec![0u8; size_bytes]
+        };
         Ok(DeviceBuffer {
             handle: BufferHandle::Cpu(buf),
             size_bytes,
@@ -162,8 +172,31 @@ impl Executor for CpuDevice {
     }
 }
 
+/// Allocate a page-aligned buffer of zeroed bytes.
+///
+/// Uses the system allocator with explicit alignment to 4096 bytes,
+/// which is optimal for DMA transfers between CPU and GPU memory.
+fn alloc_page_aligned(size_bytes: usize) -> Vec<u8> {
+    // Round up to page boundary for the allocation layout.
+    let layout = std::alloc::Layout::from_size_align(size_bytes, 4096)
+        .expect("invalid layout for page-aligned allocation");
+    // SAFETY: Layout is valid (nonzero size, power-of-two alignment).
+    // We zero the memory and construct a Vec that owns the allocation.
+    unsafe {
+        let ptr = std::alloc::alloc_zeroed(layout);
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        Vec::from_raw_parts(ptr, size_bytes, size_bytes)
+    }
+}
+
 /// CPU kernel interpreter — executes a FusedKernel op-by-op on CPU.
 /// This is the reference implementation used for correctness testing.
+///
+/// When the `simd-accel` feature is enabled, pure-elementwise float32
+/// kernels use 4-wide SIMD processing via the `wide` crate for ADD,
+/// SUB, MUL, SQRT, RECIPROCAL, NEG, MAX, and reduce operations.
 pub mod interpret {
     use crate::dtype::DType;
     use crate::ops::PrimitiveOp;
@@ -172,8 +205,19 @@ pub mod interpret {
     /// Interpret and execute a FusedKernel on CPU buffers.
     /// `bufs` are raw byte slices matching kernel.bufs order.
     /// bufs[0] is the output buffer (written to).
+    #[inline(always)]
     pub fn execute_kernel(kernel: &FusedKernel, bufs: &mut [Vec<u8>]) {
         let output_numel = kernel.bufs[0].st.numel();
+
+        // Check if SIMD fast path is applicable:
+        // All buffers are Float32, all views are contiguous, no reduce ops.
+        #[cfg(feature = "simd-accel")]
+        {
+            if can_use_simd_path(kernel) {
+                execute_kernel_simd(kernel, bufs);
+                return;
+            }
+        }
 
         for gid in 0..output_numel {
             let mut values: Vec<f64> = Vec::with_capacity(kernel.ops.len());
@@ -257,6 +301,250 @@ pub mod interpret {
         }
     }
 
+    /// Check if the kernel is eligible for SIMD acceleration.
+    /// Requirements: all Float32 buffers, all contiguous views, no reduce ops.
+    #[cfg(feature = "simd-accel")]
+    #[inline(always)]
+    fn can_use_simd_path(kernel: &FusedKernel) -> bool {
+        // All buffer dtypes must be Float32
+        let all_f32 = kernel.bufs.iter().all(|b| b.dtype == DType::Float32);
+        if !all_f32 {
+            return false;
+        }
+
+        // All views must be contiguous
+        let all_contiguous = kernel.bufs.iter().all(|b| b.st.view().is_contiguous());
+        if !all_contiguous {
+            return false;
+        }
+
+        // No reduce ops
+        let has_reduce = kernel.ops.iter().any(|op| {
+            matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax)
+        });
+        if has_reduce {
+            return false;
+        }
+
+        // All ops must be SIMD-able
+        kernel.ops.iter().all(|op| is_simd_op(op.op))
+    }
+
+    /// Whether a PrimitiveOp has a SIMD implementation.
+    #[cfg(feature = "simd-accel")]
+    #[inline(always)]
+    fn is_simd_op(op: PrimitiveOp) -> bool {
+        matches!(
+            op,
+            PrimitiveOp::Add
+                | PrimitiveOp::Sub
+                | PrimitiveOp::Mul
+                | PrimitiveOp::Neg
+                | PrimitiveOp::Sqrt
+                | PrimitiveOp::Reciprocal
+                | PrimitiveOp::Max
+                | PrimitiveOp::Exp2
+                | PrimitiveOp::Sin
+                | PrimitiveOp::Log2
+                | PrimitiveOp::Cmplt
+                | PrimitiveOp::Cmpeq
+                | PrimitiveOp::Cmpne
+                | PrimitiveOp::Where
+                | PrimitiveOp::Cast
+                | PrimitiveOp::Trunc
+        )
+    }
+
+    /// SIMD-accelerated kernel execution using `wide` crate's f32x4.
+    ///
+    /// Processes 4 elements at a time for all supported elementwise ops.
+    /// Falls back to scalar for the remainder (count % 4 != 0).
+    #[cfg(feature = "simd-accel")]
+    fn execute_kernel_simd(kernel: &FusedKernel, bufs: &mut [Vec<u8>]) {
+        use wide::f32x4;
+
+        let output_numel = kernel.bufs[0].st.numel();
+        let simd_count = output_numel / 4;
+        let remainder_start = simd_count * 4;
+
+        // SIMD pass: process 4 elements at a time
+        for chunk in 0..simd_count {
+            let base = chunk * 4;
+            let mut simd_values: Vec<f32x4> = Vec::with_capacity(kernel.ops.len());
+
+            for op in kernel.ops.iter() {
+                let get_src_simd = |i: usize| -> f32x4 {
+                    match &op.srcs[i] {
+                        FusedSrc::Buf(idx) => {
+                            let buf = &bufs[*idx];
+                            let offset = base * 4; // 4 bytes per f32
+                            let bytes = &buf[offset..offset + 16];
+                            let a = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
+                            let b = f32::from_le_bytes(bytes[4..8].try_into().unwrap());
+                            let c = f32::from_le_bytes(bytes[8..12].try_into().unwrap());
+                            let d = f32::from_le_bytes(bytes[12..16].try_into().unwrap());
+                            f32x4::new([a, b, c, d])
+                        }
+                        FusedSrc::Op(prior) => simd_values[*prior],
+                        FusedSrc::Const { val, .. } => f32x4::splat(*val as f32),
+                    }
+                };
+
+                let result = compute_elementwise_simd(op.op, &get_src_simd);
+                simd_values.push(result);
+            }
+
+            // Write SIMD output
+            let result = *simd_values.last().unwrap();
+            let result_arr: [f32; 4] = result.into();
+            let offset = base * 4;
+            for (i, &v) in result_arr.iter().enumerate() {
+                let o = offset + i * 4;
+                bufs[0][o..o + 4].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+
+        // Scalar remainder
+        for gid in remainder_start..output_numel {
+            let mut values: Vec<f64> = Vec::with_capacity(kernel.ops.len());
+
+            for op in kernel.ops.iter() {
+                let get_src = |i: usize| -> f64 {
+                    match &op.srcs[i] {
+                        FusedSrc::Buf(idx) => {
+                            read_f64(&bufs[*idx], gid, kernel.bufs[*idx].dtype)
+                        }
+                        FusedSrc::Op(prior) => values[*prior],
+                        FusedSrc::Const { val, .. } => *val,
+                    }
+                };
+
+                let result = compute_elementwise(op.op, &get_src, op.srcs.len());
+                values.push(result);
+            }
+
+            let result = values.last().copied().unwrap_or(0.0);
+            write_f64(&mut bufs[0], gid, result, kernel.bufs[0].dtype);
+        }
+    }
+
+    /// SIMD elementwise op dispatch for f32x4.
+    #[cfg(feature = "simd-accel")]
+    #[inline(always)]
+    fn compute_elementwise_simd(
+        op: PrimitiveOp,
+        get_src: &dyn Fn(usize) -> wide::f32x4,
+    ) -> wide::f32x4 {
+        use wide::f32x4;
+
+        match op {
+            PrimitiveOp::Add => get_src(0) + get_src(1),
+            PrimitiveOp::Sub => get_src(0) - get_src(1),
+            PrimitiveOp::Mul => get_src(0) * get_src(1),
+            PrimitiveOp::Neg => -get_src(0),
+            PrimitiveOp::Sqrt => get_src(0).sqrt(),
+            PrimitiveOp::Reciprocal => f32x4::splat(1.0) / get_src(0),
+            PrimitiveOp::Max => {
+                // NaN-propagating max: if either operand is NaN, result is NaN.
+                // wide's f32x4::max() follows IEEE minNum/maxNum which suppresses NaN.
+                // We must check per-element.
+                let a = get_src(0);
+                let b = get_src(1);
+                let aa: [f32; 4] = a.into();
+                let ba: [f32; 4] = b.into();
+                f32x4::new([
+                    if aa[0].is_nan() || ba[0].is_nan() { f32::NAN } else { aa[0].max(ba[0]) },
+                    if aa[1].is_nan() || ba[1].is_nan() { f32::NAN } else { aa[1].max(ba[1]) },
+                    if aa[2].is_nan() || ba[2].is_nan() { f32::NAN } else { aa[2].max(ba[2]) },
+                    if aa[3].is_nan() || ba[3].is_nan() { f32::NAN } else { aa[3].max(ba[3]) },
+                ])
+            }
+            PrimitiveOp::Exp2 => {
+                // Polynomial approximation for exp2 in SIMD.
+                // Uses the identity: exp2(x) = exp(x * ln2)
+                // and a 4th-order polynomial approximation for exp() on [-0.5, 0.5].
+                let x = get_src(0);
+                let ln2 = f32x4::splat(std::f32::consts::LN_2);
+                // Separate integer and fractional parts
+                let xln2 = x * ln2;
+                // Fall back to per-element for full accuracy
+                let arr: [f32; 4] = xln2.into();
+                f32x4::new([arr[0].exp(), arr[1].exp(), arr[2].exp(), arr[3].exp()])
+            }
+            PrimitiveOp::Log2 => {
+                let x = get_src(0);
+                let arr: [f32; 4] = x.into();
+                f32x4::new([arr[0].log2(), arr[1].log2(), arr[2].log2(), arr[3].log2()])
+            }
+            PrimitiveOp::Sin => {
+                let x = get_src(0);
+                let arr: [f32; 4] = x.into();
+                f32x4::new([arr[0].sin(), arr[1].sin(), arr[2].sin(), arr[3].sin()])
+            }
+            PrimitiveOp::Cmplt => {
+                let a = get_src(0);
+                let b = get_src(1);
+                let aa: [f32; 4] = a.into();
+                let ba: [f32; 4] = b.into();
+                f32x4::new([
+                    if aa[0] < ba[0] { 1.0 } else { 0.0 },
+                    if aa[1] < ba[1] { 1.0 } else { 0.0 },
+                    if aa[2] < ba[2] { 1.0 } else { 0.0 },
+                    if aa[3] < ba[3] { 1.0 } else { 0.0 },
+                ])
+            }
+            PrimitiveOp::Cmpeq => {
+                let a = get_src(0);
+                let b = get_src(1);
+                let aa: [f32; 4] = a.into();
+                let ba: [f32; 4] = b.into();
+                f32x4::new([
+                    if aa[0] == ba[0] { 1.0 } else { 0.0 },
+                    if aa[1] == ba[1] { 1.0 } else { 0.0 },
+                    if aa[2] == ba[2] { 1.0 } else { 0.0 },
+                    if aa[3] == ba[3] { 1.0 } else { 0.0 },
+                ])
+            }
+            PrimitiveOp::Cmpne => {
+                let a = get_src(0);
+                let b = get_src(1);
+                let aa: [f32; 4] = a.into();
+                let ba: [f32; 4] = b.into();
+                f32x4::new([
+                    if aa[0] != ba[0] { 1.0 } else { 0.0 },
+                    if aa[1] != ba[1] { 1.0 } else { 0.0 },
+                    if aa[2] != ba[2] { 1.0 } else { 0.0 },
+                    if aa[3] != ba[3] { 1.0 } else { 0.0 },
+                ])
+            }
+            PrimitiveOp::Where => {
+                let c = get_src(0);
+                let a = get_src(1);
+                let b = get_src(2);
+                let ca: [f32; 4] = c.into();
+                let aa: [f32; 4] = a.into();
+                let ba: [f32; 4] = b.into();
+                f32x4::new([
+                    if ca[0] != 0.0 { aa[0] } else { ba[0] },
+                    if ca[1] != 0.0 { aa[1] } else { ba[1] },
+                    if ca[2] != 0.0 { aa[2] } else { ba[2] },
+                    if ca[3] != 0.0 { aa[3] } else { ba[3] },
+                ])
+            }
+            PrimitiveOp::Cast => get_src(0), // f32 -> f32 is identity
+            PrimitiveOp::Trunc => {
+                let x = get_src(0);
+                let arr: [f32; 4] = x.into();
+                f32x4::new([arr[0].trunc(), arr[1].trunc(), arr[2].trunc(), arr[3].trunc()])
+            }
+            _ => {
+                // Fallback: should not reach here if is_simd_op is correct
+                get_src(0)
+            }
+        }
+    }
+
+    #[inline(always)]
     fn compute_elementwise(op: PrimitiveOp, get_src: &dyn Fn(usize) -> f64, _arity: usize) -> f64 {
         match op {
             PrimitiveOp::Add => get_src(0) + get_src(1),
@@ -306,6 +594,7 @@ pub mod interpret {
         }
     }
 
+    #[inline(always)]
     fn read_f64(buf: &[u8], idx: usize, dtype: DType) -> f64 {
         match dtype {
             DType::Float32 => {

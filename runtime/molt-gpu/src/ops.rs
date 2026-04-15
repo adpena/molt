@@ -94,6 +94,7 @@ pub enum PrimitiveOp {
 
 impl PrimitiveOp {
     /// Returns the op type category for fusion analysis.
+    #[inline(always)]
     pub fn op_type(self) -> OpType {
         match self {
             Self::Neg | Self::Exp2 | Self::Log2 | Self::Sin | Self::Sqrt
@@ -111,6 +112,7 @@ impl PrimitiveOp {
     }
 
     /// Number of source operands this op consumes.
+    #[inline(always)]
     pub fn arity(self) -> usize {
         match self.op_type() {
             OpType::Unary => 1,
@@ -121,6 +123,7 @@ impl PrimitiveOp {
     }
 
     /// Whether this op is elementwise (fuses freely with other elementwise ops).
+    #[inline(always)]
     pub fn is_elementwise(self) -> bool {
         matches!(self.op_type(), OpType::Unary | OpType::Binary | OpType::Ternary)
     }
