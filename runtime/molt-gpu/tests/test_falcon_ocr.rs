@@ -824,7 +824,7 @@ fn test_falcon_rms_norm_renders_wgsl() {
                 spec: None,
     };
 
-    let renderer = WgslRenderer;
+    let renderer = WgslRenderer::new();
     let src = renderer.render(&kernel);
     assert!(!src.is_empty(), "WGSL render should produce non-empty source");
     assert!(src.contains("@compute"), "WGSL should contain @compute");
