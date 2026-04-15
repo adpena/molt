@@ -77,7 +77,7 @@ pub enum FusedSrc {
 }
 
 /// Buffer access mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BufferAccess {
     /// Input buffer (const device T* in MSL).
     Read,
