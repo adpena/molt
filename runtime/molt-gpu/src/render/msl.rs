@@ -230,12 +230,41 @@ impl Renderer for MslRenderer {
 
         // Bounds check
         let output_numel = kernel.bufs[0].st.numel();
-        writeln!(out, "    if (gid >= {}) return;", output_numel).unwrap();
 
         // Check if we have reduce ops
         let has_reduce = kernel.ops.iter().any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
 
-        if !has_reduce {
+        // Vectorized path: when vectorize_width == 4 and kernel is pure elementwise,
+        // each thread processes 4 elements using float4 loads/stores for coalesced
+        // memory bandwidth. Grid must be divided by 4 in the caller.
+        if kernel.vectorize_width == 4 && !has_reduce {
+            let vec_numel = output_numel / 4;
+            writeln!(out, "    if (gid >= {}) return;", vec_numel).unwrap();
+            writeln!(out, "    // Vectorized 4-wide: each thread processes 4 elements").unwrap();
+
+            // Emit float4 ops: load float4 from each buffer, compute, store float4
+            // For simple single-op kernels, we directly vectorize.
+            // For multi-op chains, we process element-by-element within the float4.
+            writeln!(out, "    uint base = gid * 4;").unwrap();
+            writeln!(out, "    #pragma unroll").unwrap();
+            writeln!(out, "    for (uint lane = 0; lane < 4; lane++) {{").unwrap();
+            writeln!(out, "        uint eidx = base + lane;").unwrap();
+
+            for (i, op) in kernel.ops.iter().enumerate() {
+                let dtype_str = op.dst_dtype.narrow_metal().msl_type();
+                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel) {
+                    format!("fma({}, {}, {})", a, b, c)
+                } else {
+                    Self::render_op(op, i, kernel, "eidx")
+                };
+                writeln!(out, "        {} v{} = {};", dtype_str, i, expr).unwrap();
+            }
+
+            let last_op = kernel.ops.len() - 1;
+            writeln!(out, "        buf{}[eidx] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
+            writeln!(out, "    }}").unwrap();
+        } else if !has_reduce {
+            writeln!(out, "    if (gid >= {}) return;", output_numel).unwrap();
             // Pure elementwise kernel — straightforward
             for (i, op) in kernel.ops.iter().enumerate() {
                 let dtype_str = op.dst_dtype.narrow_metal().msl_type();

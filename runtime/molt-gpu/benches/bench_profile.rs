@@ -125,7 +125,7 @@ fn run_softmax_pipeline(x_data: &[f32]) -> StageTimings {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let log2_e = std::f64::consts::LOG2_E;
@@ -142,7 +142,7 @@ fn run_softmax_pipeline(x_data: &[f32]) -> StageTimings {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let k_reduce_sum = FusedKernel {
@@ -157,7 +157,7 @@ fn run_softmax_pipeline(x_data: &[f32]) -> StageTimings {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let k_normalize = FusedKernel {
@@ -173,7 +173,7 @@ fn run_softmax_pipeline(x_data: &[f32]) -> StageTimings {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let kernels = vec![k_reduce_max, k_exp, k_reduce_sum, k_normalize];
@@ -231,7 +231,7 @@ fn run_softmax_pipeline(x_data: &[f32]) -> StageTimings {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let mut bufs4 = vec![out_buf, exp_buf];
     interpret::execute_kernel(&k_final, &mut bufs4);
@@ -351,7 +351,7 @@ fn run_rmsnorm_pipeline(x_data: &[f32]) -> StageTimings {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let k_reduce = FusedKernel {
@@ -366,7 +366,7 @@ fn run_rmsnorm_pipeline(x_data: &[f32]) -> StageTimings {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let kernels = vec![k_sq.clone(), k_reduce.clone()];
@@ -413,7 +413,7 @@ fn run_rmsnorm_pipeline(x_data: &[f32]) -> StageTimings {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let mut bufs3 = vec![out_buf, x_bytes];
     interpret::execute_kernel(&k_scale, &mut bufs3);

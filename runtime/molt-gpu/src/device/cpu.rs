@@ -56,14 +56,13 @@ impl Default for CpuDevice {
 
 impl Allocator for CpuDevice {
     fn alloc(&self, size_bytes: usize) -> Result<DeviceBuffer, DeviceError> {
-        // Page-align allocations for optimal DMA transfer performance.
-        // Vec guarantees alignment to the element type (u8 = 1), but we want
-        // page alignment (4096 bytes) for large buffers that may be
-        // DMA-transferred to/from GPU memory.
+        // All allocations are at least 16-byte aligned for SIMD (f32x4 loads).
+        // Large buffers (>= 4096 bytes) are page-aligned (4096 bytes) for
+        // optimal DMA transfer performance between CPU and GPU memory.
         let buf = if size_bytes >= 4096 {
             alloc_page_aligned(size_bytes)
         } else {
-            vec![0u8; size_bytes]
+            alloc_simd_aligned(size_bytes)
         };
         Ok(DeviceBuffer {
             handle: BufferHandle::Cpu(buf),
@@ -169,6 +168,26 @@ impl Executor for CpuDevice {
     fn synchronize(&self) -> Result<(), DeviceError> {
         // CPU is synchronous — nothing to wait for.
         Ok(())
+    }
+}
+
+/// Allocate a 16-byte-aligned buffer of zeroed bytes.
+///
+/// Uses the system allocator with explicit 16-byte alignment for SIMD
+/// operations (f32x4 loads require 16-byte alignment for optimal
+/// performance on all architectures).
+fn alloc_simd_aligned(size_bytes: usize) -> Vec<u8> {
+    if size_bytes == 0 {
+        return Vec::new();
+    }
+    let layout = std::alloc::Layout::from_size_align(size_bytes, 16)
+        .expect("invalid layout for SIMD-aligned allocation");
+    unsafe {
+        let ptr = std::alloc::alloc_zeroed(layout);
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        Vec::from_raw_parts(ptr, size_bytes, size_bytes)
     }
 }
 
@@ -525,6 +544,8 @@ pub mod interpret {
     }
 
     /// Whether a PrimitiveOp has a SIMD implementation.
+    /// All 26 ops are covered: 6 arithmetic, 3 comparison, 5 bitwise,
+    /// 6 math, 2 reduce, 2 conversion, 1 ternary, 1 bitcast.
     #[cfg(feature = "simd-accel")]
     #[inline(always)]
     fn is_simd_op(op: PrimitiveOp) -> bool {
@@ -533,6 +554,8 @@ pub mod interpret {
             PrimitiveOp::Add
                 | PrimitiveOp::Sub
                 | PrimitiveOp::Mul
+                | PrimitiveOp::Idiv
+                | PrimitiveOp::Mod
                 | PrimitiveOp::Neg
                 | PrimitiveOp::Sqrt
                 | PrimitiveOp::Reciprocal
@@ -543,6 +566,12 @@ pub mod interpret {
                 | PrimitiveOp::Cmplt
                 | PrimitiveOp::Cmpeq
                 | PrimitiveOp::Cmpne
+                | PrimitiveOp::And
+                | PrimitiveOp::Or
+                | PrimitiveOp::Xor
+                | PrimitiveOp::Shl
+                | PrimitiveOp::Shr
+                | PrimitiveOp::Bitcast
                 | PrimitiveOp::Where
                 | PrimitiveOp::Cast
                 | PrimitiveOp::Trunc
@@ -725,6 +754,94 @@ pub mod interpret {
                     if ca[3] != 0.0 { aa[3] } else { ba[3] },
                 ])
             }
+            PrimitiveOp::Idiv => {
+                // Integer division: truncate both operands to i32, divide, convert back.
+                let a = get_src(0);
+                let b = get_src(1);
+                let aa: [f32; 4] = a.into();
+                let ba: [f32; 4] = b.into();
+                f32x4::new([
+                    if ba[0] as i32 == 0 { 0.0 } else { ((aa[0] as i32) / (ba[0] as i32)) as f32 },
+                    if ba[1] as i32 == 0 { 0.0 } else { ((aa[1] as i32) / (ba[1] as i32)) as f32 },
+                    if ba[2] as i32 == 0 { 0.0 } else { ((aa[2] as i32) / (ba[2] as i32)) as f32 },
+                    if ba[3] as i32 == 0 { 0.0 } else { ((aa[3] as i32) / (ba[3] as i32)) as f32 },
+                ])
+            }
+            PrimitiveOp::Mod => {
+                // Integer modulo: truncate both operands to i32, modulo, convert back.
+                let a = get_src(0);
+                let b = get_src(1);
+                let aa: [f32; 4] = a.into();
+                let ba: [f32; 4] = b.into();
+                f32x4::new([
+                    if ba[0] as i32 == 0 { 0.0 } else { ((aa[0] as i32) % (ba[0] as i32)) as f32 },
+                    if ba[1] as i32 == 0 { 0.0 } else { ((aa[1] as i32) % (ba[1] as i32)) as f32 },
+                    if ba[2] as i32 == 0 { 0.0 } else { ((aa[2] as i32) % (ba[2] as i32)) as f32 },
+                    if ba[3] as i32 == 0 { 0.0 } else { ((aa[3] as i32) % (ba[3] as i32)) as f32 },
+                ])
+            }
+            PrimitiveOp::And => {
+                // Bitwise AND on i32 reinterpretation of the f32 lanes.
+                let a = get_src(0);
+                let b = get_src(1);
+                let aa: [f32; 4] = a.into();
+                let ba: [f32; 4] = b.into();
+                f32x4::new([
+                    ((aa[0] as i32) & (ba[0] as i32)) as f32,
+                    ((aa[1] as i32) & (ba[1] as i32)) as f32,
+                    ((aa[2] as i32) & (ba[2] as i32)) as f32,
+                    ((aa[3] as i32) & (ba[3] as i32)) as f32,
+                ])
+            }
+            PrimitiveOp::Or => {
+                let a = get_src(0);
+                let b = get_src(1);
+                let aa: [f32; 4] = a.into();
+                let ba: [f32; 4] = b.into();
+                f32x4::new([
+                    ((aa[0] as i32) | (ba[0] as i32)) as f32,
+                    ((aa[1] as i32) | (ba[1] as i32)) as f32,
+                    ((aa[2] as i32) | (ba[2] as i32)) as f32,
+                    ((aa[3] as i32) | (ba[3] as i32)) as f32,
+                ])
+            }
+            PrimitiveOp::Xor => {
+                let a = get_src(0);
+                let b = get_src(1);
+                let aa: [f32; 4] = a.into();
+                let ba: [f32; 4] = b.into();
+                f32x4::new([
+                    ((aa[0] as i32) ^ (ba[0] as i32)) as f32,
+                    ((aa[1] as i32) ^ (ba[1] as i32)) as f32,
+                    ((aa[2] as i32) ^ (ba[2] as i32)) as f32,
+                    ((aa[3] as i32) ^ (ba[3] as i32)) as f32,
+                ])
+            }
+            PrimitiveOp::Shl => {
+                let a = get_src(0);
+                let b = get_src(1);
+                let aa: [f32; 4] = a.into();
+                let ba: [f32; 4] = b.into();
+                f32x4::new([
+                    ((aa[0] as i32) << (ba[0] as i32)) as f32,
+                    ((aa[1] as i32) << (ba[1] as i32)) as f32,
+                    ((aa[2] as i32) << (ba[2] as i32)) as f32,
+                    ((aa[3] as i32) << (ba[3] as i32)) as f32,
+                ])
+            }
+            PrimitiveOp::Shr => {
+                let a = get_src(0);
+                let b = get_src(1);
+                let aa: [f32; 4] = a.into();
+                let ba: [f32; 4] = b.into();
+                f32x4::new([
+                    ((aa[0] as i32) >> (ba[0] as i32)) as f32,
+                    ((aa[1] as i32) >> (ba[1] as i32)) as f32,
+                    ((aa[2] as i32) >> (ba[2] as i32)) as f32,
+                    ((aa[3] as i32) >> (ba[3] as i32)) as f32,
+                ])
+            }
+            PrimitiveOp::Bitcast => get_src(0), // f32 -> f32 is identity in SIMD
             PrimitiveOp::Cast => get_src(0), // f32 -> f32 is identity
             PrimitiveOp::Trunc => {
                 let x = get_src(0);

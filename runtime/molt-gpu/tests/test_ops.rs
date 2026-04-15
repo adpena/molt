@@ -62,7 +62,7 @@ fn run_binary_op_cpu(op: PrimitiveOp, a: &[f32], b: &[f32]) -> Vec<f32> {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     let mut bufs = vec![
@@ -88,7 +88,7 @@ fn run_unary_op_cpu(op: PrimitiveOp, a: &[f32]) -> Vec<f32> {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     let mut bufs = vec![
@@ -195,7 +195,7 @@ fn test_cpu_relu_composition() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mut bufs = vec![
         vec![0u8; n * 4],
@@ -223,7 +223,7 @@ fn test_cpu_where_ternary() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mut bufs = vec![
         vec![0u8; n * 4],
@@ -250,7 +250,7 @@ fn test_cpu_reduce_sum() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mut bufs = vec![
         vec![0u8; 4],
@@ -275,7 +275,7 @@ fn test_cpu_reduce_max() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mut bufs = vec![
         vec![0u8; 4],
@@ -304,7 +304,7 @@ fn test_cpu_idiv() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     fn i32_to_bytes(vals: &[i32]) -> Vec<u8> {
@@ -342,7 +342,7 @@ fn test_cpu_mod() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     fn i32_to_bytes(vals: &[i32]) -> Vec<u8> {
@@ -398,7 +398,7 @@ fn test_cpu_bitwise_and() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     fn i32_to_bytes(vals: &[i32]) -> Vec<u8> {
@@ -445,7 +445,7 @@ fn test_cpu_fused_relu_chain() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mut bufs = vec![
         vec![0u8; n * 4],
@@ -515,7 +515,7 @@ mod metal_tests {
             ],
             grid: [n as u32, 1, 1],
             local: [4, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
 
         let msl = MslRenderer.render(&kernel);

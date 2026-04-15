@@ -20,7 +20,7 @@ fn make_elementwise_kernel(op: PrimitiveOp, buf_ids: (usize, usize, usize)) -> F
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     }
 }
 
@@ -37,7 +37,7 @@ fn make_reduce_kernel(op: PrimitiveOp, in_size: usize, out_size: usize) -> Fused
         ],
         grid: [out_size as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     }
 }
 

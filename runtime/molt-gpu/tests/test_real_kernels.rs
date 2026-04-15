@@ -82,7 +82,7 @@ fn make_rmsnorm_fused_kernel(n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 
@@ -126,7 +126,7 @@ fn make_rope_kernel(n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 
@@ -162,7 +162,7 @@ fn make_sdpa_qk_kernel(seq_len: usize, d_k: usize) -> FusedKernel {
         ],
         grid: [seq_len as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 
@@ -196,7 +196,7 @@ fn make_squared_relu_gate_kernel(n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 

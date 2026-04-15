@@ -42,7 +42,7 @@ fn make_kernel_with_shape(shape: &[usize]) -> FusedKernel {
         ],
         grid: [n.max(1) as u32, 1, 1],
         local: [n.clamp(1, 256) as u32, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 

@@ -103,7 +103,7 @@ fn gpu_matmul(a_data: &[f32], b_data: &[f32], m: usize, k: usize, n: usize) -> V
         ],
         grid: [out_n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     // Pre-compute the element-wise products: A[i,k] * B[k,j] for all (i,k,j).
@@ -176,7 +176,7 @@ fn gpu_softmax(x_data: &[f32]) -> Vec<f32> {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let mut bufs1 = vec![vec![0u8; 4], x_bytes.clone()];
     interpret::execute_kernel(&k1, &mut bufs1);
@@ -219,7 +219,7 @@ fn gpu_softmax(x_data: &[f32]) -> Vec<f32> {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let mut bufs2 = vec![vec![0u8; n * 4], x_bytes];
     interpret::execute_kernel(&k2, &mut bufs2);
@@ -247,7 +247,7 @@ fn gpu_softmax(x_data: &[f32]) -> Vec<f32> {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let exp_bytes = bufs2[0].clone();
     let mut bufs3 = vec![vec![0u8; 4], exp_bytes.clone()];
@@ -277,7 +277,7 @@ fn gpu_softmax(x_data: &[f32]) -> Vec<f32> {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let mut bufs4 = vec![vec![0u8; n * 4], exp_bytes];
     interpret::execute_kernel(&k4, &mut bufs4);
@@ -328,7 +328,7 @@ fn gpu_rms_norm(x_data: &[f32], eps: f32) -> Vec<f32> {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let mut bufs1 = vec![vec![0u8; n * 4], x_bytes.clone()];
     interpret::execute_kernel(&k1, &mut bufs1);
@@ -356,7 +356,7 @@ fn gpu_rms_norm(x_data: &[f32], eps: f32) -> Vec<f32> {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let sq_bytes = bufs1[0].clone();
     let mut bufs2 = vec![vec![0u8; 4], sq_bytes];
@@ -389,7 +389,7 @@ fn gpu_rms_norm(x_data: &[f32], eps: f32) -> Vec<f32> {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let mut bufs3 = vec![vec![0u8; n * 4], x_bytes];
     interpret::execute_kernel(&k3, &mut bufs3);

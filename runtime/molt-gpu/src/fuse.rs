@@ -125,7 +125,7 @@ fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
         bufs: merged_bufs,
         grid: last.grid,
         local: last.local,
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 

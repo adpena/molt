@@ -276,7 +276,31 @@ impl Renderer for WgslRenderer {
         // Check for reduce ops
         let has_reduce = kernel.ops.iter().any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
 
-        if !has_reduce {
+        if kernel.vectorize_width == 4 && !has_reduce {
+            // Vectorized 4-wide: each thread processes 4 contiguous elements
+            // using vec4<f32> access for coalesced memory bandwidth.
+            let vec_numel = output_numel / 4;
+            if !bounds_check_elim {
+                writeln!(out, "    if (gid >= {}u) {{ return; }}", vec_numel).unwrap();
+            }
+            writeln!(out, "    // Vectorized 4-wide path").unwrap();
+            writeln!(out, "    let base = gid * 4u;").unwrap();
+            writeln!(out, "    for (var lane: u32 = 0u; lane < 4u; lane = lane + 1u) {{").unwrap();
+            writeln!(out, "        let eidx = base + lane;").unwrap();
+
+            for (i, op) in kernel.ops.iter().enumerate() {
+                let dtype_str = op.dst_dtype.narrow_webgpu().wgsl_type();
+                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel) {
+                    format!("fma({}, {}, {})", a, b, c)
+                } else {
+                    Self::render_op(op, i, kernel, "eidx")
+                };
+                writeln!(out, "        var v{}: {} = {};", i, dtype_str, expr).unwrap();
+            }
+            let last_op = kernel.ops.len() - 1;
+            writeln!(out, "        buf{}[eidx] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
+            writeln!(out, "    }}").unwrap();
+        } else if !has_reduce {
             for (i, op) in kernel.ops.iter().enumerate() {
                 let dtype_str = op.dst_dtype.narrow_webgpu().wgsl_type();
                 let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel) {

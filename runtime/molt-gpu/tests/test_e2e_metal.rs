@@ -65,7 +65,7 @@ mod metal_e2e {
             ],
             grid: [n as u32, 1, 1],
             local: [n.clamp(1, 256) as u32, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
 
         // CPU reference
@@ -125,7 +125,7 @@ mod metal_e2e {
             ],
             grid: [n as u32, 1, 1],
             local: [n.clamp(1, 256) as u32, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
 
         // CPU reference
@@ -362,7 +362,7 @@ mod metal_e2e {
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
 
         // Kernel 2: Sub (x - max) -> Exp2(* LOG2_E) = exp
@@ -413,7 +413,7 @@ mod metal_e2e {
             ],
             grid: [n as u32, 1, 1],
             local: [n as u32, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
 
         // Kernel 3: ReduceSum of exp values
@@ -439,7 +439,7 @@ mod metal_e2e {
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
 
         // Fuse: k1 is one kernel, k2 fuses elementwise, k3 is another
@@ -490,7 +490,7 @@ mod metal_e2e {
             ],
             grid: [n_out as u32, 1, 1],
             local: [n_out as u32, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
 
         // CPU reference
@@ -563,7 +563,7 @@ mod metal_e2e {
             ],
             grid: [n as u32, 1, 1],
             local: [n as u32, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
 
         let cond = [1.0f32, 0.0, 1.0, 0.0];
@@ -659,7 +659,7 @@ mod metal_e2e {
             ],
             grid: [n as u32, 1, 1],
             local: [n as u32, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
 
         let input = [-3.0f32, -1.0, 1.0, 3.0];

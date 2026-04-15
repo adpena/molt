@@ -123,7 +123,7 @@ fn gpu_rms_norm(x: &[f32], eps: f32) -> Vec<f32> {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let sq = run_kernel(&k_sq, vec![x_bytes.clone()]);
 
@@ -140,7 +140,7 @@ fn gpu_rms_norm(x: &[f32], eps: f32) -> Vec<f32> {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let sum = run_kernel(&k_sum, vec![f32_to_bytes(&sq)]);
     let inv_rms = 1.0 / (sum[0] / n as f32 + eps).sqrt();
@@ -158,7 +158,7 @@ fn gpu_rms_norm(x: &[f32], eps: f32) -> Vec<f32> {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     run_kernel(&k_scale, vec![x_bytes])
 }
@@ -448,7 +448,7 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let max_result = run_kernel(&k_max, vec![x_bytes.clone()]);
     let max_val = max_result[0];
@@ -479,7 +479,7 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let exp_result = run_kernel(&k_exp, vec![x_bytes]);
     let exp_bytes = f32_to_bytes(&exp_result);
@@ -497,7 +497,7 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let sum_result = run_kernel(&k_sum, vec![exp_bytes.clone()]);
     let inv_sum = 1.0 / sum_result[0];
@@ -515,7 +515,7 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let gpu_sm = run_kernel(&k_div, vec![exp_bytes]);
 

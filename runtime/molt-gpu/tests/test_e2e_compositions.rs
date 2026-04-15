@@ -31,7 +31,7 @@ fn run_chain(ops: Vec<FusedOp>, bufs: Vec<BufferBinding>, input_bufs: Vec<Vec<u8
         bufs,
         grid: [n_out as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     interpret::execute_kernel(&kernel, &mut all_bufs);
@@ -272,7 +272,7 @@ fn test_composition_softmax() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mut bufs1 = vec![vec![0u8; 4], f32_to_bytes(&inputs)];
     interpret::execute_kernel(&k1, &mut bufs1);
@@ -327,7 +327,7 @@ fn test_composition_softmax() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mut bufs2 = vec![vec![0u8; n * 4], f32_to_bytes(&inputs)];
     interpret::execute_kernel(&k2, &mut bufs2);
@@ -356,7 +356,7 @@ fn test_composition_softmax() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mut bufs3 = vec![vec![0u8; 4], f32_to_bytes(&exp_vals)];
     interpret::execute_kernel(&k3, &mut bufs3);
@@ -649,7 +649,7 @@ fn test_composition_reduce_sum_single_element() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     let mut bufs = vec![vec![0u8; 4], f32_to_bytes(&[42.0])];
@@ -682,7 +682,7 @@ fn test_composition_reduce_max_with_neg_infinity() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     let mut bufs = vec![
@@ -733,7 +733,7 @@ fn test_composition_fused_mul_reduce_sum() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     let a = [1.0f32, 2.0, 3.0, 4.0];
