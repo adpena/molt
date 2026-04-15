@@ -239,6 +239,97 @@ dispatch({ type: "HYDRATE", next: extractedTemplate });
 The editor's undo/redo, autosave, and all style controls work on the
 extracted template identically to manually-created templates.
 
+## ScanButton "Create Template" Integration
+
+After a successful OCR scan, the ScanButton can offer to create a
+reusable template from the scanned invoice.  The `MoltOcrBackend`
+provides an `extractTemplate()` method that calls the Worker's
+`/template/extract` endpoint.
+
+### Backend Usage
+
+```typescript
+import { MoltOcrBackend } from "./ocr-backend-molt";
+
+const backend = new MoltOcrBackend({
+  wasmUrl: "...",
+  weightsUrl: "...",
+  tokenizerUrl: "...",
+  configUrl: "...",
+  workerUrl: "https://falcon-ocr.adpena.workers.dev",
+});
+
+// After OCR completes, extract template from the same image:
+const { template, confidence, detected_sections } =
+  await backend.extractTemplate(imageBase64, {
+    documentType: "invoice",
+    preserveLogo: true,
+    detectColors: true,
+  });
+```
+
+### ScanButton Component Wiring
+
+In `ScanButton.tsx`, add template creation after successful OCR:
+
+```typescript
+import { useState } from "react";
+
+// In the ScanButton component:
+const [showTemplateOption, setShowTemplateOption] = useState(false);
+const [templateLoading, setTemplateLoading] = useState(false);
+
+// After successful OCR in onScanComplete:
+setShowTemplateOption(true);
+
+// Render the template creation button:
+{showTemplateOption && (
+  <button
+    disabled={templateLoading}
+    onClick={async () => {
+      setTemplateLoading(true);
+      try {
+        const { template, confidence } =
+          await moltBackend.extractTemplate(imageBase64);
+        if (confidence > 0.3) {
+          window.location.href = `/templates/editor?from_template=${encodeURIComponent(
+            JSON.stringify(template),
+          )}`;
+        } else {
+          // Low confidence: offer manual template creation instead
+          window.location.href = "/templates/new";
+        }
+      } catch (err) {
+        console.error("Template extraction failed:", err);
+      } finally {
+        setTemplateLoading(false);
+      }
+    }}
+  >
+    Create Template from This Invoice
+  </button>
+)}
+```
+
+### Batch OCR for Multi-Page Invoices
+
+For multi-page documents, use the `/ocr/batch` endpoint:
+
+```typescript
+const response = await fetch(
+  "https://falcon-ocr.adpena.workers.dev/ocr/batch",
+  {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      images: pageImages, // Array of base64 strings, max 10
+    }),
+  },
+);
+const { results, total_time_ms } = await response.json();
+// results: Array<{ text, tokens, time_ms }>
+```
+
 ## Rollback Plan
 
 If the new WASM module has issues in production:
