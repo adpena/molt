@@ -74,7 +74,9 @@ pub enum PrimitiveOp {
     /// `trunc(a)` — truncate toward zero. Needed for floor/ceil/round compositions.
     Trunc,
     /// `max(a, b)` — IEEE 754: NaN-propagating (if either operand is NaN, result is NaN).
-    /// Maps to fmax in MSL. For integers, standard comparison.
+    /// Maps to `max()` in MSL/WGSL (NaN-propagating), guarded `fmaxf`/`fmax` in
+    /// CUDA/HIP/OpenCL (fmax is NaN-suppressing, so an explicit NaN check is emitted).
+    /// For integers, standard comparison.
     Max,
     /// `cond ? a : b` — ternary select.
     Where,
