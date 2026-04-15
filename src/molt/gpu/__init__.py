@@ -26,6 +26,14 @@ import array
 import _intrinsics as _molt_intrinsics
 
 
+def _default_format_char(element_type: type) -> str:
+    return "d" if element_type == float else "q"
+
+
+def _format_itemsize(format_char: str) -> int:
+    return struct.calcsize(format_char)
+
+
 def _load_optional_intrinsic(name: str):
     loader = getattr(_molt_intrinsics, "load_intrinsic", None)
     if callable(loader):
@@ -37,17 +45,6 @@ def _load_optional_intrinsic(name: str):
         except RuntimeError:
             return None
     return None
-
-
-_MOLT_GPU_KERNEL_LAUNCH = _load_optional_intrinsic("molt_gpu_kernel_launch")
-
-
-def _default_format_char(element_type: type) -> str:
-    return "d" if element_type == float else "q"
-
-
-def _format_itemsize(format_char: str) -> int:
-    return struct.calcsize(format_char)
 
 
 class Buffer:
@@ -229,8 +226,10 @@ class _KernelLauncher:
         """
         grid = self._grid or 256
         threads = self._threads or 256
-        if callable(_MOLT_GPU_KERNEL_LAUNCH):
-            return _MOLT_GPU_KERNEL_LAUNCH(self._func, grid, threads, args)
+        backend_launch = _MOLT_GPU_KERNEL_LAUNCH
+        if callable(backend_launch) and getattr(self._func, "__molt_gpu_kernel__", False):
+            return backend_launch(self._func, grid, threads, args)
+
         total_threads = grid * threads if isinstance(grid, int) else grid
 
         # Interpreted fallback: simulate GPU execution sequentially
@@ -263,4 +262,8 @@ def kernel(func):
     sequentially. Compiled execution must preserve that sequential fallback
     until a real backend dispatch path is active for the target/backend lane.
     """
+    setattr(func, "__molt_gpu_kernel__", True)
     return _KernelLauncher(func)
+
+
+_MOLT_GPU_KERNEL_LAUNCH = _load_optional_intrinsic("molt_gpu_kernel_launch")

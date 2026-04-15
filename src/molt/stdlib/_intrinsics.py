@@ -9,9 +9,10 @@ Missing intrinsics must raise immediately; fallback is not permitted.
 _REGISTRY_NAME = "_molt_intrinsics"
 _LOOKUP_HELPER_NAME = "_molt_intrinsic_lookup"
 
-# Cache a reference to the real builtins module at import time so that
-# later monkeypatching of sys.modules["builtins"] cannot subvert lookup.
-import builtins as _real_builtins
+# Cache the bootstrap builtins module as a fallback, but prefer the current
+# runtime builtins module on each lookup. Compiled runtimes may replace or
+# finish populating the builtins module after this wrapper is imported.
+import builtins as _bootstrap_builtins
 
 
 def _is_intrinsic_value(value):
@@ -59,22 +60,33 @@ def _lookup_from_builtins_obj(builtins_obj, name):
     return _lookup_name_and_alias(builtins_obj, name)
 
 
+def _runtime_builtins_obj():
+    try:
+        return __import__("builtins")
+    except Exception:
+        return _bootstrap_builtins
+
+
 def _lookup_runtime_builtins(name):
-    return _lookup_from_builtins_obj(_real_builtins, name)
+    return _lookup_from_builtins_obj(_runtime_builtins_obj(), name)
 
 
 def runtime_active():
+    builtins_obj = _runtime_builtins_obj()
     helper = globals().get(_LOOKUP_HELPER_NAME)
     if _is_intrinsic_value(helper):
         return True
     if globals().get("_molt_runtime", False) or globals().get("_molt_intrinsics_strict", False):
         return True
-    helper = _lookup_builtin_obj(_real_builtins, _LOOKUP_HELPER_NAME)
+    reg = _lookup_builtin_obj(builtins_obj, _REGISTRY_NAME)
+    if isinstance(reg, dict):
+        return True
+    helper = _lookup_builtin_obj(builtins_obj, _LOOKUP_HELPER_NAME)
     if _is_intrinsic_value(helper):
         return True
     return bool(
-        getattr(_real_builtins, "_molt_runtime", False)
-        or getattr(_real_builtins, "_molt_intrinsics_strict", False)
+        getattr(builtins_obj, "_molt_runtime", False)
+        or getattr(builtins_obj, "_molt_intrinsics_strict", False)
     )
 
 
@@ -86,8 +98,13 @@ def require_intrinsic(name, namespace=None):
         if value is not None:
             return value
 
-    # 2. Check real builtins for lookup helper (cached at import time).
-    builtins_helper = getattr(_real_builtins, _LOOKUP_HELPER_NAME, None)
+    # 2. Check the current runtime builtins registry and direct aliases.
+    value = _lookup_runtime_builtins(name)
+    if value is not None:
+        return value
+
+    # 3. Check the current runtime builtins module for the lookup helper.
+    builtins_helper = getattr(_runtime_builtins_obj(), _LOOKUP_HELPER_NAME, None)
     if _is_intrinsic_value(builtins_helper):
         value = builtins_helper(name)
         if value is not None:
