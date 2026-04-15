@@ -165,7 +165,7 @@ def _load_safetensor_entry(data: bytes, data_start: int, meta: dict):
 
 
 def load_safetensors_bytes(data: bytes) -> dict:
-    """Load weights from in-memory SafeTensors bytes lazily."""
+    """Load weights from an in-memory .safetensors blob."""
     header_len = struct.unpack_from("<Q", data, 0)[0]
     if header_len > len(data) - 8:
         raise ValueError("SafeTensors header length exceeds file size")
@@ -180,8 +180,7 @@ def load_safetensors_bytes(data: bytes) -> dict:
 def load_safetensors(path: str) -> dict:
     """Load weights from a .safetensors file."""
     with open(path, "rb") as f:
-        data = f.read()
-    return load_safetensors_bytes(data)
+        return load_safetensors_bytes(f.read())
 
 
 def load_json_weights(path: str) -> dict:
