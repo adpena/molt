@@ -345,7 +345,7 @@ async function ensureModelLoaded(env) {
       }
       }
 
-      // Priority 3: Full F32 model (~1 GB, only if memory permits)
+      // Priority 5: Full F32 model (~1 GB, only if memory permits)
       if (!weightsBytes) {
         const r2Weights = await env.WEIGHTS.get("models/falcon-ocr/model.safetensors");
         const r2Config = await env.WEIGHTS.get("models/falcon-ocr/config.json");
@@ -363,7 +363,7 @@ async function ensureModelLoaded(env) {
         }
       }
 
-      // Priority 4: Embedded micro model (263 KB, no R2 fetch)
+      // Priority 6: Embedded micro model (263 KB, no R2 fetch)
       if (!weightsBytes) {
         const raw = atob(MICRO_MODEL_B64);
         weightsBytes = new Uint8Array(raw.length);
