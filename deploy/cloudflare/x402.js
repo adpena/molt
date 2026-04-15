@@ -258,6 +258,15 @@ export async function verifyX402(request, env, rid, cors) {
     return { authorized: true };
   }
 
+  // Browser bypass: skip x402 for same-origin requests from the production
+  // app.  Browser users are already authenticated via the enjoice session.
+  // x402 is only enforced for API/agent requests (no Origin or different origin).
+  const origin = request.headers.get("Origin");
+  const allowedOrigin = env.CORS_ORIGIN || "https://freeinvoicemaker.app";
+  if (origin && origin === allowedOrigin) {
+    return { authorized: true };
+  }
+
   const headerValue = request.headers.get("X-Payment-402");
   if (!headerValue) {
     return {
