@@ -3,6 +3,7 @@
 //! Each backend implements all three traits. The separation provides
 //! distinct ownership semantics (buffers vs programs vs execution state).
 
+pub mod arena;
 #[cfg(target_os = "macos")]
 pub mod metal;
 pub mod cpu;

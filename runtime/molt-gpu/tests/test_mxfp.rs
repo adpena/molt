@@ -43,15 +43,16 @@ fn test_mxfp_element_bits() {
 fn test_mxfp_block_size() {
     assert_eq!(DType::MxFP8.mxfp_block_size(), MXFP8_BLOCK_SIZE);
     assert_eq!(DType::MxFP4.mxfp_block_size(), MXFP4_BLOCK_SIZE);
-    assert_eq!(MXFP8_BLOCK_SIZE, 16);
+    // OCP MX Spec v1.0 Table 1: ALL MX formats use block size 32
+    assert_eq!(MXFP8_BLOCK_SIZE, 32);
     assert_eq!(MXFP4_BLOCK_SIZE, 32);
     assert_eq!(DType::Float32.mxfp_block_size(), 0);
 }
 
 #[test]
 fn test_mxfp_block_bytes() {
-    // MXFP8: 16 elements * 1 byte + 1 byte exponent = 17 bytes
-    assert_eq!(DType::MxFP8.mxfp_block_bytes(), 17);
+    // MXFP8: 32 elements * 1 byte + 1 byte exponent = 33 bytes
+    assert_eq!(DType::MxFP8.mxfp_block_bytes(), 33);
     // MXFP4: 32 elements * 0.5 bytes + 1 byte exponent = 17 bytes
     assert_eq!(DType::MxFP4.mxfp_block_bytes(), 17);
     assert_eq!(DType::Float32.mxfp_block_bytes(), 0);
