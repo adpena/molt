@@ -7,15 +7,19 @@
 - Bucket: `falcon-ocr-weights`
 - Note: wrangler.toml binds this as `WEIGHTS`; worker accesses objects via `env.WEIGHTS.get(...)`
 
-### Weight Upload
-- `config.json`: uploaded to `models/falcon-ocr/config.json` (remote R2)
-- `tokenizer.json`: uploaded to `v1/tokenizer.json` (remote R2) -- needs re-upload to `models/falcon-ocr/tokenizer.json` if worker needs it
-- `model.safetensors` (1,029 MiB): **FAILED** -- wrangler enforces 300 MiB upload limit for remote R2
-  - `--pipe` with `--remote` also rejects files > 300 MiB
-  - Cloudflare REST API returns 413 Payload Too Large for streaming PUT
-  - `--pipe` without `--remote` uploads to local emulator only (0 bytes after download verification)
-  - **Root cause**: Uploading files > 300 MiB to R2 requires S3-compatible API with multipart upload, which needs R2 API tokens (Access Key ID + Secret Access Key) created from the Cloudflare dashboard at `https://dash.cloudflare.com/<account>/r2/api-tokens`
-- `falcon-ocr.wasm` (compiled WASM inference binary): **NOT AVAILABLE** -- this is the molt-compiled WASM binary, not a raw weight file. Needs to be built via the molt pipeline first.
+### Weight Upload (COMPLETED 2026-04-14)
+- `model.safetensors` (1,029.8 MiB): **UPLOADED** via `wrangler r2 object put --pipe`
+- `config.json`: **UPLOADED** to `models/falcon-ocr/config.json`
+- `model_args.json`: **UPLOADED** to `models/falcon-ocr/model_args.json`
+- `tokenizer.json`: **UPLOADED** to `models/falcon-ocr/tokenizer.json` (also at `v1/tokenizer.json`)
+- `tokenizer_config.json`: **UPLOADED** to `models/falcon-ocr/tokenizer_config.json`
+- `special_tokens_map.json`: **UPLOADED** to `models/falcon-ocr/special_tokens_map.json`
+- All 6 files uploaded successfully. Total: ~1.03 GB.
+
+### WASM Inference Module
+- Status: **NOT YET BUILT** — requires `molt build wasm_driver.py --target wasm` which is part of molt's Python-to-WASM compilation pipeline
+- The Worker gracefully degrades: returns 503 with `fallback_url: "/api/ocr/paddle"` when WASM module is unavailable
+- Once built, upload to R2 at `models/falcon-ocr/falcon-ocr.wasm`
 
 ### KV Namespace
 - Status: already exists
