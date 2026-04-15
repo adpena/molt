@@ -35,6 +35,7 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
+                spec: None,
     }
 }
 
@@ -73,6 +74,7 @@ fn test_wgsl_render_select_not_ternary() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
+                spec: None,
     };
     let wgsl = WgslRenderer.render(&kernel);
     assert!(wgsl.contains("select("), "WGSL must use select(), not ternary");
@@ -93,6 +95,7 @@ fn test_wgsl_render_bitcast() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
+                spec: None,
     };
     let wgsl = WgslRenderer.render(&kernel);
     assert!(wgsl.contains("bitcast<f32>"), "WGSL must use bitcast<T> syntax");
@@ -125,6 +128,7 @@ fn test_wgsl_dtype_narrowing() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
+                spec: None,
     };
     let wgsl = WgslRenderer.render(&kernel);
     // Should use f32, not f64 (WGSL has no f64)
@@ -172,6 +176,7 @@ fn test_wgsl_all_26_ops_have_render_patterns() {
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
+                spec: None,
         };
         let wgsl = WgslRenderer.render(&kernel);
         assert!(wgsl.contains("molt_kernel"), "op {:?} failed to render WGSL", op);

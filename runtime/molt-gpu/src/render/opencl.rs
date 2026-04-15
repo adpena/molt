@@ -87,6 +87,8 @@ impl OpenClRenderer {
                 // BFloat16 is narrowed to Float32 by narrow_opencl
                 unreachable!("BFloat16 should have been narrowed to Float32")
             }
+            // MXFP types: constants are stored as uchar (raw byte).
+            DType::MxFP8 | DType::MxFP4 => format!("((uchar){})", val as u8),
         }
     }
 

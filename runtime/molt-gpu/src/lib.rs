@@ -12,4 +12,5 @@ pub mod render;
 pub mod device;
 pub mod schedule;
 pub mod fuse;
+pub mod dce;
 pub mod mlir;

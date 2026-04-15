@@ -150,6 +150,9 @@ fn mlir_element_type(dtype: DType) -> &'static str {
         DType::BFloat16 => "bf16",
         DType::Float32 => "f32",
         DType::Float64 => "f64",
+        // MXFP types map to i8 in MLIR (raw byte storage).
+        // Dequantization is expressed as explicit MLIR ops.
+        DType::MxFP8 | DType::MxFP4 => "i8",
     }
 }
 

@@ -66,6 +66,7 @@ fn main() {
             ],
             grid: [1, 1, 1],
             local: [256, 1, 1],
+                spec: None,
         },
         // 2. Sub (x - max)
         FusedKernel {
@@ -81,6 +82,7 @@ fn main() {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
+                spec: None,
         },
         // 3. Exp2
         FusedKernel {
@@ -95,6 +97,7 @@ fn main() {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
+                spec: None,
         },
         // 4. ReduceSum
         FusedKernel {
@@ -109,6 +112,7 @@ fn main() {
             ],
             grid: [1, 1, 1],
             local: [256, 1, 1],
+                spec: None,
         },
         // 5. Reciprocal
         FusedKernel {
@@ -123,6 +127,7 @@ fn main() {
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
+                spec: None,
         },
         // 6. Mul (exp * inv_sum)
         FusedKernel {
@@ -138,6 +143,7 @@ fn main() {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
+                spec: None,
         },
     ];
 
@@ -156,6 +162,7 @@ fn main() {
             ],
             grid: [1, 1, 1],
             local: [256, 1, 1],
+                spec: None,
         },
         // Kernel 2: sub -> exp2 -> reduce_sum -> reciprocal -> mul (fused)
         FusedKernel {
@@ -193,6 +200,7 @@ fn main() {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
+                spec: None,
         },
     ];
 
@@ -239,6 +247,7 @@ fn main() {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
+                spec: None,
         }
     }).collect();
 
@@ -259,6 +268,7 @@ fn main() {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
+                spec: None,
     }];
 
     let unfused_d2 = measure(|| {
