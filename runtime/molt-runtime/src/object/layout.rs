@@ -409,6 +409,28 @@ pub(crate) unsafe fn function_set_trampoline_ptr(ptr: *mut u8, bits: u64) {
     }
 }
 
+/// Read the captured globals dict bits from function slot 9.
+pub(crate) unsafe fn function_globals_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(9 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+/// Store a globals dict on the function object (slot 9).  Takes its own
+/// reference — caller must still dec-ref their copy if they own one.
+pub(crate) unsafe fn function_set_globals_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
+    unsafe {
+        crate::gil_assert();
+        let slot = ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64;
+        let old_bits = *slot;
+        if old_bits != 0 {
+            dec_ref_bits(_py, old_bits);
+        }
+        *slot = bits;
+        if bits != 0 {
+            inc_ref_bits(_py, bits);
+        }
+    }
+}
+
 pub(crate) unsafe fn ensure_function_code_bits(_py: &PyToken<'_>, func_ptr: *mut u8) -> u64 {
     unsafe {
         let existing = function_code_bits(func_ptr);

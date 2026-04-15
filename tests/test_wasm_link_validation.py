@@ -671,6 +671,7 @@ def test_tree_shake_runtime_omits_converge_flag(
     assert "--converge" not in calls[0]
 
 
+
 def test_neutralize_dead_element_entries_preserves_host_call_indirect_modules() -> None:
     module = _build_host_call_indirect_module()
     assert wasm_link._neutralize_dead_element_entries(module) is None
@@ -1507,6 +1508,58 @@ def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
         | wasm_link.FLAG_EXPLICIT_NAME
         | wasm_link.FLAG_EXPORTED,
     )
+
+
+def test_run_wasm_ld_split_runtime_emits_outputs_even_if_linked_validation_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_bytes = _module_with_linking_symbols([])
+    output_bytes = _module_with_linking_symbols([])
+    runtime = tmp_path / "molt_runtime_reloc.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    split_dir = tmp_path / "split"
+    runtime.write_bytes(runtime_bytes)
+    output.write_bytes(output_bytes)
+
+    def fake_run(cmd, **kwargs):
+        linked.write_bytes(output_bytes)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return Result()
+
+    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: False)
+    monkeypatch.setattr(wasm_link, "_append_table_ref_elements", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_build_runtime_stub", lambda data: runtime_bytes)
+    monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
+    monkeypatch.setattr(wasm_link, "_collect_module_imports", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(wasm_link, "_tree_shake_runtime", lambda *_args, **_kwargs: runtime_bytes)
+    monkeypatch.setattr(wasm_link, "_collect_custom_names", lambda _data: [])
+    monkeypatch.setattr(wasm_link, "_collect_imports", lambda _data: [])
+    monkeypatch.setattr(wasm_link, "_collect_exports", lambda _data: {"molt_memory", "molt_table"})
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
+
+    rc = wasm_link._run_wasm_ld(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        split_runtime=True,
+        split_output_dir=split_dir,
+    )
+
+    assert rc == 0
+    assert (split_dir / "app.wasm").exists()
+    assert (split_dir / "molt_runtime.wasm").exists()
 
 
 def test_wasm_link_allows_ref_null_element_expr() -> None:
