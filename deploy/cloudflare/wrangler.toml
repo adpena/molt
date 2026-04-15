@@ -24,7 +24,7 @@ bucket_name = "falcon-ocr-weights"
 # KV binding for caching compiled WASM modules and config.
 [[kv_namespaces]]
 binding = "CACHE"
-id = "falcon-ocr-cache"
+id = "791309f66ab445e8a0327a34206f7005"
 
 [vars]
 # Public vars — secrets go via `wrangler secret put`.
@@ -43,5 +43,6 @@ head_sampling_rate = 0.1
 
 # Limits — Falcon-OCR inference is compute-heavy.
 # Workers Paid plan: 30s CPU, 128 MB memory.
-[limits]
-cpu_ms = 30000
+# NOTE: cpu_ms requires Workers Paid plan. Commented out for Free plan deployment.
+# [limits]
+# cpu_ms = 30000
