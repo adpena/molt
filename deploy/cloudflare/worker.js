@@ -5,11 +5,16 @@
  *   1. Cold start: fetch WASM module + weights from R2, initialize model.
  *   2. Warm request: run OCR inference on the cached model.
  *
+ * Fallback chain:
+ *   molt-gpu (WebGPU/WASM) -> PaddleOCR (server-side JS) -> structured error
+ *
  * The Worker NEVER logs image content (privacy).  Request IDs are
  * generated for debugging without exposing PII.
  */
 
 import { handleOcrRequest, handleHealthRequest, handleTokensRequest } from "./ocr_api.js";
+import { verifyX402 } from "./x402.js";
+import { withMonitoring, createRequestLog, emitLog, writeAnalytics, categorizeError } from "./monitoring.js";
 
 /** @type {WebAssembly.Instance | null} */
 let wasmInstance = null;
@@ -19,6 +24,9 @@ let modelReady = false;
 
 /** @type {Promise<void> | null} */
 let initPromise = null;
+
+/** @type {string | null} */
+let initError = null;
 
 /**
  * Generate a unique request ID for tracing (no PII).
@@ -74,58 +82,15 @@ async function ensureModelLoaded(env) {
     // 5. Initialize the model
     wasmInstance.exports.init(weightsBytes, configJson);
     modelReady = true;
+    initError = null;
   })();
 
   try {
     await initPromise;
   } catch (err) {
     initPromise = null;
+    initError = err.message;
     throw err;
-  }
-}
-
-/**
- * Verify x402 payment header.
- *
- * @param {Request} request
- * @param {object} env
- * @returns {{ valid: boolean, error?: string }}
- */
-async function verifyX402Payment(request, env) {
-  const paymentHeader = request.headers.get("X-Payment-402");
-  if (!paymentHeader) {
-    return { valid: false, error: "Missing X-Payment-402 header" };
-  }
-
-  const walletAddress = env.X402_WALLET_ADDRESS;
-  if (!walletAddress) {
-    // If no wallet configured, skip payment verification (dev mode).
-    return { valid: true };
-  }
-
-  const verificationUrl = env.X402_VERIFICATION_URL;
-  if (!verificationUrl) {
-    return { valid: false, error: "x402 verification endpoint not configured" };
-  }
-
-  try {
-    const res = await fetch(verificationUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        payment: paymentHeader,
-        wallet: walletAddress,
-      }),
-    });
-
-    if (!res.ok) {
-      return { valid: false, error: `x402 verification failed: ${res.status}` };
-    }
-
-    const result = /** @type {{ valid: boolean }} */ (await res.json());
-    return { valid: result.valid, error: result.valid ? undefined : "Payment invalid" };
-  } catch (err) {
-    return { valid: false, error: `x402 verification error: ${err.message}` };
   }
 }
 
@@ -145,6 +110,35 @@ function corsHeaders(env) {
   };
 }
 
+/**
+ * Build a fallback error response when the primary backend fails.
+ *
+ * @param {Error} err
+ * @param {string} rid
+ * @param {Record<string, string>} cors
+ * @returns {Response}
+ */
+function fallbackErrorResponse(err, rid, cors) {
+  const category = categorizeError(err, 503);
+  return new Response(
+    JSON.stringify({
+      error: "Primary OCR backend unavailable",
+      error_category: category,
+      request_id: rid,
+      fallback_available: true,
+      fallback_url: "/api/ocr/paddle",
+      backends: {
+        "molt-gpu": { status: "error", error: err.message.split("\n")[0].slice(0, 200) },
+        "paddle-ocr": { status: "available", url: "/api/ocr/paddle" },
+      },
+    }),
+    {
+      status: 503,
+      headers: { ...cors, "Content-Type": "application/json" },
+    },
+  );
+}
+
 export default {
   /**
    * @param {Request} request
@@ -155,64 +149,108 @@ export default {
   async fetch(request, env, ctx) {
     const rid = request.headers.get("X-Request-ID") || requestId();
     const cors = corsHeaders(env);
+    const url = new URL(request.url);
+    const path = url.pathname;
 
     // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: cors });
     }
 
-    const url = new URL(request.url);
-    const path = url.pathname;
+    return withMonitoring({
+      request,
+      rid,
+      path,
+      env,
+      ctx,
+      handler: async () => {
+        // Health check — no auth required, no model load required.
+        // Reports which backends are available.
+        if (path === "/health" && request.method === "GET") {
+          return new Response(
+            JSON.stringify({
+              status: modelReady ? "ready" : initError ? "error" : "loading",
+              model: "falcon-ocr",
+              version: env.MODEL_VERSION || "0.1.0",
+              device: "wasm",
+              request_id: rid,
+              backends: {
+                "molt-gpu": {
+                  status: modelReady ? "ready" : initError ? "error" : "loading",
+                  error: initError || undefined,
+                },
+                "paddle-ocr": {
+                  status: "available",
+                  url: "/api/ocr/paddle",
+                },
+              },
+            }),
+            {
+              status: 200,
+              headers: { ...cors, "Content-Type": "application/json" },
+            },
+          );
+        }
 
-    try {
-      // Health check — no auth required, no model load required.
-      if (path === "/health" && request.method === "GET") {
-        return handleHealthRequest(modelReady, env, cors, rid);
-      }
+        // All other endpoints require POST
+        if (request.method !== "POST") {
+          return new Response(
+            JSON.stringify({ error: "Method not allowed", request_id: rid }),
+            { status: 405, headers: { ...cors, "Content-Type": "application/json" } },
+          );
+        }
 
-      // All other endpoints require POST and x402 payment.
-      if (request.method !== "POST") {
+        // Verify x402 payment
+        const payment = await verifyX402(request, env, rid, cors);
+        if (!payment.authorized) {
+          return payment.response;
+        }
+
+        // Build payment receipt header for successful payments
+        const receiptHeaders = payment.receipt
+          ? { "X-Payment-Receipt": payment.receipt }
+          : {};
+
+        // Ensure model is loaded (lazy init on first request)
+        // On failure, return fallback response instead of 500
+        try {
+          await ensureModelLoaded(env);
+        } catch (err) {
+          return fallbackErrorResponse(err, rid, cors);
+        }
+
+        if (path === "/ocr") {
+          const response = await handleOcrRequest(request, wasmInstance, env, cors, rid);
+          // Attach payment receipt to successful responses
+          if (payment.receipt) {
+            const headers = new Headers(response.headers);
+            headers.set("X-Payment-Receipt", payment.receipt);
+            return new Response(response.body, {
+              status: response.status,
+              headers,
+            });
+          }
+          return response;
+        }
+
+        if (path === "/ocr/tokens") {
+          const response = await handleTokensRequest(request, wasmInstance, env, cors, rid);
+          if (payment.receipt) {
+            const headers = new Headers(response.headers);
+            headers.set("X-Payment-Receipt", payment.receipt);
+            return new Response(response.body, {
+              status: response.status,
+              headers,
+            });
+          }
+          return response;
+        }
+
         return new Response(
-          JSON.stringify({ error: "Method not allowed", request_id: rid }),
-          { status: 405, headers: { ...cors, "Content-Type": "application/json" } },
+          JSON.stringify({ error: "Not found", request_id: rid }),
+          { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
         );
-      }
-
-      // Verify payment
-      const payment = await verifyX402Payment(request, env);
-      if (!payment.valid) {
-        return new Response(
-          JSON.stringify({ error: payment.error, request_id: rid }),
-          { status: 402, headers: { ...cors, "Content-Type": "application/json" } },
-        );
-      }
-
-      // Ensure model is loaded (lazy init on first request)
-      await ensureModelLoaded(env);
-
-      if (path === "/ocr") {
-        return handleOcrRequest(request, wasmInstance, env, cors, rid);
-      }
-
-      if (path === "/ocr/tokens") {
-        return handleTokensRequest(request, wasmInstance, env, cors, rid);
-      }
-
-      return new Response(
-        JSON.stringify({ error: "Not found", request_id: rid }),
-        { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
-      );
-    } catch (err) {
-      // Never expose stack traces in production.  Log the error server-side
-      // and return a generic 500 with the request ID for correlation.
-      console.error(`[${rid}] Unhandled error:`, err.message);
-      return new Response(
-        JSON.stringify({
-          error: "Internal server error",
-          request_id: rid,
-        }),
-        { status: 500, headers: { ...cors, "Content-Type": "application/json" } },
-      );
-    }
+      },
+    });
   },
 };
