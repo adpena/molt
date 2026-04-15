@@ -49,6 +49,7 @@ pub const MXFP4_BLOCK_SIZE: usize = 32;
 
 impl DType {
     /// Size in bytes of one element.
+    #[inline(always)]
     ///
     /// For MXFP types, this returns the per-element data size (1 byte for
     /// MXFP8, 1 byte for MXFP4 — 4 bits packed into bytes). The shared
@@ -66,6 +67,7 @@ impl DType {
     }
 
     /// Whether this is a floating-point type.
+    #[inline(always)]
     pub fn is_float(self) -> bool {
         matches!(self, Self::Float16 | Self::BFloat16 | Self::Float32 | Self::Float64 | Self::MxFP8 | Self::MxFP4)
     }

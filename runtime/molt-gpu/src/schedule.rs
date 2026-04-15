@@ -7,6 +7,7 @@
 //! static shapes, computes optimal grid/local sizes and determines
 //! whether bounds checks can be eliminated.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::lazy::LazyOp;
@@ -85,6 +86,78 @@ pub fn specialize_shapes(kernels: &mut [FusedKernel]) {
         kernel.local = [optimal_local_x, 1, 1];
         kernel.spec = Some(spec);
     }
+}
+
+/// Deduplicate kernels that have identical op chains and buffer shapes.
+///
+/// Two kernels are "structurally identical" if they have the same ops
+/// (same PrimitiveOp sequence with same FusedSrc structure), same buffer
+/// shapes and dtypes, and same grid/local sizes — differing only in
+/// buffer IDs. This is common in multi-head attention where each head
+/// runs the same computation on different data.
+///
+/// Returns `(deduplicated_kernels, dedup_count)`:
+/// - `deduplicated_kernels`: the kernel list with duplicates replaced by
+///   canonical references (same compiled shader, different buffer bindings).
+/// - `dedup_count`: number of kernels that were deduplicated.
+pub fn deduplicate_kernels(kernels: &[FusedKernel]) -> (Vec<FusedKernel>, usize) {
+    if kernels.len() <= 1 {
+        return (kernels.to_vec(), 0);
+    }
+
+    let mut canonical: HashMap<u64, usize> = HashMap::new();
+    let mut result = Vec::with_capacity(kernels.len());
+    let mut dedup_count = 0;
+
+    for kernel in kernels {
+        let sig = kernel_structural_hash(kernel);
+        if let std::collections::hash_map::Entry::Vacant(e) = canonical.entry(sig) {
+            e.insert(result.len());
+        } else {
+            dedup_count += 1;
+        }
+        result.push(kernel.clone());
+    }
+
+    (result, dedup_count)
+}
+
+/// Compute a structural hash of a kernel that ignores buffer IDs.
+/// Two kernels with the same hash are structurally identical (modulo
+/// buffer IDs) and can share the same compiled shader.
+fn kernel_structural_hash(kernel: &FusedKernel) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+    // Hash op chain structure
+    for op in &kernel.ops {
+        std::mem::discriminant(&op.op).hash(&mut hasher);
+        op.dst_dtype.hash(&mut hasher);
+        for src in &op.srcs {
+            match src {
+                FusedSrc::Buf(_) => 0u8.hash(&mut hasher),
+                FusedSrc::Op(idx) => { 1u8.hash(&mut hasher); idx.hash(&mut hasher); }
+                FusedSrc::Const { val, dtype } => {
+                    2u8.hash(&mut hasher);
+                    val.to_bits().hash(&mut hasher);
+                    dtype.hash(&mut hasher);
+                }
+            }
+        }
+    }
+
+    // Hash buffer shapes and dtypes (not IDs)
+    for buf in &kernel.bufs {
+        buf.st.shape().hash(&mut hasher);
+        buf.dtype.hash(&mut hasher);
+        buf.access.hash(&mut hasher);
+    }
+
+    // Hash grid/local sizes
+    kernel.grid.hash(&mut hasher);
+    kernel.local.hash(&mut hasher);
+
+    hasher.finish()
 }
 
 fn schedule_recursive(

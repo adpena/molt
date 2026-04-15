@@ -2,6 +2,11 @@
 //!
 //! All movement ops (reshape, permute, expand, pad, shrink, flip) are
 //! O(1) modifications to the view. No GPU kernel, no memory copy.
+//!
+//! Performance optimizations:
+//! - `is_contiguous` is cached at construction time (not recomputed per call).
+//! - `expr_idx` has a fast path for contiguous views (linear_idx == buffer offset).
+//! - Specialized `expr_idx_1d`, `expr_idx_2d`, `expr_idx_3d` avoid the general loop.
 
 /// A single view into a contiguous buffer.
 ///
@@ -20,6 +25,9 @@ pub struct View {
     /// mask[dim].0 <= idx[dim] < mask[dim].1.
     /// Elements outside the mask return the padding value (typically 0).
     pub mask: Option<Vec<(i64, i64)>>,
+    /// Cached result of contiguity check. Set at construction time.
+    /// When true, `expr_idx(i)` == `Some(i)` for all valid indices.
+    is_contiguous_cache: bool,
 }
 
 impl View {
@@ -39,24 +47,57 @@ impl View {
             strides,
             offset: 0,
             mask: None,
+            is_contiguous_cache: true, // contiguous by construction
         }
     }
 
+    /// Create a view with explicit fields and compute the contiguity cache.
+    fn new(shape: Vec<usize>, strides: Vec<i64>, offset: i64, mask: Option<Vec<(i64, i64)>>) -> Self {
+        let is_contiguous_cache = Self::compute_is_contiguous(&shape, &strides, offset, &mask);
+        Self {
+            shape,
+            strides,
+            offset,
+            mask,
+            is_contiguous_cache,
+        }
+    }
+
+    /// Compute contiguity without constructing a View (used during construction).
+    fn compute_is_contiguous(shape: &[usize], strides: &[i64], offset: i64, mask: &Option<Vec<(i64, i64)>>) -> bool {
+        if offset != 0 || mask.is_some() {
+            return false;
+        }
+        let ndim = shape.len();
+        if ndim == 0 {
+            return true;
+        }
+        // Check row-major strides: last dim stride=1, each preceding dim = product of subsequent dims
+        let mut expected_stride: i64 = 1;
+        for i in (0..ndim).rev() {
+            if strides[i] != expected_stride {
+                return false;
+            }
+            expected_stride *= shape[i] as i64;
+        }
+        true
+    }
+
     /// Total number of logical elements.
+    #[inline(always)]
     pub fn numel(&self) -> usize {
         self.shape.iter().product()
     }
 
     /// Whether this view is contiguous (row-major, no mask, offset=0).
+    /// O(1): returns the cached result computed at construction time.
+    #[inline(always)]
     pub fn is_contiguous(&self) -> bool {
-        if self.offset != 0 || self.mask.is_some() {
-            return false;
-        }
-        let expected = View::contiguous(&self.shape);
-        self.strides == expected.strides
+        self.is_contiguous_cache
     }
 
     /// Convert a linear index to multi-dimensional indices.
+    #[inline(always)]
     fn linear_to_indices(&self, linear_idx: usize) -> Vec<usize> {
         let ndim = self.shape.len();
         let mut indices = vec![0usize; ndim];
@@ -70,7 +111,108 @@ impl View {
 
     /// Compute the actual buffer offset from a linear logical index.
     /// Returns None if the index falls in a masked (padding) region.
+    ///
+    /// Fast path: for contiguous views, returns `Some(linear_idx)` directly.
+    /// Specialized paths for 1D, 2D, 3D avoid the general loop.
+    #[inline(always)]
     pub fn expr_idx(&self, linear_idx: usize) -> Option<usize> {
+        // Fast path: contiguous view — buffer offset IS the linear index.
+        if self.is_contiguous_cache {
+            return Some(linear_idx);
+        }
+
+        let ndim = self.shape.len();
+
+        // Specialized paths for common dimensionalities.
+        match ndim {
+            0 => return Some(0),
+            1 => return self.expr_idx_1d(linear_idx),
+            2 => return self.expr_idx_2d(linear_idx),
+            3 => return self.expr_idx_3d(linear_idx),
+            _ => {}
+        }
+
+        // General path for 4D+
+        self.expr_idx_general(linear_idx)
+    }
+
+    /// Specialized 1D index computation.
+    #[inline(always)]
+    fn expr_idx_1d(&self, linear_idx: usize) -> Option<usize> {
+        let idx = linear_idx;
+
+        if let Some(ref mask) = self.mask {
+            let idx_i64 = idx as i64;
+            if idx_i64 < mask[0].0 || idx_i64 >= mask[0].1 {
+                return None;
+            }
+        }
+
+        let buf_offset = self.offset + idx as i64 * self.strides[0];
+        if buf_offset < 0 {
+            return None;
+        }
+        Some(buf_offset as usize)
+    }
+
+    /// Specialized 2D index computation.
+    #[inline(always)]
+    fn expr_idx_2d(&self, linear_idx: usize) -> Option<usize> {
+        let i1 = linear_idx % self.shape[1];
+        let i0 = linear_idx / self.shape[1];
+
+        if let Some(ref mask) = self.mask {
+            let i0_i64 = i0 as i64;
+            let i1_i64 = i1 as i64;
+            if i0_i64 < mask[0].0 || i0_i64 >= mask[0].1
+                || i1_i64 < mask[1].0 || i1_i64 >= mask[1].1
+            {
+                return None;
+            }
+        }
+
+        let buf_offset = self.offset + i0 as i64 * self.strides[0] + i1 as i64 * self.strides[1];
+        if buf_offset < 0 {
+            return None;
+        }
+        Some(buf_offset as usize)
+    }
+
+    /// Specialized 3D index computation.
+    #[inline(always)]
+    fn expr_idx_3d(&self, linear_idx: usize) -> Option<usize> {
+        let dim2_size = self.shape[2];
+        let dim12_size = self.shape[1] * dim2_size;
+
+        let i2 = linear_idx % dim2_size;
+        let i1 = (linear_idx / dim2_size) % self.shape[1];
+        let i0 = linear_idx / dim12_size;
+
+        if let Some(ref mask) = self.mask {
+            let i0_i64 = i0 as i64;
+            let i1_i64 = i1 as i64;
+            let i2_i64 = i2 as i64;
+            if i0_i64 < mask[0].0 || i0_i64 >= mask[0].1
+                || i1_i64 < mask[1].0 || i1_i64 >= mask[1].1
+                || i2_i64 < mask[2].0 || i2_i64 >= mask[2].1
+            {
+                return None;
+            }
+        }
+
+        let buf_offset = self.offset
+            + i0 as i64 * self.strides[0]
+            + i1 as i64 * self.strides[1]
+            + i2 as i64 * self.strides[2];
+        if buf_offset < 0 {
+            return None;
+        }
+        Some(buf_offset as usize)
+    }
+
+    /// General N-dimensional index computation (4D+).
+    #[cold]
+    fn expr_idx_general(&self, linear_idx: usize) -> Option<usize> {
         let indices = self.linear_to_indices(linear_idx);
 
         // Check mask validity
@@ -112,16 +254,19 @@ impl ShapeTracker {
     }
 
     /// The current (outermost) view.
+    #[inline(always)]
     pub fn view(&self) -> &View {
         self.views.last().expect("ShapeTracker must have at least one view")
     }
 
     /// The logical shape of the tensor.
+    #[inline(always)]
     pub fn shape(&self) -> &[usize] {
         &self.view().shape
     }
 
     /// Total number of logical elements.
+    #[inline(always)]
     pub fn numel(&self) -> usize {
         self.view().numel()
     }
@@ -163,12 +308,7 @@ impl ShapeTracker {
         });
 
         Self {
-            views: vec![View {
-                shape: new_shape,
-                strides: new_strides,
-                offset: current.offset,
-                mask: new_mask,
-            }],
+            views: vec![View::new(new_shape, new_strides, current.offset, new_mask)],
         }
     }
 
@@ -188,12 +328,7 @@ impl ShapeTracker {
         }
 
         Self {
-            views: vec![View {
-                shape: new_shape.to_vec(),
-                strides: new_strides,
-                offset: current.offset,
-                mask: current.mask.clone(),
-            }],
+            views: vec![View::new(new_shape.to_vec(), new_strides, current.offset, current.mask.clone())],
         }
     }
 
@@ -224,12 +359,7 @@ impl ShapeTracker {
             .collect();
 
         Self {
-            views: vec![View {
-                shape: new_shape,
-                strides: current.strides.clone(),
-                offset: new_offset,
-                mask: Some(new_mask),
-            }],
+            views: vec![View::new(new_shape, current.strides.clone(), new_offset, Some(new_mask))],
         }
     }
 
@@ -247,12 +377,7 @@ impl ShapeTracker {
         }
 
         Self {
-            views: vec![View {
-                shape: new_shape,
-                strides: current.strides.clone(),
-                offset: new_offset,
-                mask: current.mask.clone(),
-            }],
+            views: vec![View::new(new_shape, current.strides.clone(), new_offset, current.mask.clone())],
         }
     }
 
@@ -268,12 +393,7 @@ impl ShapeTracker {
         let new_offset = current.offset + (current.shape[axis] as i64 - 1) * current.strides[axis];
 
         Self {
-            views: vec![View {
-                shape: current.shape.clone(),
-                strides: new_strides,
-                offset: new_offset,
-                mask: current.mask.clone(),
-            }],
+            views: vec![View::new(current.shape.clone(), new_strides, new_offset, current.mask.clone())],
         }
     }
 
@@ -281,6 +401,7 @@ impl ShapeTracker {
     /// For single-view ShapeTrackers, delegates directly to the view.
     /// For multi-view, composes views from outer to inner.
     /// Returns None if any view's mask excludes the index (padding).
+    #[inline(always)]
     pub fn expr_idx(&self, linear_idx: usize) -> Option<usize> {
         if self.views.len() == 1 {
             return self.views[0].expr_idx(linear_idx);

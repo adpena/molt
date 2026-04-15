@@ -7,6 +7,7 @@ edition = "2021"
 half = "2.4"
 wgpu = { version = "24", optional = true }
 pollster = { version = "0.4", optional = true }
+wide = { version = "0.7", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.30"
@@ -20,6 +21,11 @@ wasm-backend = ["cpu-backend"]
 webgpu-backend = ["dep:wgpu", "dep:pollster"]
 webgl2-backend = []
 opencl-backend = []
+simd-accel = ["dep:wide"]
+
+# NOTE: Release profile optimizations (lto = "thin", codegen-units = 1,
+# panic = "abort", strip = true) must be set at the workspace root
+# Cargo.toml, not here. See workspace Cargo.toml for these settings.
 
 [[bench]]
 name = "bench_primitives"
