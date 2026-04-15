@@ -341,7 +341,8 @@ pub(crate) use crate::async_rt::{
     poll_future_with_task_stack, process_poll_fn_addr, resolve_task_ptr, thread_poll_fn_addr,
 };
 pub(crate) use crate::async_rt::{
-    molt_asyncio_task_registry_live, molt_asyncio_task_registry_live_set,
+    molt_asyncio_task_last_exception_clear, molt_asyncio_task_registry_live,
+    molt_asyncio_task_registry_live_set,
 };
 pub use crate::builtins::abc::*;
 #[cfg(not(feature = "stdlib_collections"))]

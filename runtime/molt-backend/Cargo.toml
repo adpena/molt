@@ -49,9 +49,6 @@ native-backend = [
 ]
 cbor = ["dep:ciborium"]
 rust-backend = []
-gpu-metal = ["dep:metal", "dep:objc"]
-gpu-webgpu = ["dep:wgpu", "dep:pollster"]
-gpu-cuda = ["dep:cudarc"]
 mlx = ["dep:mlx-rs"]
 wasm-backend = ["dep:wasm-encoder", "dep:wasmparser"]
 

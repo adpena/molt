@@ -1,7 +1,6 @@
 use crate::PyToken;
 use crate::*;
 
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_header_size() -> u64 {
     crate::with_gil_entry!(_py, { std::mem::size_of::<MoltHeader>() as u64 })
 }
@@ -15,29 +14,12 @@ pub extern "C" fn molt_alloc(size_bits: u64) -> u64 {
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
+        unsafe {
+            let header = crate::object::header_from_obj_ptr(obj_ptr);
+            (*header).flags |= crate::object::HEADER_FLAG_RAW_ALLOC;
+        }
         MoltObject::from_ptr(obj_ptr).bits()
     })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_scratch_alloc(size_bits: u64) -> u64 {
-    let size = usize_from_bits(size_bits).max(1);
-    let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
-    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
-    if ptr.is_null() { 0 } else { ptr as u64 }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_scratch_free(ptr_bits: u64, size_bits: u64) {
-    let ptr = usize_from_bits(ptr_bits) as *mut u8;
-    if ptr.is_null() {
-        return;
-    }
-    let size = usize_from_bits(size_bits).max(1);
-    let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
-    unsafe {
-        std::alloc::dealloc(ptr, layout);
-    }
 }
 
 pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
@@ -864,7 +846,7 @@ pub(crate) fn alloc_union_type(_py: &PyToken<'_>, args_bits: u64) -> *mut u8 {
 // Context manager alloc moved to runtime/molt-runtime/src/builtins/context.rs.
 
 pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 9 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 10 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_FUNCTION);
     if ptr.is_null() {
         return ptr;
@@ -880,7 +862,13 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
         let none_bits = MoltObject::none().bits();
         *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = none_bits;
         *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut *const ()) = std::ptr::null();
+        *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         inc_ref_bits(_py, none_bits);
+        let globals_bits = crate::molt_globals_builtin();
+        if globals_bits != 0 && !obj_from_bits(globals_bits).is_none() {
+            crate::function_set_globals_bits(_py, ptr, globals_bits);
+            dec_ref_bits(_py, globals_bits);
+        }
     }
     ptr
 }
@@ -1099,7 +1087,7 @@ static EMPTY_STRING_PTR: std::sync::atomic::AtomicPtr<u8> =
 /// Each entry stores the raw object pointer (`null` = not yet initialised).
 /// Using atomics avoids a mutex on the hot lookup path.
 static ASCII_CHARS: [std::sync::atomic::AtomicPtr<u8>; 128] =
-    { [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; 128] };
+    [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; 128];
 
 /// Lazily initialise every slot in `ASCII_CHARS` that is still zero.  Called once (guarded
 /// by `OnceLock`) on the first single-ASCII-char allocation.

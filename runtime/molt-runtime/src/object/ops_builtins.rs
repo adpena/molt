@@ -10,6 +10,7 @@ use num_traits::{Signed, Zero};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::io::Write;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use super::ops::{as_float_extended, float_result_bits};
@@ -105,6 +106,28 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
         } else {
             MoltObject::none().bits()
         };
+        if matches!(
+            std::env::var("MOLT_TRACE_TRACE_ENTER_SLOT").ok().as_deref(),
+            Some("1")
+        ) {
+            let mut name = "<none>".to_string();
+            let mut file = "<none>".to_string();
+            if code_bits != 0
+                && let Some(ptr) = obj_from_bits(code_bits).as_ptr()
+                && unsafe { object_type_id(ptr) == TYPE_ID_CODE }
+            {
+                let name_bits = unsafe { code_name_bits(ptr) };
+                name = string_obj_to_owned(obj_from_bits(name_bits))
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                let file_bits = unsafe { code_filename_bits(ptr) };
+                file = string_obj_to_owned(obj_from_bits(file_bits))
+                    .unwrap_or_else(|| "<unknown>".to_string());
+            }
+            eprintln!(
+                "molt trace_enter_slot code_id={} bits=0x{:x} name={} file={}",
+                code_id, code_bits, name, file
+            );
+        }
         frame_stack_push(_py, code_bits);
         code_bits
     })
@@ -113,6 +136,29 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_exit() -> u64 {
     crate::with_gil_entry!(_py, {
+        if matches!(
+            std::env::var("MOLT_TRACE_TRACE_EXIT_PENDING")
+                .ok()
+                .as_deref(),
+            Some("1")
+        ) && exception_pending(_py)
+        {
+            if let Some((file, line, func, _, _)) =
+                crate::builtins::exceptions::frame_stack_top_info(_py)
+            {
+                let exc_bits = molt_exception_last();
+                let kind_bits = molt_exception_kind(exc_bits);
+                let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+                    .unwrap_or_else(|| "<exc>".to_string());
+                eprintln!(
+                    "molt trace_exit pending kind={} frame={} file={} line={}",
+                    kind, func, file, line
+                );
+                if !obj_from_bits(exc_bits).is_none() {
+                    dec_ref_bits(_py, exc_bits);
+                }
+            }
+        }
         frame_stack_pop(_py);
         MoltObject::none().bits()
     })
@@ -918,7 +964,7 @@ fn molt_call_func_direct(
     _py: &crate::concurrency::PyToken<'_>,
     fn_ptr: u64,
     args: &[u64],
-    code_id: u64,
+    _code_id: u64,
     callable_bits: u64,
 ) -> u64 {
     if !recursion_guard_enter() {
@@ -984,6 +1030,7 @@ unsafe fn direct_call_0(fn_ptr: u64) -> u64 {
 ///
 /// Same as `direct_call_0`: `fn_ptr` must point to an `extern "C" fn(u64) -> u64`.
 /// Caller ensures arity match via `probe_simple_func`.
+#[allow(dead_code)]
 #[inline(always)]
 unsafe fn direct_call_1(fn_ptr: u64, a0: u64) -> u64 {
     unsafe {
@@ -999,6 +1046,7 @@ unsafe fn direct_call_1(fn_ptr: u64, a0: u64) -> u64 {
 ///
 /// Same as `direct_call_0`: `fn_ptr` must point to an `extern "C" fn(u64, u64) -> u64`.
 /// Caller ensures arity match via `probe_simple_func`.
+#[allow(dead_code)]
 #[inline(always)]
 unsafe fn direct_call_2(fn_ptr: u64, a0: u64, a1: u64) -> u64 {
     unsafe {
@@ -1014,6 +1062,7 @@ unsafe fn direct_call_2(fn_ptr: u64, a0: u64, a1: u64) -> u64 {
 ///
 /// Same as `direct_call_0`: `fn_ptr` must point to an `extern "C" fn(u64, u64, u64) -> u64`.
 /// Caller ensures arity match via `probe_simple_func`.
+#[allow(dead_code)]
 #[inline(always)]
 unsafe fn direct_call_3(fn_ptr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     unsafe {
@@ -1144,11 +1193,10 @@ pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
         } else {
             line_bits as i64
         };
-        if std::env::var("MOLT_TRACE_LINE").as_deref() == Ok("1") {
+        if trace_line_enabled() {
             eprintln!("MOLT_TRACE_LINE {}", line);
         }
-        if std::env::var("MOLT_TRACE_LINE_PENDING").as_deref() == Ok("1") && exception_pending(_py)
-        {
+        if trace_line_pending_enabled() && exception_pending(_py) {
             let exc_bits = molt_exception_last();
             let kind_bits = molt_exception_kind(exc_bits);
             let kind =
@@ -1159,6 +1207,16 @@ pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
         frame_stack_set_line(line);
         MoltObject::none().bits()
     })
+}
+
+fn trace_line_enabled() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_LINE").as_deref() == Ok("1"))
+}
+
+fn trace_line_pending_enabled() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_LINE_PENDING").as_deref() == Ok("1"))
 }
 
 #[unsafe(no_mangle)]
