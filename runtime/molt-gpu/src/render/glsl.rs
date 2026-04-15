@@ -212,6 +212,10 @@ impl GlslRenderer {
 
             // Other
             PrimitiveOp::Trunc => format!("trunc({})", src(0)),
+            // GLSL ES 3.0 max() behavior with NaN is implementation-defined.
+            // The spec requires NaN-propagating max, but WebGL2 is a best-effort
+            // fallback for ~25% of users without WebGPU. No portable NaN guard
+            // exists in GLSL ES 3.0 (isnan() was added in ES 3.1).
             PrimitiveOp::Max => format!("max({}, {})", src(0), src(1)),
             // GLSL ES 3.0 supports ternary operator (unlike WGSL)
             PrimitiveOp::Where => format!("(({} != 0.0) ? {} : {})", src(0), src(1), src(2)),
