@@ -14,3 +14,6 @@ pub mod schedule;
 pub mod fuse;
 pub mod dce;
 pub mod mlir;
+
+#[cfg(test)]
+mod test_perf_regression;
