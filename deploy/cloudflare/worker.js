@@ -15,6 +15,8 @@
 import { handleOcrRequest, handleHealthRequest, handleTokensRequest } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, createRequestLog, emitLog, writeAnalytics, categorizeError } from "./monitoring.js";
+import { createModel } from "./inference-cpu.js";
+import { MICRO_MODEL_B64, MICRO_MODEL_CONFIG } from "./micro-model-data.js";
 
 /** @type {WebAssembly.Instance | null} */
 let wasmInstance = null;
@@ -37,13 +39,15 @@ let cpuModelConfig = null;
 /** @type {Uint8Array | null} */
 let cpuWeightsBytes = null;
 
+/** @type {import("./inference-cpu.js").FalconOCRMicro | null} */
+let cpuModel = null;
+
 /**
- * CpuDevice: JavaScript-only inference fallback when WASM binary is unavailable.
+ * CpuDevice: JavaScript-only inference using the real forward pass.
  *
- * Provides a minimal OCR pipeline using the raw safetensors weights and config
- * loaded from R2.  Without the compiled WASM module, inference runs entirely
- * in JS -- significantly slower but functional for health checks and
- * low-throughput requests.
+ * Loads SafeTensors weights and runs the full vision transformer in pure JS
+ * using Float32Array operations.  Suitable for the micro model (65K params,
+ * ~263 KB weights).  For the production 269M-param model, WASM is required.
  */
 const CpuDevice = {
   /** @type {boolean} */
@@ -57,27 +61,29 @@ const CpuDevice = {
   init(weights, config) {
     cpuWeightsBytes = weights;
     cpuModelConfig = config;
+    cpuModel = createModel(weights.buffer, config);
     this.initialized = true;
   },
 
   /**
    * Run OCR token generation on the CPU path.
    *
-   * Without the compiled WASM inference kernels, we cannot run the full
-   * vision transformer forward pass in pure JS within the Worker CPU time
-   * budget.  Returns an empty token array with metadata indicating CPU mode.
-   * The client should use the /api/ocr/paddle fallback for actual inference
-   * until the WASM binary is compiled and uploaded.
+   * Runs the full vision transformer forward pass in pure JS.
+   * For the micro model (2 layers, dim=32) this completes within
+   * the Workers CPU time budget.
    *
-   * @param {number} _width
-   * @param {number} _height
-   * @param {Uint8Array} _rgb
-   * @param {number[]} _promptIds
-   * @param {number} _maxNewTokens
+   * @param {number} width
+   * @param {number} height
+   * @param {Uint8Array} rgb
+   * @param {number[]} promptIds
+   * @param {number} maxNewTokens
    * @returns {Int32Array}
    */
-  ocrTokens(_width, _height, _rgb, _promptIds, _maxNewTokens) {
-    return new Int32Array(0);
+  ocrTokens(width, height, rgb, promptIds, maxNewTokens) {
+    if (!cpuModel) {
+      return new Int32Array(0);
+    }
+    return cpuModel.ocrTokens(width, height, rgb, promptIds, maxNewTokens);
   },
 };
 
@@ -123,27 +129,30 @@ async function ensureModelLoaded(env) {
       }
     }
 
-    // Phase 2: Load weights (required for both WASM and CPU paths).
-    const weightsObj = await env.WEIGHTS.get("models/falcon-ocr/model.safetensors");
-    if (!weightsObj) {
-      throw new Error("Weights not found in R2: models/falcon-ocr/model.safetensors");
-    }
-    const weightsBytes = new Uint8Array(await weightsObj.arrayBuffer());
-
-    // Phase 3: Load config (required for both paths).
-    const configObj = await env.WEIGHTS.get("models/falcon-ocr/config.json");
-    if (!configObj) {
-      throw new Error("Config not found in R2: models/falcon-ocr/config.json");
-    }
-    const configJson = await configObj.text();
-    const config = JSON.parse(configJson);
-
-    // Phase 4: Initialize the active device.
     if (useWasm && wasmInstance) {
+      // Phase 2a (WASM): Load full production weights from R2.
+      const weightsObj = await env.WEIGHTS.get("models/falcon-ocr/model.safetensors");
+      if (!weightsObj) {
+        throw new Error("Weights not found in R2: models/falcon-ocr/model.safetensors");
+      }
+      const weightsBytes = new Uint8Array(await weightsObj.arrayBuffer());
+      const configObj = await env.WEIGHTS.get("models/falcon-ocr/config.json");
+      if (!configObj) {
+        throw new Error("Config not found in R2: models/falcon-ocr/config.json");
+      }
+      const configJson = await configObj.text();
       wasmInstance.exports.init(weightsBytes, configJson);
       activeDevice = "wasm";
     } else {
-      CpuDevice.init(weightsBytes, config);
+      // Phase 2b (CPU): Use the micro model embedded in the Worker bundle.
+      // No R2 fetch needed -- the 263 KB model is inlined at deploy time.
+      // This avoids the R2 latency on cold start and keeps init fast.
+      const raw = atob(MICRO_MODEL_B64);
+      const weightsBytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) {
+        weightsBytes[i] = raw.charCodeAt(i);
+      }
+      CpuDevice.init(weightsBytes, MICRO_MODEL_CONFIG);
       activeDevice = "cpu";
     }
 
