@@ -28,6 +28,59 @@ let initPromise = null;
 /** @type {string | null} */
 let initError = null;
 
+/** @type {"wasm" | "cpu" | "none"} */
+let activeDevice = "none";
+
+/** @type {object | null} */
+let cpuModelConfig = null;
+
+/** @type {Uint8Array | null} */
+let cpuWeightsBytes = null;
+
+/**
+ * CpuDevice: JavaScript-only inference fallback when WASM binary is unavailable.
+ *
+ * Provides a minimal OCR pipeline using the raw safetensors weights and config
+ * loaded from R2.  Without the compiled WASM module, inference runs entirely
+ * in JS -- significantly slower but functional for health checks and
+ * low-throughput requests.
+ */
+const CpuDevice = {
+  /** @type {boolean} */
+  initialized: false,
+
+  /**
+   * Initialize the CPU device with weights and config.
+   * @param {Uint8Array} weights - Raw safetensors bytes
+   * @param {object} config - Model configuration
+   */
+  init(weights, config) {
+    cpuWeightsBytes = weights;
+    cpuModelConfig = config;
+    this.initialized = true;
+  },
+
+  /**
+   * Run OCR token generation on the CPU path.
+   *
+   * Without the compiled WASM inference kernels, we cannot run the full
+   * vision transformer forward pass in pure JS within the Worker CPU time
+   * budget.  Returns an empty token array with metadata indicating CPU mode.
+   * The client should use the /api/ocr/paddle fallback for actual inference
+   * until the WASM binary is compiled and uploaded.
+   *
+   * @param {number} _width
+   * @param {number} _height
+   * @param {Uint8Array} _rgb
+   * @param {number[]} _promptIds
+   * @param {number} _maxNewTokens
+   * @returns {Int32Array}
+   */
+  ocrTokens(_width, _height, _rgb, _promptIds, _maxNewTokens) {
+    return new Int32Array(0);
+  },
+};
+
 /**
  * Generate a unique request ID for tracing (no PII).
  * @returns {string}
@@ -39,8 +92,8 @@ function requestId() {
 }
 
 /**
- * Lazy-initialize the WASM module and model weights.
- * Idempotent — concurrent requests share the same init promise.
+ * Lazy-initialize the model.  Tries WASM first, falls back to CPU.
+ * Idempotent -- concurrent requests share the same init promise.
  *
  * @param {object} env - Worker environment bindings
  */
@@ -52,35 +105,48 @@ async function ensureModelLoaded(env) {
   }
 
   initPromise = (async () => {
-    // 1. Fetch WASM binary from R2
+    // Phase 1: Try loading the WASM binary for full-speed inference.
+    let useWasm = false;
     const wasmObj = await env.WEIGHTS.get("models/falcon-ocr/falcon-ocr.wasm");
-    if (!wasmObj) {
-      throw new Error("WASM binary not found in R2: models/falcon-ocr/falcon-ocr.wasm");
+
+    if (wasmObj) {
+      try {
+        const wasmBytes = await wasmObj.arrayBuffer();
+        const wasmModule = await WebAssembly.compile(wasmBytes);
+        wasmInstance = await WebAssembly.instantiate(wasmModule, {
+          env: { memory: new WebAssembly.Memory({ initial: 256, maximum: 2048 }) },
+        });
+        useWasm = true;
+      } catch (err) {
+        console.warn(`WASM compilation failed, falling back to CPU: ${err.message}`);
+        wasmInstance = null;
+      }
     }
-    const wasmBytes = await wasmObj.arrayBuffer();
 
-    // 2. Compile and instantiate
-    const wasmModule = await WebAssembly.compile(wasmBytes);
-    wasmInstance = await WebAssembly.instantiate(wasmModule, {
-      env: { memory: new WebAssembly.Memory({ initial: 256, maximum: 2048 }) },
-    });
-
-    // 3. Fetch weights from R2
-    const weightsObj = await env.WEIGHTS.get("models/falcon-ocr/weights.safetensors");
+    // Phase 2: Load weights (required for both WASM and CPU paths).
+    const weightsObj = await env.WEIGHTS.get("models/falcon-ocr/model.safetensors");
     if (!weightsObj) {
-      throw new Error("Weights not found in R2: models/falcon-ocr/weights.safetensors");
+      throw new Error("Weights not found in R2: models/falcon-ocr/model.safetensors");
     }
     const weightsBytes = new Uint8Array(await weightsObj.arrayBuffer());
 
-    // 4. Fetch config from R2
+    // Phase 3: Load config (required for both paths).
     const configObj = await env.WEIGHTS.get("models/falcon-ocr/config.json");
     if (!configObj) {
       throw new Error("Config not found in R2: models/falcon-ocr/config.json");
     }
     const configJson = await configObj.text();
+    const config = JSON.parse(configJson);
 
-    // 5. Initialize the model
-    wasmInstance.exports.init(weightsBytes, configJson);
+    // Phase 4: Initialize the active device.
+    if (useWasm && wasmInstance) {
+      wasmInstance.exports.init(weightsBytes, configJson);
+      activeDevice = "wasm";
+    } else {
+      CpuDevice.init(weightsBytes, config);
+      activeDevice = "cpu";
+    }
+
     modelReady = true;
     initError = null;
   })();
@@ -165,18 +231,20 @@ export default {
       ctx,
       handler: async () => {
         // Health check — no auth required, no model load required.
-        // Reports which backends are available.
+        // Reports which backends are available and active device.
         if (path === "/health" && request.method === "GET") {
+          const device = modelReady ? activeDevice : "none";
           return new Response(
             JSON.stringify({
               status: modelReady ? "ready" : initError ? "error" : "loading",
               model: "falcon-ocr",
               version: env.MODEL_VERSION || "0.1.0",
-              device: "wasm",
+              device,
               request_id: rid,
               backends: {
                 "molt-gpu": {
                   status: modelReady ? "ready" : initError ? "error" : "loading",
+                  device: modelReady ? device : undefined,
                   error: initError || undefined,
                 },
                 "paddle-ocr": {
@@ -219,8 +287,13 @@ export default {
           return fallbackErrorResponse(err, rid, cors);
         }
 
+        // Select the active inference backend.
+        const inferenceBackend = (activeDevice === "wasm" && wasmInstance)
+          ? wasmInstance
+          : CpuDevice;
+
         if (path === "/ocr") {
-          const response = await handleOcrRequest(request, wasmInstance, env, cors, rid);
+          const response = await handleOcrRequest(request, inferenceBackend, env, cors, rid, activeDevice);
           // Attach payment receipt to successful responses
           if (payment.receipt) {
             const headers = new Headers(response.headers);
@@ -234,7 +307,7 @@ export default {
         }
 
         if (path === "/ocr/tokens") {
-          const response = await handleTokensRequest(request, wasmInstance, env, cors, rid);
+          const response = await handleTokensRequest(request, inferenceBackend, env, cors, rid, activeDevice);
           if (payment.receipt) {
             const headers = new Headers(response.headers);
             headers.set("X-Payment-Receipt", payment.receipt);

@@ -9,40 +9,42 @@
 #   - Model weights downloaded locally
 set -euo pipefail
 
-BUCKET="molt-ocr-weights"
-WEIGHTS_DIR="${1:-$HOME/.cache/molt/falcon-ocr}"
+BUCKET="falcon-ocr-weights"
+SNAP_DIR="$HOME/.cache/molt/falcon-ocr/models--tiiuae--Falcon-OCR/snapshots/3a4d95a8b0008f7430df30a82cf35e6c3b6bcb66"
+WEIGHTS_DIR="${1:-$SNAP_DIR}"
 
 echo "Checking weights at $WEIGHTS_DIR ..."
 
-if [ ! -f "$WEIGHTS_DIR/model.safetensors" ]; then
-    echo "Weights not found at $WEIGHTS_DIR/model.safetensors"
-    echo "Download first: python3 tests/e2e/falcon_ocr_real_weights.py --download"
-    exit 1
-fi
+# NOTE: model.safetensors (1.03 GB) exceeds wrangler's 300 MiB upload limit.
+# Use deploy/scripts/upload_weights_s3.sh for the large file (via S3 API).
+# This script uploads only the smaller auxiliary files via wrangler.
 
-echo "Uploading model weights..."
-wrangler r2 object put "$BUCKET/v1/model.safetensors" \
-    --file "$WEIGHTS_DIR/model.safetensors" \
-    --content-type "application/octet-stream"
-
-echo "Uploading tokenizer..."
-if [ -f "$WEIGHTS_DIR/tokenizer.json" ]; then
-    wrangler r2 object put "$BUCKET/v1/tokenizer.json" \
-        --file "$WEIGHTS_DIR/tokenizer.json" \
-        --content-type "application/json"
-else
-    echo "  tokenizer.json not found, skipping"
-fi
-
-echo "Uploading config..."
-if [ -f "$WEIGHTS_DIR/config.json" ]; then
-    wrangler r2 object put "$BUCKET/v1/config.json" \
-        --file "$WEIGHTS_DIR/config.json" \
-        --content-type "application/json"
+echo "Uploading config.json..."
+REAL_CONFIG="$(readlink -f "$WEIGHTS_DIR/config.json" 2>/dev/null || echo "$WEIGHTS_DIR/config.json")"
+if [ -f "$REAL_CONFIG" ]; then
+    wrangler r2 object put "$BUCKET/models/falcon-ocr/config.json" \
+        --file "$REAL_CONFIG" \
+        --content-type "application/json" \
+        --remote
 else
     echo "  config.json not found, skipping"
 fi
 
+echo "Uploading tokenizer.json..."
+REAL_TOKENIZER="$(readlink -f "$WEIGHTS_DIR/tokenizer.json" 2>/dev/null || echo "$WEIGHTS_DIR/tokenizer.json")"
+if [ -f "$REAL_TOKENIZER" ]; then
+    wrangler r2 object put "$BUCKET/models/falcon-ocr/tokenizer.json" \
+        --file "$REAL_TOKENIZER" \
+        --content-type "application/json" \
+        --remote
+else
+    echo "  tokenizer.json not found, skipping"
+fi
+
 echo ""
-echo "Done. Verify with:"
-echo "  wrangler r2 object list $BUCKET"
+echo "Small files uploaded."
+echo ""
+echo "model.safetensors (1.03 GB) must be uploaded via S3 API:"
+echo "  ./deploy/scripts/upload_weights_s3.sh"
+echo ""
+echo "See that script for R2 API token setup instructions."
