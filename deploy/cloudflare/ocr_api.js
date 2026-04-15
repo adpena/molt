@@ -300,6 +300,8 @@ export async function handleOcrRequest(request, backend, env, cors, rid, device 
       confidence: 0.0,
       time_ms: timMs,
       device,
+      model_used: device === "wasm" ? "falcon-ocr-wasm" : "falcon-ocr-cpu",
+      retries: 0,
       request_id: rid,
     }),
     {
@@ -378,6 +380,8 @@ export async function handleTokensRequest(request, backend, env, cors, rid, devi
       tokens: Array.from(tokens),
       time_ms: timeMs,
       device,
+      model_used: device === "wasm" ? "falcon-ocr-wasm" : "falcon-ocr-cpu",
+      retries: 0,
       request_id: rid,
     }),
     {
