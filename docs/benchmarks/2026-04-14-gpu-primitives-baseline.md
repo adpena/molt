@@ -31,9 +31,35 @@ Warmup: 5 iters, Measurement: 100 iters.
 | matmul_256x256 | 65536 | 9557.68 | 3.511 | 0.082 |
 | rmsnorm_f32 | 100000 | 69.88 | 5.724 | 17.172 |
 
+## CpuDevice vs Raw Rust Overhead
+
+Measures the cost of molt-gpu's kernel interpreter pipeline (LazyOp construction,
+scheduling, fusion, CpuDevice interpret) vs equivalent raw Rust loops.
+
+| Operation | Raw Rust (us) | molt-gpu CPU (us) | Overhead |
+|-----------|--------------|-------------------|----------|
+| matmul 64x64x64           |        151.1 |             600.3 |    4.0x  |
+| softmax N=1024            |          1.4 |              41.0 |   29.1x  |
+| rms_norm N=1024           |          0.6 |              31.0 |   47.9x  |
+
+Overhead comes from: per-element dispatch (f64 intermediates, Vec allocation per
+kernel invocation, closure-based source lookup). For GPU backends (Metal, WebGPU),
+this overhead is amortized by GPU parallelism — the CPU interpreter is a correctness
+reference, not a performance target.
+
+## WASM Binary Size
+
+molt-gpu rlib for `wasm32-unknown-unknown` (cpu-backend + wasm-backend features):
+
+| Artifact | Size |
+|----------|------|
+| libmolt_gpu.rlib | 1.9 MB |
+
 ## Test Summary
 
-- **207 unit tests**: all passing
+- **332 tests**: all passing (25 test suites)
 - **WASM target**: `cargo check --target wasm32-unknown-unknown` passes (CPU backend)
-- **Clippy**: clean (1 dead-code warning in `CompiledProgram.handle`)
+- **Clippy**: clean (0 warnings with `--all-features -- -D warnings`)
+- **Pipeline integration**: molt-gpu wired into molt-runtime via `molt_gpu_primitives` feature
+- **Inference test**: 4-layer dim=128 synthetic Falcon-OCR forward pass + 20-step generation
 - **Benchmark profiles**: `bench` (release with debuginfo)

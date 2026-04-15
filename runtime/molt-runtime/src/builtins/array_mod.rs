@@ -4,6 +4,7 @@
 // Handles are heap-allocated ArrayHandle structs registered with the
 // provenance registry so the GC can track them.
 
+use crate::builtins::numbers::index_i64_with_overflow;
 use crate::object::ops::string_obj_to_owned;
 use crate::{
     MoltObject, PyToken, alloc_bytes, alloc_list, alloc_string, alloc_tuple, bits_from_ptr,
@@ -611,7 +612,9 @@ pub extern "C" fn molt_array_repeat_in_place(handle_bits: u64, count_bits: u64) 
                 );
             }
         };
-        handle.data.reserve(total_len.saturating_sub(snapshot.len()));
+        handle
+            .data
+            .reserve(total_len.saturating_sub(snapshot.len()));
         for _ in 1..repeat {
             handle.data.extend_from_slice(&snapshot);
         }
