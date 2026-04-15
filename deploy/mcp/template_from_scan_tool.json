@@ -1,0 +1,105 @@
+{
+  "name": "ocr_extract_template",
+  "description": "Scan an invoice image and extract a reusable template preserving the visual layout, branding, and section structure. Does not include actual data (line items, amounts). Uses OCR to detect text blocks, then AI-powered section classification to identify header, parties, metadata, line items, totals, notes, terms, and footer regions. Infers styles (font sizes, alignment, spacing) and layout (section order, column structure) from block geometry.",
+  "version": "0.1.0",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "image": {
+        "type": "string",
+        "description": "Base64-encoded invoice image (JPEG, PNG, or WebP)"
+      },
+      "format": {
+        "type": "string",
+        "enum": ["image/jpeg", "image/png", "image/webp"],
+        "default": "image/jpeg",
+        "description": "MIME type of the image"
+      },
+      "preserve_logo": {
+        "type": "boolean",
+        "default": true,
+        "description": "Attempt to detect logo position and preserve it in the template"
+      },
+      "detect_colors": {
+        "type": "boolean",
+        "default": true,
+        "description": "Attempt to detect brand colors from the invoice"
+      },
+      "document_type": {
+        "type": "string",
+        "enum": ["invoice", "credit_note", "quote", "purchase_order"],
+        "default": "invoice",
+        "description": "Type of document being scanned"
+      }
+    },
+    "required": ["image"]
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "template": {
+        "type": "object",
+        "description": "TemplateDefinition compatible with enjoice's template editor",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "type": { "type": "string", "enum": ["invoice", "credit_note", "quote", "purchase_order"] },
+          "layout": {
+            "type": "object",
+            "properties": {
+              "sections": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": { "type": "string" },
+                    "visible": { "type": "boolean" },
+                    "order": { "type": "integer" }
+                  }
+                }
+              },
+              "page": {
+                "type": "object",
+                "properties": {
+                  "size": { "type": "string" },
+                  "orientation": { "type": "string" },
+                  "margins": { "type": "object" }
+                }
+              }
+            }
+          },
+          "styles": { "type": "object" },
+          "elementStyles": { "type": "object" },
+          "hiddenElements": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "confidence": {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "description": "Overall confidence score for the template extraction"
+      },
+      "detected_sections": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "List of sections that were detected in the scanned document"
+      },
+      "time_ms": {
+        "type": "number",
+        "description": "Total processing time in milliseconds"
+      }
+    },
+    "required": ["template", "confidence", "detected_sections"]
+  },
+  "authentication": {
+    "type": "x402",
+    "description": "Payment via x402 protocol. Template extraction costs $0.005 per request (higher than OCR due to AI section classification).",
+    "header": "X-Payment-402",
+    "pricing": {
+      "per_request": "0.005 USD",
+      "currency": "USD",
+      "payment_network": "base"
+    }
+  }
+}

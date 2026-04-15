@@ -145,6 +145,100 @@ inference module.
    - Monitor error rates, latency, and accuracy via telemetry
    - Roll out to 100% after 48h stability
 
+## Template-from-Scan Integration
+
+### Overview
+
+The `POST /template/extract` endpoint on the falcon-ocr Worker scans an
+invoice image and generates a reusable `TemplateDefinition` that preserves
+the visual layout, branding, and section structure of the original document
+without including any actual data (line items, amounts, names).
+
+This enables a "Create Template from This Invoice" workflow in enjoice's
+scan UI.
+
+### REST API
+
+```bash
+curl -X POST https://falcon-ocr.adpena.workers.dev/template/extract \
+    -H "Content-Type: application/json" \
+    -H "X-Payment-402: <payment_proof_base64>" \
+    -d '{
+      "image": "<base64_encoded_invoice>",
+      "document_type": "invoice",
+      "preserve_logo": true,
+      "detect_colors": true
+    }'
+```
+
+Response:
+```json
+{
+  "template": {
+    "id": "uuid",
+    "name": "Extracted Template",
+    "type": "invoice",
+    "layout": { "sections": [...], "page": {...} },
+    "styles": { "colors": {...}, "fonts": {...}, ... }
+  },
+  "confidence": 0.85,
+  "detected_sections": ["header", "parties", "metadata", "line_items", "totals", "footer"],
+  "time_ms": 1200
+}
+```
+
+Pricing: $0.005 per request (x402 protocol, USDC on Base).
+
+### MCP Tool
+
+The `ocr_extract_template` MCP tool wraps this endpoint for AI agent
+use. See `deploy/mcp/template_from_scan_tool.json` for the full schema.
+
+### enjoice ScanButton Integration
+
+The scan flow in enjoice can offer "Create Template from This Invoice"
+after a successful scan:
+
+```typescript
+// In the ScanButton component's onScanComplete handler:
+async function handleCreateTemplate(imageBase64: string) {
+  const response = await fetch(
+    "https://falcon-ocr.adpena.workers.dev/template/extract",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-402": paymentProof,
+      },
+      body: JSON.stringify({
+        image: imageBase64,
+        document_type: "invoice",
+      }),
+    },
+  );
+  const { template, confidence } = await response.json();
+
+  // Load into the template editor
+  if (confidence > 0.3) {
+    navigateToTemplateEditor(template);
+  }
+}
+```
+
+### Template Editor Reception
+
+The extracted template is a standard `TemplateDefinition` object that
+the inline editor (`useInlineTemplateEditor`) accepts directly:
+
+```typescript
+// In the InlineEditor, hydrate from extracted template:
+const extractedTemplate: TemplateDefinition = result.template;
+dispatch({ type: "HYDRATE", next: extractedTemplate });
+```
+
+The editor's undo/redo, autosave, and all style controls work on the
+extracted template identically to manually-created templates.
+
 ## Rollback Plan
 
 If the new WASM module has issues in production:
