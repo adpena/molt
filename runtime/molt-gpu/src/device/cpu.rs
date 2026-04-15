@@ -3,6 +3,7 @@
 //! Executes kernels by interpreting the FusedKernel IR directly.
 //! Not performant — used only for correctness reference.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::device::{
@@ -17,6 +18,9 @@ use crate::device::{
 pub struct CpuDevice {
     /// Buffer allocation counter for unique IDs.
     _next_id: Mutex<usize>,
+    /// Compiled program cache: source hash -> entry name.
+    /// Prevents redundant "compilation" (source parsing) for the same shader.
+    compile_cache: Mutex<HashMap<u64, String>>,
 }
 
 impl CpuDevice {
@@ -24,7 +28,21 @@ impl CpuDevice {
     pub fn new() -> Self {
         Self {
             _next_id: Mutex::new(0),
+            compile_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Hash shader source for cache lookup (same algorithm as MetalDevice).
+    fn hash_source(source: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        source.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Returns the number of cached compiled programs.
+    pub fn cache_len(&self) -> usize {
+        self.compile_cache.lock().unwrap().len()
     }
 }
 
@@ -90,9 +108,27 @@ impl Allocator for CpuDevice {
 }
 
 impl Compiler for CpuDevice {
-    fn compile(&self, _source: &str, entry: &str) -> Result<CompiledProgram, DeviceError> {
+    fn compile(&self, source: &str, entry: &str) -> Result<CompiledProgram, DeviceError> {
+        let hash = Self::hash_source(source);
+
+        // Check cache — return early if already compiled
+        {
+            let cache = self.compile_cache.lock().unwrap();
+            if let Some(cached_entry) = cache.get(&hash) {
+                fn noop_kernel(_bufs: &[&[u8]], _out: &mut [u8], _num_elements: usize) {}
+                return Ok(CompiledProgram {
+                    handle: ProgramHandle::Cpu(noop_kernel as CpuKernelFn),
+                    entry: cached_entry.clone(),
+                });
+            }
+        }
+
         // CPU device doesn't compile shader source — it interprets FusedKernel directly.
         fn noop_kernel(_bufs: &[&[u8]], _out: &mut [u8], _num_elements: usize) {}
+
+        // Store in cache
+        self.compile_cache.lock().unwrap().insert(hash, entry.to_string());
+
         Ok(CompiledProgram {
             handle: ProgramHandle::Cpu(noop_kernel as CpuKernelFn),
             entry: entry.to_string(),

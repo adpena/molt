@@ -21,22 +21,30 @@ pub enum DType {
     Float64,
     /// Microscaling FP8 (OCP MX spec v1.0).
     ///
-    /// Block-based format: each block of `MXFP8_BLOCK_SIZE` elements shares
-    /// a single 8-bit exponent. Individual elements have an 8-bit mantissa.
+    /// Block-based format: each block of 32 elements shares a single 8-bit
+    /// E8M0 shared exponent (bias 127). Individual elements use the FP8
+    /// (E4M3 or E5M2) element format.
     /// Total per-element cost: 8 bits data + amortized exponent overhead.
     MxFP8,
     /// Microscaling FP4 (OCP MX spec v1.0).
     ///
-    /// Block-based format: each block of `MXFP4_BLOCK_SIZE` elements shares
-    /// a single 8-bit exponent. Individual elements have a 4-bit mantissa.
+    /// Block-based format: each block of 32 elements shares a single 8-bit
+    /// E8M0 shared exponent (bias 127). Individual elements use the FP4
+    /// (E2M1) element format.
     /// Total per-element cost: 4 bits data + amortized exponent overhead.
     MxFP4,
 }
 
-/// Block size for MXFP8: 16 elements share one 8-bit exponent.
-pub const MXFP8_BLOCK_SIZE: usize = 16;
+/// Block size for MXFP8: 32 elements share one 8-bit exponent.
+///
+/// Per OCP Microscaling Specification v1.0 (Table 1), ALL concrete MX
+/// formats (MXFP8, MXFP6, MXFP4, MXINT8) use a block size of 32.
+pub const MXFP8_BLOCK_SIZE: usize = 32;
 
 /// Block size for MXFP4: 32 elements share one 8-bit exponent.
+///
+/// Per OCP Microscaling Specification v1.0 (Table 1), ALL concrete MX
+/// formats use a block size of 32.
 pub const MXFP4_BLOCK_SIZE: usize = 32;
 
 impl DType {
@@ -106,7 +114,7 @@ impl DType {
     pub fn mxfp_block_bytes(self) -> usize {
         match self {
             Self::MxFP8 => {
-                // 16 elements * 1 byte each + 1 byte exponent = 17 bytes
+                // 32 elements * 1 byte each + 1 byte exponent = 33 bytes
                 MXFP8_BLOCK_SIZE + 1
             }
             Self::MxFP4 => {

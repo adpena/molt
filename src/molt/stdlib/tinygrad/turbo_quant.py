@@ -205,8 +205,8 @@ def qjl_error_correction(
 #
 # Dequantization: value[i] = mantissa[i] * 2^shared_exponent
 
-MXFP8_BLOCK_SIZE = 16
-MXFP4_BLOCK_SIZE = 32
+MXFP8_BLOCK_SIZE = 32  # OCP MX Spec v1.0 Table 1: all MX formats use block size 32
+MXFP4_BLOCK_SIZE = 32  # OCP MX Spec v1.0 Table 1: all MX formats use block size 32
 MXFP8_MANTISSA_BITS = 8
 MXFP4_MANTISSA_BITS = 4
 
