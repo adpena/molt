@@ -73,10 +73,12 @@ pub(crate) mod functions_zipfile;
 pub(crate) mod functools;
 #[cfg(feature = "stdlib_fs_extra")]
 pub(crate) mod glob_mod;
+pub(crate) mod gpu;
+#[cfg(feature = "molt_gpu_primitives")]
+pub(crate) mod gpu_primitives;
 pub(crate) mod graphlib;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod gzip;
-pub(crate) mod gpu;
 #[cfg(feature = "stdlib_crypto")]
 pub(crate) mod hashlib;
 #[cfg(feature = "stdlib_crypto")]
