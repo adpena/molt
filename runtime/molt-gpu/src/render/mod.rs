@@ -15,6 +15,27 @@ use crate::dtype::DType;
 use crate::ops::PrimitiveOp;
 use crate::shapetracker::ShapeTracker;
 
+/// Metadata from the shape specialization pass.
+///
+/// When all dimensions of a kernel's output shape are statically known (no
+/// dynamic dims), the scheduler can compute optimal work distribution and
+/// determine whether bounds checks are eliminable.
+#[derive(Debug, Clone, Default)]
+pub struct ShapeSpecialization {
+    /// `true` when total element count is exactly divisible by the local
+    /// workgroup size. When set, renderers may omit the `if (gid < N)` guard.
+    pub bounds_check_elim: bool,
+    /// Total number of elements processed by this kernel, precomputed from
+    /// the static shape.
+    pub total_elements: u64,
+    /// Optimal local workgroup size selected by the specialization pass.
+    /// May differ from the `local` field when the specializer picks a
+    /// workgroup size that divides `total_elements` evenly.
+    pub optimal_local: [u32; 3],
+    /// `true` when all dimensions are statically known (no dynamic dims).
+    pub all_static: bool,
+}
+
 /// A single fused kernel ready for codegen.
 #[derive(Debug, Clone)]
 pub struct FusedKernel {
@@ -26,6 +47,9 @@ pub struct FusedKernel {
     /// Work distribution. Computed by the scheduler, NOT the renderer.
     pub grid: [u32; 3],
     pub local: [u32; 3],
+    /// Shape specialization metadata. `None` before the specialization pass
+    /// runs; `Some` after.
+    pub spec: Option<ShapeSpecialization>,
 }
 
 /// A single op in a fused chain.

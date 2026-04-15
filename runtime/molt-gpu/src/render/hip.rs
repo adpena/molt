@@ -71,6 +71,8 @@ impl HipRenderer {
                 format!("(({}){}u)", dtype.hip_type(), val as u64)
             }
             DType::UInt64 => format!("{}ULL", val as u64),
+            // MXFP types: constants are stored as unsigned char (raw byte).
+            DType::MxFP8 | DType::MxFP4 => format!("((unsigned char){})", val as u8),
         }
     }
 

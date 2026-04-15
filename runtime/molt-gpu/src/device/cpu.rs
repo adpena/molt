@@ -332,6 +332,11 @@ pub mod interpret {
                 let bits = u16::from_le_bytes(buf[offset..offset + 2].try_into().unwrap());
                 half::bf16::from_bits(bits).to_f64()
             }
+            // MXFP types: raw byte read. Dequantization happens at a higher level.
+            DType::MxFP8 | DType::MxFP4 => {
+                if idx >= buf.len() { return 0.0; }
+                buf[idx] as f64
+            }
         }
     }
 
@@ -407,6 +412,12 @@ pub mod interpret {
                 if offset + 2 <= buf.len() {
                     let h = half::bf16::from_f64(val);
                     buf[offset..offset + 2].copy_from_slice(&h.to_bits().to_le_bytes());
+                }
+            }
+            // MXFP types: raw byte write. Quantization happens at a higher level.
+            DType::MxFP8 | DType::MxFP4 => {
+                if idx < buf.len() {
+                    buf[idx] = val as u8;
                 }
             }
         }

@@ -35,6 +35,7 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
+                spec: None,
     }
 }
 
@@ -79,6 +80,7 @@ fn test_render_neg_unary() {
         ],
         grid: [256, 1, 1],
         local: [256, 1, 1],
+                spec: None,
     };
     let msl = MslRenderer.render(&kernel);
     assert!(msl.contains("(-buf1[gid])"));
@@ -107,6 +109,7 @@ fn test_render_fused_chain() {
         ],
         grid: [128, 1, 1],
         local: [128, 1, 1],
+                spec: None,
     };
     let msl = MslRenderer.render(&kernel);
     assert!(msl.contains("v0"));
@@ -131,6 +134,7 @@ fn test_render_relu_with_const() {
         ],
         grid: [256, 1, 1],
         local: [256, 1, 1],
+                spec: None,
     };
     let msl = MslRenderer.render(&kernel);
     assert!(msl.contains("max(buf1[gid], 0.0f)"));
@@ -151,6 +155,7 @@ fn test_render_comparison_bool_output() {
         ],
         grid: [128, 1, 1],
         local: [128, 1, 1],
+                spec: None,
     };
     let msl = MslRenderer.render(&kernel);
     assert!(msl.contains("bool v0"));
@@ -197,6 +202,7 @@ fn test_all_26_ops_have_render_patterns() {
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
+                spec: None,
         };
         let msl = MslRenderer.render(&kernel);
         assert!(msl.contains("molt_kernel"), "op {:?} failed to render", op);

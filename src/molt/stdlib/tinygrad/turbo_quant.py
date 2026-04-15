@@ -189,3 +189,258 @@ def qjl_error_correction(
     correction = (proj_error @ proj.T).reshape(error.shape)
 
     return dequantized + correction
+
+
+# ---------------------------------------------------------------------------
+# MXFP (Microscaling Floating Point) — OCP MX Spec v1.0
+# ---------------------------------------------------------------------------
+#
+# Block-based format: each block of elements shares a single 8-bit exponent.
+#   MXFP8: 16 elements/block, 8-bit mantissa per element
+#   MXFP4: 32 elements/block, 4-bit mantissa per element
+#
+# Per-block encoding:
+#   shared_exponent = max exponent of all elements in the block
+#   mantissa[i] = round(element[i] / 2^shared_exponent * scale)
+#
+# Dequantization: value[i] = mantissa[i] * 2^shared_exponent
+
+MXFP8_BLOCK_SIZE = 16
+MXFP4_BLOCK_SIZE = 32
+MXFP8_MANTISSA_BITS = 8
+MXFP4_MANTISSA_BITS = 4
+
+
+def _compute_shared_exponent(block: list) -> int:
+    """Compute the shared exponent for an MXFP block.
+
+    The shared exponent is chosen such that all values in the block
+    are representable: exp = ceil(log2(abs_max)), ensuring that
+    abs_max / 2^exp <= 1.0 and all mantissas fit in [-qmax, qmax].
+
+    Uses the E8M0 exponent encoding from the OCP MX spec v1.0:
+    biased_exp = unbiased_exp + 127.
+
+    block: flat list of float values (one block).
+    Returns: 8-bit shared exponent (int in [0, 255]).
+    """
+    abs_max = 0.0
+    for val in block:
+        av = abs(val)
+        if av > abs_max:
+            abs_max = av
+
+    if abs_max == 0.0:
+        return 0  # All zeros — exponent is 0
+
+    # Use math.frexp for precise exponent extraction.
+    # frexp(x) returns (m, e) where x = m * 2^e and 0.5 <= |m| < 1.0.
+    # So log2(|x|) = e + log2(|m|), and since 0.5 <= |m| < 1.0,
+    # ceil(log2(|x|)) = e when |m| == 0.5 (exact power of 2),
+    # otherwise ceil(log2(|x|)) = e.
+    _, frexp_e = math.frexp(abs_max)
+    # frexp gives x = m * 2^e with 0.5 <= m < 1.0
+    # so abs_max < 2^e and abs_max >= 2^(e-1)
+    # We want scale = 2^exp such that abs_max / scale <= 1.0,
+    # so exp = frexp_e (since abs_max < 2^frexp_e).
+    exp = frexp_e
+
+    # Bias with 127 (E8M0 format from OCP MX spec)
+    biased_exp = exp + 127
+    # Clamp to [0, 255]
+    if biased_exp < 0:
+        biased_exp = 0
+    if biased_exp > 255:
+        biased_exp = 255
+
+    return biased_exp
+
+
+def _quantize_mantissa(value: float, shared_exp_biased: int, n_bits: int) -> int:
+    """Quantize a single value to an n-bit mantissa given the shared exponent.
+
+    value: the float to quantize
+    shared_exp_biased: the 8-bit biased shared exponent
+    n_bits: number of mantissa bits (8 for MXFP8, 4 for MXFP4)
+
+    Returns: signed integer mantissa in [-qmax, qmax]
+    """
+    # Reconstruct the scale: 2^(shared_exp - 127)
+    exp = shared_exp_biased - 127
+    scale = 2.0 ** exp
+
+    if scale == 0.0:
+        return 0
+
+    # Quantize: mantissa = round(value / scale * qmax) / qmax
+    # where qmax = 2^(n_bits - 1) - 1
+    qmax = (1 << (n_bits - 1)) - 1
+    normalized = value / scale
+    q = int(round(normalized * qmax))
+
+    # Clamp
+    if q > qmax:
+        q = qmax
+    if q < -qmax:
+        q = -qmax
+
+    return q
+
+
+def _dequantize_mantissa(mantissa: int, shared_exp_biased: int, n_bits: int) -> float:
+    """Dequantize a mantissa back to float given the shared exponent.
+
+    mantissa: signed integer mantissa
+    shared_exp_biased: the 8-bit biased shared exponent
+    n_bits: number of mantissa bits (8 for MXFP8, 4 for MXFP4)
+
+    Returns: reconstructed float value
+    """
+    exp = shared_exp_biased - 127
+    scale = 2.0 ** exp
+    qmax = (1 << (n_bits - 1)) - 1
+    return (mantissa / qmax) * scale
+
+
+def quantize_mxfp8(data: list) -> tuple:
+    """Quantize a flat list of floats to MXFP8 format.
+
+    Splits input into blocks of MXFP8_BLOCK_SIZE (16) elements.
+    Each block gets a shared 8-bit exponent.
+    Each element is quantized to an 8-bit signed mantissa.
+
+    Parameters:
+        data: flat list of float values
+
+    Returns:
+        (mantissas, exponents) where:
+        - mantissas: flat list of int8 mantissa values (same length as data,
+          padded with zeros if not a multiple of block size)
+        - exponents: list of uint8 shared exponents (one per block)
+    """
+    n = len(data)
+    block_size = MXFP8_BLOCK_SIZE
+    n_blocks = (n + block_size - 1) // block_size
+    padded_size = n_blocks * block_size
+
+    # Pad to block boundary
+    padded = list(data)
+    if padded_size > n:
+        padded.extend([0.0] * (padded_size - n))
+
+    mantissas = [0] * padded_size
+    exponents = [0] * n_blocks
+
+    for b in range(n_blocks):
+        start = b * block_size
+        end = start + block_size
+        block = padded[start:end]
+
+        shared_exp = _compute_shared_exponent(block)
+        exponents[b] = shared_exp
+
+        for i in range(block_size):
+            mantissas[start + i] = _quantize_mantissa(
+                block[i], shared_exp, MXFP8_MANTISSA_BITS,
+            )
+
+    return mantissas, exponents
+
+
+def quantize_mxfp4(data: list) -> tuple:
+    """Quantize a flat list of floats to MXFP4 format.
+
+    Splits input into blocks of MXFP4_BLOCK_SIZE (32) elements.
+    Each block gets a shared 8-bit exponent.
+    Each element is quantized to a 4-bit signed mantissa.
+
+    Parameters:
+        data: flat list of float values
+
+    Returns:
+        (mantissas, exponents) where:
+        - mantissas: flat list of int4 mantissa values (same length as data,
+          padded with zeros if not a multiple of block size)
+        - exponents: list of uint8 shared exponents (one per block)
+    """
+    n = len(data)
+    block_size = MXFP4_BLOCK_SIZE
+    n_blocks = (n + block_size - 1) // block_size
+    padded_size = n_blocks * block_size
+
+    # Pad to block boundary
+    padded = list(data)
+    if padded_size > n:
+        padded.extend([0.0] * (padded_size - n))
+
+    mantissas = [0] * padded_size
+    exponents = [0] * n_blocks
+
+    for b in range(n_blocks):
+        start = b * block_size
+        end = start + block_size
+        block = padded[start:end]
+
+        shared_exp = _compute_shared_exponent(block)
+        exponents[b] = shared_exp
+
+        for i in range(block_size):
+            mantissas[start + i] = _quantize_mantissa(
+                block[i], shared_exp, MXFP4_MANTISSA_BITS,
+            )
+
+    return mantissas, exponents
+
+
+def dequantize_mxfp8(mantissas: list, exponents: list) -> list:
+    """Dequantize MXFP8 mantissas + exponents back to float values.
+
+    Parameters:
+        mantissas: flat list of int8 mantissa values
+        exponents: list of uint8 shared exponents (one per block of 16)
+
+    Returns:
+        flat list of float values (same length as mantissas)
+    """
+    block_size = MXFP8_BLOCK_SIZE
+    n = len(mantissas)
+    result = [0.0] * n
+
+    for b in range(len(exponents)):
+        start = b * block_size
+        end = min(start + block_size, n)
+        shared_exp = exponents[b]
+
+        for i in range(start, end):
+            result[i] = _dequantize_mantissa(
+                mantissas[i], shared_exp, MXFP8_MANTISSA_BITS,
+            )
+
+    return result
+
+
+def dequantize_mxfp4(mantissas: list, exponents: list) -> list:
+    """Dequantize MXFP4 mantissas + exponents back to float values.
+
+    Parameters:
+        mantissas: flat list of int4 mantissa values
+        exponents: list of uint8 shared exponents (one per block of 32)
+
+    Returns:
+        flat list of float values (same length as mantissas)
+    """
+    block_size = MXFP4_BLOCK_SIZE
+    n = len(mantissas)
+    result = [0.0] * n
+
+    for b in range(len(exponents)):
+        start = b * block_size
+        end = min(start + block_size, n)
+        shared_exp = exponents[b]
+
+        for i in range(start, end):
+            result[i] = _dequantize_mantissa(
+                mantissas[i], shared_exp, MXFP4_MANTISSA_BITS,
+            )
+
+    return result
