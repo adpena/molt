@@ -269,6 +269,50 @@ fn main() {
 
     print_results("Composition Benchmarks", &comp_results);
 
+    // --- Kernel launch overhead benchmark ---
+    let mut overhead_results = Vec::new();
+
+    // Measure raw kernel launch overhead: alloc + compile + launch + sync + readback
+    // for a trivial 1-element ADD kernel on CPU.
+    use molt_gpu::device::Compiler;
+    overhead_results.push(bench("kernel_launch_overhead_cpu", 1, 1, 12, || {
+        let d = CpuDevice::new();
+        // Allocate buffers
+        let a_buf = d.alloc(4).expect("alloc a");
+        let b_buf = d.alloc(4).expect("alloc b");
+        let out_buf = d.alloc(4).expect("alloc out");
+        // Copy in
+        d.copy_in(&a_buf, &1.0f32.to_le_bytes()).expect("copy_in a");
+        d.copy_in(&b_buf, &2.0f32.to_le_bytes()).expect("copy_in b");
+        // Compile a trivial kernel source (tests cache behavior too)
+        let _prog = d.compile("kernel void add(device float*a,device float*b,device float*o,uint gid[[thread_position_in_grid]]){o[gid]=a[gid]+b[gid];}", "add").expect("compile");
+        // Synchronize
+        use molt_gpu::device::Executor;
+        d.synchronize().expect("sync");
+        // Readback
+        let mut out = [0u8; 4];
+        d.copy_out(&out_buf, &mut out).expect("copy_out");
+        std::hint::black_box(&out);
+        // Free
+        d.free(a_buf).expect("free");
+        d.free(b_buf).expect("free");
+        d.free(out_buf).expect("free");
+    }));
+
+    // Measure compile cache benefit: compile same source twice
+    {
+        let d = CpuDevice::new();
+        let source = "kernel void test(device float*a){a[0]=1.0;}";
+        let _p1 = d.compile(source, "test").expect("first compile");
+        assert_eq!(d.cache_len(), 1, "first compile should populate cache");
+        let _p2 = d.compile(source, "test").expect("second compile (cache hit)");
+        assert_eq!(d.cache_len(), 1, "second compile should be a cache hit, not a new entry");
+        println!("\n## Compile Cache Verification\n");
+        println!("Cache entries after 2 compiles of same source: {} (expected 1)", d.cache_len());
+    }
+
+    print_results("Kernel Launch Overhead", &overhead_results);
+
     // Free buffers
     device.free(buf_a).expect("free");
     device.free(buf_b).expect("free");
