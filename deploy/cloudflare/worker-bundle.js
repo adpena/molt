@@ -415,7 +415,7 @@ async function handleOcrRequest(request, wasmInstance, env, cors, rid) {
 
   const timMs = Date.now() - start;
   return new Response(
-    JSON.stringify({ text: "", tokens: Array.from(tokens), confidence: 0.0, time_ms: timMs, device: activeDevice, request_id: rid }),
+    JSON.stringify({ text: "", tokens: Array.from(tokens), confidence: 0.0, time_ms: timMs, device: activeDevice, model_used: activeDevice === "wasm" ? "falcon-ocr-wasm" : "falcon-ocr-cpu", retries: 0, request_id: rid }),
     { status: 200, headers: { ...cors, "Content-Type": "application/json" } },
   );
 }
@@ -450,7 +450,7 @@ async function handleTokensRequest(request, wasmInstance, env, cors, rid) {
 
   const timeMs = Date.now() - start;
   return new Response(
-    JSON.stringify({ tokens: Array.from(tokens), time_ms: timeMs, device: activeDevice, request_id: rid }),
+    JSON.stringify({ tokens: Array.from(tokens), time_ms: timeMs, device: activeDevice, model_used: activeDevice === "wasm" ? "falcon-ocr-wasm" : "falcon-ocr-cpu", retries: 0, request_id: rid }),
     { status: 200, headers: { ...cors, "Content-Type": "application/json" } },
   );
 }
