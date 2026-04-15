@@ -11,7 +11,6 @@ use crate::{
     dec_ref_bits, int_bits_from_i64, obj_from_bits, ptr_from_bits, raise_exception, release_ptr,
     slice_start_bits, slice_step_bits, slice_stop_bits, to_f64, to_i64, TYPE_ID_SLICE,
 };
-use crate::builtins::numbers::index_i64_with_overflow;
 use crate::object::ops_sys::{collect_slice_indices, normalize_slice_indices, slice_error};
 
 // ---------------------------------------------------------------------------

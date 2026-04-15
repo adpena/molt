@@ -144,15 +144,37 @@ async function ensureModelLoaded(env) {
       wasmInstance.exports.init(weightsBytes, configJson);
       activeDevice = "wasm";
     } else {
-      // Phase 2b (CPU): Use the micro model embedded in the Worker bundle.
-      // No R2 fetch needed -- the 263 KB model is inlined at deploy time.
-      // This avoids the R2 latency on cold start and keeps init fast.
-      const raw = atob(MICRO_MODEL_B64);
-      const weightsBytes = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) {
-        weightsBytes[i] = raw.charCodeAt(i);
+      // Phase 2b (CPU): Try loading the full model from R2 first (paid
+      // plan provides sufficient CPU/memory).  Fall back to the embedded
+      // micro model only when R2 weights are unavailable.
+      let weightsBytes = null;
+      let config = null;
+
+      const r2Weights = await env.WEIGHTS.get("models/falcon-ocr/model.safetensors");
+      const r2Config = await env.WEIGHTS.get("models/falcon-ocr/config.json");
+      if (r2Weights && r2Config) {
+        try {
+          weightsBytes = new Uint8Array(await r2Weights.arrayBuffer());
+          config = JSON.parse(await r2Config.text());
+          console.log(`Loaded full model from R2: ${weightsBytes.byteLength} bytes`);
+        } catch (err) {
+          console.warn(`R2 full model load failed, falling back to micro: ${err.message}`);
+          weightsBytes = null;
+          config = null;
+        }
       }
-      CpuDevice.init(weightsBytes, MICRO_MODEL_CONFIG);
+
+      if (!weightsBytes) {
+        // Fallback: use the embedded micro model (263 KB, no R2 fetch).
+        const raw = atob(MICRO_MODEL_B64);
+        weightsBytes = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) {
+          weightsBytes[i] = raw.charCodeAt(i);
+        }
+        config = MICRO_MODEL_CONFIG;
+      }
+
+      CpuDevice.init(weightsBytes, config);
       activeDevice = "cpu";
     }
 

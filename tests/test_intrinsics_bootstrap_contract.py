@@ -49,16 +49,15 @@ def test_stdlib_intrinsics_does_not_use_namespace_binding_without_helper() -> No
         loader.require_intrinsic("molt_probe", namespace)
 
 
-def test_stdlib_intrinsics_runtime_mode_requires_helper_not_registry() -> None:
+def test_stdlib_intrinsics_runtime_mode_uses_builtins_registry() -> None:
     loader = _load_stdlib_intrinsics("_molt_test_intrinsics_runtime")
     runtime_fn = lambda: "runtime"  # noqa: E731
-    loader.__dict__["_molt_intrinsics"] = {"molt_probe": runtime_fn}
-    loader.__dict__["_molt_runtime"] = True
-    with pytest.raises(RuntimeError, match="intrinsic unavailable"):
-        loader.require_intrinsic("molt_probe", None)
+    builtins._molt_intrinsics = {"molt_probe": runtime_fn}
+    builtins._molt_runtime = True
+    assert loader.require_intrinsic("molt_probe", None) is runtime_fn
 
 
-def test_stdlib_intrinsics_does_not_fallback_to_sys_modules_registry() -> None:
+def test_stdlib_intrinsics_module_registry_alone_does_not_activate_runtime() -> None:
     loader = _load_stdlib_intrinsics("_molt_test_intrinsics_no_sys_modules_fallback")
     runtime_fn = lambda: "runtime"  # noqa: E731
     loader.__dict__["_molt_intrinsics"] = {"molt_probe": runtime_fn}
@@ -135,6 +134,7 @@ def test_stdlib_intrinsics_registry_alone_does_not_activate_runtime(
     assert loader.runtime_active() is False
 
 
+
 def test_stdlib_intrinsics_uses_builtins_runtime_lookup_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -150,18 +150,23 @@ def test_stdlib_intrinsics_uses_builtins_runtime_lookup_helper(
     assert loader.require_intrinsic("molt_probe", None) is runtime_fn
 
 
-def test_stdlib_intrinsics_ignores_sys_modules_runtime_helper(
+def test_stdlib_intrinsics_uses_current_sys_modules_builtins_runtime_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     loader = _load_stdlib_intrinsics("_molt_test_intrinsics_runtime_helper_sys_modules")
-    helper = lambda _name: lambda: "runtime"  # noqa: E731
+    runtime_fn = lambda: "runtime"  # noqa: E731
+
+    def helper(name: str):  # type: ignore[no-untyped-def]
+        if name == "molt_probe":
+            return runtime_fn
+        return None
+
     monkeypatch.setitem(
         sys.modules,
         "builtins",
-        types.SimpleNamespace(_molt_intrinsic_lookup=helper),
+        types.SimpleNamespace(_molt_intrinsic_lookup=helper, _molt_runtime=True),
     )
-    with pytest.raises(RuntimeError, match="runtime inactive"):
-        loader.require_intrinsic("molt_probe", None)
+    assert loader.require_intrinsic("molt_probe", None) is runtime_fn
 
 
 def test_stdlib_intrinsics_reports_runtime_inactive_when_unavailable() -> None:
