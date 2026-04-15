@@ -127,6 +127,7 @@ molt_gpu_metal = ["dep:metal", "dep:objc"]
 molt_gpu_webgpu = ["dep:wgpu", "dep:pollster"]
 molt_gpu_cuda = []
 molt_gpu_hip = []
+molt_gpu_primitives = ["dep:molt-gpu"]
 
 [dependencies]
 # Core runtime (always required)
@@ -151,6 +152,7 @@ molt-runtime-stringprep = { path = "../molt-runtime-stringprep", optional = true
 molt-runtime-xml = { path = "../molt-runtime-xml", optional = true }
 molt-runtime-ipaddress = { path = "../molt-runtime-ipaddress", optional = true }
 molt-runtime-zoneinfo = { path = "../molt-runtime-zoneinfo", optional = true }
+molt-gpu = { path = "../molt-gpu", optional = true, default-features = false, features = ["cpu-backend"] }
 serde_json = "1.0"
 crossbeam-deque = "0.8"
 crossbeam-channel = "0.5"

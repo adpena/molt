@@ -34,3 +34,7 @@ harness = false
 [[bench]]
 name = "bench_fusion"
 harness = false
+
+[[bench]]
+name = "bench_vs_baseline"
+harness = false

@@ -1801,10 +1801,14 @@ fn drain_cleanup_entry_tracked(
     alias_roots: &BTreeMap<String, String>,
     already_decrefed: &mut BTreeSet<String>,
     op_idx: usize,
+    skip: Option<&str>,
 ) -> Vec<Value> {
     let mut cleanup = Vec::new();
     let mut to_remove = Vec::new();
     names.retain(|name| {
+        if skip == Some(name.as_str()) {
+            return true;
+        }
         // If not in last_use, default to MAX (keep alive) — NOT op_idx.
         // Using op_idx as default causes premature cleanup of variables
         // that are used later but not yet tracked in last_use.
@@ -2903,24 +2907,8 @@ impl SimpleBackend {
 
             let _tir_dump = env_setting("TIR_DUMP").as_deref() == Some("1");
             let _tir_stats = env_setting("TIR_OPT_STATS").as_deref() == Some("1");
-            // Version the TIR cache by the backend binary's own executable path hash.
-            // This ensures cache invalidation when the backend is recompiled (e.g. when
-            // TIR passes change). Without this, stale optimized IR persists across builds.
-            let cache_dir = {
-                let exe = std::env::current_exe().unwrap_or_default();
-                let mtime = std::fs::metadata(&exe)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                std::hash::Hash::hash(&exe, &mut hasher);
-                std::hash::Hash::hash(&mtime, &mut hasher);
-                let hash = std::hash::Hasher::finish(&hasher);
-                std::path::PathBuf::from(format!(".molt_cache/{:016x}", hash))
-            };
-            let mut tir_cache = crate::tir::cache::CompilationCache::open(cache_dir);
+            let mut tir_cache =
+                crate::tir::cache::CompilationCache::open(crate::tir::cache::backend_cache_dir());
 
             // Phase 1 (sequential): check cache for every function. For cache
             // hits, apply immediately. For misses, collect the function index
@@ -3189,40 +3177,28 @@ impl SimpleBackend {
                 &llvm.module,
             );
 
-            let func_count = ir.functions.iter().filter(|func| !func.is_extern).count();
-            let total_ops: usize = ir
-                .functions
-                .iter()
-                .filter(|func| !func.is_extern)
-                .map(|f| f.ops.len())
-                .sum();
+            let func_count = ir.functions.len();
+            let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
             eprintln!(
                 "MOLT_BACKEND(llvm): compiling {func_count} functions ({total_ops} total ops)"
             );
             let codegen_start = std::time::Instant::now();
 
-            let tir_funcs: Vec<_> = ir
-                .functions
-                .iter()
-                .map(|func_ir| (func_ir.is_extern, lower_to_tir(func_ir)))
-                .collect();
+            let tir_funcs: Vec<_> = ir.functions.iter().map(lower_to_tir).collect();
             llvm.function_param_types = tir_funcs
                 .iter()
-                .map(|(_, func)| (func.name.clone(), func.param_types.clone()))
+                .map(|func| (func.name.clone(), func.param_types.clone()))
                 .collect();
             llvm.function_return_types = tir_funcs
                 .iter()
-                .map(|(_, func)| (func.name.clone(), func.return_type.clone()))
+                .map(|func| (func.name.clone(), func.return_type.clone()))
                 .collect();
 
-            for (_, tir_func) in &tir_funcs {
+            for tir_func in &tir_funcs {
                 crate::llvm_backend::lowering::declare_tir_function(tir_func, &llvm);
             }
 
-            for (is_extern, tir_func) in &tir_funcs {
-                if *is_extern {
-                    continue;
-                }
+            for tir_func in &tir_funcs {
                 if env_setting("TIR_DUMP").as_deref() == Some("1")
                     || env_setting("MOLT_TIR_DUMP").as_deref() == Some("1")
                 {
@@ -3274,9 +3250,10 @@ impl SimpleBackend {
                 );
             }
 
-            let tmp_obj =
-                crate::debug_artifacts::prepare_unique_debug_artifact_path("llvm/molt_llvm_output.o")
-                    .expect("failed to prepare LLVM object path");
+            let tmp_obj = crate::debug_artifacts::prepare_unique_debug_artifact_path(
+                "llvm/molt_llvm_output.o",
+            )
+            .expect("failed to prepare LLVM object path");
             llvm.emit_object(&tmp_obj, MoltOptLevel::Aggressive)
                 .expect("LLVM object emission failed");
             let bytes = std::fs::read(&tmp_obj).unwrap_or_else(|err| {
@@ -3910,9 +3887,11 @@ mod tests {
         merge_function_arities, merge_function_has_ret,
     };
     use crate::passes::ReturnAliasSummary;
+    use crate::drain_cleanup_entry_tracked;
     use crate::rewrite_phi_to_store_load;
+    use cranelift_codegen::ir::Value;
     use cranelift_codegen::ir::types;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Mutex, OnceLock};
 
     fn backend_env_lock() -> &'static Mutex<()> {
@@ -4177,6 +4156,43 @@ mod tests {
         );
         assert!(context.leaf_functions.contains("helper"));
         assert!(context.leaf_functions.contains("helper_poll"));
+    }
+
+    #[test]
+    fn tir_roundtrip_preserves_store_var_return_alias_summary() {
+        let func = FunctionIR {
+            name: "helper".to_string(),
+            params: vec!["value".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "store_var".to_string(),
+                    var: Some("tmp".to_string()),
+                    args: Some(vec!["value".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("tmp".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["str".to_string()]),
+            source_file: None,
+            is_extern: false,
+        };
+
+        let roundtripped = roundtrip_function_through_tir(&func);
+        let summaries =
+            crate::passes::compute_return_alias_summaries(std::slice::from_ref(&roundtripped));
+
+        assert_eq!(
+            summaries.get("helper"),
+            Some(&ReturnAliasSummary::Param(0)),
+            "roundtripped params: {:?}; ops: {:?}; summaries: {:?}",
+            roundtripped.params,
+            roundtripped.ops,
+            summaries
+        );
     }
 
     #[test]
@@ -5049,6 +5065,60 @@ mod tests {
     }
 
     #[test]
+    fn direct_imported_runtime_call_avoids_guarded_call_wrapper() {
+        let func = FunctionIR {
+            name: "hot_runtime_call".to_string(),
+            params: vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+                "e".to_string(),
+                "f".to_string(),
+                "g".to_string(),
+                "h".to_string(),
+            ],
+            ops: vec![
+                OpIR {
+                    kind: "call".to_string(),
+                    s_value: Some("molt_gpu_linear_contiguous".to_string()),
+                    args: Some(vec![
+                        "a".to_string(),
+                        "b".to_string(),
+                        "c".to_string(),
+                        "d".to_string(),
+                        "e".to_string(),
+                        "f".to_string(),
+                        "g".to_string(),
+                        "h".to_string(),
+                    ]),
+                    out: Some("out".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("out".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let clif = compile_function_to_clif_text(vec![func], "hot_runtime_call");
+
+        assert!(
+            !clif.contains("molt_guarded_call"),
+            "direct imported runtime calls should not route through molt_guarded_call:\n{clif}"
+        );
+        assert!(
+            !clif.contains("explicit_slot"),
+            "direct imported runtime calls should not spill args for the guarded-call wrapper:\n{clif}"
+        );
+    }
+
+    #[test]
     fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
         let clif = compile_function_to_clif_text(
             vec![FunctionIR {
@@ -5303,5 +5373,36 @@ mod tests {
             !clif.contains("block11(v43: i64):\n    v77 = iconst.i64 0x7fff_0000_0000_0000"),
             "merged overflow result must remain boxed until a real inline-int consumer proves otherwise:\n{clif}",
         );
+    }
+
+    #[test]
+    fn drain_cleanup_entry_tracked_can_skip_named_value() {
+        let mut names = vec!["callee".to_string(), "other".to_string()];
+        let mut entry_vars = BTreeMap::new();
+        let callee = Value::from_u32(11);
+        let other = Value::from_u32(22);
+        entry_vars.insert("callee".to_string(), callee);
+        entry_vars.insert("other".to_string(), other);
+        let last_use = BTreeMap::from([
+            ("callee".to_string(), 5usize),
+            ("other".to_string(), 5usize),
+        ]);
+        let alias_roots = BTreeMap::new();
+        let mut already_decrefed = BTreeSet::new();
+
+        let cleanup = drain_cleanup_entry_tracked(
+            &mut names,
+            &mut entry_vars,
+            &last_use,
+            &alias_roots,
+            &mut already_decrefed,
+            5,
+            Some("callee"),
+        );
+
+        assert_eq!(cleanup, vec![other]);
+        assert_eq!(names, vec!["callee".to_string()]);
+        assert!(entry_vars.contains_key("callee"));
+        assert!(!entry_vars.contains_key("other"));
     }
 }
