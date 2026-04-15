@@ -28,6 +28,8 @@ export interface FalconOcrConfig {
   maxNewTokens?: number;
   /** Chunk size in bytes for streaming weight downloads. Default: 1MB. */
   weightChunkSize?: number;
+  /** Base URL of the falcon-ocr Worker (for template extraction and batch endpoints). */
+  workerUrl?: string;
 }
 
 export interface OcrResult {

@@ -185,6 +185,59 @@ export class MoltOcrBackend {
   }
 
   /**
+   * Extract a reusable template definition from an invoice image.
+   *
+   * Calls the falcon-ocr Worker's /template/extract endpoint which uses
+   * Workers AI for section classification and style inference.
+   *
+   * @param imageBase64 - Base64-encoded image bytes
+   * @param options - Extraction options
+   * @returns Template definition with confidence score and detected sections
+   */
+  async extractTemplate(
+    imageBase64: string,
+    options: {
+      documentType?: string;
+      preserveLogo?: boolean;
+      detectColors?: boolean;
+    } = {},
+  ): Promise<{
+    template: Record<string, unknown>;
+    confidence: number;
+    detected_sections: string[];
+    time_ms: number;
+  }> {
+    const endpoint = this.config.workerUrl
+      ? `${this.config.workerUrl.replace(/\/$/, "")}/template/extract`
+      : "https://falcon-ocr.adpena.workers.dev/template/extract";
+
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image: imageBase64,
+        document_type: options.documentType ?? "invoice",
+        preserve_logo: options.preserveLogo !== false,
+        detect_colors: options.detectColors !== false,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(
+        body.error ?? `Template extraction failed with status ${res.status}`,
+      );
+    }
+
+    return res.json() as Promise<{
+      template: Record<string, unknown>;
+      confidence: number;
+      detected_sections: string[];
+      time_ms: number;
+    }>;
+  }
+
+  /**
    * Release all resources held by the backend.
    */
   dispose(): void {
