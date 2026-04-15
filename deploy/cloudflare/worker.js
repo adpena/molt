@@ -12,7 +12,7 @@
  * generated for debugging without exposing PII.
  */
 
-import { handleOcrRequest, handleHealthRequest, handleTokensRequest } from "./ocr_api.js";
+import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleTemplateExtract } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, createRequestLog, emitLog, writeAnalytics, categorizeError } from "./monitoring.js";
 import { createModel, parseSafetensorsToMap, createModelFromTensors, initMatmulWasm, initSimdOps } from "./inference-cpu.js";
@@ -550,7 +550,7 @@ function corsHeaders(env) {
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Payment-402, X-Request-ID, X-Use-Backend",
+    "Access-Control-Allow-Headers": "Content-Type, X-Payment-402, X-Request-ID, X-Use-Backend, X-Document-Type",
     "Access-Control-Max-Age": "86400",
   };
 }
@@ -600,6 +600,55 @@ export default {
     // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: cors });
+    }
+
+    // Fast path: template extraction can skip local model loading entirely
+    // since it only uses Workers AI for section classification.
+    if (path === "/template/extract" && request.method === "POST" && isWorkersAiAvailable(env)) {
+      // Verify x402 payment
+      const payment = await verifyX402(request, env, rid, cors);
+      if (!payment.authorized) {
+        return payment.response;
+      }
+
+      try {
+        const ct = request.headers.get("Content-Type") || "";
+        let imageBytes = null;
+        let extractOptions = {};
+
+        if (ct.includes("application/json")) {
+          const body = await request.json();
+          if (body.image && typeof body.image === "string") {
+            const raw = atob(body.image);
+            imageBytes = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) imageBytes[i] = raw.charCodeAt(i);
+            extractOptions = {
+              documentType: body.document_type || body.documentType || "invoice",
+              preserveLogo: body.preserve_logo !== false,
+              detectColors: body.detect_colors !== false,
+            };
+          }
+        }
+
+        if (imageBytes) {
+          const result = await handleTemplateExtract(env, imageBytes, extractOptions);
+          const responseBody = { ...result, request_id: rid };
+          const headers = { ...cors, "Content-Type": "application/json" };
+          if (payment.receipt) headers["X-Payment-Receipt"] = payment.receipt;
+          return new Response(JSON.stringify(responseBody), { status: 200, headers });
+        }
+      } catch (err) {
+        return new Response(
+          JSON.stringify({
+            error: `Template extraction failed: ${err.message}`,
+            request_id: rid,
+          }),
+          {
+            status: 503,
+            headers: { ...cors, "Content-Type": "application/json" },
+          },
+        );
+      }
     }
 
     // Fast path: Workers AI backend selection via X-Use-Backend header.
@@ -860,6 +909,66 @@ export default {
               status: response.status,
               headers,
             });
+          }
+          return response;
+        }
+
+        // Template extraction: OCR -> section classification -> template
+        if (path === "/template/extract") {
+          const ct = request.headers.get("Content-Type") || "";
+          let imageBytes = null;
+          let extractOptions = {};
+
+          if (ct.includes("application/json")) {
+            const body = await request.json();
+            if (!body.image || typeof body.image !== "string") {
+              return new Response(
+                JSON.stringify({ error: "Missing 'image' field (base64 string)", request_id: rid }),
+                { status: 400, headers: { ...cors, "Content-Type": "application/json" } },
+              );
+            }
+            const raw = atob(body.image);
+            imageBytes = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) imageBytes[i] = raw.charCodeAt(i);
+            extractOptions = {
+              documentType: body.document_type || body.documentType || "invoice",
+              preserveLogo: body.preserve_logo !== false,
+              detectColors: body.detect_colors !== false,
+            };
+          } else if (ct.includes("multipart/form-data")) {
+            const formData = await request.formData();
+            const file = formData.get("image");
+            if (!file || !(file instanceof File || file instanceof Blob)) {
+              return new Response(
+                JSON.stringify({ error: "Missing 'image' field in multipart form data", request_id: rid }),
+                { status: 400, headers: { ...cors, "Content-Type": "application/json" } },
+              );
+            }
+            imageBytes = new Uint8Array(await file.arrayBuffer());
+            extractOptions = {
+              documentType: formData.get("document_type") || "invoice",
+              preserveLogo: formData.get("preserve_logo") !== "false",
+              detectColors: formData.get("detect_colors") !== "false",
+            };
+          } else {
+            return new Response(
+              JSON.stringify({ error: "Unsupported Content-Type. Use application/json or multipart/form-data", request_id: rid }),
+              { status: 415, headers: { ...cors, "Content-Type": "application/json" } },
+            );
+          }
+
+          const result = await handleTemplateExtract(env, imageBytes, extractOptions);
+          const response = new Response(
+            JSON.stringify({ ...result, request_id: rid }),
+            {
+              status: 200,
+              headers: { ...cors, "Content-Type": "application/json" },
+            },
+          );
+          if (payment.receipt) {
+            const headers = new Headers(response.headers);
+            headers.set("X-Payment-Receipt", payment.receipt);
+            return new Response(response.body, { status: response.status, headers });
           }
           return response;
         }
