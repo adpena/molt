@@ -345,14 +345,34 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             Some("1")
         ) {
             let name_bits = function_name_bits(_py, func_ptr);
-            let name = if name_bits != 0 {
+            let mut name = if name_bits != 0 {
                 string_obj_to_owned(obj_from_bits(name_bits))
                     .unwrap_or_else(|| "<unnamed>".to_string())
             } else {
                 "<unnamed>".to_string()
             };
+            let mut file = "<none>".to_string();
+            if name == "<unnamed>" {
+                let code_bits = ensure_function_code_bits(_py, func_ptr);
+                if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
+                    let code_name_bits = crate::code_name_bits(code_ptr);
+                    name = string_obj_to_owned(obj_from_bits(code_name_bits))
+                        .unwrap_or_else(|| "<unnamed>".to_string());
+                    let file_bits = crate::code_filename_bits(code_ptr);
+                    file = string_obj_to_owned(obj_from_bits(file_bits))
+                        .unwrap_or_else(|| "<none>".to_string());
+                }
+            }
+            if name == "<unknown>" && file == "<molt-builtin>" {
+                if let Some(spec) = crate::intrinsics::INTRINSICS
+                    .iter()
+                    .find(|spec| crate::intrinsics::resolve_symbol(spec.symbol) == Some(fn_ptr))
+                {
+                    name = spec.symbol.to_string();
+                }
+            }
             eprintln!(
-                "[molt call_function_obj1] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} closure_bits={closure_bits} arity={arity}"
+                "[molt call_function_obj1] name={name} file={file} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} closure_bits={closure_bits} arity={arity}"
             );
         }
         let code_bits = ensure_function_code_bits(_py, func_ptr);

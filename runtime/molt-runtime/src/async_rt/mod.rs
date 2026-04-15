@@ -64,10 +64,10 @@ pub(crate) use scheduler::{
     molt_asyncio_task_registry_live, molt_asyncio_task_registry_live_set,
     molt_asyncio_task_registry_move, molt_asyncio_task_registry_pop,
     molt_asyncio_task_registry_set, molt_asyncio_task_registry_values,
-    molt_asyncio_unregister_task, molt_block_on, molt_spawn, monotonic_now_nanos,
-    monotonic_now_secs, record_async_poll, task_exception_depths, task_exception_handler_stacks,
-    task_exception_stacks, task_last_exceptions, task_mark_done, task_waiting_on,
-    task_waiting_on_future, wake_task_ptr,
+    molt_asyncio_task_last_exception_clear, molt_asyncio_unregister_task, molt_block_on,
+    molt_spawn, monotonic_now_nanos, monotonic_now_secs, record_async_poll,
+    task_exception_depths, task_exception_handler_stacks, task_exception_stacks,
+    task_last_exceptions, task_mark_done, task_waiting_on, task_waiting_on_future, wake_task_ptr,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

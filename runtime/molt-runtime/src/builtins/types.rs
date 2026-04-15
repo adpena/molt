@@ -101,6 +101,12 @@ pub extern "C" fn molt_builtin_type(tag_bits: u64) -> u64 {
         let Some(bits) = builtin_type_bits(_py, tag) else {
             return raise_exception::<_>(_py, "TypeError", "unknown builtin type tag");
         };
+        if matches!(
+            std::env::var("MOLT_TRACE_BUILTIN_TYPE").ok().as_deref(),
+            Some("1")
+        ) {
+            eprintln!("molt builtin_type tag={} bits=0x{:x}", tag, bits);
+        }
         inc_ref_bits(_py, bits);
         bits
     })
@@ -453,7 +459,19 @@ pub extern "C" fn molt_type_subclasscheck(cls_bits: u64, sub_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_isinstance(val_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
-        MoltObject::from_bool(isinstance_runtime(_py, val_bits, class_bits)).bits()
+        let result = isinstance_runtime(_py, val_bits, class_bits);
+        if matches!(
+            std::env::var("MOLT_TRACE_ISINSTANCE").ok().as_deref(),
+            Some("1")
+        ) {
+            eprintln!(
+                "molt isinstance val_type={} class_type={} result={}",
+                crate::type_name(_py, obj_from_bits(val_bits)),
+                crate::type_name(_py, obj_from_bits(class_bits)),
+                result
+            );
+        }
+        MoltObject::from_bool(result).bits()
     })
 }
 

@@ -403,6 +403,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_asyncio_task_registry_current", symbol: "molt_asyncio_task_registry_current", arity: 0 },
     IntrinsicSpec { name: "molt_asyncio_task_registry_current_for_loop", symbol: "molt_asyncio_task_registry_current_for_loop", arity: 1 },
     IntrinsicSpec { name: "molt_asyncio_task_registry_pop", symbol: "molt_asyncio_task_registry_pop", arity: 1 },
+    IntrinsicSpec { name: "molt_asyncio_task_last_exception_clear", symbol: "molt_asyncio_task_last_exception_clear", arity: 1 },
     IntrinsicSpec { name: "molt_asyncio_task_registry_move", symbol: "molt_asyncio_task_registry_move", arity: 2 },
     IntrinsicSpec { name: "molt_asyncio_task_registry_values", symbol: "molt_asyncio_task_registry_values", arity: 0 },
     IntrinsicSpec { name: "molt_asyncio_task_registry_live", symbol: "molt_asyncio_task_registry_live", arity: 1 },
@@ -2811,6 +2812,7 @@ fn resolve_asyncio_symbol(symbol: &str) -> Option<u64> {
         "molt_asyncio_task_registry_current_for_loop" => Some(crate::molt_asyncio_task_registry_current_for_loop as *const () as usize as u64),
         #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_task_registry_pop" => Some(crate::molt_asyncio_task_registry_pop as *const () as usize as u64),
+        "molt_asyncio_task_last_exception_clear" => Some(crate::molt_asyncio_task_last_exception_clear as *const () as usize as u64),
         #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_task_registry_move" => Some(crate::molt_asyncio_task_registry_move as *const () as usize as u64),
         #[cfg(feature = "stdlib_asyncio")]
@@ -6678,4 +6680,3 @@ fn resolve_zoneinfo_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
-

@@ -83,7 +83,7 @@ For WASM, the same layered approach applies:
 ┌──────────────┐  ┌───────────────┐
 │ app.wasm     │  │ runtime.wasm  │  Pre-compiled, CDN-cached
 │ (user code)  │──│ (Layers 1-4)  │
-│ ~50KB        │  │ ~1-2MB        │
+│ tree-shaken  │  │ tree-shaken   │
 └──────────────┘  └───────────────┘
 ```
 
@@ -163,3 +163,20 @@ Only stdlib crates that the user imports are linked. The linker's
 - User code → app.wasm (tiny, per-deploy)
 - Worker.js stitches them via WebAssembly imports
 ```
+
+## GPU Primitive Stack
+
+The `molt-gpu` crate (`runtime/molt-gpu/`) provides a tinygrad-conformant GPU compute subsystem. It implements all of deep learning with 26 compute primitives, a zero-copy ShapeTracker view system, lazy evaluation DAG, kernel fusion, and multi-backend rendering (Metal, WebGPU/WGSL, CUDA, HIP).
+
+For user code that imports `tinygrad`:
+```
+molt build app.py  # where app.py uses `from tinygrad import Tensor`
+  1. [cached] libmolt_core.a
+  2. [cached] libmolt_gpu.a (molt-gpu crate)
+  3. Compile user code IR → user.o
+  4. At runtime: Tensor ops build LazyOp DAG → schedule → fuse → render → execute on GPU
+```
+
+The GPU stack operates at a different level than the AOT compiler: tensor operations construct a computation DAG at runtime, which is then scheduled, fused, rendered to shader source, and dispatched to the GPU. The AOT compiler compiles the Python control flow; the GPU stack handles the data flow.
+
+See [gpu-primitive-stack.md](gpu-primitive-stack.md) for the full architecture.

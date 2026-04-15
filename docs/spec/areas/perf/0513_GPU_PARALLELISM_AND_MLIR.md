@@ -4,101 +4,30 @@ Status: **Backlog** (ROADMAP item 16, no milestone assigned)
 Owner: runtime
 Prerequisites: TC2 (type coverage), SL2 (stdlib coverage), TL2 (tooling)
 
-## Public API Contract
+## Implementation: `molt-gpu` Crate
 
-The public ML/tensor surface should converge on **tinygrad-compatible API
-shape**, not a parallel Molt-specific tensor dialect.
+The tinygrad-conformant GPU primitive stack is implemented in `runtime/molt-gpu/`.
+This crate provides:
 
-Rules:
-- user-facing imports should prefer `tinygrad`-compatible names and behavior
-- lower-level `molt_gpu_*` and `tensor__*` wrapper intrinsics are internal
-  lowering machinery, not the compatibility contract
-- composed tensor formulations are the canonical correctness path
-- fused wrapper intrinsics are optional acceleration lanes and must never be
-  the only semantically correct implementation path
+- **26 primitive ops** (`runtime/molt-gpu/src/ops.rs`): The complete tinygrad op set
+  (Add, Sub, Mul, Idiv, Mod, Neg, Cmplt, Cmpeq, Cmpne, And, Or, Xor, Shl, Shr,
+  Exp2, Log2, Sin, Sqrt, Reciprocal, Trunc, Max, Where, Cast, Bitcast, ReduceSum,
+  ReduceMax).
+- **ShapeTracker** (`runtime/molt-gpu/src/shapetracker.rs`): Zero-copy view system
+  with O(1) reshape, permute, expand, pad, shrink, and flip.
+- **LazyOp DAG** (`runtime/molt-gpu/src/lazy.rs`): Deferred computation graph.
+- **Kernel fusion** (`runtime/molt-gpu/src/fuse.rs`): Elementwise-reduce-elementwise
+  chain fusion.
+- **4 renderers**: MSL (`render/msl.rs`), WGSL (`render/wgsl.rs`), CUDA (`render/cuda.rs`),
+  HIP (`render/hip.rs`) -- all implementing the full 26-op set.
+- **3 device backends**: CPU interpreter (`device/cpu.rs`), Metal (`device/metal.rs`),
+  WebGPU (`device/webgpu.rs`).
+- **MLIR serialization** (`runtime/molt-gpu/src/mlir.rs`): Textual MLIR IR generation
+  from FusedKernel (string output only, no C++ dependencies).
 
-Implication:
-- when a high-level wrapper intrinsic diverges from the lower canonical
-  primitive stack, prefer the canonical path and treat the wrapper as an
-  optimization problem, not a semantic dependency
-
-## Compression Package Boundaries
-
-Quantization and speculative-decode infrastructure belong under `molt.gpu`
-as first-class packages with narrow responsibilities:
-
-- `molt.gpu.dflash`: speculative decode contracts, adapter selection, and
-  runtime orchestration
-- `molt.gpu.turboquant`: KV-cache/vector compression contracts, codebooks,
-  structured-rotation reference codecs, and cache helpers
-
-Rules:
-- model-specific logic stays outside these core packages
-- core packages define reusable contracts and reference semantics first
-- fused backend kernels (`cuda`, `metal`, `webgpu`, `rocm`) are acceleration
-  lanes layered under these package boundaries, not alternate public APIs
-- no silent fallback between compression schemes; enablement must be explicit
-  and capability-aware
-
-Current reference cache split:
-- `molt.gpu.kv_cache`: projected-attention cache backends (`DenseKVCache`,
-  TurboQuant-backed cache) and cache append/attend contracts
-- `molt.gpu.transformer`: optional cache plumbing for transformer attention and
-  decoder blocks
-
-Current cache semantics:
-- cache backends must preserve tensor-SDPA-visible semantics for masks and
-  causal decode
-- grouped-query attention is supported when query heads are an integer multiple
-  of KV heads
-- dense cache append should avoid per-token concat churn and materialize lazily
-  for attention reads
-- TurboQuant reference paths should precompute query transforms once per query
-  row and cache decoded value rows across repeated attention reads
-- dense grouped-query cache reads should reuse expanded key/value tensors and
-  transposed key views across repeated attention calls until mutation
-- dense cache materialization should assemble projected chunks in one pass,
-  not via chained tensor concatenation
-- TurboQuant encoded vectors should precompute score-side weights/scales so
-  prepared-query scoring avoids repeated codebook indexing and scalar setup
-
-Current TurboQuant backend boundary:
-- runtime/backend now own an explicit `molt_gpu_turboquant_attention_packed`
-  intrinsic surface for packed-cache attention dispatch
-- current implementation is a runtime-owned reference bridge through the cache
-  object model, not a fused kernel yet
-- native runtime execution now reads the packed cache object graph directly for
-  that symbol instead of calling back into the cache’s Python
-  `_attention_reference` method
-- when runtime shadow tensors are present on the cache object, the packed
-  intrinsic should prefer those over traversing encoded Python object graphs
-- those runtime shadows now include both packed row tensors and rotation-sign
-  tensors, so native execution can bypass both encoded rows and codec
-  structure reads on the hot path
-- the Python/reference fallback should also be able to consume the same shadow
-  metadata when encoded rows are unavailable, so the two paths stay aligned
-- cache mutation should preserve and incrementally update TurboQuant shadow
-  metadata when possible, instead of invalidating and rebuilding it
-- the packed-attention symbol now also has a browser WebGPU execution lane on
-  the shadow-tensor fast path, while non-browser targets still use the runtime
-  reference implementation
-- those runtime shadow tensors are now intentionally `f32` GPU-facing metadata,
-  so both browser WebGPU and native reference fast paths consume the same layout
-- native TurboQuant codebook generation is now stabilized on explicit float
-  locals, and the packed-attention symbol also has a native Metal execution
-  lane on the same shadow-tensor ABI
-- current real GPU execution lanes for the packed-attention symbol are:
-  browser WebGPU, native Metal, and native WebGPU
-- CUDA and HIP/ROCm are now explicit contract lanes in runtime feature/env
-  plumbing; until execution lands, requesting them must fail loudly rather than
-  silently falling back to the CPU reference path
-- next backend work should replace that bridge with real packed CUDA/Metal/
-  WebGPU/ROCm kernels behind the same symbol
-
-Near-term direction:
-- keep cache semantics generic at the tensor/attention layer
-- move toward tensor-level cache-backed attention dispatch, so tinygrad-shaped
-  model code can benefit without model-specific API forks
+The Python Tensor API is at `src/molt/stdlib/tinygrad/`. It includes the Tensor class,
+LazyBuffer, dtypes, TurboQuant (Remez-optimal quantization), DDTree (decision tree
+routing with additive log-probability scoring), and DFlash (flash attention).
 
 ## Two-Lane Architecture
 
@@ -222,6 +151,61 @@ Key rule: `poll()` must never block.
 - **Medium-term (M-GPU-3)**: `cudarc` + Arrow C Device Interface for libcudf.
 - **Long-term (M-GPU-4)**: `mlir-sys` or `inkwell` for custom kernel compilation.
 
+## External Research Directions
+
+### TurboQuant / PolarQuant / QJL
+
+Recent vector-compression work is relevant to Molt's future tensor and
+model-serving path:
+
+- **TurboQuant**: randomized rotation plus residual sketching for very-low-bit
+  inner-product preservation
+- **PolarQuant**: rotation-based low-bit compression aimed at KV-cache storage
+- **QJL**: sketch-based residual correction for approximate dot products
+
+These are not substitutes for the current compiler/runtime burndown. They are
+future format/runtime work for packed numeric tensors, model weights, and
+attention-state storage.
+
+### Applicability to Molt
+
+- **Native runtime**: strong future fit for packed tensor storage and KV-cache
+  compression once tensor layouts become stable runtime ABI surfaces
+- **Browser/WebGPU/WASM**: strong fit for reducing shipped model artifacts and
+  peak memory, but only after low-bit formats are part of Molt's runtime and
+  host-interface contract
+- **MLIR lane**: good long-term fit for representing
+  `rotate -> quantize -> residual sketch` as explicit lowering stages, but
+  premature before the current MLIR bridge grows into a real optimization path
+- **Falcon-OCR-style workloads**: relevant as an external model-serving
+  strategy, not as a direct fix for current compiler/link/runtime blockers
+
+### Molt Constraints
+
+- Determinism is mandatory: rotations/codebooks/seeds must be explicit,
+  versioned, and hashed into artifacts.
+- No silent host fallback: encode/dequant paths must lower into Rust/runtime
+  kernels and wasm ops, not Python helper layers.
+- WIT-facing browser/edge deployments must expose quantized tensor layout and
+  capability metadata explicitly. If Molt adopts low-bit runtime tensors, the
+  WIT surface cannot assume raw byte compatibility without versioning.
+
+### Near-Term Experiments
+
+1. Compare current per-channel INT4 against rotation-based low-bit packing on
+   Molt tensor buffers for bytes, reconstruction error, and linear-kernel drift.
+2. Add a KV-cache benchmark lane before implementing full low-bit runtime
+   formats.
+3. Prototype packed low-bit browser model delivery on a small WASM demo before
+   touching larger models.
+
+### Primary References
+
+- Google Research blog: TurboQuant
+- arXiv `2504.19874`: TurboQuant
+- arXiv `2502.02617`: PolarQuant
+- arXiv `2406.03482`: QJL
+
 ## Kernel Subset Whitelist (Formal)
 
 The following TIR operations are eligible for GPU kernel extraction. Operations
@@ -262,7 +246,22 @@ A TIR loop is kernel-eligible if:
 4. No inter-iteration dependencies (map pattern) OR dependencies are
    associative/commutative (reduction pattern).
 
-## WASM Exclusion
+## WASM Browser GPU Contract
 
-GPU paths must be cleanly gated off for `wasm32` targets. GPU capability detection
-raises `NotImplementedError` on WASM.
+`wasm32` is no longer a blanket GPU exclusion zone.
+
+Current contract:
+- compiled `@gpu.kernel` on wasm must preserve synchronous kernel semantics
+  from the language/runtime point of view
+- browser-hosted WebGPU execution is allowed through a host-dispatch boundary
+  rather than native-in-runtime GPU code
+- the host boundary must be explicit and capability-visible; no silent CPU
+  fallback when `MOLT_GPU_BACKEND=webgpu` is requested
+
+Operational implications:
+- browser/main-thread execution is not a viable implementation target for the
+  current synchronous kernel contract because WebGPU readback is async
+- worker-backed browser hosts are the correct deployment shape for real WebGPU
+  kernel execution on wasm
+- Node/CLI wasm runners may continue to provide `ENOSYS` stubs for browser-only
+  WebGPU host imports unless they implement an equivalent host dispatcher
