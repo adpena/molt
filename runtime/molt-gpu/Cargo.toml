@@ -43,3 +43,11 @@ harness = false
 [[bench]]
 name = "bench_profile"
 harness = false
+
+[[bench]]
+name = "bench_inference"
+harness = false
+
+[[bench]]
+name = "bench_metal"
+harness = false

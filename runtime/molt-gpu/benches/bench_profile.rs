@@ -23,7 +23,7 @@ fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
     vals.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
-fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
+fn _bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
@@ -217,7 +217,7 @@ fn run_softmax_pipeline(x_data: &[f32]) -> StageTimings {
     // Compute 1/sum for normalization
     let sum_val = f32::from_le_bytes(sum_buf[0..4].try_into().unwrap());
     let inv_sum = 1.0 / sum_val;
-    let inv_sum_bytes = inv_sum.to_le_bytes().to_vec();
+    let _inv_sum_bytes = inv_sum.to_le_bytes().to_vec();
 
     let k_final = FusedKernel {
         ops: vec![FusedOp {
@@ -277,55 +277,23 @@ fn run_matmul_pipeline(a_data: &[f32], b_data: &[f32], m: usize, k: usize, n: us
     let out_n = m * n;
     let total_start = Instant::now();
 
-    // DAG construction
+    // DAG construction — fused matmul needs no kernel DAG
     let dag_start = Instant::now();
-    let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
-        bufs: vec![
-            BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[out_n]), dtype: DType::Float32, access: BufferAccess::Write },
-            BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[out_n * k]), dtype: DType::Float32, access: BufferAccess::Read },
-        ],
-        grid: [out_n as u32, 1, 1],
-        local: [1, 1, 1],
-        spec: None,
-    };
     let dag_us = dag_start.elapsed().as_secs_f64() * 1e6;
 
-    // Fusion (single kernel, nothing to fuse)
-    let fuse_start = Instant::now();
-    let _fused = fuse(vec![kernel.clone()]);
-    let fuse_us = fuse_start.elapsed().as_secs_f64() * 1e6;
+    // Fusion — fused matmul bypasses the fusion pass
+    let fuse_us = 0.0;
 
-    // Memory allocation
+    // Memory allocation — only output buffer, no intermediate product tensor
     let mem_start = Instant::now();
-    let mut products = vec![0f32; m * k * n];
-    for i in 0..m {
-        for kk in 0..k {
-            for j in 0..n {
-                products[i * k * n + kk * n + j] = a_data[i * k + kk] * b_data[kk * n + j];
-            }
-        }
-    }
-    let mut reduce_input = vec![0f32; out_n * k];
-    for i in 0..m {
-        for j in 0..n {
-            for kk in 0..k {
-                reduce_input[(i * n + j) * k + kk] = products[i * k * n + kk * n + j];
-            }
-        }
-    }
-    let reduce_input_bytes = f32_to_bytes(&reduce_input);
-    let out_buf = vec![0u8; out_n * 4];
+    let a_bytes = f32_to_bytes(a_data);
+    let b_bytes = f32_to_bytes(b_data);
+    let mut out_buf = vec![0u8; out_n * 4];
     let mem_us = mem_start.elapsed().as_secs_f64() * 1e6;
 
-    // Interpretation
+    // Interpretation — direct fused matmul
     let interp_start = Instant::now();
-    let mut bufs = vec![out_buf, reduce_input_bytes];
-    interpret::execute_kernel(&kernel, &mut bufs);
+    interpret::fused_matmul(&a_bytes, &b_bytes, &mut out_buf, m, k, n);
     let interp_us = interp_start.elapsed().as_secs_f64() * 1e6;
 
     let total_us = total_start.elapsed().as_secs_f64() * 1e6;
@@ -467,7 +435,7 @@ fn run_rmsnorm_pipeline(x_data: &[f32]) -> StageTimings {
 // Output
 // ============================================================================
 
-fn print_breakdown(name: &str, t: &StageTimings) {
+fn print_breakdown(_name: &str, t: &StageTimings) {
     let total = t.total_us.max(0.001); // prevent division by zero
     println!("| {:<25} | {:>10.2} | {:>6.1}% |", "DAG construction", t.dag_construction_us, t.dag_construction_us / total * 100.0);
     println!("| {:<25} | {:>10.2} | {:>6.1}% |", "Scheduling", t.scheduling_us, t.scheduling_us / total * 100.0);

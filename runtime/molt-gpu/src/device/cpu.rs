@@ -202,6 +202,65 @@ pub mod interpret {
     use crate::ops::PrimitiveOp;
     use crate::render::{FusedKernel, FusedSrc};
 
+    /// Fused matrix multiplication: C = A @ B without intermediate allocation.
+    ///
+    /// Reads A (M x K row-major f32) and B (K x N row-major f32) directly,
+    /// writes C (M x N row-major f32). No intermediate product tensor is
+    /// materialized, eliminating the O(M*K*N) memory allocation that the
+    /// unfused RESHAPE -> EXPAND -> MUL -> REDUCE_SUM path requires.
+    ///
+    /// Uses a KIJ loop order for optimal cache locality on row-major A,
+    /// streaming each row of A through the K dimension while accumulating
+    /// into the output row.
+    ///
+    /// `a_buf` and `b_buf` are raw f32 byte slices. `out_buf` is pre-allocated
+    /// and zeroed (M*N*4 bytes). All buffers must be Float32 little-endian.
+    #[inline(never)]
+    pub fn fused_matmul(
+        a_buf: &[u8],
+        b_buf: &[u8],
+        out_buf: &mut [u8],
+        m: usize,
+        k: usize,
+        n: usize,
+    ) {
+        debug_assert_eq!(a_buf.len(), m * k * 4, "A buffer size mismatch");
+        debug_assert_eq!(b_buf.len(), k * n * 4, "B buffer size mismatch");
+        debug_assert_eq!(out_buf.len(), m * n * 4, "output buffer size mismatch");
+
+        // Reinterpret byte slices as f32 slices for direct access.
+        // SAFETY: The caller guarantees buffers are f32 little-endian aligned.
+        // Vec<u8> from alloc_page_aligned is page-aligned (4096), so f32
+        // alignment (4) is satisfied. Standard Vec<u8> has alignment >= 1
+        // but f32::from_le_bytes is used as fallback below.
+
+        // Use a temporary f32 accumulator to avoid repeated byte conversions.
+        // This is the dominant cost: M*K*N multiply-accumulate operations.
+        let mut c = vec![0.0f32; m * n];
+
+        // IKJ loop order: for each row of A, stream through K,
+        // broadcasting a[i,k] across the entire row of B[k,:].
+        // This maximizes spatial locality in both B and C.
+        for i in 0..m {
+            for kk in 0..k {
+                let a_off = (i * k + kk) * 4;
+                let a_val = f32::from_le_bytes(a_buf[a_off..a_off + 4].try_into().unwrap());
+                let b_row_off = kk * n * 4;
+                for j in 0..n {
+                    let b_off = b_row_off + j * 4;
+                    let b_val = f32::from_le_bytes(b_buf[b_off..b_off + 4].try_into().unwrap());
+                    c[i * n + j] += a_val * b_val;
+                }
+            }
+        }
+
+        // Write results back to output buffer.
+        for (idx, &val) in c.iter().enumerate() {
+            let off = idx * 4;
+            out_buf[off..off + 4].copy_from_slice(&val.to_le_bytes());
+        }
+    }
+
     /// Interpret and execute a FusedKernel on CPU buffers.
     /// `bufs` are raw byte slices matching kernel.bufs order.
     /// bufs[0] is the output buffer (written to).
@@ -302,7 +361,8 @@ pub mod interpret {
     }
 
     /// Check if the kernel is eligible for SIMD acceleration.
-    /// Requirements: all Float32 buffers, all contiguous views, no reduce ops.
+    /// Requirements: all Float32 buffers, all contiguous views with matching
+    /// element counts, no reduce ops, all ops SIMD-able.
     #[cfg(feature = "simd-accel")]
     #[inline(always)]
     fn can_use_simd_path(kernel: &FusedKernel) -> bool {
@@ -315,6 +375,16 @@ pub mod interpret {
         // All views must be contiguous
         let all_contiguous = kernel.bufs.iter().all(|b| b.st.view().is_contiguous());
         if !all_contiguous {
+            return false;
+        }
+
+        // All buffers must have the same element count as the output.
+        // Broadcast buffers (e.g., shape [1] broadcast to [1024]) have
+        // fewer physical elements than the output, so SIMD batch reads
+        // would go out of bounds.
+        let output_numel = kernel.bufs[0].st.numel();
+        let all_same_numel = kernel.bufs.iter().all(|b| b.st.numel() == output_numel);
+        if !all_same_numel {
             return false;
         }
 
