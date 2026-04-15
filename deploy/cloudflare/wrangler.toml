@@ -26,6 +26,15 @@ bucket_name = "falcon-ocr-weights"
 binding = "CACHE"
 id = "791309f66ab445e8a0327a34206f7005"
 
+# Workers AI binding for GPU-accelerated OCR inference.
+# When available, the Worker uses vision models (Gemma 4, Llama 3.2 Vision)
+# for OCR instead of local CPU inference.  This provides:
+#   - Zero CPU cost on the Worker (inference runs on Cloudflare's GPU fleet)
+#   - No model loading or memory pressure
+#   - Higher quality (larger models than can fit in Worker memory)
+[ai]
+binding = "AI"
+
 [vars]
 # Public vars — secrets go via `wrangler secret put`.
 CORS_ORIGIN = "https://freeinvoicemaker.app"

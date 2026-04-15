@@ -35,6 +35,24 @@ SNAP = os.path.expanduser(
 # Tensors with these substrings are kept as F32 (too small or precision-critical).
 KEEP_F32_PATTERNS = ["norm.weight", "sinks", "freqs_cis"]
 
+# Mixed-precision: these layer patterns are kept as F32 even when quantizing.
+# Attention Q/K/V projections and embedding layers are most sensitive to
+# quantization error. Feed-forward layers tolerate quantization well.
+#
+# Rationale (from quantization literature):
+#   - First/last layers (embeddings, output projection) have highest impact
+#     on accuracy when quantized — they see the full distribution.
+#   - Attention Q/K/V projections accumulate error through softmax, which
+#     amplifies small perturbations. Keeping them F32 preserves attention quality.
+#   - Feed-forward layers (w13, w2) are the bulk of parameters and tolerate
+#     INT8 quantization with < 0.5% accuracy loss.
+MIXED_PRECISION_F32_PATTERNS = [
+    "img_projector.weight",      # Image embedding — first layer, critical
+    "tok_embeddings.weight",     # Token embedding — critical for output quality
+    "output.weight",             # Output projection — critical for predictions
+    "attention.wqkv.weight",     # Q/K/V projections — attention is sensitive
+]
+
 
 def read_safetensors(path):
     """Parse a safetensors file into a dict of {name: {shape, dtype, data}}."""
@@ -57,11 +75,20 @@ def read_safetensors(path):
     return tensors
 
 
-def should_keep_f32(name):
-    """Return True if this tensor should stay F32."""
+def should_keep_f32(name, mixed_precision=False):
+    """Return True if this tensor should stay F32.
+
+    Args:
+        name: Tensor name.
+        mixed_precision: If True, also keep attention/embedding layers as F32.
+    """
     for pattern in KEEP_F32_PATTERNS:
         if pattern in name:
             return True
+    if mixed_precision:
+        for pattern in MIXED_PRECISION_F32_PATTERNS:
+            if pattern in name:
+                return True
     return False
 
 
@@ -150,12 +177,17 @@ def main():
                         help="Output directory (default: ~/.cache/molt/falcon-ocr/quantized-intN)")
     parser.add_argument("--model-dir", type=str, default=SNAP,
                         help="Source model directory")
+    parser.add_argument("--mixed-precision", action="store_true", default=False,
+                        help="Keep attention Q/K/V and embedding layers as F32 "
+                             "(best quality within memory constraints)")
     args = parser.parse_args()
 
     bits = args.bits
+    mixed_precision = args.mixed_precision
     model_dir = args.model_dir
+    suffix = f"-mixed" if mixed_precision else ""
     output_dir = args.output_dir or os.path.expanduser(
-        f"~/.cache/molt/falcon-ocr/quantized-int{bits}"
+        f"~/.cache/molt/falcon-ocr/quantized-int{bits}{suffix}"
     )
     os.makedirs(output_dir, exist_ok=True)
 
@@ -163,9 +195,12 @@ def main():
     safetensors_path = os.path.realpath(os.path.join(model_dir, "model.safetensors"))
     config_path = os.path.realpath(os.path.join(model_dir, "config.json"))
 
-    print(f"Quantizing to INT{bits}")
+    print(f"Quantizing to INT{bits}{' (mixed precision)' if mixed_precision else ''}")
     print(f"  Source: {safetensors_path}")
     print(f"  Output: {output_dir}")
+    if mixed_precision:
+        print(f"  F32 patterns (base): {KEEP_F32_PATTERNS}")
+        print(f"  F32 patterns (mixed): {MIXED_PRECISION_F32_PATTERNS}")
     print()
 
     if not os.path.exists(safetensors_path):
@@ -193,11 +228,14 @@ def main():
         original_bytes = len(t["data"])
         total_original += original_bytes
 
-        if t["dtype"] != "F32" or should_keep_f32(name):
+        if t["dtype"] != "F32" or should_keep_f32(name, mixed_precision):
             q_tensors.append((name, t))
             total_quantized += original_bytes
             kept_count += 1
-            print(f"  [F32] {name}: {t['shape']} ({original_bytes:,} bytes, kept)")
+            reason = "kept"
+            if mixed_precision and any(p in name for p in MIXED_PRECISION_F32_PATTERNS):
+                reason = "kept (mixed-precision: accuracy-critical)"
+            print(f"  [F32] {name}: {t['shape']} ({original_bytes:,} bytes, {reason})")
             continue
 
         n = len(t["data"]) // 4
@@ -247,11 +285,15 @@ def main():
     out_config = os.path.join(output_dir, "config.json")
     with open(out_config, "r") as f:
         config = json.load(f)
+    all_f32_patterns = list(KEEP_F32_PATTERNS)
+    if mixed_precision:
+        all_f32_patterns.extend(MIXED_PRECISION_F32_PATTERNS)
     config["quantization"] = {
-        "method": f"symmetric_int{bits}",
+        "method": f"symmetric_int{bits}{'_mixed' if mixed_precision else ''}",
         "bits": bits,
+        "mixed_precision": mixed_precision,
         "per_tensor_scales": True,
-        "kept_f32_patterns": KEEP_F32_PATTERNS,
+        "kept_f32_patterns": all_f32_patterns,
     }
     # Add rms_inner_eps if not present (inference-cpu.js needs it)
     if "rms_inner_eps" not in config:

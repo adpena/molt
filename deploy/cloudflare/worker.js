@@ -18,6 +18,7 @@ import { withMonitoring, createRequestLog, emitLog, writeAnalytics, categorizeEr
 import { createModel, parseSafetensorsToMap, createModelFromTensors, initMatmulWasm } from "./inference-cpu.js";
 import { MICRO_MODEL_B64, MICRO_MODEL_CONFIG } from "./micro-model-data.js";
 import MATMUL_WASM_B64 from "./matmul-wasm-b64.js";
+import { isWorkersAiAvailable, hybridOcr } from "./ai-fallback.js";
 
 /** @type {WebAssembly.Instance | null} */
 let wasmInstance = null;
@@ -54,6 +55,136 @@ let cpuWeightsBytes = null;
 
 /** @type {import("./inference-cpu.js").FalconOCRMicro | null} */
 let cpuModel = null;
+
+// ---------------------------------------------------------------------------
+// Multi-level caching infrastructure
+// ---------------------------------------------------------------------------
+
+/** Cache TTL: 24 hours for OCR results (images don't change). */
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Edge cache TTL: 1 hour (Cache API). */
+const EDGE_CACHE_TTL_S = 3600;
+
+/**
+ * Compute a SHA-256 hash of image bytes for cache keying.
+ *
+ * Uses the Web Crypto API available in Workers runtime.
+ *
+ * @param {Uint8Array} imageBytes
+ * @returns {Promise<string>} hex-encoded hash
+ */
+async function hashImageBytes(imageBytes) {
+  const digest = await crypto.subtle.digest("SHA-256", imageBytes);
+  const hashArray = new Uint8Array(digest);
+  let hex = "";
+  for (let i = 0; i < hashArray.length; i++) {
+    hex += hashArray[i].toString(16).padStart(2, "0");
+  }
+  return hex;
+}
+
+/**
+ * Check KV store for a cached OCR result.
+ *
+ * Returns null if no valid cached result exists.
+ * Cached entries expire after CACHE_TTL_MS (24 hours).
+ *
+ * @param {object} env
+ * @param {string} imageHash - SHA-256 hex hash of image bytes
+ * @returns {Promise<object|null>}
+ */
+async function getCachedResult(env, imageHash) {
+  if (!env.CACHE) return null;
+  try {
+    const cached = await env.CACHE.get(`ocr:${imageHash}`, "json");
+    if (cached && typeof cached.timestamp === "number" &&
+        Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return cached;
+    }
+  } catch (_err) {
+    // KV read failure is non-fatal — proceed with inference
+  }
+  return null;
+}
+
+/**
+ * Store an OCR result in the KV cache.
+ *
+ * @param {object} env
+ * @param {string} imageHash
+ * @param {object} result
+ * @param {object} ctx - ExecutionContext for waitUntil
+ */
+function setCachedResult(env, imageHash, result, ctx) {
+  if (!env.CACHE) return;
+  const entry = {
+    ...result,
+    timestamp: Date.now(),
+    cached: true,
+  };
+  // Non-blocking write: use waitUntil so the response is not delayed.
+  // KV TTL is set to match our application TTL (86400s = 24h).
+  ctx.waitUntil(
+    env.CACHE.put(`ocr:${imageHash}`, JSON.stringify(entry), {
+      expirationTtl: Math.ceil(CACHE_TTL_MS / 1000),
+    }).catch((_err) => {
+      // KV write failure is non-fatal
+    })
+  );
+}
+
+/**
+ * Try to serve from Cloudflare's edge Cache API.
+ *
+ * For identical request URLs, the Cache API serves responses from
+ * Cloudflare's global edge network without hitting the Worker at all
+ * on subsequent requests.
+ *
+ * @param {Request} request
+ * @param {string} imageHash
+ * @returns {Promise<Response|null>}
+ */
+async function getEdgeCachedResponse(request, imageHash) {
+  try {
+    const cache = caches.default;
+    const cacheUrl = new URL(request.url);
+    cacheUrl.searchParams.set("_hash", imageHash);
+    const cacheKey = new Request(cacheUrl.toString(), { method: "GET" });
+    return await cache.match(cacheKey);
+  } catch (_err) {
+    return null;
+  }
+}
+
+/**
+ * Store a response in Cloudflare's edge Cache API.
+ *
+ * @param {Request} request
+ * @param {string} imageHash
+ * @param {Response} response
+ * @param {object} ctx
+ */
+function setEdgeCachedResponse(request, imageHash, response, ctx) {
+  try {
+    const cache = caches.default;
+    const cacheUrl = new URL(request.url);
+    cacheUrl.searchParams.set("_hash", imageHash);
+    const cacheKey = new Request(cacheUrl.toString(), { method: "GET" });
+    const cachedResponse = new Response(response.body, {
+      status: response.status,
+      headers: new Headers(response.headers),
+    });
+    cachedResponse.headers.set(
+      "Cache-Control",
+      `public, max-age=${EDGE_CACHE_TTL_S}`
+    );
+    cachedResponse.headers.set("X-Cache-Status", "MISS");
+    ctx.waitUntil(cache.put(cacheKey, cachedResponse).catch(() => {}));
+  } catch (_err) {
+    // Edge cache write failure is non-fatal
+  }
+}
 
 /**
  * CpuDevice: JavaScript-only inference using the real forward pass.
@@ -456,7 +587,7 @@ export default {
       return new Response(null, { status: 204, headers: cors });
     }
 
-    return withMonitoring({
+    const result = await withMonitoring({
       request,
       rid,
       path,
@@ -493,7 +624,18 @@ export default {
                 elapsed_ms: elapsedMs,
                 estimated_remaining_ms: estimatedRemainingMs,
               } : undefined,
+              workers_ai_available: isWorkersAiAvailable(env),
+              cache: {
+                kv: !!env.CACHE,
+                edge: true,
+              },
               backends: {
+                "workers-ai": {
+                  status: isWorkersAiAvailable(env) ? "available" : "not-bound",
+                  note: isWorkersAiAvailable(env)
+                    ? "GPU inference via Workers AI (preferred)"
+                    : "Add [ai] binding to wrangler.toml for GPU inference",
+                },
                 "molt-gpu": {
                   status: modelReady ? "ready" : initError ? "error" : "loading",
                   device: modelReady ? device : undefined,
@@ -549,7 +691,92 @@ export default {
           : CpuDevice;
 
         if (path === "/ocr") {
+          // --- Multi-level cache check ---
+          // Extract image bytes early for hashing (re-read in handler if cache miss).
+          let imageHash = null;
+          try {
+            const clonedReq = request.clone();
+            const ct = clonedReq.headers.get("Content-Type") || "";
+            if (ct.includes("application/json")) {
+              const body = await clonedReq.json();
+              if (body.image && typeof body.image === "string") {
+                const raw = atob(body.image);
+                const bytes = new Uint8Array(raw.length);
+                for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+                imageHash = await hashImageBytes(bytes);
+              }
+            } else if (ct.includes("multipart/form-data")) {
+              const formData = await clonedReq.formData();
+              const file = formData.get("image");
+              if (file && (file instanceof File || file instanceof Blob)) {
+                const bytes = new Uint8Array(await file.arrayBuffer());
+                imageHash = await hashImageBytes(bytes);
+              }
+            }
+          } catch (_err) {
+            // Hash computation failure is non-fatal — skip cache
+          }
+
+          // Level 1: Edge Cache API (fastest — served from Cloudflare edge)
+          if (imageHash) {
+            const edgeCached = await getEdgeCachedResponse(request, imageHash);
+            if (edgeCached) {
+              const headers = new Headers(edgeCached.headers);
+              Object.entries(cors).forEach(([k, v]) => headers.set(k, v));
+              headers.set("X-Cache-Status", "HIT-EDGE");
+              headers.set("X-Request-ID", rid);
+              if (payment.receipt) headers.set("X-Payment-Receipt", payment.receipt);
+              return new Response(edgeCached.body, {
+                status: edgeCached.status,
+                headers,
+              });
+            }
+          }
+
+          // Level 2: KV cache (fast — no inference needed)
+          if (imageHash) {
+            const kvCached = await getCachedResult(env, imageHash);
+            if (kvCached) {
+              const cachedResponse = new Response(
+                JSON.stringify({
+                  ...kvCached,
+                  request_id: rid,
+                  cache: "hit-kv",
+                }),
+                {
+                  status: 200,
+                  headers: {
+                    ...cors,
+                    "Content-Type": "application/json",
+                    "X-Cache-Status": "HIT-KV",
+                  },
+                },
+              );
+              if (payment.receipt) {
+                cachedResponse.headers.set("X-Payment-Receipt", payment.receipt);
+              }
+              // Promote to edge cache for future requests
+              setEdgeCachedResponse(request, imageHash, cachedResponse.clone(), ctx);
+              return cachedResponse;
+            }
+          }
+
+          // Level 3: Compute inference (cache miss)
           const response = await handleOcrRequest(request, inferenceBackend, env, cors, rid, activeDevice);
+
+          // Cache the result for future requests
+          if (imageHash && response.status === 200) {
+            try {
+              const responseClone = response.clone();
+              const resultBody = await responseClone.json();
+              setCachedResult(env, imageHash, resultBody, ctx);
+              // Also store in edge cache
+              setEdgeCachedResponse(request, imageHash, response.clone(), ctx);
+            } catch (_err) {
+              // Cache write failure is non-fatal
+            }
+          }
+
           // Attach payment receipt to successful responses
           if (payment.receipt) {
             const headers = new Headers(response.headers);
@@ -581,5 +808,26 @@ export default {
         );
       },
     });
+
+    // Warm instance pool: keep the Worker isolate alive after responding.
+    // This ensures subsequent requests hit a warm instance with the model
+    // already loaded in memory, eliminating cold start latency.
+    // The no-op promise resolves immediately but signals to the runtime
+    // that this isolate should be kept warm.
+    ctx.waitUntil(
+      (async () => {
+        // Pre-warm model loading if not already started.
+        // On warm instances this is a no-op (ensureModelLoaded is idempotent).
+        if (!modelReady && !initPromise && !initError) {
+          try {
+            await ensureModelLoaded(env);
+          } catch (_err) {
+            // Non-fatal: model will be loaded on next request
+          }
+        }
+      })()
+    );
+
+    return result;
   },
 };
