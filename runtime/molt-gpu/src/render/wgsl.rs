@@ -262,9 +262,16 @@ impl Renderer for WgslRenderer {
         writeln!(out, "fn molt_kernel(@builtin(global_invocation_id) gid_vec: vec3<u32>) {{").unwrap();
         writeln!(out, "    let gid = gid_vec.x;").unwrap();
 
-        // Bounds check
+        // Bounds check: elide when shape specialization proves total_elements
+        // is exactly divisible by workgroup size (no out-of-bounds threads).
+        // Per Maczan 2026, every instruction in the dispatch path matters when
+        // per-operation overhead dominates at batch=1.
         let output_numel = kernel.bufs[0].st.numel();
-        writeln!(out, "    if (gid >= {}u) {{ return; }}", output_numel).unwrap();
+        let bounds_check_elim = kernel.spec.as_ref()
+            .is_some_and(|s| s.bounds_check_elim);
+        if !bounds_check_elim {
+            writeln!(out, "    if (gid >= {}u) {{ return; }}", output_numel).unwrap();
+        }
 
         // Check for reduce ops
         let has_reduce = kernel.ops.iter().any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));

@@ -27,6 +27,28 @@ struct WgpuPipeline {
     bind_group_layout: wgpu::BindGroupLayout,
 }
 
+/// Detected WebGPU backend type, used for adaptive optimization.
+///
+/// Per Maczan 2026 (arXiv 2604.02344), backend choice is the dominant
+/// performance factor for dispatch overhead, and fusion strategies that
+/// help on Vulkan can *regress* on Metal (e.g. RMSNorm fusion: 1.4-1.7x
+/// on Vulkan, 0.91-0.95x on Metal). We detect the backend at device
+/// creation and expose it so the fusion engine and scheduler can adapt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebGpuBackendKind {
+    /// Vulkan backend (Linux, Windows, Android). Per-dispatch: 24-36 us.
+    Vulkan,
+    /// Metal backend (macOS, iOS). Per-dispatch: 32-71 us.
+    /// RMSNorm fusion regresses; prefer tiled MLP fusion.
+    Metal,
+    /// Direct3D 12 backend (Windows). Per-dispatch: ~59-67 us.
+    Dx12,
+    /// OpenGL/OpenGL ES fallback. Performance characteristics unknown.
+    Gl,
+    /// Unknown or browser-abstracted backend.
+    Unknown,
+}
+
 /// WebGPU device backend via the `wgpu` crate.
 ///
 /// Supports both native and browser targets through WGSL shaders.
@@ -39,10 +61,18 @@ pub struct WebGpuDevice {
     pipelines: Mutex<HashMap<u64, WgpuPipeline>>,
     /// Counter for unique buffer IDs.
     next_buf_id: Mutex<usize>,
+    /// Detected backend, for adaptive fusion and scheduling decisions.
+    /// See `WebGpuBackendKind` doc for per-backend dispatch overhead numbers.
+    backend_kind: WebGpuBackendKind,
 }
 
 impl WebGpuDevice {
     /// Create a new WebGPU device. Blocks until adapter + device are acquired.
+    ///
+    /// Detects the underlying graphics backend (Vulkan, Metal, Dx12) so the
+    /// fusion engine and scheduler can apply backend-adaptive optimizations.
+    /// Per Maczan 2026, backend choice is the dominant factor for dispatch
+    /// overhead: 24-36 us on Vulkan, 32-71 us on Metal, ~60 us on D3D12.
     pub fn new() -> Result<Self, DeviceError> {
         let instance = Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions {
@@ -50,6 +80,15 @@ impl WebGpuDevice {
             ..Default::default()
         }))
         .ok_or_else(|| DeviceError::AllocationFailed("no WebGPU adapter found".into()))?;
+
+        // Detect backend for adaptive optimization decisions.
+        let backend_kind = match adapter.get_info().backend {
+            wgpu::Backend::Vulkan => WebGpuBackendKind::Vulkan,
+            wgpu::Backend::Metal => WebGpuBackendKind::Metal,
+            wgpu::Backend::Dx12 => WebGpuBackendKind::Dx12,
+            wgpu::Backend::Gl => WebGpuBackendKind::Gl,
+            _ => WebGpuBackendKind::Unknown,
+        };
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &DeviceDescriptor {
@@ -68,7 +107,17 @@ impl WebGpuDevice {
             live_buffers: Mutex::new(HashMap::new()),
             pipelines: Mutex::new(HashMap::new()),
             next_buf_id: Mutex::new(1),
+            backend_kind,
         })
+    }
+
+    /// Returns the detected backend kind for adaptive optimization.
+    ///
+    /// Callers (fusion engine, scheduler) use this to select backend-specific
+    /// strategies. For example, RMSNorm fusion should be skipped on Metal
+    /// where it regresses performance (Maczan 2026, Table 9).
+    pub fn backend_kind(&self) -> WebGpuBackendKind {
+        self.backend_kind
     }
 
     fn hash_source(source: &str) -> u64 {
@@ -328,6 +377,104 @@ impl Executor for WebGpuDevice {
 
     fn synchronize(&self) -> Result<(), DeviceError> {
         self.device.poll(wgpu::Maintain::Wait);
+        Ok(())
+    }
+}
+
+/// Dispatch specification for batched execution.
+///
+/// Used with `exec_batch()` to encode multiple dispatches into a single
+/// command buffer before submitting once, reducing submission overhead
+/// (40% of per-dispatch cost per Maczan 2026).
+pub struct BatchDispatch<'a> {
+    /// Compiled program to execute.
+    pub prog: &'a CompiledProgram,
+    /// Buffer bindings for this dispatch.
+    pub bufs: &'a [&'a DeviceBuffer],
+    /// Workgroup grid dimensions.
+    pub grid: [u32; 3],
+}
+
+impl WebGpuDevice {
+    /// Execute multiple dispatches in a single command buffer submission.
+    ///
+    /// Per Maczan 2026 (arXiv 2604.02344), submission accounts for ~40% of
+    /// per-dispatch overhead. For non-autoregressive workloads (image
+    /// processing, embedding computation), batching all dispatches for a
+    /// forward pass into one `queue.submit()` eliminates redundant submission
+    /// overhead.
+    ///
+    /// Note: autoregressive (token-by-token) inference requires GPU->CPU sync
+    /// per token, which negates command batching benefits. Use `exec()` for
+    /// autoregressive workloads.
+    pub fn exec_batch(&self, dispatches: &[BatchDispatch<'_>]) -> Result<(), DeviceError> {
+        if dispatches.is_empty() {
+            return Ok(());
+        }
+
+        let pipelines = self.pipelines.lock().unwrap();
+        let live = self.live_buffers.lock().unwrap();
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("molt-gpu-batch"),
+        });
+
+        for (dispatch_idx, dispatch) in dispatches.iter().enumerate() {
+            let hash: u64 = dispatch.prog.entry.parse()
+                .map_err(|_| DeviceError::InvalidArgument("invalid program hash".into()))?;
+
+            let wgpu_pipeline = pipelines.get(&hash)
+                .ok_or_else(|| DeviceError::InvalidArgument(
+                    format!("pipeline not found for dispatch {}", dispatch_idx),
+                ))?;
+
+            // Resolve buffer handles
+            let mut wgpu_bufs = Vec::with_capacity(dispatch.bufs.len());
+            for buf in dispatch.bufs {
+                let id = match &buf.handle {
+                    BufferHandle::Cpu(bytes) => {
+                        usize::from_le_bytes(
+                            bytes[..std::mem::size_of::<usize>()].try_into().unwrap(),
+                        )
+                    }
+                    #[cfg(target_os = "macos")]
+                    _ => return Err(DeviceError::InvalidArgument("not a WebGPU buffer".into())),
+                };
+                let wgpu_buf = live.get(&id)
+                    .ok_or_else(|| DeviceError::InvalidArgument(
+                        format!("buffer not found in batch dispatch {}", dispatch_idx),
+                    ))?;
+                wgpu_bufs.push(wgpu_buf);
+            }
+
+            let bind_entries: Vec<BindGroupEntry<'_>> = wgpu_bufs.iter().enumerate()
+                .map(|(i, wgpu_buf)| BindGroupEntry {
+                    binding: i as u32,
+                    resource: wgpu_buf.as_entire_binding(),
+                })
+                .collect();
+
+            let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
+                label: Some("molt-gpu-batch-bind"),
+                layout: &wgpu_pipeline.bind_group_layout,
+                entries: &bind_entries,
+            });
+
+            {
+                let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("molt-gpu-batch-pass"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&wgpu_pipeline.pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.dispatch_workgroups(dispatch.grid[0], dispatch.grid[1], dispatch.grid[2]);
+            }
+        }
+
+        drop(live);
+        drop(pipelines);
+
+        self.queue.submit(std::iter::once(encoder.finish()));
         Ok(())
     }
 }

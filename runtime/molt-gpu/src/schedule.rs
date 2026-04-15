@@ -17,7 +17,37 @@ use crate::shapetracker::ShapeTracker;
 /// Common workgroup sizes to try, in descending order of preference.
 /// We pick the largest that evenly divides the total element count,
 /// falling back to 1 (which always divides).
+///
+/// Default preference: 256 first (optimal for Vulkan/NVIDIA per Maczan 2026).
+/// Use `preferred_local_sizes_for_backend()` for backend-adaptive selection.
 const PREFERRED_LOCAL_SIZES: [u32; 9] = [256, 128, 64, 32, 16, 8, 4, 2, 1];
+
+/// Backend-adaptive workgroup size preferences.
+///
+/// Per Maczan 2026 (arXiv 2604.02344), backend choice is the dominant factor
+/// for dispatch overhead, and within Metal alone there is 2.2x variance
+/// between implementations. Workgroup size selection should account for this.
+///
+/// Returns the preferred local size array for the given backend.
+#[cfg(feature = "webgpu-backend")]
+pub fn preferred_local_sizes_for_backend(
+    backend: crate::device::webgpu::WebGpuBackendKind,
+) -> &'static [u32] {
+    use crate::device::webgpu::WebGpuBackendKind;
+    match backend {
+        // Vulkan (NVIDIA, AMD): 256 is optimal, matches CUDA warp scheduling.
+        WebGpuBackendKind::Vulkan => &PREFERRED_LOCAL_SIZES,
+        // Metal (Apple): Prefer 128 over 256 to reduce register pressure on
+        // Apple GPU's TBDR architecture. Maczan shows Metal-specific regressions
+        // with aggressive fusion; conservative workgroup sizes help.
+        WebGpuBackendKind::Metal => &[128, 64, 256, 32, 16, 8, 4, 2, 1],
+        // D3D12 (Windows/NVIDIA): 256 works well, but 128 is safer fallback
+        // for Intel integrated GPUs with limited EU count.
+        WebGpuBackendKind::Dx12 => &[256, 128, 64, 32, 16, 8, 4, 2, 1],
+        // GL/Unknown: conservative default.
+        WebGpuBackendKind::Gl | WebGpuBackendKind::Unknown => &[64, 128, 32, 256, 16, 8, 4, 2, 1],
+    }
+}
 
 /// Schedule a LazyOp DAG into a list of FusedKernels.
 ///
