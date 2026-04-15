@@ -689,6 +689,7 @@ export default {
             error: `Workers AI OCR failed: ${err.message}`,
             request_id: rid,
             fallback_available: true,
+            fallback_url: "/api/ocr/paddle",
           }),
           {
             status: 503,

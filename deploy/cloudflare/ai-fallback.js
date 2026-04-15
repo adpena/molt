@@ -28,9 +28,11 @@
  * @typedef {Object} AiFallbackResult
  * @property {string} text - Extracted text
  * @property {number} confidence - Confidence score [0, 1]
- * @property {string} model - Model identifier used
+ * @property {string} model - Full model identifier used
+ * @property {string} model_used - Short model name for client consumption
  * @property {string} backend - "workers-ai" | "local-cpu"
  * @property {number} time_ms - Inference time
+ * @property {number} retries - Number of retry attempts on the serving model
  */
 
 /**
@@ -52,15 +54,21 @@ Output raw text only, no interpretation.`;
 
 /**
  * Preferred Workers AI models for OCR, in order of quality.
- * Each entry includes the model ID and a fallback flag.
  *
- * @type {Array<{id: string, maxTokens: number}>}
+ * The primary model (Gemma 3 12B) is retried with exponential backoff
+ * on 503/capacity errors.  Fallback models each get a single attempt.
+ *
+ * @type {Array<{id: string, name: string, maxTokens: number, retries: number, delays: number[]}>}
  */
 const AI_MODELS = [
-  { id: "@cf/google/gemma-3-12b-it", maxTokens: 2048 },
-  { id: "@cf/meta/llama-3.2-11b-vision-instruct", maxTokens: 2048 },
-  { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", maxTokens: 2048 },
+  { id: "@cf/google/gemma-3-12b-it", name: "gemma-3-12b", maxTokens: 2048, retries: 3, delays: [200, 500, 1000] },
+  { id: "@cf/meta/llama-3.2-11b-vision-instruct", name: "llama-3.2-11b", maxTokens: 2048, retries: 0, delays: [] },
+  { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", name: "mistral-small-3.1", maxTokens: 2048, retries: 0, delays: [] },
+  { id: "@cf/meta/llama-3.2-3b-instruct", name: "llama-3.2-3b", maxTokens: 2048, retries: 0, delays: [] },
 ];
+
+/** Total timeout for the entire retry+fallback chain (ms). */
+const AI_TOTAL_TIMEOUT_MS = 5000;
 
 /**
  * Check if Workers AI binding is available and functional.
@@ -73,10 +81,33 @@ export function isWorkersAiAvailable(env) {
 }
 
 /**
- * Run OCR inference via Cloudflare Workers AI.
+ * Determine whether an error is a transient capacity error (503)
+ * that warrants a retry or model fallback.
  *
- * Tries each model in AI_MODELS order until one succeeds.
- * Converts image bytes to base64 for the API.
+ * @param {Error} err
+ * @returns {boolean}
+ */
+function isCapacityError(err) {
+  const msg = (err.message || "").toLowerCase();
+  return msg.includes("503") ||
+    msg.includes("capacity") ||
+    msg.includes("overloaded") ||
+    msg.includes("rate limit") ||
+    msg.includes("too many requests");
+}
+
+/**
+ * Run OCR inference via Cloudflare Workers AI with exponential backoff
+ * retries on the primary model and ordered fallback to smaller models.
+ *
+ * Retry strategy:
+ *   1. Primary model (Gemma 3 12B): up to 3 retries with 200ms/500ms/1000ms backoff
+ *   2. Fallback models: 1 attempt each, no retries (time budget already spent)
+ *   3. Total hard timeout: 5 seconds for the entire chain
+ *
+ * On success, the response includes `model_used` indicating which model
+ * served the request, and `retries` counting how many attempts were made
+ * on the model that ultimately succeeded.
  *
  * @param {object} env - Worker environment with AI binding
  * @param {Uint8Array} imageBytes - Raw image file bytes (JPEG/PNG)
@@ -94,46 +125,88 @@ export async function runWorkersAiOcr(env, imageBytes, options = {}) {
   const prompt = options.prompt || (options.isInvoice ? INVOICE_OCR_PROMPT : OCR_PROMPT);
   const maxTokens = options.maxTokens || 2048;
   const start = Date.now();
+  const deadline = start + AI_TOTAL_TIMEOUT_MS;
 
-  // Convert image to base64 for the AI API
+  // Convert image to base64 once (shared across all attempts)
   const base64Image = uint8ArrayToBase64(imageBytes);
 
   let lastError = null;
+  let totalAttempts = 0;
 
   for (const model of AI_MODELS) {
-    try {
-      // Workers AI vision models accept images in multiple formats.
-      // Llama 3.2 Vision uses content array with image_url data URIs.
-      // Fall back to top-level image field for other models.
-      const result = await env.AI.run(model.id, {
-        messages: [
-          {
-            role: "user",
-            content: `${prompt}\n\n![image](data:image/png;base64,${base64Image})`,
-          },
-        ],
-        max_tokens: Math.min(maxTokens, model.maxTokens),
-      });
+    const maxAttempts = model.retries + 1; // retries + initial attempt
 
-      const text = extractTextFromAiResult(result);
-      if (text && text.length > 0) {
-        return {
-          text,
-          confidence: estimateConfidence(text),
-          model: model.id,
-          backend: "workers-ai",
-          time_ms: Date.now() - start,
-        };
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // Hard timeout: abort if we've exceeded the 5s budget
+      if (Date.now() >= deadline) {
+        console.warn(`Workers AI timeout reached after ${totalAttempts} total attempts across models`);
+        throw new Error(
+          `Workers AI timeout: all models exhausted within ${AI_TOTAL_TIMEOUT_MS}ms. ` +
+          `Last error: ${lastError?.message || "unknown"}`
+        );
       }
-    } catch (err) {
-      lastError = err;
-      console.warn(`Workers AI model ${model.id} failed: ${err.message}`);
-      // Try next model
+
+      // Exponential backoff sleep (only on retries, not the first attempt)
+      if (attempt > 0) {
+        const delay = model.delays[attempt - 1];
+        // Don't sleep past the deadline
+        const effectiveDelay = Math.min(delay, deadline - Date.now());
+        if (effectiveDelay > 0) {
+          await new Promise((resolve) => setTimeout(resolve, effectiveDelay));
+        }
+        // Re-check deadline after sleep
+        if (Date.now() >= deadline) {
+          console.warn(`Workers AI timeout reached during backoff for ${model.name}`);
+          break;
+        }
+      }
+
+      totalAttempts++;
+
+      try {
+        const result = await env.AI.run(model.id, {
+          messages: [
+            {
+              role: "user",
+              content: `${prompt}\n\n![image](data:image/png;base64,${base64Image})`,
+            },
+          ],
+          max_tokens: Math.min(maxTokens, model.maxTokens),
+        });
+
+        const text = extractTextFromAiResult(result);
+        if (text && text.length > 0) {
+          return {
+            text,
+            confidence: estimateConfidence(text),
+            model: model.id,
+            model_used: model.name,
+            backend: "workers-ai",
+            time_ms: Date.now() - start,
+            retries: attempt,
+          };
+        }
+
+        // Empty response: treat as a soft failure, try next model
+        console.warn(`Workers AI model ${model.name} returned empty text (attempt ${attempt + 1}/${maxAttempts})`);
+        lastError = new Error(`${model.name} returned empty response`);
+      } catch (err) {
+        lastError = err;
+        console.warn(`Workers AI model ${model.name} attempt ${attempt + 1}/${maxAttempts} failed: ${err.message}`);
+
+        if (isCapacityError(err)) {
+          // Capacity error: retry (if retries remain) or fall through to next model
+          continue;
+        }
+        // Non-capacity error (e.g., bad request, auth failure): skip retries, try next model
+        break;
+      }
     }
   }
 
   throw new Error(
-    `All Workers AI models failed. Last error: ${lastError?.message || "unknown"}`
+    `All Workers AI models failed after ${totalAttempts} total attempts. ` +
+    `Last error: ${lastError?.message || "unknown"}`
   );
 }
 
@@ -257,8 +330,10 @@ export async function hybridOcr(env, imageBytes, localInferenceFn, options = {})
       text: result.text || "",
       confidence: result.confidence || 0.0,
       model: "falcon-ocr-int8",
+      model_used: "falcon-ocr-int8",
       backend: "local-cpu",
       time_ms: Date.now() - start,
+      retries: 0,
     };
   }
 
