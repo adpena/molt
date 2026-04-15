@@ -261,6 +261,130 @@ pub mod interpret {
         }
     }
 
+    /// Detect and execute a fused softmax pattern:
+    /// REDUCE_MAX -> SUB -> EXP2 -> REDUCE_SUM -> RECIPROCAL -> MUL
+    ///
+    /// This is numerically equivalent to: softmax(x) = exp2(x - max(x)) / sum(exp2(x - max(x)))
+    /// Executes as a single pass per output row, avoiding 6 separate kernel
+    /// interpretations and intermediate buffer allocations.
+    ///
+    /// `input_buf` is the raw f32 input, `output_buf` is pre-allocated.
+    /// `n` is the number of output rows, `reduce_size` is elements per row.
+    #[inline(never)]
+    pub fn fused_softmax(
+        input_buf: &[u8],
+        output_buf: &mut [u8],
+        n: usize,
+        reduce_size: usize,
+    ) {
+        for row in 0..n {
+            let row_start = row * reduce_size;
+
+            // Pass 1: find max for numerical stability
+            let mut max_val = f64::NEG_INFINITY;
+            for j in 0..reduce_size {
+                let idx = row_start + j;
+                let offset = idx * 4;
+                if offset + 4 > input_buf.len() {
+                    continue;
+                }
+                let val = f32::from_le_bytes(
+                    input_buf[offset..offset + 4].try_into().unwrap(),
+                ) as f64;
+                if val > max_val {
+                    max_val = val;
+                }
+            }
+
+            // Pass 2: compute exp2(x - max) and sum
+            let mut exp_vals = vec![0.0f64; reduce_size];
+            let mut sum = 0.0f64;
+            for (j, exp_slot) in exp_vals.iter_mut().enumerate() {
+                let idx = row_start + j;
+                let offset = idx * 4;
+                if offset + 4 > input_buf.len() {
+                    continue;
+                }
+                let val = f32::from_le_bytes(
+                    input_buf[offset..offset + 4].try_into().unwrap(),
+                ) as f64;
+                let e = (val - max_val).exp2();
+                *exp_slot = e;
+                sum += e;
+            }
+
+            // Pass 3: normalize
+            let inv_sum = 1.0 / sum;
+            for (j, &exp_val) in exp_vals.iter().enumerate() {
+                let idx = row_start + j;
+                let offset = idx * 4;
+                if offset + 4 <= output_buf.len() {
+                    let result = (exp_val * inv_sum) as f32;
+                    output_buf[offset..offset + 4].copy_from_slice(&result.to_le_bytes());
+                }
+            }
+        }
+    }
+
+    /// Detect and execute a fused RMSNorm pattern:
+    /// MUL(x,x) -> REDUCE_SUM -> ADD(eps) -> SQRT -> RECIPROCAL -> MUL(x, ...)
+    ///
+    /// Equivalent to: rmsnorm(x) = x / sqrt(mean(x^2) + eps)
+    /// (Note: mean = sum/N, so the caller must account for the division by N
+    /// in the eps or post-processing.)
+    ///
+    /// Executes as a single pass per output row instead of 6 separate kernels.
+    ///
+    /// `input_buf` is the raw f32 input, `output_buf` is pre-allocated.
+    /// `n` is the number of rows, `dim` is elements per row, `eps` is the
+    /// normalization epsilon.
+    #[inline(never)]
+    pub fn fused_rms_norm(
+        input_buf: &[u8],
+        output_buf: &mut [u8],
+        n: usize,
+        dim: usize,
+        eps: f64,
+    ) {
+        for row in 0..n {
+            let row_start = row * dim;
+
+            // Pass 1: compute sum of squares
+            let mut sum_sq = 0.0f64;
+            for j in 0..dim {
+                let idx = row_start + j;
+                let offset = idx * 4;
+                if offset + 4 > input_buf.len() {
+                    continue;
+                }
+                let val = f32::from_le_bytes(
+                    input_buf[offset..offset + 4].try_into().unwrap(),
+                ) as f64;
+                sum_sq += val * val;
+            }
+
+            // Compute 1/sqrt(mean(x^2) + eps)
+            let mean_sq = sum_sq / dim as f64;
+            let inv_rms = 1.0 / (mean_sq + eps).sqrt();
+
+            // Pass 2: scale each element
+            for j in 0..dim {
+                let idx = row_start + j;
+                let offset = idx * 4;
+                if offset + 4 > input_buf.len() {
+                    continue;
+                }
+                let val = f32::from_le_bytes(
+                    input_buf[offset..offset + 4].try_into().unwrap(),
+                ) as f64;
+                let result = (val * inv_rms) as f32;
+                if offset + 4 <= output_buf.len() {
+                    output_buf[offset..offset + 4].copy_from_slice(&result.to_le_bytes());
+                }
+            }
+        }
+    }
+
     /// Interpret and execute a FusedKernel on CPU buffers.
     /// `bufs` are raw byte slices matching kernel.bufs order.
     /// bufs[0] is the output buffer (written to).
