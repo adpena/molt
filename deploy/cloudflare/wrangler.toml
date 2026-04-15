@@ -42,7 +42,8 @@ enabled = true
 head_sampling_rate = 0.1
 
 # Limits — Falcon-OCR inference is compute-heavy.
-# Workers Paid plan: 30s CPU, 128 MB memory.
-# NOTE: cpu_ms requires Workers Paid plan. Commented out for Free plan deployment.
-# [limits]
-# cpu_ms = 30000
+# Workers Paid plan supports up to 256 MB memory with explicit limits config.
+# INT4 quantized model is ~129 MB; needs headroom for JS runtime + activations.
+[limits]
+cpu_ms = 30000
+memory_mb = 256
