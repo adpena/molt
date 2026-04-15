@@ -15,6 +15,8 @@ pub mod webgpu;
 pub mod webgl2;
 #[cfg(feature = "opencl-backend")]
 pub mod opencl;
+#[cfg(feature = "ane-backend")]
+pub mod ane;
 
 /// Opaque GPU buffer handle backed by a device-specific implementation.
 #[derive(Debug)]

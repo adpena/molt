@@ -12,6 +12,7 @@ pub mod cuda;
 pub mod hip;
 pub mod glsl;
 pub mod opencl;
+pub mod mil;
 
 use crate::dtype::DType;
 use crate::ops::PrimitiveOp;

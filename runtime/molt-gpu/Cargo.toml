@@ -21,6 +21,7 @@ wasm-backend = ["cpu-backend"]
 webgpu-backend = ["dep:wgpu", "dep:pollster"]
 webgl2-backend = []
 opencl-backend = []
+ane-backend = []
 simd-accel = ["dep:wide"]
 
 # NOTE: Release profile optimizations (lto = "thin", codegen-units = 1,
