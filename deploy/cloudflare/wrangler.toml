@@ -1,0 +1,47 @@
+# Cloudflare Worker configuration for Falcon-OCR inference.
+#
+# This Worker loads the molt-compiled WASM module, fetches weights from
+# R2, and serves OCR requests over a REST API.
+#
+# Deploy: wrangler deploy --config deploy/cloudflare/wrangler.toml
+
+name = "falcon-ocr"
+main = "worker.js"
+compatibility_date = "2026-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Smart Placement: colocate with R2 bucket to minimize weight-fetch latency.
+[placement]
+mode = "smart"
+
+# R2 binding for weight storage.  Weights are NOT bundled in the Worker
+# (they exceed the 10 MB Worker size limit).  The Worker fetches them
+# from R2 on cold start and caches the initialized model in-memory.
+[[r2_buckets]]
+binding = "WEIGHTS"
+bucket_name = "falcon-ocr-weights"
+
+# KV binding for caching compiled WASM modules and config.
+[[kv_namespaces]]
+binding = "CACHE"
+id = "falcon-ocr-cache"
+
+[vars]
+# Public vars — secrets go via `wrangler secret put`.
+CORS_ORIGIN = "https://freeinvoicemaker.app"
+MAX_IMAGE_BYTES = "10485760"
+MODEL_VERSION = "0.1.0"
+
+# Secrets (set via `wrangler secret put`):
+# X402_WALLET_ADDRESS — wallet for x402 payment verification
+# X402_VERIFICATION_URL — x402 verification endpoint
+
+[observability]
+[observability.logs]
+enabled = true
+head_sampling_rate = 0.1
+
+# Limits — Falcon-OCR inference is compute-heavy.
+# Workers Paid plan: 30s CPU, 128 MB memory.
+[limits]
+cpu_ms = 30000
