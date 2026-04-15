@@ -249,39 +249,10 @@
       (local.set $p
         (f32x4.add (local.get $c0) (f32x4.mul (local.get $xf) (local.get $p))))
       ;; Reconstruct: result = p * 2^xi
-      ;; 2^xi = reinterpret((floor(x) + 127) << 23) as float
-      ;; xi is integer-valued f32. Convert to i32, add 127, shift left 23.
-      (local.set $result
-        (f32x4.mul
-          (local.get $p)
-          ;; Construct 2^xi via IEEE 754 exponent manipulation
-          ;; i32 = (int(xi) + 127) << 23, then reinterpret as f32
-          (v128.load
-            ;; We need to construct this in-place. Use a scratch approach:
-            ;; Since WASM doesn't have direct i32x4->f32x4 reinterpret in all engines
-            ;; cleanly, we use the identity: 2^n = float_from_bits((n+127)<<23)
-            ;; But we need to do this per-lane. Let's use i32x4 ops.
-            (i32.add (local.get $a) (i32.mul (local.get $i) (i32.const 4))))))
-      ;; Actually, the above is wrong. Let's do it properly with i32x4 operations.
-      ;; Convert xi (f32x4 with integer values) to i32x4
-      ;; Use i32x4.trunc_sat_f32x4_s to convert
-      ;; Then add 127, shl 23, reinterpret as f32x4
-      (local.set $result
-        (f32x4.mul
-          (local.get $p)
-          ;; 2^xi via bit manipulation
-          (f32x4.convert_i32x4_s
-            (i32x4.shl
-              (i32x4.add
-                (i32x4.trunc_sat_f32x4_s (local.get $xi))
-                (v128.const i32x4 127 127 127 127))
-              (i32.const 23)))))
-      ;; Wait -- f32x4.convert_i32x4_s converts int to float, but we want
-      ;; reinterpret. WASM doesn't have v128.reinterpret, but since v128 is
-      ;; just bits, we can store+load from the same location, or just
-      ;; use the bit pattern directly. In WASM, v128 operations are type-agnostic
-      ;; on the bits. So i32x4.shl result IS the f32x4 reinterpretation.
-      ;; Remove the convert and just use the bit pattern directly.
+      ;; 2^xi via IEEE 754 exponent manipulation:
+      ;;   bits = (trunc_to_i32(xi) + 127) << 23
+      ;; In WASM, v128 is type-agnostic on bits, so the i32x4.shl result
+      ;; IS the f32x4 reinterpretation (no explicit reinterpret needed).
       (local.set $result
         (f32x4.mul
           (local.get $p)
