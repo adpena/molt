@@ -376,7 +376,7 @@ def test_x402_required_for_ocr_endpoints():
     # Health check must be BEFORE payment verification
     lines = source.split("\n")
     health_line = next(i for i, l in enumerate(lines) if "/health" in l and "path" in l)
-    payment_line = next(i for i, l in enumerate(lines) if "verifyX402Payment" in l and "await" in l)
+    payment_line = next(i for i, l in enumerate(lines) if "verifyX402" in l and "await" in l)
 
     assert health_line < payment_line, (
         "/health must be handled before x402 verification"
