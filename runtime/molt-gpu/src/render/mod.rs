@@ -5,6 +5,8 @@
 //! elementwise suffix) plus buffer bindings and work distribution.
 
 pub mod msl;
+#[cfg(feature = "metal4")]
+pub mod msl4;
 pub mod wgsl;
 pub mod cuda;
 pub mod hip;

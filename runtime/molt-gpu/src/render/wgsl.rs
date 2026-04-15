@@ -7,6 +7,10 @@
 //! - Bitcast syntax: `bitcast<T>(x)`
 //! - Thread index: `@builtin(global_invocation_id) gid: vec3<u32>`
 //! - Workgroup size annotation: `@workgroup_size(X, Y, Z)`
+//!
+//! WebGPU subgroups (Chrome 134+, Edge 144+): when enabled, reduction ops
+//! use `subgroupAdd()` / `subgroupMax()` instead of sequential loops for
+//! the final reduction within a subgroup.
 
 use std::fmt::Write;
 
@@ -14,8 +18,35 @@ use crate::dtype::DType;
 use crate::ops::PrimitiveOp;
 use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, Renderer};
 
+/// Configuration for the WGSL renderer.
+#[derive(Debug, Clone, Default)]
+pub struct WgslRendererConfig {
+    /// When true, emit `enable subgroups;` and use `subgroupAdd()` /
+    /// `subgroupMax()` for reduction operations. Requires WebGPU subgroups
+    /// support (Chrome 134+, Edge 144+).
+    pub use_subgroups: bool,
+}
+
 /// WebGPU Shading Language renderer for all 26 primitive ops.
-pub struct WgslRenderer;
+///
+/// Optionally uses WebGPU subgroup operations for efficient reductions
+/// when `config.use_subgroups` is true.
+pub struct WgslRenderer {
+    /// Renderer configuration. When `None`, uses default (no subgroups).
+    config: WgslRendererConfig,
+}
+
+impl WgslRenderer {
+    /// Create a new WGSL renderer with default configuration (no subgroups).
+    pub fn new() -> Self {
+        Self { config: WgslRendererConfig::default() }
+    }
+
+    /// Create a new WGSL renderer with the given configuration.
+    pub fn with_config(config: WgslRendererConfig) -> Self {
+        Self { config }
+    }
+}
 
 impl WgslRenderer {
     /// Format a constant value as WGSL literal.
@@ -154,9 +185,21 @@ impl WgslRenderer {
     }
 }
 
+impl Default for WgslRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Renderer for WgslRenderer {
     fn render(&self, kernel: &FusedKernel) -> String {
         let mut out = String::with_capacity(4096);
+
+        // Emit subgroup enable directive when configured.
+        if self.config.use_subgroups {
+            writeln!(out, "enable subgroups;").unwrap();
+            writeln!(out).unwrap();
+        }
 
         // Buffer bindings as storage buffers
         for (i, binding) in kernel.bufs.iter().enumerate() {
@@ -252,6 +295,21 @@ impl Renderer for WgslRenderer {
                     _ => unreachable!(),
                 }
                 writeln!(out, "    }}").unwrap();
+            }
+
+            // Apply subgroup reduction when enabled.
+            if self.config.use_subgroups {
+                match reduce_op.op {
+                    PrimitiveOp::ReduceSum => {
+                        writeln!(out, "    // WebGPU subgroup reduction").unwrap();
+                        writeln!(out, "    acc = subgroupAdd(acc);").unwrap();
+                    }
+                    PrimitiveOp::ReduceMax => {
+                        writeln!(out, "    // WebGPU subgroup reduction").unwrap();
+                        writeln!(out, "    acc = subgroupMax(acc);").unwrap();
+                    }
+                    _ => unreachable!(),
+                }
             }
 
             writeln!(out, "    var v{}: {} = acc;", reduce_idx, reduce_dtype.wgsl_type()).unwrap();

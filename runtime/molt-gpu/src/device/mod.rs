@@ -7,6 +7,8 @@ pub mod arena;
 #[cfg(target_os = "macos")]
 pub mod metal;
 pub mod cpu;
+#[cfg(feature = "wasm-backend")]
+pub mod wasm_cpu;
 #[cfg(feature = "webgpu-backend")]
 pub mod webgpu;
 #[cfg(feature = "webgl2-backend")]
