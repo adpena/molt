@@ -47,9 +47,9 @@ Molt's GPU compute subsystem implements all of deep learning with 26 compute pri
 
 ## Location
 
-- **Rust crate**: `runtime/molt-gpu/` (~10,700 LOC, 33 files)
-- **Python API**: `src/molt/stdlib/tinygrad/` (17 files, ~9,300 LOC)
-- **Tests**: `runtime/molt-gpu/tests/` (13 test files, 207 tests)
+- **Rust crate**: `runtime/molt-gpu/` (48 files, 15,748 LOC — 25 source, 21 test, 2 bench)
+- **Python API**: `src/molt/stdlib/tinygrad/` (21 files, 7,291 LOC)
+- **Tests**: `runtime/molt-gpu/tests/` (21 test files, 323 tests)
 - **Benchmarks**: `runtime/molt-gpu/benches/` (2 files)
 
 ## The 3 OpTypes

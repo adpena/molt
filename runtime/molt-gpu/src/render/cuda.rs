@@ -167,7 +167,9 @@ impl CudaRenderer {
             PrimitiveOp::Reciprocal => format!("(1.0f / {})", src(0)),
 
             PrimitiveOp::Trunc => format!("truncf({})", src(0)),
-            PrimitiveOp::Max => format!("fmaxf({}, {})", src(0), src(1)),
+            // NaN-propagating max: if either operand is NaN, result is NaN.
+            // fmaxf is NaN-suppressing (IEEE 754 minNum), so we add an explicit NaN check.
+            PrimitiveOp::Max => format!("(isnan({a}) || isnan({b}) ? NAN : fmaxf({a}, {b}))", a = src(0), b = src(1)),
             PrimitiveOp::Where => format!("({} ? {} : {})", src(0), src(1), src(2)),
             PrimitiveOp::Cast => format!("(({})({}))", dst_type, src(0)),
             PrimitiveOp::Bitcast => format!("*reinterpret_cast<const {}*>(&{})", dst_type, src(0)),
@@ -303,7 +305,7 @@ impl Renderer for CudaRenderer {
                 let src_var = format!("v{}", reduce_idx - 1);
                 match reduce_op.op {
                     PrimitiveOp::ReduceSum => writeln!(out, "        acc += {};", src_var).unwrap(),
-                    PrimitiveOp::ReduceMax => writeln!(out, "        acc = fmaxf(acc, {});", src_var).unwrap(),
+                    PrimitiveOp::ReduceMax => writeln!(out, "        acc = (isnan({v}) || isnan(acc)) ? NAN : fmaxf(acc, {v});", v = src_var).unwrap(),
                     _ => unreachable!(),
                 }
                 writeln!(out, "    }}").unwrap();
@@ -319,7 +321,10 @@ impl Renderer for CudaRenderer {
                 };
                 match reduce_op.op {
                     PrimitiveOp::ReduceSum => writeln!(out, "        acc += {};", src_expr).unwrap(),
-                    PrimitiveOp::ReduceMax => writeln!(out, "        acc = fmaxf(acc, {});", src_expr).unwrap(),
+                    PrimitiveOp::ReduceMax => {
+                        // Avoid double-evaluation of complex buffer read expressions
+                        writeln!(out, "        {{ float _rv = {}; acc = (isnan(_rv) || isnan(acc)) ? NAN : fmaxf(acc, _rv); }}", src_expr).unwrap();
+                    }
                     _ => unreachable!(),
                 }
                 writeln!(out, "    }}").unwrap();

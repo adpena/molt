@@ -191,7 +191,9 @@ impl OpenClRenderer {
             }
 
             PrimitiveOp::Trunc => format!("trunc({})", src(0)),
-            PrimitiveOp::Max => format!("fmax({}, {})", src(0), src(1)),
+            // NaN-propagating max: if either operand is NaN, result is NaN.
+            // fmax is NaN-suppressing (IEEE 754 minNum), so we add an explicit NaN check.
+            PrimitiveOp::Max => format!("(isnan({a}) || isnan({b}) ? NAN : fmax({a}, {b}))", a = src(0), b = src(1)),
             PrimitiveOp::Where => format!("({} ? {} : {})", src(0), src(1), src(2)),
             PrimitiveOp::Cast => format!("(({})({}))", dst_type, src(0)),
             PrimitiveOp::Bitcast => format!("as_{}({})", dst_type, src(0)),
@@ -340,7 +342,7 @@ impl Renderer for OpenClRenderer {
                 let src_var = format!("v{}", reduce_idx - 1);
                 match reduce_op.op {
                     PrimitiveOp::ReduceSum => writeln!(out, "        acc += {};", src_var).unwrap(),
-                    PrimitiveOp::ReduceMax => writeln!(out, "        acc = fmax(acc, {});", src_var).unwrap(),
+                    PrimitiveOp::ReduceMax => writeln!(out, "        acc = (isnan({v}) || isnan(acc)) ? NAN : fmax(acc, {v});", v = src_var).unwrap(),
                     _ => unreachable!(),
                 }
                 writeln!(out, "    }}").unwrap();
@@ -356,7 +358,9 @@ impl Renderer for OpenClRenderer {
                 };
                 match reduce_op.op {
                     PrimitiveOp::ReduceSum => writeln!(out, "        acc += {};", src_expr).unwrap(),
-                    PrimitiveOp::ReduceMax => writeln!(out, "        acc = fmax(acc, {});", src_expr).unwrap(),
+                    PrimitiveOp::ReduceMax => {
+                        writeln!(out, "        {{ float _rv = {}; acc = (isnan(_rv) || isnan(acc)) ? NAN : fmax(acc, _rv); }}", src_expr).unwrap();
+                    }
                     _ => unreachable!(),
                 }
                 writeln!(out, "    }}").unwrap();
@@ -372,7 +376,7 @@ impl Renderer for OpenClRenderer {
             writeln!(out, "        if (lid < s) {{").unwrap();
             match reduce_op.op {
                 PrimitiveOp::ReduceSum => writeln!(out, "            sdata[lid] += sdata[lid + s];").unwrap(),
-                PrimitiveOp::ReduceMax => writeln!(out, "            sdata[lid] = fmax(sdata[lid], sdata[lid + s]);").unwrap(),
+                PrimitiveOp::ReduceMax => writeln!(out, "            sdata[lid] = (isnan(sdata[lid]) || isnan(sdata[lid + s])) ? NAN : fmax(sdata[lid], sdata[lid + s]);").unwrap(),
                 _ => unreachable!(),
             }
             writeln!(out, "        }}").unwrap();
