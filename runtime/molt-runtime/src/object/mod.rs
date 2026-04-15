@@ -420,6 +420,10 @@ pub(crate) const HEADER_FLAG_NURSERY: u32 = 1 << 18;
 /// iterating over elements because they are all primitives (int/float/bool/None).
 pub(crate) const HEADER_FLAG_CONTAINS_REFS: u32 = 1 << 19;
 
+/// Object was allocated via `molt_alloc` (raw allocation) — deallocation must
+/// use the raw-alloc path rather than type-specific destructors.
+pub(crate) const HEADER_FLAG_RAW_ALLOC: u32 = 1 << 20;
+
 /// Maximum total_size (header + payload) eligible for nursery allocation.
 /// Objects larger than this always go through the global allocator.
 const NURSERY_ALLOC_MAX: usize = 256;

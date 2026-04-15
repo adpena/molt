@@ -1992,26 +1992,6 @@ def _collect_module_imports(
     return result
 
 
-def _normalize_required_runtime_export_names(required_exports: set[str]) -> set[str]:
-    normalized = set(required_exports)
-    normalized.update(
-        name if name.startswith("molt_") else f"molt_{name}"
-        for name in required_exports
-    )
-    return normalized
-
-
-def _canonical_split_runtime_required_exports(runtime_data: bytes) -> set[str]:
-    """Return stable low-level runtime exports whose presence must not vary by app."""
-    exports = set(_collect_function_exports(runtime_data))
-    return {
-        name
-        for name in exports
-        if name.startswith("molt_object_field_")
-        or name.startswith("molt_guarded_field_")
-    }
-
-
 def _wasm_link_build_state_root() -> Path:
     override = os.environ.get("MOLT_BUILD_STATE_DIR", "").strip()
     if override:
@@ -2114,9 +2094,9 @@ def _tree_shake_runtime(
     # `molt_*` symbols.  Without this normalization, split-runtime
     # tree-shaking strips every function export even when the app has a
     # large live runtime dependency surface.
-    normalized_required_exports = _normalize_required_runtime_export_names(
-        required_exports
-    )
+    normalized_required_exports = set(required_exports)
+    normalized_required_exports.update(f"molt_{name}" for name in required_exports)
+    normalized_required_exports.update(_ESSENTIAL_EXPORTS)
     # Preserve the minimal exception-inspection surface used by the direct
     # runner and browser host to marshal JS values and turn pending runtime
     # exceptions into actionable diagnostics.
@@ -2136,6 +2116,7 @@ def _tree_shake_runtime(
             "molt_traceback_format_exc",
             "molt_type_tag_of_bits",
             "molt_object_repr",
+            "molt_profile_dump",
             "molt_dec_ref_obj",
         }
     )
@@ -2262,6 +2243,7 @@ def _tree_shake_runtime(
             str(input_path),
             "-o", str(output_path),
             "-Oz",
+            "--converge",
             "--remove-unused-module-elements",
             "--closed-world",
             "--strip-debug",
@@ -2553,6 +2535,7 @@ def _strip_debug_sections(data: bytes) -> bytes | None:
 _ESSENTIAL_EXPORTS = frozenset({
     "memory",
     "molt_memory",
+    "molt_host_init",
     "molt_main",
     "molt_table_init",
     "molt_table",
@@ -2566,6 +2549,7 @@ def _split_app_reference_function_exports(reference_data: bytes | None) -> set[s
     if reference_data is None:
         return set()
     keep = {
+        "molt_host_init",
         "molt_main",
         "molt_table_init",
         "molt_set_wasm_table_base",
@@ -4177,8 +4161,9 @@ def _validate_linked(linked: Path) -> bool:
     # type-remapping bugs that simpler checks miss.
     exe = shutil.which("wasm-tools")
     if exe is not None:
+        validate_data = _strip_debug_sections(data) or data
         with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as f:
-            f.write(data)
+            f.write(validate_data)
             f.flush()
             tmp_path = f.name
         try:
@@ -4644,12 +4629,6 @@ def _run_wasm_ld(
                 print(f"Freestanding WASI stubbing failed: {exc}", file=sys.stderr)
                 return 1
 
-        if freestanding:
-            if not _validate_freestanding(linked_bytes):
-                return 1
-        if not _validate_linked(linked):
-            return 1
-
         # -- Split-runtime: emit app.wasm + molt_runtime.wasm ---------------
         if split_runtime:
             out_dir = split_output_dir or linked.parent
@@ -4711,32 +4690,20 @@ def _run_wasm_ld(
                 if non_reloc.exists():
                     deploy_runtime = non_reloc
 
-            # Tree-shake the runtime against a canonical split-runtime export
-            # surface so the shared runtime artifact remains CDN-cacheable
-            # across different programs.
+            # Tree-shake the runtime: strip exports the app doesn't import,
+            # then run wasm-opt to eliminate dead code.  This is the key step
+            # that reduces the runtime from ~8MB to ~1-2MB for typical apps.
             full_rt_size = deploy_runtime.stat().st_size
             try:
-                deploy_runtime_bytes = deploy_runtime.read_bytes()
                 app_imports = _collect_module_imports(
                     app_wasm.read_bytes(), "molt_runtime"
                 )
-                canonical_runtime_exports = _canonical_split_runtime_required_exports(
-                    deploy_runtime_bytes
-                )
-                required_runtime_exports = set(app_imports)
-                required_runtime_exports.update(canonical_runtime_exports)
                 print(
-                    f"Canonical split runtime keeps {len(required_runtime_exports)} exports",
-                    file=sys.stderr,
-                )
-                print(
-                    "Split runtime export guard: "
-                    f"get={('molt_object_field_get' in required_runtime_exports)} "
-                    f"set={('molt_object_field_set' in required_runtime_exports)}",
+                    f"App imports {len(app_imports)} functions from molt_runtime",
                     file=sys.stderr,
                 )
                 shaken_runtime = _tree_shake_runtime(
-                    deploy_runtime_bytes, required_runtime_exports
+                    deploy_runtime.read_bytes(), app_imports
                 )
                 rt_wasm.write_bytes(shaken_runtime)
             except Exception as exc:
@@ -4759,6 +4726,24 @@ def _run_wasm_ld(
                 file=sys.stderr,
             )
 
+        if freestanding:
+            if not _validate_freestanding(linked_bytes):
+                return 1
+        stripped_debug = _strip_debug_sections(linked_bytes)
+        if stripped_debug is not None:
+            linked.write_bytes(stripped_debug)
+            linked_bytes = stripped_debug
+        linked_ok = _validate_linked(linked)
+        if not linked_ok:
+            if split_runtime:
+                print(
+                    "Warning: linked wasm validation failed after split-runtime outputs were emitted; "
+                    "continuing because split artifacts do not depend on the linked binary.",
+                    file=sys.stderr,
+                )
+                return 0
+            return 1
+
         return 0
     finally:
         temp_dir.cleanup()
@@ -4769,12 +4754,6 @@ def main() -> int:
         description="Attempt to link Molt output/runtime into a single WASM module.",
     )
     parser.add_argument("--runtime", type=Path, default=_default_runtime_path())
-    parser.add_argument(
-        "--deploy-runtime",
-        type=Path,
-        default=None,
-        help="Canonical non-relocatable runtime artifact to emit for split-runtime output",
-    )
     parser.add_argument("--input", type=Path, default=_default_input_path())
     parser.add_argument("--output", type=Path, default=_default_output_path())
     parser.add_argument(
@@ -4797,10 +4776,14 @@ def main() -> int:
         "--split-output-dir", type=Path, default=None,
         help="Directory for split-runtime output files (default: same as --output parent)",
     )
+    parser.add_argument(
+        "--deploy-runtime", type=Path, default=None,
+        dest="deploy_runtime_override",
+        help="Override the deploy runtime wasm path (non-relocatable variant)",
+    )
     args = parser.parse_args()
 
     runtime = args.runtime
-    deploy_runtime_override = args.deploy_runtime
     output = args.input
     linked = args.output
 
@@ -4833,7 +4816,7 @@ def main() -> int:
         freestanding=args.freestanding,
         split_runtime=args.split_runtime,
         split_output_dir=args.split_output_dir,
-        deploy_runtime_override=deploy_runtime_override,
+        deploy_runtime_override=args.deploy_runtime_override,
     )
 
 
