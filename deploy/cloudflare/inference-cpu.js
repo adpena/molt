@@ -1,16 +1,23 @@
 /**
- * CPU-only inference engine for Falcon-OCR micro model.
+ * CPU-only inference engine for Falcon-OCR.
  *
- * Implements the minimal forward pass in pure JavaScript using
- * Float32Array for tensor operations.  This is NOT the production
- * path (WASM will be faster) but proves the Worker can serve real
- * inference from weights loaded from R2.
+ * Implements the full forward pass in pure JavaScript using
+ * Float32Array for tensor operations.  Supports both F32 weights
+ * and INT4 quantized weights (with on-the-fly dequantization
+ * during matmul to minimize memory usage).
  *
  * Architecture matches falcon_ocr.py exactly:
  *   - RMSNorm (pre-norm)
  *   - Grouped-query attention with RoPE
  *   - SwiGLU feed-forward (squared ReLU gate, interleaved w13)
  *   - Greedy argmax decoding
+ *
+ * Quantization format (INT4):
+ *   - Per-tensor symmetric: val = scale * int4_val
+ *   - Two 4-bit signed values packed per byte, low nibble first
+ *   - byte = (val_hi & 0xF) << 4 | (val_lo & 0xF)
+ *   - Signed range: [-8, 7]
+ *   - Scales stored separately in scales.json
  */
 
 // ---------------------------------------------------------------------------
@@ -19,10 +26,15 @@
 
 /**
  * Parse a SafeTensors file from an ArrayBuffer.
- * Returns a Map<string, { dtype: string, shape: number[], data: Float32Array }>.
+ *
+ * For quantized models, I4/I8 tensors are stored as raw Uint8Array
+ * (NOT dequantized upfront) to save memory.  Dequantization happens
+ * on-the-fly during matmul via matmulDequant().
+ *
+ * Returns a Map<string, { dtype: string, shape: number[], data: Float32Array|Uint8Array }>.
  *
  * @param {ArrayBuffer} buffer
- * @returns {Map<string, { dtype: string, shape: number[], data: Float32Array }>}
+ * @returns {Map<string, { dtype: string, shape: number[], data: Float32Array|Uint8Array }>}
  */
 function parseSafetensors(buffer) {
   const view = new DataView(buffer);
@@ -42,7 +54,6 @@ function parseSafetensors(buffer) {
     if (meta.dtype === "F32") {
       data = new Float32Array(byteSlice);
     } else if (meta.dtype === "F16") {
-      // Convert F16 to F32
       const u16 = new Uint16Array(byteSlice);
       data = new Float32Array(u16.length);
       for (let i = 0; i < u16.length; i++) {
@@ -54,6 +65,9 @@ function parseSafetensors(buffer) {
       for (let i = 0; i < u16.length; i++) {
         data[i] = bf16ToF32(u16[i]);
       }
+    } else if (meta.dtype === "I8" || meta.dtype === "I4") {
+      // Keep quantized data as raw bytes -- dequantized on-the-fly during matmul.
+      data = new Uint8Array(byteSlice);
     } else {
       throw new Error(`Unsupported dtype: ${meta.dtype}`);
     }
@@ -111,6 +125,132 @@ function matmul(a, b, M, K, N) {
       }
       out[oBase + n] = sum;
     }
+  }
+  return out;
+}
+
+/**
+ * Dequantize an INT8 value: val = scale * (signed int8).
+ * @param {number} byte_val - unsigned byte [0..255]
+ * @returns {number} - signed int8 [-128..127]
+ */
+function int8Signed(byte_val) {
+  return byte_val > 127 ? byte_val - 256 : byte_val;
+}
+
+/**
+ * Matrix multiply with on-the-fly INT8 dequantization of B.
+ * A is Float32Array [M, K], B is Uint8Array [K, N] (INT8 quantized).
+ * Result: [M, N] where B_ij = scale * int8_signed(B_raw[i*N+j])
+ *
+ * @param {Float32Array} a
+ * @param {Uint8Array} b
+ * @param {number} scale
+ * @param {number} M
+ * @param {number} K
+ * @param {number} N
+ * @returns {Float32Array}
+ */
+function matmulDequantI8(a, b, scale, M, K, N) {
+  const out = new Float32Array(M * N);
+  for (let m = 0; m < M; m++) {
+    const aBase = m * K;
+    const oBase = m * N;
+    for (let n = 0; n < N; n++) {
+      let sum = 0;
+      for (let k = 0; k < K; k++) {
+        const bVal = int8Signed(b[k * N + n]) * scale;
+        sum += a[aBase + k] * bVal;
+      }
+      out[oBase + n] = sum;
+    }
+  }
+  return out;
+}
+
+/**
+ * Matrix multiply with on-the-fly INT4 dequantization of B.
+ * A is Float32Array [M, K], B is Uint8Array with INT4 packed weights.
+ * Two 4-bit signed values per byte, low nibble first.
+ * B logical shape: [K, N], packed into K*N/2 bytes.
+ *
+ * @param {Float32Array} a
+ * @param {Uint8Array} b
+ * @param {number} scale
+ * @param {number} M
+ * @param {number} K
+ * @param {number} N
+ * @returns {Float32Array}
+ */
+function matmulDequantI4(a, b, scale, M, K, N) {
+  const out = new Float32Array(M * N);
+  // Pre-build a lookup for INT4 dequant to avoid repeated branch in inner loop.
+  // Each element in B at logical index [k, n] = k*N + n is packed:
+  //   byte_index = logical_index >> 1
+  //   if logical_index is even: low nibble
+  //   if logical_index is odd:  high nibble
+  for (let m = 0; m < M; m++) {
+    const aBase = m * K;
+    const oBase = m * N;
+    for (let n = 0; n < N; n++) {
+      let sum = 0;
+      for (let k = 0; k < K; k++) {
+        const logIdx = k * N + n;
+        const byteIdx = logIdx >> 1;
+        const byteVal = b[byteIdx];
+        let nibble;
+        if ((logIdx & 1) === 0) {
+          nibble = byteVal & 0xF;         // low nibble
+        } else {
+          nibble = (byteVal >> 4) & 0xF;  // high nibble
+        }
+        // Sign-extend 4-bit to signed: range [-8, 7]
+        const signed = nibble >= 8 ? nibble - 16 : nibble;
+        sum += a[aBase + k] * (signed * scale);
+      }
+      out[oBase + n] = sum;
+    }
+  }
+  return out;
+}
+
+/**
+ * Dequantize an entire INT4 tensor to Float32Array.
+ * Used for non-matmul access (embeddings, norms, etc.).
+ *
+ * @param {Uint8Array} packed - packed INT4 data
+ * @param {number} numElements - total logical elements
+ * @param {number} scale - dequantization scale
+ * @returns {Float32Array}
+ */
+function dequantI4Full(packed, numElements, scale) {
+  const out = new Float32Array(numElements);
+  for (let i = 0; i < numElements; i++) {
+    const byteIdx = i >> 1;
+    const byteVal = packed[byteIdx];
+    let nibble;
+    if ((i & 1) === 0) {
+      nibble = byteVal & 0xF;
+    } else {
+      nibble = (byteVal >> 4) & 0xF;
+    }
+    const signed = nibble >= 8 ? nibble - 16 : nibble;
+    out[i] = signed * scale;
+  }
+  return out;
+}
+
+/**
+ * Dequantize an entire INT8 tensor to Float32Array.
+ *
+ * @param {Uint8Array} data - INT8 data
+ * @param {number} scale - dequantization scale
+ * @returns {Float32Array}
+ */
+function dequantI8Full(data, scale) {
+  const out = new Float32Array(data.length);
+  for (let i = 0; i < data.length; i++) {
+    out[i] = int8Signed(data[i]) * scale;
   }
   return out;
 }
@@ -330,12 +470,14 @@ function precomputeRopeFreqs(dim, maxLen, theta) {
 
 export class FalconOCRMicro {
   /**
-   * @param {Map<string, { dtype: string, shape: number[], data: Float32Array }>} weights
+   * @param {Map<string, { dtype: string, shape: number[], data: Float32Array|Uint8Array }>} weights
    * @param {object} config
+   * @param {Object<string, number>|null} scales - per-tensor dequantization scales (null for F32 models)
    */
-  constructor(weights, config) {
+  constructor(weights, config, scales) {
     this.config = config;
     this.weights = weights;
+    this.scales = scales || {};
     this.dim = config.dim;
     this.nLayers = config.n_layers;
     this.nHeads = config.n_heads;
@@ -349,32 +491,106 @@ export class FalconOCRMicro {
     this.patchSize = config.spatial_patch_size;
     this.eosId = config.eos_id;
 
+    // Detect quantization mode from the first weight tensor dtype
+    const sampleTensor = weights.get("output.weight");
+    this.quantMode = sampleTensor.dtype === "I4" ? "int4"
+                   : sampleTensor.dtype === "I8" ? "int8"
+                   : "f32";
+
     const ropeDim = this.headDim >> 1;
     this.rope = precomputeRopeFreqs(ropeDim, config.max_seq_len, config.rope_theta);
 
-    // Extract weight tensors
-    this.tokEmbed = weights.get("tok_embeddings.weight").data;
-    this.imgProj = weights.get("img_projector.weight").data;
+    // Extract weight tensors.  For quantized models, large weight matrices
+    // stay as raw Uint8Array; small F32 tensors (norms, embeddings) are
+    // dequantized eagerly since they're accessed element-wise.
+    const tokEmbT = weights.get("tok_embeddings.weight");
+    this.tokEmbDtype = tokEmbT.dtype;
+    this.tokEmbed = tokEmbT.data;
+    this.tokEmbScale = this.scales["tok_embeddings.weight"] || 0;
+
+    const imgProjT = weights.get("img_projector.weight");
+    this.imgProjDtype = imgProjT.dtype;
+    this.imgProj = imgProjT.data;
+    this.imgProjScale = this.scales["img_projector.weight"] || 0;
+
+    // norm.weight is always F32 (kept during quantization)
     this.normW = weights.get("norm.weight").data;
-    this.outputW = weights.get("output.weight").data;
+
+    const outputT = weights.get("output.weight");
+    this.outputDtype = outputT.dtype;
+    this.outputW = outputT.data;
+    this.outputScale = this.scales["output.weight"] || 0;
 
     this.layers = [];
     for (let i = 0; i < this.nLayers; i++) {
+      const wqkvT = weights.get(`layers.${i}.attention.wqkv.weight`);
+      const woT = weights.get(`layers.${i}.attention.wo.weight`);
+      const w13T = weights.get(`layers.${i}.feed_forward.w13.weight`);
+      const w2T = weights.get(`layers.${i}.feed_forward.w2.weight`);
       this.layers.push({
-        wqkv: weights.get(`layers.${i}.attention.wqkv.weight`).data,
-        wo: weights.get(`layers.${i}.attention.wo.weight`).data,
-        w13: weights.get(`layers.${i}.feed_forward.w13.weight`).data,
-        w2: weights.get(`layers.${i}.feed_forward.w2.weight`).data,
+        wqkv: wqkvT.data,
+        wqkvDtype: wqkvT.dtype,
+        wqkvScale: this.scales[`layers.${i}.attention.wqkv.weight`] || 0,
+        wo: woT.data,
+        woDtype: woT.dtype,
+        woScale: this.scales[`layers.${i}.attention.wo.weight`] || 0,
+        w13: w13T.data,
+        w13Dtype: w13T.dtype,
+        w13Scale: this.scales[`layers.${i}.feed_forward.w13.weight`] || 0,
+        w2: w2T.data,
+        w2Dtype: w2T.dtype,
+        w2Scale: this.scales[`layers.${i}.feed_forward.w2.weight`] || 0,
       });
     }
   }
 
   /**
-   * Embed a single token ID.
+   * Dispatch matmul based on weight dtype.
+   * a: Float32Array [M, K], w: Float32Array|Uint8Array, wDtype, wScale
+   * Weight shape: [outDim, inDim] stored row-major, so matmul is a[M,K] x w[K,N].
+   *
+   * @param {Float32Array} a
+   * @param {Float32Array|Uint8Array} w
+   * @param {string} wDtype
+   * @param {number} wScale
+   * @param {number} M
+   * @param {number} K
+   * @param {number} N
+   * @returns {Float32Array}
+   */
+  matmulW(a, w, wDtype, wScale, M, K, N) {
+    if (wDtype === "I4") {
+      return matmulDequantI4(a, w, wScale, M, K, N);
+    } else if (wDtype === "I8") {
+      return matmulDequantI8(a, w, wScale, M, K, N);
+    }
+    return matmul(a, w, M, K, N);
+  }
+
+  /**
+   * Embed a single token ID.  Handles dequantization for quantized embeddings.
    * @param {number} tokenId
    * @returns {Float32Array}
    */
   embedToken(tokenId) {
+    if (this.tokEmbDtype === "I4") {
+      // INT4: 2 values per byte.  Each embedding row is dim elements = dim/2 bytes.
+      // dim is always even (768), so rows are byte-aligned.
+      const startByte = (tokenId * this.dim) >> 1;
+      const numBytes = this.dim >> 1;
+      const out = new Float32Array(this.dim);
+      for (let i = 0; i < this.dim; i++) {
+        const byteIdx = startByte + (i >> 1);
+        const byteVal = this.tokEmbed[byteIdx];
+        const nibble = (i & 1) === 0 ? (byteVal & 0xF) : ((byteVal >> 4) & 0xF);
+        const signed = nibble >= 8 ? nibble - 16 : nibble;
+        out[i] = signed * this.tokEmbScale;
+      }
+      return out;
+    } else if (this.tokEmbDtype === "I8") {
+      const slice = this.tokEmbed.slice(tokenId * this.dim, (tokenId + 1) * this.dim);
+      return dequantI8Full(slice, this.tokEmbScale);
+    }
     return this.tokEmbed.slice(tokenId * this.dim, (tokenId + 1) * this.dim);
   }
 
@@ -400,7 +616,7 @@ export class FalconOCRMicro {
     const hNorm = rmsNorm(h, dim, rmsInnerEps);
 
     // QKV projection: [S, dim] x [dim, totalQkv] -> [S, totalQkv]
-    const qkv = matmul(hNorm, layer.wqkv, S, dim, totalQkv);
+    const qkv = this.matmulW(hNorm, layer.wqkv, layer.wqkvDtype, layer.wqkvScale, S, dim, totalQkv);
 
     // Split into Q, K, V
     const q = new Float32Array(S * qDim);
@@ -462,7 +678,7 @@ export class FalconOCRMicro {
 
     // Reshape attention output: [S, nHeads * headDim] -> [S, dim]
     // Output projection: [S, qDim] x [qDim, dim] -> [S, dim]
-    const attnProj = matmul(attnOut, layer.wo, S, qDim, dim);
+    const attnProj = this.matmulW(attnOut, layer.wo, layer.woDtype, layer.woScale, S, qDim, dim);
 
     // Residual
     const h2 = new Float32Array(S * dim);
@@ -472,9 +688,9 @@ export class FalconOCRMicro {
 
     // Feed-forward
     const ffNorm = rmsNorm(h2, dim, rmsInnerEps);
-    const ffUp = matmul(ffNorm, layer.w13, S, dim, this.ffnDim * 2);
+    const ffUp = this.matmulW(ffNorm, layer.w13, layer.w13Dtype, layer.w13Scale, S, dim, this.ffnDim * 2);
     const ffAct = squaredReluGateInterleaved(ffUp, S, this.ffnDim);
-    const ffDown = matmul(ffAct, layer.w2, S, this.ffnDim, dim);
+    const ffDown = this.matmulW(ffAct, layer.w2, layer.w2Dtype, layer.w2Scale, S, this.ffnDim, dim);
 
     // Residual
     const h3 = new Float32Array(S * dim);
@@ -580,7 +796,7 @@ export class FalconOCRMicro {
 
     // Replace image patch positions with projected patch features
     if (patchFeatures !== null && nPatches > 0) {
-      const projected = matmul(patchFeatures, this.imgProj, nPatches, patchDim, dim);
+      const projected = this.matmulW(patchFeatures, this.imgProj, this.imgProjDtype, this.imgProjScale, nPatches, patchDim, dim);
       let patchIdx = 0;
       for (let i = 0; i < prefixLen; i++) {
         if (prefixIds[i] === config.img_id && patchIdx < nPatches) {
@@ -613,7 +829,7 @@ export class FalconOCRMicro {
       const lastH = h.slice((S - 1) * dim, S * dim);
 
       // Logits: [1, dim] x [dim, vocabSize] -> [1, vocabSize]
-      const logits = matmul(lastH, this.outputW, 1, dim, vocabSize);
+      const logits = this.matmulW(lastH, this.outputW, this.outputDtype, this.outputScale, 1, dim, vocabSize);
 
       // Greedy decode
       const nextId = argmax(logits);
@@ -652,13 +868,38 @@ export class FalconOCRMicro {
 }
 
 /**
- * Create a FalconOCRMicro model from R2 objects.
+ * Create a FalconOCRMicro model from a single safetensors buffer.
  *
  * @param {ArrayBuffer} weightsBuffer - SafeTensors file content
  * @param {object} config - Parsed JSON config
+ * @param {Object<string, number>|null} scales - Per-tensor dequantization scales (null for F32)
  * @returns {FalconOCRMicro}
  */
-export function createModel(weightsBuffer, config) {
+export function createModel(weightsBuffer, config, scales) {
   const weights = parseSafetensors(weightsBuffer);
-  return new FalconOCRMicro(weights, config);
+  return new FalconOCRMicro(weights, config, scales);
+}
+
+/**
+ * Parse a SafeTensors buffer and return a Map (same as parseSafetensors but exported).
+ * Used for sharded loading where each shard is parsed separately.
+ *
+ * @param {ArrayBuffer} buffer
+ * @returns {Map<string, { dtype: string, shape: number[], data: Float32Array|Uint8Array }>}
+ */
+export function parseSafetensorsToMap(buffer) {
+  return parseSafetensors(buffer);
+}
+
+/**
+ * Create a FalconOCRMicro model from a pre-built tensor Map.
+ * Used for sharded loading where tensors are accumulated across shards.
+ *
+ * @param {Map<string, { dtype: string, shape: number[], data: Float32Array|Uint8Array }>} tensors
+ * @param {object} config - Parsed JSON config
+ * @param {Object<string, number>|null} scales - Per-tensor dequantization scales
+ * @returns {FalconOCRMicro}
+ */
+export function createModelFromTensors(tensors, config, scales) {
+  return new FalconOCRMicro(tensors, config, scales);
 }
