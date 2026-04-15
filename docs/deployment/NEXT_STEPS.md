@@ -6,7 +6,7 @@ Last validated: 2026-04-14
 
 All of the following have been built, tested, and validated on this machine.
 
-- [x] **molt-gpu crate** -- 48 Rust files, 15,748 LOC, 332 tests all passing
+- [x] **molt-gpu crate** -- 52 Rust files, 17,491 LOC, 421 tests all passing
 - [x] **Python tinygrad stack** -- 21 files, 7,291 LOC (operators, tensors, nn, optimizer, scheduler)
 - [x] **6 GPU renderers** -- MSL (Metal), WGSL (WebGPU), GLSL, CUDA, HIP, OpenCL
 - [x] **7 device backends** -- CPU, Metal, CUDA, WebGPU, HIP, OpenCL, WASM
@@ -23,6 +23,13 @@ All of the following have been built, tested, and validated on this machine.
 - [x] **MCP tool definition** -- deploy/mcp/ocr_tool.json
 - [x] **wrangler.toml** -- Cloudflare Workers config with R2, KV, smart placement
 - [x] **Pre-deploy check** -- 10/10 checks passing (tests, clippy, WASM, JS syntax, no stale markers, bundle, scripts, wrangler config, MCP, git state)
+- [x] **Stress tests** -- adversarial inputs (empty/single/1M-element tensors, extreme floats, subnormals, NaN propagation, inf arithmetic, 6D+ ShapeTracker, 25-op fused chains, constant folding)
+- [x] **Concurrency tests** -- 4-thread parallel compute, arena under concurrent alloc/reset, compile cache contention, concurrent write/read
+- [x] **Error handling tests** -- alloc(0), oversized copy_in, empty/invalid compile source, zero-grid exec, copy_out truncation, zero-size buffer ops
+- [x] **Drop/memory lifecycle tests** -- DeviceBuffer, CompiledProgram, Arena, CpuDevice all verified leak-free under rapid create-drop cycles
+- [x] **Clippy clean** -- `cargo clippy -p molt-gpu --all-features -- -D warnings` passes with zero warnings
+- [x] **All public types documented** -- every `pub struct`, `pub enum`, `pub trait`, `pub fn`, `pub const` has doc comments
+- [x] **Zero TODOs/FIXMEs** -- full source scan of molt-gpu/src/ shows no deferred work
 - [x] **Falcon-OCR model identified** -- `tiiuae/Falcon-OCR` on HuggingFace, Apache-2.0 license, 5,222 downloads, image-to-text pipeline
 - [x] **Falcon-OCR weights downloaded** -- 1,034.6 MB total (model.safetensors: 1,029.8 MB + tokenizer: 4.8 MB), cached at `~/.cache/molt/falcon-ocr/`
 
