@@ -3,6 +3,7 @@
  *
  * Endpoints:
  *   POST /ocr          — accepts image (base64 or multipart), returns text
+ *   POST /ocr/batch    — accepts multiple images, returns array of results
  *   POST /ocr/tokens   — low-level: image + prompt IDs -> token IDs
  *   GET  /health       — returns 200 with model status
  *
@@ -820,6 +821,182 @@ function uint8ArrayToBase64Worker(bytes) {
     }
   }
   return btoa(binary);
+}
+
+/**
+ * POST /ocr/batch -- batch OCR: multiple images in, multiple results out.
+ *
+ * Accepts JSON body: { "images": ["base64_1", ...], "prompt": "optional" }
+ * Max 10 images per batch.
+ * Processes sequentially (Workers are single-threaded).
+ * Each result is individually cached by image hash.
+ *
+ * @param {Request} request
+ * @param {object} backend - WASM instance or CpuDevice
+ * @param {object} env
+ * @param {Record<string, string>} cors
+ * @param {string} rid
+ * @param {string} device - "wasm" or "cpu"
+ * @param {{ getCached: (hash: string) => Promise<object|null>, setCached: (hash: string, result: object) => void, hashBytes: (bytes: Uint8Array) => Promise<string> }} cacheOps
+ * @returns {Promise<Response>}
+ */
+export async function handleBatchOcr(request, backend, env, cors, rid, device = "wasm", cacheOps = {}) {
+  const batchStart = Date.now();
+  const contentType = request.headers.get("Content-Type") || "";
+
+  if (!contentType.includes("application/json")) {
+    return new Response(
+      JSON.stringify({
+        error: "/ocr/batch requires application/json",
+        request_id: rid,
+      }),
+      {
+        status: 415,
+        headers: { ...cors, "Content-Type": "application/json" },
+      },
+    );
+  }
+
+  const body = /** @type {{ images?: string[], prompt?: string }} */ (await request.json());
+
+  if (!Array.isArray(body.images) || body.images.length === 0) {
+    return new Response(
+      JSON.stringify({
+        error: "Missing or empty 'images' array in JSON body",
+        request_id: rid,
+      }),
+      {
+        status: 400,
+        headers: { ...cors, "Content-Type": "application/json" },
+      },
+    );
+  }
+
+  if (body.images.length > 10) {
+    return new Response(
+      JSON.stringify({
+        error: `Batch too large: ${body.images.length} images (max 10)`,
+        request_id: rid,
+      }),
+      {
+        status: 400,
+        headers: { ...cors, "Content-Type": "application/json" },
+      },
+    );
+  }
+
+  const maxBytes = parseInt(env.MAX_IMAGE_BYTES || String(MAX_IMAGE_BYTES_DEFAULT), 10);
+  const promptIds = [];
+  const maxNewTokens = device === "cpu" ? 1 : 512;
+  const results = [];
+
+  for (let idx = 0; idx < body.images.length; idx++) {
+    const imageStart = Date.now();
+    const b64 = body.images[idx];
+
+    if (typeof b64 !== "string" || b64.length === 0) {
+      results.push({
+        text: "",
+        tokens: [],
+        time_ms: 0,
+        error: `Image at index ${idx}: invalid or empty base64 string`,
+      });
+      continue;
+    }
+
+    let raw;
+    try {
+      raw = atob(b64);
+    } catch (_e) {
+      results.push({
+        text: "",
+        tokens: [],
+        time_ms: 0,
+        error: `Image at index ${idx}: invalid base64 encoding`,
+      });
+      continue;
+    }
+
+    if (raw.length > maxBytes) {
+      results.push({
+        text: "",
+        tokens: [],
+        time_ms: 0,
+        error: `Image at index ${idx}: too large (${raw.length} bytes, max ${maxBytes})`,
+      });
+      continue;
+    }
+
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) {
+      bytes[i] = raw.charCodeAt(i);
+    }
+
+    // Check per-image cache if cache operations are provided
+    let imageHash = null;
+    if (cacheOps.hashBytes) {
+      try {
+        imageHash = await cacheOps.hashBytes(bytes);
+        if (cacheOps.getCached) {
+          const cached = await cacheOps.getCached(imageHash);
+          if (cached) {
+            results.push({
+              text: cached.text || "",
+              tokens: cached.tokens || [],
+              time_ms: 0,
+              cache: "hit",
+            });
+            continue;
+          }
+        }
+      } catch (_e) {
+        // Cache failure is non-fatal
+      }
+    }
+
+    try {
+      const decoded = await decodeImageToRgb(bytes, "image/jpeg");
+      const aligned = alignToPatch(decoded.width, decoded.height);
+      const rgb = padRgb(decoded.rgb, decoded.width, decoded.height, aligned.width, aligned.height);
+      const tokens = invokeOcrTokens(backend, aligned.width, aligned.height, rgb, promptIds, maxNewTokens);
+      const timeMs = Date.now() - imageStart;
+      const result = {
+        text: "",
+        tokens: Array.from(tokens),
+        time_ms: timeMs,
+      };
+      results.push(result);
+
+      // Cache individual result
+      if (imageHash && cacheOps.setCached) {
+        try {
+          cacheOps.setCached(imageHash, result);
+        } catch (_e) {
+          // Cache write failure is non-fatal
+        }
+      }
+    } catch (err) {
+      results.push({
+        text: "",
+        tokens: [],
+        time_ms: Date.now() - imageStart,
+        error: `Image at index ${idx}: ${err.message}`,
+      });
+    }
+  }
+
+  return new Response(
+    JSON.stringify({
+      results,
+      total_time_ms: Date.now() - batchStart,
+      device,
+      request_id: rid,
+    }),
+    {
+      status: 200,
+      headers: { ...cors, "Content-Type": "application/json" },
+    },
+  );
 }
 
 /**

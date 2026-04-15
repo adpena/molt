@@ -12,7 +12,7 @@
  * generated for debugging without exposing PII.
  */
 
-import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleTemplateExtract } from "./ocr_api.js";
+import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleBatchOcr, handleTemplateExtract } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, createRequestLog, emitLog, writeAnalytics, categorizeError } from "./monitoring.js";
 import { createModel, parseSafetensorsToMap, createModelFromTensors, initMatmulWasm, initSimdOps } from "./inference-cpu.js";
@@ -902,6 +902,25 @@ export default {
 
         if (path === "/ocr/tokens") {
           const response = await handleTokensRequest(request, inferenceBackend, env, cors, rid, activeDevice);
+          if (payment.receipt) {
+            const headers = new Headers(response.headers);
+            headers.set("X-Payment-Receipt", payment.receipt);
+            return new Response(response.body, {
+              status: response.status,
+              headers,
+            });
+          }
+          return response;
+        }
+
+        // Batch OCR: multiple images in one request
+        if (path === "/ocr/batch") {
+          const cacheOps = {
+            hashBytes: hashImageBytes,
+            getCached: (hash) => getCachedResult(env, hash),
+            setCached: (hash, result) => setCachedResult(env, hash, result, ctx),
+          };
+          const response = await handleBatchOcr(request, inferenceBackend, env, cors, rid, activeDevice, cacheOps);
           if (payment.receipt) {
             const headers = new Headers(response.headers);
             headers.set("X-Payment-Receipt", payment.receipt);
