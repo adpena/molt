@@ -206,7 +206,7 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                 && task_cancel_pending(ptr)
             {
                 task_take_cancel_pending(ptr);
-                task_mark_done(ptr);
+                task_mark_done(_py, ptr);
                 return raise_cancelled_with_message::<i64>(_py, ptr);
             }
             let res = crate::poll_future_with_task_stack(_py, ptr, poll_fn_addr);
@@ -243,10 +243,18 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
                     return raise_cancelled_with_message::<i64>(_py, current_task);
                 }
             }
+            let poll_pending = exception_pending(_py);
             if res != pending_bits_i64() {
-                task_mark_done(ptr);
+                if !poll_pending {
+                    crate::task_last_exception_drop(_py, ptr);
+                }
+                task_mark_done(_py, ptr);
             }
-            if res != pending_bits_i64() && !current_task.is_null() && ptr != current_task {
+            if res != pending_bits_i64()
+                && poll_pending
+                && !current_task.is_null()
+                && ptr != current_task
+            {
                 let awaited_exception = {
                     let guard = task_last_exceptions(_py).lock().unwrap();
                     guard.get(&PtrSlot(ptr)).copied()
@@ -1549,6 +1557,12 @@ pub unsafe extern "C" fn molt_asyncio_future_invoke_callbacks(
 ) -> u64 {
     unsafe {
         crate::with_gil_entry!(_py, {
+            let trace = matches!(
+                std::env::var("MOLT_TRACE_ASYNCIO_CALLBACKS")
+                    .ok()
+                    .as_deref(),
+                Some("1")
+            );
             let Some(callback_tuple_bits) = tuple_from_iter_bits(_py, callbacks_bits) else {
                 return MoltObject::none().bits();
             };
@@ -1561,6 +1575,13 @@ pub unsafe extern "C" fn molt_asyncio_future_invoke_callbacks(
                 );
             };
             let callbacks = seq_vec_ref(callback_tuple_ptr);
+            if trace {
+                eprintln!(
+                    "molt asyncio callbacks future=0x{:x} count={}",
+                    future_bits,
+                    callbacks.len()
+                );
+            }
             let idx0 = MoltObject::from_int(0).bits();
             let idx1 = MoltObject::from_int(1).bits();
             let mut called = 0i64;
@@ -1577,6 +1598,13 @@ pub unsafe extern "C" fn molt_asyncio_future_invoke_callbacks(
                     }
                     dec_ref_bits(_py, callback_tuple_bits);
                     return MoltObject::none().bits();
+                }
+                if trace {
+                    eprintln!(
+                        "molt asyncio callback entry fn_type={} ctx_type={}",
+                        crate::type_name(_py, obj_from_bits(fn_bits)),
+                        crate::type_name(_py, obj_from_bits(ctx_bits))
+                    );
                 }
                 let out_bits =
                     asyncio_call_method2(_py, future_bits, b"_run_callback", fn_bits, ctx_bits);

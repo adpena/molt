@@ -1,0 +1,28 @@
+[package]
+name = "molt-gpu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+half = "2.4"
+wgpu = { version = "24", optional = true }
+pollster = { version = "0.4", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.30"
+
+[features]
+default = ["metal-backend", "cpu-backend"]
+metal-backend = []
+cpu-backend = []
+webgpu-backend = ["dep:wgpu", "dep:pollster"]
+webgl2-backend = []
+opencl-backend = []
+
+[[bench]]
+name = "bench_primitives"
+harness = false
+
+[[bench]]
+name = "bench_fusion"
+harness = false

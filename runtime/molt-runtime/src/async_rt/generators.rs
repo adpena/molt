@@ -4,8 +4,8 @@ use std::sync::OnceLock;
 use molt_obj_model::MoltObject;
 
 use super::generators_async::{cancel_future_task, molt_future_new};
-use crate::object::{HEADER_FLAG_COROUTINE, object_state};
 use crate::object::accessors::resolve_obj_ptr;
+use crate::object::{HEADER_FLAG_COROUTINE, object_state};
 use crate::{
     ACTIVE_EXCEPTION_STACK, ASYNCGEN_CONTROL_SIZE, ASYNCGEN_FIRSTITER_OFFSET, ASYNCGEN_GEN_OFFSET,
     ASYNCGEN_OP_ACLOSE, ASYNCGEN_OP_ANEXT, ASYNCGEN_OP_ASEND, ASYNCGEN_OP_ATHROW,
@@ -28,8 +28,7 @@ use crate::{
     molt_is_callable, molt_raise, molt_str_from_obj, obj_from_bits, object_mark_has_ptrs,
     object_type_id, pending_bits_i64, ptr_from_bits, raise_exception, register_task_token,
     resolve_task_ptr, runtime_state, seq_vec_ref, set_generator_raise, string_obj_to_owned,
-    type_name,
-    task_mark_done, task_waiting_on, to_i64, token_id_from_bits,
+    task_mark_done, task_waiting_on, to_i64, token_id_from_bits, type_name,
 };
 
 use crate::state::runtime_state::{AsyncGenLocalsEntry, GenLocalsEntry};
@@ -263,6 +262,16 @@ unsafe fn generator_method_result(_py: &PyToken<'_>, res_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let trace_alloc = matches!(
+            std::env::var("MOLT_TRACE_GENERATOR_ALLOC").ok().as_deref(),
+            Some("1")
+        );
+        if trace_alloc {
+            eprintln!(
+                "molt_task_new enter poll_fn=0x{:x} closure_size={} kind={}",
+                poll_fn_addr, closure_size, kind_bits
+            );
+        }
         let (type_id, is_coroutine) = match kind_bits {
             TASK_KIND_FUTURE => (TYPE_ID_OBJECT, false),
             TASK_KIND_COROUTINE => (TYPE_ID_OBJECT, true),
@@ -299,6 +308,14 @@ pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits:
                 *generator_slot_ptr(ptr, GEN_CLOSED_OFFSET) = MoltObject::from_bool(false).bits();
                 *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET) = MoltObject::from_int(1).bits();
             }
+        }
+        if trace_alloc {
+            eprintln!(
+                "molt_task_new ok ptr=0x{:x} bits=0x{:x} type_id={}",
+                ptr as usize,
+                MoltObject::from_ptr(ptr).bits(),
+                type_id
+            );
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -949,7 +966,7 @@ pub extern "C" fn molt_coroutine_close_method(coro_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
         };
         cancel_future_task(_py, task_ptr, None);
-        task_mark_done(task_ptr);
+        task_mark_done(_py, task_ptr);
         MoltObject::none().bits()
     })
 }

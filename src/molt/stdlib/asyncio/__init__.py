@@ -935,6 +935,20 @@ def _debug_asyncio_condition_enabled() -> bool:
 
 _DEBUG_ASYNCIO_CONDITION = _debug_asyncio_condition_enabled()
 
+
+def _debug_asyncio_handles_enabled() -> bool:
+    return _os.getenv("MOLT_DEBUG_ASYNCIO_HANDLES") == "1"
+
+
+_DEBUG_ASYNCIO_HANDLES = _debug_asyncio_handles_enabled()
+
+
+def _debug_asyncio_shutdown_enabled() -> bool:
+    return _os.getenv("MOLT_DEBUG_ASYNCIO_SHUTDOWN") == "1"
+
+
+_DEBUG_ASYNCIO_SHUTDOWN = _debug_asyncio_shutdown_enabled()
+
 _UNSET = object()
 _PROC_STDIO_INHERIT = 0
 _PROC_STDIO_PIPE = 1
@@ -1303,6 +1317,9 @@ molt_asyncio_task_registry_current_for_loop = _intrinsic_require(
 )
 molt_asyncio_task_registry_pop = _intrinsic_require(
     "molt_asyncio_task_registry_pop", globals()
+)
+molt_asyncio_task_last_exception_clear = _intrinsic_require(
+    "molt_asyncio_task_last_exception_clear", globals()
 )
 molt_asyncio_task_registry_move = _intrinsic_require(
     "molt_asyncio_task_registry_move", globals()
@@ -1734,6 +1751,31 @@ def _debug_exc_state(tag: str) -> None:
     return None
 
 
+def _debug_task_summary(task: Any) -> str:
+    task_type = type(task).__name__
+    task_name_getter = getattr(task, "get_name", None)
+    if callable(task_name_getter):
+        try:
+            task_name = task_name_getter()
+        except BaseException as err:
+            task_name = f"<name:{type(err).__name__}>"
+    else:
+        task_name = getattr(task, "_name", None)
+    done_getter = getattr(task, "done", None)
+    if callable(done_getter):
+        try:
+            done_state = bool(done_getter())
+        except BaseException as err:
+            done_state = f"error:{type(err).__name__}"
+    else:
+        done_state = "<no-done>"
+    return "type={task_type} name={task_name!r} done={done_state!r}".format(
+        task_type=task_type,
+        task_name=task_name,
+        done_state=done_state,
+    )
+
+
 class _SubprocessConstants:
     PIPE = _SUBPROCESS_PIPE
     DEVNULL = _SUBPROCESS_DEVNULL
@@ -2119,16 +2161,21 @@ class Task(Future):
                 if _DEBUG_TASKS:
                     token_id = self._token.token_id()
                     _debug_write(f"asyncio_task_done token={token_id}")
+            molt_asyncio_task_last_exception_clear(self)
         else:
             if not molt_asyncio_future_done(self._fut_handle):
                 self.set_exception(exc)
         _cleanup_event_waiters_for_token(self._token.token_id())
+        _debug_exc_state("task_runner_after_cleanup_event_waiters")
         _task_registry_pop(self._token.token_id())
+        _debug_exc_state("task_runner_after_task_registry_pop")
         if extra_token_id is not None:
             _task_registry_pop(extra_token_id)
+            _debug_exc_state("task_runner_after_extra_task_registry_pop")
         _contextvars._clear_context_for_token(  # type: ignore[unresolved-attribute]
             self._token.token_id()
         )
+        _debug_exc_state("task_runner_after_clear_context")
 
     def __repr__(self) -> str:
         if molt_asyncio_future_cancelled(self._fut_handle):
@@ -3197,6 +3244,12 @@ class Handle:
     def _run(self) -> None:
         if self._cancelled:
             return
+        if _DEBUG_ASYNCIO_HANDLES:
+            cb = self._callback
+            cb_name = getattr(cb, "__qualname__", None) or getattr(cb, "__name__", None)
+            if cb_name is None:
+                cb_name = type(cb).__name__
+            _debug_write(f"asyncio_handle_run callback={cb_name}")
         if self._context is not None:
             self._context.run(self._callback, *self._args)
         else:
@@ -5000,6 +5053,15 @@ def _cancel_all_tasks(loop: EventLoop) -> None:
     except BaseException:
         return
     tasks = list(live_tasks)
+    if _DEBUG_ASYNCIO_SHUTDOWN:
+        summaries = [_debug_task_summary(task) for task in tasks]
+        _debug_write(
+            "asyncio_cancel_all_tasks loop={loop_type} count={count} tasks={tasks}".format(
+                loop_type=type(loop).__name__,
+                count=len(tasks),
+                tasks=summaries,
+            )
+        )
     if not tasks:
         return
     _asyncio_cancel_pending_tasks(tasks)
@@ -5007,8 +5069,16 @@ def _cancel_all_tasks(loop: EventLoop) -> None:
         waiter = _require_asyncio_intrinsic(
             molt_asyncio_gather_new, "asyncio_gather_new"
         )(tasks, True)
+        if _DEBUG_ASYNCIO_SHUTDOWN:
+            _debug_write(
+                "asyncio_cancel_all_tasks_waiter {summary}".format(
+                    summary=_debug_task_summary(waiter)
+                )
+            )
         loop.run_until_complete(waiter)
     except BaseException:
+        if _DEBUG_ASYNCIO_SHUTDOWN:
+            _debug_exc_state("cancel_all_tasks_after_waiter_exception")
         pass
 
 
@@ -5058,6 +5128,12 @@ class Runner:
             task = loop.create_task(coro)
         try:
             result = loop.run_until_complete(task)
+            if _DEBUG_ASYNCIO_SHUTDOWN:
+                _debug_write(
+                    "asyncio_runner_run_after_complete {summary}".format(
+                        summary=_debug_task_summary(task)
+                    )
+                )
         except BaseException:
             _cancel_all_tasks(loop)
             shutdown = globals().get("molt_asyncgen_shutdown")
@@ -5074,11 +5150,15 @@ class Runner:
         if self._loop is None:
             return
         if not self._loop.is_closed():
+            if _DEBUG_ASYNCIO_SHUTDOWN:
+                _debug_write("asyncio_runner_close_begin")
             _cancel_all_tasks(self._loop)
             shutdown = globals().get("molt_asyncgen_shutdown")
             if shutdown is not None:
                 shutdown()
             self._loop.close()
+            if _DEBUG_ASYNCIO_SHUTDOWN:
+                _debug_write("asyncio_runner_close_end")
         set_event_loop(None)
         self._context = None
 

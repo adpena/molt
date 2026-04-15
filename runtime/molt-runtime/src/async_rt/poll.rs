@@ -445,7 +445,101 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
             if normalized_poll_fn_addr < crate::wasm_table_base() {
                 return raise_exception::<i64>(_py, "RuntimeError", "invalid wasm poll function");
             }
-            crate::molt_call_indirect1(normalized_poll_fn_addr, addr)
+            let res = crate::molt_call_indirect1(normalized_poll_fn_addr, addr);
+            if matches!(
+                std::env::var("MOLT_TRACE_POLL_RETURN").ok().as_deref(),
+                Some("1")
+            ) {
+                let known_kind = if poll_fn_addr == async_sleep_poll_fn_addr() {
+                    "async_sleep"
+                } else if poll_fn_addr == promise_poll_fn_addr() {
+                    "promise"
+                } else if poll_fn_addr == asyncio_wait_for_poll_fn_addr() {
+                    "asyncio_wait_for"
+                } else if poll_fn_addr == asyncio_wait_poll_fn_addr() {
+                    "asyncio_wait"
+                } else if poll_fn_addr == asyncio_gather_poll_fn_addr() {
+                    "asyncio_gather"
+                } else if poll_fn_addr == asyncio_timer_handle_poll_fn_addr() {
+                    "asyncio_timer_handle"
+                } else if poll_fn_addr == asyncio_fd_watcher_poll_fn_addr() {
+                    "asyncio_fd_watcher"
+                } else if poll_fn_addr == asyncio_server_accept_loop_poll_fn_addr() {
+                    "asyncio_server_accept_loop"
+                } else if poll_fn_addr == asyncio_ready_runner_poll_fn_addr() {
+                    "asyncio_ready_runner"
+                } else if poll_fn_addr == asyncio_socket_reader_read_poll_fn_addr() {
+                    "asyncio_socket_reader_read"
+                } else if poll_fn_addr == asyncio_socket_reader_readline_poll_fn_addr() {
+                    "asyncio_socket_reader_readline"
+                } else if poll_fn_addr == asyncio_stream_reader_read_poll_fn_addr() {
+                    "asyncio_stream_reader_read"
+                } else if poll_fn_addr == asyncio_stream_reader_readline_poll_fn_addr() {
+                    "asyncio_stream_reader_readline"
+                } else if poll_fn_addr == asyncio_stream_send_all_poll_fn_addr() {
+                    "asyncio_stream_send_all"
+                } else if poll_fn_addr == asyncio_sock_recv_poll_fn_addr() {
+                    "asyncio_sock_recv"
+                } else if poll_fn_addr == asyncio_sock_connect_poll_fn_addr() {
+                    "asyncio_sock_connect"
+                } else if poll_fn_addr == asyncio_sock_accept_poll_fn_addr() {
+                    "asyncio_sock_accept"
+                } else if poll_fn_addr == asyncio_sock_recv_into_poll_fn_addr() {
+                    "asyncio_sock_recv_into"
+                } else if poll_fn_addr == asyncio_sock_sendall_poll_fn_addr() {
+                    "asyncio_sock_sendall"
+                } else if poll_fn_addr == asyncio_sock_recvfrom_poll_fn_addr() {
+                    "asyncio_sock_recvfrom"
+                } else if poll_fn_addr == asyncio_sock_recvfrom_into_poll_fn_addr() {
+                    "asyncio_sock_recvfrom_into"
+                } else if poll_fn_addr == asyncio_sock_sendto_poll_fn_addr() {
+                    "asyncio_sock_sendto"
+                } else if poll_fn_addr == io_wait_poll_fn_addr() {
+                    "io_wait"
+                } else if poll_fn_addr == thread_poll_fn_addr() {
+                    "thread"
+                } else if poll_fn_addr == process_poll_fn_addr() {
+                    "process"
+                } else if poll_fn_addr == asyncgen_poll_fn_addr() {
+                    "asyncgen"
+                } else if poll_fn_addr == anext_default_poll_fn_addr() {
+                    "anext_default"
+                } else if poll_fn_addr == ws_wait_poll_fn_addr() {
+                    "ws_wait"
+                } else {
+                    "other"
+                };
+                let mut code_name = "<none>".to_string();
+                let mut code_file = "<none>".to_string();
+                let code_bits = crate::fn_ptr_code_get(_py, poll_fn_addr);
+                if code_bits != 0
+                    && let Some(code_ptr) = crate::maybe_ptr_from_bits(code_bits)
+                {
+                    let name_bits = crate::code_name_bits(code_ptr);
+                    code_name = crate::string_obj_to_owned(crate::obj_from_bits(name_bits))
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    let file_bits = crate::code_filename_bits(code_ptr);
+                    code_file = crate::string_obj_to_owned(crate::obj_from_bits(file_bits))
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                }
+                let kind = if crate::exception_pending(_py) {
+                    let exc_bits = crate::molt_exception_last();
+                    if let Some(exc_ptr) = crate::maybe_ptr_from_bits(exc_bits) {
+                        let kind_bits = crate::exception_kind_bits(exc_ptr);
+                        crate::string_obj_to_owned(crate::obj_from_bits(kind_bits))
+                            .unwrap_or_else(|| "<exc>".to_string())
+                    } else {
+                        "<none>".to_string()
+                    }
+                } else {
+                    "<none>".to_string()
+                };
+                eprintln!(
+                    "molt poll return fn=0x{:x} normalized=0x{:x} kind={} code={} file={} res=0x{:x} pending={}",
+                    poll_fn_addr, normalized_poll_fn_addr, known_kind, code_name, code_file, res as u64, kind
+                );
+            }
+            res
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -501,6 +595,9 @@ pub(crate) unsafe fn poll_future_with_task_stack(
         let prev_raise = task_raise_active();
         set_task_raise_active(true);
         let res = call_poll_fn(_py, poll_fn_addr, task_ptr);
+        if res != crate::pending_bits_i64() && !crate::exception_pending(_py) {
+            crate::task_last_exception_drop(_py, task_ptr);
+        }
         set_task_raise_active(prev_raise);
         let new_depth = exception_stack_depth();
         task_exception_depth_store(_py, task_ptr, new_depth);

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import bisect
-import copy
 import json
 import os
 import sys
@@ -199,7 +198,6 @@ class MidendEnvConfig:
 class ActiveException:
     value: MoltValue
     slot: int | None = None
-    var_slot: str | None = None
 
 
 @dataclass(frozen=True)
@@ -738,7 +736,6 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
 
 _INTRINSIC_ARITY_CACHE: dict[str, int] | None = None
 _INTRINSIC_SYMBOL_CACHE: dict[str, str] | None = None
-_INTRINSIC_SYMBOL_VALUES_CACHE: set[str] | None = None
 
 
 def _ensure_intrinsic_arity_cache() -> dict[str, int]:
@@ -843,13 +840,6 @@ def _ensure_intrinsic_symbol_cache() -> dict[str, str]:
                 cache.setdefault(match.group("name"), match.group("symbol"))
         _INTRINSIC_SYMBOL_CACHE = cache
     return _INTRINSIC_SYMBOL_CACHE
-
-
-def _ensure_intrinsic_symbol_values() -> set[str]:
-    global _INTRINSIC_SYMBOL_VALUES_CACHE
-    if _INTRINSIC_SYMBOL_VALUES_CACHE is None:
-        _INTRINSIC_SYMBOL_VALUES_CACHE = set(_ensure_intrinsic_symbol_cache().values())
-    return _INTRINSIC_SYMBOL_VALUES_CACHE
 
 
 def _canonical_intrinsic_runtime_name(runtime_name: str) -> str:
@@ -1047,10 +1037,6 @@ class TryScope:
     ctx_mark: MoltValue
     finalbody: list[ast.stmt] | None
     ctx_mark_offset: int | None = None
-    ctx_mark_slot: str | None = None
-    ctx_mark_name: str | None = None
-    exc_capture_slot: str | None = None
-    exc_capture_name: str | None = None
     done_label: int | None = None
 
 
@@ -1262,14 +1248,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.module_declared_classes: set[str] = set()
         self.module_defined_funcs: set[str] = set()
         self.class_definition_pending: set[str] = set()
-        self.current_classcell_capture: MoltValue | None = None
         self.module_global_mutations: set[str] = set()
         self.module_intrinsic_globals: dict[str, str] = {}
-        self.exception_alias_renames: list[dict[str, str]] = []
-        self.exception_alias_bindings: list[dict[str, ActiveException]] = []
-        self.exception_alias_stmt_cache: dict[str, MoltValue] = {}
-        self.module_scope_exception_aliases: list[set[str]] = []
-        self.non_none_name_assumptions: list[set[str]] = []
         # Track the last-known type hint for module-scope attributes.
         # Populated by _emit_module_attr_set_on and read by _emit_module_attr_get.
         # Enables fast_int/fast_float paths for module-scope loop variables.
@@ -1278,8 +1258,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.instance_attr_mutations: dict[str, set[str]] = {}
         self.imported_names: dict[str, str] = {}
         self.global_imported_names: dict[str, str] = {}
-        self.imported_name_attrs: dict[str, str] = {}
-        self.global_imported_name_attrs: dict[str, str] = {}
         self.imported_modules: dict[str, str] = {}
         self.global_imported_modules: dict[str, str] = {}
         self.local_intrinsic_wrappers: set[str] = set()
@@ -1613,16 +1591,20 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._emit_module_attr_set_on(self.module_obj, "__spec__", spec_val)
 
     def _emit_module_frame_enter(self, node: ast.Module) -> None:
-        if self.current_func_name != "molt_main" or self.module_frame_entered:
+        if (
+            self.current_func_name != "molt_main"
+            and not self.current_func_name.startswith("molt_init_")
+        ) or self.module_frame_entered:
             return
         if self.module_name in _BOOTSTRAP_TRACE_EXEMPT_MODULES:
             return
         self.module_frame_entered = True
         code_id = self.module_frame_code_id
         if code_id is None:
-            code_id = self.func_code_ids.get("molt_main")
+            current_func = self.current_func_name
+            code_id = self.func_code_ids.get(current_func)
             if code_id is None:
-                code_id = self._register_code_symbol("molt_main")
+                code_id = self._register_code_symbol(current_func)
             self.module_frame_code_id = code_id
         if not self.module_frame_emitted:
             self.module_frame_emitted = True
@@ -1689,13 +1671,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
 
     def _emit_module_frame_exit(self) -> None:
         if (
-            self.current_func_name != "molt_main"
+            (
+                self.current_func_name != "molt_main"
+                and not self.current_func_name.startswith("molt_init_")
+            )
             or not self.module_frame_entered
             or self.module_frame_exited
         ):
             return
         self.module_frame_exited = True
         self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
+
+    def _function_needs_frame_trace(self, name: str | None = None) -> bool:
+        func_name = self.current_func_name if name is None else name
+        if func_name is None:
+            return False
+        if func_name == "molt_main" or func_name.startswith("molt_init_"):
+            return False
+        return True
 
     def _module_chunk_param_value(self) -> MoltValue:
         return MoltValue(_MOLT_MODULE_CHUNK_PARAM, type_hint="module")
@@ -1740,7 +1733,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.exact_builtin_locals = {}
         self.globals = {}
         self.imported_names = dict(self.global_imported_names)
-        self.imported_name_attrs = dict(self.global_imported_name_attrs)
         self.imported_modules = dict(self.global_imported_modules)
         # Clear the per-function module cache so that module references are
         # re-fetched via MODULE_CACHE_GET in each new chunk function.  Without
@@ -1789,7 +1781,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.loop_break_counter = 0
         self.loop_layout_guards = []
         self.loop_guard_assumptions = []
-        self.non_none_name_assumptions = []
         self.active_exceptions = []
 
     def _module_chunk_stmt_cost(self, stmt: ast.stmt) -> int:
@@ -2098,10 +2089,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "EXCEPTION_STACK_SET_DEPTH",
             "EXCEPTION_CLEAR",
             "EXCEPTION_LAST",
-            "EXCEPTION_ACTIVE",
-            "EXCEPTION_CURRENT",
-            "EXCEPTION_ENTER_HANDLER",
-            "EXCEPTION_RESOLVE_CAPTURED",
             "EXCEPTION_SET_CAUSE",
             "EXCEPTION_SET_LAST",
             "EXCEPTION_CONTEXT_SET",
@@ -2144,12 +2131,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "ret",
         }:
             return
-        if self.try_scopes:
-            exc_snapshot = MoltValue(self.next_var(), type_hint="exception")
-            self.current_ops.append(
-                MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_snapshot)
-            )
-            self._append_try_exception_capture_ops(self.try_scopes[-1], exc_snapshot)
         self.current_ops.append(
             MoltOp(
                 kind="CHECK_EXCEPTION",
@@ -2822,12 +2803,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         base = "molt_user_main" if name == "main" else name
         symbol = f"{self.module_prefix}{base}"
         counter = 1
-        intrinsic_symbols = _ensure_intrinsic_symbol_values()
-        while (
-            symbol in self.funcs_map
-            or f"{symbol}_poll" in self.funcs_map
-            or symbol in intrinsic_symbols
-        ):
+        while symbol in self.funcs_map or f"{symbol}_poll" in self.funcs_map:
             symbol = f"{self.module_prefix}{base}_{counter}"
             counter += 1
         self.func_symbol_names[symbol] = name
@@ -2841,13 +2817,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         base = "molt_user_main" if name == "main" else name
         symbol = f"{self.module_prefix}{base}"
         counter = 1
-        intrinsic_symbols = _ensure_intrinsic_symbol_values()
         while (
             symbol in self.funcs_map
             or f"{symbol}_poll" in self.funcs_map
             or symbol in self.func_symbol_names
             or symbol in self.reserved_func_symbols.values()
-            or symbol in intrinsic_symbols
         ):
             symbol = f"{self.module_prefix}{base}_{counter}"
             counter += 1
@@ -2958,7 +2932,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.exact_locals = {}
         self.exact_builtin_locals = {}
         self.imported_names = dict(self.global_imported_names)
-        self.imported_name_attrs = dict(self.global_imported_name_attrs)
         self.imported_modules = dict(self.global_imported_modules)
         self.async_locals = {}
         self.async_internal_locals = set()
@@ -3600,7 +3573,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "return_unwind_popped_scopes": self.return_unwind_popped_scopes,
             "active_exceptions": self.active_exceptions,
             "loop_guard_assumptions": self.loop_guard_assumptions,
-            "non_none_name_assumptions": self.non_none_name_assumptions,
             "return_label": self.return_label,
             "return_slot": self.return_slot,
             "return_slot_index": self.return_slot_index,
@@ -3608,7 +3580,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "defer_module_attrs": self.defer_module_attrs,
             "deferred_module_attrs": self.deferred_module_attrs,
             "imported_names": self.imported_names,
-            "imported_name_attrs": self.imported_name_attrs,
             "imported_modules": self.imported_modules,
             "class_definition_pending": self.class_definition_pending,
             "block_terminated": self.block_terminated,
@@ -3658,7 +3629,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.return_unwind_popped_scopes = state["return_unwind_popped_scopes"]
         self.active_exceptions = state["active_exceptions"]
         self.loop_guard_assumptions = state["loop_guard_assumptions"]
-        self.non_none_name_assumptions = state["non_none_name_assumptions"]
         self.return_label = state["return_label"]
         self.return_slot = state["return_slot"]
         self.return_slot_index = state["return_slot_index"]
@@ -3666,7 +3636,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.defer_module_attrs = state["defer_module_attrs"]
         self.deferred_module_attrs = state["deferred_module_attrs"]
         self.imported_names = state["imported_names"]
-        self.imported_name_attrs = state["imported_name_attrs"]
         self.imported_modules = state["imported_modules"]
         self.class_definition_pending = state["class_definition_pending"]
         self.block_terminated = state["block_terminated"]
@@ -3815,7 +3784,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.module_defined_funcs.add(stmt.name)
                 if isinstance(stmt, ast.ClassDef):
                     self.class_definition_pending.discard(stmt.name)
-                self._invalidate_module_scope_stmt_cache()
                 if (
                     current_chunk is not None
                     and self.module_chunk_max_ops > 0
@@ -3842,7 +3810,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.module_defined_funcs.add(stmt.name)
                 if isinstance(stmt, ast.ClassDef):
                     self.class_definition_pending.discard(stmt.name)
-                self._invalidate_module_scope_stmt_cache()
         if defer:
             self._flush_deferred_module_attrs()
         if (
@@ -3950,10 +3917,14 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         exit_baseline_now = self.return_slot is None or self.return_label is None
         self._emit_restore_exception_stack_depth(exit_baseline=exit_baseline_now)
         if exit_baseline_now:
+            if self._function_needs_frame_trace():
+                self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="ret", args=[value], result=MoltValue("none")))
             return
         slot = self._load_return_slot()
         if slot is None:
+            if self._function_needs_frame_trace():
+                self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="ret", args=[value], result=MoltValue("none")))
             return
         idx = self._load_return_slot_index()
@@ -3981,6 +3952,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         res = MoltValue(self.next_var())
         idx = self._load_return_slot_index()
         self.emit(MoltOp(kind="INDEX", args=[slot, idx], result=res))
+        if self._function_needs_frame_trace():
+            self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
 
     def _emit_boxed_locals_cleanup(self) -> None:
@@ -4038,30 +4011,24 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.current_func_name == "molt_main"
                 or self.current_func_name.startswith("molt_init_")
             ):
-                # Guard MODULE_CACHE_DEL with the real pending-exception
-                # control primitive. The exception handler label is reachable
-                # both from CHECK_EXCEPTION jumps (exception pending) and from
-                # normal fallthrough when no explicit ret precedes the label.
-                # Using EXCEPTION_LAST here is wrong because it may surface the
-                # active exception context even when nothing is pending.
-                rollback_label = self.next_label()
-                rollback_done_label = self.next_label()
+                # Guard MODULE_CACHE_DEL with an exception-pending check.
+                # The exception handler label is reachable both from
+                # check_exception jumps (exception pending) and from normal
+                # fallthrough when no explicit ret precedes the label.
+                # Deleting the module from the cache unconditionally would
+                # corrupt the module cache on the normal (non-error) path.
+                _guard_exc = MoltValue(self.next_var(), type_hint="exception")
+                self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=_guard_exc))
+                _guard_none = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=_guard_none))
+                _guard_is = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(
-                    MoltOp(
-                        kind="CHECK_EXCEPTION",
-                        args=[rollback_label],
-                        result=MoltValue("none"),
-                    )
+                    MoltOp(kind="IS", args=[_guard_exc, _guard_none], result=_guard_is)
                 )
+                _guard_pending = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="NOT", args=[_guard_is], result=_guard_pending))
                 self.emit(
-                    MoltOp(
-                        kind="JUMP",
-                        args=[rollback_done_label],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(
-                    MoltOp(kind="LABEL", args=[rollback_label], result=MoltValue("none"))
+                    MoltOp(kind="IF", args=[_guard_pending], result=MoltValue("none"))
                 )
                 module_name_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(
@@ -4096,14 +4063,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             result=MoltValue("none"),
                         )
                     )
-                self.emit(
-                    MoltOp(
-                        kind="LABEL",
-                        args=[rollback_done_label],
-                        result=MoltValue("none"),
-                    )
-                )
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self._emit_restore_exception_stack_depth()
+        if self._function_needs_frame_trace():
+            self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
         self._emit_raise_if_pending(emit_exit=True, clear_handlers=clear_handlers)
         self.function_exception_label = prev_label
 
@@ -4755,13 +4718,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         free_vars: set[str] = set()
         for _name, expr, _exec_id in items:
             free_vars.update(self._collect_annotation_free_vars(expr))
-        if exec_map_name and not self._in_module_scope_function():
+        if exec_map_name and self.current_func_name != "molt_main":
             free_vars.add(exec_map_name)
         free_vars_list = sorted(free_vars)
         free_var_hints: dict[str, str] = {}
         closure_val: MoltValue | None = None
         has_closure = False
-        if free_vars_list and not self._in_module_scope_function():
+        if free_vars_list and self.current_func_name != "molt_main":
             self.unbound_check_names.update(free_vars_list)
             for name in free_vars_list:
                 self._box_local(name)
@@ -5016,7 +4979,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_module_attr_set(
         self, name: str, value: MoltValue, *, defer: bool = True
     ) -> None:
-        if not self._in_module_scope_function() or self.module_obj is None:
+        if self.current_func_name != "molt_main" or self.module_obj is None:
             return
         if defer and self.defer_module_attrs:
             self.deferred_module_attrs.add(name)
@@ -5054,20 +5017,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
         module_val = self.module_obj
-        if not self._in_module_scope_function() or module_val is None:
+        if self.current_func_name != "molt_main" or module_val is None:
             module_val = self._get_or_emit_module_cache(self.module_name)
-        self.emit(
-            MoltOp(
-                kind="MODULE_DEL_GLOBAL",
-                args=[module_val, name_val],
-                result=MoltValue("none"),
-            )
-        )
-
-    def _emit_module_global_del_cached(self, name: str) -> None:
-        name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        module_val = self._get_or_emit_module_cache(self.module_name)
         self.emit(
             MoltOp(
                 kind="MODULE_DEL_GLOBAL",
@@ -5079,7 +5030,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _emit_module_global_del_safe(self, name: str) -> None:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        module_val = self._get_or_emit_module_cache(self.module_name)
+        module_val = self.module_obj
+        if self.current_func_name != "molt_main" or module_val is None:
+            module_val = self._get_or_emit_module_cache(self.module_name)
         baseline_exc = MoltValue(self.next_var(), type_hint="exception")
         self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=baseline_exc))
         baseline_none = MoltValue(self.next_var(), type_hint="None")
@@ -5131,13 +5084,22 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
-    def _emit_function_default_values(
+    def _emit_function_defaults(
         self,
         func_val: MoltValue,
         default_exprs: list[ast.expr],
         kw_default_exprs: list[ast.expr | None],
         kwonly_params: list[str],
-    ) -> tuple[MoltValue, MoltValue, MoltValue]:
+    ) -> MoltValue:
+        def set_attr(attr: str, value: MoltValue) -> None:
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[func_val, attr, value],
+                    result=MoltValue("none"),
+                )
+            )
+
         yield_in_defaults = False
         yield_in_kwdefaults = False
         func_spill: int | None = None
@@ -5167,10 +5129,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self.emit(
                 MoltOp(kind="TUPLE_NEW", args=default_vals, result=defaults_tuple)
             )
-            defaults_val = defaults_tuple
+            if func_spill is not None and yield_in_defaults:
+                func_val = self._reload_async_value(func_spill, func_val.type_hint)
+            set_attr("__defaults__", defaults_tuple)
         else:
-            defaults_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=defaults_val))
+            defaults_none = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=defaults_none))
+            set_attr("__defaults__", defaults_none)
 
         if kw_default_exprs and kwonly_params:
             kw_pairs: list[MoltValue] = []
@@ -5185,166 +5150,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
                 kw_pairs.extend([key_val, val])
             if kw_pairs:
-                kwdefaults_val = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(MoltOp(kind="DICT_NEW", args=kw_pairs, result=kwdefaults_val))
+                kw_defaults = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(MoltOp(kind="DICT_NEW", args=kw_pairs, result=kw_defaults))
+                if func_spill is not None and yield_in_kwdefaults:
+                    func_val = self._reload_async_value(func_spill, func_val.type_hint)
+                set_attr("__kwdefaults__", kw_defaults)
             else:
-                kwdefaults_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=kwdefaults_val))
+                kw_defaults_none = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=kw_defaults_none))
+                if func_spill is not None and yield_in_kwdefaults:
+                    func_val = self._reload_async_value(func_spill, func_val.type_hint)
+                set_attr("__kwdefaults__", kw_defaults_none)
         else:
-            kwdefaults_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=kwdefaults_val))
-
+            kw_defaults_none = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=kw_defaults_none))
+            set_attr("__kwdefaults__", kw_defaults_none)
         if func_spill is not None and (yield_in_defaults or yield_in_kwdefaults):
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
-        return func_val, defaults_val, kwdefaults_val
-
-    def _emit_exception_pending_value(self) -> MoltValue:
-        pending_helper = self._emit_runtime_builtin_function(
-            "molt_exception_pending", 0
-        )
-        pending_raw = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(kind="CALL_FUNC", args=[pending_helper], result=pending_raw)
-        )
-        zero_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero_val))
-        pending = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="NE", args=[pending_raw, zero_val], result=pending))
-        return pending
-
-    def _emit_exception_active_or_last(self) -> MoltValue:
-        current_val = MoltValue(self.next_var(), type_hint="exception")
-        self.emit(MoltOp(kind="EXCEPTION_CURRENT", args=[], result=current_val))
-        return current_val
-
-    def _emit_exception_active_value(self) -> MoltValue:
-        active_val = MoltValue(self.next_var(), type_hint="exception")
-        self.emit(MoltOp(kind="EXCEPTION_ACTIVE", args=[], result=active_val))
-        return active_val
-
-    def _init_try_exception_capture(self) -> tuple[str | None, str | None]:
-        none_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-        if self._in_module_scope_function():
-            name = f"__molt_exc_capture_{self.next_label()}"
-            self._emit_module_attr_set(name, none_val)
-            return None, name
-        slot = self._spill_control_flow_value(none_val, "try_exc_capture")
-        return slot, None
-
-    def _store_try_exception_capture(self, scope: TryScope, value: MoltValue) -> None:
-        if scope.exc_capture_name is not None:
-            self._emit_module_attr_set(scope.exc_capture_name, value)
-            return
-        if scope.exc_capture_slot is not None:
-            self.emit(
-                MoltOp(
-                    kind="STORE_VAR",
-                    args=[value],
-                    result=MoltValue("none"),
-                    metadata={"var": scope.exc_capture_slot},
-                )
-            )
-
-    def _append_try_exception_capture_ops(self, scope: TryScope, value: MoltValue) -> None:
-        if scope.exc_capture_name is not None:
-            if self._in_module_scope_function() and self.module_obj is not None:
-                module_val = self.module_obj
-            else:
-                module_name_val = MoltValue(self.next_var(), type_hint="str")
-                self.current_ops.append(
-                    MoltOp(kind="CONST_STR", args=[self.module_name], result=module_name_val)
-                )
-                module_val = MoltValue(self.next_var(), type_hint="module")
-                self.current_ops.append(
-                    MoltOp(kind="MODULE_CACHE_GET", args=[module_name_val], result=module_val)
-                )
-            name_val = MoltValue(self.next_var(), type_hint="str")
-            self.current_ops.append(
-                MoltOp(kind="CONST_STR", args=[scope.exc_capture_name], result=name_val)
-            )
-            self.current_ops.append(
-                MoltOp(
-                    kind="MODULE_SET_ATTR",
-                    args=[module_val, name_val, value],
-                    result=MoltValue("none"),
-                )
-            )
-            return
-        if scope.exc_capture_slot is not None:
-            self.current_ops.append(
-                MoltOp(
-                    kind="STORE_VAR",
-                    args=[value],
-                    result=MoltValue("none"),
-                    metadata={"var": scope.exc_capture_slot},
-                )
-            )
-
-    def _load_try_exception_capture(self, scope: TryScope) -> MoltValue:
-        captured: MoltValue | None = None
-        if scope.exc_capture_name is not None:
-            captured = self._emit_global_get(
-                scope.exc_capture_name, reload_module=True
-            )
-        elif scope.exc_capture_slot is not None:
-            captured = self._reload_control_flow_value(scope.exc_capture_slot, "exception")
-        if captured is None:
-            return self._emit_exception_active_or_last()
-        out = MoltValue(self.next_var(), type_hint="exception")
-        self.emit(
-            MoltOp(kind="EXCEPTION_RESOLVE_CAPTURED", args=[captured], result=out)
-        )
-        return out
-
-    def _spill_control_flow_value(self, value: MoltValue, stem: str) -> str:
-        slot_name = f"__molt_cf_{stem}_{self.next_var()}"
-        self.emit(
-            MoltOp(
-                kind="STORE_VAR",
-                args=[value],
-                result=MoltValue("none"),
-                metadata={"var": slot_name},
-            )
-        )
-        return slot_name
-
-    def _reload_control_flow_value(self, slot_name: str, hint: str) -> MoltValue:
-        res = MoltValue(self.next_var(), type_hint=hint)
-        self.emit(
-            MoltOp(
-                kind="LOAD_VAR",
-                args=[],
-                result=res,
-                metadata={"var": slot_name},
-            )
-        )
-        return res
-
-    def _emit_function_defaults(
-        self,
-        func_val: MoltValue,
-        default_exprs: list[ast.expr],
-        kw_default_exprs: list[ast.expr | None],
-        kwonly_params: list[str],
-    ) -> MoltValue:
-        func_val, defaults_val, kwdefaults_val = self._emit_function_default_values(
-            func_val,
-            default_exprs,
-            kw_default_exprs,
-            kwonly_params,
-        )
-        defaults_helper = self._emit_runtime_builtin_function(
-            "molt_function_set_defaults", 3
-        )
-        defaults_res = MoltValue(self.next_var(), type_hint="None")
-        self.emit(
-            MoltOp(
-                kind="CALL_FUNC",
-                args=[defaults_helper, func_val, defaults_val, kwdefaults_val],
-                result=defaults_res,
-            )
-        )
         return func_val
 
     def _emit_function_metadata(
@@ -5373,15 +5195,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         emit_code: bool = True,
         varnames: list[str] | None = None,
     ) -> None:
+        def set_attr(attr: str, value: MoltValue) -> None:
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[func_val, attr, value],
+                    result=MoltValue("none"),
+                )
+            )
+
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
+        set_attr("__name__", name_val)
 
         qual_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[qualname], result=qual_val))
+        set_attr("__qualname__", qual_val)
 
         module_name = module_override or self.module_name
         module_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_val))
+        set_attr("__module__", module_val)
 
         arg_name_vals: list[MoltValue] = []
         for param in posonly_params + pos_or_kw_params:
@@ -5390,9 +5224,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             arg_name_vals.append(param_val)
         arg_names_tuple = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=arg_name_vals, result=arg_names_tuple))
+        set_attr("__molt_arg_names__", arg_names_tuple)
 
         posonly_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[len(posonly_params)], result=posonly_val))
+        set_attr("__molt_posonly__", posonly_val)
 
         kwonly_name_vals: list[MoltValue] = []
         for param in kwonly_params:
@@ -5401,6 +5237,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             kwonly_name_vals.append(param_val)
         kwonly_tuple = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=kwonly_name_vals, result=kwonly_tuple))
+        set_attr("__molt_kwonly_names__", kwonly_tuple)
 
         if vararg is None:
             vararg_val = MoltValue(self.next_var(), type_hint="None")
@@ -5408,6 +5245,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             vararg_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[vararg], result=vararg_val))
+        set_attr("__molt_vararg__", vararg_val)
 
         if varkw is None:
             varkw_val = MoltValue(self.next_var(), type_hint="None")
@@ -5415,14 +5253,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             varkw_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[varkw], result=varkw_val))
-        func_val, defaults_val, kwdefaults_val = self._emit_function_default_values(
+        set_attr("__molt_varkw__", varkw_val)
+        func_val = self._emit_function_defaults(
             func_val, default_exprs, kw_default_exprs, kwonly_params
         )
-        bind_kind_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=bind_kind_val))
+
         if bind_kind is not None:
             bind_kind_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[bind_kind], result=bind_kind_val))
+            set_attr("__molt_bind_kind__", bind_kind_val)
 
         if docstring is None:
             doc_val = MoltValue(self.next_var(), type_hint="None")
@@ -5430,9 +5269,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             doc_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[docstring], result=doc_val))
-
-        code_arg = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=code_arg))
+        set_attr("__doc__", doc_val)
 
         if emit_code:
             filename = trace_filename or self.source_path or "<unknown>"
@@ -5502,7 +5339,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=code_val,
                 )
             )
-            code_arg = code_val
+            set_attr("__code__", code_val)
             code_symbol = self._code_symbol_for_value(func_val)
             if code_symbol is not None:
                 code_id = self._register_code_symbol(code_symbol)
@@ -5523,75 +5360,18 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
 
-        metadata_tuple = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(
-            MoltOp(
-                kind="TUPLE_NEW",
-                args=[
-                    name_val,
-                    qual_val,
-                    module_val,
-                    arg_names_tuple,
-                    posonly_val,
-                    kwonly_tuple,
-                    vararg_val,
-                    varkw_val,
-                    defaults_val,
-                    kwdefaults_val,
-                    doc_val,
-                ],
-                result=metadata_tuple,
-            )
-        )
-
-        metadata_helper = self._emit_runtime_builtin_function(
-            "molt_function_init_metadata_packed", 4
-        )
-        metadata_res = MoltValue(self.next_var(), type_hint="None")
-        self.emit(
-            MoltOp(
-                kind="CALL_FUNC",
-                args=[
-                    metadata_helper,
-                    func_val,
-                    metadata_tuple,
-                    code_arg,
-                    bind_kind_val,
-                ],
-                result=metadata_res,
-            )
-        )
-
         if is_coroutine:
             coro_val = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=coro_val))
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[func_val, "__molt_is_coroutine__", coro_val],
-                    result=MoltValue("none"),
-                )
-            )
+            set_attr("__molt_is_coroutine__", coro_val)
         if is_generator:
             gen_val = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=gen_val))
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[func_val, "__molt_is_generator__", gen_val],
-                    result=MoltValue("none"),
-                )
-            )
+            set_attr("__molt_is_generator__", gen_val)
         if is_async_generator:
             gen_val = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=gen_val))
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[func_val, "__molt_is_async_generator__", gen_val],
-                    result=MoltValue("none"),
-                )
-            )
+            set_attr("__molt_is_async_generator__", gen_val)
 
     def _build_gpu_kernel_descriptor_json(
         self, *, func_symbol: str, func_name: str
@@ -5654,14 +5434,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return self._emit_module_attr_get_on(module_name, class_name)
         return self._emit_module_attr_get(class_name)
 
-    def _emit_global_get(self, name: str, *, reload_module: bool = False) -> MoltValue:
+    def _emit_global_get(self, name: str) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        if (
-            self.current_func_name == "molt_main"
-            and self.module_obj is not None
-            and not reload_module
-        ):
+        if self.current_func_name == "molt_main" and self.module_obj is not None:
             module_val = self.module_obj
         else:
             module_val = self._get_or_emit_module_cache(self.module_name)
@@ -5724,7 +5500,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return func_val
 
     def _ensure_globals_builtin(self) -> None:
-        if self.globals_builtin_emitted or self.module_obj is None:
+        if (
+            self.globals_builtin_emitted
+            or self.current_func_name != "molt_main"
+            or self.module_obj is None
+        ):
             return
         func_val = self._emit_globals_builtin_obj()
         self._emit_module_attr_set(_MOLT_GLOBALS_BUILTIN, func_val)
@@ -5872,41 +5652,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         exc_val = self._emit_exception_new("ImportError", message)
         self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
 
-    @staticmethod
-    def _rewrite_exception_alias_body(
-        body: list[ast.stmt], public_name: str, internal_name: str
-    ) -> list[ast.stmt]:
-        class Rewriter(ast.NodeTransformer):
-            def visit_Name(self, node: ast.Name) -> ast.AST:
-                if node.id == public_name:
-                    new_node = ast.Name(id=internal_name, ctx=node.ctx)
-                    return ast.copy_location(new_node, node)
-                return node
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-                return node
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
-                return node
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
-                return node
-
-            def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
-                return node
-
-        rewriter = Rewriter()
-        return [cast(ast.stmt, rewriter.visit(copy.deepcopy(stmt))) for stmt in body]
-
     def _should_track_module_overrides(self) -> bool:
         return self.current_func_name == "molt_main" and self.control_flow_depth == 0
-
-    def _in_module_scope_function(self) -> bool:
-        if self.current_func_name == "molt_main":
-            return True
-        return self.current_func_name.startswith(
-            f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_"
-        )
 
     @staticmethod
     def _is_modulespec_ctor(node: ast.AST) -> bool:
@@ -6039,16 +5786,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             ):
                 display_module = self._display_allowlist_module(imported_from)
                 return f"{display_module}.{func_id}"
-        return None
-
-    def _resolve_imported_attr_name(
-        self, local_name: str, *, include_global: bool = True
-    ) -> str | None:
-        attr_name = self.imported_name_attrs.get(local_name)
-        if attr_name is not None:
-            return attr_name
-        if include_global:
-            return self.global_imported_name_attrs.get(local_name)
         return None
 
     def _emit_module_attr_set_runtime(self, name: str, value: MoltValue) -> None:
@@ -6756,19 +6493,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         )
         return func_val
 
-    def _emit_runtime_builtin_function(
-        self, runtime_name: str, arity: int, *, type_hint: str = "function"
-    ) -> MoltValue:
-        func_val = MoltValue(self.next_var(), type_hint=type_hint)
-        self.emit(
-            MoltOp(
-                kind="BUILTIN_FUNC",
-                args=[runtime_name, arity],
-                result=func_val,
-            )
-        )
-        return func_val
-
     def _emit_intrinsic_function(self, runtime_name: str) -> MoltValue:
         arity = _intrinsic_arity_exact(runtime_name)
         if arity is None:
@@ -7072,116 +6796,92 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         return self._emit_name_from_obj(type_val)
 
     def visit_Name(self, node: ast.Name) -> Any:
-        name = node.id
         if isinstance(node.ctx, ast.Load):
-            for rename_map in reversed(self.exception_alias_renames):
-                mapped = rename_map.get(name)
-                if mapped is not None:
-                    name = mapped
-                    break
-            for binding_map in reversed(self.exception_alias_bindings):
-                bound_exc = binding_map.get(name)
-                if bound_exc is not None:
-                    cached_alias = self.exception_alias_stmt_cache.get(name)
-                    if cached_alias is not None:
-                        return cached_alias
-                    alias_val = self._active_exception_value(bound_exc)
-                    self.exception_alias_stmt_cache[name] = alias_val
-                    return alias_val
-            for alias_names in reversed(self.module_scope_exception_aliases):
-                if name in alias_names:
-                    cached_alias = self.exception_alias_stmt_cache.get(name)
-                    if cached_alias is not None:
-                        return cached_alias
-                    alias_val = self._emit_global_get(name, reload_module=True)
-                    self.exception_alias_stmt_cache[name] = alias_val
-                    return alias_val
-        if isinstance(node.ctx, ast.Load):
-            if self.in_annotation and name in self.annotation_type_params:
-                return self.annotation_type_params[name]
-            if name == "__molt_missing__":
+            if self.in_annotation and node.id in self.annotation_type_params:
+                return self.annotation_type_params[node.id]
+            if node.id == "__molt_missing__":
                 res = MoltValue(self.next_var(), type_hint="missing")
                 self.emit(MoltOp(kind="MISSING", args=[], result=res))
                 return res
-            if name == "__name__":
+            if node.id == "__name__":
                 if self.entry_module and self.module_name == self.entry_module:
                     return self._emit_module_attr_get("__name__")
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[self.module_name], result=res))
                 return res
-            if name in self.nonlocal_decls and name not in self.free_vars:
+            if node.id in self.nonlocal_decls and node.id not in self.free_vars:
                 raise NotImplementedError("nonlocal binding not found")
-            if name in self.free_vars:
-                free_val = self._emit_free_var_load(name)
+            if node.id in self.free_vars:
+                free_val = self._emit_free_var_load(node.id)
                 if free_val is not None:
                     return free_val
             # Check locals BEFORE module_global_mutations: inline
             # comprehensions bind their iterator variable in self.locals,
             # which must shadow the module-level name (CPython scoping).
-            local = self._load_local_value(name)
+            local = self._load_local_value(node.id)
             if local is not None:
                 return local
             if (
                 self.current_func_name == "molt_main"
-                and name in self.module_global_mutations
+                and node.id in self.module_global_mutations
             ):
-                return self._emit_module_attr_get(name)
-            global_val = self.globals.get(name)
+                return self._emit_module_attr_get(node.id)
+            global_val = self.globals.get(node.id)
             if global_val is None:
-                if name == "NotImplemented":
+                if node.id == "NotImplemented":
                     res = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(MoltOp(kind="CONST_NOT_IMPLEMENTED", args=[], result=res))
                     return res
-                if name == "Ellipsis":
+                if node.id == "Ellipsis":
                     res = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(MoltOp(kind="CONST_ELLIPSIS", args=[], result=res))
                     return res
-                if name in self.module_chunk_globals:
-                    return self._emit_global_get(name)
-                if name == "TYPE_CHECKING":
+                if node.id in self.module_chunk_globals:
+                    return self._emit_global_get(node.id)
+                if node.id == "TYPE_CHECKING":
                     res = MoltValue(self.next_var(), type_hint="bool")
                     self.emit(MoltOp(kind="CONST_BOOL", args=[0], result=res))
                     return res
                 if (
-                    name in self.module_declared_funcs
-                    or name in self.module_declared_classes
+                    node.id in self.module_declared_funcs
+                    or node.id in self.module_declared_classes
                 ):
                     if (
                         self.current_func_name != "molt_main"
                         or self.module_name in self.stdlib_allowlist
                         or self._is_known_project_module(self.module_name)
                     ):
-                        if name in self.stable_module_funcs:
-                            return self._emit_module_attr_get(name)
-                        return self._emit_global_get(name)
-                if name == "globals":
-                    return self._emit_globals_builtin_ref()
-                if name in {"locals", "__import__"}:
-                    return self._emit_module_attr_get_on("builtins", name)
-                builtin_tag = BUILTIN_TYPE_TAGS.get(name)
+                        if node.id in self.stable_module_funcs:
+                            return self._emit_module_attr_get(node.id)
+                        return self._emit_global_get(node.id)
+                if node.id == "globals":
+                    return self._emit_globals_builtin_obj()
+                if node.id in {"locals", "__import__"}:
+                    return self._emit_module_attr_get_on("builtins", node.id)
+                builtin_tag = BUILTIN_TYPE_TAGS.get(node.id)
                 if builtin_tag is not None:
                     tag_val = MoltValue(self.next_var(), type_hint="int")
                     self.emit(MoltOp(kind="CONST", args=[builtin_tag], result=tag_val))
                     res = MoltValue(self.next_var(), type_hint="type")
                     self.emit(MoltOp(kind="BUILTIN_TYPE", args=[tag_val], result=res))
                     return res
-                if name in BUILTIN_FUNC_SPECS:
-                    return self._emit_builtin_function(name)
-                if name in BUILTIN_EXCEPTION_NAMES:
-                    return self._emit_exception_class(name)
-                if name in self.stdlib_allowlist:
-                    module_val = self._emit_module_load(name)
+                if node.id in BUILTIN_FUNC_SPECS:
+                    return self._emit_builtin_function(node.id)
+                if node.id in BUILTIN_EXCEPTION_NAMES:
+                    return self._emit_exception_class(node.id)
+                if node.id in self.stdlib_allowlist:
+                    module_val = self._emit_module_load(node.id)
                     if self.current_func_name == "molt_main":
-                        self.globals[name] = module_val
-                        self._emit_module_attr_set(name, module_val)
+                        self.globals[node.id] = module_val
+                        self._emit_module_attr_set(node.id, module_val)
                     return module_val
-                return self._emit_global_get(name)
+                return self._emit_global_get(node.id)
             if self.current_func_name == "molt_main":
                 return global_val
-            if name in self.stable_module_funcs:
-                return self._emit_module_attr_get(name)
-            return self._emit_global_get(name)
-        return name
+            if node.id in self.stable_module_funcs:
+                return self._emit_module_attr_get(node.id)
+            return self._emit_global_get(node.id)
+        return node.id
 
     def visit_Global(self, node: ast.Global) -> None:
         if self.current_func_name == "molt_main":
@@ -7271,9 +6971,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _closure_cells_for(self, names: Sequence[str]) -> list[MoltValue]:
         items: list[MoltValue] = []
         for name in names:
-            if name == "__class__" and self.current_classcell_capture is not None:
-                items.append(self.current_classcell_capture)
-                continue
             cell = self._load_boxed_cell(name)
             if cell is None:
                 cell = self.boxed_locals[name]
@@ -8519,11 +8216,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return res
         return cached
 
-    def _store_temporary_local_value(self, name: str, value: MoltValue) -> None:
-        self._invalidate_loop_guard(name)
-        self.locals[name] = value
-        self.exact_locals.pop(name, None)
-
     def _store_local_value(self, name: str, value: MoltValue) -> None:
         def update_locals_cache() -> None:
             # Never include internal Molt scaffolding in `locals()`.
@@ -8810,8 +8502,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         free_vars = getattr(self, "free_vars", None)
         if free_vars:
             spillable.update(free_vars)
-        last_def: dict[str, int] = {name: -1 for name in spillable}
         type_hints: dict[str, str] = {}
+        for op in self.current_ops:
+            for arg in op.args:
+                if not isinstance(arg, MoltValue):
+                    continue
+                name = arg.name
+                if name in {"self", "none"}:
+                    continue
+                spillable.add(name)
+                if arg.type_hint:
+                    type_hints.setdefault(name, arg.type_hint)
+            out_name = op.result.name
+            if out_name != "none":
+                spillable.add(out_name)
+                if op.result.type_hint:
+                    type_hints.setdefault(out_name, op.result.type_hint)
+        last_def: dict[str, int] = {name: -1 for name in spillable}
         label_spills: dict[int, set[str]] = {idx: set() for idx in label_indices}
         spill_names: set[str] = set()
         for idx, op in enumerate(self.current_ops):
@@ -8834,8 +8541,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             out_name = op.result.name
             if out_name != "none" and out_name in spillable:
                 last_def[out_name] = idx
-                if op.result.type_hint:
-                    type_hints[out_name] = op.result.type_hint
         if not spill_names:
             return
         for name in spill_names:
@@ -8898,8 +8603,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
     def _active_exception_value(self, exc: ActiveException) -> MoltValue:
         if self.is_async() and exc.slot is not None:
             return self._reload_async_value(exc.slot, exc.value.type_hint)
-        if exc.var_slot is not None:
-            return self._reload_control_flow_value(exc.var_slot, exc.value.type_hint)
         return exc.value
 
     def _emit_expr_list(self, exprs: list[ast.expr]) -> list[MoltValue]:
@@ -11498,7 +11201,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 and len(node.left.elts) == 1
                 and isinstance(node.left.elts[0], ast.Constant)
                 and isinstance(node.left.elts[0].value, int)
-                and not isinstance(node.left.elts[0].value, bool)
             ):
                 list_node, count_node = node.left, node.right
             elif (
@@ -11506,7 +11208,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 and len(node.right.elts) == 1
                 and isinstance(node.right.elts[0], ast.Constant)
                 and isinstance(node.right.elts[0].value, int)
-                and not isinstance(node.right.elts[0].value, bool)
             ):
                 list_node, count_node = node.right, node.left
             if list_node is not None and count_node is not None:
@@ -13172,16 +12873,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             for item in node.body
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         )
-        prev_classcell_capture = self.current_classcell_capture
-        classcell_val: MoltValue | None = None
-        if needs_classcell:
-            classcell_none = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=classcell_none))
-            classcell_val = MoltValue(self.next_var(), type_hint="list")
-            self.emit(
-                MoltOp(kind="LIST_NEW", args=[classcell_none], result=classcell_val)
-            )
-            self.current_classcell_capture = classcell_val
         property_updates: dict[int, MethodInfo] = {}
         class_attrs: dict[str, ast.expr] = {}
         class_attr_values: dict[str, MoltValue] = {}
@@ -13546,19 +13237,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             free_var_hints: dict[str, str] = {}
             closure_val: MoltValue | None = None
             has_closure = False
-            needs_method_classcell = self._function_needs_classcell(item)
-            if not self._in_module_scope_function() or needs_method_classcell:
+            if self.current_func_name != "molt_main":
                 free_vars = self._collect_free_vars(item)
-                if needs_method_classcell and "__class__" not in free_vars:
-                    free_vars.append("__class__")
                 if free_vars:
                     self.unbound_check_names.update(free_vars)
                     for name in free_vars:
-                        if name != "__class__":
-                            self._box_local(name)
+                        self._box_local(name)
                         self.closure_locals.add(name)
                     for name in free_vars:
-                        hint = node.name if name == "__class__" else self.boxed_local_hints.get(name)
+                        hint = self.boxed_local_hints.get(name)
                         if hint is None:
                             value = self.locals.get(name)
                             if value is not None and value.type_hint:
@@ -13863,19 +13550,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             free_var_hints: dict[str, str] = {}
             closure_val: MoltValue | None = None
             has_closure = False
-            needs_method_classcell = self._function_needs_classcell(item)
-            if not self._in_module_scope_function() or needs_method_classcell:
+            if self.current_func_name != "molt_main":
                 free_vars = self._collect_free_vars(item)
-                if needs_method_classcell and "__class__" not in free_vars:
-                    free_vars.append("__class__")
                 if free_vars:
                     self.unbound_check_names.update(free_vars)
                     for name in free_vars:
-                        if name != "__class__":
-                            self._box_local(name)
+                        self._box_local(name)
                         self.closure_locals.add(name)
                     for name in free_vars:
-                        hint = node.name if name == "__class__" else self.boxed_local_hints.get(name)
+                        hint = self.boxed_local_hints.get(name)
                         if hint is None:
                             value = self.locals.get(name)
                             if value is not None and value.type_hint:
@@ -14129,19 +13812,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 free_var_hints: dict[str, str] = {}
                 closure_val: MoltValue | None = None
                 has_closure = False
-                needs_method_classcell = self._function_needs_classcell(item)
-                if not self._in_module_scope_function() or needs_method_classcell:
+                if self.current_func_name != "molt_main":
                     free_vars = self._collect_free_vars(item)
-                    if needs_method_classcell and "__class__" not in free_vars:
-                        free_vars.append("__class__")
                     if free_vars:
                         self.unbound_check_names.update(free_vars)
                         for name in free_vars:
-                            if name != "__class__":
-                                self._box_local(name)
+                            self._box_local(name)
                             self.closure_locals.add(name)
                         for name in free_vars:
-                            hint = node.name if name == "__class__" else self.boxed_local_hints.get(name)
+                            hint = self.boxed_local_hints.get(name)
                             if hint is None:
                                 value = self.locals.get(name)
                                 if value is not None and value.type_hint:
@@ -14765,6 +14444,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_val))
 
         dynamic_namespace: MoltValue | None = None
+        classcell_val: MoltValue | None = None
         dynamic_bases_tuple: MoltValue | None = None
         dynamic_meta: MoltValue | None = None
         dynamic_prepared_kwds: MoltValue | None = None
@@ -14951,7 +14631,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             dynamic_namespace = namespace_val
-            if needs_classcell and classcell_val is not None:
+            if needs_classcell:
+                none_val = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+                classcell_val = MoltValue(self.next_var(), type_hint="list")
+                self.emit(
+                    MoltOp(kind="LIST_NEW", args=[none_val], result=classcell_val)
+                )
                 key_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(
                     MoltOp(kind="CONST_STR", args=["__classcell__"], result=key_val)
@@ -15399,37 +15085,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 or dynamic_namespace is None
             ):
                 raise NotImplementedError("Unsupported dynamic class build")
-            meta_slot = self._spill_control_flow_value(dynamic_meta, "class_meta")
-            bases_slot = self._spill_control_flow_value(
-                dynamic_bases_tuple, "class_bases"
-            )
-            namespace_slot = self._spill_control_flow_value(
-                dynamic_namespace, "class_namespace"
-            )
-            classcell_slot = None
-            if classcell_val is not None:
-                classcell_slot = self._spill_control_flow_value(
-                    classcell_val, "classcell"
-                )
-            kwds_slot = None
-            if dynamic_prepared_kwds is not None:
-                kwds_slot = self._spill_control_flow_value(
-                    dynamic_prepared_kwds, "class_kwds"
-                )
-            dynamic_meta = self._reload_control_flow_value(
-                meta_slot, dynamic_meta.type_hint
-            )
-            dynamic_bases_tuple = self._reload_control_flow_value(
-                bases_slot, dynamic_bases_tuple.type_hint
-            )
-            dynamic_namespace = self._reload_control_flow_value(
-                namespace_slot, dynamic_namespace.type_hint
-            )
-            if kwds_slot is not None:
-                dynamic_prepared_kwds = self._reload_control_flow_value(
-                    kwds_slot,
-                    dynamic_prepared_kwds.type_hint if dynamic_prepared_kwds else "Any",
-                )
             callargs = MoltValue(self.next_var(), type_hint="callargs")
             self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
             self.emit(
@@ -15476,31 +15131,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            if dynamic_namespace is not None:
-                has_methods = any(
-                    isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    for item in node.body
-                )
-                if has_methods:
-                    # __classdictcell__ is compiler/runtime bookkeeping, not a
-                    # user-visible namespace entry for Python metaclass __new__.
-                    # Strip it before the metaclass call so custom metaclasses
-                    # do not observe a self-referential namespace payload.
-                    cdc_key = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(
-                        MoltOp(
-                            kind="CONST_STR",
-                            args=["__classdictcell__"],
-                            result=cdc_key,
-                        )
-                    )
-                    self.emit(
-                        MoltOp(
-                            kind="DEL_INDEX",
-                            args=[dynamic_namespace, cdc_key],
-                            result=MoltValue("none"),
-                        )
-                    )
             class_val = MoltValue(self.next_var(), type_hint="type")
             self.emit(
                 MoltOp(
@@ -15508,22 +15138,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             if needs_classcell and classcell_val is not None:
-                zero_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=zero_val))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[classcell_val, zero_val, class_val],
-                        result=MoltValue("none"),
-                    )
-                )
-                if classcell_slot is not None:
-                    classcell_val = self._reload_control_flow_value(
-                        classcell_slot, classcell_val.type_hint
-                    )
-                dynamic_namespace = self._reload_control_flow_value(
-                    namespace_slot, dynamic_namespace.type_hint
-                )
                 none_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
                 key_val = MoltValue(self.next_var(), type_hint="str")
@@ -15737,16 +15351,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     metadata={"s_value": class_def_meta},
                 )
             )
-            if classcell_val is not None:
-                zero_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=zero_val))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[classcell_val, zero_val, class_val],
-                        result=MoltValue("none"),
-                    )
-                )
             if self.current_func_name == "molt_main":
                 self.globals[node.name] = class_val
                 self._emit_module_attr_set(node.name, class_val)
@@ -15941,7 +15545,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.class_annotation_exec_name = prev_class_exec_name
         self.class_annotation_exec_counter = prev_class_exec_counter
         self.annotation_type_params = prev_type_params
-        self.current_classcell_capture = prev_classcell_capture
         return None
 
     def _emit_dynamic_call(
@@ -17925,26 +17528,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if isinstance(node.func, ast.Name):
             func_id = node.func.id
             imported_binding = self.imported_names.get(func_id)
-            imported_attr = self.imported_name_attrs.get(func_id)
             if (
                 imported_binding is None
                 and func_id not in self.locals
                 and func_id not in self.boxed_locals
             ):
                 imported_binding = self.global_imported_names.get(func_id)
-                if imported_attr is None:
-                    imported_attr = self.global_imported_name_attrs.get(func_id)
             imported_from = imported_binding
-            resolved_imported_func_id = imported_attr or func_id
             intrinsic_global_symbol = self.module_intrinsic_globals.get(func_id)
             target_info = self.locals.get(func_id)
-            if (
-                intrinsic_global_symbol is not None
-                and self._name_assumed_non_none(func_id)
-            ):
+            if target_info is None and intrinsic_global_symbol is not None:
                 target_info = MoltValue(func_id, type_hint=f"Func:{intrinsic_global_symbol}")
-            elif target_info is None and intrinsic_global_symbol is not None:
-                target_info = None
             if target_info is None:
                 target_info = self.globals.get(func_id)
             is_local = func_id in self.locals or func_id in self.boxed_locals
@@ -17958,18 +17552,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             if imported_from:
                 normalized = self._normalize_allowlist_module(imported_from)
                 allowlist_key = normalized or imported_from
-                if (
-                    resolved_imported_func_id == "field"
-                    and allowlist_key == "dataclasses"
-                ):
+                if func_id == "field" and allowlist_key == "dataclasses":
                     return self._emit_dataclasses_field_call(allowlist_key, node)
-                if (
-                    allowlist_key == "statistics"
-                    and resolved_imported_func_id in {"mean", "stdev"}
-                ):
-                    lowered_stats = self._lower_statistics_slice_call(
-                        resolved_imported_func_id, node
-                    )
+                if allowlist_key == "statistics" and func_id in {"mean", "stdev"}:
+                    lowered_stats = self._lower_statistics_slice_call(func_id, node)
                     if lowered_stats is not None:
                         return lowered_stats
             # Try lowering _intrinsics.require_intrinsic("name") calls to a
@@ -17977,12 +17563,12 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             # path (e.g. a `def _require_intrinsic(...)` defined in an except
             # handler) can intercept the call and produce a CALL_BIND on a
             # never-assigned sentinel local.
-            if self._is_intrinsics_module_name(imported_binding) and resolved_imported_func_id in {
+            if self._is_intrinsics_module_name(imported_binding) and func_id in {
                 "require_intrinsic",
                 "_require_intrinsic",
             }:
                 lowered_intrinsic_early = self._try_lower_intrinsic_lookup_call(
-                    func_id=resolved_imported_func_id,
+                    func_id=func_id,
                     imported_from=imported_binding,
                     node=node,
                 )
@@ -17990,7 +17576,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     return lowered_intrinsic_early
             if (
                 target_info is None
-                and (self.current_func_name != "molt_main" or self.module_chunking)
+                and self.current_func_name != "molt_main"
                 and self.module_declared_funcs.get(func_id) == "sync"
             ):
                 func_symbol = self._function_symbol_for_reference(func_id)
@@ -18205,16 +17791,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if default is None:
                         default = MoltValue(self.next_var(), type_hint="None")
                         self.emit(MoltOp(kind="CONST_NONE", args=[], result=default))
-                else:
-                    default = MoltValue(self.next_var(), type_hint="Missing")
-                    self.emit(MoltOp(kind="MISSING", args=[], result=default))
-                self.emit(
-                    MoltOp(
-                        kind="GETATTR_NAME_DEFAULT",
-                        args=[obj, name, default],
-                        result=res,
+                    self.emit(
+                        MoltOp(
+                            kind="GETATTR_NAME_DEFAULT",
+                            args=[obj, name, default],
+                            result=res,
+                        )
                     )
-                )
+                else:
+                    self.emit(
+                        MoltOp(
+                            kind="GETATTR_NAME",
+                            args=[obj, name],
+                            result=res,
+                        )
+                    )
                 return res
             if func_id == "setattr":
                 if len(node.args) != 3 or node.keywords:
@@ -18381,11 +17972,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         self.current_class is not None
                         and self.current_method_first_param is not None
                     ):
-                        class_ref = None
-                        if "__class__" in self.free_vars:
-                            class_ref = self._emit_free_var_load("__class__")
-                        if class_ref is None:
-                            class_ref = self._load_local_value("__class__")
+                        class_ref = self._emit_module_attr_get(self.current_class)
                         obj = self._load_local_value(self.current_method_first_param)
                         if (
                             obj is None
@@ -19025,8 +18612,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             class_id = None
             if func_id in self.classes:
                 class_id = func_id
-            elif resolved_imported_func_id in self.classes:
-                class_id = resolved_imported_func_id
             if class_id is not None:
                 if imported_from:
                     class_ref = self._emit_module_attr_get_on(imported_from, class_id)
@@ -19086,7 +18671,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     if init_method is not None:
                         init_func = init_method["func"]
                         target_name = init_func.type_hint.split(":", 1)[1]
-                        init_has_closure = bool(init_method.get("has_closure", False))
                         init_args = [res] + args
                         func_obj = None
                         param_count = init_method.get("param_count")
@@ -19113,7 +18697,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             func_obj=func_obj,
                             positional_limit=positional_limit,
                         )
-                        if init_args is None or init_has_closure:
+                        if init_args is None:
                             init_func_val = self._emit_class_method_func(
                                 class_ref, "__init__"
                             )
@@ -21208,9 +20792,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             )
                         )
                         return res
-                    args = self._emit_direct_call_args(
-                        target_module, resolved_imported_func_id, node
-                    )
+                    args = self._emit_direct_call_args(target_module, func_id, node)
                     if args is None:
                         callee = self.visit(node.func)
                         if callee is None:
@@ -21227,7 +20809,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         return res
                     res = MoltValue(self.next_var(), type_hint="Any")
                     target_name = (
-                        f"{self._sanitize_module_name(target_module)}__{resolved_imported_func_id}"
+                        f"{self._sanitize_module_name(target_module)}__{func_id}"
                     )
                     self.emit(
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
@@ -21238,13 +20820,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             else:
                 normalized = None
             lowered_intrinsic = self._try_lower_intrinsic_lookup_call(
-                func_id=resolved_imported_func_id,
+                func_id=func_id,
                 imported_from=imported_from,
                 node=node,
             )
             if lowered_intrinsic is not None:
                 return lowered_intrinsic
-            if self._is_intrinsics_module_name(imported_from) and resolved_imported_func_id in {
+            if self._is_intrinsics_module_name(imported_from) and func_id in {
                 "require_intrinsic",
                 "_require_intrinsic",
                 "load_intrinsic",
@@ -21274,10 +20856,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     target_module, set()
                 )
                 has_known_direct_target = (
-                    self._lookup_func_defaults(
-                        target_module, resolved_imported_func_id
-                    )
-                    is not None
+                    self._lookup_func_defaults(target_module, func_id) is not None
                 )
                 allow_speculative_internal_direct = (
                     not has_known_direct_target
@@ -21294,13 +20873,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and not force_bind
                     and (has_known_direct_target or allow_speculative_internal_direct)
                 ):
-                    args = self._emit_direct_call_args(
-                        target_module, resolved_imported_func_id, node
-                    )
+                    args = self._emit_direct_call_args(target_module, func_id, node)
                     if args is not None:
                         res = MoltValue(self.next_var(), type_hint="Any")
                         target_name = (
-                            f"{self._sanitize_module_name(target_module)}__{resolved_imported_func_id}"
+                            f"{self._sanitize_module_name(target_module)}__{func_id}"
                         )
                         self.emit(
                             MoltOp(kind="CALL", args=[target_name] + args, result=res)
@@ -21321,13 +20898,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 return res
 
             if imported_from is None:
-                callee = target_info if target_info is not None else self.visit(node.func)
+                callee = self.visit(node.func)
                 if callee is not None:
                     return self._emit_dynamic_call(node, callee, needs_bind)
 
-            suggestion = self._call_allowlist_suggestion(
-                resolved_imported_func_id, imported_from
-            )
+            suggestion = self._call_allowlist_suggestion(func_id, imported_from)
             if suggestion:
                 alternative = f"use {suggestion}"
             else:
@@ -21802,10 +21377,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self._emit_module_attr_set(node.target.id, value_node)
                 if self.current_func_name == "molt_main":
                     self.globals[node.target.id] = value_node
-                    if optional_intrinsic_name is not None:
-                        self.module_intrinsic_globals[node.target.id] = (
-                            optional_intrinsic_name
-                        )
             return None
 
         obj = self.visit(node.target.value)
@@ -22220,11 +21791,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return
         if isinstance(target, ast.Name):
             self.imported_names.pop(target.id, None)
-            self.imported_name_attrs.pop(target.id, None)
             self.imported_modules.pop(target.id, None)
             if self.current_func_name == "molt_main":
                 self.global_imported_names.pop(target.id, None)
-                self.global_imported_name_attrs.pop(target.id, None)
                 self.global_imported_modules.pop(target.id, None)
                 # `_load_optional_intrinsic(...)` is a runtime value with
                 # optional semantics (`None` when unavailable). Keep calls to
@@ -22325,20 +21894,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
         else:
             value_node = self.visit(node.value)
-        if self.try_end_labels:
-            if self.try_scopes:
-                exc_snapshot = MoltValue(self.next_var(), type_hint="exception")
-                self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_snapshot))
-                self._store_try_exception_capture(self.try_scopes[-1], exc_snapshot)
-            self._emit_raise_if_pending()
         for target in node.targets:
             self._emit_assign_target(target, value_node, node.value)
-            if (
-                optional_intrinsic_name is not None
-                and isinstance(target, ast.Name)
-                and self.current_func_name == "molt_main"
-            ):
-                self.module_intrinsic_globals[target.id] = optional_intrinsic_name
         return None
 
     def _match_dict_increment_assign(
@@ -22841,36 +22398,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         for target in node.targets:
             delete_target(target)
         return None
-
-    @staticmethod
-    def _branch_non_none_assumptions(test: ast.AST) -> tuple[set[str], set[str]]:
-        expr = test
-        inverted = False
-        if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
-            expr = expr.operand
-            inverted = True
-        if (
-            isinstance(expr, ast.Compare)
-            and len(expr.ops) == 1
-            and len(expr.comparators) == 1
-            and isinstance(expr.left, ast.Name)
-            and isinstance(expr.comparators[0], ast.Constant)
-            and expr.comparators[0].value is None
-        ):
-            name = expr.left.id
-            if isinstance(expr.ops[0], ast.IsNot):
-                then_names, else_names = {name}, set()
-            elif isinstance(expr.ops[0], ast.Is):
-                then_names, else_names = set(), {name}
-            else:
-                return set(), set()
-            if inverted:
-                return else_names, then_names
-            return then_names, else_names
-        return set(), set()
-
-    def _name_assumed_non_none(self, name: str) -> bool:
-        return any(name in assumed for assumed in self.non_none_name_assumptions)
 
     def _emit_delete_name(self, name: str, *, allow_missing: bool = False) -> None:
         if self.current_func_name == "molt_main":
@@ -24128,11 +23655,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         subject_name = f"__molt_match_subject_{self.next_label()}"
         self._store_local_value(subject_name, subject)
         subject_val = self._load_local_value_unchecked(subject_name) or subject
-        handler_aliases = {handler.name for handler in node.handlers if handler.name}
-        for name in handler_aliases:
-            self.scope_assigned.discard(name)
-        assigned = self._collect_assigned_names([node]) - handler_aliases
         if not self.is_async() and self.current_func_name != "molt_main":
+            assigned = self._collect_assigned_names([node])
             for name in sorted(assigned):
                 if name not in self.scope_assigned or name in self.closure_locals:
                     self._box_local(name)
@@ -24273,19 +23797,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
         self.control_flow_depth += 1
         try:
-            then_non_none, else_non_none = self._branch_non_none_assumptions(node.test)
-            self.non_none_name_assumptions.append(then_non_none)
-            try:
-                self._visit_block(node.body)
-            finally:
-                self.non_none_name_assumptions.pop()
+            self._visit_block(node.body)
             if node.orelse:
                 self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                self.non_none_name_assumptions.append(else_non_none)
-                try:
-                    self._visit_block(node.orelse)
-                finally:
-                    self.non_none_name_assumptions.pop()
+                self._visit_block(node.orelse)
         finally:
             self.control_flow_depth -= 1
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
@@ -25194,9 +24709,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.block_terminated = False
         terminated = False
         for stmt in body:
-            self.exception_alias_stmt_cache.clear()
             self.visit(stmt)
-            self.exception_alias_stmt_cache.clear()
             if self.block_terminated:
                 terminated = True
                 break
@@ -25211,16 +24724,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             else:
                 handler_label = self.function_exception_label
             if handler_label is not None:
-                if self.try_scopes:
-                    exc_snapshot = MoltValue(self.next_var(), type_hint="exception")
-                    self.emit(
-                        MoltOp(
-                            kind="EXCEPTION_LAST",
-                            args=[],
-                            result=exc_snapshot,
-                        )
-                    )
-                    self._store_try_exception_capture(self.try_scopes[-1], exc_snapshot)
                 self.emit(
                     MoltOp(
                         kind="CHECK_EXCEPTION",
@@ -25299,40 +24802,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._emit_guarded_body(remaining, baseline_exc)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
-    @contextmanager
-    def _module_scope_exception_name_reload(self):
-        if not self._in_module_scope_function():
-            yield
-            return
-        prev_globals = self.globals
-        prev_locals = self.locals
-        prev_exact_locals = self.exact_locals
-        prev_module_obj = self.module_obj
-        reloaded_module_obj = (
-            prev_module_obj
-            if prev_module_obj is not None
-            else self._get_or_emit_module_cache(self.module_name)
-        )
-        self.globals = {}
-        self.locals = {}
-        self.exact_locals = {}
-        self.module_obj = reloaded_module_obj
-        try:
-            yield
-        finally:
-            self.globals = prev_globals
-            self.locals = prev_locals
-            self.exact_locals = prev_exact_locals
-            self.module_obj = prev_module_obj
-
-    def _invalidate_module_scope_stmt_cache(self) -> None:
-        if self.current_func_name != "molt_main":
-            return
-        self.module_chunk_globals.update(self.globals.keys())
-        self.globals.clear()
-        self.locals.clear()
-        self.exact_locals.clear()
-
     def _emit_finalbody(
         self,
         finalbody: list[ast.stmt],
@@ -25349,10 +24818,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.return_unwind_depth -= 1
 
     def _ctx_mark_arg(self, scope: TryScope) -> MoltValue:
-        if scope.ctx_mark_name is not None:
-            return self._emit_global_get(scope.ctx_mark_name, reload_module=True)
-        if scope.ctx_mark_slot is not None and not self.is_async():
-            return self._reload_control_flow_value(scope.ctx_mark_slot, "int")
         if scope.ctx_mark_offset is None or not self.is_async():
             return scope.ctx_mark
         res = MoltValue(self.next_var(), type_hint="int")
@@ -25444,12 +24909,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         else:
             handler_label = self.function_exception_label
         if handler_label is not None:
-            if self.try_scopes:
-                exc_snapshot = MoltValue(self.next_var(), type_hint="exception")
-                self.emit(
-                    MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_snapshot)
-                )
-                self._store_try_exception_capture(self.try_scopes[-1], exc_snapshot)
             if (
                 self.current_func_name == "molt_main"
                 or self.current_func_name.startswith("molt_init_")
@@ -25494,11 +24953,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 detail="try/else requires an except handler",
             )
             return None
-        handler_aliases = {handler.name for handler in node.handlers if handler.name}
-        for name in handler_aliases:
-            self.scope_assigned.discard(name)
-        assigned = self._collect_assigned_names([node]) - handler_aliases
         if not self.is_async() and self.current_func_name != "molt_main":
+            assigned = self._collect_assigned_names([node])
             for name in sorted(assigned):
                 if name not in self.scope_assigned or name in self.closure_locals:
                     self._box_local(name)
@@ -25509,10 +24965,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         ctx_mark = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
         ctx_mark_offset = None
-        ctx_mark_slot = None
-        ctx_mark_name = None
-        exc_capture_slot = None
-        exc_capture_name = None
         if self.is_async():
             ctx_name = f"__ctx_mark_{len(self.async_locals)}"
             ctx_mark_offset = self._async_local_offset(ctx_name)
@@ -25523,36 +24975,17 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
-        elif self._in_module_scope_function():
-            ctx_mark_name = f"__molt_ctx_mark_{self.next_label()}"
-            self._emit_module_attr_set(ctx_mark_name, ctx_mark)
-        else:
-            ctx_mark_slot = self._spill_control_flow_value(ctx_mark, "try_ctx_mark")
-        exc_capture_slot, exc_capture_name = self._init_try_exception_capture()
         scope = TryScope(
             ctx_mark=ctx_mark,
             finalbody=node.finalbody,
             ctx_mark_offset=ctx_mark_offset,
-            ctx_mark_slot=ctx_mark_slot,
-            ctx_mark_name=ctx_mark_name,
-            exc_capture_slot=exc_capture_slot,
-            exc_capture_name=exc_capture_name,
         )
         self.try_scopes.append(scope)
-
-        def invalidate_try_assigned_module_names() -> None:
-            if self.current_func_name != "molt_main":
-                return
-            for name in assigned:
-                self.globals.pop(name, None)
-                self.locals.pop(name, None)
-                self.exact_locals.pop(name, None)
 
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
         try_exc_label = self.next_label()
         try_join_label = self.next_label()
         try_done_label = self.next_label()
-        simple_except_only = bool(node.handlers) and not node.orelse and not node.finalbody
         scope.done_label = try_done_label
         self.try_end_labels.append(try_exc_label)
         self.emit(MoltOp(kind="TRY_START", args=[], result=MoltValue("none")))
@@ -25561,13 +24994,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.block_terminated = False
         if not body_terminated:
             self.emit(MoltOp(kind="TRY_END", args=[], result=MoltValue("none")))
-            self.emit(
-                MoltOp(
-                    kind="JUMP",
-                    args=[try_done_label if simple_except_only else try_join_label],
-                    result=MoltValue("none"),
-                )
-            )
+            self.emit(MoltOp(kind="JUMP", args=[try_join_label], result=MoltValue("none")))
         self.emit(
             MoltOp(
                 kind="LABEL",
@@ -25581,15 +25008,23 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.try_suppress_depth = len(self.try_end_labels)
         self.try_handler_scopes.append(scope)
 
-        if not simple_except_only:
-            self.emit(
-                MoltOp(
-                    kind="LABEL",
-                    args=[try_join_label],
-                    result=MoltValue("none"),
-                )
+        self.emit(
+            MoltOp(
+                kind="LABEL",
+                args=[try_join_label],
+                result=MoltValue("none"),
             )
-        exc_val = self._load_try_exception_capture(scope)
+        )
+        exc_val = MoltValue(self.next_var(), type_hint="exception")
+        self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_val))
+        none_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+        is_none = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
+        pending = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
+
+        self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
         ctx_arg = self._ctx_mark_arg(scope)
         self.emit(
             MoltOp(
@@ -25598,9 +25033,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 result=MoltValue("none"),
             )
         )
-        if not simple_except_only:
-            pending = self._emit_exception_pending_value()
-            self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
 
         def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
             if not handlers:
@@ -25612,10 +25044,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             match_val = self._emit_exception_match(handler, exc_val)
             self.emit(MoltOp(kind="IF", args=[match_val], result=MoltValue("none")))
             exc_slot_offset = None
-            exc_slot_name = None
-            handler_body = handler.body
-            alias_name = None
-            module_scope_alias = self._in_module_scope_function()
             if self.is_async():
                 exc_slot_name = f"__exc_handler_{len(self.async_locals)}"
                 exc_slot_offset = self._async_local_offset(exc_slot_name)
@@ -25626,60 +25054,21 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         result=MoltValue("none"),
                     )
                 )
-            else:
-                exc_slot_name = self._spill_control_flow_value(exc_val, "handler_exc")
-            handler_exc = ActiveException(
-                value=exc_val, slot=exc_slot_offset, var_slot=exc_slot_name
-            )
-            stable_exc_val = self._active_exception_value(handler_exc)
             if handler.name:
-                if module_scope_alias:
-                    alias_name = handler.name
-                else:
-                    alias_name = f"__molt_exc_alias_{handler.name}_{self.next_label()}"
-                    self.exception_alias_renames.append({handler.name: alias_name})
-                    handler_body = self._rewrite_exception_alias_body(
-                        handler.body, handler.name, alias_name
-                    )
-            body_exc_val = MoltValue(self.next_var(), type_hint="exception")
+                if self.current_func_name == "molt_main":
+                    self.module_global_mutations.add(handler.name)
+                self._store_local_value(handler.name, exc_val)
+            exc_entry = ActiveException(value=exc_val, slot=exc_slot_offset)
+            self.active_exceptions.append(exc_entry)
+            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
             self.emit(
                 MoltOp(
-                    kind="EXCEPTION_ENTER_HANDLER",
-                    args=[stable_exc_val],
-                    result=body_exc_val,
+                    kind="EXCEPTION_CONTEXT_SET",
+                    args=[exc_val],
+                    result=MoltValue("none"),
                 )
             )
-            if self.is_async() and exc_slot_offset is not None:
-                self.emit(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", exc_slot_offset, body_exc_val],
-                        result=MoltValue("none"),
-                    )
-                )
-            elif exc_slot_name is not None:
-                self.emit(
-                    MoltOp(
-                        kind="STORE_VAR",
-                        args=[body_exc_val],
-                        result=MoltValue("none"),
-                        metadata={"var": exc_slot_name},
-                    )
-                )
-            exc_entry = ActiveException(
-                value=body_exc_val, slot=exc_slot_offset, var_slot=exc_slot_name
-            )
-            self.active_exceptions.append(exc_entry)
-            if alias_name is not None:
-                if module_scope_alias:
-                    self.module_scope_exception_aliases.append({alias_name})
-                    module_val = self._get_or_emit_module_cache(self.module_name)
-                    alias_value = self._active_exception_value(exc_entry)
-                    self._emit_module_attr_set_on(module_val, alias_name, alias_value)
-                else:
-                    self.exception_alias_bindings.append({alias_name: exc_entry})
-            with self._module_scope_exception_name_reload():
-                self._emit_guarded_body(handler_body, exc_entry)
+            self._emit_guarded_body(handler.body, exc_entry)
             cleared_ctx = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_ctx))
             self.emit(
@@ -25690,12 +25079,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             if handler.name:
-                if module_scope_alias:
-                    self.module_scope_exception_aliases.pop()
-                    self._emit_module_global_del_cached(alias_name)
-                else:
-                    self.exception_alias_bindings.pop()
-                    self.exception_alias_renames.pop()
+                self._emit_delete_name(handler.name, allow_missing=True)
             self.active_exceptions.pop()
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
             if len(handlers) > 1:
@@ -25705,25 +25089,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
                 )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-        if simple_except_only:
-            emit_handlers(node.handlers)
-            self.emit(
-                MoltOp(
-                    kind="LABEL",
-                    args=[try_done_label],
-                    result=MoltValue("none"),
-                )
-            )
-            self.try_handler_scopes.pop()
-            self.try_suppress_depth = prior_suppress
-            self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-            self._emit_raise_if_pending(emit_exit=True)
-            self.try_scopes.pop()
-            self.control_flow_depth -= 1
-            invalidate_try_assigned_module_names()
-            self.block_terminated = prior_terminated
-            return None
 
         if node.handlers:
             emit_handlers(node.handlers)
@@ -25753,8 +25118,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-            with self._module_scope_exception_name_reload():
-                self._emit_finalbody(node.finalbody, final_entry, popped_scopes=0)
+            self._emit_finalbody(node.finalbody, final_entry, popped_scopes=0)
             exc_after = MoltValue(self.next_var(), type_hint="exception")
             self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_after))
             none_after = MoltValue(self.next_var(), type_hint="None")
@@ -25838,8 +25202,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             )
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-            with self._module_scope_exception_name_reload():
-                self._emit_finalbody(node.finalbody, else_final_entry, popped_scopes=0)
+            self._emit_finalbody(node.finalbody, else_final_entry, popped_scopes=0)
             else_after = MoltValue(self.next_var(), type_hint="exception")
             self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=else_after))
             none_after = MoltValue(self.next_var(), type_hint="None")
@@ -25902,7 +25265,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self._emit_raise_if_pending(emit_exit=True)
         self.try_scopes.pop()
         self.control_flow_depth -= 1
-        invalidate_try_assigned_module_names()
         self.block_terminated = prior_terminated
         return None
 
@@ -25937,10 +25299,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         ctx_mark = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
         ctx_mark_offset = None
-        ctx_mark_slot = None
-        ctx_mark_name = None
-        exc_capture_slot = None
-        exc_capture_name = None
         if self.is_async():
             ctx_name = f"__ctx_star_{len(self.async_locals)}"
             ctx_mark_offset = self._async_local_offset(ctx_name)
@@ -25951,22 +25309,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     result=MoltValue("none"),
                 )
             )
-        elif self._in_module_scope_function():
-            ctx_mark_name = f"__molt_ctx_mark_{self.next_label()}"
-            self._emit_module_attr_set(ctx_mark_name, ctx_mark)
-        else:
-            ctx_mark_slot = self._spill_control_flow_value(
-                ctx_mark, "try_star_ctx_mark"
-            )
-        exc_capture_slot, exc_capture_name = self._init_try_exception_capture()
         scope = TryScope(
             ctx_mark=ctx_mark,
             finalbody=node.finalbody,
             ctx_mark_offset=ctx_mark_offset,
-            ctx_mark_slot=ctx_mark_slot,
-            ctx_mark_name=ctx_mark_name,
-            exc_capture_slot=exc_capture_slot,
-            exc_capture_name=exc_capture_name,
         )
         self.try_scopes.append(scope)
 
@@ -25991,9 +25337,16 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.try_suppress_depth = len(self.try_end_labels)
         self.try_handler_scopes.append(scope)
 
-        pending = self._emit_exception_pending_value()
+        exc_val = MoltValue(self.next_var(), type_hint="exception")
+        self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_val))
+        none_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+        is_none = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
+        pending = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
+
         self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
-        exc_val = self._load_try_exception_capture(scope)
         ctx_arg = self._ctx_mark_arg(scope)
         self.emit(
             MoltOp(
@@ -26109,8 +25462,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self.emit(MoltOp(kind="NOT", args=[match_is_none], result=has_match))
                 self.emit(MoltOp(kind="IF", args=[has_match], result=MoltValue("none")))
                 exc_slot_offset = None
-                handler_body = handler.body
-                alias_name = None
                 if self.is_async():
                     exc_slot_name = f"__exc_star_{len(self.async_locals)}"
                     exc_slot_offset = self._async_local_offset(exc_slot_name)
@@ -26122,12 +25473,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         )
                     )
                 if handler.name:
-                    alias_name = f"__molt_exc_alias_{handler.name}_{self.next_label()}"
-                    self.exception_alias_renames.append({handler.name: alias_name})
-                    self._store_temporary_local_value(alias_name, match_val)
-                    handler_body = self._rewrite_exception_alias_body(
-                        handler.body, handler.name, alias_name
-                    )
+                    if self.current_func_name == "molt_main":
+                        self.module_global_mutations.add(handler.name)
+                    self._store_local_value(handler.name, match_val)
                 exc_entry = ActiveException(value=match_val, slot=exc_slot_offset)
                 self.active_exceptions.append(exc_entry)
                 self.emit(
@@ -26140,10 +25488,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         result=MoltValue("none"),
                     )
                 )
-                with self._module_scope_exception_name_reload():
-                    if alias_name is not None:
-                        self._store_temporary_local_value(alias_name, match_val)
-                    self._emit_guarded_body(handler_body, exc_entry)
+                self._emit_guarded_body(handler.body, exc_entry)
                 cleared_ctx = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_ctx))
                 self.emit(
@@ -26154,9 +25499,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     )
                 )
                 if handler.name:
-                    alias_name = self.exception_alias_renames.pop()[handler.name]
-                    self.locals.pop(alias_name, None)
-                    self.exact_locals.pop(alias_name, None)
+                    self._emit_delete_name(handler.name, allow_missing=True)
                 self.active_exceptions.pop()
                 raised_exc = MoltValue(self.next_var(), type_hint="exception")
                 self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=raised_exc))
@@ -26697,8 +26040,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             should_exit = len(self.try_end_labels) > self.try_suppress_depth
 
         def emit_raise_or_defer(exc: MoltValue) -> None:
-            if self.try_scopes:
-                self._store_try_exception_capture(self.try_scopes[-1], exc)
             if should_exit:
                 self.emit(MoltOp(kind="RAISE", args=[exc], result=MoltValue("none")))
             else:
@@ -28800,10 +28141,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     continue
                 bind_name = alias.asname or alias.name
                 self.imported_names[bind_name] = module_name
-                self.imported_name_attrs[bind_name] = alias.name
                 if self.current_func_name == "molt_main":
                     self.global_imported_names[bind_name] = module_name
-                    self.global_imported_name_attrs[bind_name] = alias.name
                     self.module_intrinsic_globals.pop(bind_name, None)
                 # Direct calls like `_require_intrinsic("name")` are rewritten
                 # to invoke the canonical runtime resolver by
@@ -28910,10 +28249,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             if _mod_resolvable:
                 self.imported_names[bind_name] = module_name
-                self.imported_name_attrs[bind_name] = attr_name
                 if self.current_func_name == "molt_main":
                     self.global_imported_names[bind_name] = module_name
-                    self.global_imported_name_attrs[bind_name] = attr_name
                     self.module_intrinsic_globals.pop(bind_name, None)
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
@@ -29728,6 +29065,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             self._active_midend_function_name = "<direct>"
         ops = self._run_ir_midend_passes(ops)
         json_ops: list[dict[str, Any]] = []
+        emit_function_frame = self._function_needs_frame_trace(function_name)
 
         def field_offset(expected_class: str, attr: str) -> int | None:
             class_info = self.classes.get(expected_class)
@@ -30756,26 +30094,6 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 )
             elif op.kind == "EXCEPTION_LAST":
                 json_ops.append({"kind": "exception_last", "out": op.result.name})
-            elif op.kind == "EXCEPTION_ACTIVE":
-                json_ops.append({"kind": "exception_active", "out": op.result.name})
-            elif op.kind == "EXCEPTION_CURRENT":
-                json_ops.append({"kind": "exception_current", "out": op.result.name})
-            elif op.kind == "EXCEPTION_ENTER_HANDLER":
-                json_ops.append(
-                    {
-                        "kind": "exception_enter_handler",
-                        "args": [op.args[0].name],
-                        "out": op.result.name,
-                    }
-                )
-            elif op.kind == "EXCEPTION_RESOLVE_CAPTURED":
-                json_ops.append(
-                    {
-                        "kind": "exception_resolve_captured",
-                        "args": [op.args[0].name],
-                        "out": op.result.name,
-                    }
-                )
             elif op.kind == "EXCEPTION_NEW":
                 json_ops.append(
                     {
@@ -32912,6 +32230,8 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 if var_name in li_set:
                     li_set.add(op.result.name)
             elif op.kind == "ret":
+                if emit_function_frame:
+                    json_ops.append({"kind": "trace_exit"})
                 json_ops.append({"kind": "ret", "var": op.args[0].name})
             elif op.kind == "ALLOC_TASK":
                 poll_func = op.args[0]
@@ -33237,7 +32557,15 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 json_ops.append({"kind": op.kind, "out": op.result.name})
 
         if ops and ops[-1].kind != "ret":
+            if emit_function_frame:
+                json_ops.append({"kind": "trace_exit"})
             json_ops.append({"kind": "ret_void"})
+
+        if emit_function_frame:
+            code_id = self.func_code_ids.get(function_name or "")
+            if code_id is None:
+                code_id = self._register_code_symbol(function_name or "")
+            json_ops.insert(0, {"kind": "trace_enter_slot", "value": int(code_id)})
 
         # Post-pass: inject expression-level col_offset/end_col_offset into
         # JSON dicts emitted by raising ops.  This is done after serialization
@@ -39339,12 +38667,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         sccp_iter_cap_override=sccp_iter_cap,
                     )
                     total_phi_edge_trims += cse_phi_trims
-                    # Validate the rewritten candidate against the names that
-                    # were genuinely predefined at CSE input. Inferring
-                    # "predefined" names from the candidate itself masks
-                    # broken rewrites that drop a definition and then leave
-                    # dangling SSA uses behind.
-                    cse_predefined = self._infer_predefined_value_names(cse_input)
+                    cse_predefined = self._infer_predefined_value_names(cse_candidate)
                     cse_failures = self._verify_definite_assignment_in_ops(
                         cse_candidate, predefined_value_names=cse_predefined
                     )
@@ -39839,11 +39162,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "exception_stack_depth",
             "exception_stack_set_depth",
             "exception_stack_clear",
-            "exception_active",
             "exception_last",
-            "exception_current",
-            "exception_enter_handler",
-            "exception_resolve_captured",
             "frame_locals_set",
             "trace_enter_slot",
             "trace_exit",

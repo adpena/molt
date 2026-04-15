@@ -564,6 +564,18 @@ fn maybe_compact_asyncio_event_waiters(
 
 fn asyncio_parse_token_id(_py: &PyToken<'_>, token_bits: u64) -> Result<u64, u64> {
     let Some(token_id) = to_i64(obj_from_bits(token_bits)) else {
+        if matches!(
+            std::env::var("MOLT_TRACE_BAD_ASYNCIO_TOKEN")
+                .ok()
+                .as_deref(),
+            Some("1")
+        ) {
+            eprintln!(
+                "molt bad asyncio token type={} value={}",
+                crate::type_name(_py, obj_from_bits(token_bits)),
+                crate::format_obj_str(_py, obj_from_bits(token_bits))
+            );
+        }
         return Err(raise_exception::<u64>(
             _py,
             "TypeError",
@@ -800,6 +812,25 @@ fn asyncio_task_registry_pop_impl(_py: &PyToken<'_>, token_bits: u64) -> u64 {
     guard
         .remove(&token_id)
         .unwrap_or_else(|| MoltObject::none().bits())
+}
+
+fn asyncio_task_last_exception_clear_impl(_py: &PyToken<'_>, task_bits: u64) -> u64 {
+    let Some(task_ptr) = resolve_task_ptr(task_bits) else {
+        return raise_exception::<u64>(_py, "TypeError", "object is not awaitable");
+    };
+    if matches!(
+        std::env::var("MOLT_TRACE_TASK_LAST_EXCEPTION_CLEAR")
+            .ok()
+            .as_deref(),
+        Some("1")
+    ) {
+        eprintln!(
+            "molt asyncio task_last_exception_clear task=0x{:x}",
+            task_ptr as usize
+        );
+    }
+    crate::task_last_exception_drop(_py, task_ptr);
+    MoltObject::none().bits()
 }
 
 fn asyncio_task_registry_move_impl(
@@ -1280,6 +1311,11 @@ pub extern "C" fn molt_asyncio_task_registry_current_for_loop(loop_bits: u64) ->
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_pop(token_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, { asyncio_task_registry_pop_impl(_py, token_bits) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_asyncio_task_last_exception_clear(task_bits: u64) -> u64 {
+    crate::with_gil_entry!(_py, { asyncio_task_last_exception_clear_impl(_py, task_bits) })
 }
 
 #[unsafe(no_mangle)]
@@ -3023,7 +3059,7 @@ impl MoltScheduler {
                         exception_stack_set_depth(_py, caller_depth);
                         exception_context_fallback_pop();
                         clear_task_token(_py, task_ptr);
-                        task_mark_done(task_ptr);
+                        task_mark_done(_py, task_ptr);
                         runtime_state(_py).sleep_queue().cancel_task(_py, task_ptr);
                         let waiters = await_waiters_take(_py, task_ptr);
                         for waiter in waiters {
@@ -3177,7 +3213,7 @@ impl MoltScheduler {
                         }
                     } else {
                         clear_task_token(_py, task_ptr);
-                        task_mark_done(task_ptr);
+                        task_mark_done(_py, task_ptr);
                         runtime_state(_py).sleep_queue().cancel_task(_py, task_ptr);
                         let _ = task_take_wake_pending(task_ptr);
                         let waiters = await_waiters_take(_py, task_ptr);
@@ -3246,9 +3282,12 @@ fn task_clear_queue_flags(task_ptr: *mut u8) {
     }
 }
 
-pub(crate) fn task_mark_done(task_ptr: *mut u8) {
+pub(crate) fn task_mark_done(_py: &PyToken<'_>, task_ptr: *mut u8) {
     if task_ptr.is_null() {
         return;
+    }
+    if !exception_pending(_py) {
+        crate::task_last_exception_drop(_py, task_ptr);
     }
     let _guard = task_queue_lock().lock().unwrap();
     unsafe {
@@ -3510,6 +3549,30 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 let _py = _gil.token();
                 let _py = &_py;
                 let mut res = call_poll_fn(_py, poll_fn_addr, task_ptr);
+                if res != pending_bits_i64() && !exception_pending(_py) {
+                    crate::task_last_exception_drop(_py, task_ptr);
+                }
+                if matches!(
+                    std::env::var("MOLT_TRACE_BLOCK_ON_RESULT").ok().as_deref(),
+                    Some("1")
+                ) {
+                    let pending_kind = if exception_pending(_py) {
+                        let exc_bits = molt_exception_last();
+                        if let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) {
+                            let kind_bits = exception_kind_bits(exc_ptr);
+                            string_obj_to_owned(obj_from_bits(kind_bits))
+                                .unwrap_or_else(|| "<exc>".to_string())
+                        } else {
+                            "<none>".to_string()
+                        }
+                    } else {
+                        "<none>".to_string()
+                    };
+                    eprintln!(
+                        "molt block_on poll result=0x{:x} pending_kind={}",
+                        res, pending_kind
+                    );
+                }
                 if task_cancel_pending(task_ptr) {
                     if exception_pending(_py) {
                         let _ = task_take_cancel_pending(task_ptr);
@@ -3723,7 +3786,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 let _py = &_py;
                 runtime_state(_py).scheduler().drain_ready();
                 // Once the root task is ready, don't re-poll it; clear pending wake/cancel flags.
-                task_mark_done(task_ptr);
+                task_mark_done(_py, task_ptr);
                 let _ = task_take_cancel_pending(task_ptr);
                 let _ = task_take_wake_pending(task_ptr);
             }
@@ -3734,26 +3797,62 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             let _gil = GilGuard::new();
             let _py = _gil.token();
             let _py = &_py;
+            let trace_epilogue = matches!(
+                std::env::var("MOLT_TRACE_BLOCK_ON_EPILOGUE")
+                    .ok()
+                    .as_deref(),
+                Some("1")
+            );
+            let trace_step = |label: &str| {
+                if !trace_epilogue {
+                    return;
+                }
+                let pending = exception_pending(_py);
+                let kind = if pending {
+                    let exc_bits = molt_exception_last();
+                    if let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) {
+                        let kind_bits = exception_kind_bits(exc_ptr);
+                        string_obj_to_owned(obj_from_bits(kind_bits))
+                            .unwrap_or_else(|| "<exc>".to_string())
+                    } else {
+                        "<none>".to_string()
+                    }
+                } else {
+                    "<none>".to_string()
+                };
+                eprintln!("molt block_on epilogue step={} pending={} kind={}", label, pending, kind);
+            };
             let new_depth = exception_stack_depth();
+            trace_step("start");
             task_exception_depth_store(_py, task_ptr, new_depth);
+            trace_step("task_exception_depth_store");
             exception_context_align_depth(_py, new_depth);
+            trace_step("exception_context_align_depth");
             let new_baseline = exception_stack_baseline_get();
             task_exception_baseline_store(_py, task_ptr, new_baseline);
+            trace_step("task_exception_baseline_store");
             exception_stack_baseline_set(caller_baseline);
+            trace_step("exception_stack_baseline_set");
             let task_handlers =
                 EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
             task_exception_handler_stack_store(_py, task_ptr, task_handlers);
+            trace_step("task_exception_handler_stack_store");
             let task_active =
                 ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
             task_exception_stack_store(_py, task_ptr, task_active);
+            trace_step("task_exception_stack_store");
             ACTIVE_EXCEPTION_STACK.with(|stack| {
                 *stack.borrow_mut() = caller_active;
             });
+            trace_step("restore_active_exception_stack");
             EXCEPTION_STACK.with(|stack| {
                 *stack.borrow_mut() = caller_handlers;
             });
+            trace_step("restore_exception_stack");
             exception_stack_set_depth(_py, caller_depth);
+            trace_step("exception_stack_set_depth");
             exception_context_fallback_pop();
+            trace_step("exception_context_fallback_pop");
             // Move any pending exception off the block_on task and onto the caller/global slot.
             let task_exc_slot = {
                 let state = runtime_state(_py);
@@ -3766,6 +3865,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 }
                 slot
             };
+            trace_step("task_exc_slot_taken");
             let pending_bits = if let Some(exc_slot) = task_exc_slot {
                 MoltObject::from_ptr(exc_slot.0).bits()
             } else if exception_pending(_py) {
@@ -3773,6 +3873,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             } else {
                 MoltObject::none().bits()
             };
+            trace_step("pending_bits_selected");
             if let Some(exc_ptr) = maybe_ptr_from_bits(pending_bits) {
                 let restore_task = CURRENT_TASK.with(|cell| {
                 let restore = cell.get();
@@ -3787,16 +3888,23 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             });
                 record_exception(_py, exc_ptr);
                 CURRENT_TASK.with(|cell| cell.set(restore_task));
+                trace_step("record_exception");
             }
             if !obj_from_bits(pending_bits).is_none() {
                 dec_ref_bits(_py, pending_bits);
+                trace_step("pending_bits_dec_ref");
             }
             let header = header_from_obj_ptr(task_ptr);
             (*header).flags &= !HEADER_FLAG_BLOCK_ON;
-            task_mark_done(task_ptr);
+            trace_step("clear_block_on_flag");
+            task_mark_done(_py, task_ptr);
+            trace_step("task_mark_done");
             BLOCK_ON_TASK.with(|cell| cell.set(std::ptr::null_mut()));
+            trace_step("clear_block_on_task");
             set_task_raise_active(prev_raise);
+            trace_step("set_task_raise_active");
             set_current_token(_py, prev_token);
+            trace_step("set_current_token");
             if debug_current_task() && prev_task.is_null() {
                 let current = CURRENT_TASK.with(|cell| cell.get());
                 if !current.is_null() {
@@ -3807,6 +3915,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 }
             }
             CURRENT_TASK.with(|cell| cell.set(prev_task));
+            trace_step("restore_current_task");
             let pending_after = exception_pending(_py);
             let handlers_active = exception_handler_active();
             let generator_raise = generator_raise_active();

@@ -19,6 +19,7 @@ members = [
     "runtime/molt-runtime-protobuf",
     "runtime/molt-ffi",
     "runtime/molt-tier",
+    "runtime/molt-gpu",
 ]
 resolver = "2"
 

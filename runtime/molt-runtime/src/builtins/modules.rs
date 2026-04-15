@@ -102,6 +102,61 @@ fn trace_op_sigtrap_enabled() -> bool {
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TraceModuleGlobalsMode {
+    Off,
+    Filtered,
+    Verbose,
+}
+
+fn trace_module_globals_mode_raw(raw: Option<&str>) -> TraceModuleGlobalsMode {
+    match raw {
+        Some("all") | Some("verbose") => TraceModuleGlobalsMode::Verbose,
+        Some("1") => TraceModuleGlobalsMode::Filtered,
+        _ => TraceModuleGlobalsMode::Off,
+    }
+}
+
+fn trace_module_globals_mode() -> TraceModuleGlobalsMode {
+    static TRACE: OnceLock<TraceModuleGlobalsMode> = OnceLock::new();
+    *TRACE.get_or_init(|| {
+        trace_module_globals_mode_raw(std::env::var("MOLT_TRACE_MODULE_GLOBALS").ok().as_deref())
+    })
+}
+
+fn trace_bad_module_name_arg(_py: &PyToken<'_>, where_: &str, bits: u64) {
+    if !matches!(
+        std::env::var("MOLT_TRACE_BAD_MODULE_NAME").ok().as_deref(),
+        Some("1")
+    ) {
+        return;
+    }
+    let obj = obj_from_bits(bits);
+    let type_name = type_name(_py, obj);
+    let rendered = format_obj_str(_py, obj);
+    if let Some((file, line, func, _, _)) = crate::builtins::exceptions::frame_stack_top_info(_py)
+    {
+        eprintln!(
+            "molt bad module name where={} type={} value={} frame={} file={} line={}",
+            where_, type_name, rendered, func, file, line
+        );
+    } else {
+        eprintln!(
+            "molt bad module name where={} type={} value={} frame=<none>",
+            where_, type_name, rendered
+        );
+    }
+    if matches!(
+        std::env::var("MOLT_TRACE_BAD_MODULE_NAME_BT")
+            .ok()
+            .as_deref(),
+        Some("1")
+    ) {
+        let bt = std::backtrace::Backtrace::force_capture();
+        eprintln!("{bt}");
+    }
+}
+
 fn normalize_pending_import_exception(_py: &PyToken<'_>) {
     if !exception_pending(_py) {
         return;
@@ -426,16 +481,21 @@ pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
+            trace_bad_module_name_arg(_py, "module_new_ptr", name_bits);
             return raise_exception::<_>(_py, "TypeError", "module name must be str");
         };
         unsafe {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
+                trace_bad_module_name_arg(_py, "module_new_type", name_bits);
                 return raise_exception::<_>(_py, "TypeError", "module name must be str");
             }
         }
         let _name = match string_obj_to_owned(name_obj) {
             Some(val) => val,
-            None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
+            None => {
+                trace_bad_module_name_arg(_py, "module_new_utf8", name_bits);
+                return raise_exception::<_>(_py, "TypeError", "module name must be str");
+            }
         };
         let ptr = alloc_module_obj(_py, name_bits);
         if ptr.is_null() {
@@ -465,10 +525,12 @@ pub extern "C" fn molt_module_cache_get(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
+            trace_bad_module_name_arg(_py, "module_cache_get_ptr", name_bits);
             return raise_exception::<_>(_py, "TypeError", "module name must be str");
         };
         unsafe {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
+                trace_bad_module_name_arg(_py, "module_cache_get_type", name_bits);
                 return raise_exception::<_>(_py, "TypeError", "module name must be str");
             }
         }
@@ -480,7 +542,10 @@ pub extern "C" fn molt_module_cache_get(name_bits: u64) -> u64 {
         } else {
             name_owned = match string_obj_to_owned(name_obj) {
                 Some(val) => val,
-                None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
+                None => {
+                    trace_bad_module_name_arg(_py, "module_cache_get_utf8", name_bits);
+                    return raise_exception::<_>(_py, "TypeError", "module name must be str");
+                }
             };
             name_owned.as_str()
         };
@@ -516,7 +581,10 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
             Some(val) => val,
-            None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
+            None => {
+                trace_bad_module_name_arg(_py, "module_import", name_bits);
+                return raise_exception::<_>(_py, "TypeError", "module name must be str");
+            }
         };
         let trace_import_stage = std::env::var("MOLT_TRACE_IMPORT_STAGE").as_deref() == Ok("1");
         let trace_stage = |stage: &str| {
@@ -4260,11 +4328,15 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
             };
             if let Some(val) = module_attr_lookup(_py, module_ptr, attr_bits) {
                 if trace_attrs || trace_attrs_verbose {
-                    let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
-                        .unwrap_or_else(|| "<module>".to_string());
+                    let module_name =
+                        string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
+                            .unwrap_or_else(|| "<module>".to_string());
                     let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
                         .unwrap_or_else(|| "<attr>".to_string());
-                    if trace_attrs_verbose || attr_name == "_sys" || module_name.contains("importlib") {
+                    if trace_attrs_verbose
+                        || attr_name == "_sys"
+                        || module_name.contains("importlib")
+                    {
                         eprintln!(
                             "molt module attr get module={} attr={}",
                             module_name, attr_name
@@ -4272,9 +4344,6 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                     }
                 }
                 return val;
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
             }
             let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
                 .unwrap_or_default();
@@ -4308,8 +4377,22 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
 pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let trace = trace_name_error();
-        let debug_try_globals =
-            std::env::var("MOLT_DEBUG_TRY_GLOBALS").as_deref() == Ok("1");
+        let trace_globals_mode = trace_module_globals_mode();
+        let trace_globals = trace_globals_mode != TraceModuleGlobalsMode::Off;
+        let trace_globals_all = trace_globals_mode == TraceModuleGlobalsMode::Verbose;
+        let trace_name =
+            string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<name>".to_string());
+        let trace_name_match = trace_globals_all
+            || trace_name == "_SYS_FLAGS_SEQUENCE_FIELDS"
+            || trace_name == "_FlagsTuple";
+        if trace_globals && trace_name_match {
+            eprintln!(
+                "molt module_get_global enter name={} module_bits=0x{:x} pending={}",
+                trace_name,
+                module_bits,
+                exception_pending(_py),
+            );
+        }
         let module_obj = obj_from_bits(module_bits);
         let Some(module_ptr) = module_obj.as_ptr() else {
             // On exception handler paths, SSA variables may resolve to
@@ -4317,27 +4400,41 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
             // None silently — the exception handler will check
             // exception_last and re-raise if needed.
             if module_obj.is_none() || exception_pending(_py) {
+                if trace_globals && trace_name_match {
+                    eprintln!(
+                        "molt module_get_global early_none name={} module_bits=0x{:x} module_is_none={} pending={}",
+                        trace_name,
+                        module_bits,
+                        module_obj.is_none(),
+                        exception_pending(_py),
+                    );
+                }
                 return MoltObject::none().bits();
             }
-            let name = string_obj_to_owned(obj_from_bits(name_bits))
-                .unwrap_or_else(|| "<name>".to_string());
             let msg = format!(
                 "module get_global expects module, got non-pointer (bits=0x{:x}) for name '{}'",
-                module_bits, name
+                module_bits, trace_name
             );
             return raise_exception::<_>(_py, "TypeError", &msg);
         };
         unsafe {
             if object_type_id(module_ptr) != TYPE_ID_MODULE {
                 if exception_pending(_py) {
+                    if trace_globals && trace_name_match {
+                        eprintln!(
+                            "molt module_get_global early_type name={} module_bits=0x{:x} type_id={} pending={}",
+                            trace_name,
+                            module_bits,
+                            object_type_id(module_ptr),
+                            exception_pending(_py),
+                        );
+                    }
                     return MoltObject::none().bits();
                 }
-                let name = string_obj_to_owned(obj_from_bits(name_bits))
-                    .unwrap_or_else(|| "<name>".to_string());
                 let type_id = object_type_id(module_ptr);
                 let msg = format!(
                     "module get_global expects module, got type_id={} (bits=0x{:x}) for name '{}'",
-                    type_id, module_bits, name
+                    type_id, module_bits, trace_name
                 );
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
@@ -4347,24 +4444,30 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                 Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
                 _ => return raise_exception::<_>(_py, "TypeError", "module dict missing"),
             };
-            let debug_name = if debug_try_globals {
-                string_obj_to_owned(obj_from_bits(name_bits))
-            } else {
-                None
-            };
             if let Some(val) = dict_get_in_place(_py, dict_ptr, name_bits) {
-                if let Some(name) = debug_name.as_deref()
-                    && debug_try_global_name(name)
-                {
+                if trace_globals && trace_name_match {
+                    let module_name =
+                        string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
+                            .unwrap_or_else(|| "<module>".to_string());
                     eprintln!(
-                        "molt module_get_global name={} from=dict type={} bits=0x{:x}",
-                        name,
+                        "molt module_get_global hit module={} name={} module_bits=0x{:x} dict_bits=0x{:x} val_type={}",
+                        module_name,
+                        trace_name,
+                        module_bits,
+                        dict_bits,
                         type_name(_py, obj_from_bits(val)),
-                        val
                     );
                 }
                 inc_ref_bits(_py, val);
                 return val;
+            }
+            if trace_globals && trace_name_match {
+                let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
+                    .unwrap_or_else(|| "<module>".to_string());
+                eprintln!(
+                    "molt module_get_global miss module={} name={} module_bits=0x{:x} dict_bits=0x{:x}",
+                    module_name, trace_name, module_bits, dict_bits
+                );
             }
             // Mirror CPython LOAD_GLOBAL: fall back to the builtins module dict.
             let builtins_bits = {
@@ -4386,26 +4489,14 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                     if !builtins_dict_ptr.is_null()
                         && let Some(val) = dict_get_in_place(_py, builtins_dict_ptr, name_bits)
                     {
-                        if let Some(name) = debug_name.as_deref()
-                            && debug_try_global_name(name)
-                        {
-                            eprintln!(
-                                "molt module_get_global name={} from=builtins type={} bits=0x{:x}",
-                                name,
-                                type_name(_py, obj_from_bits(val)),
-                                val
-                            );
-                        }
                         inc_ref_bits(_py, val);
                         return val;
                     }
                 }
             }
-            let name = string_obj_to_owned(obj_from_bits(name_bits))
-                .unwrap_or_else(|| "<name>".to_string());
-            if name == "exec" || name == "eval" {
+            if trace_name == "exec" || trace_name == "eval" {
                 let msg = format!(
-                    "MOLT_COMPAT_ERROR: {name}() is unsupported in compiled Molt binaries; \
+                    "MOLT_COMPAT_ERROR: {trace_name}() is unsupported in compiled Molt binaries; \
 dynamic code execution is outside the verified subset. \
 Use static modules or pre-generated code paths instead."
                 );
@@ -4417,7 +4508,7 @@ Use static modules or pre-generated code paths instead."
                 let pending = exception_pending(_py);
                 eprintln!(
                     "molt name error module={} name={} pending={}",
-                    module_name, name, pending
+                    module_name, trace_name, pending
                 );
             }
             // CPython 3.12+: suggest similar names in NameError.
@@ -4436,8 +4527,8 @@ Use static modules or pre-generated code paths instead."
                         let len = string_len(key_ptr);
                         let bytes = std::slice::from_raw_parts(string_bytes(key_ptr), len);
                         if let Ok(cand) = std::str::from_utf8(bytes) {
-                            let d = simple_edit_distance(&name, cand);
-                            let t = if name.len() <= 2 { 1 } else { 2 };
+                            let d = simple_edit_distance(&trace_name, cand);
+                            let t = if trace_name.len() <= 2 { 1 } else { 2 };
                             if d > 0 && d <= t && (best.is_none() || d < best.as_ref().unwrap().1) {
                                 best = Some((cand.to_string(), d));
                             }
@@ -4471,8 +4562,8 @@ Use static modules or pre-generated code paths instead."
                         let len = string_len(key_ptr);
                         let bytes = std::slice::from_raw_parts(string_bytes(key_ptr), len);
                         if let Ok(cand) = std::str::from_utf8(bytes) {
-                            let d = simple_edit_distance(&name, cand);
-                            let t = if name.len() <= 2 { 1 } else { 2 };
+                            let d = simple_edit_distance(&trace_name, cand);
+                            let t = if trace_name.len() <= 2 { 1 } else { 2 };
                             if d > 0 && d <= t && (best.is_none() || d < best.as_ref().unwrap().1) {
                                 best = Some((cand.to_string(), d));
                             }
@@ -4483,21 +4574,13 @@ Use static modules or pre-generated code paths instead."
                 best.map(|(n, _)| n)
             });
             let msg = if let Some(similar) = suggestion {
-                format!("name '{name}' is not defined. Did you mean: '{similar}'?")
+                format!("name '{trace_name}' is not defined. Did you mean: '{similar}'?")
             } else {
-                format!("name '{name}' is not defined")
+                format!("name '{trace_name}' is not defined")
             };
             raise_exception::<_>(_py, "NameError", &msg)
         }
     })
-}
-
-#[inline]
-fn debug_try_global_name(name: &str) -> bool {
-    name.starts_with("__molt_exc_capture_")
-        || name.starts_with("__molt_ctx_mark_")
-        || name == "__molt_module_obj__"
-        || name == "exc"
 }
 
 #[unsafe(no_mangle)]
@@ -4571,7 +4654,6 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
     crate::with_gil_entry!(_py, {
         let trace_attrs = trace_module_attrs();
         let trace_attrs_verbose = trace_module_attrs_verbose();
-        let debug_try_globals = std::env::var("MOLT_DEBUG_TRY_GLOBALS").as_deref() == Ok("1");
         let module_obj = obj_from_bits(module_bits);
         let Some(module_ptr) = module_obj.as_ptr() else {
             if exception_pending(_py) {
@@ -4601,26 +4683,12 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
                     .unwrap_or_else(|| "<module>".to_string());
                 let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
                     .unwrap_or_else(|| "<attr>".to_string());
-                if trace_attrs_verbose
-                    || attr_name == "_sys"
-                    || module_name.contains("importlib")
-                {
+                if trace_attrs_verbose || attr_name == "_sys" || module_name.contains("importlib") {
                     eprintln!(
                         "molt module attr set module={} attr={}",
                         module_name, attr_name
                     );
                 }
-            }
-            if debug_try_globals
-                && let Some(attr_name) = string_obj_to_owned(obj_from_bits(attr_bits))
-                && debug_try_global_name(&attr_name)
-            {
-                eprintln!(
-                    "molt module_set_attr name={} type={} bits=0x{:x}",
-                    attr_name,
-                    type_name(_py, obj_from_bits(val_bits)),
-                    val_bits
-                );
             }
             let annotations_bits = intern_static_name(
                 _py,
@@ -4966,28 +5034,26 @@ mod tests {
     #[test]
     fn sys_module_cache_set_does_not_leave_pending_exception() {
         crate::with_gil_entry!(_py, {
-            unsafe {
-                let name_ptr = alloc_string(_py, b"sys");
-                assert!(!name_ptr.is_null());
-                let name_bits = MoltObject::from_ptr(name_ptr).bits();
-                let module_ptr = alloc_module_obj(_py, name_bits);
-                assert!(!module_ptr.is_null());
-                let module_bits = MoltObject::from_ptr(module_ptr).bits();
+            let name_ptr = alloc_string(_py, b"sys");
+            assert!(!name_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let module_ptr = alloc_module_obj(_py, name_bits);
+            assert!(!module_ptr.is_null());
+            let module_bits = MoltObject::from_ptr(module_ptr).bits();
 
-                let result_bits = molt_module_cache_set(name_bits, module_bits);
-                assert!(
-                    !exception_pending(_py),
-                    "sys module registration must not leave a pending exception"
-                );
-                assert!(
-                    !obj_from_bits(result_bits).is_none(),
-                    "sys module cache set should return a non-None success value"
-                );
+            let result_bits = molt_module_cache_set(name_bits, module_bits);
+            assert!(
+                !exception_pending(_py),
+                "sys module registration must not leave a pending exception"
+            );
+            assert!(
+                !obj_from_bits(result_bits).is_none(),
+                "sys module cache set should return a non-None success value"
+            );
 
-                dec_ref_bits(_py, result_bits);
-                dec_ref_bits(_py, module_bits);
-                dec_ref_bits(_py, name_bits);
-            }
+            dec_ref_bits(_py, result_bits);
+            dec_ref_bits(_py, module_bits);
+            dec_ref_bits(_py, name_bits);
         });
     }
 }
