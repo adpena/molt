@@ -48,7 +48,7 @@ fn make_unary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 
@@ -81,7 +81,7 @@ fn make_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 
@@ -387,7 +387,7 @@ fn test_reduce_sum_single_element() {
         ],
         grid: [n_out as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let mut bufs = vec![vec![0u8; n_out * 4], f32_to_bytes(&[42.0])];
@@ -422,7 +422,7 @@ fn test_reduce_max_single_element() {
         ],
         grid: [n_out as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let mut bufs = vec![vec![0u8; n_out * 4], f32_to_bytes(&[-999.0])];
@@ -461,7 +461,7 @@ fn test_reduce_sum_large() {
         ],
         grid: [n_out as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let mut bufs = vec![vec![0u8; n_out * 4], f32_to_bytes(&input)];
@@ -579,7 +579,7 @@ fn test_fused_chain_20_ops() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let input: Vec<f32> = (0..n).map(|i| i as f32).collect();
@@ -647,7 +647,7 @@ fn test_fused_chain_mixed_ops_25() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let input: Vec<f32> = vec![0.0; n];
@@ -688,7 +688,7 @@ fn test_constant_fold_all_constant_chain() {
         }],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let folded = constant_fold(std::slice::from_mut(&mut kernel));
@@ -727,7 +727,7 @@ fn test_constant_fold_nested_chain() {
         }],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let folded = constant_fold(std::slice::from_mut(&mut kernel));
@@ -781,7 +781,7 @@ fn test_constant_fold_partial_chain() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let folded = constant_fold(std::slice::from_mut(&mut kernel));
@@ -823,7 +823,7 @@ fn test_where_op_large() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let mut bufs = vec![

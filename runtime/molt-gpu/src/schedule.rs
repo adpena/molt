@@ -10,7 +10,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::dtype::DType;
 use crate::lazy::LazyOp;
+use crate::ops::PrimitiveOp;
 use crate::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ShapeSpecialization};
 use crate::shapetracker::ShapeTracker;
 
@@ -115,6 +117,19 @@ pub fn specialize_shapes(kernels: &mut [FusedKernel]) {
         kernel.grid = [grid_x, 1, 1];
         kernel.local = [optimal_local_x, 1, 1];
         kernel.spec = Some(spec);
+
+        // Auto-vectorize: set vectorize_width to 4 when conditions are met:
+        // 1. Total elements divisible by 4 (for aligned SIMD access)
+        // 2. All buffers are Float32 (SIMD float4 loads/stores)
+        // 3. All buffer views are contiguous (no stride gaps)
+        // 4. No reduce ops (vectorized reduce needs different codegen)
+        let can_vectorize = total % 4 == 0
+            && kernel.bufs.iter().all(|b| b.dtype == DType::Float32)
+            && kernel.bufs.iter().all(|b| b.st.view().is_contiguous())
+            && !kernel.ops.iter().any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
+        if can_vectorize {
+            kernel.vectorize_width = 4;
+        }
     }
 }
 
@@ -220,7 +235,7 @@ fn schedule_recursive(
                 ],
                 grid: [n.max(1) as u32, 1, 1],
                 local: [n.clamp(1, 256) as u32, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
             });
         }
         LazyOp::Binary { op, lhs, rhs } => {
@@ -248,7 +263,7 @@ fn schedule_recursive(
                 ],
                 grid: [n.max(1) as u32, 1, 1],
                 local: [n.clamp(1, 256) as u32, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
             });
         }
         LazyOp::Ternary { op, cond, a, b } => {
@@ -280,7 +295,7 @@ fn schedule_recursive(
                 ],
                 grid: [n.max(1) as u32, 1, 1],
                 local: [n.clamp(1, 256) as u32, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
             });
         }
         LazyOp::Reduce { op, src, axis: _ } => {
@@ -305,7 +320,7 @@ fn schedule_recursive(
                 ],
                 grid: [out_n as u32, 1, 1],
                 local: [out_n.min(256) as u32, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
             });
         }
         LazyOp::Movement { src, st: _ } => {

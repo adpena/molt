@@ -66,7 +66,7 @@ fn main() {
             ],
             grid: [1, 1, 1],
             local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         },
         // 2. Sub (x - max)
         FusedKernel {
@@ -82,7 +82,7 @@ fn main() {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         },
         // 3. Exp2
         FusedKernel {
@@ -97,7 +97,7 @@ fn main() {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         },
         // 4. ReduceSum
         FusedKernel {
@@ -112,7 +112,7 @@ fn main() {
             ],
             grid: [1, 1, 1],
             local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         },
         // 5. Reciprocal
         FusedKernel {
@@ -127,7 +127,7 @@ fn main() {
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         },
         // 6. Mul (exp * inv_sum)
         FusedKernel {
@@ -143,7 +143,7 @@ fn main() {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         },
     ];
 
@@ -162,7 +162,7 @@ fn main() {
             ],
             grid: [1, 1, 1],
             local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         },
         // Kernel 2: sub -> exp2 -> reduce_sum -> reciprocal -> mul (fused)
         FusedKernel {
@@ -200,7 +200,7 @@ fn main() {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         },
     ];
 
@@ -247,7 +247,7 @@ fn main() {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         }
     }).collect();
 
@@ -268,7 +268,7 @@ fn main() {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     }];
 
     let unfused_d2 = measure(|| {

@@ -12,7 +12,7 @@ fn make_kernel(ops: Vec<FusedOp>, bufs: Vec<BufferBinding>) -> FusedKernel {
         bufs,
         grid: [64, 1, 1],
         local: [64, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 

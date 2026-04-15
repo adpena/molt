@@ -35,7 +35,7 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     }
 }
 
@@ -62,7 +62,7 @@ fn make_simple_unary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     }
 }
 
@@ -170,7 +170,7 @@ fn test_glsl_no_f64_types() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     // f64 and double should not appear in GLSL output
@@ -193,7 +193,7 @@ fn test_glsl_no_i64_u64_types() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(!glsl.contains("i64"), "GLSL should not contain 'i64'");
@@ -275,7 +275,7 @@ fn test_glsl_render_cmplt() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(glsl.contains(" < "), "Cmplt should use < operator");
@@ -297,7 +297,7 @@ fn test_glsl_render_cmpeq() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(glsl.contains(" == "), "Cmpeq should use == operator");
@@ -318,7 +318,7 @@ fn test_glsl_render_cmpne() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(glsl.contains(" != "), "Cmpne should use != operator");
@@ -437,7 +437,7 @@ fn test_glsl_render_where_ternary() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     // GLSL supports ternary, so should use ? : (unlike WGSL's select())
@@ -459,7 +459,7 @@ fn test_glsl_render_cast() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(glsl.contains("int("), "Cast to int should use int()");
@@ -479,7 +479,7 @@ fn test_glsl_render_bitcast_to_float() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(
@@ -502,7 +502,7 @@ fn test_glsl_render_bitcast_to_int() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(
@@ -525,7 +525,7 @@ fn test_glsl_render_bitcast_to_uint() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(
@@ -552,7 +552,7 @@ fn test_glsl_render_reduce_sum() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(glsl.contains("#version 300 es"), "Must have GLSL ES 3.0 header");
@@ -575,7 +575,7 @@ fn test_glsl_render_reduce_max() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(glsl.contains("for (int rid"), "Reduce must have reduction loop");
@@ -610,7 +610,7 @@ fn test_glsl_render_fused_elementwise_then_reduce() {
         ],
         grid: [4, 1, 1],
         local: [4, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(glsl.contains("for (int rid"), "Must have reduce loop");
@@ -651,7 +651,7 @@ fn test_glsl_render_fused_elementwise_chain() {
         ],
         grid: [256, 1, 1],
         local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     // Check chain references: v1 uses v0, v2 uses v1
@@ -705,7 +705,7 @@ fn test_glsl_all_26_ops_have_render_patterns() {
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
         let glsl = GlslRenderer.render(&kernel);
         assert!(
@@ -740,7 +740,7 @@ fn test_glsl_all_26_ops_have_render_patterns() {
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
         let glsl = GlslRenderer.render(&kernel);
         assert!(
@@ -811,7 +811,7 @@ fn test_glsl_const_infinity() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(
@@ -837,7 +837,7 @@ fn test_glsl_const_neg_infinity() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(
@@ -863,7 +863,7 @@ fn test_glsl_const_nan() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let glsl = GlslRenderer.render(&kernel);
     assert!(

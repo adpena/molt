@@ -69,7 +69,7 @@ mod metal_real {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
 
         // CPU reference
@@ -144,7 +144,7 @@ mod metal_real {
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
 
         let max_buf = device.alloc(4).unwrap();
@@ -174,7 +174,7 @@ mod metal_real {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
 
         let exp_buf = device.alloc(n * 4).unwrap();
@@ -196,7 +196,7 @@ mod metal_real {
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
 
         let sum_buf = device.alloc(4).unwrap();
@@ -223,7 +223,7 @@ mod metal_real {
             ],
             grid: [n as u32, 1, 1],
             local: [256, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
 
         let out_buf = device.alloc(n * 4).unwrap();
@@ -271,7 +271,7 @@ mod metal_real {
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
 
         // CPU reference

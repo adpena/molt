@@ -240,7 +240,7 @@ fn test_cpu_softmax_execution() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let max_result = run_kernel(&k_max, vec![x_bytes.clone()]);
     let max_val = max_result[0];
@@ -281,7 +281,7 @@ fn test_cpu_softmax_execution() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let exp_result = run_kernel(&k_exp, vec![x_bytes]);
     let exp_bytes = f32_to_bytes(&exp_result);
@@ -309,7 +309,7 @@ fn test_cpu_softmax_execution() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let sum_result = run_kernel(&k_sum, vec![exp_bytes.clone()]);
     let sum_val = sum_result[0];
@@ -337,7 +337,7 @@ fn test_cpu_softmax_execution() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let softmax_result = run_kernel(&k_div, vec![exp_bytes]);
 
@@ -556,7 +556,7 @@ fn test_full_transformer_forward_pass() {
         ],
         grid: [dim as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let sq_result = run_kernel(&k_sq, vec![x_bytes.clone()]);
 
@@ -583,7 +583,7 @@ fn test_full_transformer_forward_pass() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let sum_result = run_kernel(&k_sum, vec![f32_to_bytes(&sq_result)]);
     let sum_sq = sum_result[0];
@@ -613,7 +613,7 @@ fn test_full_transformer_forward_pass() {
         ],
         grid: [dim as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let norm_result = run_kernel(&k_scale, vec![x_bytes]);
 
@@ -769,7 +769,7 @@ fn test_kernel_deduplication() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let k2 = FusedKernel {
@@ -794,7 +794,7 @@ fn test_kernel_deduplication() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let (deduped, count) = schedule::deduplicate_kernels(&[k1, k2]);

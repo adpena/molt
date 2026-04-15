@@ -21,7 +21,7 @@ fn test_mlir_add_f32() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mlir = to_mlir_text(&kernel);
     assert!(mlir.contains("arith.addf"));
@@ -44,7 +44,7 @@ fn test_mlir_add_i32() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mlir = to_mlir_text(&kernel);
     assert!(mlir.contains("arith.addi"));
@@ -66,7 +66,7 @@ fn test_mlir_cmplt() {
         ],
         grid: [32, 1, 1],
         local: [32, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mlir = to_mlir_text(&kernel);
     assert!(mlir.contains("arith.cmpf \"olt\""));
@@ -87,7 +87,7 @@ fn test_mlir_shr_signed_vs_unsigned() {
         ],
         grid: [16, 1, 1],
         local: [16, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     assert!(to_mlir_text(&kernel_signed).contains("arith.shrsi"));
 
@@ -104,7 +104,7 @@ fn test_mlir_shr_signed_vs_unsigned() {
         ],
         grid: [16, 1, 1],
         local: [16, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     assert!(to_mlir_text(&kernel_unsigned).contains("arith.shrui"));
 }
@@ -123,7 +123,7 @@ fn test_mlir_reduce_sum() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mlir = to_mlir_text(&kernel);
     assert!(mlir.contains("arith.addf"));
@@ -150,7 +150,7 @@ fn test_mlir_math_ops() {
             ],
             grid: [32, 1, 1],
             local: [32, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
         let mlir = to_mlir_text(&kernel);
         assert!(mlir.contains(expected), "op {:?} should emit {}", op, expected);

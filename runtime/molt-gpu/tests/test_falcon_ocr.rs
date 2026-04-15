@@ -37,7 +37,7 @@ fn run_chain(ops: Vec<FusedOp>, bufs: Vec<BufferBinding>, input_bufs: Vec<Vec<u8
         bufs,
         grid: [n_out as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     interpret::execute_kernel(&kernel, &mut all_bufs);
@@ -82,7 +82,7 @@ fn test_falcon_rms_norm_unit_vector() {
         ],
         grid: [n as u32, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mut bufs1 = vec![vec![0u8; n * 4], f32_to_bytes(&x)];
     interpret::execute_kernel(&k1, &mut bufs1);
@@ -111,7 +111,7 @@ fn test_falcon_rms_norm_unit_vector() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let mut bufs2 = vec![vec![0u8; 4], f32_to_bytes(&x_sq)];
     interpret::execute_kernel(&k2, &mut bufs2);
@@ -821,7 +821,7 @@ fn test_falcon_rms_norm_renders_wgsl() {
         ],
         grid: [4, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     let renderer = WgslRenderer::new();
@@ -859,7 +859,7 @@ fn test_falcon_rms_norm_renders_cuda() {
         ],
         grid: [4, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     let renderer = CudaRenderer;
@@ -900,7 +900,7 @@ fn test_falcon_rms_norm_renders_msl() {
         ],
         grid: [4, 1, 1],
         local: [1, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
 
     let renderer = MslRenderer;

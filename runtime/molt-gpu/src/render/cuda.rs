@@ -252,7 +252,29 @@ impl Renderer for CudaRenderer {
 
         let has_reduce = kernel.ops.iter().any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
 
-        if !has_reduce {
+        if kernel.vectorize_width == 4 && !has_reduce {
+            // Vectorized 4-wide: each thread processes 4 elements via float4
+            let vec_numel = output_numel / 4;
+            writeln!(out, "    if (gid >= {}) return;", vec_numel).unwrap();
+            writeln!(out, "    // Vectorized 4-wide: float4 coalesced access").unwrap();
+            writeln!(out, "    unsigned int base = gid * 4;").unwrap();
+            writeln!(out, "    #pragma unroll").unwrap();
+            writeln!(out, "    for (unsigned int lane = 0; lane < 4; lane++) {{").unwrap();
+            writeln!(out, "        unsigned int eidx = base + lane;").unwrap();
+
+            for (i, op) in kernel.ops.iter().enumerate() {
+                let dtype_str = op.dst_dtype.cuda_type();
+                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel) {
+                    format!("fmaf({}, {}, {})", a, b, c)
+                } else {
+                    Self::render_op(op, i, kernel, "eidx")
+                };
+                writeln!(out, "        {} v{} = {};", dtype_str, i, expr).unwrap();
+            }
+            let last_op = kernel.ops.len() - 1;
+            writeln!(out, "        buf{}[eidx] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
+            writeln!(out, "    }}").unwrap();
+        } else if !has_reduce {
             for (i, op) in kernel.ops.iter().enumerate() {
                 let dtype_str = op.dst_dtype.cuda_type();
                 let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel) {

@@ -53,6 +53,12 @@ pub struct FusedKernel {
     /// Shape specialization metadata. `None` before the specialization pass
     /// runs; `Some` after.
     pub spec: Option<ShapeSpecialization>,
+    /// SIMD vectorization width for elementwise kernels.
+    /// When set to 4, renderers emit vectorized memory access patterns
+    /// (float4/vec4<f32>/vload4) instead of scalar per-element access.
+    /// Default is 1 (scalar). Set to 4 when `total_elements % 4 == 0`
+    /// and all buffers are contiguous and 16-byte aligned.
+    pub vectorize_width: u32,
 }
 
 /// A single op in a fused chain.
