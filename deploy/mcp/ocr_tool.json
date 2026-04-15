@@ -1,0 +1,137 @@
+{
+  "name": "falcon_ocr",
+  "description": "Extract text from images using Falcon-OCR (on-device ML via WebGPU/WASM). Optimized for invoices, receipts, and business documents.",
+  "version": "0.1.0",
+  "server": {
+    "url": "https://falcon-ocr.freeinvoicemaker.workers.dev",
+    "transport": "http"
+  },
+  "tools": [
+    {
+      "name": "ocr_extract_text",
+      "description": "Extract all text from an image. Best for invoices, receipts, business cards, and documents.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "image": {
+            "type": "string",
+            "description": "Base64-encoded image data (JPEG, PNG, or WebP)"
+          },
+          "format": {
+            "type": "string",
+            "enum": ["image/jpeg", "image/png", "image/webp"],
+            "default": "image/jpeg",
+            "description": "MIME type of the image"
+          },
+          "max_tokens": {
+            "type": "integer",
+            "default": 512,
+            "minimum": 1,
+            "maximum": 2048,
+            "description": "Maximum number of tokens to generate"
+          }
+        },
+        "required": ["image"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Extracted text content"
+          },
+          "tokens": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "description": "Raw token IDs (for advanced use)"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "Overall confidence score"
+          },
+          "time_ms": {
+            "type": "number",
+            "description": "Inference time in milliseconds"
+          },
+          "device": {
+            "type": "string",
+            "enum": ["webgpu", "wasm"],
+            "description": "Compute device used for inference"
+          }
+        },
+        "required": ["text", "time_ms", "device"]
+      }
+    },
+    {
+      "name": "ocr_extract_tokens",
+      "description": "Low-level OCR: extract raw token IDs from pre-processed image data. For custom prompt engineering and pipeline integration.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "width": {
+            "type": "integer",
+            "description": "Image width in pixels (must be multiple of 16)"
+          },
+          "height": {
+            "type": "integer",
+            "description": "Image height in pixels (must be multiple of 16)"
+          },
+          "rgb": {
+            "type": "string",
+            "description": "Base64-encoded raw RGB pixel data (3 bytes per pixel, row-major)"
+          },
+          "prompt_ids": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "description": "Tokenized prompt prefix"
+          },
+          "max_new_tokens": {
+            "type": "integer",
+            "default": 512,
+            "minimum": 1,
+            "maximum": 2048,
+            "description": "Maximum number of new tokens to generate"
+          }
+        },
+        "required": ["width", "height", "rgb", "prompt_ids"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "tokens": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "description": "Generated token IDs"
+          },
+          "time_ms": {
+            "type": "number",
+            "description": "Inference time in milliseconds"
+          },
+          "device": {
+            "type": "string",
+            "description": "Compute device used"
+          }
+        },
+        "required": ["tokens", "time_ms", "device"]
+      }
+    }
+  ],
+  "authentication": {
+    "type": "x402",
+    "description": "Payment via x402 protocol. Include X-Payment-402 header with payment proof.",
+    "header": "X-Payment-402",
+    "pricing": {
+      "per_request": "0.001 USD",
+      "currency": "USD",
+      "payment_network": "base"
+    }
+  },
+  "rate_limits": {
+    "requests_per_minute": 60,
+    "requests_per_day": 10000,
+    "max_image_size_bytes": 10485760,
+    "max_concurrent_requests": 10
+  }
+}

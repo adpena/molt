@@ -1,0 +1,62 @@
+{
+  "name": "falcon-ocr",
+  "version": "0.1.0",
+  "description": "Falcon-OCR WASM module compiled by molt",
+  "compilation": {
+    "source": "src/molt/stdlib/tinygrad/wasm_driver.py",
+    "command": "molt build wasm_driver.py --target wasm",
+    "output": "falcon-ocr.wasm"
+  },
+  "exports": {
+    "init": {
+      "description": "Initialize model from SafeTensors weights and JSON config",
+      "params": [
+        { "name": "weights_bytes", "type": "bytes", "description": "Raw SafeTensors file content" },
+        { "name": "config_json", "type": "string", "description": "JSON config matching FalconOCRConfig schema" }
+      ],
+      "returns": "void"
+    },
+    "ocr_tokens": {
+      "description": "Run OCR on a single image, returns generated token IDs",
+      "params": [
+        { "name": "width", "type": "int", "description": "Image width (multiple of patch_size)" },
+        { "name": "height", "type": "int", "description": "Image height (multiple of patch_size)" },
+        { "name": "rgb", "type": "bytes", "description": "Raw RGB pixel data, row-major, 3 bytes/pixel" },
+        { "name": "prompt_ids", "type": "list[int]", "description": "Tokenized prompt prefix" },
+        { "name": "max_new_tokens", "type": "int", "description": "Max tokens to generate (default 512)" }
+      ],
+      "returns": "list[int]"
+    }
+  },
+  "artifacts": {
+    "wasm": {
+      "path": "falcon-ocr.wasm",
+      "content_type": "application/wasm",
+      "description": "Compiled WASM binary"
+    },
+    "weights": {
+      "path": "falcon-ocr.safetensors",
+      "content_type": "application/octet-stream",
+      "description": "Model weights in SafeTensors format",
+      "storage": "r2",
+      "r2_key": "models/falcon-ocr/weights.safetensors"
+    },
+    "config": {
+      "path": "falcon-ocr-config.json",
+      "content_type": "application/json",
+      "description": "Model configuration"
+    },
+    "tokenizer": {
+      "path": "falcon-ocr-tokenizer.json",
+      "content_type": "application/json",
+      "description": "Tokenizer vocabulary"
+    }
+  },
+  "constraints": {
+    "max_wasm_size_gzip_bytes": 2097152,
+    "max_image_bytes": 10485760,
+    "supported_image_formats": ["image/jpeg", "image/png", "image/webp"],
+    "patch_size": 16,
+    "max_seq_len": 8192
+  }
+}
