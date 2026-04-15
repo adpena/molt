@@ -5,7 +5,7 @@
 - Replace PaddleOCR with molt-compiled Falcon-OCR for client-side OCR inference
 - Add browser capability detection (WebGPU/WebGL2) with automatic backend selection
 - Fallback chain: molt-gpu (WebGPU/WASM) -> PaddleOCR (server-side JS) -> server-side API
-- Cloudflare Worker at `https://falcon-ocr.adpena.workers.dev` serves INT4 quantized model (129 MB) for server-side fallback
+- Cloudflare Worker at `https://falcon-ocr.adpena.workers.dev` with Workers AI GPU inference (Gemma 3 12B primary) + SIMD-accelerated micro model fallback
 
 ## Files changed
 
@@ -89,7 +89,9 @@ For the client-side WASM path, weights are streamed directly from R2 CDN.
 
 ## Performance expectations
 
-- Cold start (Worker): ~2-3s to load INT4 model from R2
-- Warm inference: depends on image size and token count
+- Health endpoint TTFB: ~88ms average (Cloudflare edge)
+- Workers AI OCR TTFB: ~1.0s (Gemma 3 12B via GPU fleet)
 - Client-side WASM: ~1-2s for weight download (cached after first load), inference TBD
-- INT4 quantization: <3% accuracy loss vs F32 on OCR benchmarks (symmetric quantization preserves text recognition quality well since weight distributions are approximately Gaussian)
+- Workers AI backend: zero CPU cost, inference on Cloudflare GPU fleet
+- SIMD-accelerated micro model: fallback for Workers AI unavailability
+- INT8 sharded model (257 MB): uploaded to R2, available for future Workers with higher memory limits
