@@ -179,16 +179,42 @@ function padRgb(rgb, origWidth, origHeight, newWidth, newHeight) {
 }
 
 /**
- * POST /ocr — full OCR: image in, text out.
+ * Invoke the OCR inference backend.
+ *
+ * The backend is either a WebAssembly.Instance (with exports.ocr_tokens)
+ * or a CpuDevice object (with an ocrTokens method).  This helper
+ * normalizes the call interface.
+ *
+ * @param {object} backend - WASM instance or CpuDevice
+ * @param {number} width
+ * @param {number} height
+ * @param {Uint8Array} rgb
+ * @param {number[]} promptIds
+ * @param {number} maxNewTokens
+ * @returns {Int32Array | Uint32Array}
+ */
+function invokeOcrTokens(backend, width, height, rgb, promptIds, maxNewTokens) {
+  if (backend.exports && typeof backend.exports.ocr_tokens === "function") {
+    return backend.exports.ocr_tokens(width, height, rgb, promptIds, maxNewTokens);
+  }
+  if (typeof backend.ocrTokens === "function") {
+    return backend.ocrTokens(width, height, rgb, promptIds, maxNewTokens);
+  }
+  throw new Error("Invalid inference backend: no ocr_tokens or ocrTokens method");
+}
+
+/**
+ * POST /ocr -- full OCR: image in, text out.
  *
  * @param {Request} request
- * @param {WebAssembly.Instance} wasmInstance
+ * @param {object} backend - WASM instance or CpuDevice
  * @param {object} env
  * @param {Record<string, string>} cors
  * @param {string} rid
+ * @param {string} device - "wasm" or "cpu"
  * @returns {Promise<Response>}
  */
-export async function handleOcrRequest(request, wasmInstance, env, cors, rid) {
+export async function handleOcrRequest(request, backend, env, cors, rid, device = "wasm") {
   const start = Date.now();
   const imageResult = await extractImage(request, env);
   if ("error" in imageResult) {
@@ -210,16 +236,10 @@ export async function handleOcrRequest(request, wasmInstance, env, cors, rid) {
   const promptIds = [];
   const maxNewTokens = 512;
 
-  const tokens = wasmInstance.exports.ocr_tokens(
-    aligned.width,
-    aligned.height,
-    rgb,
-    promptIds,
-    maxNewTokens,
-  );
+  const tokens = invokeOcrTokens(backend, aligned.width, aligned.height, rgb, promptIds, maxNewTokens);
 
   // Token-to-text decode happens server-side using a cached tokenizer.
-  // For now, return raw tokens — the browser-side has its own tokenizer.
+  // For now, return raw tokens -- the browser-side has its own tokenizer.
   const timMs = Date.now() - start;
 
   return new Response(
@@ -228,7 +248,7 @@ export async function handleOcrRequest(request, wasmInstance, env, cors, rid) {
       tokens: Array.from(tokens),
       confidence: 0.0,
       time_ms: timMs,
-      device: "wasm",
+      device,
       request_id: rid,
     }),
     {
@@ -239,16 +259,17 @@ export async function handleOcrRequest(request, wasmInstance, env, cors, rid) {
 }
 
 /**
- * POST /ocr/tokens — low-level: image + prompt IDs -> token IDs.
+ * POST /ocr/tokens -- low-level: image + prompt IDs -> token IDs.
  *
  * @param {Request} request
- * @param {WebAssembly.Instance} wasmInstance
+ * @param {object} backend - WASM instance or CpuDevice
  * @param {object} env
  * @param {Record<string, string>} cors
  * @param {string} rid
+ * @param {string} device - "wasm" or "cpu"
  * @returns {Promise<Response>}
  */
-export async function handleTokensRequest(request, wasmInstance, env, cors, rid) {
+export async function handleTokensRequest(request, backend, env, cors, rid, device = "wasm") {
   const start = Date.now();
   const contentType = request.headers.get("Content-Type") || "";
 
@@ -298,22 +319,14 @@ export async function handleTokensRequest(request, wasmInstance, env, cors, rid)
   }
 
   const maxNewTokens = body.max_new_tokens || 512;
-
-  const tokens = wasmInstance.exports.ocr_tokens(
-    body.width,
-    body.height,
-    rgb,
-    body.prompt_ids,
-    maxNewTokens,
-  );
-
+  const tokens = invokeOcrTokens(backend, body.width, body.height, rgb, body.prompt_ids, maxNewTokens);
   const timeMs = Date.now() - start;
 
   return new Response(
     JSON.stringify({
       tokens: Array.from(tokens),
       time_ms: timeMs,
-      device: "wasm",
+      device,
       request_id: rid,
     }),
     {
@@ -324,21 +337,22 @@ export async function handleTokensRequest(request, wasmInstance, env, cors, rid)
 }
 
 /**
- * GET /health — model status.
+ * GET /health -- model status.
  *
  * @param {boolean} modelReady
  * @param {object} env
  * @param {Record<string, string>} cors
  * @param {string} rid
+ * @param {string} device - "wasm", "cpu", or "none"
  * @returns {Response}
  */
-export function handleHealthRequest(modelReady, env, cors, rid) {
+export function handleHealthRequest(modelReady, env, cors, rid, device = "none") {
   return new Response(
     JSON.stringify({
       status: modelReady ? "ready" : "loading",
       model: "falcon-ocr",
       version: env.MODEL_VERSION || "0.1.0",
-      device: "wasm",
+      device,
       request_id: rid,
     }),
     {
