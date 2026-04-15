@@ -57,7 +57,7 @@ Output raw text only, no interpretation.`;
  * @type {Array<{id: string, maxTokens: number}>}
  */
 const AI_MODELS = [
-  { id: "@cf/google/gemma-4-26b-a4b-it", maxTokens: 2048 },
+  { id: "@cf/google/gemma-3-12b-it", maxTokens: 2048 },
   { id: "@cf/meta/llama-3.2-11b-vision-instruct", maxTokens: 2048 },
   { id: "@cf/mistralai/mistral-small-3.1-24b-instruct", maxTokens: 2048 },
 ];
@@ -102,24 +102,17 @@ export async function runWorkersAiOcr(env, imageBytes, options = {}) {
 
   for (const model of AI_MODELS) {
     try {
+      // Workers AI vision models accept images in multiple formats.
+      // Llama 3.2 Vision uses content array with image_url data URIs.
+      // Fall back to top-level image field for other models.
       const result = await env.AI.run(model.id, {
         messages: [
           {
             role: "user",
-            content: [
-              {
-                type: "image",
-                image: base64Image,
-              },
-              {
-                type: "text",
-                text: prompt,
-              },
-            ],
+            content: `${prompt}\n\n![image](data:image/png;base64,${base64Image})`,
           },
         ],
         max_tokens: Math.min(maxTokens, model.maxTokens),
-        temperature: 0.0,  // Deterministic for OCR
       });
 
       const text = extractTextFromAiResult(result);
