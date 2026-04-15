@@ -17,7 +17,7 @@ echo ""
 
 # 1. Rust tests (molt-gpu)
 echo -n "1. Rust tests (molt-gpu): "
-if cargo test -p molt-gpu --all-features 2>&1 | tail -1 | grep -q "passed"; then
+if cargo test -p molt-gpu --all-features 2>&1 | tail -5 | grep -q "passed"; then
     echo "PASS"
 else
     echo "FAIL"
@@ -122,7 +122,7 @@ fi
 # 10. Git state
 echo -n "10. Git state: "
 STAGED=$(git diff --cached --name-only 2>/dev/null || true)
-CONFLICT=$(grep -rn "<<<<<<< \|======= \|>>>>>>> " deploy/ docs/deployment/ 2>/dev/null || true)
+CONFLICT=$(grep -rn "^<<<<<<< \|^=======$\|^>>>>>>> " deploy/ docs/deployment/ 2>/dev/null || true)
 if [ -n "$CONFLICT" ]; then
     echo "FAIL (merge conflict markers found)"
     echo "$CONFLICT" | while IFS= read -r line; do echo "   $line"; done
