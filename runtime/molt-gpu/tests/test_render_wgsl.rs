@@ -42,7 +42,7 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
 #[test]
 fn test_wgsl_render_add() {
     let kernel = make_simple_binary_kernel(PrimitiveOp::Add, 1024);
-    let wgsl = WgslRenderer.render(&kernel);
+    let wgsl = WgslRenderer::new().render(&kernel);
     assert!(wgsl.contains("@compute @workgroup_size(256"));
     assert!(wgsl.contains("fn molt_kernel"));
     assert!(wgsl.contains("@builtin(global_invocation_id)"));
@@ -53,7 +53,7 @@ fn test_wgsl_render_add() {
 #[test]
 fn test_wgsl_render_mul() {
     let kernel = make_simple_binary_kernel(PrimitiveOp::Mul, 512);
-    let wgsl = WgslRenderer.render(&kernel);
+    let wgsl = WgslRenderer::new().render(&kernel);
     assert!(wgsl.contains("buf1[gid] * buf2[gid]"));
 }
 
@@ -76,7 +76,7 @@ fn test_wgsl_render_select_not_ternary() {
         local: [64, 1, 1],
                 spec: None,
     };
-    let wgsl = WgslRenderer.render(&kernel);
+    let wgsl = WgslRenderer::new().render(&kernel);
     assert!(wgsl.contains("select("), "WGSL must use select(), not ternary");
     assert!(!wgsl.contains(" ? "), "WGSL must not contain ternary operator");
 }
@@ -97,14 +97,14 @@ fn test_wgsl_render_bitcast() {
         local: [64, 1, 1],
                 spec: None,
     };
-    let wgsl = WgslRenderer.render(&kernel);
+    let wgsl = WgslRenderer::new().render(&kernel);
     assert!(wgsl.contains("bitcast<f32>"), "WGSL must use bitcast<T> syntax");
 }
 
 #[test]
 fn test_wgsl_storage_bindings() {
     let kernel = make_simple_binary_kernel(PrimitiveOp::Add, 128);
-    let wgsl = WgslRenderer.render(&kernel);
+    let wgsl = WgslRenderer::new().render(&kernel);
     assert!(wgsl.contains("@group(0) @binding(0)"));
     assert!(wgsl.contains("@group(0) @binding(1)"));
     assert!(wgsl.contains("@group(0) @binding(2)"));
@@ -130,7 +130,7 @@ fn test_wgsl_dtype_narrowing() {
         local: [64, 1, 1],
                 spec: None,
     };
-    let wgsl = WgslRenderer.render(&kernel);
+    let wgsl = WgslRenderer::new().render(&kernel);
     // Should use f32, not f64 (WGSL has no f64)
     assert!(wgsl.contains("f32"), "WGSL should narrow f64 to f32");
     assert!(!wgsl.contains("f64"), "WGSL should not contain f64");
@@ -178,7 +178,7 @@ fn test_wgsl_all_26_ops_have_render_patterns() {
             local: [64, 1, 1],
                 spec: None,
         };
-        let wgsl = WgslRenderer.render(&kernel);
+        let wgsl = WgslRenderer::new().render(&kernel);
         assert!(wgsl.contains("molt_kernel"), "op {:?} failed to render WGSL", op);
     }
 }
