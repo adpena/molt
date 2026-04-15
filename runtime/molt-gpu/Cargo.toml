@@ -39,3 +39,7 @@ harness = false
 [[bench]]
 name = "bench_vs_baseline"
 harness = false
+
+[[bench]]
+name = "bench_profile"
+harness = false
