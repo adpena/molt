@@ -873,3 +873,242 @@ def _dequantize_entry(
             result[i] = q_data[i] * scale
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Prefix Caching via Radix Tree (Trie)
+# ---------------------------------------------------------------------------
+#
+# Maps token ID sequences (prefixes) to cached KV blocks so that new
+# prompts sharing a prefix with a cached prompt can reuse the cached
+# KV blocks without recomputation.
+#
+# Each node in the radix tree stores:
+#   - children: dict mapping token_id -> child RadixNode
+#   - kv_blocks: list of (k_data, v_data) tuples for tokens at this depth
+#   - last_access: monotonic counter for LRU eviction
+#
+# Lookup is O(prefix_length). Eviction removes the least-recently-used
+# leaf paths first.
+
+
+class _RadixNode:
+    """A node in the prefix caching radix tree."""
+
+    __slots__ = ("children", "kv_block", "last_access", "depth")
+
+    def __init__(self, depth: int = 0) -> None:
+        self.children: dict = {}  # token_id -> _RadixNode
+        self.kv_block: tuple = None  # (k_data, v_data) or None
+        self.last_access: int = 0  # monotonic access counter
+        self.depth: int = depth
+
+
+class PrefixCache:
+    """Radix tree (trie) for prefix caching of KV blocks.
+
+    Maps token ID sequences to cached KV blocks. When a new prompt
+    shares a prefix with a previously cached prompt, the shared KV
+    blocks are returned immediately without recomputation.
+
+    Parameters:
+        d_k: dimension of each key/value vector
+        max_cached_blocks: maximum number of KV blocks to cache
+            (LRU eviction when exceeded)
+    """
+
+    def __init__(self, d_k: int, max_cached_blocks: int = 4096) -> None:
+        if d_k <= 0:
+            raise ValueError(f"d_k must be positive, got {d_k}")
+        if max_cached_blocks <= 0:
+            raise ValueError(f"max_cached_blocks must be positive, got {max_cached_blocks}")
+        self._d_k = d_k
+        self._max_cached_blocks = max_cached_blocks
+        self._root = _RadixNode(depth=0)
+        self._access_counter: int = 0  # monotonic clock for LRU
+        self._total_blocks: int = 0  # current number of cached blocks
+
+    @property
+    def d_k(self) -> int:
+        return self._d_k
+
+    @property
+    def total_blocks(self) -> int:
+        return self._total_blocks
+
+    def insert(self, token_ids: list, kv_blocks: list) -> None:
+        """Insert KV blocks for a token ID sequence into the cache.
+
+        token_ids: list of integer token IDs forming the prefix.
+        kv_blocks: list of (k_data, v_data) tuples, one per token.
+            Each k_data and v_data is a flat list of d_k floats.
+
+        len(token_ids) must equal len(kv_blocks).
+        """
+        if len(token_ids) != len(kv_blocks):
+            raise ValueError(
+                f"token_ids length ({len(token_ids)}) must match "
+                f"kv_blocks length ({len(kv_blocks)})"
+            )
+
+        self._access_counter += 1
+        node = self._root
+
+        for i, token_id in enumerate(token_ids):
+            if token_id not in node.children:
+                node.children[token_id] = _RadixNode(depth=i + 1)
+            node = node.children[token_id]
+            node.last_access = self._access_counter
+
+            # Only insert if this node doesn't already have a cached block.
+            if node.kv_block is None:
+                k_data, v_data = kv_blocks[i]
+                if len(k_data) != self._d_k or len(v_data) != self._d_k:
+                    raise ValueError(
+                        f"Expected KV vectors of length {self._d_k}, "
+                        f"got k={len(k_data)}, v={len(v_data)} at position {i}"
+                    )
+                node.kv_block = (list(k_data), list(v_data))
+                self._total_blocks += 1
+
+        # Enforce capacity limit.
+        self._evict_if_needed()
+
+    def lookup_prefix(self, token_ids: list) -> tuple:
+        """Look up the longest cached prefix for a token sequence.
+
+        token_ids: list of integer token IDs.
+
+        Returns:
+            (cached_length, kv_blocks) where:
+            - cached_length: number of tokens in the longest matching prefix
+              that has cached KV blocks (contiguous from the start)
+            - kv_blocks: list of (k_data, v_data) tuples for the cached prefix
+
+        If no prefix is cached, returns (0, []).
+        """
+        self._access_counter += 1
+        node = self._root
+        kv_blocks = []
+        cached_length = 0
+
+        for token_id in token_ids:
+            if token_id not in node.children:
+                break
+            node = node.children[token_id]
+            node.last_access = self._access_counter
+
+            if node.kv_block is not None:
+                kv_blocks.append(node.kv_block)
+                cached_length += 1
+            else:
+                # Gap in the cached prefix — stop here.
+                break
+
+        return cached_length, kv_blocks
+
+    def invalidate(self, token_ids: list) -> int:
+        """Remove cached KV blocks for a specific token sequence.
+
+        Removes the node at the end of the sequence and all of its
+        descendant subtrees.
+
+        Returns the number of blocks removed.
+        """
+        if not token_ids:
+            return 0
+
+        # Navigate to the parent of the target node.
+        node = self._root
+        parent = None
+        last_token = None
+
+        for token_id in token_ids:
+            if token_id not in node.children:
+                return 0  # Path doesn't exist
+            parent = node
+            last_token = token_id
+            node = node.children[token_id]
+
+        # Count blocks in the subtree rooted at `node`.
+        removed = self._count_blocks(node)
+
+        # Remove the subtree from the parent.
+        if parent is not None and last_token is not None:
+            del parent.children[last_token]
+            self._total_blocks -= removed
+
+        return removed
+
+    def clear(self) -> None:
+        """Remove all cached entries."""
+        self._root = _RadixNode(depth=0)
+        self._total_blocks = 0
+
+    def _evict_if_needed(self) -> None:
+        """Evict least-recently-used leaf blocks until under capacity."""
+        while self._total_blocks > self._max_cached_blocks:
+            # Find the leaf node with the smallest last_access.
+            victim_path = self._find_lru_leaf()
+            if victim_path is None:
+                break  # No more leaves to evict
+
+            # Remove the victim leaf.
+            self._remove_leaf(victim_path)
+
+    def _find_lru_leaf(self) -> list:
+        """Find the path to the least-recently-used leaf node.
+
+        Returns a list of (parent_node, token_id) pairs from root
+        to the leaf, or None if the tree is empty.
+        """
+        best_path = None
+        best_access = None
+
+        def walk(node: _RadixNode, path: list) -> None:
+            nonlocal best_path, best_access
+
+            if not node.children:
+                # Leaf node.
+                if node.kv_block is not None:
+                    if best_access is None or node.last_access < best_access:
+                        best_access = node.last_access
+                        best_path = list(path)
+                return
+
+            for token_id, child in list(node.children.items()):
+                path.append((node, token_id))
+                walk(child, path)
+                path.pop()
+
+        walk(self._root, [])
+        return best_path
+
+    def _remove_leaf(self, path: list) -> None:
+        """Remove a leaf node given its path from root.
+
+        path: list of (parent_node, token_id) pairs.
+        """
+        if not path:
+            return
+
+        # Remove the leaf.
+        parent, token_id = path[-1]
+        leaf = parent.children[token_id]
+        if leaf.kv_block is not None:
+            self._total_blocks -= 1
+        del parent.children[token_id]
+
+        # Clean up empty intermediate nodes (bottom-up).
+        for i in range(len(path) - 2, -1, -1):
+            ancestor, tok = path[i]
+            child = ancestor.children.get(tok)
+            if child is not None and not child.children and child.kv_block is None:
+                del ancestor.children[tok]
+
+    def _count_blocks(self, node: _RadixNode) -> int:
+        """Count total cached blocks in a subtree."""
+        count = 1 if node.kv_block is not None else 0
+        for child in node.children.values():
+            count += self._count_blocks(child)
+        return count
