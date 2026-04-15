@@ -58,7 +58,7 @@ fn make_reduce_sum_kernel(n: usize, reduce_size: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 
@@ -86,7 +86,7 @@ fn make_reduce_max_kernel(n: usize, reduce_size: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 
@@ -136,7 +136,7 @@ fn make_elementwise_chain_kernel(n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 
@@ -177,7 +177,7 @@ fn make_exp2_mul_kernel(n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 
@@ -220,7 +220,7 @@ fn make_fused_softmax_kernel(n: usize, reduce_size: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 
@@ -359,7 +359,7 @@ fn test_cross_renderers_type_narrowing() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     for (renderer_name, renderer) in all_renderers() {
@@ -475,7 +475,7 @@ fn test_cross_renderers_where_op_syntax() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     for (renderer_name, renderer) in all_renderers() {
@@ -533,7 +533,7 @@ fn test_cross_renderers_reciprocal_syntax() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     for (renderer_name, renderer) in all_renderers() {

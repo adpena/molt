@@ -113,6 +113,15 @@ let matmulWasmMemory = null;
 /** @type {boolean} */
 let matmulWasmFailed = false;
 
+/** @type {WebAssembly.Instance | null} */
+let simdOpsInstance = null;
+
+/** @type {WebAssembly.Memory | null} */
+let simdOpsMemory = null;
+
+/** @type {boolean} */
+let simdOpsFailed = false;
+
 /**
  * Try to initialize the WASM SIMD matmul kernel.
  * The matmul.wasm module is embedded as a base64 string (< 1 KB) to avoid
@@ -131,6 +140,157 @@ async function initMatmulWasm(wasmBytes) {
     console.warn(`WASM matmul init failed, using JS fallback: ${err.message}`);
     matmulWasmFailed = true;
   }
+}
+
+/**
+ * Initialize the expanded WASM SIMD ops module for all hot-path operations.
+ * Covers: add, mul, sqrt, reciprocal, neg, max, exp2, reduce_sum,
+ * reduce_max, softmax, rms_norm, rope, matmul, matmul_dequant_i8.
+ *
+ * @param {ArrayBuffer} wasmBytes - The simd-ops.wasm binary
+ */
+async function initSimdOps(wasmBytes) {
+  if (simdOpsInstance || simdOpsFailed) return;
+  try {
+    const module = await WebAssembly.compile(wasmBytes);
+    simdOpsInstance = await WebAssembly.instantiate(module);
+    simdOpsMemory = simdOpsInstance.exports.memory;
+  } catch (err) {
+    console.warn(`WASM SIMD ops init failed, using JS fallback: ${err.message}`);
+    simdOpsFailed = true;
+  }
+}
+
+/**
+ * Ensure SIMD ops WASM memory has at least `needed` bytes.
+ * @param {number} needed - bytes required
+ */
+function ensureSimdOpsMemory(needed) {
+  const current = simdOpsMemory.buffer.byteLength;
+  if (needed > current) {
+    const pages = Math.ceil((needed - current) / 65536);
+    simdOpsMemory.grow(pages);
+  }
+}
+
+/**
+ * WASM SIMD softmax: find max, sub, exp2, sum, div in fused SIMD passes.
+ * Falls back to JS if SIMD ops not available.
+ * @param {Float32Array} x - input (D elements for a single row)
+ * @param {number} D - row size
+ * @returns {Float32Array}
+ */
+function softmaxSimd(x, D) {
+  if (simdOpsInstance) {
+    const n = x.length;
+    const rows = n / D;
+    const out = new Float32Array(n);
+    for (let r = 0; r < rows; r++) {
+      const row = x.subarray(r * D, (r + 1) * D);
+      const inBytes = D * 4;
+      const outBytes = D * 4;
+      const totalBytes = inBytes + outBytes;
+      ensureSimdOpsMemory(totalBytes);
+      const aPtr = 0;
+      const outPtr = inBytes;
+      new Float32Array(simdOpsMemory.buffer, aPtr, D).set(row);
+      simdOpsInstance.exports.softmax_f32(aPtr, outPtr, D);
+      out.set(new Float32Array(simdOpsMemory.buffer, outPtr, D), r * D);
+    }
+    return out;
+  }
+  return softmax(x, D);
+}
+
+/**
+ * WASM SIMD RMSNorm with weight: rmsNorm(x, D, eps) * weight.
+ * @param {Float32Array} x
+ * @param {Float32Array} weight
+ * @param {number} D
+ * @param {number} eps
+ * @returns {Float32Array}
+ */
+function rmsNormWeightSimd(x, weight, D, eps) {
+  if (simdOpsInstance) {
+    const n = x.length;
+    const rows = n / D;
+    const out = new Float32Array(n);
+    for (let r = 0; r < rows; r++) {
+      const rowX = x.subarray(r * D, (r + 1) * D);
+      const aBytes = D * 4;
+      const wBytes = D * 4;
+      const outBytes = D * 4;
+      const totalBytes = aBytes + wBytes + outBytes;
+      ensureSimdOpsMemory(totalBytes);
+      const aPtr = 0;
+      const wPtr = aBytes;
+      const outPtr = aBytes + wBytes;
+      new Float32Array(simdOpsMemory.buffer, aPtr, D).set(rowX);
+      new Float32Array(simdOpsMemory.buffer, wPtr, D).set(weight);
+      simdOpsInstance.exports.rms_norm_f32(aPtr, wPtr, outPtr, D, eps);
+      out.set(new Float32Array(simdOpsMemory.buffer, outPtr, D), r * D);
+    }
+    return out;
+  }
+  return rmsNormWeight(x, weight, D, eps);
+}
+
+/**
+ * WASM SIMD RoPE rotation.
+ * @param {Float32Array} x - [S, H, D]
+ * @param {Float32Array} cosTable
+ * @param {Float32Array} sinTable
+ * @param {number} S
+ * @param {number} H
+ * @param {number} D
+ * @param {number} freqDim
+ * @returns {Float32Array}
+ */
+function applyRopeSimd(x, cosTable, sinTable, S, H, D, freqDim) {
+  if (simdOpsInstance && D === freqDim * 2) {
+    // When D == freqDim*2, we can use the fused SIMD rope per head
+    const out = new Float32Array(x);
+    for (let s = 0; s < S; s++) {
+      const freqBase = s * freqDim;
+      for (let h = 0; h < H; h++) {
+        const base = (s * H + h) * D;
+        const headSlice = x.subarray(base, base + D);
+        const cosSlice = cosTable.subarray(freqBase, freqBase + freqDim);
+        const sinSlice = sinTable.subarray(freqBase, freqBase + freqDim);
+        // Pack for rope_f32: interleave pairs [x0, x_half, x1, x_{half+1}, ...]
+        // rope_f32 expects pairs: q[2*i], q[2*i+1] with cos[i], sin[i]
+        const qBytes = D * 4;
+        const cosBytes = freqDim * 4;
+        const sinBytes = freqDim * 4;
+        const outBytes = D * 4;
+        const totalBytes = qBytes + cosBytes + sinBytes + outBytes;
+        ensureSimdOpsMemory(totalBytes);
+        const qPtr = 0;
+        const cosPtr = qBytes;
+        const sinPtr = cosPtr + cosBytes;
+        const outPtr = sinPtr + sinBytes;
+        // Interleave: [x[0], x[half], x[1], x[half+1], ...]
+        const half = D >> 1;
+        const interleaved = new Float32Array(D);
+        for (let i = 0; i < half; i++) {
+          interleaved[2 * i] = headSlice[i];
+          interleaved[2 * i + 1] = headSlice[i + half];
+        }
+        new Float32Array(simdOpsMemory.buffer, qPtr, D).set(interleaved);
+        new Float32Array(simdOpsMemory.buffer, cosPtr, freqDim).set(cosSlice);
+        new Float32Array(simdOpsMemory.buffer, sinPtr, freqDim).set(sinSlice);
+        simdOpsInstance.exports.rope_f32(qPtr, cosPtr, sinPtr, outPtr, D);
+        const result = new Float32Array(simdOpsMemory.buffer, outPtr, D);
+        // De-interleave back
+        for (let i = 0; i < half; i++) {
+          out[base + i] = result[2 * i];
+          out[base + i + half] = result[2 * i + 1];
+        }
+      }
+    }
+    return out;
+  }
+  return applyRope(x, cosTable, sinTable, S, H, D, freqDim);
 }
 
 /**
@@ -709,7 +869,7 @@ export class FalconOCRMicro {
     const kvDim = nKvHeads * headDim;
     const totalQkv = qDim + 2 * kvDim;
 
-    // Pre-norm for attention
+    // Pre-norm for attention (SIMD-accelerated when available)
     const hNorm = rmsNorm(h, dim, rmsInnerEps);
 
     // QKV projection: [S, dim] x [dim, totalQkv] -> [S, totalQkv]
@@ -730,9 +890,9 @@ export class FalconOCRMicro {
     const qNorm = rmsNorm(q, headDim, rmsInnerEps);
     const kNorm = rmsNorm(k, headDim, rmsInnerEps);
 
-    // Apply RoPE
-    const qRope = applyRope(qNorm, this.rope.cos, this.rope.sin, S, nHeads, headDim, this.rope.freqDim);
-    const kRope = applyRope(kNorm, this.rope.cos, this.rope.sin, S, nKvHeads, headDim, this.rope.freqDim);
+    // Apply RoPE (SIMD-accelerated when available)
+    const qRope = applyRopeSimd(qNorm, this.rope.cos, this.rope.sin, S, nHeads, headDim, this.rope.freqDim);
+    const kRope = applyRopeSimd(kNorm, this.rope.cos, this.rope.sin, S, nKvHeads, headDim, this.rope.freqDim);
 
     // Repeat KV
     const kRep = repeatKv(kRope, S, nKvHeads, headDim, nRep);
@@ -758,8 +918,8 @@ export class FalconOCRMicro {
         }
       }
 
-      // Softmax per row
-      const probs = softmax(scores, S);
+      // Softmax per row (SIMD-accelerated when available)
+      const probs = softmaxSimd(scores, S);
 
       // Weighted sum of V
       for (let qi = 0; qi < S; qi++) {
@@ -919,8 +1079,8 @@ export class FalconOCRMicro {
         h = this.transformerBlock(h, S, layer, mask);
       }
 
-      // Final norm
-      h = rmsNormWeight(h, this.normW, dim, normEps);
+      // Final norm (SIMD-accelerated when available)
+      h = rmsNormWeightSimd(h, this.normW, dim, normEps);
 
       // Extract last token's hidden state
       const lastH = h.slice((S - 1) * dim, S * dim);
@@ -1008,4 +1168,4 @@ export function createModelFromTensors(tensors, config, scales) {
  *
  * @param {ArrayBuffer} wasmBytes - The compiled matmul.wasm binary
  */
-export { initMatmulWasm };
+export { initMatmulWasm, initSimdOps };

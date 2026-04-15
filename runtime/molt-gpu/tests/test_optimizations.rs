@@ -151,7 +151,7 @@ fn make_mul_add_kernel() -> FusedKernel {
         ],
         grid: [4, 1, 1],
         local: [256, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }
 }
 
@@ -260,7 +260,7 @@ fn test_no_fma_for_integer_ops() {
         ],
         grid: [4, 1, 1],
         local: [256, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let renderer = msl::MslRenderer;
     let source = renderer.render(&kernel);
@@ -300,7 +300,7 @@ fn test_unroll_hint_msl_small_reduce() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let renderer = msl::MslRenderer;
     let source = renderer.render(&kernel);
@@ -336,7 +336,7 @@ fn test_no_unroll_hint_msl_large_reduce() {
         ],
         grid: [1, 1, 1],
         local: [1, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
     let renderer = msl::MslRenderer;
     let source = renderer.render(&kernel);
@@ -382,7 +382,7 @@ fn test_kernel_dedup_identical_ops() {
         ],
         grid: [1, 1, 1],
         local: [128, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let k2 = FusedKernel {
@@ -413,7 +413,7 @@ fn test_kernel_dedup_identical_ops() {
         ],
         grid: [1, 1, 1],
         local: [128, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let (result, dedup_count) = deduplicate_kernels(&[k1, k2]);
@@ -451,7 +451,7 @@ fn test_kernel_dedup_different_ops() {
         ],
         grid: [1, 1, 1],
         local: [128, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let k2 = FusedKernel {
@@ -482,7 +482,7 @@ fn test_kernel_dedup_different_ops() {
         ],
         grid: [1, 1, 1],
         local: [128, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     };
 
     let (_, dedup_count) = deduplicate_kernels(&[k1, k2]);
@@ -671,7 +671,7 @@ mod simd_tests {
             ],
             grid: [n as u32, 1, 1],
             local: [n as u32, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
 
         let mut bufs = vec![
@@ -723,7 +723,7 @@ mod simd_tests {
             ],
             grid: [n as u32, 1, 1],
             local: [n as u32, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
 
         let mut bufs = vec![
@@ -776,7 +776,7 @@ mod simd_tests {
             ],
             grid: [n as u32, 1, 1],
             local: [n as u32, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
 
         let mut bufs = vec![
@@ -830,7 +830,7 @@ fn test_bounds_check_elim_for_divisible_size() {
         ],
         grid: [1, 1, 1],
         local: [256, 1, 1],
-        spec: None,
+        spec: None, vectorize_width: 1,
     }];
 
     specialize_shapes(&mut kernels);

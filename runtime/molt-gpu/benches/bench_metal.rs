@@ -78,7 +78,7 @@ mod metal_bench {
             ],
             grid: [(n as u32 + 255) / 256, 1, 1],
             local: [256, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
 
         // CPU reference
@@ -192,7 +192,7 @@ mod metal_bench {
             ],
             grid: [out_n as u32, 1, 1],
             local: [1, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
 
         // Pre-compute product tensor for Metal (this is what the unfused path does)
@@ -268,7 +268,7 @@ mod metal_bench {
                 BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
                 BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
             ],
-            grid: [1, 1, 1], local: [1, 1, 1], spec: None,
+            grid: [1, 1, 1], local: [1, 1, 1], spec: None, vectorize_width: 1,
         };
 
         let log2_e = std::f64::consts::LOG2_E;
@@ -283,7 +283,7 @@ mod metal_bench {
                 BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
                 BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Read },
             ],
-            grid: [n as u32, 1, 1], local: [1, 1, 1], spec: None,
+            grid: [n as u32, 1, 1], local: [1, 1, 1], spec: None, vectorize_width: 1,
         };
 
         let k_reduce_sum = FusedKernel {
@@ -296,7 +296,7 @@ mod metal_bench {
                 BufferBinding { buf_id: 0, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Write },
                 BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
             ],
-            grid: [1, 1, 1], local: [1, 1, 1], spec: None,
+            grid: [1, 1, 1], local: [1, 1, 1], spec: None, vectorize_width: 1,
         };
 
         // CPU timing (full softmax pipeline)
@@ -365,7 +365,7 @@ mod metal_bench {
                 BufferBinding { buf_id: 1, st: ShapeTracker::contiguous(&[n]), dtype: DType::Float32, access: BufferAccess::Read },
                 BufferBinding { buf_id: 2, st: ShapeTracker::contiguous(&[1]), dtype: DType::Float32, access: BufferAccess::Read },
             ],
-            grid: [n as u32, 1, 1], local: [1, 1, 1], spec: None,
+            grid: [n as u32, 1, 1], local: [1, 1, 1], spec: None, vectorize_width: 1,
         };
         let src_norm = renderer.render(&k_norm);
         let prog_norm = metal.compile(&src_norm, "molt_kernel").expect("compile norm");

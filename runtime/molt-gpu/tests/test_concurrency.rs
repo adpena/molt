@@ -69,7 +69,7 @@ fn test_concurrent_cpu_device_independent_compute() {
                     ],
                     grid: [n as u32, 1, 1],
                     local: [1, 1, 1],
-                    spec: None,
+                    spec: None, vectorize_width: 1,
                 };
 
                 let mut bufs = vec![vec![0u8; n * 4], f32_to_bytes(&input)];
@@ -308,7 +308,7 @@ fn test_concurrent_different_kernel_shapes() {
                     ],
                     grid: [n as u32, 1, 1],
                     local: [1, 1, 1],
-                    spec: None,
+                    spec: None, vectorize_width: 1,
                 };
 
                 let mut bufs = vec![vec![0u8; n * 4], f32_to_bytes(&input)];

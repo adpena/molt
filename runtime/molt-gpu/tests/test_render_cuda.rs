@@ -35,7 +35,7 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     }
 }
 
@@ -72,7 +72,7 @@ fn test_cuda_full_i64_support() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let cuda = CudaRenderer.render(&kernel);
     // CUDA supports full i64 — should NOT narrow to i32
@@ -94,7 +94,7 @@ fn test_cuda_full_f64_support() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let cuda = CudaRenderer.render(&kernel);
     assert!(cuda.contains("double"), "CUDA should support f64 as 'double'");
@@ -117,7 +117,7 @@ fn test_cuda_ternary_operator() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let cuda = CudaRenderer.render(&kernel);
     assert!(cuda.contains(" ? "), "CUDA should use ternary operator");
@@ -163,7 +163,7 @@ fn test_cuda_all_26_ops_render() {
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
         let cuda = CudaRenderer.render(&kernel);
         assert!(cuda.contains("molt_kernel"), "op {:?} failed to render CUDA", op);

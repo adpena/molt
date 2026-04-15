@@ -35,7 +35,7 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     }
 }
 
@@ -62,7 +62,7 @@ fn make_unary_kernel(op: PrimitiveOp, n: usize, dtype: DType) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     }
 }
 
@@ -136,7 +136,7 @@ fn test_opencl_f64_with_extension() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(true).render(&kernel);
     assert!(ocl.contains("#pragma OPENCL EXTENSION cl_khr_fp64 : enable"), "must enable fp64 pragma");
@@ -158,7 +158,7 @@ fn test_opencl_f64_without_extension() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
     assert!(!ocl.contains("#pragma OPENCL EXTENSION cl_khr_fp64"), "no fp64 pragma when not supported");
@@ -181,7 +181,7 @@ fn test_opencl_i64_native_support() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
     // OpenCL supports i64 natively
@@ -203,7 +203,7 @@ fn test_opencl_bool_as_int() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
     // OpenCL kernels use int for bool
@@ -228,7 +228,7 @@ fn test_opencl_ternary_where() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
     assert!(ocl.contains(" ? "), "OpenCL should use ternary operator for Where");
@@ -248,7 +248,7 @@ fn test_opencl_bitcast_as_type() {
         ],
         grid: [64, 1, 1],
         local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
     // OpenCL uses as_type() for bitcasts
@@ -313,7 +313,7 @@ fn test_opencl_reduce_sum_with_barrier() {
         ],
         grid: [1, 1, 1],
         local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
     assert!(ocl.contains("barrier(CLK_LOCAL_MEM_FENCE)"), "reduce must use barrier");
@@ -337,7 +337,7 @@ fn test_opencl_reduce_max_with_barrier() {
         ],
         grid: [1, 1, 1],
         local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
     assert!(ocl.contains("barrier(CLK_LOCAL_MEM_FENCE)"), "reduce must use barrier");
@@ -369,7 +369,7 @@ fn test_opencl_reduce_with_prefix_ops() {
         ],
         grid: [1, 1, 1],
         local: [256, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
     };
     let ocl = OpenClRenderer::new(false).render(&kernel);
     assert!(ocl.contains("barrier(CLK_LOCAL_MEM_FENCE)"));
@@ -418,7 +418,7 @@ fn test_opencl_all_26_ops_render() {
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
         let ocl = OpenClRenderer::new(false).render(&kernel);
         assert!(ocl.contains("__kernel void molt_kernel("), "op {:?} failed to render OpenCL", op);
@@ -440,7 +440,7 @@ fn test_opencl_all_26_ops_render() {
             ],
             grid: [1, 1, 1],
             local: [64, 1, 1],
-                spec: None,
+                spec: None, vectorize_width: 1,
         };
         let ocl = OpenClRenderer::new(false).render(&kernel);
         assert!(ocl.contains("__kernel void molt_kernel("), "reduce op {:?} failed to render OpenCL", reduce_op);

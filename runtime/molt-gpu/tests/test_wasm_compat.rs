@@ -140,7 +140,7 @@ mod wasm_cpu_tests {
             ],
             grid: [4, 1, 1],
             local: [4, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
 
         let mut bufs = vec![
