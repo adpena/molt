@@ -1,5 +1,60 @@
 # Deployment Log
 
+## 2026-04-15: Production Launch -- x402 + enjoice Integration
+
+### x402 Browser Bypass
+- Updated `deploy/cloudflare/x402.js` to skip payment verification for same-origin
+  requests from `freeinvoicemaker.app` (matched via `Origin` header against `CORS_ORIGIN` env var)
+- API/agent requests (no Origin or different origin) still require x402 payment
+- Deployed Worker version: `1713fc1a-7ff5-4c15-874a-472ef55ef834`
+
+### enjoice OCR Integration
+- Copied molt OCR integration files into enjoice at `site/src/lib/ocr/molt/`:
+  - `falcon-ocr-molt.ts` -- WASM session management and image preprocessing
+  - `ocr-backend-molt.ts` -- MoltOcrBackend class with WebGPU detection
+  - `capabilities.ts` -- Browser/GPU capability detection
+- Updated `site/src/lib/ocr/index.ts`:
+  - Added `molt-gpu` as highest-priority backend in the auto-selection chain
+  - Hits `https://falcon-ocr.adpena.workers.dev/ocr` for Workers AI inference
+  - Exported `extractTemplateFromScan()` for template extraction
+  - Backend chain: molt-gpu -> falcon-ocr (local WASM) -> paddleocr
+- Fixed strict TypeScript compliance (exactOptionalPropertyTypes, noUncheckedIndexedAccess)
+
+### Template-from-Scan in ScanButton
+- Updated `site/src/components/invoice/ScanButton.tsx`:
+  - After successful OCR, shows "Create template from this invoice" link
+  - Calls `/template/extract` on the falcon-ocr Worker
+  - Navigates to `/templates/editor` with extracted template data
+  - Loading/error states for template extraction
+
+### Endpoint Verification
+| Endpoint | Browser (Origin) | API (no Origin) | Expected |
+|----------|-----------------|-----------------|----------|
+| GET /health | 200 | 200 | 200 (no auth required) |
+| POST /ocr | 200/503* | 402 | bypass/block |
+| POST /template/extract | 200 | 402 | bypass/block |
+| POST /ocr/batch | 200/503* | 402 | bypass/block |
+
+*503 = Workers AI capacity on specific edge (not auth failure)
+
+### enjoice Deployment
+- Build: `pnpm --filter iv-site build` -- success (15.97s)
+- Deploy: `wrangler deploy --config site/dist/server/wrangler.json`
+- Version ID: `5d2053d6-a13c-4c59-8763-ea9d2bdea90d`
+- Site live at https://freeinvoicemaker.app/ (HTTP 200)
+
+### Files Changed (molt)
+- `deploy/cloudflare/x402.js` -- added Origin-based browser bypass
+
+### Files Changed (enjoice)
+- `site/src/lib/ocr/molt/falcon-ocr-molt.ts` -- NEW
+- `site/src/lib/ocr/molt/ocr-backend-molt.ts` -- NEW
+- `site/src/lib/ocr/molt/capabilities.ts` -- NEW
+- `site/src/lib/ocr/index.ts` -- added molt-gpu backend + extractTemplateFromScan
+- `site/src/components/invoice/ScanButton.tsx` -- template-from-scan button
+
+---
+
 ## 2026-04-14: CPU Inference Pipeline Live (Micro Model)
 
 ### WASM Build Attempt
