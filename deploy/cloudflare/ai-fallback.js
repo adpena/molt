@@ -465,45 +465,6 @@ export async function runStructuredOcr(env, imageBytes) {
   };
 }
 
-/**
- * Hybrid OCR handler: tries Workers AI first, falls back to local CPU.
- *
- * This is the recommended production entry point. It provides the best
- * balance of quality, speed, and sustainability:
- *
- *   - Workers AI: GPU inference, zero CPU cost, highest quality
- *   - Local CPU: Falcon-OCR INT8, fallback only, bounded by Worker limits
- *
- * @param {object} env - Worker environment
- * @param {Uint8Array} imageBytes - Raw image bytes
- * @param {function|null} localInferenceFn - Local CPU inference fallback
- * @param {object} options - Configuration options
- * @returns {Promise<AiFallbackResult>}
- */
-export async function hybridOcr(env, imageBytes, localInferenceFn, options = {}) {
-  // Try Workers AI first (GPU, zero CPU cost)
-  if (isWorkersAiAvailable(env)) {
-    try {
-      return await runWorkersAiOcr(env, imageBytes, options);
-    } catch (err) {
-      console.warn(`Workers AI OCR failed, falling back to local: ${err.message}`);
-    }
-  }
-
-  // Fall back to local CPU inference
-  if (typeof localInferenceFn === "function") {
-    const start = Date.now();
-    const result = await localInferenceFn(imageBytes);
-    return {
-      text: result.text || "",
-      confidence: result.confidence || 0.0,
-      model: "falcon-ocr-int8",
-      model_used: "falcon-ocr-int8",
-      backend: "local-cpu",
-      time_ms: Date.now() - start,
-      retries: 0,
-    };
-  }
-
-  throw new Error("No OCR backend available: Workers AI not bound and no local inference");
-}
+// hybridOcr removed: Workers AI is NOT used for OCR text extraction (hallucinates).
+// OCR uses Falcon-OCR (micro/INT4) with PaddleOCR browser-side as primary.
+// Workers AI is only used for /invoice/fill, /template/extract, /ocr/structured.
