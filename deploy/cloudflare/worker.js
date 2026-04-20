@@ -698,6 +698,11 @@ export default {
     const requestedBackend = request.headers.get("X-Use-Backend");
     if (path === "/ocr" && request.method === "POST" &&
         isWorkersAiAvailable(env) && requestedBackend !== "local") {
+      // x402 payment verification (skipped for same-origin browser requests)
+      const payment = await verifyX402(request, env, rid, cors);
+      if (!payment.authorized) {
+        return payment.response;
+      }
       try {
         const ct = request.headers.get("Content-Type") || "";
         let imageBytes = null;
