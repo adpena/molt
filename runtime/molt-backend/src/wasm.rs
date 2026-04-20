@@ -4180,12 +4180,14 @@ impl WasmBackend {
             self.exports
                 .export("molt_main", ExportKind::Func, wrapper_index);
 
-            // Export indirect call table refs ONLY when relocatable (split-runtime
-            // linking needs them to resolve cross-module function slots).
-            // For self-contained WASM (non-reloc), these exports are dead weight:
-            // they prevent wasm-opt from tree-shaking unreachable functions,
-            // inflating the binary from ~2 MB to ~13 MB.
-            if reloc_enabled {
+            // Export indirect call table refs ONLY for split-runtime builds where
+            // the runtime and app are separate WASM modules that need to
+            // cross-reference function slots. For monolithic/linked builds,
+            // these exports are dead weight: they prevent wasm-opt from
+            // tree-shaking unreachable functions, inflating the binary
+            // from ~2 MB to ~13 MB (7,359 unnecessary exports).
+            let is_split_runtime = self.options.split_runtime_runtime_table_min.is_some();
+            if is_split_runtime {
                 let mut ref_exported = BTreeSet::new();
                 for (slot, func_index) in table_indices.iter().enumerate() {
                     if slot < split_runtime_owned_slot_start
