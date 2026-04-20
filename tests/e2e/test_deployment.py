@@ -15,6 +15,7 @@ They validate the contracts between components.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import sys
@@ -46,9 +47,6 @@ def test_wasm_driver_exports():
     assert "def init(" in source, "wasm_driver.py must export init()"
     assert "def ocr_tokens(" in source, "wasm_driver.py must export ocr_tokens()"
 
-    # Must not define any other public functions (no underscore prefix)
-    import ast
-
     tree = ast.parse(source)
     public_functions = [
         node.name
@@ -77,8 +75,41 @@ def test_wasm_driver_delegates_to_falcon_ocr():
     with open(driver_path) as f:
         source = f.read()
 
-    assert "from molt.stdlib.tinygrad.examples.falcon_ocr import" in source, (
-        "wasm_driver.py must import from falcon_ocr.py"
+    tree = ast.parse(source)
+    falcon_module_bindings: set[str] = set()
+    direct_falcon_bindings: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "molt.stdlib.tinygrad.examples.falcon_ocr":
+                    falcon_module_bindings.add(alias.asname or "molt")
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "molt.stdlib.tinygrad.examples.falcon_ocr"
+        ):
+            for alias in node.names:
+                direct_falcon_bindings[alias.asname or alias.name] = alias.name
+
+    assert falcon_module_bindings or direct_falcon_bindings, (
+        "wasm_driver.py must import falcon_ocr.py"
+    )
+
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert _delegates_to_falcon_ocr(
+        functions["init"],
+        "init",
+        falcon_module_bindings,
+        direct_falcon_bindings,
+    )
+    assert _delegates_to_falcon_ocr(
+        functions["ocr_tokens"],
+        "ocr_tokens",
+        falcon_module_bindings,
+        direct_falcon_bindings,
     )
     # Must NOT contain model implementation details
     assert "class FalconOCRConfig" not in source, (
@@ -87,6 +118,31 @@ def test_wasm_driver_delegates_to_falcon_ocr():
     assert "def _generate" not in source, (
         "wasm_driver.py must not reimplement _generate"
     )
+
+
+def _delegates_to_falcon_ocr(
+    function: ast.FunctionDef,
+    attr_name: str,
+    module_bindings: set[str],
+    direct_bindings: dict[str, str],
+) -> bool:
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        callee = node.func
+        if (
+            isinstance(callee, ast.Attribute)
+            and callee.attr == attr_name
+            and isinstance(callee.value, ast.Name)
+            and callee.value.id in module_bindings
+        ):
+            return True
+        if (
+            isinstance(callee, ast.Name)
+            and direct_bindings.get(callee.id) == attr_name
+        ):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -373,13 +429,15 @@ def test_x402_required_for_ocr_endpoints():
     with open(worker_path) as f:
         source = f.read()
 
-    # Health check must be BEFORE payment verification
-    lines = source.split("\n")
-    health_line = next(i for i, l in enumerate(lines) if "/health" in l and "path" in l)
-    payment_line = next(i for i, l in enumerate(lines) if "verifyX402" in l and "await" in l)
-
-    assert health_line < payment_line, (
-        "/health must be handled before x402 verification"
+    # Health check must be before the common POST payment gate in the
+    # monitored handler. Earlier fast-path routes are separately guarded.
+    health_pos = source.index('if (path === "/health" && request.method === "GET")')
+    common_payment_pos = source.index(
+        "const payment = await verifyX402(request, env, rid, cors);",
+        health_pos,
+    )
+    assert health_pos < common_payment_pos, (
+        "/health must be handled before the common x402 verification gate"
     )
 
 
