@@ -482,6 +482,12 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
     // Compute block ordering (BFS from entry) and build dominator tree.
     let dom = compute_dominator_tree(func);
 
+    // Only check reachable blocks. Unreachable blocks (dead code left by
+    // optimization passes like SCCP branch folding) may reference values
+    // whose definitions no longer dominate them. Checking them would report
+    // false SSA dominance violations.
+    let reachable: HashSet<BlockId> = bfs_order(func).into_iter().collect();
+
     // Build a map: ValueId → BlockId where it is defined.
     let mut def_block: HashMap<ValueId, BlockId> = HashMap::new();
     // Also track the op index within the block (for same-block use-before-def checks).
@@ -547,6 +553,12 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
         };
 
     for (bid, block) in &func.blocks {
+        // Skip unreachable blocks — their ops may reference values whose
+        // definitions no longer dominate them after optimization passes
+        // changed the CFG (e.g., SCCP branch folding).
+        if !reachable.contains(bid) {
+            continue;
+        }
         for (op_idx, op) in block.ops.iter().enumerate() {
             for operand in &op.operands {
                 check_use(*bid, Some(op_idx), *operand, errors);
