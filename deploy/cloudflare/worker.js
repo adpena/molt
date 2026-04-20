@@ -23,7 +23,7 @@
  * generated for debugging without exposing PII.
  */
 
-import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleBatchOcr, handleTemplateExtract, handleStructuredOcr, handleDetailedOcr, handleTableOcr, handleTemplateExtractFast } from "./ocr_api.js";
+import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleBatchOcr, handleTemplateExtract, handleStructuredOcr, handleDetailedOcr, handleTableOcr, handleTemplateExtractFast, handleInvoiceFill } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, createRequestLog, emitLog, writeAnalytics, categorizeError } from "./monitoring.js";
 import { getAnalyticsSummary } from "./analytics.js";
@@ -732,6 +732,22 @@ export default {
         return payment.response;
       }
       const response = await handleTableOcr(request, env, cors, rid);
+      if (payment.receipt) {
+        const headers = new Headers(response.headers);
+        headers.set("X-Payment-Receipt", payment.receipt);
+        return new Response(response.body, { status: response.status, headers });
+      }
+      return response;
+    }
+
+    // Fast path: NL invoice fill uses Workers AI to parse natural language
+    // into structured invoice data (no image required).
+    if (path === "/invoice/fill" && request.method === "POST" && isWorkersAiAvailable(env)) {
+      const payment = await verifyX402(request, env, rid, cors);
+      if (!payment.authorized) {
+        return payment.response;
+      }
+      const response = await handleInvoiceFill(request, env, cors, rid);
       if (payment.receipt) {
         const headers = new Headers(response.headers);
         headers.set("X-Payment-Receipt", payment.receipt);

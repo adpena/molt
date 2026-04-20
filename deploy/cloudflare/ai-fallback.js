@@ -231,6 +231,8 @@ export async function runWorkersAiOcr(env, imageBytes, options = {}) {
             model_used: model.name,
             backend: "workers-ai",
             auto_filled: true,
+            auto_fill_warning: "These fields were auto-filled by AI. Please review all values before sending.",
+            auto_fill_dismissable: true,
             time_ms: Date.now() - start,
             retries: attempt,
           };
@@ -442,6 +444,9 @@ export async function runStructuredOcr(env, imageBytes) {
       confidence: 0.0,
       model: result.model,
       model_used: result.model_used,
+      auto_filled: true,
+      auto_fill_warning: "These fields were auto-filled by AI. Please review all values before sending.",
+      auto_fill_dismissable: true,
       time_ms: result.time_ms,
       parse_error: "Failed to extract JSON from model response",
     };
@@ -453,6 +458,9 @@ export async function runStructuredOcr(env, imageBytes) {
     confidence: result.confidence,
     model: result.model,
     model_used: result.model_used,
+    auto_filled: true,
+    auto_fill_warning: "These fields were auto-filled by AI. Please review all values before sending.",
+    auto_fill_dismissable: true,
     time_ms: result.time_ms,
   };
 }
