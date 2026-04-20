@@ -322,22 +322,34 @@ def generate_invoice_minimal() -> InvoiceSpec:
 # OCR submission
 # ---------------------------------------------------------------------------
 
-def submit_to_ocr(image_bytes: bytes) -> dict:
-    """Send image to the live Worker OCR endpoint."""
+def submit_to_ocr(image_bytes: bytes, max_retries: int = 3) -> dict:
+    """Send image to the live Worker OCR endpoint with retry for transient errors."""
     b64 = base64.b64encode(image_bytes).decode("ascii")
     payload = {"image": b64}
 
-    resp = requests.post(
-        f"{WORKER_URL}/ocr",
-        json=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Origin": ORIGIN_HEADER,
-        },
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    last_exc = None
+    for attempt in range(max_retries):
+        resp = requests.post(
+            f"{WORKER_URL}/ocr",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Origin": ORIGIN_HEADER,
+            },
+            timeout=120,
+        )
+        if resp.status_code == 503:
+            # Workers AI GPU fleet transiently unavailable — back off and retry
+            last_exc = requests.HTTPError(
+                f"{resp.status_code} Server Error: Service Unavailable",
+                response=resp,
+            )
+            time.sleep(2 ** attempt)
+            continue
+        resp.raise_for_status()
+        return resp.json()
+
+    raise last_exc
 
 
 # ---------------------------------------------------------------------------
