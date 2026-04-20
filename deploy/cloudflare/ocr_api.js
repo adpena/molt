@@ -614,14 +614,16 @@ function resizeForInference(rgb, width, height, maxDim = 128, patchSize = 16) {
  * @param {Uint8Array} rgb
  * @param {number[]} promptIds
  * @param {number} maxNewTokens
+ * @param {number} [maxLayers=0] - Use only the first N layers (0 = all).
+ *   Only supported by the CPU backend (CpuDevice).  WASM backend ignores this.
  * @returns {Int32Array | Uint32Array}
  */
-function invokeOcrTokens(backend, width, height, rgb, promptIds, maxNewTokens) {
+function invokeOcrTokens(backend, width, height, rgb, promptIds, maxNewTokens, maxLayers = 0) {
   if (backend.exports && typeof backend.exports.ocr_tokens === "function") {
     return backend.exports.ocr_tokens(width, height, rgb, promptIds, maxNewTokens);
   }
   if (typeof backend.ocrTokens === "function") {
-    return backend.ocrTokens(width, height, rgb, promptIds, maxNewTokens);
+    return backend.ocrTokens(width, height, rgb, promptIds, maxNewTokens, maxLayers);
   }
   throw new Error("Invalid inference backend: no ocr_tokens or ocrTokens method");
 }
@@ -675,7 +677,14 @@ export async function handleOcrRequest(request, backend, env, cors, rid, device 
     maxNewTokens = imageResult.maxTokens;
   }
 
-  const tokens = invokeOcrTokens(backend, finalW, finalH, rgb, promptIds, maxNewTokens);
+  // For CPU mode with large models (>8 layers), use only the first 8 layers
+  // to enable multi-token generation within the Workers wall-clock budget.
+  // Speed vs quality tradeoff:
+  //   - 8 of 22 layers: ~2.75x faster per step, moderate quality loss
+  //   - All layers: full quality but ~60s per step (INT4 model)
+  //   - Micro model (2 layers): maxLayers has no effect (all layers used)
+  const maxLayers = device === "cpu" ? 8 : 0;
+  const tokens = invokeOcrTokens(backend, finalW, finalH, rgb, promptIds, maxNewTokens, maxLayers);
 
   // Decode token IDs to text using the server-side tokenizer.
   // Falls back to empty string if no tokenizer is loaded (browser has its own).
