@@ -5668,23 +5668,21 @@ const runDirectLink = async () => {
     console.error(`[molt wasm] call_indirect2 smoke result=${res}`);
   }
   initializeWasiForInstance(runtimeInst, memory);
-  if (!hostExportCallsEnabled) {
-    if (typeof outputInstance.exports.molt_isolate_bootstrap === 'function') {
-      if (traceRun) {
-        console.error('[molt wasm] direct: call molt_isolate_bootstrap');
-      }
-      outputInstance.exports.molt_isolate_bootstrap();
-      if (traceRun) {
-        console.error('[molt wasm] direct: molt_isolate_bootstrap returned');
-      }
-    }
+  if (typeof outputInstance.exports.molt_isolate_bootstrap === 'function') {
     if (traceRun) {
-      console.error('[molt wasm] direct: call molt_main');
+      console.error('[molt wasm] direct: call molt_isolate_bootstrap');
     }
-    runMainWithWasiExit(() => {
-      molt_main();
-    });
+    outputInstance.exports.molt_isolate_bootstrap();
+    if (traceRun) {
+      console.error('[molt wasm] direct: molt_isolate_bootstrap returned');
+    }
   }
+  if (traceRun) {
+    console.error('[molt wasm] direct: call molt_main');
+  }
+  runMainWithWasiExit(() => {
+    molt_main();
+  });
 };
 
 const runLinked = async () => {
@@ -5796,11 +5794,11 @@ const runLinked = async () => {
     (importObject.env && importObject.env.__indirect_function_table) ||
     null;
   ensureTableCapacityForExportedRefs(linkedModule.instance, linkedTable, 'linked');
-  // Fully linked artifacts already carry finalized active element segments.
-  // Re-running molt_table_init here replays split/direct startup semantics
-  // against a post-link table layout and corrupts linked startup.
-  // Linked artifacts can still carry table-relocation edge cases on some wasm-ld
-  // versions. Opt-in reinstall helps debug signature-mismatch traps.
+  // Linked artifacts populate the table via two mechanisms:
+  //   1. The active element segment (installed at instantiation) for runtime entries.
+  //   2. molt_table_init (called from molt_main) for app-specific entries.
+  // The JS runner does NOT call molt_table_init separately — molt_main handles it.
+  // Opt-in installTableRefs reinstalls from exported __molt_table_ref_* for debugging.
   if (installTableRefsEnabled) {
     installTableRefs(linkedModule.instance, linkedTable, 'linked');
   }
@@ -5818,11 +5816,9 @@ const runLinked = async () => {
     initializeWasiForInstance(linkedModule.instance, linkedMemory);
     setWasmMemory(linkedMemory);
   }
-  if (!hostExportCallsEnabled) {
-    runMainWithWasiExit(() => {
-      molt_main();
-    });
-  }
+  runMainWithWasiExit(() => {
+    molt_main();
+  });
 };
 
 const runMain = async () => {

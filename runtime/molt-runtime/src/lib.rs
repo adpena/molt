@@ -213,10 +213,9 @@ pub mod ffi_bridge {
 pub(crate) use crate::async_rt::*;
 pub use crate::builtins::gpu::molt_gpu_broadcast_binary_contiguous;
 pub use crate::builtins::gpu::molt_gpu_buffer_to_list;
-pub use crate::builtins::gpu::molt_gpu_tensor__tensor_concat_first_dim;
+pub use crate::builtins::gpu::molt_gpu_interop__load_safetensors;
 pub use crate::builtins::gpu::molt_gpu_interop_decode_bf16_bytes_to_f32;
 pub use crate::builtins::gpu::molt_gpu_interop_decode_f16_bytes_to_f32;
-pub use crate::builtins::gpu::molt_gpu_interop__load_safetensors;
 pub use crate::builtins::gpu::molt_gpu_linear_contiguous;
 pub use crate::builtins::gpu::molt_gpu_linear_split_last_dim_contiguous;
 pub use crate::builtins::gpu::molt_gpu_linear_squared_relu_gate_interleaved_contiguous;
@@ -226,8 +225,8 @@ pub use crate::builtins::gpu::molt_gpu_repeat_axis_contiguous;
 pub use crate::builtins::gpu::molt_gpu_rms_norm_last_axis_contiguous;
 pub use crate::builtins::gpu::molt_gpu_rope_apply_contiguous;
 pub use crate::builtins::gpu::molt_gpu_softmax_last_axis_contiguous;
-pub use crate::builtins::gpu::molt_gpu_tensor__tensor_scatter_rows;
 pub use crate::builtins::gpu::molt_gpu_squared_relu_gate_interleaved_contiguous;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_concat_first_dim;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_data_list;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_linear;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_linear_split_last_dim;
@@ -235,12 +234,13 @@ pub use crate::builtins::gpu::molt_gpu_tensor__tensor_linear_squared_relu_gate_i
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_permute_dims;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_reshape_view;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_scaled_dot_product_attention;
-pub use crate::builtins::gpu::molt_gpu_turboquant_attention_packed;
+pub use crate::builtins::gpu::molt_gpu_tensor__tensor_scatter_rows;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_softmax_last_axis;
 pub use crate::builtins::gpu::molt_gpu_tensor__tensor_take_rows;
 pub use crate::builtins::gpu::molt_gpu_tensor__zeros;
 pub use crate::builtins::gpu::molt_gpu_tensor_from_buffer;
 pub use crate::builtins::gpu::molt_gpu_tensor_from_parts;
+pub use crate::builtins::gpu::molt_gpu_turboquant_attention_packed;
 pub use crate::builtins::strings::molt_string_from_bytes;
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{
@@ -265,8 +265,8 @@ pub(crate) use crate::concurrency::{
 pub(crate) use crate::state::RuntimeState;
 pub use crate::wasm_abi_exports::{
     molt_dict_getitem, molt_dict_setitem, molt_fast_dict_get, molt_fast_list_append,
-    molt_fast_str_join, molt_resource_on_allocate, molt_resource_on_free, molt_tuple_getitem,
-    molt_type_tag_of_bits,
+    molt_fast_str_join, molt_resource_on_allocate, molt_resource_on_free, molt_scratch_alloc,
+    molt_scratch_free, molt_tuple_getitem, molt_type_tag_of_bits,
 };
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::MoltObject;
@@ -601,17 +601,16 @@ pub(crate) use crate::object::layout::{
     enumerate_set_index_bits, enumerate_target_bits, filter_func_bits, filter_iter_bits,
     function_annotate_bits, function_annotations_bits, function_arity, function_closure_bits,
     function_code_bits, function_dict_bits, function_fn_ptr, function_globals_bits,
-    function_name_bits,
-    function_set_annotate_bits, function_set_annotations_bits, function_set_closure_bits,
-    function_set_code_bits, function_set_dict_bits, function_set_globals_bits,
-    function_set_trampoline_ptr,
-    function_trampoline_ptr, generic_alias_args_bits, generic_alias_origin_bits, iter_cached_tuple,
-    iter_index, iter_set_cached_tuple, iter_set_index, iter_target_bits, map_func_bits,
-    map_iters_ptr, module_dict_bits, module_name_bits, property_del_bits, property_get_bits,
-    property_set_bits, range_len_i64, range_start_bits, range_step_bits, range_stop_bits,
-    reversed_index, reversed_set_index, reversed_target_bits, seq_vec, seq_vec_ptr, seq_vec_ref,
-    slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits, super_obj_bits,
-    super_type_bits, union_type_args_bits, zip_iters_ptr, zip_set_strict_bits, zip_strict_bits,
+    function_name_bits, function_set_annotate_bits, function_set_annotations_bits,
+    function_set_closure_bits, function_set_code_bits, function_set_dict_bits,
+    function_set_globals_bits, function_set_trampoline_ptr, function_trampoline_ptr,
+    generic_alias_args_bits, generic_alias_origin_bits, iter_cached_tuple, iter_index,
+    iter_set_cached_tuple, iter_set_index, iter_target_bits, map_func_bits, map_iters_ptr,
+    module_dict_bits, module_name_bits, property_del_bits, property_get_bits, property_set_bits,
+    range_len_i64, range_start_bits, range_step_bits, range_stop_bits, reversed_index,
+    reversed_set_index, reversed_target_bits, seq_vec, seq_vec_ptr, seq_vec_ref, slice_start_bits,
+    slice_step_bits, slice_stop_bits, staticmethod_func_bits, super_obj_bits, super_type_bits,
+    union_type_args_bits, zip_iters_ptr, zip_set_strict_bits, zip_strict_bits,
 };
 pub(crate) use crate::object::memoryview::{
     bytes_like_slice, bytes_like_slice_raw, memoryview_bytes_slice, memoryview_bytes_slice_mut,
