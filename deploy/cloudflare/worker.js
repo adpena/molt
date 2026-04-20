@@ -15,10 +15,29 @@
 import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleBatchOcr, handleTemplateExtract, handleStructuredOcr } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, createRequestLog, emitLog, writeAnalytics, categorizeError } from "./monitoring.js";
-import { createModel, parseSafetensorsToMap, createModelFromTensors, initMatmulWasm, initSimdOps } from "./inference-cpu.js";
-import { MICRO_MODEL_B64, MICRO_MODEL_CONFIG } from "./micro-model-data.js";
-import MATMUL_WASM_B64 from "./matmul-wasm-b64.js";
-import { SIMD_OPS_WASM } from "./simd-ops-b64.js";
+// Lazy-loaded: these heavy modules are imported only when local inference is needed.
+// This avoids burning CPU budget on cold start when only the Workers AI fast path is used.
+let _inferenceModule = null;
+let _microModelData = null;
+let _matmulWasm = null;
+let _simdOpsWasm = null;
+
+async function getInferenceModule() {
+  if (!_inferenceModule) _inferenceModule = await import("./inference-cpu.js");
+  return _inferenceModule;
+}
+async function getMicroModelData() {
+  if (!_microModelData) _microModelData = await import("./micro-model-data.js");
+  return _microModelData;
+}
+async function getMatmulWasm() {
+  if (!_matmulWasm) _matmulWasm = await import("./matmul-wasm-b64.js");
+  return _matmulWasm;
+}
+async function getSimdOpsWasm() {
+  if (!_simdOpsWasm) _simdOpsWasm = await import("./simd-ops-b64.js");
+  return _simdOpsWasm;
+}
 import { isWorkersAiAvailable, hybridOcr, runWorkersAiOcr } from "./ai-fallback.js";
 
 /** @type {WebAssembly.Instance | null} */
@@ -204,10 +223,11 @@ const CpuDevice = {
    * @param {object} config - Model configuration
    * @param {Object<string, number>|null} scales - Per-tensor dequantization scales
    */
-  init(weights, config, scales) {
+  async init(weights, config, scales) {
     cpuWeightsBytes = weights;
     cpuModelConfig = config;
-    cpuModel = createModel(weights.buffer, config, scales);
+    const inf = await getInferenceModule();
+    cpuModel = inf.createModel(weights.buffer, config, scales);
     this.initialized = true;
   },
 
@@ -259,32 +279,35 @@ async function ensureModelLoaded(env) {
   initPromise = (async () => {
     loadStartTime = Date.now();
 
-    // Phase 0: Initialize the WASM SIMD matmul kernel (< 1 KB, instant).
-    // This accelerates all matmul operations 10-50x regardless of model variant.
-    if (MATMUL_WASM_B64) {
-      try {
-        const raw = atob(MATMUL_WASM_B64);
+    // Lazy-load the inference module once for the entire init sequence.
+    const inf = await getInferenceModule();
+
+    // Phase 0: Initialize WASM SIMD kernels.
+    // These modules are only imported when local inference is needed (not Workers AI).
+    try {
+      const matmulMod = await getMatmulWasm();
+      if (matmulMod.default) {
+        const raw = atob(matmulMod.default);
         const bytes = new Uint8Array(raw.length);
         for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-        await initMatmulWasm(bytes.buffer);
+        await inf.initMatmulWasm(bytes.buffer);
         console.log("WASM SIMD matmul kernel initialized");
-      } catch (err) {
-        console.warn(`WASM matmul init failed: ${err.message}`);
       }
+    } catch (err) {
+      console.warn(`WASM matmul init failed: ${err.message}`);
     }
 
-    // Phase 0b: Initialize the expanded WASM SIMD ops module (softmax, RMSNorm, RoPE).
-    // This provides 2-5x speedup on all SIMD-capable operations beyond matmul.
-    if (SIMD_OPS_WASM) {
-      try {
-        const raw = atob(SIMD_OPS_WASM);
+    try {
+      const simdMod = await getSimdOpsWasm();
+      if (simdMod.SIMD_OPS_WASM) {
+        const raw = atob(simdMod.SIMD_OPS_WASM);
         const bytes = new Uint8Array(raw.length);
         for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-        await initSimdOps(bytes.buffer);
-        console.log("WASM SIMD ops kernel initialized (softmax, RMSNorm, RoPE)");
-      } catch (err) {
-        console.warn(`WASM SIMD ops init failed: ${err.message}`);
+        await inf.initSimdOps(bytes.buffer);
+        console.log("WASM SIMD ops kernel initialized");
       }
+    } catch (err) {
+      console.warn(`WASM SIMD ops init failed: ${err.message}`);
     }
 
     // Phase 1: Try loading the WASM binary for full-speed inference.
@@ -366,7 +389,7 @@ async function ensureModelLoaded(env) {
             const shardBuffer = await shardObj.arrayBuffer();
             totalBytes += shardBuffer.byteLength;
 
-            const shardTensors = parseSafetensorsToMap(shardBuffer);
+            const shardTensors = inf.parseSafetensorsToMap(shardBuffer);
             for (const [name, tensor] of shardTensors) {
               allTensors.set(name, tensor);
             }
@@ -374,7 +397,7 @@ async function ensureModelLoaded(env) {
             console.log(`  Loaded shard ${loadedShards}/${numShards} ${shardName}: ${shardBuffer.byteLength} bytes, ${shardTensors.size} tensors`);
           }
 
-          cpuModel = createModelFromTensors(allTensors, config, scales);
+          cpuModel = inf.createModelFromTensors(allTensors, config, scales);
           CpuDevice.initialized = true;
           activeDevice = "cpu";
           activeModelVariant = "int8-sharded";
@@ -446,7 +469,7 @@ async function ensureModelLoaded(env) {
             const shardBuffer = await shardObj.arrayBuffer();
             totalBytes += shardBuffer.byteLength;
 
-            const shardTensors = parseSafetensorsToMap(shardBuffer);
+            const shardTensors = inf.parseSafetensorsToMap(shardBuffer);
             for (const [name, tensor] of shardTensors) {
               allTensors.set(name, tensor);
             }
@@ -454,7 +477,7 @@ async function ensureModelLoaded(env) {
             console.log(`  Loaded shard ${loadedShards}/${numShards} ${shardName}: ${shardBuffer.byteLength} bytes, ${shardTensors.size} tensors`);
           }
 
-          cpuModel = createModelFromTensors(allTensors, config, scales);
+          cpuModel = inf.createModelFromTensors(allTensors, config, scales);
           CpuDevice.initialized = true;
           activeDevice = "cpu";
           activeModelVariant = "int4-sharded";
@@ -511,12 +534,12 @@ async function ensureModelLoaded(env) {
 
       // Priority 6: Embedded micro model (263 KB, no R2 fetch)
       if (!weightsBytes) {
-        const raw = atob(MICRO_MODEL_B64);
+        const _mm = await getMicroModelData(); const raw = atob(_mm.MICRO_MODEL_B64);
         weightsBytes = new Uint8Array(raw.length);
         for (let i = 0; i < raw.length; i++) {
           weightsBytes[i] = raw.charCodeAt(i);
         }
-        config = MICRO_MODEL_CONFIG;
+        config = _mm.MICRO_MODEL_CONFIG;
         modelVariant = "micro";
       }
 
@@ -667,12 +690,14 @@ export default {
       return response;
     }
 
-    // Fast path: Workers AI backend selection via X-Use-Backend header.
-    // This MUST run before withMonitoring/ensureModelLoaded to avoid
-    // consuming CPU time on local model init (INT8 shards exceed CPU limit).
+    // Fast path: Workers AI is the DEFAULT backend for /ocr when available.
+    // Local model loading is too CPU-heavy for Workers (even with Paid plan).
+    // Workers AI runs on Cloudflare's GPU fleet — zero CPU cost on this Worker.
+    // Only falls through to local model if Workers AI is unavailable AND
+    // X-Use-Backend: local is explicitly requested.
     const requestedBackend = request.headers.get("X-Use-Backend");
     if (path === "/ocr" && request.method === "POST" &&
-        requestedBackend === "workers-ai" && isWorkersAiAvailable(env)) {
+        isWorkersAiAvailable(env) && requestedBackend !== "local") {
       try {
         const ct = request.headers.get("Content-Type") || "";
         let imageBytes = null;
