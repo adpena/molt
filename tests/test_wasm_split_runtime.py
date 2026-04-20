@@ -739,6 +739,76 @@ def test_split_runtime_host_export_calls_decode_result_repr(
     assert results[1]["result_repr"] == "[8, 4, 24, 3, 13, 7, 7, 8, 9]"
 
 
+def test_linked_host_export_attribute_error_does_not_return_none(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "missing_attr_probe.py"
+    source.write_text(
+        "_x = None\n"
+        "\n"
+        "def get_attr():\n"
+        "    return _x.foo\n",
+        encoding="utf-8",
+    )
+    calls_path = tmp_path / "calls.json"
+    calls_path.write_text(
+        json.dumps({"calls": [{"export": "missing_attr_probe__get_attr", "args": []}]}),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    env = os.environ.copy()
+    repo_src = str(ROOT / "src")
+    env["PYTHONPATH"] = repo_src
+    env["MOLT_BACKEND_DAEMON"] = "0"
+    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    diff_target_dir.mkdir(parents=True, exist_ok=True)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
+    env.setdefault("MOLT_SESSION_ID", "test-linked-host-attr-error")
+    env.setdefault("CARGO_BUILD_JOBS", "1")
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(source),
+            "--target",
+            "wasm",
+            "--build-profile",
+            "dev",
+            "--rebuild",
+            "--out-dir",
+            str(out_dir),
+        ],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "1"
+    run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
+    run = subprocess.run(
+        ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
+        cwd=str(ROOT),
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert run.returncode != 0, run.stdout
+    assert "AttributeError" in run.stderr
+    assert "None" in run.stderr
+    assert "foo" in run.stderr
+
+
 @pytest.mark.slow
 def test_split_runtime_host_export_struct_unpack_from_reads_u64(
     tmp_path: Path,
