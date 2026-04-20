@@ -5822,6 +5822,15 @@ const runLinked = async () => {
     initializeWasiForInstance(linkedModule.instance, linkedMemory);
     setWasmMemory(linkedMemory);
   }
+  if (typeof linkedModule.instance.exports.molt_isolate_bootstrap === 'function') {
+    if (traceRun) {
+      console.error('[molt wasm] linked: call molt_isolate_bootstrap');
+    }
+    linkedModule.instance.exports.molt_isolate_bootstrap();
+    if (traceRun) {
+      console.error('[molt wasm] linked: molt_isolate_bootstrap returned');
+    }
+  }
   runMainWithWasiExit(() => {
     molt_main();
   });
