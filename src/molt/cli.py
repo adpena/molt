@@ -18107,6 +18107,18 @@ def _prepare_backend_dispatch(
                 warnings.append(
                     "Failed to read runtime memory layout; using default data base."
                 )
+        if (
+            linked
+            and not split_runtime
+            and runtime_wasm is not None
+            and not runtime_wasm.exists()
+        ):
+            if not ensure_runtime_wasm_shared():
+                return None, _fail(
+                    "Runtime wasm build failed",
+                    json_output,
+                    command="build",
+                )
         if "MOLT_WASM_TABLE_BASE" not in backend_env:
             table_probe_path = layout_probe_path or runtime_wasm
             if table_probe_path is not None and table_probe_path.exists():
