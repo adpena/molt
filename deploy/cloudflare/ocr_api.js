@@ -2,10 +2,13 @@
  * REST API handlers for Falcon-OCR inference.
  *
  * Endpoints:
- *   POST /ocr          — accepts image (base64 or multipart), returns text
- *   POST /ocr/batch    — accepts multiple images, returns array of results
- *   POST /ocr/tokens   — low-level: image + prompt IDs -> token IDs
- *   GET  /health       — returns 200 with model status
+ *   POST /ocr            — accepts image (base64 or multipart), returns text
+ *   POST /ocr/batch      — accepts multiple images, returns array of results
+ *   POST /ocr/detailed   — block-level OCR with bounding boxes, tables, metadata (multi-page)
+ *   POST /ocr/table      — table-only extraction from document image
+ *   POST /ocr/tokens     — low-level: image + prompt IDs -> token IDs
+ *   POST /template/extract — optimized template extraction (Llama 3.2 3B + cache)
+ *   GET  /health         — returns 200 with model status
  *
  * Security:
  *   - x402 payment verification (handled in worker.js before these handlers)
@@ -457,10 +460,10 @@ export async function handleStructuredOcr(request, env, cors, rid) {
         headers: { ...cors, "Content-Type": "application/json" },
       },
     );
-  } catch (err) {
+  } catch (_err) {
     return new Response(
       JSON.stringify({
-        error: `Structured OCR failed: ${err.message}`,
+        error: "Structured OCR processing failed",
         request_id: rid,
       }),
       {
@@ -1107,4 +1110,520 @@ export function handleHealthRequest(modelReady, env, cors, rid, device = "none")
       headers: { ...cors, "Content-Type": "application/json" },
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// POST /ocr/detailed -- block-level OCR with bounding boxes, tables, metadata
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute a SHA-256 hash of arbitrary bytes, returned as hex string.
+ * @param {Uint8Array} bytes
+ * @returns {Promise<string>}
+ */
+async function hashImageBytes(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Run detailed OCR on a single image page, returning blocks, tables, and metadata.
+ *
+ * @param {object} env - Worker environment bindings
+ * @param {Uint8Array} imageBytes - Raw image bytes
+ * @returns {Promise<{ text: string, blocks: Array, tables: Array, metadata: object }>}
+ */
+async function runDetailedOcrPage(env, imageBytes) {
+  const base64Image = uint8ArrayToBase64Worker(imageBytes);
+
+  const prompt = `Analyze this document image. Return JSON with exactly these keys:
+- "text": all extracted text concatenated
+- "blocks": array of objects with "text", "confidence" (0-1), "bbox" (object with "x","y","width","height" in pixels assuming 612x792 page), "type" (one of: "heading","field_label","field_value","paragraph","table_cell","footer")
+- "tables": array of objects with "rows" (int), "cols" (int), "headers" (string array), "data" (2D string array of row data excluding headers)
+- "metadata": object with "language" (ISO 639-1), "orientation" (0/90/180/270), "has_handwriting" (bool)
+
+Output ONLY valid JSON, no markdown fences, no explanation.
+
+![image](data:image/png;base64,${base64Image})`;
+
+  const aiResult = await env.AI.run("@cf/google/gemma-3-12b-it", {
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 4096,
+  });
+
+  const responseText = typeof aiResult === "string"
+    ? aiResult
+    : (aiResult?.response || aiResult?.choices?.[0]?.message?.content || "");
+
+  // Parse JSON from response (strip any markdown fences the model may add)
+  let parsed = null;
+  try {
+    const stripped = responseText.replace(/^```(?:json)?\s*\n?/m, "").replace(/\n?```\s*$/m, "");
+    const jsonMatch = stripped.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      parsed = JSON.parse(jsonMatch[0]);
+    }
+  } catch (_e) {
+    // Parse failure handled below
+  }
+
+  if (!parsed) {
+    return {
+      text: responseText,
+      blocks: [],
+      tables: [],
+      metadata: { language: "en", orientation: 0, has_handwriting: false },
+    };
+  }
+
+  // Normalize blocks
+  const blocks = Array.isArray(parsed.blocks) ? parsed.blocks.map((b) => ({
+    text: String(b.text || ""),
+    confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0.5)),
+    bbox: {
+      x: Number(b.bbox?.x) || 0,
+      y: Number(b.bbox?.y) || 0,
+      width: Number(b.bbox?.width) || 0,
+      height: Number(b.bbox?.height) || 0,
+    },
+    type: b.type || "paragraph",
+  })) : [];
+
+  // Normalize tables
+  const tables = Array.isArray(parsed.tables) ? parsed.tables.map((t) => ({
+    rows: Number(t.rows) || 0,
+    cols: Number(t.cols) || 0,
+    headers: Array.isArray(t.headers) ? t.headers.map(String) : [],
+    data: Array.isArray(t.data) ? t.data.map((row) => Array.isArray(row) ? row.map(String) : []) : [],
+  })) : [];
+
+  // Normalize metadata
+  const metadata = {
+    language: String(parsed.metadata?.language || "en").slice(0, 5),
+    orientation: [0, 90, 180, 270].includes(Number(parsed.metadata?.orientation))
+      ? Number(parsed.metadata.orientation)
+      : 0,
+    has_handwriting: Boolean(parsed.metadata?.has_handwriting),
+  };
+
+  const text = typeof parsed.text === "string" ? parsed.text
+    : blocks.map((b) => b.text).join("\n");
+
+  return { text, blocks, tables, metadata };
+}
+
+/**
+ * POST /ocr/detailed handler.
+ * Accepts single image or multi-page images array.
+ *
+ * @param {Request} request
+ * @param {object} env
+ * @param {Record<string, string>} cors
+ * @param {string} rid
+ * @returns {Promise<Response>}
+ */
+export async function handleDetailedOcr(request, env, cors, rid) {
+  const start = Date.now();
+
+  if (!env.AI || typeof env.AI.run !== "function") {
+    return new Response(
+      JSON.stringify({ error: "Detailed OCR requires Workers AI binding", request_id: rid }),
+      { status: 503, headers: { ...cors, "Content-Type": "application/json" } },
+    );
+  }
+
+  const contentType = request.headers.get("Content-Type") || "";
+  if (!contentType.includes("application/json")) {
+    return new Response(
+      JSON.stringify({ error: "Requires application/json", request_id: rid }),
+      { status: 415, headers: { ...cors, "Content-Type": "application/json" } },
+    );
+  }
+
+  const body = await request.json();
+  const maxBytes = parseInt(env.MAX_IMAGE_BYTES || String(MAX_IMAGE_BYTES_DEFAULT), 10);
+
+  // Multi-page: { "images": ["b64_1", "b64_2", ...] }
+  // Single-page: { "image": "b64" }
+  let imageList = [];
+  if (Array.isArray(body.images) && body.images.length > 0) {
+    if (body.images.length > 20) {
+      return new Response(
+        JSON.stringify({ error: "Maximum 20 pages per request", request_id: rid }),
+        { status: 400, headers: { ...cors, "Content-Type": "application/json" } },
+      );
+    }
+    imageList = body.images;
+  } else if (body.image && typeof body.image === "string") {
+    imageList = [body.image];
+  } else {
+    return new Response(
+      JSON.stringify({ error: "Missing 'image' (string) or 'images' (array) field", request_id: rid }),
+      { status: 400, headers: { ...cors, "Content-Type": "application/json" } },
+    );
+  }
+
+  // Decode all images to bytes
+  const pageBytes = [];
+  for (let i = 0; i < imageList.length; i++) {
+    const b64 = imageList[i];
+    if (typeof b64 !== "string" || b64.length === 0) {
+      return new Response(
+        JSON.stringify({ error: `Page ${i}: invalid or empty base64`, request_id: rid }),
+        { status: 400, headers: { ...cors, "Content-Type": "application/json" } },
+      );
+    }
+    let raw;
+    try { raw = atob(b64); } catch (_e) {
+      return new Response(
+        JSON.stringify({ error: `Page ${i}: invalid base64 encoding`, request_id: rid }),
+        { status: 400, headers: { ...cors, "Content-Type": "application/json" } },
+      );
+    }
+    if (raw.length > maxBytes) {
+      return new Response(
+        JSON.stringify({ error: `Page ${i}: exceeds max size (${raw.length} > ${maxBytes})`, request_id: rid }),
+        { status: 413, headers: { ...cors, "Content-Type": "application/json" } },
+      );
+    }
+    const bytes = new Uint8Array(raw.length);
+    for (let j = 0; j < raw.length; j++) bytes[j] = raw.charCodeAt(j);
+    pageBytes.push(bytes);
+  }
+
+  // Check cache for each page, run OCR only on cache misses
+  const pages = [];
+  for (let i = 0; i < pageBytes.length; i++) {
+    let cacheKey = null;
+    let cached = null;
+
+    if (env.OCR_CACHE) {
+      cacheKey = `detailed:${await hashImageBytes(pageBytes[i])}`;
+      try {
+        const stored = await env.OCR_CACHE.get(cacheKey, "json");
+        if (stored) { cached = stored; }
+      } catch (_e) { /* cache miss */ }
+    }
+
+    if (cached) {
+      pages.push(cached);
+    } else {
+      const pageResult = await runDetailedOcrPage(env, pageBytes[i]);
+      pages.push(pageResult);
+      // Store in cache (non-blocking, 24h TTL)
+      if (env.OCR_CACHE && cacheKey) {
+        env.OCR_CACHE.put(cacheKey, JSON.stringify(pageResult), { expirationTtl: 86400 })
+          .catch(() => {});
+      }
+    }
+  }
+
+  // Combine pages
+  const combinedText = pages.map((p, i) =>
+    pages.length > 1 ? `--- Page ${i + 1} ---\n${p.text}` : p.text
+  ).join("\n\n");
+
+  const allBlocks = [];
+  for (let i = 0; i < pages.length; i++) {
+    for (const block of pages[i].blocks) {
+      allBlocks.push({ ...block, page: i + 1 });
+    }
+  }
+
+  const allTables = [];
+  for (let i = 0; i < pages.length; i++) {
+    for (const table of pages[i].tables) {
+      allTables.push({ ...table, page: i + 1 });
+    }
+  }
+
+  const metadata = {
+    ...pages[0]?.metadata || { language: "en", orientation: 0, has_handwriting: false },
+    page_count: pages.length,
+  };
+
+  const result = {
+    text: combinedText,
+    blocks: allBlocks,
+    tables: allTables,
+    metadata,
+    pages: pages.length > 1 ? pages.map((p, i) => ({
+      page: i + 1,
+      text: p.text,
+      blocks: p.blocks,
+      tables: p.tables,
+    })) : undefined,
+    time_ms: Date.now() - start,
+    request_id: rid,
+  };
+
+  return new Response(JSON.stringify(result), {
+    status: 200,
+    headers: { ...cors, "Content-Type": "application/json" },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// POST /ocr/table -- table-only extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /ocr/table handler.
+ * Extracts only tabular data from the document image.
+ *
+ * @param {Request} request
+ * @param {object} env
+ * @param {Record<string, string>} cors
+ * @param {string} rid
+ * @returns {Promise<Response>}
+ */
+export async function handleTableOcr(request, env, cors, rid) {
+  const start = Date.now();
+
+  if (!env.AI || typeof env.AI.run !== "function") {
+    return new Response(
+      JSON.stringify({ error: "Table OCR requires Workers AI binding", request_id: rid }),
+      { status: 503, headers: { ...cors, "Content-Type": "application/json" } },
+    );
+  }
+
+  const imageResult = await extractImage(request, env);
+  if ("error" in imageResult) {
+    return new Response(
+      JSON.stringify({ error: imageResult.error, request_id: rid }),
+      { status: imageResult.status, headers: { ...cors, "Content-Type": "application/json" } },
+    );
+  }
+
+  const base64Image = uint8ArrayToBase64Worker(imageResult.bytes);
+
+  const prompt = `Extract ALL tables from this document image. Return JSON with key "tables": an array where each table has:
+- "headers": array of column header strings
+- "data": 2D array of row data (strings), excluding headers
+- "rows": total data row count (int)
+- "cols": column count (int)
+
+If no tables found, return {"tables":[]}.
+Output ONLY valid JSON, no markdown fences.
+
+![image](data:image/png;base64,${base64Image})`;
+
+  const aiResult = await env.AI.run("@cf/google/gemma-3-12b-it", {
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 4096,
+  });
+
+  const responseText = typeof aiResult === "string"
+    ? aiResult
+    : (aiResult?.response || aiResult?.choices?.[0]?.message?.content || "");
+
+  let tables = [];
+  try {
+    const stripped = responseText.replace(/^```(?:json)?\s*\n?/m, "").replace(/\n?```\s*$/m, "");
+    const jsonMatch = stripped.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(parsed.tables)) {
+        tables = parsed.tables.map((t) => ({
+          rows: Number(t.rows) || (Array.isArray(t.data) ? t.data.length : 0),
+          cols: Number(t.cols) || (Array.isArray(t.headers) ? t.headers.length : 0),
+          headers: Array.isArray(t.headers) ? t.headers.map(String) : [],
+          data: Array.isArray(t.data) ? t.data.map((row) => Array.isArray(row) ? row.map(String) : []) : [],
+        }));
+      }
+    }
+  } catch (_e) {
+    // Parse failure — return empty tables
+  }
+
+  return new Response(
+    JSON.stringify({
+      tables,
+      table_count: tables.length,
+      time_ms: Date.now() - start,
+      request_id: rid,
+    }),
+    { status: 200, headers: { ...cors, "Content-Type": "application/json" } },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Optimized template extraction (Llama 3.2 3B + aggressive caching)
+// ---------------------------------------------------------------------------
+
+/**
+ * Optimized template extraction: uses smaller/faster model and caching.
+ * Replaces the Gemma 12B multi-step approach with a single-pass Llama 3.2 3B prompt.
+ *
+ * @param {object} env - Worker environment bindings
+ * @param {Uint8Array} imageBytes - Raw image bytes
+ * @param {object} options
+ * @param {string} [options.documentType]
+ * @param {boolean} [options.preserveLogo]
+ * @param {boolean} [options.detectColors]
+ * @returns {Promise<object>}
+ */
+export async function handleTemplateExtractFast(env, imageBytes, options = {}) {
+  const start = Date.now();
+  const docType = options.documentType || "invoice";
+
+  // Check cache first — template extraction is highly cacheable
+  let cacheKey = null;
+  if (env.OCR_CACHE) {
+    cacheKey = `tpl:${docType}:${await hashImageBytes(imageBytes)}`;
+    try {
+      const cached = await env.OCR_CACHE.get(cacheKey, "json");
+      if (cached) {
+        return { ...cached, time_ms: Date.now() - start, cache: "hit" };
+      }
+    } catch (_e) { /* cache miss */ }
+  }
+
+  if (!env.AI || typeof env.AI.run !== "function") {
+    return {
+      template: buildDefaultTemplate(docType),
+      confidence: 0.0,
+      detected_sections: [],
+      time_ms: Date.now() - start,
+      error: "Workers AI not available for template extraction",
+    };
+  }
+
+  const base64Image = uint8ArrayToBase64Worker(imageBytes);
+
+  // Single concise prompt to Llama 3.2 3B — faster model, direct JSON output
+  const prompt = `Analyze this ${docType} document layout. Return JSON:
+{"sections":["header","parties","metadata","line_items","totals","notes","terms","footer"],"header_align":"left|center|right","parties_layout":"two-column|stacked","totals_position":"left|right|full-width","logo_position":"left|center|right","compact":true|false,"heading_size":"sm|md|lg|xl"}
+Only include sections actually present. Output ONLY JSON.
+
+![image](data:image/png;base64,${base64Image})`;
+
+  const aiResult = await env.AI.run("@cf/meta/llama-3.2-3b-instruct", {
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 512,
+  });
+
+  const responseText = typeof aiResult === "string"
+    ? aiResult
+    : (aiResult?.response || aiResult?.choices?.[0]?.message?.content || "");
+
+  let layoutInfo = null;
+  try {
+    const stripped = responseText.replace(/^```(?:json)?\s*\n?/m, "").replace(/\n?```\s*$/m, "");
+    const jsonMatch = stripped.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      layoutInfo = JSON.parse(jsonMatch[0]);
+    }
+  } catch (_e) {
+    // Parse failure
+  }
+
+  if (!layoutInfo) {
+    return {
+      template: buildDefaultTemplate(docType),
+      confidence: 0.2,
+      detected_sections: SECTION_TYPES,
+      time_ms: Date.now() - start,
+    };
+  }
+
+  // Build template from AI layout analysis
+  const detectedSections = Array.isArray(layoutInfo.sections)
+    ? layoutInfo.sections.filter((s) => SECTION_TYPES.includes(s))
+    : SECTION_TYPES;
+
+  const sectionOrder = [...detectedSections];
+  for (const s of SECTION_TYPES) {
+    if (!sectionOrder.includes(s)) sectionOrder.push(s);
+  }
+
+  const headerAlign = ["left", "center", "right"].includes(layoutInfo.header_align)
+    ? layoutInfo.header_align : "left";
+  const partiesLayout = ["two-column", "stacked"].includes(layoutInfo.parties_layout)
+    ? layoutInfo.parties_layout : "two-column";
+  const totalsPosition = ["left", "right", "full-width"].includes(layoutInfo.totals_position)
+    ? layoutInfo.totals_position : "right";
+  const logoPosition = ["left", "center", "right"].includes(layoutInfo.logo_position)
+    ? layoutInfo.logo_position : "left";
+  const isCompact = Boolean(layoutInfo.compact);
+  const headingSize = ["xs", "sm", "md", "lg", "xl", "2xl"].includes(layoutInfo.heading_size)
+    ? layoutInfo.heading_size : "lg";
+
+  const templateId = crypto.randomUUID();
+  const template = {
+    id: templateId,
+    name: "Extracted Template",
+    description: "Template extracted from scanned document via Falcon-OCR",
+    type: docType,
+    layout: {
+      id: "",
+      name: "Extracted Layout",
+      description: "Layout extracted from scanned document",
+      sections: sectionOrder.map((s, i) => ({
+        type: s,
+        visible: detectedSections.includes(s),
+        order: i,
+      })),
+      page: {
+        size: "letter",
+        orientation: "portrait",
+        margins: { top: 28, right: 36, bottom: 28, left: 36 },
+      },
+    },
+    styles: {
+      colors: {
+        primary: "#111111",
+        secondary: "#666666",
+        accent: "#2563EB",
+        text: "#111111",
+        background: "#FFFFFF",
+        border: "#E5E5E5",
+        headerBg: "#F9F9F9",
+        altRowBg: "#FAFAFA",
+      },
+      fonts: {
+        heading: "Inter",
+        body: "Inter",
+        mono: "JetBrains Mono",
+      },
+      spacing: { compact: isCompact },
+      logo: {
+        position: logoPosition,
+        maxWidth: 200,
+        maxHeight: 80,
+      },
+      typography: {
+        headingSize,
+        bodySize: isCompact ? 10 : 12,
+      },
+      layoutHints: {
+        headerAlign,
+        titleAlign: headerAlign,
+        totalsPosition,
+        partiesLayout,
+      },
+    },
+    elementStyles: {},
+    hiddenElements: [],
+    customFields: [],
+    customSections: [],
+  };
+
+  const confidence = Math.min(1, 0.4 + detectedSections.length * 0.08);
+
+  const result = {
+    template,
+    confidence: Math.round(confidence * 1000) / 1000,
+    detected_sections: detectedSections,
+    time_ms: Date.now() - start,
+  };
+
+  // Cache result (non-blocking, 24h TTL)
+  if (env.OCR_CACHE && cacheKey) {
+    env.OCR_CACHE.put(cacheKey, JSON.stringify(result), { expirationTtl: 86400 })
+      .catch(() => {});
+  }
+
+  return result;
+}
 }
