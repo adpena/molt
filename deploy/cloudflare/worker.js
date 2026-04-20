@@ -12,7 +12,7 @@
  * generated for debugging without exposing PII.
  */
 
-import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleBatchOcr, handleTemplateExtract } from "./ocr_api.js";
+import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleBatchOcr, handleTemplateExtract, handleStructuredOcr } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, createRequestLog, emitLog, writeAnalytics, categorizeError } from "./monitoring.js";
 import { createModel, parseSafetensorsToMap, createModelFromTensors, initMatmulWasm, initSimdOps } from "./inference-cpu.js";
@@ -651,6 +651,22 @@ export default {
       }
     }
 
+    // Fast path: structured OCR skips local model loading entirely
+    // since it only uses Workers AI for structured extraction.
+    if (path === "/ocr/structured" && request.method === "POST" && isWorkersAiAvailable(env)) {
+      const payment = await verifyX402(request, env, rid, cors);
+      if (!payment.authorized) {
+        return payment.response;
+      }
+      const response = await handleStructuredOcr(request, env, cors, rid);
+      if (payment.receipt) {
+        const headers = new Headers(response.headers);
+        headers.set("X-Payment-Receipt", payment.receipt);
+        return new Response(response.body, { status: response.status, headers });
+      }
+      return response;
+    }
+
     // Fast path: Workers AI backend selection via X-Use-Backend header.
     // This MUST run before withMonitoring/ensureModelLoaded to avoid
     // consuming CPU time on local model init (INT8 shards exceed CPU limit).
@@ -922,6 +938,20 @@ export default {
             setCached: (hash, result) => setCachedResult(env, hash, result, ctx),
           };
           const response = await handleBatchOcr(request, inferenceBackend, env, cors, rid, activeDevice, cacheOps);
+          if (payment.receipt) {
+            const headers = new Headers(response.headers);
+            headers.set("X-Payment-Receipt", payment.receipt);
+            return new Response(response.body, {
+              status: response.status,
+              headers,
+            });
+          }
+          return response;
+        }
+
+        // Structured OCR: returns parsed invoice JSON (Workers AI only)
+        if (path === "/ocr/structured") {
+          const response = await handleStructuredOcr(request, env, cors, rid);
           if (payment.receipt) {
             const headers = new Headers(response.headers);
             headers.set("X-Payment-Receipt", payment.receipt);

@@ -392,6 +392,78 @@ export async function handleTokensRequest(request, backend, env, cors, rid, devi
 }
 
 // ---------------------------------------------------------------------------
+// Structured OCR: image in, parsed invoice JSON out
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /ocr/structured -- OCR with structured JSON output.
+ *
+ * Uses Workers AI with a structured extraction prompt to return parsed
+ * invoice data instead of raw text.  Useful for MCP agents and automation
+ * pipelines that need structured data.
+ *
+ * @param {Request} request
+ * @param {object} env
+ * @param {Record<string, string>} cors
+ * @param {string} rid
+ * @returns {Promise<Response>}
+ */
+export async function handleStructuredOcr(request, env, cors, rid) {
+  const start = Date.now();
+  const imageResult = await extractImage(request, env);
+  if ("error" in imageResult) {
+    return new Response(
+      JSON.stringify({ error: imageResult.error, request_id: rid }),
+      {
+        status: imageResult.status,
+        headers: { ...cors, "Content-Type": "application/json" },
+      },
+    );
+  }
+
+  // Import dynamically to avoid circular deps at module level
+  const { runStructuredOcr, isWorkersAiAvailable } = await import("./ai-fallback.js");
+
+  if (!isWorkersAiAvailable(env)) {
+    return new Response(
+      JSON.stringify({
+        error: "Structured OCR requires Workers AI binding (not available)",
+        request_id: rid,
+      }),
+      {
+        status: 503,
+        headers: { ...cors, "Content-Type": "application/json" },
+      },
+    );
+  }
+
+  try {
+    const result = await runStructuredOcr(env, imageResult.bytes);
+    return new Response(
+      JSON.stringify({
+        ...result,
+        request_id: rid,
+      }),
+      {
+        status: 200,
+        headers: { ...cors, "Content-Type": "application/json" },
+      },
+    );
+  } catch (err) {
+    return new Response(
+      JSON.stringify({
+        error: `Structured OCR failed: ${err.message}`,
+        request_id: rid,
+      }),
+      {
+        status: 500,
+        headers: { ...cors, "Content-Type": "application/json" },
+      },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Template extraction: OCR -> section classification -> style inference
 // ---------------------------------------------------------------------------
 
