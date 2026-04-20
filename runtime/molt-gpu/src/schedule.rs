@@ -123,7 +123,7 @@ pub fn specialize_shapes(kernels: &mut [FusedKernel]) {
         // 2. All buffers are Float32 (SIMD float4 loads/stores)
         // 3. All buffer views are contiguous (no stride gaps)
         // 4. No reduce ops (vectorized reduce needs different codegen)
-        let can_vectorize = total % 4 == 0
+        let can_vectorize = total.is_multiple_of(4)
             && kernel.bufs.iter().all(|b| b.dtype == DType::Float32)
             && kernel.bufs.iter().all(|b| b.st.view().is_contiguous())
             && !kernel.ops.iter().any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
