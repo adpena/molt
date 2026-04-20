@@ -1,6 +1,11 @@
 /**
  * OCR backend implementation for enjoice using molt-compiled Falcon-OCR.
  *
+ * Architecture:
+ *   - On WebGPU/WASM-capable browsers: uses Falcon-OCR WASM for local inference
+ *     (offline, private — no image data leaves the device).
+ *   - Fallback: PaddleOCR via the Worker endpoint.
+ *
  * Implements the OcrBackend interface expected by site/src/lib/ocr/index.ts.
  * Handles WebGPU detection, graceful fallback, and TTFB measurement.
  *
@@ -17,6 +22,9 @@ import {
   type FalconOcrSession,
   type OcrResult,
 } from "./falcon-ocr-molt";
+
+// Browser-side Falcon-OCR WASM loader for offline inference
+import type { FalconOCR as FalconOCRLoader } from "../browser/falcon-ocr-loader.js";
 
 // --------------------------------------------------------------------------
 // Types matching enjoice's OcrBackend interface
@@ -85,29 +93,53 @@ async function detectWebGpu(): Promise<{
 
 export class MoltOcrBackend {
   private session: FalconOcrSession | null = null;
+  private browserOcr: FalconOCRLoader | null = null;
   private config: FalconOcrConfig;
   private initTimingMs = 0;
   private webGpuAvailable = false;
   private initError: string | null = null;
+  private usingBrowserWasm = false;
 
   constructor(config: FalconOcrConfig) {
     this.config = config;
   }
 
   /**
-   * Initialize the WASM module and model. Call once before recognize().
-   * Returns false if initialization failed (caller should use fallback).
+   * Initialize the OCR backend. Attempts browser-side WASM inference first
+   * (offline, private), falls back to the session-based approach.
+   * Returns false if initialization failed (caller should use PaddleOCR fallback).
    */
   async initialize(): Promise<boolean> {
     const initStart = performance.now();
 
     try {
-      // Check WebGPU availability (informational — the WASM module handles
-      // GPU dispatch internally when available)
+      // Check WebGPU availability
       const gpu = await detectWebGpu();
       this.webGpuAvailable = gpu.available;
 
-      // Create the WASM session
+      // On WebGPU/WASM-capable browsers, prefer local Falcon-OCR WASM inference.
+      // This keeps all image data on-device (privacy-first).
+      if (typeof WebAssembly !== "undefined") {
+        try {
+          const { FalconOCR } = await import("../browser/falcon-ocr-loader.js");
+          const loader = new FalconOCR({
+            baseUrl: this.config.workerUrl || "https://falcon-ocr.adpena.workers.dev",
+            onProgress: this.config.onProgress,
+          });
+          await loader.init();
+          this.browserOcr = loader as unknown as FalconOCRLoader;
+          this.usingBrowserWasm = true;
+          this.initTimingMs = performance.now() - initStart;
+          return true;
+        } catch (wasmErr) {
+          // WASM init failed — fall through to session-based approach
+          console.warn(
+            `Falcon-OCR WASM init failed, falling back to session: ${(wasmErr as Error).message}`,
+          );
+        }
+      }
+
+      // Fallback: Create the WASM session (original path)
       this.session = await createFalconOcrSession(this.config);
       this.initTimingMs = performance.now() - initStart;
       return true;
@@ -124,6 +156,28 @@ export class MoltOcrBackend {
   async recognize(
     image: ImageData | { width: number; height: number; rgb: Uint8Array },
   ): Promise<{ result: OcrBackendResult; timings: OcrTimings }> {
+    // Browser WASM path: all inference runs locally, no network
+    if (this.usingBrowserWasm && this.browserOcr) {
+      const totalStart = performance.now();
+      const wasmResult = await (this.browserOcr as any).recognize(image);
+      const totalMs = performance.now() - totalStart;
+
+      return {
+        result: {
+          text: wasmResult.text,
+          boundingBoxes: [], // WASM model returns raw text only; bounding boxes require post-processing
+          confidence: 0.95, // INT4 accuracy estimate
+        },
+        timings: {
+          initMs: this.initTimingMs,
+          inferenceMs: wasmResult.timeMs,
+          totalMs,
+          ttfbMs: 0, // No network — zero TTFB
+        },
+      };
+    }
+
+    // Session-based path (original)
     if (!this.session || !this.session.ready) {
       throw new Error(
         this.initError
@@ -165,6 +219,14 @@ export class MoltOcrBackend {
         name: "molt-falcon-ocr",
         device: "none",
         reason: this.initError,
+      };
+    }
+
+    if (this.usingBrowserWasm && this.browserOcr) {
+      return {
+        available: true,
+        name: "molt-falcon-ocr-browser",
+        device: this.webGpuAvailable ? "webgpu" : "wasm",
       };
     }
 
@@ -241,6 +303,10 @@ export class MoltOcrBackend {
    * Release all resources held by the backend.
    */
   dispose(): void {
+    if (this.browserOcr) {
+      (this.browserOcr as any).dispose();
+      this.browserOcr = null;
+    }
     if (this.session) {
       this.session.dispose();
       this.session = null;
