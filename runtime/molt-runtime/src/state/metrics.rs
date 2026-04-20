@@ -1,35 +1,88 @@
-// On wasm32, profiling is never used. All profile_* functions are zero-cost no-ops
-// so callers see `if false { ... }` and the compiler eliminates the branch entirely
-// without any source-level change to call sites.
+// On wasm32 we still support logical runtime counters when MOLT_PROFILE=1, but
+// RSS sampling remains unavailable in the host-agnostic wasm runtime.
 #[cfg(target_arch = "wasm32")]
 mod wasm_stubs {
-    use std::sync::atomic::AtomicU64;
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-    #[inline(always)]
-    pub(crate) fn profile_enabled(_py: &crate::PyToken<'_>) -> bool {
-        false
+    use crate::{HANDLE_RESOLVE_COUNT, PyToken, STRUCT_FIELD_STORE_COUNT, runtime_state};
+
+    static PROFILE_ENABLED_GIL_FREE: OnceLock<bool> = OnceLock::new();
+
+    fn profile_enabled_unchecked() -> bool {
+        *PROFILE_ENABLED_GIL_FREE.get_or_init(|| {
+            std::env::var("MOLT_PROFILE")
+                .map(|val| !val.is_empty() && val != "0")
+                .unwrap_or(false)
+        })
     }
 
-    #[inline(always)]
-    pub(crate) fn profile_hit(_py: &crate::PyToken<'_>, _counter: &AtomicU64) {}
+    pub(crate) fn profile_enabled(_py: &PyToken<'_>) -> bool {
+        *runtime_state(_py).profile_enabled.get_or_init(|| {
+            std::env::var("MOLT_PROFILE")
+                .map(|val| !val.is_empty() && val != "0")
+                .unwrap_or(false)
+        })
+    }
 
-    #[inline(always)]
-    pub(crate) fn profile_hit_unchecked(_counter: &AtomicU64) {}
+    #[unsafe(no_mangle)]
+    pub extern "C" fn molt_profile_enabled() -> u64 {
+        if profile_enabled_unchecked() { 1 } else { 0 }
+    }
 
-    #[inline(always)]
-    pub(crate) fn profile_hit_bytes(_py: &crate::PyToken<'_>, _counter: &AtomicU64, _bytes: u64) {}
+    pub(crate) fn profile_hit(_py: &PyToken<'_>, counter: &AtomicU64) {
+        if profile_enabled(_py) {
+            counter.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+    }
+
+    pub(crate) fn profile_hit_unchecked(counter: &AtomicU64) {
+        if profile_enabled_unchecked() {
+            counter.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+    }
+
+    pub(crate) fn profile_hit_bytes(_py: &PyToken<'_>, counter: &AtomicU64, bytes: u64) {
+        if profile_enabled(_py) {
+            counter.fetch_add(bytes, AtomicOrdering::Relaxed);
+        }
+    }
 
     pub(crate) fn current_rss_bytes() -> u64 {
         0
     }
 
     pub(crate) fn sample_peak_rss() {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn molt_profile_snapshot() {
+        crate::with_gil_entry!(_py, {
+            if profile_enabled(_py) {
+                sample_peak_rss();
+            }
+        })
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn molt_profile_struct_field_store() {
+        crate::with_gil_entry!(_py, {
+            profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
+        })
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn molt_profile_handle_resolve() {
+        crate::with_gil_entry!(_py, {
+            profile_hit(_py, &HANDLE_RESOLVE_COUNT);
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use wasm_stubs::{
-    current_rss_bytes, profile_enabled, profile_hit, profile_hit_bytes, profile_hit_unchecked,
-    sample_peak_rss,
+    current_rss_bytes, molt_profile_enabled, molt_profile_handle_resolve, molt_profile_snapshot,
+    molt_profile_struct_field_store, profile_enabled, profile_hit, profile_hit_bytes,
+    profile_hit_unchecked, sample_peak_rss,
 };
 
 // Full profiling implementation for non-wasm32 targets.

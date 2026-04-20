@@ -321,21 +321,18 @@ fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirTyp
         OpCode::Not => Some(TirType::Bool),
         OpCode::Bool => Some(TirType::Bool),
 
-        // Bitwise (I64 only)
-        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::Shl | OpCode::Shr => {
-            match operand_types {
-                [TirType::I64, TirType::I64] => Some(TirType::I64),
-                _ => None,
-            }
-        }
+        // Bitwise ops other than shifts are closed over the inline I64 lane.
+        // Shifts can promote beyond the inline range and must stay boxed until
+        // the runtime operator decides whether bigint promotion is required.
+        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor => match operand_types {
+            [TirType::I64, TirType::I64] => Some(TirType::I64),
+            _ => None,
+        },
+        OpCode::Shl | OpCode::Shr => None,
         OpCode::BitNot => match operand_types {
             [TirType::I64] => Some(TirType::I64),
             _ => None,
         },
-
-        OpCode::ClassmethodNew | OpCode::StaticmethodNew | OpCode::PropertyNew => {
-            Some(TirType::DynBox)
-        }
 
         // Containers
         OpCode::BuildList => Some(TirType::List(Box::new(TirType::DynBox))),

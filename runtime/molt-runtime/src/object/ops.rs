@@ -948,7 +948,7 @@ unsafe fn find_first_mismatch_neon(lhs: &[u64], rhs: &[u64], len: usize) -> usiz
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sum_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
+pub(crate) unsafe fn sum_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
     use std::arch::x86_64::*;
     let mut i = 0usize;
     let mut vec_sum = _mm_setzero_si128();
@@ -973,7 +973,7 @@ unsafe fn sum_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sum_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
+pub(crate) unsafe fn sum_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
     use std::arch::x86_64::*;
     let mut i = 0usize;
     let mut vec_sum = _mm256_setzero_si256();
@@ -1028,7 +1028,7 @@ pub(crate) unsafe fn sum_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn prod_ints_unboxed_avx2_trivial(elems: &[i64]) -> Option<i64> {
+pub(crate) unsafe fn prod_ints_unboxed_avx2_trivial(elems: &[i64]) -> Option<i64> {
     use std::arch::x86_64::*;
     let mut idx = 0usize;
     let ones = _mm256_set1_epi64x(1);
@@ -1063,7 +1063,7 @@ unsafe fn prod_ints_unboxed_avx2_trivial(elems: &[i64]) -> Option<i64> {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn min_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
+pub(crate) unsafe fn min_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
     use std::arch::x86_64::*;
     let mut i = 0usize;
     let mut vec_min = _mm_set1_epi64x(acc);
@@ -1091,7 +1091,7 @@ unsafe fn min_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn min_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
+pub(crate) unsafe fn min_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
     use std::arch::x86_64::*;
     let mut i = 0usize;
     let mut vec_min = _mm256_set1_epi64x(acc);
@@ -1141,7 +1141,7 @@ pub(crate) unsafe fn min_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn max_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
+pub(crate) unsafe fn max_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
     use std::arch::x86_64::*;
     let mut i = 0usize;
     let mut vec_max = _mm_set1_epi64x(acc);
@@ -1169,7 +1169,7 @@ unsafe fn max_ints_simd_x86_64(elems: &[u64], acc: i64) -> Option<i64> {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn max_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
+pub(crate) unsafe fn max_ints_simd_x86_64_avx2(elems: &[u64], acc: i64) -> Option<i64> {
     use std::arch::x86_64::*;
     let mut i = 0usize;
     let mut vec_max = _mm256_set1_epi64x(acc);
@@ -1219,7 +1219,7 @@ pub(crate) unsafe fn max_ints_simd_wasm32(elems: &[u64], acc: i64) -> Option<i64
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sum_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
+pub(crate) unsafe fn sum_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
     use std::arch::x86_64::*;
     let mut i = 0usize;
     let mut vec_sum = _mm_setzero_si128();
@@ -1243,7 +1243,7 @@ unsafe fn sum_ints_trusted_simd_x86_64(elems: &[u64], acc: i64) -> i64 {
 }
 
 #[cfg(target_arch = "x86_64")]
-unsafe fn sum_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
+pub(crate) unsafe fn sum_ints_trusted_simd_x86_64_avx2(elems: &[u64], acc: i64) -> i64 {
     use std::arch::x86_64::*;
     let mut i = 0usize;
     let mut vec_sum = _mm256_setzero_si256();
@@ -1300,6 +1300,14 @@ use super::ops_sys::{collect_iterable_values, collect_slice_indices, normalize_s
 pub extern "C" fn molt_len(val: u64) -> u64 {
     crate::with_gil_entry!(_py, {
         let obj = obj_from_bits(val);
+        if std::env::var("MOLT_TRACE_LEN").as_deref() == Ok("1") {
+            eprintln!(
+                "molt_len arg_type={} bits=0x{:x} pending={}",
+                type_name(_py, obj),
+                val,
+                exception_pending(_py),
+            );
+        }
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 let type_id = object_type_id(ptr);

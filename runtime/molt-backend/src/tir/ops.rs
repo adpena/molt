@@ -71,9 +71,6 @@ pub enum OpCode {
     Call,
     CallMethod,
     CallBuiltin,
-    ClassmethodNew,
-    StaticmethodNew,
-    PropertyNew,
     // Box/unbox
     BoxVal,
     UnboxVal,

@@ -9,6 +9,103 @@ from tests.wasm_linked_runner import (
 )
 
 
+def test_wasm_importlib_import_forms_and_os_sys_bootstrap_smoke(
+    tmp_path: Path,
+) -> None:
+    require_wasm_toolchain()
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "bootstrap_probe.py"
+    src.write_text(
+        "import importlib\n"
+        "from importlib import machinery\n"
+        "import os\n"
+        "import sys\n\n"
+        'print(importlib.__name__)\n'
+        'print(machinery.__name__)\n'
+        'print(sys.modules["os"] is os)\n'
+        'print(sys.modules["sys"] is sys)\n',
+        encoding="utf-8",
+    )
+
+    output_wasm = build_wasm_linked(root, src, tmp_path)
+    run = run_wasm_linked(root, output_wasm)
+
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.splitlines() == [
+        "importlib",
+        "importlib.machinery",
+        "True",
+        "True",
+    ]
+
+
+def test_wasm_importlib_package_main_alias_identity_smoke(
+    tmp_path: Path,
+) -> None:
+    require_wasm_toolchain()
+    root = Path(__file__).resolve().parents[1]
+    pkg = tmp_path / "probe_pkg"
+    (pkg / "subpkg").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "sibling.py").write_text("SIBLING = 'sibling-ok'\n", encoding="utf-8")
+    (pkg / "helper.py").write_text(
+        "import os\n"
+        "from .sibling import SIBLING\n\n"
+        "class Helper:\n"
+        "    def describe(self):\n"
+        "        return 'helper-ok'\n\n"
+        "def ping():\n"
+        "    return SIBLING\n",
+        encoding="utf-8",
+    )
+    (pkg / "subpkg" / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "subpkg" / "leaf.py").write_text(
+        "import os\n"
+        "import sys\n\n"
+        "def describe_leaf():\n"
+        "    return (__name__, __package__, sys.__name__, os.__name__)\n",
+        encoding="utf-8",
+    )
+    src = pkg / "__main__.py"
+    src.write_text(
+        "import os as os_alias\n"
+        "import sys as sys_alias\n"
+        "import probe_pkg.helper as helper_alias\n"
+        "from .helper import Helper as HelperAlias\n"
+        "from .subpkg.leaf import describe_leaf as describe_leaf_alias\n\n"
+        'print(__name__)\n'
+        'print(__package__)\n'
+        'print(sys_alias.modules["__main__"] is sys_alias.modules[__name__])\n'
+        'print(sys_alias is sys_alias.modules["sys"])\n'
+        'print(os_alias is sys_alias.modules["os"])\n'
+        'print(helper_alias is sys_alias.modules["probe_pkg.helper"])\n'
+        'print(HelperAlias is helper_alias.Helper)\n'
+        'print(describe_leaf_alias())\n'
+        'print(helper_alias.ping())\n'
+        'print(sys_alias.__name__)\n'
+        'print(os_alias.__name__)\n',
+        encoding="utf-8",
+    )
+
+    output_wasm = build_wasm_linked(root, src, tmp_path)
+    run = run_wasm_linked(root, output_wasm)
+
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.splitlines() == [
+        "__main__",
+        "probe_pkg",
+        "True",
+        "True",
+        "True",
+        "True",
+        "True",
+        "('probe_pkg.subpkg.leaf', 'probe_pkg.subpkg', 'sys', 'os')",
+        "sibling-ok",
+        "sys",
+        "os",
+    ]
+
+
 def test_wasm_importlib_top_level_import_runs_module_body(tmp_path: Path) -> None:
     require_wasm_toolchain()
     root = Path(__file__).resolve().parents[1]
@@ -171,6 +268,30 @@ def test_wasm_linked_caught_missing_intrinsic_does_not_poison_module_init(
 
     assert run.returncode == 0, run.stderr
     assert run.stdout.splitlines() == ["caught", "ok"]
+
+
+def test_wasm_linked_gpu_intrinsics_are_available_to_stdlib_wrapper(
+    tmp_path: Path,
+) -> None:
+    require_wasm_toolchain()
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "gpu_intrinsics_probe.py"
+    src.write_text(
+        "import _intrinsics\n"
+        "from molt.gpu.tensor import Tensor\n\n"
+        "for name in (\n"
+        "    'molt_gpu_matmul_contiguous',\n"
+        "    'molt_gpu_tensor__zeros',\n"
+        "):\n"
+        "    print(_intrinsics.load_intrinsic(name) is not None)\n",
+        encoding="utf-8",
+    )
+
+    output_wasm = build_wasm_linked(root, src, tmp_path)
+    run = run_wasm_linked(root, output_wasm)
+
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.splitlines() == ["True", "True"]
 
 
 def test_wasm_linked_import_typing_runs_module_body(tmp_path: Path) -> None:

@@ -449,9 +449,9 @@ fn push_unsigned(
     Ok(())
 }
 
-fn read_signed(bytes: &[u8], endian: StructEndian, size: usize) -> Result<i128, String> {
+fn read_signed(bytes: &[u8], endian: StructEndian, size: usize) -> Result<i64, String> {
     let val = match size {
-        1 => i8::from_ne_bytes([bytes[0]]) as i128,
+        1 => i8::from_ne_bytes([bytes[0]]) as i64,
         2 => {
             let mut buf = [0u8; 2];
             match endian {
@@ -463,7 +463,7 @@ fn read_signed(bytes: &[u8], endian: StructEndian, size: usize) -> Result<i128, 
                 StructEndian::Native => i16::from_ne_bytes(buf),
                 StructEndian::Little => i16::from_le_bytes(buf),
                 StructEndian::Big => i16::from_be_bytes(buf),
-            }) as i128
+            }) as i64
         }
         4 => {
             let mut buf = [0u8; 4];
@@ -476,7 +476,7 @@ fn read_signed(bytes: &[u8], endian: StructEndian, size: usize) -> Result<i128, 
                 StructEndian::Native => i32::from_ne_bytes(buf),
                 StructEndian::Little => i32::from_le_bytes(buf),
                 StructEndian::Big => i32::from_be_bytes(buf),
-            }) as i128
+            }) as i64
         }
         8 => {
             let mut buf = [0u8; 8];
@@ -489,16 +489,16 @@ fn read_signed(bytes: &[u8], endian: StructEndian, size: usize) -> Result<i128, 
                 StructEndian::Native => i64::from_ne_bytes(buf),
                 StructEndian::Little => i64::from_le_bytes(buf),
                 StructEndian::Big => i64::from_be_bytes(buf),
-            }) as i128
+            })
         }
         _ => return Err("unsupported integer size".to_string()),
     };
     Ok(val)
 }
 
-fn read_unsigned(bytes: &[u8], endian: StructEndian, size: usize) -> Result<u128, String> {
+fn read_unsigned(bytes: &[u8], endian: StructEndian, size: usize) -> Result<u64, String> {
     let val = match size {
-        1 => u8::from_ne_bytes([bytes[0]]) as u128,
+        1 => u8::from_ne_bytes([bytes[0]]) as u64,
         2 => {
             let mut buf = [0u8; 2];
             match endian {
@@ -510,7 +510,7 @@ fn read_unsigned(bytes: &[u8], endian: StructEndian, size: usize) -> Result<u128
                 StructEndian::Native => u16::from_ne_bytes(buf),
                 StructEndian::Little => u16::from_le_bytes(buf),
                 StructEndian::Big => u16::from_be_bytes(buf),
-            }) as u128
+            }) as u64
         }
         4 => {
             let mut buf = [0u8; 4];
@@ -523,7 +523,7 @@ fn read_unsigned(bytes: &[u8], endian: StructEndian, size: usize) -> Result<u128
                 StructEndian::Native => u32::from_ne_bytes(buf),
                 StructEndian::Little => u32::from_le_bytes(buf),
                 StructEndian::Big => u32::from_be_bytes(buf),
-            }) as u128
+            }) as u64
         }
         8 => {
             let mut buf = [0u8; 8];
@@ -536,11 +536,19 @@ fn read_unsigned(bytes: &[u8], endian: StructEndian, size: usize) -> Result<u128
                 StructEndian::Native => u64::from_ne_bytes(buf),
                 StructEndian::Little => u64::from_le_bytes(buf),
                 StructEndian::Big => u64::from_be_bytes(buf),
-            }) as u128
+            })
         }
         _ => return Err("unsupported integer size".to_string()),
     };
     Ok(val)
+}
+
+fn struct_unsigned_bits(_py: &PyToken<'_>, val: u64) -> u64 {
+    if let Ok(inline) = i64::try_from(val) {
+        int_bits_from_i64(_py, inline)
+    } else {
+        bigint_bits(_py, BigInt::from(val))
+    }
 }
 
 fn f16_from_f64(val: f64) -> u16 {
@@ -774,6 +782,7 @@ fn struct_unpack_values(
     ops: &[StructOp],
     buf: &[u8],
 ) -> Result<Vec<u64>, StructIntrinsicError> {
+    let trace_struct = std::env::var("MOLT_TRACE_STRUCT_UNPACK").as_deref() == Ok("1");
     let expected_values = expected_value_count(ops);
     let mut out: Vec<u64> = Vec::with_capacity(expected_values);
     let mut offset = 0usize;
@@ -881,11 +890,23 @@ fn struct_unpack_values(
                     let bits = if signed {
                         let val = read_signed(slice, parsed.endian, op.size)
                             .map_err(|msg| ("OverflowError", msg))?;
-                        int_bits_from_i128(_py, val)
+                        if trace_struct {
+                            eprintln!(
+                                "[molt struct] signed code={} size={} slice={:?} value={}",
+                                op.code, op.size, slice, val
+                            );
+                        }
+                        int_bits_from_i64(_py, val)
                     } else {
                         let val = read_unsigned(slice, parsed.endian, op.size)
                             .map_err(|msg| ("OverflowError", msg))?;
-                        int_bits_from_i128(_py, val as i128)
+                        if trace_struct {
+                            eprintln!(
+                                "[molt struct] unsigned code={} size={} slice={:?} value={}",
+                                op.code, op.size, slice, val
+                            );
+                        }
+                        struct_unsigned_bits(_py, val)
                     };
                     out.push(bits);
                     offset = end;
@@ -1470,6 +1491,10 @@ pub extern "C" fn molt_struct_unpack_from(
             Ok(parsed) => parsed,
             Err(msg) => return raise_exception::<u64>(_py, "ValueError", msg.as_str()),
         };
+        let trace_struct = std::env::var("MOLT_TRACE_STRUCT_UNPACK").as_deref() == Ok("1");
+        if trace_struct {
+            eprintln!("[molt struct call] ops={:?}", ops.len());
+        }
         let Some(size) = calc_size(&ops) else {
             return raise_exception::<u64>(_py, "OverflowError", "total struct size too long");
         };
@@ -1478,6 +1503,16 @@ pub extern "C" fn molt_struct_unpack_from(
             Ok(buf) => buf,
             Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
         };
+        if trace_struct {
+            eprintln!(
+                "[molt struct call] format={:?} buffer_bits=0x{:x} buffer_type={} buf_len={} offset_bits=0x{:x}",
+                format,
+                buffer_bits,
+                type_name(_py, buffer_obj),
+                buf.len(),
+                offset_bits
+            );
+        }
         let Some(raw_offset) = struct_index_offset(_py, offset_bits) else {
             return MoltObject::none().bits();
         };
@@ -1508,6 +1543,9 @@ pub extern "C" fn molt_struct_unpack_from(
             Ok(values) => values,
             Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
         };
+        if trace_struct {
+            eprintln!("[molt struct call] out_bits={:?}", out);
+        }
         let tuple_ptr = alloc_tuple(_py, &out);
         if tuple_ptr.is_null() {
             return MoltObject::none().bits();
@@ -1570,4 +1608,53 @@ pub extern "C" fn molt_struct_iter_unpack(format_bits: u64, buffer_bits: u64) ->
         }
         MoltObject::from_ptr(list_ptr).bits()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StructEndian, molt_struct_unpack_from, read_unsigned, struct_unsigned_bits};
+    use crate::*;
+
+    #[test]
+    fn read_unsigned_little_endian_u64_matches_bytes() {
+        let bytes = [8u8, 7, 6, 5, 4, 3, 2, 1];
+        let value = read_unsigned(&bytes, StructEndian::Little, 8).expect("read unsigned");
+        assert_eq!(value, 0x0102_0304_0506_0708);
+    }
+
+    #[test]
+    fn struct_unsigned_bits_promotes_large_u64_without_zeroing() {
+        let expected = "72623859790382856";
+        crate::with_gil_entry!(_py, {
+            let bits = struct_unsigned_bits(_py, 0x0102_0304_0506_0708);
+            let repr_bits = crate::molt_repr_from_obj(bits);
+            let Some(repr_ptr) = obj_from_bits(repr_bits).as_ptr() else {
+                panic!("repr must be a string object");
+            };
+            let rendered = unsafe { string_obj_to_owned(repr_ptr) };
+            dec_ref_bits(_py, repr_bits);
+            dec_ref_bits(_py, bits);
+            assert_eq!(rendered, expected);
+        });
+    }
+
+    #[test]
+    fn molt_struct_unpack_from_reads_u64_from_bytes_object() {
+        crate::with_gil_entry!(_py, {
+            let fmt_ptr = alloc_string(_py, b"<Q");
+            assert!(!fmt_ptr.is_null());
+            let fmt_bits = MoltObject::from_ptr(fmt_ptr).bits();
+            let data_ptr = alloc_bytes(_py, &[8, 7, 6, 5, 4, 3, 2, 1]);
+            assert!(!data_ptr.is_null());
+            let data_bits = MoltObject::from_ptr(data_ptr).bits();
+            let out_bits =
+                molt_struct_unpack_from(fmt_bits, data_bits, MoltObject::from_int(0).bits());
+            let repr_bits = crate::molt_repr_from_obj(out_bits);
+            let rendered = string_obj_to_owned(obj_from_bits(repr_bits))
+                .expect("repr must be a string object");
+            dec_ref_bits(_py, repr_bits);
+            dec_ref_bits(_py, out_bits);
+            assert_eq!(rendered, "(72623859790382856,)");
+        });
+    }
 }

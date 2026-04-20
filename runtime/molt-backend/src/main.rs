@@ -81,6 +81,8 @@ struct DaemonJobRequest {
     wasm_data_base: Option<u32>,
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
     wasm_table_base: Option<u32>,
+    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
+    wasm_split_runtime_runtime_table_min: Option<u32>,
     output: String,
     cache_key: String,
     function_cache_key: Option<String>,
@@ -148,10 +150,7 @@ fn default_backend_output_path(kind: BackendOutputKind) -> &'static str {
     }
 }
 
-fn resolve_backend_output_path(
-    output_path: Option<&str>,
-    kind: BackendOutputKind,
-) -> &str {
+fn resolve_backend_output_path(output_path: Option<&str>, kind: BackendOutputKind) -> &str {
     output_path.unwrap_or(default_backend_output_path(kind))
 }
 
@@ -636,6 +635,11 @@ impl DaemonJobRequest {
             wasm_link: optional_bool(obj, "wasm_link", ctx)?.unwrap_or(false),
             wasm_data_base: optional_u32(obj, "wasm_data_base", ctx)?,
             wasm_table_base: optional_u32(obj, "wasm_table_base", ctx)?,
+            wasm_split_runtime_runtime_table_min: optional_u32(
+                obj,
+                "wasm_split_runtime_runtime_table_min",
+                ctx,
+            )?,
             output: required_string(obj, "output", ctx)?,
             cache_key: required_string(obj, "cache_key", ctx)?,
             function_cache_key: optional_string(obj, "function_cache_key", ctx)?,
@@ -1059,6 +1063,11 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 if let Some(table_base) = job.wasm_table_base {
                     options.table_base = table_base;
                 }
+                if let Some(split_runtime_runtime_table_min) =
+                    job.wasm_split_runtime_runtime_table_min
+                {
+                    options.split_runtime_runtime_table_min = Some(split_runtime_runtime_table_min);
+                }
                 let backend = WasmBackend::with_options(options);
                 Arc::from(backend.compile(ir))
             }
@@ -1093,12 +1102,11 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 let explicit_stdlib_module_symbols = explicit_stdlib_module_symbols_from_env();
 
                 if let Some(ref stdlib_path_str) = stdlib_obj_path {
-                    let (mut user_remaining, mut stdlib_funcs) =
-                        prune_and_partition_native_stdlib(
-                            &mut ir,
-                            &entry_module,
-                            explicit_stdlib_module_symbols.as_ref(),
-                        );
+                    let (mut user_remaining, mut stdlib_funcs) = prune_and_partition_native_stdlib(
+                        &mut ir,
+                        &entry_module,
+                        explicit_stdlib_module_symbols.as_ref(),
+                    );
                     let stdlib_path = std::path::Path::new(stdlib_path_str);
                     ensure_output_parent_dir(stdlib_path.to_str().unwrap_or("")).unwrap_or_else(
                         |e| {
@@ -1676,6 +1684,23 @@ fn main() -> io::Result<()> {
         .and_then(|idx| args.get(idx + 1))
         .map(String::as_str);
 
+    let wasm_link_flag = args.iter().any(|arg| arg == "--wasm-link");
+    let wasm_data_base = args
+        .iter()
+        .position(|arg| arg == "--wasm-data-base")
+        .and_then(|idx| args.get(idx + 1))
+        .and_then(|raw| raw.parse::<u32>().ok());
+    let wasm_table_base = args
+        .iter()
+        .position(|arg| arg == "--wasm-table-base")
+        .and_then(|idx| args.get(idx + 1))
+        .and_then(|raw| raw.parse::<u32>().ok());
+    let wasm_split_runtime_runtime_table_min = args
+        .iter()
+        .position(|arg| arg == "--wasm-split-runtime-runtime-table-min")
+        .and_then(|idx| args.get(idx + 1))
+        .and_then(|raw| raw.parse::<u32>().ok());
+
     let ir_format = args
         .iter()
         .position(|arg| arg == "--ir-format")
@@ -1889,7 +1914,20 @@ fn main() -> io::Result<()> {
                     format!("failed to create backend output '{}': {}", output_file, err),
                 )
             })?;
-            let backend = WasmBackend::with_options(WasmCompileOptions::default());
+            let mut options = WasmCompileOptions::default();
+            if wasm_link_flag {
+                options.reloc_enabled = true;
+            }
+            if let Some(value) = wasm_data_base {
+                options.data_base = value;
+            }
+            if let Some(value) = wasm_table_base {
+                options.table_base = value;
+            }
+            if let Some(value) = wasm_split_runtime_runtime_table_min {
+                options.split_runtime_runtime_table_min = Some(value);
+            }
+            let backend = WasmBackend::with_options(options);
             let wasm_bytes = backend.compile(ir);
             file.write_all(&wasm_bytes)?;
             println!("Successfully compiled to {output_file}");
@@ -1917,12 +1955,11 @@ fn main() -> io::Result<()> {
             let explicit_stdlib_module_symbols = explicit_stdlib_module_symbols_from_env();
 
             if let Some(ref stdlib_path) = stdlib_obj_path {
-                let (mut user_remaining, mut stdlib_funcs) =
-                    prune_and_partition_native_stdlib(
-                        &mut ir,
-                        &entry_module,
-                        explicit_stdlib_module_symbols.as_ref(),
-                    );
+                let (mut user_remaining, mut stdlib_funcs) = prune_and_partition_native_stdlib(
+                    &mut ir,
+                    &entry_module,
+                    explicit_stdlib_module_symbols.as_ref(),
+                );
                 let stdlib_path = std::path::Path::new(stdlib_path);
                 // Ensure parent directory exists for stdlib cache path —
                 // --rebuild may have cleared the build directory tree.
@@ -2125,19 +2162,18 @@ fn main() -> io::Result<()> {
 mod tests {
     use super::{
         BACKEND_DAEMON_PROTOCOL_VERSION, BackendOutputKind, DEFAULT_BACKEND_BATCH_SIZE,
-        DEFAULT_STDLIB_BATCH_SIZE, DaemonCache, DaemonJobRequest, DaemonRequest,
-        DaemonResponse, GIB, compile_single_job, create_backend_output_file,
-        daemon_response_payload,
+        DEFAULT_STDLIB_BATCH_SIZE, DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse,
+        GIB, compile_single_job, create_backend_output_file, daemon_response_payload,
         default_backend_max_rss_gb_from_physical_mem_bytes, default_backend_output_path,
         ensure_output_parent_dir, is_user_owned_symbol, merge_relocatable_objects,
         partition_functions_for_batches, prune_and_partition_native_stdlib,
-        read_daemon_request_bytes, relocatable_linker_binary, resolved_batch_size_limit,
-        resolve_backend_output_path, shared_stdlib_cache_matches, write_cached_output,
+        read_daemon_request_bytes, relocatable_linker_binary, resolve_backend_output_path,
+        resolved_batch_size_limit, shared_stdlib_cache_matches, write_cached_output,
         write_shared_stdlib_cache_sidecars,
     };
     use molt_backend::{FunctionIR, OpIR, SimpleIR};
-    use std::io::Write;
     use std::io::Cursor;
+    use std::io::Write;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2192,10 +2228,39 @@ mod tests {
 
         let job = request.jobs.expect("job list").pop().expect("job");
         assert!(!job.wasm_link);
+        assert_eq!(job.wasm_split_runtime_runtime_table_min, None);
         assert!(!job.skip_module_output_if_synced);
         assert!(!job.skip_function_output_if_synced);
         assert!(!job.probe_cache_only);
         assert!(job.ir.is_none());
+    }
+
+    #[test]
+    fn daemon_request_parse_reads_split_runtime_table_min() {
+        let request = DaemonRequest::from_json_bytes(
+            br#"{
+                "version": 1,
+                "jobs": [
+                    {
+                        "id": "job0",
+                        "is_wasm": true,
+                        "wasm_link": true,
+                        "wasm_data_base": 1048576,
+                        "wasm_table_base": 4096,
+                        "wasm_split_runtime_runtime_table_min": 8192,
+                        "output": "/tmp/out.wasm",
+                        "cache_key": "module"
+                    }
+                ]
+            }"#,
+        )
+        .expect("request parse");
+
+        let job = request.jobs.expect("job list").pop().expect("job");
+        assert!(job.wasm_link);
+        assert_eq!(job.wasm_data_base, Some(1048576));
+        assert_eq!(job.wasm_table_base, Some(4096));
+        assert_eq!(job.wasm_split_runtime_runtime_table_min, Some(8192));
     }
 
     #[test]
@@ -2318,6 +2383,7 @@ mod tests {
                 wasm_link: false,
                 wasm_data_base: None,
                 wasm_table_base: None,
+                wasm_split_runtime_runtime_table_min: None,
                 output: "/tmp/unused.o".to_string(),
                 cache_key: "module".to_string(),
                 function_cache_key: Some("function".to_string()),
@@ -2353,6 +2419,7 @@ mod tests {
                 wasm_link: false,
                 wasm_data_base: None,
                 wasm_table_base: None,
+                wasm_split_runtime_runtime_table_min: None,
                 output: output.to_string_lossy().into_owned(),
                 cache_key: "module".to_string(),
                 function_cache_key: Some("function".to_string()),
@@ -2672,8 +2739,14 @@ mod tests {
         unsafe {
             std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "0");
         }
-        assert_eq!(resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE), usize::MAX);
-        assert_eq!(resolved_batch_size_limit(DEFAULT_STDLIB_BATCH_SIZE), usize::MAX);
+        assert_eq!(
+            resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE),
+            usize::MAX
+        );
+        assert_eq!(
+            resolved_batch_size_limit(DEFAULT_STDLIB_BATCH_SIZE),
+            usize::MAX
+        );
 
         match prior {
             Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", value) },
@@ -2813,7 +2886,10 @@ mod tests {
         let stdlib_modules = std::collections::BTreeSet::from(["sys".to_string()]);
         let (user_remaining, stdlib_funcs) =
             prune_and_partition_native_stdlib(&mut ir, "app", Some(&stdlib_modules));
-        let user_names: Vec<_> = user_remaining.iter().map(|func| func.name.as_str()).collect();
+        let user_names: Vec<_> = user_remaining
+            .iter()
+            .map(|func| func.name.as_str())
+            .collect();
         let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
 
         assert_eq!(user_names, vec!["molt_main"]);
@@ -2865,10 +2941,16 @@ mod tests {
         let stdlib_modules = std::collections::BTreeSet::new();
         let (user_remaining, stdlib_funcs) =
             prune_and_partition_native_stdlib(&mut ir, "__main__", Some(&stdlib_modules));
-        let user_names: Vec<_> = user_remaining.iter().map(|func| func.name.as_str()).collect();
+        let user_names: Vec<_> = user_remaining
+            .iter()
+            .map(|func| func.name.as_str())
+            .collect();
         let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
 
-        assert_eq!(user_names, vec!["molt_main", "demo__module", "molt_isolate_import"]);
+        assert_eq!(
+            user_names,
+            vec!["molt_main", "demo__module", "molt_isolate_import"]
+        );
         assert!(stdlib_names.is_empty());
     }
 
@@ -2950,7 +3032,15 @@ mod tests {
             None => unsafe { std::env::remove_var("MOLT_ENTRY_MODULE") },
         }
 
-        assert_eq!(names, vec!["molt_main", "demo__module", "molt_isolate_bootstrap", "molt_isolate_import"]);
+        assert_eq!(
+            names,
+            vec![
+                "molt_main",
+                "demo__module",
+                "molt_isolate_bootstrap",
+                "molt_isolate_import"
+            ]
+        );
     }
 
     #[test]
@@ -3005,9 +3095,7 @@ mod tests {
             Some("demo")
         );
         assert_eq!(
-            std::env::var("MOLT_STDLIB_OBJ")
-                .ok()
-                .as_deref(),
+            std::env::var("MOLT_STDLIB_OBJ").ok().as_deref(),
             Some(stdlib.to_string_lossy().as_ref())
         );
         assert_eq!(
@@ -3080,11 +3168,19 @@ mod tests {
         let stdlib_modules = std::collections::BTreeSet::from(["sys".to_string()]);
         let (user_remaining, stdlib_funcs) =
             prune_and_partition_native_stdlib(&mut partition_ir, "demo", Some(&stdlib_modules));
-        let user_names: Vec<_> = user_remaining.iter().map(|func| func.name.as_str()).collect();
+        let user_names: Vec<_> = user_remaining
+            .iter()
+            .map(|func| func.name.as_str())
+            .collect();
         let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
         assert_eq!(
             user_names,
-            vec!["molt_main", "demo__module", "molt_isolate_bootstrap", "molt_isolate_import"]
+            vec![
+                "molt_main",
+                "demo__module",
+                "molt_isolate_bootstrap",
+                "molt_isolate_import"
+            ]
         );
         assert_eq!(stdlib_names, vec!["molt_init_sys"]);
         let mut cache = DaemonCache::new(None);

@@ -548,7 +548,7 @@ molt build app.py --target wasm --precompile  # Precompiled .cwasm
 ```
 
 **Size optimization:**
-- `--split-runtime` splits into `app.wasm` (~50-100KB) + `molt_runtime.wasm` (~1-2MB).
+- `--split-runtime` splits into `app.wasm` + `molt_runtime.wasm`; both artifacts are tree-shaken and post-optimized independently.
 - `--stdlib-profile micro` includes only core modules.
 - `--wasm-opt-level Oz` (default) optimizes for size; `O3` optimizes for speed.
 

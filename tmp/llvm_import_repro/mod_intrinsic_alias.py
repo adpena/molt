@@ -1,1 +1,0 @@
-from _intrinsics import require_intrinsic as _require_intrinsic

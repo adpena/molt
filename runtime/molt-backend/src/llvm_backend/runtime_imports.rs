@@ -39,6 +39,7 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         "molt_not",
         "molt_invert",
         "molt_is_truthy",
+        "molt_is_function_obj",
         "molt_is_truthy_int",
         "molt_is_truthy_int_nogil",
         "molt_is_truthy_bool",
@@ -115,6 +116,15 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
             get_ty,
             Some(inkwell::module::Linkage::External),
         );
+        let get_obj_ic_ty = i64_ty.fn_type(
+            &[i64_ty.into(), i64_ty.into(), i64_ty.into(), i64_ty.into()],
+            false,
+        );
+        module.add_function(
+            "molt_get_attr_object_ic",
+            get_obj_ic_ty,
+            Some(inkwell::module::Linkage::External),
+        );
         let set_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
         module.add_function(
             "molt_set_attr_name",
@@ -180,6 +190,27 @@ pub fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>
         module.add_function(
             "molt_iter_next",
             fn_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+    }
+
+    // ── Descriptor wrappers ──
+    {
+        let unary_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        module.add_function(
+            "molt_classmethod_new",
+            unary_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+        module.add_function(
+            "molt_staticmethod_new",
+            unary_ty,
+            Some(inkwell::module::Linkage::External),
+        );
+        let property_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
+        module.add_function(
+            "molt_property_new",
+            property_ty,
             Some(inkwell::module::Linkage::External),
         );
     }

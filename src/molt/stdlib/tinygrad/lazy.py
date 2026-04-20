@@ -6,6 +6,8 @@ The DAG is materialized on realize() via schedule -> fuse -> render -> execute.
 """
 
 from __future__ import annotations
+from _intrinsics import require_intrinsic as _require_intrinsic
+_gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from tinygrad.dtypes import DType, dtypes
 

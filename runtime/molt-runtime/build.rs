@@ -13,8 +13,9 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR missing"));
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
 
-    // NOTE: cdylib removed from crate-type — staticlib+rlib only.
-    // The cdylib-specific linker flag is no longer needed.
+    // Keep cdylib in the crate types so plain `cargo build -p molt-runtime`
+    // still emits a stable `molt_runtime.wasm` artifact for wasm lanes that
+    // consume the runtime directly.
     let _ = &target_os;
     println!("cargo:rustc-check-cfg=cfg(molt_has_mpdec)");
 
@@ -39,6 +40,8 @@ fn main() {
     ) {
         println!("cargo:rustc-cfg=molt_has_mpdec");
     }
+
+    emit_native_cdylib_isolate_stubs(&out_dir, &target_arch, &target_env);
 
     if target_arch != "wasm32" {
         let output = Command::new("python3")
@@ -326,6 +329,49 @@ for code, cps in titlecase_map:
     println!("cargo:rerun-if-env-changed=WASI_SYSROOT");
     println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+fn emit_native_cdylib_isolate_stubs(out_dir: &Path, target_arch: &str, target_env: &str) {
+    if target_arch == "wasm32" {
+        return;
+    }
+
+    let source = out_dir.join("molt_cdylib_isolate_stubs.c");
+    fs::write(
+        &source,
+        r#"#include <stdint.h>
+
+uint64_t molt_isolate_bootstrap(void) {
+    return 0;
+}
+
+uint64_t molt_isolate_import(uint64_t name_bits) {
+    (void)name_bits;
+    return 0;
+}
+"#,
+    )
+    .expect("failed to write native cdylib isolate stubs");
+
+    let object_ext = if target_env == "msvc" { "obj" } else { "o" };
+    let object = out_dir.join(format!("molt_cdylib_isolate_stubs.{object_ext}"));
+    let compiler = Build::new().cargo_metadata(false).get_compiler();
+    let mut cmd = compiler.to_command();
+    if compiler.is_like_msvc() {
+        cmd.arg("/nologo")
+            .arg("/c")
+            .arg(&source)
+            .arg(format!("/Fo{}", object.display()));
+    } else {
+        cmd.arg("-c").arg(&source).arg("-o").arg(&object);
+    }
+    let status = cmd
+        .status()
+        .unwrap_or_else(|err| panic!("failed to compile native cdylib isolate stubs: {err}"));
+    if !status.success() {
+        panic!("compiling native cdylib isolate stubs failed: {status}");
+    }
+    println!("cargo:rustc-cdylib-link-arg={}", object.display());
 }
 
 fn write_unicode_range_module(
