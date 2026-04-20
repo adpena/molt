@@ -536,6 +536,37 @@ export default {
     }
 
     // -----------------------------------------------------------------------
+    // CF Bot Protection bypass for legitimate API clients.
+    // Cloudflare's Bot Management returns 403 (error 1010) for requests
+    // without a browser-like User-Agent. Programmatic clients (x402 agents,
+    // MCP tools) must identify themselves with a recognized User-Agent.
+    // Requests carrying X-Payment-402 are always considered legitimate API
+    // traffic regardless of User-Agent.
+    // -----------------------------------------------------------------------
+    const ALLOWED_API_USER_AGENTS = [
+      "FalconOCR-Client/",
+      "enjoice/",
+      "molt-agent/",
+    ];
+    const ua = request.headers.get("User-Agent") || "";
+    const hasPaymentHeader = request.headers.has("X-Payment-402");
+    const isRecognizedApiClient = ALLOWED_API_USER_AGENTS.some((prefix) => ua.startsWith(prefix));
+    if (!hasPaymentHeader && !isRecognizedApiClient && request.method === "POST") {
+      // If cf-bot-score is available and low, allow recognized payment clients through
+      const botScore = request.cf?.botManagement?.score ?? 100;
+      if (botScore < 30 && !ua) {
+        return new Response(
+          JSON.stringify({
+            error: "Bot detected",
+            detail: "API clients must set User-Agent header (e.g. 'FalconOCR-Client/1.0') or include X-Payment-402 header.",
+            request_id: rid,
+          }),
+          { status: 403, headers: { ...cors, "Content-Type": "application/json" } },
+        );
+      }
+    }
+
+    // -----------------------------------------------------------------------
     // Browser asset serving: WASM binary and model weights from R2.
     // These are public-read, no x402 required — inference runs locally in the
     // browser, not on this Worker. Immutable caching (weights don't change).
