@@ -68,3 +68,42 @@ head_sampling_rate = 0.1
 [limits]
 cpu_ms = 300000  # 5 minutes — Workers Paid plan maximum
 memory_mb = 256
+
+# ---------------------------------------------------------------------------
+# Cloudflare Containers — Falcon-OCR self-hosted inference
+#
+# As of GA (2026-04-13), Cloudflare Containers do NOT expose GPUs to
+# customers. GPU hardware is reserved for Workers AI internally.
+# Instance types are CPU-only: lite (1/16 vCPU, 256 MiB), basic (1/4 vCPU,
+# 1 GiB), standard-1..4 (up to 4 vCPU, 12 GiB).
+#
+# The Falcon-OCR Docker image (ghcr.io/tiiuae/falcon-ocr:latest) requires
+# GPU for real-time inference.  On CPU-only Containers it would be too slow
+# for production use (minutes per page vs. sub-second on GPU).
+#
+# BLOCKED: Do not deploy until Cloudflare ships customer-facing GPU
+# containers.  Until then, the Worker routes inference through Workers AI
+# (see [ai] binding above) which runs on Cloudflare's internal GPU fleet.
+#
+# Alternative GPU hosting options for the Docker image:
+#   - Fly.io GPU Machines: A100/H100, $2.50/hr, deploy with fly deploy
+#   - Modal:               A100/H100, per-second billing, modal deploy
+#   - Replicate:           Push Docker image as a Cog model, pay per prediction
+#   - RunPod:              A100/H100/4090, $0.44/hr+, serverless or pods
+#
+# When CF GPU containers ship, uncomment the block below and add a
+# durable_objects binding + migration for FalconOCRContainer.
+# ---------------------------------------------------------------------------
+# [[containers]]
+# class_name = "FalconOCRContainer"
+# image = "ghcr.io/tiiuae/falcon-ocr:latest"
+# max_instances = 2
+# instance_type = "standard-4"  # 4 vCPU, 12 GiB — max available (CPU-only)
+#
+# [[durable_objects.bindings]]
+# name = "FALCON_OCR_CONTAINER"
+# class_name = "FalconOCRContainer"
+#
+# [[migrations]]
+# tag = "v2"
+# new_sqlite_classes = ["FalconOCRContainer"]
