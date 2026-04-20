@@ -4711,7 +4711,7 @@ def _run_wasm_ld(
         public_export_map.update(
             {
                 name: export_symbol_map[name]
-                for name in ("molt_main", "molt_table_init")
+                for name in ("molt_host_init", "molt_main", "molt_table_init")
                 if name in export_symbol_map
             }
         )

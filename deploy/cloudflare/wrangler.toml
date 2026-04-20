@@ -45,6 +45,18 @@ MODEL_VERSION = "0.1.0"
 # X402_WALLET_ADDRESS — wallet for x402 payment verification
 # X402_VERIFICATION_URL — x402 verification endpoint
 
+# Durable Object for persistent model state.
+# The DO loads the model ONCE and keeps it in memory across requests,
+# eliminating cold-start latency for repeat callers.
+[durable_objects]
+bindings = [
+    { name = "FALCON_OCR", class_name = "FalconOCRInference" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["FalconOCRInference"]
+
 [observability]
 [observability.logs]
 enabled = true
@@ -54,5 +66,5 @@ head_sampling_rate = 0.1
 # Workers Paid plan supports up to 256 MB memory with explicit limits config.
 # INT4 quantized model is ~129 MB; needs headroom for JS runtime + activations.
 [limits]
-cpu_ms = 30000
+cpu_ms = 300000  # 5 minutes — Workers Paid plan maximum
 memory_mb = 256
