@@ -7,9 +7,9 @@
  *   - Single-threaded: no concurrent model initialization races
  *   - Hibernation: can sleep between requests without losing model state
  *
- * This DO loads the INT4-sharded model from R2 on first request and
- * keeps it in memory for subsequent requests.  If INT4 fails (memory),
- * it falls back to the embedded micro model.
+ * Model loading priority: INT8-sharded > INT4-sharded > micro.
+ * INT8 uses all layers (no skip) and 224x224 input for maximum quality.
+ * INT4 is faster but produces degraded output with 8/22 layers.
  *
  * The Worker routes /ocr requests here when X-Use-Backend: durable.
  */
@@ -100,7 +100,63 @@ export class FalconOCRInference {
   }
 
   /**
-   * Load model weights.  Tries INT4-sharded first, falls back to micro.
+   * Load sharded model from R2 by variant prefix.
+   *
+   * @param {string} variant - R2 directory name (e.g. "falcon-ocr-int8-sharded")
+   * @param {object} configOverrides - config fields to override (e.g. maxLayers, imageSize)
+   * @returns {Promise<boolean>} true if loaded successfully
+   */
+  async loadShardedModel(variant, configOverrides = {}) {
+    const prefix = `models/${variant}`;
+    const indexObj = await this.env.WEIGHTS.get(`${prefix}/model.safetensors.index.json`);
+    const configObj = await this.env.WEIGHTS.get(`${prefix}/config.json`);
+    const scalesObj = await this.env.WEIGHTS.get(`${prefix}/scales.json`);
+
+    if (!indexObj || !configObj || !scalesObj) return false;
+
+    const indexJson = JSON.parse(await indexObj.text());
+    const config = JSON.parse(await configObj.text());
+    const scales = JSON.parse(await scalesObj.text());
+
+    // Apply overrides: maxLayers=null means use all layers, imageSize for input resolution.
+    if (configOverrides.maxLayers !== undefined) config.max_layers = configOverrides.maxLayers;
+    if (configOverrides.imageSize !== undefined) config.image_size = configOverrides.imageSize;
+
+    const shardNames = [];
+    const seen = new Set();
+    for (const shardName of Object.values(indexJson.weight_map)) {
+      if (!seen.has(shardName)) {
+        seen.add(shardName);
+        shardNames.push(shardName);
+      }
+    }
+
+    const allTensors = new Map();
+    for (const shardName of shardNames) {
+      const shardObj = await this.env.WEIGHTS.get(`${prefix}/${shardName}`);
+      if (!shardObj) throw new Error(`Shard not found: ${prefix}/${shardName}`);
+      const shardBuffer = await shardObj.arrayBuffer();
+      const shardTensors = parseSafetensorsToMap(shardBuffer);
+      for (const [name, tensor] of shardTensors) {
+        allTensors.set(name, tensor);
+      }
+    }
+
+    const model = createModelFromTensors(allTensors, config, scales);
+    this.backend = new DOCpuDevice(model);
+    this.modelVariant = variant.replace("falcon-ocr-", "");
+    this.modelReady = true;
+    this.loadError = null;
+    console.log(`[DO] Loaded ${variant} model: ${allTensors.size} tensors, config overrides: ${JSON.stringify(configOverrides)}`);
+    return true;
+  }
+
+  /**
+   * Load model weights.  Priority: INT8-sharded > INT4-sharded > micro.
+   *
+   * INT8-sharded: all 22 layers, 224x224 input, best quality (~22 min/token).
+   * INT4-sharded: 8/22 layers, 128x128 input, fast but degraded.
+   * Micro: embedded 65K-param model, always fits, lowest quality.
    */
   async loadModel() {
     if (this.initPromise) {
@@ -109,49 +165,30 @@ export class FalconOCRInference {
     }
 
     this.initPromise = (async () => {
-      // Try INT4 sharded (best quality that fits in 256 MB)
+      // Priority 1: INT8-sharded (best quality, all layers, 224x224 input)
+      // Slow (~22 * 60s per token) but the question is: does quality improve?
       try {
-        const indexObj = await this.env.WEIGHTS.get("models/falcon-ocr-int4-sharded/model.safetensors.index.json");
-        const configObj = await this.env.WEIGHTS.get("models/falcon-ocr-int4-sharded/config.json");
-        const scalesObj = await this.env.WEIGHTS.get("models/falcon-ocr-int4-sharded/scales.json");
-
-        if (indexObj && configObj && scalesObj) {
-          const indexJson = JSON.parse(await indexObj.text());
-          const config = JSON.parse(await configObj.text());
-          const scales = JSON.parse(await scalesObj.text());
-
-          const shardNames = [];
-          const seen = new Set();
-          for (const shardName of Object.values(indexJson.weight_map)) {
-            if (!seen.has(shardName)) {
-              seen.add(shardName);
-              shardNames.push(shardName);
-            }
-          }
-
-          const allTensors = new Map();
-          for (const shardName of shardNames) {
-            const shardObj = await this.env.WEIGHTS.get(`models/falcon-ocr-int4-sharded/${shardName}`);
-            if (!shardObj) throw new Error(`Shard not found: ${shardName}`);
-            const shardBuffer = await shardObj.arrayBuffer();
-            const shardTensors = parseSafetensorsToMap(shardBuffer);
-            for (const [name, tensor] of shardTensors) {
-              allTensors.set(name, tensor);
-            }
-          }
-
-          const model = createModelFromTensors(allTensors, config, scales);
-          this.backend = new DOCpuDevice(model);
-          this.modelVariant = "int4-sharded";
-          this.modelReady = true;
-          this.loadError = null;
-          console.log(`[DO] Loaded INT4-sharded model: ${allTensors.size} tensors`);
+        const loaded = await this.loadShardedModel("falcon-ocr-int8-sharded", {
+          maxLayers: null,   // Use ALL 22 layers (no skip)
+          imageSize: 224,    // Larger input for more detail (vs 128)
+        });
+        if (loaded) {
+          console.log("[DO] INT8 quality test: all 22 layers, 224x224 input, expect ~22 min/token");
         }
       } catch (err) {
-        console.warn(`[DO] INT4-sharded load failed: ${err.message}`);
+        console.warn(`[DO] INT8-sharded load failed: ${err.message}`);
       }
 
-      // Fallback: embedded micro model (263 KB, always fits)
+      // Priority 2: INT4-sharded (faster, degraded quality)
+      if (!this.modelReady) {
+        try {
+          await this.loadShardedModel("falcon-ocr-int4-sharded");
+        } catch (err) {
+          console.warn(`[DO] INT4-sharded load failed: ${err.message}`);
+        }
+      }
+
+      // Priority 3: embedded micro model (263 KB, always fits)
       if (!this.modelReady) {
         const raw = atob(MICRO_MODEL_B64);
         const weightsBytes = new Uint8Array(raw.length);
