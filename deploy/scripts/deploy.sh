@@ -8,6 +8,14 @@
 #   - molt CLI installed
 #   - R2 bucket "falcon-ocr-weights" created
 #   - Worker secrets configured (X402_WALLET_ADDRESS, X402_VERIFICATION_URL)
+#
+# CRITICAL BUILD INSTRUCTIONS (no tribal knowledge):
+#   - WASM builds: MOLT_HERMETIC_MODULE_ROOTS=1 (skip venv scanning)
+#   - Post-build: wasm-strip + wasm-opt -Oz --enable-reference-types (6x size reduction)
+#   - R2 uploads: ALWAYS use --remote flag (without it, uploads go to local emulator)
+#   - Workers: use Workers AI for inference, NOT WASM (CPU limit blocks instantiation)
+#   - Browser: use WASM for inference (offline, private, zero cost)
+#   - Import aliases: avoid 'from X import Y as Z' in WASM-compiled code (linker bug)
 
 set -euo pipefail
 

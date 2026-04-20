@@ -334,7 +334,7 @@ def submit_to_ocr(image_bytes: bytes) -> dict:
             "Content-Type": "application/json",
             "Origin": ORIGIN_HEADER,
         },
-        timeout=60,
+        timeout=120,
     )
     resp.raise_for_status()
     return resp.json()
