@@ -8,6 +8,7 @@
  *   POST /ocr/table      — table-only extraction from document image
  *   POST /ocr/tokens     — low-level: image + prompt IDs -> token IDs
  *   POST /template/extract — optimized template extraction (Llama 3.2 3B + cache)
+ *   POST /invoice/fill   — NL utterance -> structured invoice JSON (Llama 3.2 3B)
  *   GET  /health         — returns 200 with model status
  *
  * Security:
@@ -306,6 +307,8 @@ export async function handleOcrRequest(request, backend, env, cors, rid, device 
       model_used: device === "wasm" ? "falcon-ocr-wasm" : "falcon-ocr-cpu",
       backend: device === "wasm" ? "wasm" : "cpu",
       auto_filled: true,
+      auto_fill_warning: "These fields were auto-filled by AI. Please review all values before sending.",
+      auto_fill_dismissable: true,
       time_ms: timMs,
       device,
       retries: 0,
@@ -390,6 +393,8 @@ export async function handleTokensRequest(request, backend, env, cors, rid, devi
       model_used: device === "wasm" ? "falcon-ocr-wasm" : "falcon-ocr-cpu",
       backend: device === "wasm" ? "wasm" : "cpu",
       auto_filled: true,
+      auto_fill_warning: "These fields were auto-filled by AI. Please review all values before sending.",
+      auto_fill_dismissable: true,
       time_ms: timeMs,
       device,
       retries: 0,
@@ -852,6 +857,9 @@ export async function handleTemplateExtract(env, imageBytes, options = {}) {
     template,
     confidence,
     detected_sections: detectedSections,
+    auto_filled: true,
+    auto_fill_warning: "These fields were auto-filled by AI. Please review all values before sending.",
+    auto_fill_dismissable: true,
     time_ms: Date.now() - start,
   };
 }
@@ -1615,6 +1623,9 @@ Only include sections actually present. Output ONLY JSON.
     template,
     confidence: Math.round(confidence * 1000) / 1000,
     detected_sections: detectedSections,
+    auto_filled: true,
+    auto_fill_warning: "These fields were auto-filled by AI. Please review all values before sending.",
+    auto_fill_dismissable: true,
     time_ms: Date.now() - start,
   };
 
@@ -1626,4 +1637,68 @@ Only include sections actually present. Output ONLY JSON.
 
   return result;
 }
+
+// ---------------------------------------------------------------------------
+// NL Invoice Fill: natural language utterance -> structured invoice JSON
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /invoice/fill -- parse a natural language description into structured
+ * invoice data using Workers AI (Llama 3.2 3B Instruct).
+ *
+ * @param {Request} request
+ * @param {object} env
+ * @param {Record<string, string>} cors
+ * @param {string} rid
+ * @returns {Promise<Response>}
+ */
+export async function handleInvoiceFill(request, env, cors, rid) {
+  const body = await request.json();
+  const { utterance } = body;
+
+  if (!utterance) {
+    return new Response(JSON.stringify({ error: "Missing 'utterance' field", request_id: rid }),
+      { status: 400, headers: { ...cors, "Content-Type": "application/json" } });
+  }
+
+  const prompt = `Parse this invoice description into structured JSON:
+"${utterance}"
+
+Return JSON with these fields (omit unknown fields):
+{"vendor":"","invoice_number":"auto","items":[{"description":"","qty":1,"rate_cents":0}],"currency":"USD","due_date":"","payment_terms":"","notes":""}
+
+Rules:
+- Amounts in cents (e.g., $5,000 = 500000)
+- "five grand" = 500000, "5k" = 500000
+- "Net 30" = payment_terms:"Net 30", due_date = today + 30 days
+- Dates in ISO format (YYYY-MM-DD)
+- Only include fields mentioned in the description`;
+
+  const start = Date.now();
+  const result = await env.AI.run("@cf/meta/llama-3.2-3b-instruct", {
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 512,
+    temperature: 0.1,
+  });
+
+  let filled;
+  try {
+    const text = result.response || result;
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    filled = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+  } catch {
+    filled = { raw_text: result.response || result };
+  }
+
+  return new Response(JSON.stringify({
+    engine: "falcon-ocr",
+    model: "@cf/meta/llama-3.2-3b-instruct",
+    backend: "workers-ai",
+    filled_invoice: filled,
+    auto_filled: true,
+    auto_fill_warning: "These fields were auto-filled by AI. Please review all values before sending.",
+    auto_fill_dismissable: true,
+    time_ms: Date.now() - start,
+    request_id: rid,
+  }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
 }
