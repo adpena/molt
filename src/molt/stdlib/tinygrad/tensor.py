@@ -15,9 +15,20 @@ from __future__ import annotations
 
 import math
 import random as _random
+from _intrinsics import require_intrinsic as _require_intrinsic
 from tinygrad.dtypes import DType, dtypes
 from tinygrad.lazy import LazyBuffer, LazyOp
 from tinygrad.realize import realize as _realize
+
+# GPU primitive intrinsics — these bridge to the Rust molt-gpu crate
+# when compiled via `molt build --target wasm`. At runtime in CPython,
+# these are None (Python-only fallback path is used instead).
+_gpu_create = _require_intrinsic("molt_gpu_prim_create_tensor")
+_gpu_zeros = _require_intrinsic("molt_gpu_prim_zeros")
+_gpu_realize = _require_intrinsic("molt_gpu_prim_realize")
+_gpu_unary = _require_intrinsic("molt_gpu_prim_unary")
+_gpu_binary = _require_intrinsic("molt_gpu_prim_binary")
+_gpu_reduce = _require_intrinsic("molt_gpu_prim_reduce")
 
 _LOG2_E = math.log2(math.e)
 _LN_2 = math.log(2)

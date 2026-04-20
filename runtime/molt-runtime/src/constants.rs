@@ -1,4 +1,6 @@
-use std::sync::{OnceLock, atomic::AtomicU64};
+#[cfg(target_arch = "wasm32")]
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicU64;
 
 // Keep in sync with MOLT_BIND_KIND_OPEN in src/molt/frontend/__init__.py.
 pub(crate) const BIND_KIND_OPEN: i64 = 1;

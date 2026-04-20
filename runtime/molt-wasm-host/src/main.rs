@@ -421,7 +421,11 @@ fn resolve_linked_path(wasm_path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn wasm_path_candidates(arg: Option<PathBuf>, env_path: Option<PathBuf>, cwd: &Path) -> Vec<PathBuf> {
+fn wasm_path_candidates(
+    arg: Option<PathBuf>,
+    env_path: Option<PathBuf>,
+    cwd: &Path,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = arg {
         candidates.push(path);
@@ -438,11 +442,7 @@ fn wasm_path_candidates(arg: Option<PathBuf>, env_path: Option<PathBuf>, cwd: &P
     candidates
 }
 
-fn linked_path_candidates(
-    wasm_path: &Path,
-    env_path: Option<PathBuf>,
-    cwd: &Path,
-) -> Vec<PathBuf> {
+fn linked_path_candidates(wasm_path: &Path, env_path: Option<PathBuf>, cwd: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = env_path {
         candidates.push(path);
@@ -522,7 +522,10 @@ mod tests {
         let cwd = Path::new("/repo");
         let wasm_path = Path::new("/repo/dist/output.wasm");
         let candidates = linked_path_candidates(wasm_path, None, cwd);
-        assert_eq!(candidates, vec![PathBuf::from("/repo/dist/output_linked.wasm")]);
+        assert_eq!(
+            candidates,
+            vec![PathBuf::from("/repo/dist/output_linked.wasm")]
+        );
     }
 }
 

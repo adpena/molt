@@ -50,7 +50,11 @@ pub fn prepare_unique_debug_artifact_path(relative_path: impl AsRef<Path>) -> io
         .unwrap_or("artifact");
     let ext = base.extension().and_then(|s| s.to_str()).unwrap_or("");
     let file_name = if ext.is_empty() {
-        format!("{stem}.{}.{}.tmp", std::process::id(), nanos ^ (unique as u128))
+        format!(
+            "{stem}.{}.{}.tmp",
+            std::process::id(),
+            nanos ^ (unique as u128)
+        )
     } else {
         format!(
             "{stem}.{}.{}.tmp.{ext}",

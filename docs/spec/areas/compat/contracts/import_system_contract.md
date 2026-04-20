@@ -58,9 +58,17 @@ Modules may be:
 - Reload behavior is explicit; `importlib.reload` is gated.
 - Cache invalidation requires explicit tooling support.
 
+## 5. Validation Anchors
+Import/bootstrap changes are expected to be covered by the existing in-tree regression lanes documented in
+[0008_MINIMUM_MUST_PASS_MATRIX.md](../../testing/0008_MINIMUM_MUST_PASS_MATRIX.md):
+
+- Native bootstrap/package-entry regressions: `tests/test_native_import_bootstrap_regressions.py`
+- WASM import bootstrap smoke and package-relative imports: `tests/test_wasm_importlib_smoke.py`, `tests/test_wasm_importlib_package_bootstrap.py`
+- Differential import semantics: `tests/differential/stdlib/importlib_basic.py`, `tests/differential/stdlib/importlib_import_module_basic.py`, `tests/differential/stdlib/importlib_relative_import_from_package.py`, `tests/differential/stdlib/importlib_import_module_helper_constant.py`, `tests/differential/stdlib/importlib_support_bootstrap.py`
+
 ---
 
-## 5. Build-Time Manifest
+## 6. Build-Time Manifest
 Build emits an import manifest:
 - list of resolved modules,
 - module origin (compiled/stdlib/bridge),
@@ -70,7 +78,7 @@ This manifest is part of reproducible builds.
 
 ---
 
-## 6. Errors
+## 7. Errors
 Import errors must include:
 - target module name,
 - resolution path attempted,
@@ -78,7 +86,7 @@ Import errors must include:
 
 ---
 
-## 7. Open Questions
+## 8. Open Questions
 - Policy for namespace packages.
 - Editable installs and dev-mode behaviors.
 

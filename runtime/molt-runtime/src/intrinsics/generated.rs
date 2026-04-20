@@ -2422,6 +2422,33 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec { name: "molt_dict_getitem_borrowed", symbol: "molt_dict_getitem_borrowed", arity: 2 },
     IntrinsicSpec { name: "molt_list_getitem_borrowed", symbol: "molt_list_getitem_borrowed", arity: 2 },
     IntrinsicSpec { name: "molt_tuple_getitem_borrowed", symbol: "molt_tuple_getitem_borrowed", arity: 2 },
+    // --- GPU primitives (molt-gpu tinygrad stack) ---
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_create_tensor", symbol: "molt_gpu_prim_create_tensor", arity: 3 },
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_zeros", symbol: "molt_gpu_prim_zeros", arity: 2 },
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_realize", symbol: "molt_gpu_prim_realize", arity: 1 },
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_read_data", symbol: "molt_gpu_prim_read_data", arity: 2 },
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_free", symbol: "molt_gpu_prim_free", arity: 1 },
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_unary", symbol: "molt_gpu_prim_unary", arity: 2 },
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_binary", symbol: "molt_gpu_prim_binary", arity: 3 },
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_ternary", symbol: "molt_gpu_prim_ternary", arity: 4 },
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_reduce", symbol: "molt_gpu_prim_reduce", arity: 3 },
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_shape", symbol: "molt_gpu_prim_shape", arity: 2 },
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_numel", symbol: "molt_gpu_prim_numel", arity: 1 },
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_device", symbol: "molt_gpu_prim_device", arity: 0 },
+    #[cfg(feature = "molt_gpu_primitives")]
+    IntrinsicSpec { name: "molt_gpu_prim_tensor_count", symbol: "molt_gpu_prim_tensor_count", arity: 0 },
 ];
 
 pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
@@ -2541,6 +2568,8 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
     if let Some(v) = resolve_wsgiref_symbol(symbol) { return Some(v); }
     if let Some(v) = resolve_xmlrpc_symbol(symbol) { return Some(v); }
     if let Some(v) = resolve_zoneinfo_symbol(symbol) { return Some(v); }
+    #[cfg(feature = "molt_gpu_primitives")]
+    if let Some(v) = resolve_gpu_prim_symbol(symbol) { return Some(v); }
     None
 }
 
@@ -6677,6 +6706,29 @@ fn resolve_zoneinfo_symbol(symbol: &str) -> Option<u64> {
         "molt_zoneinfo_new" => Some(crate::molt_zoneinfo_new as *const () as usize as u64),
         "molt_zoneinfo_tzname" => Some(crate::molt_zoneinfo_tzname as *const () as usize as u64),
         "molt_zoneinfo_utcoffset" => Some(crate::molt_zoneinfo_utcoffset as *const () as usize as u64),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "molt_gpu_primitives")]
+#[inline(never)]
+#[cold]
+fn resolve_gpu_prim_symbol(symbol: &str) -> Option<u64> {
+    use crate::builtins::gpu_primitives::*;
+    match symbol {
+        "molt_gpu_prim_create_tensor" => Some(molt_gpu_prim_create_tensor as *const () as usize as u64),
+        "molt_gpu_prim_zeros" => Some(molt_gpu_prim_zeros as *const () as usize as u64),
+        "molt_gpu_prim_realize" => Some(molt_gpu_prim_realize as *const () as usize as u64),
+        "molt_gpu_prim_read_data" => Some(molt_gpu_prim_read_data as *const () as usize as u64),
+        "molt_gpu_prim_free" => Some(molt_gpu_prim_free as *const () as usize as u64),
+        "molt_gpu_prim_unary" => Some(molt_gpu_prim_unary as *const () as usize as u64),
+        "molt_gpu_prim_binary" => Some(molt_gpu_prim_binary as *const () as usize as u64),
+        "molt_gpu_prim_ternary" => Some(molt_gpu_prim_ternary as *const () as usize as u64),
+        "molt_gpu_prim_reduce" => Some(molt_gpu_prim_reduce as *const () as usize as u64),
+        "molt_gpu_prim_shape" => Some(molt_gpu_prim_shape as *const () as usize as u64),
+        "molt_gpu_prim_numel" => Some(molt_gpu_prim_numel as *const () as usize as u64),
+        "molt_gpu_prim_device" => Some(molt_gpu_prim_device as *const () as usize as u64),
+        "molt_gpu_prim_tensor_count" => Some(molt_gpu_prim_tensor_count as *const () as usize as u64),
         _ => None,
     }
 }

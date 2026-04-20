@@ -1247,8 +1247,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::BitOr => Some(binary_op("bit_or", op, out_var)),
         OpCode::BitXor => Some(binary_op("bit_xor", op, out_var)),
         OpCode::BitNot => Some(unary_op("bit_not", op, out_var)),
-        OpCode::Shl => Some(binary_op("shl", op, out_var)),
-        OpCode::Shr => Some(binary_op("shr", op, out_var)),
+        OpCode::Shl => Some(binary_op("lshift", op, out_var)),
+        OpCode::Shr => Some(binary_op("rshift", op, out_var)),
 
         // Boolean.
         OpCode::And => Some(binary_op("and", op, out_var)),
@@ -1334,24 +1334,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 ..OpIR::default()
             })
         }
-        OpCode::ClassmethodNew => Some(OpIR {
-            kind: "classmethod_new".to_string(),
-            args: Some(operand_args(op)),
-            out: out_var,
-            ..OpIR::default()
-        }),
-        OpCode::StaticmethodNew => Some(OpIR {
-            kind: "staticmethod_new".to_string(),
-            args: Some(operand_args(op)),
-            out: out_var,
-            ..OpIR::default()
-        }),
-        OpCode::PropertyNew => Some(OpIR {
-            kind: "property_new".to_string(),
-            args: Some(operand_args(op)),
-            out: out_var,
-            ..OpIR::default()
-        }),
 
         // Box/unbox — no-ops at SimpleIR level (type info discarded).
         OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
@@ -2897,6 +2879,49 @@ mod tests {
         let ops = lower_to_simple_ir(&func, &HashMap::new());
         let has_ret = ops.iter().any(|o| o.kind == "ret" || o.kind == "ret_void");
         assert!(has_ret, "expected a return op, got: {:?}", ops);
+    }
+
+    #[test]
+    fn lower_shift_ops_use_runtime_simple_ir_names() {
+        let mut func = TirFunction::new(
+            "shift_names".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::DynBox,
+        );
+        let shl = ValueId(func.next_value);
+        func.next_value += 1;
+        let shr = ValueId(func.next_value);
+        func.next_value += 1;
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Shl,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![shl],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Shr,
+            operands: vec![shl, ValueId(1)],
+            results: vec![shr],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![shr] };
+
+        let type_map = HashMap::from([
+            (ValueId(0), TirType::I64),
+            (ValueId(1), TirType::I64),
+            (shl, TirType::DynBox),
+            (shr, TirType::DynBox),
+        ]);
+        let ops = lower_to_simple_ir(&func, &type_map);
+        assert!(ops.iter().any(|op| op.kind == "lshift"));
+        assert!(ops.iter().any(|op| op.kind == "rshift"));
+        assert!(!ops.iter().any(|op| op.kind == "shl"));
+        assert!(!ops.iter().any(|op| op.kind == "shr"));
     }
 
     #[test]

@@ -19,12 +19,12 @@ fn alias_source_name<'a>(
     summaries: &BTreeMap<String, ReturnAliasSummary>,
 ) -> Option<&'a str> {
     match op.kind.as_str() {
-        "copy" | "copy_var" | "box" | "unbox" | "cast" | "widen" | "identity_alias" => op
+        "copy" | "box" | "unbox" | "cast" | "widen" | "identity_alias" => op
             .args
             .as_ref()
             .and_then(|args| args.first())
             .map(String::as_str),
-        "load_var" => op.var.as_deref().or_else(|| {
+        "copy_var" | "load_var" | "store_var" => op.var.as_deref().or_else(|| {
             op.args
                 .as_ref()
                 .and_then(|args| args.first())
@@ -50,6 +50,7 @@ fn compute_function_return_alias_summary(
     func: &FunctionIR,
     known: &BTreeMap<String, ReturnAliasSummary>,
 ) -> Option<ReturnAliasSummary> {
+    let trace_alias = std::env::var("MOLT_DEBUG_RETURN_ALIAS").as_deref() == Ok("1");
     let mut alias_roots: BTreeMap<String, String> = BTreeMap::new();
     for param in &func.params {
         if param != "none" {
@@ -58,7 +59,14 @@ fn compute_function_return_alias_summary(
     }
 
     for op in &func.ops {
-        let Some(out) = op.out.as_ref() else {
+        let logical_out = op.out.as_ref().or_else(|| {
+            if op.kind == "store_var" {
+                op.var.as_ref()
+            } else {
+                None
+            }
+        });
+        let Some(out) = logical_out else {
             continue;
         };
         if out == "none" {
@@ -70,6 +78,12 @@ fn compute_function_return_alias_summary(
                 .cloned()
                 .unwrap_or_else(|| src.to_string());
             alias_roots.insert(out.clone(), root);
+            if trace_alias {
+                eprintln!(
+                    "[molt alias] func={} op={} out={} src={} root={}",
+                    func.name, op.kind, out, src, alias_roots[out]
+                );
+            }
         }
     }
 
@@ -112,6 +126,12 @@ fn compute_function_return_alias_summary(
                     .cloned()
                     .unwrap_or_else(|| ret_name.clone());
                 let param_idx = func.params.iter().position(|param| param == &root)?;
+                if trace_alias {
+                    eprintln!(
+                        "[molt alias] func={} ret_name={} root={} param_idx={}",
+                        func.name, ret_name, root, param_idx
+                    );
+                }
                 let current = ReturnAliasSummary::Param(param_idx);
                 match summary {
                     None => summary = Some(current),

@@ -20,6 +20,10 @@ import json
 import math
 import os
 import _intrinsics
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+# GPU primitive intrinsic — required for WASM stdlib enforcement
+_gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from molt.gpu import Buffer, alloc
 from tinygrad.tensor import Tensor

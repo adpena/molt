@@ -1888,9 +1888,8 @@ pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
         };
         #[cfg(target_arch = "wasm32")]
         {
-            if let Some((_, _, value)) = WASM_SYSCONF_ENTRIES
-                .iter()
-                .find(|(_, key, _)| *key == name)
+            if let Some((_, _, value)) =
+                WASM_SYSCONF_ENTRIES.iter().find(|(_, key, _)| *key == name)
             {
                 return MoltObject::from_int(*value).bits();
             }

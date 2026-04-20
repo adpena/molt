@@ -52,6 +52,13 @@ a4 = array("i", [1, 2])
 a4.extend([3, 4])
 print("extended", a4.tolist())
 
+# repeat / in-place repeat
+a_repeat = array("i", [7, 8])
+print("repeat_3", (a_repeat * 3).tolist())
+a_repeat *= 2
+print("irepeat_2", a_repeat.tolist())
+print("repeat_0", (a_repeat * 0).tolist())
+
 # float array
 af = array("d", [1.5, 2.5, 3.5])
 print("float_len", len(af))

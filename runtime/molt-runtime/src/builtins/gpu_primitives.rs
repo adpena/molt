@@ -79,7 +79,7 @@ fn store_tensor(tensor: PrimitiveTensor) -> u64 {
 fn with_tensor<R>(handle: u64, f: impl FnOnce(&PrimitiveTensor) -> R) -> Option<R> {
     TENSOR_STORE.with(|store| {
         let store = store.borrow();
-        store.get(handle as usize).and_then(|slot| slot.as_ref().map(&f))
+        store.get(handle as usize).and_then(|slot| slot.as_ref().map(|t| f(t)))
     })
 }
 
