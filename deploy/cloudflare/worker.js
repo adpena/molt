@@ -5,8 +5,19 @@
  *   1. Cold start: fetch WASM module + weights from R2, initialize model.
  *   2. Warm request: run OCR inference on the cached model.
  *
- * Fallback chain:
- *   molt-gpu (WebGPU/WASM) -> PaddleOCR (server-side JS) -> structured error
+ * Fallback chain (in-Worker):
+ *   WASM (WebAssembly.instantiateStreaming) -> Workers AI (GPU fleet) -> PaddleOCR -> error
+ *
+ * NOTE: The full WASM path (falcon-ocr.wasm at 13.4 MB + model.safetensors at 1 GB)
+ * exceeds Workers' memory and CPU time limits on cold start. The WASM path is therefore
+ * only viable for:
+ *   - Browser-side inference (no memory/CPU budget constraints)
+ *   - Self-hosted/on-prem deployments (no per-request cost)
+ *
+ * In the Worker, Workers AI is the preferred fast default (zero CPU cost, GPU fleet).
+ * The WASM path here serves as documentation and is activated only when
+ * X-Use-Backend: wasm is explicitly requested (for testing or edge cases where
+ * the Worker has been deployed on a high-memory plan).
  *
  * The Worker NEVER logs image content (privacy).  Request IDs are
  * generated for debugging without exposing PII.
@@ -311,25 +322,41 @@ async function ensureModelLoaded(env) {
     }
 
     // Phase 1: Try loading the WASM binary for full-speed inference.
+    // Uses instantiateStreaming for fastest possible compilation — the browser/runtime
+    // can compile the module while bytes are still being downloaded from R2.
+    //
+    // CONSTRAINT: falcon-ocr.wasm is 13.4 MB. Combined with 1 GB weights, this
+    // exceeds Workers memory limits on cold start. This path is only reached when
+    // explicitly requested (X-Use-Backend: wasm) or in high-memory deployments.
+    // For browser/self-hosted use, see docs/architecture/browser-webgpu-inference.md.
     let useWasm = false;
     const wasmObj = await env.WEIGHTS.get("models/falcon-ocr/falcon-ocr.wasm");
 
     if (wasmObj) {
       try {
-        const wasmBytes = await wasmObj.arrayBuffer();
-        const wasmModule = await WebAssembly.compile(wasmBytes);
-        wasmInstance = await WebAssembly.instantiate(wasmModule, {
-          env: { memory: new WebAssembly.Memory({ initial: 256, maximum: 2048 }) },
+        // R2 objects expose a body (ReadableStream) — wrap it in a Response for
+        // instantiateStreaming which requires a Response with application/wasm type.
+        const wasmResponse = new Response(wasmObj.body, {
+          headers: { "Content-Type": "application/wasm" },
         });
+        const importObject = {
+          env: { memory: new WebAssembly.Memory({ initial: 256, maximum: 2048 }) },
+        };
+        const { instance } = await WebAssembly.instantiateStreaming(wasmResponse, importObject);
+        wasmInstance = instance;
         useWasm = true;
+        console.log("WASM module loaded via instantiateStreaming (13.4 MB)");
       } catch (err) {
-        console.warn(`WASM compilation failed, falling back to CPU: ${err.message}`);
+        console.warn(`WASM instantiateStreaming failed, falling back to CPU: ${err.message}`);
         wasmInstance = null;
       }
     }
 
     if (useWasm && wasmInstance) {
       // Phase 2a (WASM): Load full production weights from R2.
+      // The WASM module exports init(weights_bytes, config_json) and
+      // ocr_tokens(width, height, rgb, prompt_ids, max_new_tokens).
+      // See wasm_driver.py for the export contract.
       const weightsObj = await env.WEIGHTS.get("models/falcon-ocr/model.safetensors");
       if (!weightsObj) {
         throw new Error("Weights not found in R2: models/falcon-ocr/model.safetensors");
@@ -340,8 +367,15 @@ async function ensureModelLoaded(env) {
         throw new Error("Config not found in R2: models/falcon-ocr/config.json");
       }
       const configJson = await configObj.text();
+
+      // Initialize the WASM model — this loads weights into WASM linear memory.
       wasmInstance.exports.init(weightsBytes, configJson);
       activeDevice = "wasm";
+      activeModelVariant = "f32";
+      modelReady = true;
+      initError = null;
+      console.log(`Model loaded via WASM: ${weightsBytes.byteLength} bytes weights`);
+      return;
     } else {
       // Phase 2b (CPU): Try loading quantized sharded model from R2 first,
       // then single-file INT4, then full F32, then embedded micro model.
