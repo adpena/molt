@@ -1017,9 +1017,17 @@ export class FalconOCRMicro {
    * @param {Float32Array|null} patchFeatures - [nPatches, patchDim]
    * @param {number} nPatches
    * @param {number} maxNewTokens
+   * @param {number} [maxLayers=0] - If > 0, use only the first N transformer
+   *   layers instead of all layers. This is a quality-vs-speed tradeoff:
+   *     - All layers (default): full quality, slowest
+   *     - First 8 of 22 layers: ~2.75x faster, moderate quality loss
+   *     - First 4 of 22 layers: ~5.5x faster, significant quality loss
+   *   For the micro model (2 layers), this has no effect.
+   *   For the full 22-layer model on Workers CPU, using 8 layers enables
+   *   multi-token generation within the 30s wall-clock budget.
    * @returns {number[]}
    */
-  generate(promptIds, patchFeatures, nPatches, maxNewTokens) {
+  generate(promptIds, patchFeatures, nPatches, maxNewTokens, maxLayers = 0) {
     const { dim, vocabSize, normEps, config } = this;
     const patchDim = this.patchSize * this.patchSize * 3;
 
@@ -1081,10 +1089,11 @@ export class FalconOCRMicro {
       // Build causal mask
       const mask = this.buildCausalMask(S);
 
-      // Run transformer
+      // Run transformer (optionally with layer skip for speed)
       let h = new Float32Array(allEmbeddings);
-      for (const layer of this.layers) {
-        h = this.transformerBlock(h, S, layer, mask);
+      const layerCount = maxLayers > 0 ? Math.min(maxLayers, this.layers.length) : this.layers.length;
+      for (let li = 0; li < layerCount; li++) {
+        h = this.transformerBlock(h, S, this.layers[li], mask);
       }
 
       // Final norm (SIMD-accelerated when available)
@@ -1122,12 +1131,13 @@ export class FalconOCRMicro {
    * @param {Uint8Array} rgb
    * @param {number[]} promptIds
    * @param {number} maxNewTokens
+   * @param {number} [maxLayers=0] - Use only the first N layers (0 = all)
    * @returns {Int32Array}
    */
-  ocrTokens(width, height, rgb, promptIds, maxNewTokens) {
+  ocrTokens(width, height, rgb, promptIds, maxNewTokens, maxLayers = 0) {
     const patches = this.rgbToPatches(rgb, width, height);
     const nPatches = (width / this.patchSize) * (height / this.patchSize);
-    const tokens = this.generate(promptIds, patches, nPatches, maxNewTokens);
+    const tokens = this.generate(promptIds, patches, nPatches, maxNewTokens, maxLayers);
     return new Int32Array(tokens);
   }
 }
