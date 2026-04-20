@@ -1507,6 +1507,105 @@ def test_run_wasm_ld_force_exports_user_module_exports(
     assert "--export=__molt_output_export_1" in cmd
 
 
+def test_run_wasm_ld_repairs_linked_host_init_export(
+    tmp_path: Path, monkeypatch
+) -> None:
+    write_varuint = wasm_link._write_varuint
+
+    def _module(*, include_host_init_export: bool) -> bytes:
+        sections: list[tuple[int, bytes]] = []
+        type_payload = bytearray()
+        type_payload.extend(write_varuint(1))
+        type_payload.append(0x60)
+        type_payload.extend(write_varuint(0))
+        type_payload.extend(write_varuint(0))
+        sections.append((1, bytes(type_payload)))
+
+        func_payload = write_varuint(2) + write_varuint(0) + write_varuint(0)
+        sections.append((3, bytes(func_payload)))
+
+        exports: list[tuple[str, int]] = [("molt_main", 1)]
+        if include_host_init_export:
+            exports.insert(0, ("molt_host_init", 0))
+        export_payload = bytearray()
+        export_payload.extend(write_varuint(len(exports)))
+        for name, index in exports:
+            export_payload.extend(wasm_link._write_string(name))
+            export_payload.append(0x00)
+            export_payload.extend(write_varuint(index))
+        sections.append((7, bytes(export_payload)))
+
+        code_payload = bytearray()
+        code_payload.extend(write_varuint(2))
+        for _ in range(2):
+            code_payload.extend(write_varuint(2))
+            code_payload.append(0x00)
+            code_payload.append(0x0B)
+        sections.append((10, bytes(code_payload)))
+
+        linking_payload = wasm_link._build_linking_payload(
+            2,
+            [
+                (
+                    wasm_link.SYMTAB_SUBSECTION_ID,
+                    _build_symbol_subsection(
+                        [
+                            _function_symbol_entry(
+                                flags=wasm_link.FLAG_BINDING_GLOBAL
+                                | wasm_link.FLAG_EXPLICIT_NAME
+                                | wasm_link.FLAG_EXPORTED
+                                | wasm_link.FLAG_NO_STRIP,
+                                index=0,
+                                name="molt_host_init",
+                            ),
+                            _function_symbol_entry(
+                                flags=wasm_link.FLAG_BINDING_GLOBAL
+                                | wasm_link.FLAG_EXPLICIT_NAME
+                                | wasm_link.FLAG_EXPORTED
+                                | wasm_link.FLAG_NO_STRIP,
+                                index=1,
+                                name="molt_main",
+                            ),
+                        ]
+                    ),
+                )
+            ],
+        )
+        sections.append((0, wasm_link._build_custom_section("linking", linking_payload)))
+        return wasm_link._build_sections(sections)
+
+    output_bytes = _module(include_host_init_export=True)
+    linked_without_host_init = _module(include_host_init_export=False)
+    runtime = tmp_path / "runtime.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    runtime.write_bytes(output_bytes)
+    output.write_bytes(output_bytes)
+
+    def fake_run(_cmd, **_kwargs):
+        linked.write_bytes(linked_without_host_init)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return Result()
+
+    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: True)
+    monkeypatch.setattr(wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None)
+    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda data: (True, None))
+
+    rc = wasm_link._run_wasm_ld("wasm-ld", runtime, output, linked)
+
+    assert rc == 0
+    exports = wasm_link._collect_function_exports(linked.read_bytes())
+    assert "molt_host_init" in exports
+
+
 def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
     tmp_path: Path,
     monkeypatch,
