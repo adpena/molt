@@ -3,13 +3,13 @@ use crate::{
     TYPE_ID_BYTES, TYPE_ID_COMPLEX, TYPE_ID_DATACLASS, TYPE_ID_FLOAT, TYPE_ID_FROZENSET,
     TYPE_ID_INTARRAY, TYPE_ID_LIST, TYPE_ID_LIST_INT, TYPE_ID_MEMORYVIEW, TYPE_ID_RANGE,
     TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_TAG_ANY, TYPE_TAG_BOOL,
-    TYPE_TAG_BUFFER2D, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES, TYPE_TAG_COMPLEX,
-    TYPE_TAG_DATACLASS, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_INTARRAY,
-    TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
-    TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, bound_method_self_bits, molt_dict_get,
-    molt_index, molt_list_append, molt_store_index, molt_string_join, obj_from_bits,
-    object_type_id, raise_exception,
+    TYPE_TAG_BUFFER2D, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES, TYPE_TAG_COMPLEX, TYPE_TAG_DATACLASS,
+    TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_INTARRAY, TYPE_TAG_LIST,
+    TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET, TYPE_TAG_SLICE, TYPE_TAG_STR,
+    TYPE_TAG_TUPLE, bound_method_self_bits, molt_dict_get, molt_index, molt_list_append,
+    molt_store_index, molt_string_join, obj_from_bits, object_type_id, raise_exception,
 };
+use std::alloc::{Layout, alloc, dealloc};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_getitem(dict_bits: u64, key_bits: u64) -> u64 {
@@ -150,5 +150,35 @@ pub extern "C" fn molt_type_tag_of_bits(bits: u64) -> i64 {
             TYPE_ID_FLOAT => TYPE_TAG_FLOAT,
             _ => TYPE_TAG_ANY,
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_scratch_alloc(size: u64) -> u64 {
+    let Ok(size) = usize::try_from(size) else {
+        return 0;
+    };
+    let alloc_size = size.max(1);
+    let Ok(layout) = Layout::from_size_align(alloc_size, 8) else {
+        return 0;
+    };
+    let ptr = unsafe { alloc(layout) };
+    ptr as usize as u64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_scratch_free(ptr: u64, size: u64) {
+    if ptr == 0 {
+        return;
+    }
+    let Ok(size) = usize::try_from(size) else {
+        return;
+    };
+    let alloc_size = size.max(1);
+    let Ok(layout) = Layout::from_size_align(alloc_size, 8) else {
+        return;
+    };
+    unsafe {
+        dealloc(ptr as usize as *mut u8, layout);
     }
 }
