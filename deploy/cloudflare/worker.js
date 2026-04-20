@@ -22,9 +22,9 @@
  * generated for debugging without exposing PII.
  */
 
-import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleBatchOcr, handleTemplateExtract, handleStructuredOcr, handleDetailedOcr, handleTableOcr, handleTemplateExtractFast, handleInvoiceFill } from "./ocr_api.js";
+import { handleOcrRequest, handleTokensRequest, handleBatchOcr, handleStructuredOcr, handleDetailedOcr, handleTableOcr, handleTemplateExtractFast, handleInvoiceFill } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
-import { withMonitoring, createRequestLog, emitLog, writeAnalytics, categorizeError } from "./monitoring.js";
+import { withMonitoring, categorizeError } from "./monitoring.js";
 import { getAnalyticsSummary } from "./analytics.js";
 import { TokenizerDecoder } from "./tokenizer.js";
 // Lazy-loaded: these heavy modules are imported only when local inference is needed.
@@ -51,6 +51,89 @@ async function getSimdOpsWasm() {
   return _simdOpsWasm;
 }
 import { isWorkersAiAvailable } from "./ai-fallback.js";
+
+// ---------------------------------------------------------------------------
+// Production hardening: timeouts, memory pressure, graceful degradation
+// ---------------------------------------------------------------------------
+
+/** Maximum time (ms) to wait for a single R2 object fetch before aborting. */
+const R2_FETCH_TIMEOUT_MS = 30_000;
+
+/** Maximum time (ms) for a single inference forward pass before aborting. */
+const INFERENCE_TIMEOUT_MS = 60_000;
+
+/** Memory pressure threshold (bytes). Skip larger models above this. */
+const MEMORY_PRESSURE_THRESHOLD_MB = 200;
+
+/**
+ * Fetch an R2 object with a timeout.  Returns null (like R2 miss) on timeout.
+ *
+ * R2's `.get()` does not support AbortSignal, so we use Promise.race
+ * against a timer.  On timeout the R2 request may still complete in the
+ * background, but we proceed without waiting.
+ *
+ * @param {R2Bucket} bucket
+ * @param {string} key
+ * @param {number} [timeoutMs=R2_FETCH_TIMEOUT_MS]
+ * @returns {Promise<R2ObjectBody|null>}
+ */
+async function fetchR2WithTimeout(bucket, key, timeoutMs = R2_FETCH_TIMEOUT_MS) {
+  if (!bucket) return null;
+  const TIMEOUT_SENTINEL = Symbol("timeout");
+  const result = await Promise.race([
+    bucket.get(key),
+    new Promise((resolve) => setTimeout(() => resolve(TIMEOUT_SENTINEL), timeoutMs)),
+  ]);
+  if (result === TIMEOUT_SENTINEL) {
+    console.warn(`R2 fetch timeout after ${timeoutMs}ms: ${key}`);
+    return null;
+  }
+  return result;
+}
+
+/**
+ * Run an async function with a timeout.  Rejects with a descriptive error
+ * if the function does not resolve within `timeoutMs`.
+ *
+ * @template T
+ * @param {() => Promise<T>|T} fn
+ * @param {number} timeoutMs
+ * @param {string} label - Human-readable label for timeout error messages
+ * @returns {Promise<T>}
+ */
+function withTimeout(fn, timeoutMs, label = "operation") {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    Promise.resolve(fn()).then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
+/**
+ * Estimate current memory usage in MB.
+ *
+ * Workers do not expose process.memoryUsage(), so we estimate based on
+ * known allocations (model weights, WASM heap).  Returns 0 if we cannot
+ * estimate (conservative: allow all models).
+ *
+ * @returns {number} estimated memory usage in MB
+ */
+function estimateMemoryMB() {
+  let bytes = 0;
+  // Account for loaded model weights
+  if (cpuWeightsBytes) bytes += cpuWeightsBytes.byteLength;
+  // Account for WASM linear memory (if instantiated)
+  if (wasmInstance && wasmInstance.exports && wasmInstance.exports.memory) {
+    bytes += wasmInstance.exports.memory.buffer.byteLength;
+  }
+  // Base JS heap overhead (~60 MB typical for Workers)
+  bytes += 60 * 1024 * 1024;
+  return Math.round(bytes / (1024 * 1024));
+}
 
 /** @type {WebAssembly.Instance | null} */
 let wasmInstance = null;
@@ -358,12 +441,19 @@ async function ensureModelLoaded(env) {
       // INT8 is only usable in Durable Objects, Containers, or browser-side.
       console.log("Skipping INT8 models (exceed 256 MB Worker memory limit)");
 
+      // Memory pressure gate: skip INT4 models if we are already above threshold.
+      const currentMemMB = estimateMemoryMB();
+      const skipLargeModels = currentMemMB > MEMORY_PRESSURE_THRESHOLD_MB;
+      if (skipLargeModels) {
+        console.warn(`Memory pressure: ~${currentMemMB} MB used (threshold: ${MEMORY_PRESSURE_THRESHOLD_MB} MB). Skipping INT4 models, falling back to micro.`);
+      }
+
       // Priority 1: INT4 sharded model (~5x30 MB shards, fits Workers memory)
       // Each shard is loaded individually, tensors extracted, buffer dropped.
-      if (!weightsBytes) {
-      const r2ShardIndex = await env.WEIGHTS.get("models/falcon-ocr-int4-sharded/model.safetensors.index.json");
-      const r2ShardConfig = await env.WEIGHTS.get("models/falcon-ocr-int4-sharded/config.json");
-      const r2ShardScales = await env.WEIGHTS.get("models/falcon-ocr-int4-sharded/scales.json");
+      if (!weightsBytes && !skipLargeModels) {
+      const r2ShardIndex = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr-int4-sharded/model.safetensors.index.json");
+      const r2ShardConfig = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr-int4-sharded/config.json");
+      const r2ShardScales = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr-int4-sharded/scales.json");
 
       if (r2ShardIndex && r2ShardConfig && r2ShardScales) {
         try {
@@ -389,9 +479,9 @@ async function ensureModelLoaded(env) {
           let totalBytes = 0;
 
           for (const shardName of shardNames) {
-            const shardObj = await env.WEIGHTS.get(`models/falcon-ocr-int4-sharded/${shardName}`);
+            const shardObj = await fetchR2WithTimeout(env.WEIGHTS, `models/falcon-ocr-int4-sharded/${shardName}`);
             if (!shardObj) {
-              throw new Error(`Shard not found in R2: ${shardName}`);
+              throw new Error(`Shard not found or timed out in R2: ${shardName}`);
             }
             const shardBuffer = await shardObj.arrayBuffer();
             totalBytes += shardBuffer.byteLength;
@@ -421,10 +511,10 @@ async function ensureModelLoaded(env) {
       }
 
       // Priority 2: INT4 single-file model (~129 MB, tight but possible)
-      if (!weightsBytes) {
-      const r2QuantWeights = await env.WEIGHTS.get("models/falcon-ocr-int4/model.safetensors");
-      const r2QuantConfig = await env.WEIGHTS.get("models/falcon-ocr-int4/config.json");
-      const r2QuantScales = await env.WEIGHTS.get("models/falcon-ocr-int4/scales.json");
+      if (!weightsBytes && !skipLargeModels) {
+      const r2QuantWeights = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr-int4/model.safetensors");
+      const r2QuantConfig = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr-int4/config.json");
+      const r2QuantScales = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr-int4/scales.json");
       if (r2QuantWeights && r2QuantConfig && r2QuantScales) {
         try {
           weightsBytes = new Uint8Array(await r2QuantWeights.arrayBuffer());
@@ -466,7 +556,7 @@ async function ensureModelLoaded(env) {
     // and the browser-side tokenizer handles decoding.
     if (!cachedTokenizer && env.WEIGHTS) {
       try {
-        const tokObj = await env.WEIGHTS.get("models/falcon-ocr/tokenizer.json");
+        const tokObj = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr/tokenizer.json");
         if (tokObj) {
           const tokJson = await tokObj.text();
           cachedTokenizer = TokenizerDecoder.fromJSON(tokJson);
@@ -594,7 +684,7 @@ export default {
     // -----------------------------------------------------------------------
     if (request.method === "GET" && path.startsWith("/wasm/")) {
       const key = `models/falcon-ocr/${path.slice(6)}`; // strip "/wasm/"
-      const obj = await env.WEIGHTS.get(key);
+      const obj = await fetchR2WithTimeout(env.WEIGHTS, key);
       if (!obj) {
         return new Response(
           JSON.stringify({ error: "Not found", key, request_id: rid }),
@@ -612,7 +702,7 @@ export default {
 
     if (request.method === "GET" && path.startsWith("/weights/")) {
       const key = `models/${path.slice(9)}`; // strip "/weights/" -> "models/<variant>/..."
-      const obj = await env.WEIGHTS.get(key);
+      const obj = await fetchR2WithTimeout(env.WEIGHTS, key);
       if (!obj) {
         return new Response(
           JSON.stringify({ error: "Not found", request_id: rid }),
@@ -1018,8 +1108,30 @@ export default {
             }
           }
 
-          // Level 3: Compute inference (cache miss)
-          const response = await handleOcrRequest(request, inferenceBackend, env, cors, rid, activeDevice, cachedTokenizer);
+          // Level 3: Compute inference (cache miss) — with timeout guard
+          let response;
+          try {
+            response = await withTimeout(
+              () => handleOcrRequest(request, inferenceBackend, env, cors, rid, activeDevice, cachedTokenizer),
+              INFERENCE_TIMEOUT_MS,
+              "OCR inference",
+            );
+          } catch (timeoutErr) {
+            console.error(`Inference timeout: ${timeoutErr.message} [rid=${rid}]`);
+            return new Response(
+              JSON.stringify({
+                error: "OCR inference timed out",
+                detail: `Forward pass exceeded ${INFERENCE_TIMEOUT_MS}ms limit`,
+                request_id: rid,
+                fallback_available: true,
+                fallback_url: "/api/ocr/paddle",
+              }),
+              {
+                status: 504,
+                headers: { ...cors, "Content-Type": "application/json", "Retry-After": "5" },
+              },
+            );
+          }
 
           // Cache the result for future requests
           if (imageHash && response.status === 200) {
@@ -1047,7 +1159,27 @@ export default {
         }
 
         if (path === "/ocr/tokens") {
-          const response = await handleTokensRequest(request, inferenceBackend, env, cors, rid, activeDevice);
+          let response;
+          try {
+            response = await withTimeout(
+              () => handleTokensRequest(request, inferenceBackend, env, cors, rid, activeDevice),
+              INFERENCE_TIMEOUT_MS,
+              "Token inference",
+            );
+          } catch (timeoutErr) {
+            console.error(`Token inference timeout: ${timeoutErr.message} [rid=${rid}]`);
+            return new Response(
+              JSON.stringify({
+                error: "Token inference timed out",
+                detail: `Forward pass exceeded ${INFERENCE_TIMEOUT_MS}ms limit`,
+                request_id: rid,
+              }),
+              {
+                status: 504,
+                headers: { ...cors, "Content-Type": "application/json", "Retry-After": "5" },
+              },
+            );
+          }
           if (payment.receipt) {
             const headers = new Headers(response.headers);
             headers.set("X-Payment-Receipt", payment.receipt);
