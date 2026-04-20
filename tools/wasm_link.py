@@ -1864,6 +1864,73 @@ def _rewrite_memory_min(data: bytes, required_min: int) -> bytes | None:
     return _build_sections(new_sections)
 
 
+_EMPTY_FUNC_BODY = bytes([0x00, 0x0B])
+
+
+def _neutralize_linked_table_init(data: bytes) -> bytes | None:
+    """Replace linked-output ``molt_table_init`` with a no-op body.
+
+    Relocatable app modules need ``molt_table_init`` to install their passive
+    table segment into a shared runtime table. A fully linked monolith already
+    has its active element segment applied by WebAssembly instantiation. Running
+    the relocatable table initializer again after ``wasm-ld`` can overwrite
+    runtime-owned table slots with app function refs and break indirect calls.
+    """
+    export_indices = _collect_function_exports(data)
+    table_init_index = export_indices.get("molt_table_init")
+    if table_init_index is None:
+        return None
+
+    sections = _parse_sections(data)
+    import_count = _count_func_imports(sections)
+    local_index = table_init_index - import_count
+    if local_index < 0:
+        return None
+
+    types = _parse_type_section(sections)
+    _func_section_idx, func_type_indices = _parse_func_type_indices(sections)
+    if local_index >= len(func_type_indices):
+        return None
+    type_index = func_type_indices[local_index]
+    params, results = types[type_index]
+    if params or results:
+        raise ValueError("molt_table_init must have no params and no results")
+
+    changed = False
+    new_sections: list[tuple[int, bytes]] = []
+    for section_id, payload in sections:
+        if section_id != 10:
+            new_sections.append((section_id, payload))
+            continue
+
+        offset = 0
+        func_count, offset = _read_varuint(payload, offset)
+        if local_index >= func_count:
+            return None
+        rebuilt = bytearray(_write_varuint(func_count))
+        for idx in range(func_count):
+            body_size, body_start = _read_varuint(payload, offset)
+            body_end = body_start + body_size
+            if idx == local_index:
+                body = payload[body_start:body_end]
+                if body == _EMPTY_FUNC_BODY:
+                    rebuilt.extend(_write_varuint(body_size))
+                    rebuilt.extend(body)
+                else:
+                    rebuilt.extend(_write_varuint(len(_EMPTY_FUNC_BODY)))
+                    rebuilt.extend(_EMPTY_FUNC_BODY)
+                    changed = True
+            else:
+                rebuilt.extend(_write_varuint(body_size))
+                rebuilt.extend(payload[body_start:body_end])
+            offset = body_end
+        new_sections.append((section_id, bytes(rebuilt)))
+
+    if not changed:
+        return None
+    return _build_sections(new_sections)
+
+
 def _rewrite_output_imports(
     output: Path, runtime_exports: set[str]
 ) -> tuple[Path, tempfile.TemporaryDirectory, list[str]] | None:
@@ -4525,6 +4592,16 @@ def _run_wasm_ld(
         if updated is not None:
             linked.write_bytes(updated)
             linked_bytes = updated
+
+        if not split_runtime:
+            try:
+                updated = _neutralize_linked_table_init(linked_bytes)
+            except ValueError as exc:
+                print(f"Failed to neutralize linked table init: {exc}", file=sys.stderr)
+                return 1
+            if updated is not None:
+                linked.write_bytes(updated)
+                linked_bytes = updated
 
         # MOL-183/MOL-186: Post-link optimization to reduce V8 OOM risk.
         # Strip debug sections, internal exports, and report data duplicates.
