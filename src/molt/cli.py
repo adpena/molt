@@ -18049,20 +18049,17 @@ def _prepare_backend_dispatch(
         if extra_required_imports:
             backend_env["MOLT_WASM_EXTRA_REQUIRED_IMPORTS"] = ",".join(
                 extra_required_imports
-            )
+        )
         layout_probe_path: Path | None = None
         if reloc_requested and linked and runtime_reloc_wasm is not None:
+            if not ensure_runtime_wasm_reloc():
+                return None, _fail(
+                    "Runtime wasm build failed",
+                    json_output,
+                    command="build",
+                )
             if runtime_reloc_wasm.exists():
                 layout_probe_path = runtime_reloc_wasm
-            else:
-                if not ensure_runtime_wasm_reloc():
-                    return None, _fail(
-                        "Runtime wasm build failed",
-                        json_output,
-                        command="build",
-                    )
-                if runtime_reloc_wasm.exists():
-                    layout_probe_path = runtime_reloc_wasm
         if "MOLT_WASM_DATA_BASE" not in backend_env:
             if layout_probe_path is None:
                 if not ensure_runtime_wasm_shared():

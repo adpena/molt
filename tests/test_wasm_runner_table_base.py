@@ -81,20 +81,22 @@ def test_extract_wasm_table_base_accepts_active_base_one(tmp_path: Path) -> None
     assert _extract_table_base(wasm_path) == 1
 
 
-def test_extract_wasm_table_base_does_not_infer_runtime_prefix_for_empty_table_init(
+def test_extract_wasm_table_base_ignores_runtime_prefix_when_app_segment_exists(
     tmp_path: Path,
 ) -> None:
     wasm_path = _wasm_from_wat(
         tmp_path,
-        "empty_table_init",
+        "runtime_prefix_and_app_segment",
         """
         (module
-          (table 4 funcref)
-          (func $f)
-          (elem (i32.const 1) func $f)
+          (table 4097 funcref)
+          (func $runtime)
+          (func $app)
+          (elem (i32.const 1) func $runtime)
+          (elem (i32.const 4096) func $app)
           (func (export "molt_table_init"))
         )
         """,
     )
 
-    assert _extract_table_base(wasm_path) is None
+    assert _extract_table_base(wasm_path) == 4096

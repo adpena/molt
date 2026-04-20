@@ -322,104 +322,40 @@ async function ensureModelLoaded(env) {
       console.warn(`WASM SIMD ops init failed: ${err.message}`);
     }
 
-    // WASM inference is NOT used on Workers.
-    // falcon-ocr.wasm is 13.4 MB — WebAssembly.instantiateStreaming on a module
-    // this size exceeds Workers CPU budget on cold start (even on the paid plan).
-    // Combined with 129+ MB of weights, it also exceeds memory limits.
+    // WASM inference path: falcon-ocr.wasm is 13.4 MB.  With the 5-minute CPU
+    // budget (300,000 ms on Workers Paid plan), cold-start compilation is feasible.
+    // However, the 256 MB memory limit is tight with 129+ MB of INT8 weights plus
+    // the JS heap and WASM linear memory.  If memory is the bottleneck, the CPU
+    // micro model or INT4-sharded path is the fallback.
     //
-    // The correct Worker-side inference path is Workers AI (GPU fleet, 1.03s TTFB).
-    // WASM is served to browsers via GET /wasm/* for client-side offline inference.
+    // WASM is also served to browsers via GET /wasm/* for client-side offline inference.
     // See docs/architecture/browser-webgpu-inference.md for the full architecture.
     {
-      // Phase 2 (CPU): Try loading quantized sharded model from R2 first,
-      // then single-file INT4, then full F32, then embedded micro model.
+      // Phase 2 (CPU): Load model based on available memory budget.
+      //
+      // Workers memory limit is 256 MB.  The JS runtime + V8 heap + WASM engine
+      // consume ~60-80 MB, leaving ~170-190 MB for model weights + activations.
+      //
+      // Memory budget enforcement:
+      //   - INT8 models (257 MB weights) NEVER fit — skip entirely.
+      //   - INT4 sharded (129 MB) is borderline — try with OOM protection.
+      //   - Micro model (263 KB) always fits and is the guaranteed fallback.
+      //
+      // Priority order (respecting memory budget):
+      //   1. INT4 sharded (~129 MB) — best quality that can fit
+      //   2. INT4 single-file (~129 MB) — same quality, different packaging
+      //   3. Micro model (263 KB embedded) — guaranteed to work
       let weightsBytes = null;
       let config = null;
       let scales = null;
       let modelVariant = "unknown";
 
-      // Priority 1: INT8 sharded model (~257 MB across ~6x50 MB shards)
-      // INT8 has < 1% accuracy loss vs F32, far better than INT4's 3-10%.
-      // Shards are loaded sequentially for progressive loading; the model
-      // becomes usable after the embedding shard is loaded.
-      const r2Int8ShardIndex = await env.WEIGHTS.get("models/falcon-ocr-int8-sharded/model.safetensors.index.json");
-      const r2Int8ShardConfig = await env.WEIGHTS.get("models/falcon-ocr-int8-sharded/config.json");
-      const r2Int8ShardScales = await env.WEIGHTS.get("models/falcon-ocr-int8-sharded/scales.json");
+      // NOTE: INT8 models (257 MB) are SKIPPED on Workers.
+      // They exceed the 256 MB memory limit when combined with JS heap overhead.
+      // INT8 is only usable in Durable Objects, Containers, or browser-side.
+      console.log("Skipping INT8 models (exceed 256 MB Worker memory limit)");
 
-      if (r2Int8ShardIndex && r2Int8ShardConfig && r2Int8ShardScales) {
-        try {
-          const indexJson = JSON.parse(await r2Int8ShardIndex.text());
-          config = JSON.parse(await r2Int8ShardConfig.text());
-          scales = JSON.parse(await r2Int8ShardScales.text());
-          const numShards = indexJson.metadata.num_shards;
-
-          const shardNames = [];
-          const seen = new Set();
-          for (const shardName of Object.values(indexJson.weight_map)) {
-            if (!seen.has(shardName)) {
-              seen.add(shardName);
-              shardNames.push(shardName);
-            }
-          }
-
-          console.log(`Loading INT8 sharded model: ${numShards} shards`);
-          totalShards = numShards;
-          loadedShards = 0;
-
-          const allTensors = new Map();
-          let totalBytes = 0;
-
-          for (const shardName of shardNames) {
-            const shardObj = await env.WEIGHTS.get(`models/falcon-ocr-int8-sharded/${shardName}`);
-            if (!shardObj) {
-              throw new Error(`Shard not found in R2: ${shardName}`);
-            }
-            const shardBuffer = await shardObj.arrayBuffer();
-            totalBytes += shardBuffer.byteLength;
-
-            const shardTensors = inf.parseSafetensorsToMap(shardBuffer);
-            for (const [name, tensor] of shardTensors) {
-              allTensors.set(name, tensor);
-            }
-            loadedShards++;
-            console.log(`  Loaded shard ${loadedShards}/${numShards} ${shardName}: ${shardBuffer.byteLength} bytes, ${shardTensors.size} tensors`);
-          }
-
-          cpuModel = inf.createModelFromTensors(allTensors, config, scales);
-          CpuDevice.initialized = true;
-          activeDevice = "cpu";
-          activeModelVariant = "int8-sharded";
-          modelReady = true;
-          initError = null;
-          console.log(`Model variant: int8-sharded, device: cpu, total: ${totalBytes} bytes, ${allTensors.size} tensors`);
-          return;
-        } catch (err) {
-          console.warn(`R2 sharded INT8 model load failed: ${err.message}`);
-          config = null;
-          scales = null;
-        }
-      }
-
-      // Priority 2: INT8 single-file model (~257 MB, tight fit on Paid plan)
-      const r2Int8Weights = await env.WEIGHTS.get("models/falcon-ocr-int8/model.safetensors");
-      const r2Int8Config = await env.WEIGHTS.get("models/falcon-ocr-int8/config.json");
-      const r2Int8Scales = await env.WEIGHTS.get("models/falcon-ocr-int8/scales.json");
-      if (r2Int8Weights && r2Int8Config && r2Int8Scales) {
-        try {
-          weightsBytes = new Uint8Array(await r2Int8Weights.arrayBuffer());
-          config = JSON.parse(await r2Int8Config.text());
-          scales = JSON.parse(await r2Int8Scales.text());
-          modelVariant = "int8";
-          console.log(`Loaded INT8 quantized model from R2: ${weightsBytes.byteLength} bytes`);
-        } catch (err) {
-          console.warn(`R2 INT8 model load failed: ${err.message}`);
-          weightsBytes = null;
-          config = null;
-          scales = null;
-        }
-      }
-
-      // Priority 3: INT4 sharded model (~5x30 MB shards, fits Workers memory)
+      // Priority 1: INT4 sharded model (~5x30 MB shards, fits Workers memory)
       // Each shard is loaded individually, tensors extracted, buffer dropped.
       if (!weightsBytes) {
       const r2ShardIndex = await env.WEIGHTS.get("models/falcon-ocr-int4-sharded/model.safetensors.index.json");
@@ -481,7 +417,7 @@ async function ensureModelLoaded(env) {
       }
       }
 
-      // Priority 4: INT4 single-file model (~129 MB, may exceed memory)
+      // Priority 2: INT4 single-file model (~129 MB, tight but possible)
       if (!weightsBytes) {
       const r2QuantWeights = await env.WEIGHTS.get("models/falcon-ocr-int4/model.safetensors");
       const r2QuantConfig = await env.WEIGHTS.get("models/falcon-ocr-int4/config.json");
@@ -502,25 +438,10 @@ async function ensureModelLoaded(env) {
       }
       }
 
-      // Priority 5: Full F32 model (~1 GB, only if memory permits)
-      if (!weightsBytes) {
-        const r2Weights = await env.WEIGHTS.get("models/falcon-ocr/model.safetensors");
-        const r2Config = await env.WEIGHTS.get("models/falcon-ocr/config.json");
-        if (r2Weights && r2Config) {
-          try {
-            weightsBytes = new Uint8Array(await r2Weights.arrayBuffer());
-            config = JSON.parse(await r2Config.text());
-            modelVariant = "f32";
-            console.log(`Loaded full F32 model from R2: ${weightsBytes.byteLength} bytes`);
-          } catch (err) {
-            console.warn(`R2 full model load failed, falling back to micro: ${err.message}`);
-            weightsBytes = null;
-            config = null;
-          }
-        }
-      }
+      // NOTE: F32 model (~1 GB) is SKIPPED — exceeds Workers memory by 4x.
+      // F32 is only viable for browser-side or Container deployments.
 
-      // Priority 6: Embedded micro model (263 KB, no R2 fetch)
+      // Priority 3: Embedded micro model (263 KB, no R2 fetch, always fits)
       if (!weightsBytes) {
         const _mm = await getMicroModelData(); const raw = atob(_mm.MICRO_MODEL_B64);
         weightsBytes = new Uint8Array(raw.length);
@@ -895,6 +816,37 @@ export default {
           ? { "X-Payment-Receipt": payment.receipt }
           : {};
 
+        // Route to Durable Object if requested or if default Worker path is
+        // insufficient.  The DO persists model state across requests.
+        const useBackend = request.headers.get("X-Use-Backend");
+        if (useBackend === "durable" && env.FALCON_OCR && path === "/ocr") {
+          try {
+            const id = env.FALCON_OCR.idFromName("default");
+            const stub = env.FALCON_OCR.get(id);
+            const doResponse = await stub.fetch(request.clone());
+            const headers = new Headers(doResponse.headers);
+            Object.entries(cors).forEach(([k, v]) => headers.set(k, v));
+            headers.set("X-Request-ID", rid);
+            if (payment.receipt) headers.set("X-Payment-Receipt", payment.receipt);
+            return new Response(doResponse.body, { status: doResponse.status, headers });
+          } catch (doErr) {
+            console.error(`Durable Object error: ${doErr.message}`, doErr.stack);
+            return new Response(
+              JSON.stringify({
+                error: "Durable Object inference failed",
+                reason: doErr.message,
+                request_id: rid,
+                fallback_available: true,
+                fallback_url: "/api/ocr/paddle",
+              }),
+              {
+                status: 503,
+                headers: { ...cors, "Content-Type": "application/json" },
+              },
+            );
+          }
+        }
+
         // Ensure model is loaded (lazy init on first request)
         // On failure, return fallback response instead of 500
         try {
@@ -1180,3 +1132,6 @@ export default {
     return result;
   },
 };
+
+// Re-export the Durable Object class for Cloudflare's runtime.
+export { FalconOCRInference } from "./falcon-ocr-do.js";

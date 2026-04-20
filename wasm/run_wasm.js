@@ -4725,10 +4725,11 @@ const extractWasmTableBase = (buffer) => {
       }
       return tableInitBase;
     }
-    if (tableInitFuncIndex !== null) {
-      return exportedBase;
-    }
     if (activeTableBases.length > 0) {
+      const appActiveTableBases = activeTableBases.filter((base) => base > 1);
+      if (appActiveTableBases.length > 0) {
+        return Math.min(...appActiveTableBases);
+      }
       return Math.min(...activeTableBases);
     }
     return exportedBase;
