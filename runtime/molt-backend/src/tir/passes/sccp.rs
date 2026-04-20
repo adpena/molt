@@ -372,7 +372,72 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         }
     }
 
+    // Phase 5: Eliminate blocks that became unreachable after branch folding.
+    // When a CondBranch is folded to a Branch, one successor is no longer
+    // reachable from the folded block. If that was the only path to the target,
+    // the target and its transitive successors become dead. Leaving dead blocks
+    // in the TIR is incorrect because their ops reference values whose
+    // definitions may no longer dominate them (the dominance tree changed when
+    // the CFG edge was removed). Removing dead blocks prevents downstream
+    // verification from reporting false SSA dominance violations.
+    if stats.ops_removed > 0 {
+        let reachable = compute_reachable_blocks(func);
+        let dead_blocks: Vec<BlockId> = func
+            .blocks
+            .keys()
+            .copied()
+            .filter(|bid| !reachable.contains(bid))
+            .collect();
+        for bid in &dead_blocks {
+            func.blocks.remove(bid);
+            func.loop_roles.remove(bid);
+            func.loop_pairs.remove(bid);
+            func.loop_break_kinds.remove(bid);
+            func.loop_cond_blocks.remove(bid);
+            func.label_id_map.remove(&bid.0);
+        }
+        stats.ops_removed += dead_blocks.len();
+    }
+
     stats
+}
+
+/// BFS from entry block to find all reachable blocks.
+fn compute_reachable_blocks(func: &TirFunction) -> HashSet<BlockId> {
+    use std::collections::VecDeque;
+
+    let mut visited: HashSet<BlockId> = HashSet::new();
+    let mut queue: VecDeque<BlockId> = VecDeque::new();
+    queue.push_back(func.entry_block);
+    visited.insert(func.entry_block);
+
+    while let Some(bid) = queue.pop_front() {
+        if let Some(block) = func.blocks.get(&bid) {
+            let succs: Vec<BlockId> = match &block.terminator {
+                Terminator::Branch { target, .. } => vec![*target],
+                Terminator::CondBranch {
+                    then_block,
+                    else_block,
+                    ..
+                } => vec![*then_block, *else_block],
+                Terminator::Switch {
+                    cases, default, ..
+                } => {
+                    let mut s = vec![*default];
+                    s.extend(cases.iter().map(|(_, t, _)| *t));
+                    s
+                }
+                Terminator::Return { .. } | Terminator::Unreachable => vec![],
+            };
+            for succ in succs {
+                if visited.insert(succ) {
+                    queue.push_back(succ);
+                }
+            }
+        }
+    }
+
+    visited
 }
 
 /// Try to evaluate a binary/unary op on constant operands.
