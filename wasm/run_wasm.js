@@ -4656,7 +4656,7 @@ const extractWasmTableBase = (buffer) => {
             }
             if (
               Number.isFinite(tableBase) &&
-              tableBase > 1 &&
+              tableBase > 0 &&
               (!Number.isFinite(exportedBase) || tableBase >= exportedBase)
             ) {
               activeTableBases.push(tableBase);
@@ -4698,39 +4698,40 @@ const extractWasmTableBase = (buffer) => {
       }
     }
 
+    let tableInitBase = null;
+    if (tableInitFuncIndex !== null && codeBodies) {
+      const definedIndex = tableInitFuncIndex - importFuncCount;
+      if (definedIndex >= 0 && definedIndex < codeBodies.length) {
+        const [bodyStart, bodyEnd] = codeBodies[definedIndex];
+        let pos = bodyStart;
+        let localDeclCount;
+        [localDeclCount, pos] = readVarUint(bytes, pos);
+        for (let i = 0; i < localDeclCount; i += 1) {
+          [, pos] = readVarUint(bytes, pos);
+          if (pos >= bodyEnd) {
+            break;
+          }
+          pos += 1;
+        }
+        if (pos < bodyEnd && bytes[pos] === 0x41) {
+          pos += 1;
+          [tableInitBase] = readVarInt32(bytes, pos);
+        }
+      }
+    }
+    if (Number.isFinite(tableInitBase) && tableInitBase > 0) {
+      if (Number.isFinite(exportedBase) && exportedBase > 0 && tableInitBase < exportedBase) {
+        return exportedBase;
+      }
+      return tableInitBase;
+    }
+    if (tableInitFuncIndex !== null) {
+      return exportedBase;
+    }
     if (activeTableBases.length > 0) {
       return Math.min(...activeTableBases);
     }
-    if (tableInitFuncIndex === null || !codeBodies) {
-      return exportedBase;
-    }
-    const definedIndex = tableInitFuncIndex - importFuncCount;
-    if (definedIndex < 0 || definedIndex >= codeBodies.length) {
-      return null;
-    }
-    const [bodyStart, bodyEnd] = codeBodies[definedIndex];
-    let pos = bodyStart;
-    let localDeclCount;
-    [localDeclCount, pos] = readVarUint(bytes, pos);
-    for (let i = 0; i < localDeclCount; i += 1) {
-      [, pos] = readVarUint(bytes, pos);
-      if (pos >= bodyEnd) {
-        return null;
-      }
-      pos += 1;
-    }
-    if (pos >= bodyEnd || bytes[pos] !== 0x41) {
-      return null;
-    }
-    pos += 1;
-    const [tableBase] = readVarInt32(bytes, pos);
-    if (!Number.isFinite(tableBase) || tableBase <= 0) {
-      return exportedBase;
-    }
-    if (Number.isFinite(exportedBase) && exportedBase > 0 && tableBase < exportedBase) {
-      return exportedBase;
-    }
-    return tableBase;
+    return exportedBase;
   } catch {
     return exportedBase;
   }
@@ -5986,5 +5987,6 @@ if (require.main === module && !IS_DB_WORKER && !IS_SOCKET_WORKER) {
 }
 
 module.exports = {
+  extractWasmTableBase,
   resolveWasmPaths,
 };
