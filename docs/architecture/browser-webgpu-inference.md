@@ -1,11 +1,68 @@
-# Browser WebGPU Inference for Falcon-OCR
+# Falcon-OCR Inference Architecture
 
 ## Overview
 
-Falcon-OCR runs entirely in the browser via WebAssembly SIMD, providing
-private, offline-capable OCR inference with no server round-trips.
+Falcon-OCR is deployed across three tiers with different trade-offs.
+The correct inference path depends on where the code runs:
 
-## Architecture
+| Environment | Primary Backend | Fallback | Why |
+|-------------|----------------|----------|-----|
+| **Cloudflare Workers** | Workers AI (GPU fleet) | PaddleOCR | 13 MB WASM instantiation exceeds Workers CPU budget |
+| **Browser** | Falcon-OCR WASM (offline, private) | PaddleOCR | No server round-trips, data never leaves device |
+| **Self-hosted** | Falcon-OCR WASM or native binary | — | Full control, unlimited resources |
+
+### Why NOT WASM on Workers
+
+The compiled `falcon-ocr.wasm` is 13.4 MB (4 MB gzipped). `WebAssembly.instantiateStreaming`
+on a module this size exceeds the Workers CPU time budget on cold start (50 ms free, 30 s paid).
+Even on the paid plan, instantiating 13 MB of WASM plus loading 129+ MB of weights into linear
+memory hits both CPU and memory limits. Workers AI offloads inference to Cloudflare's GPU fleet
+at zero CPU cost to the Worker isolate.
+
+### Why WASM in Browser
+
+Browsers have no CPU time limit. The 13 MB module compiles in ~2s on modern hardware via
+streaming compilation. Weights are cached in IndexedDB for offline use. All inference is local
+— no image data leaves the device. This is the privacy-first path for enjoice.
+
+## Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Cloudflare Workers (falcon-ocr.adpena.workers.dev)              │
+│                                                                 │
+│  POST /ocr ──► Workers AI (Gemma 3 12B, GPU fleet, 1.03s TTFB) │
+│                    │ fail                                        │
+│                    ▼                                             │
+│               PaddleOCR fallback                                │
+│                                                                 │
+│  GET /wasm/* ──► R2 (serves WASM + weights for browser)         │
+│  GET /weights/* ──► R2 (serves model weights for browser)       │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ Browser (freeinvoicemaker.app)                                  │
+│                                                                 │
+│  FalconOCR WASM loader:                                         │
+│    1. Download falcon-ocr.wasm (4 MB gzipped, cached)           │
+│    2. Download INT4 weights (129 MB, IndexedDB cached)          │
+│    3. WebAssembly.instantiateStreaming                           │
+│    4. wasm.init(weights, config)                                │
+│    5. wasm.ocr_tokens(w, h, rgb, prompt, max_tokens)            │
+│                    │ fail                                        │
+│                    ▼                                             │
+│               PaddleOCR fallback (server-side)                  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ Self-hosted                                                     │
+│                                                                 │
+│  falcon-ocr.wasm (Node/Deno) or native binary                  │
+│  Full F32 weights, no quantization loss                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Browser WASM Path (Primary)
 
 ```
 Browser loads page
@@ -228,13 +285,16 @@ class FalconOCR {
 
 ## Deployment Targets
 
-| Target | WASM Path | Weights | Memory Limit | Status |
-|--------|-----------|---------|--------------|--------|
-| Browser (desktop) | falcon-ocr.wasm | INT4 (129 MB) | ~4 GB | Primary target |
-| Browser (mobile) | falcon-ocr.wasm | INT4 (129 MB) | ~1-2 GB | Best-effort |
-| Cloudflare Worker | falcon-ocr.wasm | F32 (1 GB) | 128 MB (free) / 512 MB (paid) | Not viable (memory) |
-| Self-hosted (Node) | falcon-ocr.wasm | F32/INT8 | Unlimited | Fully supported |
-| Deno Deploy | falcon-ocr.wasm | INT4 (129 MB) | 512 MB | Viable |
+| Target | Inference Path | Weights | Status |
+|--------|---------------|---------|--------|
+| Browser (desktop) | Falcon-OCR WASM | INT4 (129 MB) | Primary target |
+| Browser (mobile) | Falcon-OCR WASM | INT4 (129 MB) | Best-effort |
+| Cloudflare Worker | Workers AI (GPU fleet) | N/A (remote) | Production (1.03s TTFB) |
+| Self-hosted (Node) | falcon-ocr.wasm or native | F32/INT8 | Fully supported |
+| Deno Deploy | falcon-ocr.wasm | INT4 (129 MB) | Viable |
+
+**Note**: Cloudflare Workers do NOT use WASM inference. The 13 MB WASM instantiation
+exceeds Workers CPU budget. Workers AI runs on Cloudflare's GPU fleet instead.
 
 ## Limitations
 

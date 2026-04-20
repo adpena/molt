@@ -321,63 +321,16 @@ async function ensureModelLoaded(env) {
       console.warn(`WASM SIMD ops init failed: ${err.message}`);
     }
 
-    // Phase 1: Try loading the WASM binary for full-speed inference.
-    // Uses instantiateStreaming for fastest possible compilation — the browser/runtime
-    // can compile the module while bytes are still being downloaded from R2.
+    // WASM inference is NOT used on Workers.
+    // falcon-ocr.wasm is 13.4 MB — WebAssembly.instantiateStreaming on a module
+    // this size exceeds Workers CPU budget on cold start (even on the paid plan).
+    // Combined with 129+ MB of weights, it also exceeds memory limits.
     //
-    // CONSTRAINT: falcon-ocr.wasm is 13.4 MB. Combined with 1 GB weights, this
-    // exceeds Workers memory limits on cold start. This path is only reached when
-    // explicitly requested (X-Use-Backend: wasm) or in high-memory deployments.
-    // For browser/self-hosted use, see docs/architecture/browser-webgpu-inference.md.
-    let useWasm = false;
-    const wasmObj = await env.WEIGHTS.get("models/falcon-ocr/falcon-ocr.wasm");
-
-    if (wasmObj) {
-      try {
-        // R2 objects expose a body (ReadableStream) — wrap it in a Response for
-        // instantiateStreaming which requires a Response with application/wasm type.
-        const wasmResponse = new Response(wasmObj.body, {
-          headers: { "Content-Type": "application/wasm" },
-        });
-        const importObject = {
-          env: { memory: new WebAssembly.Memory({ initial: 256, maximum: 2048 }) },
-        };
-        const { instance } = await WebAssembly.instantiateStreaming(wasmResponse, importObject);
-        wasmInstance = instance;
-        useWasm = true;
-        console.log("WASM module loaded via instantiateStreaming (13.4 MB)");
-      } catch (err) {
-        console.warn(`WASM instantiateStreaming failed, falling back to CPU: ${err.message}`);
-        wasmInstance = null;
-      }
-    }
-
-    if (useWasm && wasmInstance) {
-      // Phase 2a (WASM): Load full production weights from R2.
-      // The WASM module exports init(weights_bytes, config_json) and
-      // ocr_tokens(width, height, rgb, prompt_ids, max_new_tokens).
-      // See wasm_driver.py for the export contract.
-      const weightsObj = await env.WEIGHTS.get("models/falcon-ocr/model.safetensors");
-      if (!weightsObj) {
-        throw new Error("Weights not found in R2: models/falcon-ocr/model.safetensors");
-      }
-      const weightsBytes = new Uint8Array(await weightsObj.arrayBuffer());
-      const configObj = await env.WEIGHTS.get("models/falcon-ocr/config.json");
-      if (!configObj) {
-        throw new Error("Config not found in R2: models/falcon-ocr/config.json");
-      }
-      const configJson = await configObj.text();
-
-      // Initialize the WASM model — this loads weights into WASM linear memory.
-      wasmInstance.exports.init(weightsBytes, configJson);
-      activeDevice = "wasm";
-      activeModelVariant = "f32";
-      modelReady = true;
-      initError = null;
-      console.log(`Model loaded via WASM: ${weightsBytes.byteLength} bytes weights`);
-      return;
-    } else {
-      // Phase 2b (CPU): Try loading quantized sharded model from R2 first,
+    // The correct Worker-side inference path is Workers AI (GPU fleet, 1.03s TTFB).
+    // WASM is served to browsers via GET /wasm/* for client-side offline inference.
+    // See docs/architecture/browser-webgpu-inference.md for the full architecture.
+    {
+      // Phase 2 (CPU): Try loading quantized sharded model from R2 first,
       // then single-file INT4, then full F32, then embedded micro model.
       let weightsBytes = null;
       let config = null;
@@ -657,6 +610,52 @@ export default {
     // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: cors });
+    }
+
+    // -----------------------------------------------------------------------
+    // Browser asset serving: WASM binary and model weights from R2.
+    // These are public-read, no x402 required — inference runs locally in the
+    // browser, not on this Worker. Immutable caching (weights don't change).
+    // -----------------------------------------------------------------------
+    if (request.method === "GET" && path.startsWith("/wasm/")) {
+      const key = `models/falcon-ocr/${path.slice(6)}`; // strip "/wasm/"
+      const obj = await env.WEIGHTS.get(key);
+      if (!obj) {
+        return new Response(
+          JSON.stringify({ error: "Not found", request_id: rid }),
+          { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
+        );
+      }
+      const headers = {
+        ...cors,
+        "Content-Type": "application/wasm",
+        "Cache-Control": "public, max-age=86400, immutable",
+        "Content-Length": String(obj.size),
+      };
+      return new Response(obj.body, { status: 200, headers });
+    }
+
+    if (request.method === "GET" && path.startsWith("/weights/")) {
+      const key = `models/falcon-ocr/${path.slice(9)}`; // strip "/weights/"
+      const obj = await env.WEIGHTS.get(key);
+      if (!obj) {
+        return new Response(
+          JSON.stringify({ error: "Not found", request_id: rid }),
+          { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
+        );
+      }
+      // Determine content type from extension
+      let contentType = "application/octet-stream";
+      if (key.endsWith(".json")) contentType = "application/json";
+      else if (key.endsWith(".safetensors")) contentType = "application/octet-stream";
+
+      const headers = {
+        ...cors,
+        "Content-Type": contentType,
+        "Cache-Control": "public, max-age=86400, immutable",
+        "Content-Length": String(obj.size),
+      };
+      return new Response(obj.body, { status: 200, headers });
     }
 
     // Fast path: template extraction can skip local model loading entirely
