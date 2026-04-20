@@ -6,18 +6,18 @@
  *   2. Warm request: run OCR inference on the cached model.
  *
  * Fallback chain (in-Worker):
- *   WASM (WebAssembly.instantiateStreaming) -> Workers AI (GPU fleet) -> PaddleOCR -> error
+ *   Falcon-OCR CPU (micro model) -> PaddleOCR fallback -> error
  *
- * NOTE: The full WASM path (falcon-ocr.wasm at 13.4 MB + model.safetensors at 1 GB)
- * exceeds Workers' memory and CPU time limits on cold start. The WASM path is therefore
- * only viable for:
- *   - Browser-side inference (no memory/CPU budget constraints)
- *   - Self-hosted/on-prem deployments (no per-request cost)
+ * NOTE: Workers AI is NOT used for OCR text extraction (it hallucinates content).
+ * Workers AI is ONLY used for:
+ *   - /invoice/fill (NL template filling)
+ *   - /template/extract (layout analysis)
+ *   - /ocr/structured (structured extraction)
  *
- * In the Worker, Workers AI is the preferred fast default (zero CPU cost, GPU fleet).
- * The WASM path here serves as documentation and is activated only when
- * X-Use-Backend: wasm is explicitly requested (for testing or edge cases where
- * the Worker has been deployed on a high-memory plan).
+ * The WASM path (falcon-ocr.wasm at 13.4 MB + model.safetensors at 1 GB)
+ * exceeds Workers' memory and CPU time limits on cold start. The WASM path is
+ * only viable for browser-side inference or self-hosted deployments.
+ * The CPU micro model is used for in-Worker OCR inference.
  *
  * The Worker NEVER logs image content (privacy).  Request IDs are
  * generated for debugging without exposing PII.
@@ -50,7 +50,7 @@ async function getSimdOpsWasm() {
   if (!_simdOpsWasm) _simdOpsWasm = await import("./simd-ops-b64.js");
   return _simdOpsWasm;
 }
-import { isWorkersAiAvailable, hybridOcr, runWorkersAiOcr } from "./ai-fallback.js";
+import { isWorkersAiAvailable } from "./ai-fallback.js";
 
 /** @type {WebAssembly.Instance | null} */
 let wasmInstance = null;
@@ -579,12 +579,13 @@ function fallbackErrorResponse(err, rid, cors) {
   return new Response(
     JSON.stringify({
       error: "Primary OCR backend unavailable",
+      reason: "Falcon-OCR model loading",
       error_category: category,
       request_id: rid,
       fallback_available: true,
       fallback_url: "/api/ocr/paddle",
       backends: {
-        "molt-gpu": { status: "error" },
+        "falcon-ocr": { status: "error" },
         "paddle-ocr": { status: "available", url: "/api/ocr/paddle" },
       },
     }),
@@ -772,61 +773,10 @@ export default {
       return response;
     }
 
-    // Fast path: Workers AI is the DEFAULT backend for /ocr when available.
-    // Local model loading is too CPU-heavy for Workers (even with Paid plan).
-    // Workers AI runs on Cloudflare's GPU fleet — zero CPU cost on this Worker.
-    // Only falls through to local model if Workers AI is unavailable AND
-    // X-Use-Backend: local is explicitly requested.
-    const requestedBackend = request.headers.get("X-Use-Backend");
-    if (path === "/ocr" && request.method === "POST" &&
-        isWorkersAiAvailable(env) && requestedBackend !== "local") {
-      // x402 payment verification (skipped for same-origin browser requests)
-      const payment = await verifyX402(request, env, rid, cors);
-      if (!payment.authorized) {
-        return payment.response;
-      }
-      try {
-        const ct = request.headers.get("Content-Type") || "";
-        let imageBytes = null;
-        let prompt = null;
-        if (ct.includes("application/json")) {
-          const body = await request.json();
-          if (body.image && typeof body.image === "string") {
-            const raw = atob(body.image);
-            imageBytes = new Uint8Array(raw.length);
-            for (let i = 0; i < raw.length; i++) imageBytes[i] = raw.charCodeAt(i);
-            prompt = body.prompt;
-          }
-        }
-        if (imageBytes) {
-          const aiResult = await runWorkersAiOcr(env, imageBytes, {
-            prompt: prompt || undefined,
-            isInvoice: true,
-          });
-          return new Response(
-            JSON.stringify({ ...aiResult, request_id: rid }),
-            {
-              status: 200,
-              headers: { ...cors, "Content-Type": "application/json" },
-            },
-          );
-        }
-      } catch (err) {
-        return new Response(
-          JSON.stringify({
-            error: "OCR inference temporarily unavailable",
-            error_category: categorizeError(err, 503),
-            request_id: rid,
-            fallback_available: true,
-            fallback_url: "/api/ocr/paddle",
-          }),
-          {
-            status: 503,
-            headers: { ...cors, "Content-Type": "application/json", "Retry-After": "5" },
-          },
-        );
-      }
-    }
+    // OCR path: Falcon-OCR CPU (micro model) is the primary backend.
+    // Workers AI is NOT used for /ocr — it hallucinates invoice content.
+    // If Falcon-OCR model is not loaded, return 503 with PaddleOCR fallback.
+    // Workers AI remains available for /invoice/fill and /template/extract only.
 
     let result;
     try {
@@ -892,26 +842,26 @@ export default {
                 },
                 window_minutes: analyticsSummary.time_window_minutes,
               } : undefined,
-              model_variant_priorities: [
-                "workers-ai (GPU fleet, preferred)",
-                "molt-gpu (local WASM+WebGPU)",
+              ocr_backend_priorities: [
+                "falcon-ocr-cpu (micro model, primary)",
                 "paddle-ocr (CPU fallback)",
               ],
+              workers_ai_usage: "NL fill and template extraction ONLY (not OCR)",
               backends: {
-                "workers-ai": {
-                  status: isWorkersAiAvailable(env) ? "available" : "not-bound",
-                  note: isWorkersAiAvailable(env)
-                    ? "GPU inference via Workers AI (preferred)"
-                    : "Add [ai] binding to wrangler.toml for GPU inference",
-                },
-                "molt-gpu": {
+                "falcon-ocr": {
                   status: modelReady ? "ready" : initError ? "error" : "loading",
                   device: modelReady ? device : undefined,
                   error: initError || undefined,
+                  note: "Primary OCR engine (CPU micro model)",
                 },
                 "paddle-ocr": {
                   status: "available",
                   url: "/api/ocr/paddle",
+                  note: "OCR fallback when Falcon-OCR unavailable",
+                },
+                "workers-ai": {
+                  status: isWorkersAiAvailable(env) ? "available" : "not-bound",
+                  note: "Used for /invoice/fill and /template/extract ONLY (not OCR)",
                 },
               },
             }),
