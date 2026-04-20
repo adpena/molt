@@ -69,7 +69,7 @@ const SUPPORTED_CONTENT_TYPES = new Set([
  *
  * @param {Request} request
  * @param {object} env
- * @returns {Promise<{ bytes: Uint8Array, format: string } | { error: string, status: number }>}
+ * @returns {Promise<{ bytes: Uint8Array, format: string, maxTokens?: number } | { error: string, status: number }>}
  */
 async function extractImage(request, env) {
   const maxBytes = parseInt(env.MAX_IMAGE_BYTES || String(MAX_IMAGE_BYTES_DEFAULT), 10);
@@ -101,7 +101,7 @@ async function extractImage(request, env) {
   }
 
   if (contentType.includes("application/json")) {
-    const body = /** @type {{ image?: string, format?: string }} */ (await request.json());
+    const body = /** @type {{ image?: string, format?: string, max_tokens?: number }} */ (await request.json());
     if (!body.image || typeof body.image !== "string") {
       return { error: "Missing 'image' field (base64 string) in JSON body", status: 400 };
     }
@@ -123,7 +123,8 @@ async function extractImage(request, env) {
         status: 415,
       };
     }
-    return { bytes, format };
+    const maxTokens = typeof body.max_tokens === "number" ? body.max_tokens : undefined;
+    return { bytes, format, maxTokens };
   }
 
   return {
@@ -172,8 +173,9 @@ async function decodeImageToRgb(bytes, _format) {
     return { width, height, rgb };
   }
 
-  // Fallback: extract dimensions from PNG/JPEG header and return raw bytes.
-  // The CPU inference path handles RGB conversion directly.
+  // Fallback: decode PNG inline when createImageBitmap is unavailable.
+  // Cloudflare Workers gained createImageBitmap support in 2025-Q3, but
+  // we need a working fallback for environments without it.
   const dims = parseImageDimensions(bytes);
   if (!dims) {
     throw new Error(
@@ -181,20 +183,303 @@ async function decodeImageToRgb(bytes, _format) {
       "Supported: PNG, JPEG."
     );
   }
-  // For PNG: decompress and extract RGB data.
-  // For the micro model demo, we generate synthetic RGB from pixel dimensions.
-  // Real decode requires the WASM module or createImageBitmap.
-  const { width, height } = dims;
-  const rgb = new Uint8Array(width * height * 3);
-  // Fill with a simple pattern from the raw bytes (best-effort without full decode)
-  for (let i = 0; i < rgb.length && i < bytes.length; i++) {
-    rgb[i] = bytes[i % bytes.length];
+
+  // Attempt minimal PNG decode for the most common case.
+  const isPng = bytes.length >= 8 &&
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+
+  if (isPng) {
+    const rgb = decodePngToRgb(bytes, dims.width, dims.height);
+    if (rgb) {
+      return { width: dims.width, height: dims.height, rgb };
+    }
   }
-  return { width, height, rgb };
+
+  throw new Error(
+    "createImageBitmap not available and cannot decode image in pure JS. " +
+    "This environment requires createImageBitmap support (Cloudflare Workers 2025-Q3+) " +
+    "or pre-decoded RGB data via POST /ocr/tokens."
+  );
 }
 
 /**
- * Align dimensions to the model's patch size (16).
+ * Paeth predictor for PNG unfiltering.
+ * @param {number} a - left
+ * @param {number} b - above
+ * @param {number} c - upper-left
+ * @returns {number}
+ */
+function paethPredictor(a, b, c) {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
+}
+
+/**
+ * Synchronous zlib inflate (RFC 1950 / RFC 1951 DEFLATE).
+ *
+ * Implements a complete Huffman/DEFLATE decoder for PNG IDAT decompression.
+ * Handles stored, fixed Huffman, and dynamic Huffman blocks.
+ *
+ * @param {Uint8Array} data - zlib-wrapped compressed data
+ * @returns {Uint8Array | null}
+ */
+function inflateSync(data) {
+  if (data.length < 6) return null;
+  if ((data[0] & 0x0f) !== 8) return null; // Must be deflate
+
+  let bitPos = 16; // Skip 2-byte zlib header
+  const output = [];
+
+  function readBits(n) {
+    let val = 0;
+    for (let i = 0; i < n; i++) {
+      const byteIdx = bitPos >> 3;
+      const bitIdx = bitPos & 7;
+      if (byteIdx >= data.length) return 0;
+      val |= ((data[byteIdx] >> bitIdx) & 1) << i;
+      bitPos++;
+    }
+    return val;
+  }
+
+  function readByte() {
+    bitPos = (bitPos + 7) & ~7;
+    const byteIdx = bitPos >> 3;
+    bitPos += 8;
+    return byteIdx < data.length ? data[byteIdx] : 0;
+  }
+
+  // Fixed Huffman code length tables
+  const FIXED_LIT_LENS = new Uint8Array(288);
+  for (let i = 0; i <= 143; i++) FIXED_LIT_LENS[i] = 8;
+  for (let i = 144; i <= 255; i++) FIXED_LIT_LENS[i] = 9;
+  for (let i = 256; i <= 279; i++) FIXED_LIT_LENS[i] = 7;
+  for (let i = 280; i <= 287; i++) FIXED_LIT_LENS[i] = 8;
+
+  const FIXED_DIST_LENS = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) FIXED_DIST_LENS[i] = 5;
+
+  function buildHuffmanTable(codeLengths, maxSymbols) {
+    let maxBits = 0;
+    for (let i = 0; i < maxSymbols; i++) {
+      if (codeLengths[i] > maxBits) maxBits = codeLengths[i];
+    }
+    if (maxBits === 0) return { table: new Map(), maxBits: 1 };
+
+    const blCount = new Uint16Array(maxBits + 1);
+    for (let i = 0; i < maxSymbols; i++) {
+      if (codeLengths[i] > 0) blCount[codeLengths[i]]++;
+    }
+    const nextCode = new Uint16Array(maxBits + 1);
+    let code = 0;
+    for (let bits = 1; bits <= maxBits; bits++) {
+      code = (code + blCount[bits - 1]) << 1;
+      nextCode[bits] = code;
+    }
+    const table = new Map();
+    for (let sym = 0; sym < maxSymbols; sym++) {
+      const len = codeLengths[sym];
+      if (len > 0) {
+        table.set((len << 16) | nextCode[len], sym);
+        nextCode[len]++;
+      }
+    }
+    return { table, maxBits };
+  }
+
+  function readSymbol(ht) {
+    let code = 0;
+    for (let len = 1; len <= ht.maxBits; len++) {
+      code = (code << 1) | readBits(1);
+      const key = (len << 16) | code;
+      if (ht.table.has(key)) return ht.table.get(key);
+    }
+    return -1;
+  }
+
+  const LEN_BASE = [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+  const LEN_EXTRA = [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+  const DIST_BASE = [1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+  const DIST_EXTRA = [0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+  const CL_ORDER = [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+
+  let bfinal = 0;
+  while (!bfinal) {
+    bfinal = readBits(1);
+    const btype = readBits(2);
+
+    if (btype === 0) {
+      const len = readByte() | (readByte() << 8);
+      readByte(); readByte(); // Skip nlen
+      for (let i = 0; i < len; i++) output.push(readByte());
+    } else if (btype === 1 || btype === 2) {
+      let litHt, distHt;
+
+      if (btype === 1) {
+        litHt = buildHuffmanTable(FIXED_LIT_LENS, 288);
+        distHt = buildHuffmanTable(FIXED_DIST_LENS, 32);
+      } else {
+        const hlit = readBits(5) + 257;
+        const hdist = readBits(5) + 1;
+        const hclen = readBits(4) + 4;
+        const clLens = new Uint8Array(19);
+        for (let i = 0; i < hclen; i++) clLens[CL_ORDER[i]] = readBits(3);
+        const clHt = buildHuffmanTable(clLens, 19);
+
+        const allLens = new Uint8Array(hlit + hdist);
+        let idx = 0;
+        while (idx < hlit + hdist) {
+          const sym = readSymbol(clHt);
+          if (sym < 16) {
+            allLens[idx++] = sym;
+          } else if (sym === 16) {
+            const rep = readBits(2) + 3;
+            const val = idx > 0 ? allLens[idx - 1] : 0;
+            for (let r = 0; r < rep; r++) allLens[idx++] = val;
+          } else if (sym === 17) {
+            const rep = readBits(3) + 3;
+            for (let r = 0; r < rep; r++) allLens[idx++] = 0;
+          } else if (sym === 18) {
+            const rep = readBits(7) + 11;
+            for (let r = 0; r < rep; r++) allLens[idx++] = 0;
+          }
+        }
+        litHt = buildHuffmanTable(allLens.subarray(0, hlit), hlit);
+        distHt = buildHuffmanTable(allLens.subarray(hlit), hdist);
+      }
+
+      while (true) {
+        const sym = readSymbol(litHt);
+        if (sym < 0) return null;
+        if (sym === 256) break;
+        if (sym < 256) {
+          output.push(sym);
+        } else {
+          const lenIdx = sym - 257;
+          const length = LEN_BASE[lenIdx] + readBits(LEN_EXTRA[lenIdx]);
+          const distSym = readSymbol(distHt);
+          const distance = DIST_BASE[distSym] + readBits(DIST_EXTRA[distSym]);
+          const srcStart = output.length - distance;
+          for (let i = 0; i < length; i++) output.push(output[srcStart + i]);
+        }
+      }
+    } else {
+      return null;
+    }
+  }
+
+  return new Uint8Array(output);
+}
+
+/**
+ * Minimal PNG decoder: handles all standard filter types (none, sub, up,
+ * average, paeth) with zlib-compressed IDAT chunks.
+ *
+ * Supports 8-bit RGB (colorType 2), RGBA (colorType 6), and grayscale
+ * (colorType 0). Returns null if decode fails.
+ *
+ * @param {Uint8Array} png - Full PNG file bytes
+ * @param {number} width
+ * @param {number} height
+ * @returns {Uint8Array | null} - RGB data or null on failure
+ */
+function decodePngToRgb(png, width, height) {
+  try {
+    const idatChunks = [];
+    let offset = 8;
+    let bitDepth = 8;
+    let colorType = 2;
+
+    while (offset < png.length - 4) {
+      const dv = new DataView(png.buffer, png.byteOffset, png.byteLength);
+      const chunkLen = dv.getUint32(offset, false);
+      const chunkType = String.fromCharCode(
+        png[offset + 4], png[offset + 5], png[offset + 6], png[offset + 7]
+      );
+
+      if (chunkType === "IHDR") {
+        bitDepth = png[offset + 16];
+        colorType = png[offset + 17];
+      } else if (chunkType === "IDAT") {
+        idatChunks.push(png.slice(offset + 8, offset + 8 + chunkLen));
+      } else if (chunkType === "IEND") {
+        break;
+      }
+      offset += 12 + chunkLen;
+    }
+
+    if (idatChunks.length === 0 || bitDepth !== 8) return null;
+
+    const totalLen = idatChunks.reduce((sum, c) => sum + c.length, 0);
+    const compressed = new Uint8Array(totalLen);
+    let pos = 0;
+    for (const chunk of idatChunks) {
+      compressed.set(chunk, pos);
+      pos += chunk.length;
+    }
+
+    const inflated = inflateSync(compressed);
+    if (!inflated) return null;
+
+    const bpp = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 0 ? 1 : null;
+    if (bpp === null) return null;
+
+    const stride = width * bpp;
+    const rgb = new Uint8Array(width * height * 3);
+    let prevRow = new Uint8Array(stride);
+
+    for (let y = 0; y < height; y++) {
+      const filterByte = inflated[y * (stride + 1)];
+      const rowStart = y * (stride + 1) + 1;
+      const row = new Uint8Array(stride);
+
+      for (let i = 0; i < stride; i++) {
+        const raw = inflated[rowStart + i];
+        const a = i >= bpp ? row[i - bpp] : 0;
+        const b = prevRow[i];
+        const c = i >= bpp ? prevRow[i - bpp] : 0;
+
+        switch (filterByte) {
+          case 0: row[i] = raw; break;
+          case 1: row[i] = (raw + a) & 0xff; break;
+          case 2: row[i] = (raw + b) & 0xff; break;
+          case 3: row[i] = (raw + ((a + b) >> 1)) & 0xff; break;
+          case 4: row[i] = (raw + paethPredictor(a, b, c)) & 0xff; break;
+          default: return null;
+        }
+      }
+
+      for (let x = 0; x < width; x++) {
+        const srcIdx = x * bpp;
+        const dstIdx = (y * width + x) * 3;
+        if (bpp >= 3) {
+          rgb[dstIdx] = row[srcIdx];
+          rgb[dstIdx + 1] = row[srcIdx + 1];
+          rgb[dstIdx + 2] = row[srcIdx + 2];
+        } else {
+          rgb[dstIdx] = rgb[dstIdx + 1] = rgb[dstIdx + 2] = row[srcIdx];
+        }
+      }
+      prevRow = row;
+    }
+    return rgb;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Align dimensions DOWN to the model's patch size (16).
+ *
+ * Falcon-OCR requires exact multiples of patchSize. We floor (not ceil)
+ * to avoid introducing black padding that corrupts patch embeddings.
+ * The Python reference raises ValueError on non-multiples, so we
+ * truncate to the nearest lower multiple instead.
  *
  * @param {number} width
  * @param {number} height
@@ -203,13 +488,13 @@ async function decodeImageToRgb(bytes, _format) {
  */
 function alignToPatch(width, height, patchSize = 16) {
   return {
-    width: Math.ceil(width / patchSize) * patchSize,
-    height: Math.ceil(height / patchSize) * patchSize,
+    width: Math.floor(width / patchSize) * patchSize,
+    height: Math.floor(height / patchSize) * patchSize,
   };
 }
 
 /**
- * Pad RGB data to patch-aligned dimensions with black pixels.
+ * Crop RGB data to patch-aligned dimensions (discard right/bottom edges).
  *
  * @param {Uint8Array} rgb - Original RGB data
  * @param {number} origWidth
@@ -218,17 +503,102 @@ function alignToPatch(width, height, patchSize = 16) {
  * @param {number} newHeight
  * @returns {Uint8Array}
  */
-function padRgb(rgb, origWidth, origHeight, newWidth, newHeight) {
+function cropRgb(rgb, origWidth, origHeight, newWidth, newHeight) {
   if (origWidth === newWidth && origHeight === newHeight) {
     return rgb;
   }
-  const padded = new Uint8Array(newWidth * newHeight * 3);
-  for (let y = 0; y < origHeight; y++) {
+  const cropped = new Uint8Array(newWidth * newHeight * 3);
+  for (let y = 0; y < newHeight; y++) {
     const srcOffset = y * origWidth * 3;
     const dstOffset = y * newWidth * 3;
-    padded.set(rgb.subarray(srcOffset, srcOffset + origWidth * 3), dstOffset);
+    cropped.set(rgb.subarray(srcOffset, srcOffset + newWidth * 3), dstOffset);
   }
-  return padded;
+  return cropped;
+}
+
+/**
+ * Downsample an image to fit within maxDim while maintaining aspect ratio,
+ * then align to the nearest multiple of patchSize.
+ *
+ * This is the primary speed optimization: reducing image size from 224x224
+ * (196 patches, O(n^2) attention) to 128x128 (64 patches) gives a ~9x
+ * speedup in the attention layers (quadratic in sequence length).
+ *
+ * Tradeoffs:
+ *   - 128x128 (64 patches): ~9x faster than 224x224, minor quality loss
+ *     on fine text. Good for invoices, receipts, printed documents.
+ *   - 96x96 (36 patches): ~30x faster, noticeable quality loss on small
+ *     text. Acceptable for large-font documents.
+ *   - 64x64 (16 patches): ~150x faster, significant quality loss.
+ *     Only useful for single-line text or very large text.
+ *
+ * Uses bilinear interpolation for quality downsampling.
+ *
+ * @param {Uint8Array} rgb - Source RGB pixels
+ * @param {number} width - Source width
+ * @param {number} height - Source height
+ * @param {number} maxDim - Maximum dimension (default 128)
+ * @param {number} patchSize - Patch size for alignment (default 16)
+ * @returns {{ rgb: Uint8Array, width: number, height: number }}
+ */
+function resizeForInference(rgb, width, height, maxDim = 128, patchSize = 16) {
+  // If already within bounds, just align to patch size
+  if (width <= maxDim && height <= maxDim) {
+    const aw = Math.floor(width / patchSize) * patchSize;
+    const ah = Math.floor(height / patchSize) * patchSize;
+    if (aw < patchSize || ah < patchSize) {
+      return { rgb, width, height };
+    }
+    return { rgb: cropRgb(rgb, width, height, aw, ah), width: aw, height: ah };
+  }
+
+  // Scale down maintaining aspect ratio
+  const scale = Math.min(maxDim / width, maxDim / height);
+  let newW = Math.floor(width * scale);
+  let newH = Math.floor(height * scale);
+
+  // Align to patch size (floor to avoid exceeding maxDim)
+  newW = Math.floor(newW / patchSize) * patchSize;
+  newH = Math.floor(newH / patchSize) * patchSize;
+
+  // Ensure minimum 1 patch per dimension
+  if (newW < patchSize) newW = patchSize;
+  if (newH < patchSize) newH = patchSize;
+
+  // Bilinear interpolation
+  const out = new Uint8Array(newW * newH * 3);
+  const xRatio = width / newW;
+  const yRatio = height / newH;
+
+  for (let y = 0; y < newH; y++) {
+    const srcY = y * yRatio;
+    const y0 = Math.floor(srcY);
+    const y1 = Math.min(y0 + 1, height - 1);
+    const yFrac = srcY - y0;
+
+    for (let x = 0; x < newW; x++) {
+      const srcX = x * xRatio;
+      const x0 = Math.floor(srcX);
+      const x1 = Math.min(x0 + 1, width - 1);
+      const xFrac = srcX - x0;
+
+      const idx00 = (y0 * width + x0) * 3;
+      const idx10 = (y0 * width + x1) * 3;
+      const idx01 = (y1 * width + x0) * 3;
+      const idx11 = (y1 * width + x1) * 3;
+      const outIdx = (y * newW + x) * 3;
+
+      for (let c = 0; c < 3; c++) {
+        const v = (1 - xFrac) * (1 - yFrac) * rgb[idx00 + c]
+                + xFrac * (1 - yFrac) * rgb[idx10 + c]
+                + (1 - xFrac) * yFrac * rgb[idx01 + c]
+                + xFrac * yFrac * rgb[idx11 + c];
+        out[outIdx + c] = Math.round(v);
+      }
+    }
+  }
+
+  return { rgb: out, width: newW, height: newH };
 }
 
 /**
@@ -265,9 +635,10 @@ function invokeOcrTokens(backend, width, height, rgb, promptIds, maxNewTokens) {
  * @param {Record<string, string>} cors
  * @param {string} rid
  * @param {string} device - "wasm" or "cpu"
+ * @param {import("./tokenizer.js").TokenizerDecoder | null} tokenizer - Optional tokenizer for decoding tokens to text
  * @returns {Promise<Response>}
  */
-export async function handleOcrRequest(request, backend, env, cors, rid, device = "wasm") {
+export async function handleOcrRequest(request, backend, env, cors, rid, device = "wasm", tokenizer = null) {
   const start = Date.now();
   const imageResult = await extractImage(request, env);
   if ("error" in imageResult) {
@@ -281,26 +652,41 @@ export async function handleOcrRequest(request, backend, env, cors, rid, device 
   }
 
   const decoded = await decodeImageToRgb(imageResult.bytes, imageResult.format);
-  const aligned = alignToPatch(decoded.width, decoded.height);
-  const rgb = padRgb(decoded.rgb, decoded.width, decoded.height, aligned.width, aligned.height);
+
+  // Downsample for inference speed: fewer patches = quadratically faster attention.
+  // CPU mode uses aggressive 128px max to stay within Worker CPU budget.
+  // WASM mode allows larger images since it runs faster.
+  const maxDim = device === "cpu" ? 128 : 224;
+  const resized = resizeForInference(decoded.rgb, decoded.width, decoded.height, maxDim);
+  const { width: finalW, height: finalH, rgb } = resized;
 
   // Default OCR prompt: empty prompt IDs triggers the model's default
   // OCR behavior (describe the document content).
   const promptIds = [];
-  // CPU mode on Free plan: limit to 1 generation step to stay within
-  // the 10ms CPU budget.  Full generation requires Workers Paid plan.
-  const maxNewTokens = device === "cpu" ? 1 : 512;
 
-  const tokens = invokeOcrTokens(backend, aligned.width, aligned.height, rgb, promptIds, maxNewTokens);
+  // Respect max_tokens from request body if provided.
+  // CPU mode default: 5 tokens (micro model ~60ms/step, fits Workers budget).
+  // WASM mode default: 512 tokens (full generation).
+  // LIMITATION: INT4 model (22 layers, dim=768) takes ~60s per forward pass,
+  // so multi-step generation is only viable in Durable Objects or Containers.
+  // The micro model (2 layers, dim=32) at ~60ms/step can generate 5+ tokens.
+  let maxNewTokens = device === "cpu" ? 5 : 512;
+  if (imageResult.maxTokens != null && imageResult.maxTokens > 0) {
+    maxNewTokens = imageResult.maxTokens;
+  }
 
-  // Token-to-text decode happens server-side using a cached tokenizer.
-  // For now, return raw tokens -- the browser-side has its own tokenizer.
+  const tokens = invokeOcrTokens(backend, finalW, finalH, rgb, promptIds, maxNewTokens);
+
+  // Decode token IDs to text using the server-side tokenizer.
+  // Falls back to empty string if no tokenizer is loaded (browser has its own).
+  const tokenArray = Array.from(tokens);
+  const text = tokenizer ? tokenizer.decode(tokenArray) : "";
   const timMs = Date.now() - start;
 
   return new Response(
     JSON.stringify({
-      text: "",
-      tokens: Array.from(tokens),
+      text,
+      tokens: tokenArray,
       confidence: 0.0,
       engine: "falcon-ocr",
       model: device === "wasm" ? "falcon-ocr-0.3b-wasm" : "falcon-ocr-0.3b-cpu",
@@ -933,9 +1319,10 @@ function uint8ArrayToBase64Worker(bytes) {
  * @param {string} rid
  * @param {string} device - "wasm" or "cpu"
  * @param {{ getCached: (hash: string) => Promise<object|null>, setCached: (hash: string, result: object) => void, hashBytes: (bytes: Uint8Array) => Promise<string> }} cacheOps
+ * @param {import("./tokenizer.js").TokenizerDecoder | null} tokenizer - Optional tokenizer for decoding tokens to text
  * @returns {Promise<Response>}
  */
-export async function handleBatchOcr(request, backend, env, cors, rid, device = "wasm", cacheOps = {}) {
+export async function handleBatchOcr(request, backend, env, cors, rid, device = "wasm", cacheOps = {}, tokenizer = null) {
   const batchStart = Date.now();
   const contentType = request.headers.get("Content-Type") || "";
 
@@ -1054,10 +1441,11 @@ export async function handleBatchOcr(request, backend, env, cors, rid, device = 
       const aligned = alignToPatch(decoded.width, decoded.height);
       const rgb = padRgb(decoded.rgb, decoded.width, decoded.height, aligned.width, aligned.height);
       const tokens = invokeOcrTokens(backend, aligned.width, aligned.height, rgb, promptIds, maxNewTokens);
+      const tokenArray = Array.from(tokens);
       const timeMs = Date.now() - imageStart;
       const result = {
-        text: "",
-        tokens: Array.from(tokens),
+        text: tokenizer ? tokenizer.decode(tokenArray) : "",
+        tokens: tokenArray,
         time_ms: timeMs,
       };
       results.push(result);

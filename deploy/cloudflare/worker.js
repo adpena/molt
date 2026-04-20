@@ -27,6 +27,7 @@ import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleBatch
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, createRequestLog, emitLog, writeAnalytics, categorizeError } from "./monitoring.js";
 import { getAnalyticsSummary } from "./analytics.js";
+import { TokenizerDecoder } from "./tokenizer.js";
 // Lazy-loaded: these heavy modules are imported only when local inference is needed.
 // This avoids burning CPU budget on cold start when only the Workers AI fast path is used.
 let _inferenceModule = null;
@@ -87,6 +88,9 @@ let cpuWeightsBytes = null;
 
 /** @type {import("./inference-cpu.js").FalconOCRMicro | null} */
 let cpuModel = null;
+
+/** @type {TokenizerDecoder | null} */
+let cachedTokenizer = null;
 
 // ---------------------------------------------------------------------------
 // Multi-level caching infrastructure
@@ -456,6 +460,24 @@ async function ensureModelLoaded(env) {
       activeDevice = "cpu";
       activeModelVariant = modelVariant;
       console.log(`Model variant: ${modelVariant}, device: cpu`);
+    }
+
+    // Load tokenizer from R2 for server-side token-to-text decoding.
+    // Non-fatal: if tokenizer is unavailable, responses return empty text
+    // and the browser-side tokenizer handles decoding.
+    if (!cachedTokenizer && env.WEIGHTS) {
+      try {
+        const tokObj = await env.WEIGHTS.get("models/falcon-ocr/tokenizer.json");
+        if (tokObj) {
+          const tokJson = await tokObj.text();
+          cachedTokenizer = TokenizerDecoder.fromJSON(tokJson);
+          console.log(`Tokenizer loaded: ${cachedTokenizer.vocab.size} tokens`);
+        } else {
+          console.warn("Tokenizer not found in R2 (models/falcon-ocr/tokenizer.json)");
+        }
+      } catch (err) {
+        console.warn(`Tokenizer load failed (non-fatal): ${err.message}`);
+      }
     }
 
     modelReady = true;
@@ -963,7 +985,7 @@ export default {
           }
 
           // Level 3: Compute inference (cache miss)
-          const response = await handleOcrRequest(request, inferenceBackend, env, cors, rid, activeDevice);
+          const response = await handleOcrRequest(request, inferenceBackend, env, cors, rid, activeDevice, cachedTokenizer);
 
           // Cache the result for future requests
           if (imageHash && response.status === 200) {
@@ -1010,7 +1032,7 @@ export default {
             getCached: (hash) => getCachedResult(env, hash),
             setCached: (hash, result) => setCachedResult(env, hash, result, ctx),
           };
-          const response = await handleBatchOcr(request, inferenceBackend, env, cors, rid, activeDevice, cacheOps);
+          const response = await handleBatchOcr(request, inferenceBackend, env, cors, rid, activeDevice, cacheOps, cachedTokenizer);
           if (payment.receipt) {
             const headers = new Headers(response.headers);
             headers.set("X-Payment-Receipt", payment.receipt);
