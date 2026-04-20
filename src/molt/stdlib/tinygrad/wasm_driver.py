@@ -20,10 +20,7 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
-from molt.stdlib.tinygrad.examples.falcon_ocr import (
-    init as _falcon_init,
-    ocr_tokens as _falcon_ocr_tokens,
-)
+import molt.stdlib.tinygrad.examples.falcon_ocr as _falcon_ocr
 
 
 def init(weights_bytes: bytes, config_json: str) -> None:
@@ -37,7 +34,7 @@ def init(weights_bytes: bytes, config_json: str) -> None:
         weights_bytes: Raw SafeTensors file content.
         config_json:   JSON string matching the FalconOCRConfig schema.
     """
-    _falcon_init(weights_bytes, config_json)
+    _falcon_ocr.init(weights_bytes, config_json)
 
 
 def ocr_tokens(
@@ -63,4 +60,4 @@ def ocr_tokens(
         RuntimeError: If init() has not been called.
         ValueError:   If rgb length does not match width * height * 3.
     """
-    return _falcon_ocr_tokens(width, height, rgb, prompt_ids, max_new_tokens)
+    return _falcon_ocr.ocr_tokens(width, height, rgb, prompt_ids, max_new_tokens)

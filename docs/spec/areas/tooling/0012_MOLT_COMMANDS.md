@@ -252,16 +252,17 @@ Key flags:
 ### 4.5 `molt clean`
 **Status:** Implemented (initial).
 
-Purpose: Remove Molt caches (`$MOLT_CACHE`), repo-local temp/cache variants (`tmp/`, `.uv-cache/`, `.molt_cache/`), Molt build artifacts (`$MOLT_HOME/build`), Molt binaries (`$MOLT_BIN`), repo-local artifacts (vendor/logs/output*.wasm/cache dirs), and optional Cargo build artifacts.
+Purpose: Remove Molt caches (`$MOLT_CACHE`), repo-local temp/cache variants (`tmp/`, `.uv-cache/`, `.molt_cache/`), Molt build artifacts (`$MOLT_HOME/build`), Molt binaries (`$MOLT_BIN`), repo-local generated artifacts (logs/dist/build/output*.wasm/cache dirs), and optional Cargo build artifacts. Tracked vendored source under `vendor/` is not removed.
 
 Key flags:
 - `--cache/--no-cache`
 - `--artifacts/--no-artifacts`
+- `--scratch/--no-scratch` (remove repo-local scratch/cache roots: `tmp/`, `.uv-cache*`, `.molt_cache*`, Python cache dirs)
 - `--bins/--no-bins`
 - `--repo-artifacts/--no-repo-artifacts` (skips virtualenvs by default)
 - `--include-venvs` (include virtualenv caches when cleaning repo artifacts)
-- `--cargo-target/--no-cargo-target` (remove Cargo `target/` artifacts in the repo root)
-- `--all` (enable all cleanup targets, including `target/` and legacy `target-*` dirs if present)
+- `--cargo-target/--no-cargo-target` (remove Cargo `target/`, legacy `target-*`, and top-level nested workspace `*/target` artifacts)
+- `--all` (enable all cleanup targets, including repo-local, legacy, and nested workspace Cargo target dirs if present)
 
 ### 4.6 `molt config`
 **Status:** Implemented (initial).
