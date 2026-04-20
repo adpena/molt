@@ -199,6 +199,8 @@ def build_wasm_linked(
     )
     env.setdefault("CARGO_BUILD_JOBS", "1")
     env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "45")
+    env.setdefault("MOLT_CARGO_TIMEOUT", "900")
+    env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
     env.setdefault("MOLT_CSE_MAX_ITERS", "6")

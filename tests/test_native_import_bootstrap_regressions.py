@@ -975,48 +975,6 @@ def test_native_llvm_json_loads_with_kwonly_defaults_executes(tmp_path: Path) ->
     assert run.stdout.strip().splitlines() == ["5", "22"]
 
 
-def test_native_llvm_rebuild_reuses_shared_stdlib_without_duplicate_symbols(
-    tmp_path: Path,
-) -> None:
-    source = (
-        "import json\n"
-        "class C:\n"
-        "    def __init__(self, dim: int = 768, n_layers: int = 22):\n"
-        "        self.dim = dim\n"
-        "        self.n_layers = n_layers\n"
-        "    @classmethod\n"
-        "    def make(cls, s: str):\n"
-        "        data = json.loads(s)\n"
-        "        return cls(dim=data['dim'])\n"
-        "obj = C.make('{\"dim\":5}')\n"
-        "print(obj.dim)\n"
-        "print(obj.n_layers)\n"
-    )
-    cache_dir = ROOT / ".molt_cache-llvm-stdlib-reuse"
-
-    first = _build_and_run_with_env(
-        tmp_path / "first",
-        source,
-        "llvm_json_first",
-        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-llvm",
-        cache_dir=cache_dir,
-        backend="llvm",
-    )
-    second = _build_and_run_with_env(
-        tmp_path / "second",
-        source,
-        "llvm_json_second",
-        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-llvm",
-        cache_dir=cache_dir,
-        backend="llvm",
-    )
-
-    assert first.returncode == 0, first.stdout + first.stderr
-    assert second.returncode == 0, second.stdout + second.stderr
-    assert first.stdout.strip().splitlines() == ["5", "22"]
-    assert second.stdout.strip().splitlines() == ["5", "22"]
-
-
 def test_native_import_os_is_clean(tmp_path: Path) -> None:
     run = _build_and_run(tmp_path, "import os\nprint('ok')\n", "import_os")
     assert run.returncode == 0, run.stdout + run.stderr

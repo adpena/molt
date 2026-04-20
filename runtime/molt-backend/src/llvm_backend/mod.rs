@@ -11,8 +11,6 @@ pub mod runtime_imports;
 pub mod types;
 
 #[cfg(feature = "llvm")]
-use std::collections::BTreeMap;
-#[cfg(feature = "llvm")]
 use inkwell::OptimizationLevel;
 #[cfg(feature = "llvm")]
 use inkwell::builder::Builder;
@@ -22,6 +20,8 @@ use inkwell::context::Context;
 use inkwell::module::Module;
 #[cfg(feature = "llvm")]
 use inkwell::targets::TargetMachine;
+#[cfg(feature = "llvm")]
+use std::collections::BTreeMap;
 
 #[cfg(feature = "llvm")]
 use crate::tir::types::TirType;

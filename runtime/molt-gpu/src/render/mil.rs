@@ -368,7 +368,7 @@ mod tests {
             bufs,
             grid: [1024, 1, 1],
             local: [1, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         }
     }
 
@@ -454,7 +454,7 @@ mod tests {
             ],
             grid: [1, 1, 1],
             local: [1, 1, 1],
-            spec: None,
+            spec: None, vectorize_width: 1,
         };
         let renderer = MilRenderer;
         let source = renderer.render(&kernel);

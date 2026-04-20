@@ -702,7 +702,8 @@ fn call_bind_ic_hits_bound_direct_function_method() {
         assert!(!exception_pending(_py));
 
         let builder_b = crate::call::bind::molt_callargs_new(1, 0);
-        let _ = unsafe { crate::molt_callargs_push_pos(builder_b, MoltObject::from_int(11).bits()) };
+        let _ =
+            unsafe { crate::molt_callargs_push_pos(builder_b, MoltObject::from_int(11).bits()) };
         let out_b = crate::call::bind::molt_call_bind_ic(site_bits, method_bits, builder_b);
         assert_eq!(to_i64(obj_from_bits(out_b)), Some(11));
         assert!(!exception_pending(_py));

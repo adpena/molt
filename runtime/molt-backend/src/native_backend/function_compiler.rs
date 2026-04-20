@@ -19124,6 +19124,12 @@ impl SimpleBackend {
                 }
             }
             if !is_block_filled && loop_depth == 0 && builder.current_block() == Some(entry_block) {
+                let cleanup_skip = match op.kind.as_str() {
+                    "call_func" | "call_bind" | "call_indirect" | "invoke_ffi" => {
+                        op.args.as_ref().and_then(|args| args.first()).map(String::as_str)
+                    }
+                    _ => None,
+                };
                 let cleanup = drain_cleanup_entry_tracked(
                     &mut tracked_obj_vars,
                     &mut entry_vars,
@@ -19131,6 +19137,7 @@ impl SimpleBackend {
                     &alias_roots,
                     &mut already_decrefed,
                     op_idx,
+                    cleanup_skip,
                 );
                 for val in cleanup {
                     builder.ins().call(local_dec_ref_obj, &[val]);
@@ -19142,6 +19149,7 @@ impl SimpleBackend {
                     &alias_roots,
                     &mut already_decrefed,
                     op_idx,
+                    cleanup_skip,
                 );
                 for val in cleanup {
                     // Use dec_ref_obj (NaN-box aware) instead of dec_ref (raw ptr).

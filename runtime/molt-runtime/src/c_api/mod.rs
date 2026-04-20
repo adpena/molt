@@ -2,10 +2,12 @@
 // molt-lang-cpython-abi.  Suppress the dead-code warnings for those stubs.
 #![allow(dead_code, non_snake_case, unused_imports)]
 
+#[cfg(not(target_arch = "wasm32"))]
 mod cpython_compat;
 mod molt_api;
 
 // Re-export all public C-API symbols so external references remain unchanged.
+#[cfg(not(target_arch = "wasm32"))]
 pub use cpython_compat::*;
 pub use molt_api::*;
 

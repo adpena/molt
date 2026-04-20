@@ -271,9 +271,6 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 | OpCode::IterNext
                 | OpCode::Alloc
                 | OpCode::StackAlloc
-                | OpCode::ClassmethodNew
-                | OpCode::StaticmethodNew
-                | OpCode::PropertyNew
                 | OpCode::BuildList
                 | OpCode::BuildDict
                 | OpCode::BuildTuple

@@ -1943,7 +1943,9 @@ impl ConstStrCache {
 }
 
 use std::cell::RefCell;
-use std::sync::{Mutex, OnceLock};
+#[cfg(target_arch = "wasm32")]
+use std::sync::Mutex;
+use std::sync::OnceLock;
 
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
@@ -2003,6 +2005,10 @@ pub unsafe extern "C" fn molt_string_from_bytes(
 ) -> i32 {
     unsafe {
         crate::with_gil_entry!(_py, {
+            // Host-fed string objects can cross arbitrary compiled call boundaries
+            // and may be stored in persistent module/class/function structures.
+            // They must not be tied to a nursery frame.
+            let _nursery_guard = crate::object::NurserySuspendGuard::new();
             let len = usize_from_bits(len_bits);
             if trace_string_from_bytes() {
                 eprintln!(
@@ -2098,6 +2104,13 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
 ) -> i32 {
     unsafe {
         crate::with_gil_entry!(_py, {
+            // Host-fed bytes objects are entry-boundary values: they can be passed
+            // through nested compiled calls and must not depend on nursery lifetime.
+            let _nursery_guard = crate::object::NurserySuspendGuard::new();
+            let trace = matches!(
+                std::env::var("MOLT_TRACE_BYTES_FROM_BYTES").ok().as_deref(),
+                Some("1")
+            );
             let len = usize_from_bits(len_bits);
             if out.is_null() {
                 return 2;
@@ -2110,6 +2123,15 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
                 if obj_ptr.is_null() {
                     return 2;
                 }
+                if trace {
+                    let header = crate::object::header_from_obj_ptr(obj_ptr);
+                    eprintln!(
+                        "[molt bytes_from_bytes] empty ptr=0x{:x} type_id={} flags=0x{:x}",
+                        obj_ptr as usize,
+                        (*header).type_id,
+                        (*header).flags
+                    );
+                }
                 write_bits_out(out, MoltObject::from_ptr(obj_ptr).bits());
                 return 0;
             }
@@ -2117,6 +2139,16 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
             let obj_ptr = alloc_bytes(_py, slice);
             if obj_ptr.is_null() {
                 return 2;
+            }
+            if trace {
+                let header = crate::object::header_from_obj_ptr(obj_ptr);
+                eprintln!(
+                    "[molt bytes_from_bytes] len={} ptr=0x{:x} type_id={} flags=0x{:x}",
+                    len,
+                    obj_ptr as usize,
+                    (*header).type_id,
+                    (*header).flags
+                );
             }
             write_bits_out(out, MoltObject::from_ptr(obj_ptr).bits());
             0

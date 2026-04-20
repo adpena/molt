@@ -366,6 +366,35 @@ unsafe fn backend_read_bytes(
     }
 }
 
+fn file_remaining_bytes_hint(file: &mut std::fs::File) -> Option<usize> {
+    let pos = file.stream_position().ok()?;
+    let len = file.metadata().ok()?.len();
+    usize::try_from(len.saturating_sub(pos)).ok()
+}
+
+unsafe fn buffered_read_reserve_hint(
+    _py: &PyToken<'_>,
+    handle: &mut MoltFileHandle,
+    backend: &mut MoltFileBackend,
+    size: Option<usize>,
+) -> Option<usize> {
+    unsafe {
+        if let Some(size) = size {
+            return Some(size.saturating_add(unread_bytes(handle)));
+        }
+        let unread = unread_bytes(handle);
+        match backend {
+            MoltFileBackend::File(file) => {
+                file_remaining_bytes_hint(file).map(|n| n.saturating_add(unread))
+            }
+            MoltFileBackend::Memory(mem) => memory_backend_vec_ref_from_bits(_py, handle.mem_bits)
+                .ok()
+                .map(|data| data.len().saturating_sub(mem.pos).saturating_add(unread)),
+            MoltFileBackend::Text(_) => None,
+        }
+    }
+}
+
 unsafe fn backend_write_bytes(
     _py: &PyToken<'_>,
     mem_bits: u64,
@@ -592,8 +621,32 @@ unsafe fn buffered_read_bytes(
     size: Option<usize>,
 ) -> Result<(Vec<u8>, bool), u64> {
     unsafe {
+        if !handle.write_buf.is_empty() {
+            flush_write_buffer(_py, handle, backend)?;
+        }
+        if size.is_none() {
+            let unread = unread_bytes(handle);
+            if let MoltFileBackend::File(file) = backend {
+                let reserve = file_remaining_bytes_hint(file)
+                    .unwrap_or(0)
+                    .saturating_add(unread);
+                let mut out = Vec::with_capacity(reserve);
+                if unread > 0 {
+                    let start = handle.read_pos;
+                    out.extend_from_slice(&handle.read_buf[start..]);
+                    clear_read_buffer(handle);
+                }
+                match file.read_to_end(&mut out) {
+                    Ok(_) => return Ok((out, true)),
+                    Err(_) => return Err(raise_exception::<_>(_py, "OSError", "read failed")),
+                }
+            }
+        }
+
         if handle.buffer_size == 0 {
-            let mut buf = Vec::new();
+            let mut buf = Vec::with_capacity(
+                buffered_read_reserve_hint(_py, handle, backend, size).unwrap_or(0),
+            );
             let mut tmp = [0u8; 8192];
             let mut at_eof = false;
             match size {
@@ -623,16 +676,14 @@ unsafe fn buffered_read_bytes(
             return Ok((buf, at_eof));
         }
 
-        let mut out: Vec<u8> = Vec::new();
+        let mut out =
+            Vec::with_capacity(buffered_read_reserve_hint(_py, handle, backend, size).unwrap_or(0));
         let mut at_eof = false;
         let mut remaining = size;
         if let Some(rem) = remaining
             && rem == 0
         {
             return Ok((out, false));
-        }
-        if !handle.write_buf.is_empty() {
-            flush_write_buffer(_py, handle, backend)?;
         }
 
         while remaining.map(|r| r > 0).unwrap_or(true) {
@@ -1101,7 +1152,7 @@ fn file_from_fd(fd: i64) -> Option<std::fs::File> {
     Some(unsafe { std::fs::File::from_raw_handle(dup as *mut _) })
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
 fn file_from_fd(fd: i64) -> Option<std::fs::File> {
     use std::os::wasi::io::FromRawFd;
     if fd < 0 {
@@ -1110,7 +1161,10 @@ fn file_from_fd(fd: i64) -> Option<std::fs::File> {
     Some(unsafe { std::fs::File::from_raw_fd(fd as std::os::wasi::io::RawFd) })
 }
 
-#[cfg(all(not(any(unix, windows)), not(target_arch = "wasm32")))]
+#[cfg(all(
+    not(any(unix, windows)),
+    not(all(target_arch = "wasm32", target_os = "wasi"))
+))]
 fn file_from_fd(_fd: i64) -> Option<std::fs::File> {
     None
 }
@@ -2119,8 +2173,8 @@ fn alloc_stdio_handle(
     if trace_stdio && exception_pending(_py) {
         let exc_bits = molt_exception_last();
         let kind_bits = molt_exception_kind(exc_bits);
-        let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-            .unwrap_or_else(|| "<exc>".to_string());
+        let kind =
+            string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| "<exc>".to_string());
         eprintln!("stdio build pending after wrapper alloc fd={fd}: {kind}");
     }
     dec_ref_bits(_py, name_bits);
@@ -2150,8 +2204,8 @@ fn cached_stdio_handle(
     if trace_stdio && exception_pending(_py) {
         let exc_bits = molt_exception_last();
         let kind_bits = molt_exception_kind(exc_bits);
-        let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-            .unwrap_or_else(|| "<exc>".to_string());
+        let kind =
+            string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_else(|| "<exc>".to_string());
         eprintln!("stdio build pending after make_handle: {kind}");
     }
 
@@ -6698,4 +6752,37 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
         file_handle_close_ptr(ptr);
         MoltObject::none().bits()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_remaining_bytes_hint;
+    use std::fs::{File, remove_file};
+    use std::io::{Seek, SeekFrom, Write};
+    use std::path::PathBuf;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "molt_io_{name}_{}_{}.bin",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("t")
+        ));
+        path
+    }
+
+    #[test]
+    fn file_remaining_bytes_hint_tracks_stream_position() {
+        let path = temp_path("reserve_hint");
+        let mut writer = File::create(&path).expect("create temp file");
+        writer.write_all(&[1u8; 16]).expect("write temp file");
+        drop(writer);
+
+        let mut file = File::open(&path).expect("open temp file");
+        assert_eq!(file_remaining_bytes_hint(&mut file), Some(16));
+        file.seek(SeekFrom::Start(5)).expect("seek temp file");
+        assert_eq!(file_remaining_bytes_hint(&mut file), Some(11));
+
+        let _ = remove_file(path);
+    }
 }

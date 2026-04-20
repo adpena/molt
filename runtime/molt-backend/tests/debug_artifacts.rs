@@ -52,9 +52,22 @@ fn prepare_unique_debug_artifact_path_creates_unique_sibling_paths() {
         molt_backend::debug_artifacts::prepare_unique_debug_artifact_path("llvm/output.o").unwrap();
     assert_ne!(a, b);
     assert_eq!(a.parent(), b.parent());
-    assert_eq!(a.parent(), Some(base.join("tmp").join("molt-backend").join("llvm").as_path()));
-    assert!(a.file_name().unwrap().to_string_lossy().starts_with("output."));
-    assert!(b.file_name().unwrap().to_string_lossy().starts_with("output."));
+    assert_eq!(
+        a.parent(),
+        Some(base.join("tmp").join("molt-backend").join("llvm").as_path())
+    );
+    assert!(
+        a.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("output.")
+    );
+    assert!(
+        b.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("output.")
+    );
     match prior {
         Some(value) => unsafe { std::env::set_var("MOLT_EXT_ROOT", value) },
         None => unsafe { std::env::remove_var("MOLT_EXT_ROOT") },

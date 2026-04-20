@@ -20,9 +20,9 @@ use crate::llvm_backend::LlvmBackend;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::types::lower_type;
 #[cfg(feature = "llvm")]
-use inkwell::attributes::AttributeLoc;
-#[cfg(feature = "llvm")]
 use inkwell::FloatPredicate;
+#[cfg(feature = "llvm")]
+use inkwell::attributes::AttributeLoc;
 
 #[cfg(feature = "llvm")]
 use crate::tir::blocks::{BlockId, Terminator};
@@ -85,9 +85,9 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
         }
         TirType::Bool => {
             let raw = match operand {
-                BasicValueEnum::IntValue(iv) if iv.get_type().get_bit_width() == 1 => builder
-                    .build_int_z_extend(iv, i64_ty, "zext_bool")
-                    .unwrap(),
+                BasicValueEnum::IntValue(iv) if iv.get_type().get_bit_width() == 1 => {
+                    builder.build_int_z_extend(iv, i64_ty, "zext_bool").unwrap()
+                }
                 _ => ensure_i64_with_builder(builder, context, operand),
             };
             builder
@@ -215,7 +215,9 @@ struct FunctionLowering<'ctx, 'func> {
     /// `patch_incomplete_phis` to add undef entries for missing predecessors.
     llvm_pred_map: HashMap<BasicBlock<'ctx>, Vec<BasicBlock<'ctx>>>,
     /// Structured exception-region stack baselines for preserved TryStart/TryEnd.
-    try_stack_baselines: Vec<BasicValueEnum<'ctx>>,
+    /// Stored in entry-block allocas so later TryEnd sites do not violate LLVM
+    /// dominance when the region spans multiple blocks.
+    try_stack_baselines: Vec<inkwell::values::PointerValue<'ctx>>,
     /// Deterministic per-function call-site numbering for IC lanes.
     call_site_counter: usize,
 }
@@ -878,8 +880,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         )
                         .unwrap(),
                     _ => {
-                        let truthy_fn =
-                            self.backend.module.get_function("molt_is_truthy").unwrap();
+                        let truthy_fn = self.backend.module.get_function("molt_is_truthy").unwrap();
                         let truthy = self
                             .backend
                             .builder
@@ -1088,20 +1089,54 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         }
                     })
                     .unwrap_or("<unknown>");
+                let runtime_name = if matches!(original_kind, Some("get_attr_generic_obj")) {
+                    "molt_get_attr_object_ic"
+                } else {
+                    "molt_get_attr_name"
+                };
+                let get_fn = if runtime_name == "molt_get_attr_object_ic" {
+                    self.ensure_runtime_i64_fn(runtime_name, 4)
+                } else {
+                    self.ensure_runtime_i64_fn(runtime_name, 2)
+                };
                 let name = self.intern_string_const(attr_name);
                 let name_bits = self.ensure_i64(name);
-                let get_fn = self.ensure_runtime_i64_fn("molt_get_attr_name", 2);
+                let site_bits = self.next_call_site_bits("get_attr_generic_obj");
+                let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(attr_name);
+                let call_args_generic = [
+                    obj_bits.into(),
+                    attr_ptr_bits.into(),
+                    attr_len_bits.into(),
+                    site_bits.into(),
+                ];
+                let call_args_name = [obj_bits.into(), name_bits.into()];
                 let val = self
                     .backend
                     .builder
                     .build_call(
                         get_fn,
-                        &[obj_bits.into(), name_bits.into()],
-                        "get_attr_name",
+                        if runtime_name == "molt_get_attr_object_ic" {
+                            &call_args_generic
+                        } else {
+                            &call_args_name
+                        },
+                        runtime_name,
                     )
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
+                if runtime_name == "molt_get_attr_object_ic" {
+                    let inc_fn = self.ensure_runtime_i64_fn("molt_inc_ref_obj", 1);
+                    let _ = self
+                        .backend
+                        .builder
+                        .build_call(
+                            inc_fn,
+                            &[val.into_int_value().into()],
+                            "get_attr_object_ic_inc_ref",
+                        )
+                        .unwrap();
+                }
                 self.values.insert(result_id, val);
                 self.value_types.insert(result_id, TirType::DynBox);
             }
@@ -1132,7 +1167,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     }
                     return;
                 }
-                if matches!(original_kind, Some("store") | Some("store_init")) && op.operands.len() >= 2 {
+                if matches!(original_kind, Some("store") | Some("store_init"))
+                    && op.operands.len() >= 2
+                {
                     let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
                     let val_bits = self.materialize_dynbox_operand(op.operands[1]);
                     let offset = op
@@ -1355,7 +1392,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // is in-range, we call `molt_getitem_unchecked` which skips the
                 // runtime bounds check and associated branch entirely.
                 let val = if has_attr(op, "bce_safe") {
-                    self.call_runtime_2_boxed("molt_getitem_unchecked", op.operands[0], op.operands[1])
+                    self.call_runtime_2_boxed(
+                        "molt_getitem_unchecked",
+                        op.operands[0],
+                        op.operands[1],
+                    )
                 } else {
                     self.call_runtime_2_boxed("molt_getitem_method", op.operands[0], op.operands[1])
                 };
@@ -1388,8 +1429,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
             OpCode::DelIndex => {
-                let val =
-                    self.call_runtime_2_boxed("molt_delitem_method", op.operands[0], op.operands[1]);
+                let val = self.call_runtime_2_boxed(
+                    "molt_delitem_method",
+                    op.operands[0],
+                    op.operands[1],
+                );
                 if !op.results.is_empty() {
                     self.values.insert(op.results[0], val);
                     self.value_types.insert(op.results[0], TirType::DynBox);
@@ -1408,7 +1452,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     && !op.operands.is_empty()
                 {
                     let callable = self.resolve(op.operands[0]);
-                    let result = self.emit_call_func_runtime(callable, &op.operands[1..]);
+                    let result = self.emit_call_func_or_bind_runtime(callable, &op.operands[1..]);
                     if let Some(&result_id) = op.results.first() {
                         self.values.insert(result_id, result);
                         self.value_types.insert(result_id, TirType::DynBox);
@@ -1493,7 +1537,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         if expected_params != direct_operands.len() {
                             if let Some(callable_id) = guarded_callable {
                                 let callable = self.resolve(callable_id);
-                                let result = self.emit_call_func_runtime(callable, direct_operands);
+                                let result = self.emit_call_bind_runtime(callable, direct_operands);
                                 if let Some(&result_id) = op.results.first() {
                                     self.values.insert(result_id, result);
                                     self.value_types.insert(result_id, TirType::DynBox);
@@ -1571,7 +1615,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     } else {
                         if let Some(callable_id) = guarded_callable {
                             let callable = self.resolve(callable_id);
-                            let result = self.emit_call_func_runtime(callable, direct_operands);
+                            let result = self.emit_call_bind_runtime(callable, direct_operands);
                             if let Some(&result_id) = op.results.first() {
                                 self.values.insert(result_id, result);
                                 self.value_types.insert(result_id, TirType::DynBox);
@@ -1919,77 +1963,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         self.values.insert(result_id, result);
                         self.value_types.insert(result_id, TirType::DynBox);
                     }
-                }
-            }
-
-            OpCode::ClassmethodNew => {
-                let Some(&func_id) = op.operands.first() else {
-                    return;
-                };
-                let func_bits = self.ensure_i64(self.resolve(func_id));
-                let classmethod_fn = self.ensure_runtime_i64_fn("molt_classmethod_new", 1);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(
-                        classmethod_fn,
-                        &[func_bits.into()],
-                        "classmethod_new",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
-
-            OpCode::StaticmethodNew => {
-                let Some(&func_id) = op.operands.first() else {
-                    return;
-                };
-                let func_bits = self.ensure_i64(self.resolve(func_id));
-                let staticmethod_fn = self.ensure_runtime_i64_fn("molt_staticmethod_new", 1);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(
-                        staticmethod_fn,
-                        &[func_bits.into()],
-                        "staticmethod_new",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
-
-            OpCode::PropertyNew => {
-                if op.operands.len() != 3 {
-                    return;
-                }
-                let getter_bits = self.ensure_i64(self.resolve(op.operands[0]));
-                let setter_bits = self.ensure_i64(self.resolve(op.operands[1]));
-                let deleter_bits = self.ensure_i64(self.resolve(op.operands[2]));
-                let property_fn = self.ensure_runtime_i64_fn("molt_property_new", 3);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(
-                        property_fn,
-                        &[getter_bits.into(), setter_bits.into(), deleter_bits.into()],
-                        "property_new",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
                 }
             }
 
@@ -2367,7 +2340,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     AttrValue::Str(s) => Some(s.as_str()),
                     _ => None,
                 }) else {
-                    panic!("alloc_task missing poll function name in {}", self.func.name);
+                    panic!(
+                        "alloc_task missing poll function name in {}",
+                        self.func.name
+                    );
                 };
                 let poll_fn = self.ensure_function_symbol(poll_func_name, 1, false);
                 let poll_addr = self
@@ -2402,11 +2378,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let task_ptr = self
                     .backend
                     .builder
-                    .build_int_to_ptr(
-                        self.ensure_i64(task_bits),
-                        ptr_ty,
-                        "task_obj_ptr",
-                    )
+                    .build_int_to_ptr(self.ensure_i64(task_bits), ptr_ty, "task_obj_ptr")
                     .unwrap();
                 for (idx, &arg_id) in op.operands.iter().enumerate() {
                     let arg_bits = self.materialize_dynbox_operand(arg_id);
@@ -2416,7 +2388,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             .build_gep(
                                 i64_ty,
                                 task_ptr,
-                                &[i64_ty.const_int(((payload_base / 8) as usize + idx) as u64, false)],
+                                &[i64_ty
+                                    .const_int(((payload_base / 8) as usize + idx) as u64, false)],
                                 &format!("task_payload_ptr_{idx}"),
                             )
                             .unwrap()
@@ -2467,10 +2440,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let mut switch_cases: Vec<_> = Vec::with_capacity(resume_cases.len());
                 for (state_id, target_bb) in resume_cases {
                     self.record_llvm_edge(current_bb, target_bb);
-                    switch_cases.push((
-                        i64_ty.const_int(state_id as u64, state_id < 0),
-                        target_bb,
-                    ));
+                    switch_cases.push((i64_ty.const_int(state_id as u64, state_id < 0), target_bb));
                 }
                 switch_cases.sort_by_key(|(state, _)| state.get_zero_extended_constant());
                 self.backend
@@ -2689,7 +2659,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "state_transition_sleep",
                     )
                     .unwrap();
-                self.backend.builder.build_return(Some(&pending_const)).unwrap();
+                self.backend
+                    .builder
+                    .build_return(Some(&pending_const))
+                    .unwrap();
                 self.backend.builder.position_at_end(ready_path);
                 if let Some(slot_id) = slot_id {
                     let slot_bits = self.raw_i64_operand(slot_id, ready_path);
@@ -2813,7 +2786,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .build_conditional_branch(is_pending, pending_path, ready_path)
                     .unwrap();
                 self.backend.builder.position_at_end(pending_path);
-                self.backend.builder.build_return(Some(&pending_const)).unwrap();
+                self.backend
+                    .builder
+                    .build_return(Some(&pending_const))
+                    .unwrap();
                 self.backend.builder.position_at_end(ready_path);
                 let next_state_bits = i64_ty.const_int(next_state_id as u64, true);
                 let _ = self
@@ -2919,7 +2895,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .build_conditional_branch(is_pending, pending_path, ready_path)
                     .unwrap();
                 self.backend.builder.position_at_end(pending_path);
-                self.backend.builder.build_return(Some(&pending_const)).unwrap();
+                self.backend
+                    .builder
+                    .build_return(Some(&pending_const))
+                    .unwrap();
                 self.backend.builder.position_at_end(ready_path);
                 let next_state_bits = i64_ty.const_int(next_state_id as u64, true);
                 let _ = self
@@ -3127,7 +3106,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 } else if let Some(AttrValue::Str(module_name)) = op.attrs.get("_var") {
                     self.intern_string_const(module_name)
                 } else {
-                    panic!("Import op missing module operand/attr in {}", self.func.name);
+                    panic!(
+                        "Import op missing module operand/attr in {}",
+                        self.func.name
+                    );
                 };
                 let name_i64 = self.ensure_i64(name);
                 let import_fn = self
@@ -3149,8 +3131,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // ── ImportFrom: from module import name ──
             // operands: [module, attr_name]
             OpCode::ImportFrom => {
-                let result =
-                    self.call_runtime_2_boxed("molt_module_get_attr", op.operands[0], op.operands[1]);
+                let result = self.call_runtime_2_boxed(
+                    "molt_module_get_attr",
+                    op.operands[0],
+                    op.operands[1],
+                );
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, result);
                     self.value_types.insert(result_id, TirType::DynBox);
@@ -3422,16 +3407,30 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                self.try_stack_baselines.push(baseline);
+                let baseline_slot = self.build_entry_i64_alloca("try_baseline");
+                self.backend
+                    .builder
+                    .build_store(baseline_slot, baseline)
+                    .unwrap();
+                self.try_stack_baselines.push(baseline_slot);
                 if let Some(&result_id) = op.results.first() {
                     self.values.insert(result_id, baseline);
                     self.value_types.insert(result_id, TirType::DynBox);
                 }
             }
             OpCode::TryEnd => {
-                if let Some(baseline) = self.try_stack_baselines.pop() {
+                if let Some(baseline_slot) = self.try_stack_baselines.pop() {
                     let exit_fn = self.ensure_runtime_i64_fn("molt_exception_stack_exit", 1);
-                    let baseline_bits = self.ensure_i64(baseline);
+                    let baseline_bits = self
+                        .backend
+                        .builder
+                        .build_load(
+                            self.backend.context.i64_type(),
+                            baseline_slot,
+                            "try_baseline_load",
+                        )
+                        .unwrap()
+                        .into_int_value();
                     let result = self
                         .backend
                         .builder
@@ -4083,6 +4082,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .cloned()
             .unwrap_or(TirType::DynBox);
         self.materialize_dynbox_bits(operand, &operand_ty)
+    }
+
+    fn build_entry_i64_alloca(&self, name: &str) -> inkwell::values::PointerValue<'ctx> {
+        let builder = self.backend.context.create_builder();
+        let current_fn = self
+            .backend
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .expect("llvm function missing while allocating try baseline");
+        let entry = current_fn
+            .get_first_basic_block()
+            .expect("llvm function missing entry block");
+        if let Some(first_instr) = entry.get_first_instruction() {
+            builder.position_before(&first_instr);
+        } else {
+            builder.position_at_end(entry);
+        }
+        builder
+            .build_alloca(self.backend.context.i64_type(), name)
+            .unwrap()
     }
 
     fn call_runtime_2_boxed(
@@ -4915,12 +4935,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .add_function(name, fn_ty, Some(inkwell::module::Linkage::External))
     }
 
-    fn unbox_ptr_bits(&self, bits: inkwell::values::IntValue<'ctx>) -> inkwell::values::IntValue<'ctx> {
+    fn unbox_ptr_bits(
+        &self,
+        bits: inkwell::values::IntValue<'ctx>,
+    ) -> inkwell::values::IntValue<'ctx> {
         let i64_ty = self.backend.context.i64_type();
         let masked = self
             .backend
             .builder
-            .build_and(bits, i64_ty.const_int(nanbox::POINTER_MASK, false), "ptr_masked")
+            .build_and(
+                bits,
+                i64_ty.const_int(nanbox::POINTER_MASK, false),
+                "ptr_masked",
+            )
             .unwrap();
         let shifted = self
             .backend
@@ -4974,11 +5001,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         arity: usize,
         has_closure: bool,
     ) -> FunctionValue<'ctx> {
+        let param_count = self
+            .backend
+            .function_param_types
+            .get(name)
+            .map(|tys| tys.len())
+            .unwrap_or(arity + usize::from(has_closure));
         if let Some(func) = self.backend.module.get_function(name) {
             return func;
         }
         let i64_ty = self.backend.context.i64_type();
-        let param_count = arity + usize::from(has_closure);
         let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
             (0..param_count).map(|_| i64_ty.into()).collect();
         let fn_ty = i64_ty.fn_type(&params, false);
@@ -4993,16 +5025,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         arity: usize,
         has_closure: bool,
     ) -> FunctionValue<'ctx> {
-        let target_fn = self.ensure_function_symbol(name, arity, has_closure);
+        let callable_arity = self
+            .backend
+            .function_param_types
+            .get(name)
+            .map(|tys| tys.len().saturating_sub(usize::from(has_closure)))
+            .unwrap_or(arity);
+        let target_fn = self.ensure_function_symbol(name, callable_arity, has_closure);
         let target_return_tir_ty = self
             .backend
             .function_return_types
             .get(name)
             .cloned()
             .unwrap_or(TirType::DynBox);
-        let callable_arity = target_fn
-            .count_params()
-            .saturating_sub(u32::from(has_closure)) as usize;
         let closure_suffix = if has_closure { "_closure" } else { "" };
         let trampoline_name =
             format!("{name}__molt_llvm_trampoline_{callable_arity}{closure_suffix}");
@@ -5163,7 +5198,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "builtin_func_ptr",
                     )
                     .unwrap();
-                let trampoline = self.ensure_plain_trampoline(func_name, callable_arity, false);
+                let trampoline = self.ensure_plain_trampoline(func_name, arity, false);
                 let tramp_ptr = self
                     .backend
                     .builder
@@ -5184,7 +5219,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             name_bits.into(),
                             fn_ptr.into(),
                             tramp_ptr.into(),
-                            i64_ty.const_int(callable_arity as u64, false).into(),
+                            i64_ty.const_int(arity as u64, false).into(),
                         ],
                         "builtin_func_new",
                     )
@@ -5213,7 +5248,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     })
                     .unwrap_or(0);
                 let func = self.ensure_function_symbol(func_name, arity, false);
-                let callable_arity = func.count_params() as usize;
                 let fn_ptr = self
                     .backend
                     .builder
@@ -5223,7 +5257,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "func_ptr",
                     )
                     .unwrap();
-                let trampoline = self.ensure_plain_trampoline(func_name, callable_arity, false);
+                let trampoline = self.ensure_plain_trampoline(func_name, arity, false);
                 let tramp_ptr = self
                     .backend
                     .builder
@@ -5242,7 +5276,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         &[
                             fn_ptr.into(),
                             tramp_ptr.into(),
-                            i64_ty.const_int(callable_arity as u64, false).into(),
+                            i64_ty.const_int(arity as u64, false).into(),
                         ],
                         "func_new",
                     )
@@ -5275,7 +5309,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 };
                 let closure_bits = self.ensure_i64(self.resolve(closure_id));
                 let func = self.ensure_function_symbol(func_name, arity, true);
-                let callable_arity = func.count_params().saturating_sub(1) as usize;
                 let fn_ptr = self
                     .backend
                     .builder
@@ -5285,7 +5318,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "closure_func_ptr",
                     )
                     .unwrap();
-                let trampoline = self.ensure_plain_trampoline(func_name, callable_arity, true);
+                let trampoline = self.ensure_plain_trampoline(func_name, arity, true);
                 let tramp_ptr = self
                     .backend
                     .builder
@@ -5304,7 +5337,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         &[
                             fn_ptr.into(),
                             tramp_ptr.into(),
-                            i64_ty.const_int(callable_arity as u64, false).into(),
+                            i64_ty.const_int(arity as u64, false).into(),
                             closure_bits.into(),
                         ],
                         "func_new_closure",
@@ -5390,6 +5423,69 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 true
             }
+            "classmethod_new" => {
+                let Some(&func_id) = op.operands.first() else {
+                    return false;
+                };
+                let func_bits = self.ensure_i64(self.resolve(func_id));
+                let classmethod_fn = self.ensure_runtime_i64_fn("molt_classmethod_new", 1);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(classmethod_fn, &[func_bits.into()], "classmethod_new")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "staticmethod_new" => {
+                let Some(&func_id) = op.operands.first() else {
+                    return false;
+                };
+                let func_bits = self.ensure_i64(self.resolve(func_id));
+                let staticmethod_fn = self.ensure_runtime_i64_fn("molt_staticmethod_new", 1);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(staticmethod_fn, &[func_bits.into()], "staticmethod_new")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "property_new" => {
+                if op.operands.len() != 3 {
+                    return false;
+                }
+                let getter_bits = self.ensure_i64(self.resolve(op.operands[0]));
+                let setter_bits = self.ensure_i64(self.resolve(op.operands[1]));
+                let deleter_bits = self.ensure_i64(self.resolve(op.operands[2]));
+                let property_fn = self.ensure_runtime_i64_fn("molt_property_new", 3);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        property_fn,
+                        &[getter_bits.into(), setter_bits.into(), deleter_bits.into()],
+                        "property_new",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "trace_enter_slot" => {
                 let code_id = op
                     .attrs
@@ -5429,11 +5525,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let _ = self
                     .backend
                     .builder
-                    .build_call(
-                        frame_locals_fn,
-                        &[dict_bits.into()],
-                        "frame_locals_set",
-                    )
+                    .build_call(frame_locals_fn, &[dict_bits.into()], "frame_locals_set")
                     .unwrap();
                 true
             }
@@ -5732,11 +5824,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
-                        func,
-                        &[list_bits.into(), item_bits.into()],
-                        "list_append",
-                    )
+                    .build_call(func, &[list_bits.into(), item_bits.into()], "list_append")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -5756,11 +5844,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
-                        func,
-                        &[list_bits.into(), other_bits.into()],
-                        "list_extend",
-                    )
+                    .build_call(func, &[list_bits.into(), other_bits.into()], "list_extend")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -5937,11 +6021,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
-                        func,
-                        &[set_bits.into(), item_bits.into()],
-                        "frozenset_add",
-                    )
+                    .build_call(func, &[set_bits.into(), item_bits.into()], "frozenset_add")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -6074,11 +6154,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
-                        func,
-                        &[ctx_bits.into(), exc_bits.into()],
-                        "context_exit",
-                    )
+                    .build_call(func, &[ctx_bits.into(), exc_bits.into()], "context_exit")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -6474,11 +6550,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
-                        func,
-                        &[dict_bits.into(), other_bits.into()],
-                        "dict_update",
-                    )
+                    .build_call(func, &[dict_bits.into(), other_bits.into()], "dict_update")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -7314,8 +7386,93 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.emit_call_bind_runtime(callable, arg_ids)
     }
 
+    fn emit_call_func_or_bind_runtime(
+        &mut self,
+        callable: BasicValueEnum<'ctx>,
+        arg_ids: &[ValueId],
+    ) -> BasicValueEnum<'ctx> {
+        let callable_i64 = self.ensure_i64(callable);
+        let is_func_fn = self.ensure_runtime_i64_fn("molt_is_function_obj", 1);
+        let is_func_bits = self
+            .backend
+            .builder
+            .build_call(is_func_fn, &[callable_i64.into()], "is_function_obj")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value();
+        let truthy_fn = self.ensure_runtime_i64_fn("molt_is_truthy", 1);
+        let is_func_truthy = self
+            .backend
+            .builder
+            .build_call(truthy_fn, &[is_func_bits.into()], "is_function_truthy")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value();
+        let cond_i1 = self
+            .backend
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                is_func_truthy,
+                self.backend.context.i64_type().const_zero(),
+                "call_func_fast_guard",
+            )
+            .unwrap();
+        let current_fn = self.llvm_fn;
+        let fast_bb = self
+            .backend
+            .context
+            .append_basic_block(current_fn, "call_func_fast");
+        let bind_bb = self
+            .backend
+            .context
+            .append_basic_block(current_fn, "call_func_bind");
+        let merge_bb = self
+            .backend
+            .context
+            .append_basic_block(current_fn, "call_func_merge");
+        self.all_llvm_blocks.push(fast_bb);
+        self.all_llvm_blocks.push(bind_bb);
+        self.all_llvm_blocks.push(merge_bb);
+        self.backend
+            .builder
+            .build_conditional_branch(cond_i1, fast_bb, bind_bb)
+            .unwrap();
+
+        self.backend.builder.position_at_end(fast_bb);
+        let fast_result = self.emit_call_func_runtime(callable, arg_ids);
+        self.backend
+            .builder
+            .build_unconditional_branch(merge_bb)
+            .unwrap();
+        let fast_exit_bb = self.backend.builder.get_insert_block().unwrap();
+
+        self.backend.builder.position_at_end(bind_bb);
+        let bind_result = self.emit_call_bind_runtime(callable, arg_ids);
+        self.backend
+            .builder
+            .build_unconditional_branch(merge_bb)
+            .unwrap();
+        let bind_exit_bb = self.backend.builder.get_insert_block().unwrap();
+
+        self.backend.builder.position_at_end(merge_bb);
+        let phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.context.i64_type(), "call_func_or_bind_phi")
+            .unwrap();
+        phi.add_incoming(&[
+            (&fast_result.into_int_value(), fast_exit_bb),
+            (&bind_result.into_int_value(), bind_exit_bb),
+        ]);
+        phi.as_basic_value()
+    }
+
     fn next_call_site_bits(&mut self, lane: &str) -> inkwell::values::IntValue<'ctx> {
-        let site_id = crate::stable_ic_site_id(self.func.name.as_str(), self.call_site_counter, lane);
+        let site_id =
+            crate::stable_ic_site_id(self.func.name.as_str(), self.call_site_counter, lane);
         self.call_site_counter += 1;
         let raw: BasicValueEnum<'ctx> = self
             .backend
@@ -7400,10 +7557,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
         for state_id in resume_ids {
-            let bb = self.backend.context.append_basic_block(
-                self.llvm_fn,
-                &format!("state_resume_{}", state_id),
-            );
+            let bb = self
+                .backend
+                .context
+                .append_basic_block(self.llvm_fn, &format!("state_resume_{}", state_id));
             self.all_llvm_blocks.push(bb);
             self.state_resume_blocks.insert(state_id, bb);
         }
@@ -7532,10 +7689,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 #[cfg(all(test, feature = "llvm"))]
 mod tests {
     use super::*;
-    use crate::ir::{FunctionIR, OpIR};
     use crate::llvm_backend::LlvmBackend;
     use crate::llvm_backend::runtime_imports::declare_runtime_functions;
-    use crate::tir::lower_from_simple::lower_to_tir;
     use crate::tir::blocks::{Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -7823,7 +7978,10 @@ mod tests {
         let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
         let trampoline = lowering.ensure_plain_trampoline("helper_bool", 0, false);
 
-        assert_eq!(trampoline.get_type().get_return_type(), Some(ctx.i64_type().into()));
+        assert_eq!(
+            trampoline.get_type().get_return_type(),
+            Some(ctx.i64_type().into())
+        );
         backend.module.verify().expect("llvm module should verify");
         let ir = trampoline.print_to_string().to_string();
         assert!(ir.contains("box_bool") || ir.contains("zext_bool"), "{ir}");
@@ -7851,10 +8009,16 @@ mod tests {
         let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
         let trampoline = lowering.ensure_plain_trampoline("helper_f64", 0, false);
 
-        assert_eq!(trampoline.get_type().get_return_type(), Some(ctx.i64_type().into()));
+        assert_eq!(
+            trampoline.get_type().get_return_type(),
+            Some(ctx.i64_type().into())
+        );
         backend.module.verify().expect("llvm module should verify");
         let ir = trampoline.print_to_string().to_string();
-        assert!(ir.contains("f64_to_i64") || ir.contains("bitcast double"), "{ir}");
+        assert!(
+            ir.contains("f64_to_i64") || ir.contains("bitcast double"),
+            "{ir}"
+        );
         assert!(ir.contains("fcmp uno"), "{ir}");
         assert!(ir.contains("ret i64"), "{ir}");
     }
@@ -7887,7 +8051,10 @@ mod tests {
             results: vec![result],
             attrs: {
                 let mut attrs = AttrDict::new();
-                attrs.insert("_original_kind".into(), AttrValue::Str("call_guarded".into()));
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("call_guarded".into()),
+                );
                 attrs.insert("s_value".into(), AttrValue::Str("guarded_target".into()));
                 attrs
             },
@@ -7946,7 +8113,10 @@ mod tests {
             results: vec![result],
             attrs: {
                 let mut attrs = AttrDict::new();
-                attrs.insert("_original_kind".into(), AttrValue::Str("dict_update".into()));
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("dict_update".into()),
+                );
                 attrs
             },
             source_span: None,
@@ -8005,7 +8175,10 @@ mod tests {
             results: vec![],
             attrs: {
                 let mut attrs = AttrDict::new();
-                attrs.insert("_original_kind".into(), AttrValue::Str("list_append".into()));
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("list_append".into()),
+                );
                 attrs
             },
             source_span: None,
@@ -8092,7 +8265,10 @@ mod tests {
             results: vec![],
             attrs: {
                 let mut attrs = AttrDict::new();
-                attrs.insert("_original_kind".into(), AttrValue::Str("list_extend".into()));
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("list_extend".into()),
+                );
                 attrs
             },
             source_span: None,
@@ -8124,7 +8300,9 @@ mod tests {
             },
             source_span: None,
         });
-        entry.terminator = Terminator::Return { values: vec![result] };
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
@@ -8152,7 +8330,9 @@ mod tests {
             },
             source_span: None,
         });
-        entry.terminator = Terminator::Return { values: vec![result] };
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
@@ -8183,7 +8363,9 @@ mod tests {
             },
             source_span: None,
         });
-        entry.terminator = Terminator::Return { values: vec![result] };
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
@@ -8211,107 +8393,13 @@ mod tests {
             },
             source_span: None,
         });
-        entry.terminator = Terminator::Return { values: vec![result] };
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
         assert!(ir.contains("molt_super_new"), "{ir}");
-    }
-
-    #[test]
-    fn lower_from_simple_preserves_classmethod_new_for_llvm() {
-        let ctx = Context::create();
-        let backend = make_backend(&ctx);
-        let func_ir = FunctionIR {
-            name: "classmethod_from_simple".into(),
-            params: vec!["wrapped".into()],
-            ops: vec![
-                OpIR {
-                    kind: "classmethod_new".into(),
-                    args: Some(vec!["wrapped".into()]),
-                    out: Some("wrapped_cm".into()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret".into(),
-                    var: Some("wrapped_cm".into()),
-                    ..OpIR::default()
-                },
-            ],
-            param_types: Some(vec!["object".into()]),
-            source_file: None,
-            is_extern: false,
-        };
-
-        let tir_func = lower_to_tir(&func_ir);
-        let llvm_fn = lower_tir_to_llvm(&tir_func, &backend);
-        let ir = llvm_fn.print_to_string().to_string();
-
-        assert!(ir.contains("molt_classmethod_new"), "{ir}");
-    }
-
-    #[test]
-    fn lower_from_simple_preserves_staticmethod_new_for_llvm() {
-        let ctx = Context::create();
-        let backend = make_backend(&ctx);
-        let func_ir = FunctionIR {
-            name: "staticmethod_from_simple".into(),
-            params: vec!["wrapped".into()],
-            ops: vec![
-                OpIR {
-                    kind: "staticmethod_new".into(),
-                    args: Some(vec!["wrapped".into()]),
-                    out: Some("wrapped_sm".into()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret".into(),
-                    var: Some("wrapped_sm".into()),
-                    ..OpIR::default()
-                },
-            ],
-            param_types: Some(vec!["object".into()]),
-            source_file: None,
-            is_extern: false,
-        };
-
-        let tir_func = lower_to_tir(&func_ir);
-        let llvm_fn = lower_tir_to_llvm(&tir_func, &backend);
-        let ir = llvm_fn.print_to_string().to_string();
-
-        assert!(ir.contains("molt_staticmethod_new"), "{ir}");
-    }
-
-    #[test]
-    fn lower_from_simple_preserves_property_new_for_llvm() {
-        let ctx = Context::create();
-        let backend = make_backend(&ctx);
-        let func_ir = FunctionIR {
-            name: "property_from_simple".into(),
-            params: vec!["getter".into(), "setter".into(), "deleter".into()],
-            ops: vec![
-                OpIR {
-                    kind: "property_new".into(),
-                    args: Some(vec!["getter".into(), "setter".into(), "deleter".into()]),
-                    out: Some("prop".into()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret".into(),
-                    var: Some("prop".into()),
-                    ..OpIR::default()
-                },
-            ],
-            param_types: Some(vec!["object".into(), "object".into(), "object".into()]),
-            source_file: None,
-            is_extern: false,
-        };
-
-        let tir_func = lower_to_tir(&func_ir);
-        let llvm_fn = lower_tir_to_llvm(&tir_func, &backend);
-        let ir = llvm_fn.print_to_string().to_string();
-
-        assert!(ir.contains("molt_property_new"), "{ir}");
     }
 
     #[test]
@@ -8332,7 +8420,10 @@ mod tests {
             results: vec![result],
             attrs: {
                 let mut attrs = AttrDict::new();
-                attrs.insert("_original_kind".into(), AttrValue::Str("get_attr_name".into()));
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("get_attr_name".into()),
+                );
                 attrs
             },
             source_span: None,
@@ -8365,7 +8456,10 @@ mod tests {
             results: vec![result],
             attrs: {
                 let mut attrs = AttrDict::new();
-                attrs.insert("_original_kind".into(), AttrValue::Str("set_attr_name".into()));
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("set_attr_name".into()),
+                );
                 attrs
             },
             source_span: None,
@@ -8398,7 +8492,10 @@ mod tests {
             results: vec![result],
             attrs: {
                 let mut attrs = AttrDict::new();
-                attrs.insert("_original_kind".into(), AttrValue::Str("del_attr_name".into()));
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("del_attr_name".into()),
+                );
                 attrs
             },
             source_span: None,
@@ -8429,12 +8526,17 @@ mod tests {
             results: vec![result],
             attrs: {
                 let mut attrs = AttrDict::new();
-                attrs.insert("_original_kind".into(), AttrValue::Str("has_attr_name".into()));
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("has_attr_name".into()),
+                );
                 attrs
             },
             source_span: None,
         });
-        entry.terminator = Terminator::Return { values: vec![result] };
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
@@ -8458,7 +8560,9 @@ mod tests {
             attrs: AttrDict::new(),
             source_span: None,
         });
-        entry.terminator = Terminator::Return { values: vec![result] };
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
@@ -8487,7 +8591,9 @@ mod tests {
             },
             source_span: None,
         });
-        entry.terminator = Terminator::Return { values: vec![result] };
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();

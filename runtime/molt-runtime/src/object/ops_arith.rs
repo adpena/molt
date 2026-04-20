@@ -3408,6 +3408,7 @@ pub extern "C" fn molt_inplace_bit_xor(a: u64, b: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lshift(a: u64, b: u64) -> u64 {
     crate::with_gil_entry!(_py, {
+        let trace_shift = std::env::var("MOLT_TRACE_BIGINT_SHIFT").as_deref() == Ok("1");
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         let shift = index_i64_from_obj(_py, b, "shift count must be int");
@@ -3417,20 +3418,51 @@ pub extern "C" fn molt_lshift(a: u64, b: u64) -> u64 {
         let shift_u = shift as u32;
         if let Some(value) = to_i64(lhs) {
             if shift_u >= 63 {
-                return bigint_bits(_py, BigInt::from(value) << shift_u);
+                let res = BigInt::from(value) << shift_u;
+                let bits = bigint_bits(_py, res.clone());
+                if trace_shift {
+                    eprintln!(
+                        "[molt shift] i64-bigint lhs={} shift={} branch=wide result={} bits=0x{:x}",
+                        value, shift_u, res, bits
+                    );
+                }
+                return bits;
             }
             let res = value << shift_u;
             if inline_int_from_i128(res as i128).is_some() {
                 return int_bits_from_i64(_py, res);
             }
-            return bigint_bits(_py, BigInt::from(value) << shift_u);
+            let wide = BigInt::from(value) << shift_u;
+            let bits = bigint_bits(_py, wide.clone());
+            if trace_shift {
+                eprintln!(
+                    "[molt shift] i64-bigint lhs={} shift={} branch=promote result={} bits=0x{:x}",
+                    value, shift_u, wide, bits
+                );
+            }
+            return bits;
         }
         if let Some(value) = to_bigint(lhs) {
+            let value_for_trace = if trace_shift {
+                Some(value.clone())
+            } else {
+                None
+            };
             let res = value << shift_u;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
             }
-            return bigint_bits(_py, res);
+            let bits = bigint_bits(_py, res.clone());
+            if trace_shift {
+                eprintln!(
+                    "[molt shift] bigint lhs={} shift={} branch=bigint result={} bits=0x{:x}",
+                    value_for_trace.expect("trace clone present"),
+                    shift_u,
+                    res,
+                    bits
+                );
+            }
+            return bits;
         }
         binary_type_error(_py, lhs, rhs, "<<")
     })
@@ -3497,6 +3529,26 @@ pub extern "C" fn molt_inplace_rshift(a: u64, b: u64) -> u64 {
         }
         molt_rshift(a, b)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::*;
+
+    #[test]
+    fn molt_lshift_promotes_bigint_operand_correctly() {
+        crate::with_gil_entry!(_py, {
+            let lhs = int_bits_from_i128(_py, 283686952306183);
+            let rhs = MoltObject::from_int(8).bits();
+            let out = molt_lshift(lhs, rhs);
+            let repr_bits = crate::molt_repr_from_obj(out);
+            let rendered = string_obj_to_owned(obj_from_bits(repr_bits))
+                .expect("repr must be a string object");
+            dec_ref_bits(_py, repr_bits);
+            dec_ref_bits(_py, out);
+            assert_eq!(rendered, "72623859790382848");
+        });
+    }
 }
 
 #[unsafe(no_mangle)]

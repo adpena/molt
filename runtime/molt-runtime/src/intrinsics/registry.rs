@@ -720,10 +720,14 @@ mod tests {
 
             let runtime_active_name_ptr = alloc_string(_py, b"runtime_active");
             let runtime_active_name_bits = MoltObject::from_ptr(runtime_active_name_ptr).bits();
-            let runtime_active_bits = crate::molt_get_attr_name(module_bits, runtime_active_name_bits);
+            let runtime_active_bits =
+                crate::molt_get_attr_name(module_bits, runtime_active_name_bits);
             assert!(obj_from_bits(runtime_active_bits).as_ptr().is_some());
             let runtime_active_out = molt_runtime_active_runtime();
-            assert_eq!(crate::is_truthy(_py, obj_from_bits(runtime_active_out)), true);
+            assert_eq!(
+                crate::is_truthy(_py, obj_from_bits(runtime_active_out)),
+                true
+            );
 
             let load_name_ptr = alloc_string(_py, b"load_intrinsic");
             let load_name_bits = MoltObject::from_ptr(load_name_ptr).bits();
@@ -736,7 +740,10 @@ mod tests {
             let resolved_ptr = obj_from_bits(resolved_bits)
                 .as_ptr()
                 .expect("load_intrinsic should resolve known intrinsics");
-            assert_eq!(unsafe { object_type_id(resolved_ptr) }, crate::TYPE_ID_FUNCTION);
+            assert_eq!(
+                unsafe { object_type_id(resolved_ptr) },
+                crate::TYPE_ID_FUNCTION
+            );
 
             let split_name_ptr =
                 alloc_string(_py, b"molt_gpu_tensor__tensor_linear_split_last_dim");
@@ -746,7 +753,10 @@ mod tests {
             let split_ptr = obj_from_bits(split_bits)
                 .as_ptr()
                 .expect("split intrinsic should resolve to a function");
-            assert_eq!(unsafe { object_type_id(split_ptr) }, crate::TYPE_ID_FUNCTION);
+            assert_eq!(
+                unsafe { object_type_id(split_ptr) },
+                crate::TYPE_ID_FUNCTION
+            );
             assert_eq!(
                 unsafe { crate::function_fn_ptr(split_ptr) },
                 crate::molt_gpu_tensor__tensor_linear_split_last_dim as *const () as usize as u64
