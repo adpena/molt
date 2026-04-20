@@ -26,6 +26,7 @@
 import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleBatchOcr, handleTemplateExtract, handleStructuredOcr } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, createRequestLog, emitLog, writeAnalytics, categorizeError } from "./monitoring.js";
+import { getAnalyticsSummary } from "./analytics.js";
 // Lazy-loaded: these heavy modules are imported only when local inference is needed.
 // This avoids burning CPU budget on cold start when only the Workers AI fast path is used.
 let _inferenceModule = null;
@@ -636,7 +637,7 @@ export default {
     }
 
     if (request.method === "GET" && path.startsWith("/weights/")) {
-      const key = `models/falcon-ocr/${path.slice(9)}`; // strip "/weights/"
+      const key = `models/${path.slice(9)}`; // strip "/weights/" -> "models/<variant>/..."
       const obj = await env.WEIGHTS.get(key);
       if (!obj) {
         return new Response(
@@ -801,6 +802,14 @@ export default {
           const status = modelReady ? "ready" : initError ? "error" : "loading";
           const httpStatus = modelReady ? 200 : initError ? 500 : 503;
 
+          // Fetch analytics (non-blocking best-effort)
+          let analyticsSummary = null;
+          try {
+            analyticsSummary = await getAnalyticsSummary(env);
+          } catch (_) {
+            // Analytics fetch is non-fatal
+          }
+
           return new Response(
             JSON.stringify({
               status,
@@ -816,10 +825,27 @@ export default {
                 estimated_remaining_ms: estimatedRemainingMs,
               } : undefined,
               workers_ai_available: isWorkersAiAvailable(env),
+              wasm_available: true,
               cache: {
                 kv: !!env.CACHE,
                 edge: true,
               },
+              analytics: analyticsSummary ? {
+                requests_per_minute: analyticsSummary.requests_per_minute,
+                error_rate: analyticsSummary.error_rate,
+                cache_hit_ratio: analyticsSummary.cache_hit_ratio,
+                latency: {
+                  p50_ms: analyticsSummary.latency_p50_ms,
+                  p95_ms: analyticsSummary.latency_p95_ms,
+                  p99_ms: analyticsSummary.latency_p99_ms,
+                },
+                window_minutes: analyticsSummary.time_window_minutes,
+              } : undefined,
+              model_variant_priorities: [
+                "workers-ai (GPU fleet, preferred)",
+                "molt-gpu (local WASM+WebGPU)",
+                "paddle-ocr (CPU fallback)",
+              ],
               backends: {
                 "workers-ai": {
                   status: isWorkersAiAvailable(env) ? "available" : "not-bound",
