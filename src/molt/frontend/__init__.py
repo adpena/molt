@@ -1258,6 +1258,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.instance_attr_mutations: dict[str, set[str]] = {}
         self.imported_names: dict[str, str] = {}
         self.global_imported_names: dict[str, str] = {}
+        # Maps bind_name -> original attr_name for `from X import Y as Z`
+        # (bind_name="Z", attr_name="Y").  Used to resolve cross-module call
+        # targets to the original function name rather than the alias.
+        self.imported_attr_names: dict[str, str] = {}
+        self.global_imported_attr_names: dict[str, str] = {}
         self.imported_modules: dict[str, str] = {}
         self.global_imported_modules: dict[str, str] = {}
         self.local_intrinsic_wrappers: set[str] = set()
@@ -1733,6 +1738,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.exact_builtin_locals = {}
         self.globals = {}
         self.imported_names = dict(self.global_imported_names)
+        self.imported_attr_names = dict(self.global_imported_attr_names)
         self.imported_modules = dict(self.global_imported_modules)
         # Clear the per-function module cache so that module references are
         # re-fetched via MODULE_CACHE_GET in each new chunk function.  Without
@@ -2932,6 +2938,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.exact_locals = {}
         self.exact_builtin_locals = {}
         self.imported_names = dict(self.global_imported_names)
+        self.imported_attr_names = dict(self.global_imported_attr_names)
         self.imported_modules = dict(self.global_imported_modules)
         self.async_locals = {}
         self.async_internal_locals = set()
@@ -3580,6 +3587,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             "defer_module_attrs": self.defer_module_attrs,
             "deferred_module_attrs": self.deferred_module_attrs,
             "imported_names": self.imported_names,
+            "imported_attr_names": self.imported_attr_names,
             "imported_modules": self.imported_modules,
             "class_definition_pending": self.class_definition_pending,
             "block_terminated": self.block_terminated,
@@ -3636,6 +3644,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.defer_module_attrs = state["defer_module_attrs"]
         self.deferred_module_attrs = state["deferred_module_attrs"]
         self.imported_names = state["imported_names"]
+        self.imported_attr_names = state["imported_attr_names"]
         self.imported_modules = state["imported_modules"]
         self.class_definition_pending = state["class_definition_pending"]
         self.block_terminated = state["block_terminated"]
@@ -20792,7 +20801,9 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                             )
                         )
                         return res
-                    args = self._emit_direct_call_args(target_module, func_id, node)
+                    # Resolve alias -> original attr name for cross-module calls
+                    original_attr = self.imported_attr_names.get(func_id, func_id)
+                    args = self._emit_direct_call_args(target_module, original_attr, node)
                     if args is None:
                         callee = self.visit(node.func)
                         if callee is None:
@@ -20809,7 +20820,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                         return res
                     res = MoltValue(self.next_var(), type_hint="Any")
                     target_name = (
-                        f"{self._sanitize_module_name(target_module)}__{func_id}"
+                        f"{self._sanitize_module_name(target_module)}__{original_attr}"
                     )
                     self.emit(
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
@@ -20852,11 +20863,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 or self._is_known_project_module(imported_from)
             ):
                 target_module = normalized or imported_from
-                force_bind = func_id[:1].isupper() or func_id in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
+                # Resolve alias -> original attr name for cross-module calls
+                original_attr = self.imported_attr_names.get(func_id, func_id)
+                force_bind = original_attr[:1].isupper() or original_attr in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
                     target_module, set()
                 )
                 has_known_direct_target = (
-                    self._lookup_func_defaults(target_module, func_id) is not None
+                    self._lookup_func_defaults(target_module, original_attr) is not None
                 )
                 allow_speculative_internal_direct = (
                     not has_known_direct_target
@@ -20873,11 +20886,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     and not force_bind
                     and (has_known_direct_target or allow_speculative_internal_direct)
                 ):
-                    args = self._emit_direct_call_args(target_module, func_id, node)
+                    args = self._emit_direct_call_args(target_module, original_attr, node)
                     if args is not None:
                         res = MoltValue(self.next_var(), type_hint="Any")
                         target_name = (
-                            f"{self._sanitize_module_name(target_module)}__{func_id}"
+                            f"{self._sanitize_module_name(target_module)}__{original_attr}"
                         )
                         self.emit(
                             MoltOp(kind="CALL", args=[target_name] + args, result=res)
@@ -21791,9 +21804,11 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             return
         if isinstance(target, ast.Name):
             self.imported_names.pop(target.id, None)
+            self.imported_attr_names.pop(target.id, None)
             self.imported_modules.pop(target.id, None)
             if self.current_func_name == "molt_main":
                 self.global_imported_names.pop(target.id, None)
+                self.global_imported_attr_names.pop(target.id, None)
                 self.global_imported_modules.pop(target.id, None)
                 # `_load_optional_intrinsic(...)` is a runtime value with
                 # optional semantics (`None` when unavailable). Keep calls to
@@ -28141,8 +28156,10 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                     continue
                 bind_name = alias.asname or alias.name
                 self.imported_names[bind_name] = module_name
+                self.imported_attr_names[bind_name] = alias.name
                 if self.current_func_name == "molt_main":
                     self.global_imported_names[bind_name] = module_name
+                    self.global_imported_attr_names[bind_name] = alias.name
                     self.module_intrinsic_globals.pop(bind_name, None)
                 # Direct calls like `_require_intrinsic("name")` are rewritten
                 # to invoke the canonical runtime resolver by
@@ -28249,8 +28266,13 @@ class SimpleTIRGenerator(ast.NodeVisitor):
             )
             if _mod_resolvable:
                 self.imported_names[bind_name] = module_name
+                # Track the original attr name so cross-module call targets
+                # resolve to the canonical function name, not the alias.
+                # e.g. `from X import Y as Z` -> imported_attr_names["Z"] = "Y"
+                self.imported_attr_names[bind_name] = attr_name
                 if self.current_func_name == "molt_main":
                     self.global_imported_names[bind_name] = module_name
+                    self.global_imported_attr_names[bind_name] = attr_name
                     self.module_intrinsic_globals.pop(bind_name, None)
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
