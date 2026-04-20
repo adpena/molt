@@ -27,9 +27,12 @@ Key properties:
 
 ### API (x402 payment, cloud inference)
 
+**Important:** API clients must set `User-Agent: FalconOCR-Client/1.0` to bypass Cloudflare Bot Protection (error 1010). Requests with the `X-Payment-402` header are also exempt from bot checks.
+
 ```bash
 curl -X POST https://falcon-ocr.adpena.workers.dev/ocr \
   -H "Content-Type: application/json" \
+  -H "User-Agent: FalconOCR-Client/1.0" \
   -H "Origin: https://your-app.example.com" \
   -H "X-Payment-402: <payment-proof>" \
   -d '{"image": "<base64-png-or-jpeg>"}'
