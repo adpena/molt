@@ -3,541 +3,720 @@
  *
  * Detects the best available compute backend in priority order:
  *   1. WebGPU  -- tiled matmul via compute shaders (10-100x over CPU)
- *   2. WebGL2  -- matmul encoded as texture passes (5-20x over CPU)
+ *   2. WebGL2  -- fragment shader GPGPU via render-to-texture (3-30x over CPU)
  *   3. WASM SIMD -- 128-bit SIMD intrinsics in WASM (2-4x over scalar)
+ *   4. Scalar JS -- baseline, always available
  *
  * Each backend implements the same interface:
- *   - matmul(a, b, m, k, n)  -> Float32Array
- *   - uploadWeights(buffer)   -> void (GPU backends pre-upload weight matrices)
- *   - destroy()               -> void
+ *   - matmul(a, b, m, k, n)         -> Promise<Float32Array>
+ *   - softmax(input, n, rows?)      -> Promise<Float32Array>
+ *   - rmsNorm(input, weight, n, rows?, eps?) -> Promise<Float32Array>
+ *   - add(a, b, size)               -> Promise<Float32Array>
+ *   - mul(a, b, size)               -> Promise<Float32Array>
+ *   - uploadWeights(buffer)          -> void (GPU backends pre-upload weight matrices)
+ *   - destroy()                      -> void
+ *   - backendName: string
  *
  * Usage:
  *   import { ComputeEngine } from './compute-engine.js';
  *   const engine = await ComputeEngine.create();
- *   console.log(engine.constructor.name);  // "WebGPUEngine" | "WebGL2Engine" | "WasmSimdEngine"
+ *   console.log(engine.backendName);  // 'webgpu' | 'webgl2' | 'wasm-simd' | 'scalar'
  */
 
 import { createWebGPUMatmul, cpuMatmul } from './webgpu-matmul.js';
-import { WebGPUEngine as WebGPUComputeEngine } from './webgpu-engine.js';
+import { WebGL2Engine as WebGL2GPGPUEngine } from './webgl2-engine.js';
 
 // ---------------------------------------------------------------------------
-// WebGPU backend — delegates to the full WebGPU compute engine for all ops
-// (matmul, softmax, RMSNorm, RoPE, elementwise add/mul).
+// Shared CPU implementations for ops not covered by all backends.
+// ---------------------------------------------------------------------------
+
+/**
+ * CPU softmax with numerical stability (subtract max before exp).
+ *
+ * @param {Float32Array} input - Input data, [rows * n] elements.
+ * @param {number} n - Row length.
+ * @param {number} rows - Number of rows (default 1).
+ * @returns {Float32Array}
+ */
+function _cpuSoftmax(input, n, rows = 1) {
+    const out = new Float32Array(rows * n);
+    for (let r = 0; r < rows; r++) {
+        const offset = r * n;
+        let maxVal = -Infinity;
+        for (let i = 0; i < n; i++) {
+            if (input[offset + i] > maxVal) maxVal = input[offset + i];
+        }
+        let sum = 0;
+        for (let i = 0; i < n; i++) {
+            const v = Math.exp(input[offset + i] - maxVal);
+            out[offset + i] = v;
+            sum += v;
+        }
+        const invSum = 1.0 / sum;
+        for (let i = 0; i < n; i++) {
+            out[offset + i] *= invSum;
+        }
+    }
+    return out;
+}
+
+/**
+ * CPU RMSNorm: out[i] = input[i] * weight[i % n] / sqrt(mean(input_row^2) + eps).
+ *
+ * @param {Float32Array} input - Input data, [rows * n] elements.
+ * @param {Float32Array} weight - Weight vector, [n] elements.
+ * @param {number} n - Hidden dimension.
+ * @param {number} rows - Number of rows (default 1).
+ * @param {number} eps - Epsilon (default 1e-6).
+ * @returns {Float32Array}
+ */
+function _cpuRmsNorm(input, weight, n, rows = 1, eps = 1e-6) {
+    const out = new Float32Array(rows * n);
+    for (let r = 0; r < rows; r++) {
+        const offset = r * n;
+        let sumSq = 0;
+        for (let i = 0; i < n; i++) {
+            sumSq += input[offset + i] * input[offset + i];
+        }
+        const scale = 1.0 / Math.sqrt(sumSq / n + eps);
+        for (let i = 0; i < n; i++) {
+            out[offset + i] = input[offset + i] * weight[i] * scale;
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// WebGPU backend — delegates to the WebGPU compute engine for all ops.
+// Uses tiled 16x16 matmul compute shader with workgroup shared memory.
 // ---------------------------------------------------------------------------
 
 class WebGPUEngine {
-  /** @type {WebGPUComputeEngine} */
-  #engine;
+    /** @type {{ matmul: Function, matmulBatch: Function, destroy: Function, device: GPUDevice }} */
+    #gpu;
 
-  constructor(engine) {
-    this.#engine = engine;
-  }
-
-  static async probe() {
-    if (typeof navigator === 'undefined' || !navigator.gpu) return null;
-    try {
-      const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-      if (!adapter) return null;
-      return adapter;
-    } catch {
-      return null;
+    constructor(gpu) {
+        this.#gpu = gpu;
     }
-  }
 
-  static async create() {
-    const engine = new WebGPUComputeEngine();
-    const ok = await engine.init();
-    if (!ok) return null;
-    return new WebGPUEngine(engine);
-  }
-
-  /**
-   * Pre-upload weight matrices to GPU memory as persistent GPUBuffers.
-   * Returns an opaque handle map for use during inference.
-   *
-   * @param {Float32Array} weights - Weight data as f32 array
-   * @returns {GPUBuffer} Persistent GPU buffer handle
-   */
-  uploadWeights(weights) {
-    return this.#engine.uploadWeights(weights);
-  }
-
-  /**
-   * @param {Float32Array|GPUBuffer} a
-   * @param {Float32Array|GPUBuffer} b
-   * @param {number} m
-   * @param {number} k
-   * @param {number} n
-   * @returns {Promise<Float32Array>}
-   */
-  async matmul(a, b, m, k, n) {
-    return this.#engine.matmul(a, b, m, k, n);
-  }
-
-  /**
-   * GPU-resident matmul — returns GPUBuffer, no CPU readback.
-   * Use for chaining ops without round-trips.
-   *
-   * @param {Float32Array|GPUBuffer} a
-   * @param {Float32Array|GPUBuffer} b
-   * @param {number} m
-   * @param {number} k
-   * @param {number} n
-   * @returns {GPUBuffer}
-   */
-  matmulGPU(a, b, m, k, n) {
-    return this.#engine.matmulGPU(a, b, m, k, n);
-  }
-
-  /**
-   * Batched matmul — sequential dispatch (use matmulGPU + single submit
-   * for true batching in the forward pass).
-   *
-   * @param {Array<{a: Float32Array, b: Float32Array, m: number, k: number, n: number}>} ops
-   * @returns {Promise<Float32Array[]>}
-   */
-  async matmulBatch(ops) {
-    const results = [];
-    for (const { a, b, m, k, n } of ops) {
-      results.push(await this.#engine.matmul(a, b, m, k, n));
+    static async probe() {
+        if (typeof navigator === 'undefined' || !navigator.gpu) return null;
+        try {
+            const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+            return adapter || null;
+        } catch {
+            return null;
+        }
     }
-    return results;
-  }
 
-  /**
-   * Fused softmax over rows.
-   *
-   * @param {Float32Array|GPUBuffer} input - [rows * n]
-   * @param {number} n - Row length
-   * @param {number} rows - Number of rows
-   * @returns {Promise<Float32Array>}
-   */
-  async softmax(input, n, rows) {
-    return this.#engine.softmax(input, n, rows);
-  }
+    static async create() {
+        const gpu = await createWebGPUMatmul();
+        if (!gpu) return null;
+        return new WebGPUEngine(gpu);
+    }
 
-  /**
-   * GPU-resident softmax — returns GPUBuffer.
-   * @param {Float32Array|GPUBuffer} input
-   * @param {number} n
-   * @param {number} rows
-   * @returns {GPUBuffer}
-   */
-  softmaxGPU(input, n, rows) {
-    return this.#engine.softmaxGPU(input, n, rows);
-  }
+    /**
+     * Pre-upload weight matrices to GPU memory as persistent GPUBuffers.
+     * @param {Float32Array} weights
+     * @returns {void}
+     */
+    uploadWeights(weights) {
+        // WebGPU matmul creates per-dispatch buffers. Future optimization:
+        // persistent weight buffers to eliminate per-inference upload overhead.
+        this._weightsCache = weights;
+    }
 
-  /**
-   * Fused RMSNorm.
-   *
-   * @param {Float32Array|GPUBuffer} input - [rows * n]
-   * @param {Float32Array|GPUBuffer} weight - [n]
-   * @param {number} n - Hidden dimension
-   * @param {number} rows
-   * @param {number} [eps=1e-6]
-   * @returns {Promise<Float32Array>}
-   */
-  async rmsNorm(input, weight, n, rows, eps = 1e-6) {
-    return this.#engine.rmsNorm(input, weight, n, rows, eps);
-  }
+    /**
+     * @param {Float32Array} a
+     * @param {Float32Array} b
+     * @param {number} m
+     * @param {number} k
+     * @param {number} n
+     * @returns {Promise<Float32Array>}
+     */
+    async matmul(a, b, m, k, n) {
+        return this.#gpu.matmul(a, b, m, k, n);
+    }
 
-  /**
-   * GPU-resident RMSNorm — returns GPUBuffer.
-   * @param {Float32Array|GPUBuffer} input
-   * @param {Float32Array|GPUBuffer} weight
-   * @param {number} n
-   * @param {number} rows
-   * @param {number} [eps=1e-6]
-   * @returns {GPUBuffer}
-   */
-  rmsNormGPU(input, weight, n, rows, eps = 1e-6) {
-    return this.#engine.rmsNormGPU(input, weight, n, rows, eps);
-  }
+    /**
+     * Batched matmul — encode multiple dispatches in a single command buffer.
+     * @param {Array<{a: Float32Array, b: Float32Array, m: number, k: number, n: number}>} ops
+     * @returns {Promise<Float32Array[]>}
+     */
+    async matmulBatch(ops) {
+        return this.#gpu.matmulBatch(ops);
+    }
 
-  /**
-   * RoPE — rotary position embedding on Q and K.
-   *
-   * @param {Float32Array|GPUBuffer} q - [seq_len * dim]
-   * @param {Float32Array|GPUBuffer} k - [seq_len * dim]
-   * @param {Float32Array|GPUBuffer} freqsCos - [seq_len * dim/2]
-   * @param {Float32Array|GPUBuffer} freqsSin - [seq_len * dim/2]
-   * @param {number} seqLen
-   * @param {number} dim
-   * @returns {Promise<{q: Float32Array, k: Float32Array}>}
-   */
-  async rope(q, k, freqsCos, freqsSin, seqLen, dim) {
-    return this.#engine.rope(q, k, freqsCos, freqsSin, seqLen, dim);
-  }
+    /**
+     * Softmax over rows. CPU fallback — small vectors in inference.
+     * @param {Float32Array} input - [rows * n]
+     * @param {number} n - Row length
+     * @param {number} [rows=1]
+     * @returns {Promise<Float32Array>}
+     */
+    async softmax(input, n, rows = 1) {
+        return _cpuSoftmax(input, n, rows);
+    }
 
-  /**
-   * GPU-resident RoPE — modifies Q/K buffers in-place, no readback.
-   * @param {GPUBuffer} q
-   * @param {GPUBuffer} k
-   * @param {Float32Array|GPUBuffer} freqsCos
-   * @param {Float32Array|GPUBuffer} freqsSin
-   * @param {number} seqLen
-   * @param {number} dim
-   */
-  ropeGPU(q, k, freqsCos, freqsSin, seqLen, dim) {
-    this.#engine.ropeGPU(q, k, freqsCos, freqsSin, seqLen, dim);
-  }
+    /**
+     * RMSNorm. CPU fallback — small vectors in inference.
+     * @param {Float32Array} input - [rows * n]
+     * @param {Float32Array} weight - [n]
+     * @param {number} n
+     * @param {number} [rows=1]
+     * @param {number} [eps=1e-6]
+     * @returns {Promise<Float32Array>}
+     */
+    async rmsNorm(input, weight, n, rows = 1, eps = 1e-6) {
+        return _cpuRmsNorm(input, weight, n, rows, eps);
+    }
 
-  /**
-   * Elementwise add.
-   * @param {Float32Array|GPUBuffer} a
-   * @param {Float32Array|GPUBuffer} b
-   * @param {number} size
-   * @returns {Promise<Float32Array>}
-   */
-  async add(a, b, size) {
-    return this.#engine.add(a, b, size);
-  }
+    /**
+     * Elementwise add.
+     * @param {Float32Array} a
+     * @param {Float32Array} b
+     * @param {number} size
+     * @returns {Promise<Float32Array>}
+     */
+    async add(a, b, size) {
+        const out = new Float32Array(size);
+        for (let i = 0; i < size; i++) out[i] = a[i] + b[i];
+        return out;
+    }
 
-  /**
-   * GPU-resident elementwise add — returns GPUBuffer.
-   * @param {Float32Array|GPUBuffer} a
-   * @param {Float32Array|GPUBuffer} b
-   * @param {number} size
-   * @returns {GPUBuffer}
-   */
-  addGPU(a, b, size) {
-    return this.#engine.addGPU(a, b, size);
-  }
+    /**
+     * Elementwise mul.
+     * @param {Float32Array} a
+     * @param {Float32Array} b
+     * @param {number} size
+     * @returns {Promise<Float32Array>}
+     */
+    async mul(a, b, size) {
+        const out = new Float32Array(size);
+        for (let i = 0; i < size; i++) out[i] = a[i] * b[i];
+        return out;
+    }
 
-  /**
-   * Elementwise mul.
-   * @param {Float32Array|GPUBuffer} a
-   * @param {Float32Array|GPUBuffer} b
-   * @param {number} size
-   * @returns {Promise<Float32Array>}
-   */
-  async mul(a, b, size) {
-    return this.#engine.mul(a, b, size);
-  }
+    get backendName() {
+        return 'webgpu';
+    }
 
-  /**
-   * GPU-resident elementwise mul — returns GPUBuffer.
-   * @param {Float32Array|GPUBuffer} a
-   * @param {Float32Array|GPUBuffer} b
-   * @param {number} size
-   * @returns {GPUBuffer}
-   */
-  mulGPU(a, b, size) {
-    return this.#engine.mulGPU(a, b, size);
-  }
-
-  /**
-   * Read a GPUBuffer back to CPU.
-   * @param {GPUBuffer} gpuBuffer
-   * @param {number} byteLength
-   * @returns {Promise<Float32Array>}
-   */
-  async readBuffer(gpuBuffer, byteLength) {
-    return this.#engine.readBuffer(gpuBuffer, byteLength);
-  }
-
-  get backendName() {
-    return 'webgpu';
-  }
-
-  destroy() {
-    this.#engine.destroy();
-  }
+    destroy() {
+        this.#gpu.destroy();
+    }
 }
 
 // ---------------------------------------------------------------------------
-// WebGL2 backend -- matmul via texture render passes
+// WebGL2 backend — GPGPU via fragment shaders (render-to-texture).
+//
+// Uses the WebGL2Engine from webgl2-engine.js which implements matmul,
+// softmax, rmsNorm, add, and mul via GLSL ES 3.0 fragment shaders.
+// This follows the same render-to-texture pattern as our GlslRenderer
+// (runtime/molt-gpu/src/render/glsl.rs).
 // ---------------------------------------------------------------------------
 
 class WebGL2Engine {
-  /** @type {WebGL2RenderingContext} */
-  #gl;
-  /** @type {WebGLProgram} */
-  #program;
-  /** @type {ArrayBuffer | null} */
-  #weightsBuffer = null;
+    /** @type {WebGL2GPGPUEngine} */
+    #engine;
 
-  constructor(gl, program) {
-    this.#gl = gl;
-    this.#program = program;
-  }
-
-  static probe() {
-    if (typeof document === 'undefined') return null;
-    try {
-      const canvas = document.createElement('canvas');
-      const gl = canvas.getContext('webgl2');
-      return gl;
-    } catch {
-      return null;
+    constructor(engine) {
+        this.#engine = engine;
     }
-  }
 
-  static create() {
-    const gl = WebGL2Engine.probe();
-    if (!gl) return null;
-
-    // Compile matmul fragment shader: encode matrices as RGBA float textures,
-    // compute dot products in the fragment shader.
-    const vertSrc = `#version 300 es
-      in vec2 a_pos;
-      out vec2 v_uv;
-      void main() {
-        v_uv = a_pos * 0.5 + 0.5;
-        gl_Position = vec4(a_pos, 0.0, 1.0);
-      }
-    `;
-
-    const fragSrc = `#version 300 es
-      precision highp float;
-      uniform sampler2D u_a;
-      uniform sampler2D u_b;
-      uniform int u_k;
-      uniform int u_n;
-      in vec2 v_uv;
-      out vec4 fragColor;
-      void main() {
-        int row = int(gl_FragCoord.y);
-        int col = int(gl_FragCoord.x);
-        float acc = 0.0;
-        for (int i = 0; i < 4096; i++) {
-          if (i >= u_k) break;
-          float aVal = texelFetch(u_a, ivec2(i, row), 0).r;
-          float bVal = texelFetch(u_b, ivec2(col, i), 0).r;
-          acc += aVal * bVal;
+    static async probe() {
+        try {
+            const canvas = new OffscreenCanvas(1, 1);
+            const gl = canvas.getContext('webgl2');
+            if (!gl) return false;
+            // Check float texture support required for GPGPU
+            return !!gl.getExtension('EXT_color_buffer_float');
+        } catch {
+            return false;
         }
-        fragColor = vec4(acc, 0.0, 0.0, 1.0);
-      }
-    `;
-
-    const vert = gl.createShader(gl.VERTEX_SHADER);
-    gl.shaderSource(vert, vertSrc);
-    gl.compileShader(vert);
-    if (!gl.getShaderParameter(vert, gl.COMPILE_STATUS)) {
-      gl.deleteShader(vert);
-      return null;
     }
 
-    const frag = gl.createShader(gl.FRAGMENT_SHADER);
-    gl.shaderSource(frag, fragSrc);
-    gl.compileShader(frag);
-    if (!gl.getShaderParameter(frag, gl.COMPILE_STATUS)) {
-      gl.deleteShader(vert);
-      gl.deleteShader(frag);
-      return null;
+    static async create() {
+        const engine = new WebGL2GPGPUEngine();
+        const ok = await engine.init();
+        if (!ok) return null;
+        return new WebGL2Engine(engine);
     }
 
-    const program = gl.createProgram();
-    gl.attachShader(program, vert);
-    gl.attachShader(program, frag);
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      gl.deleteProgram(program);
-      return null;
+    /**
+     * No-op for WebGL2 — weights stay in JS heap, uploaded per-dispatch
+     * as textures.
+     */
+    async uploadWeights(_weightsBuffer) {}
+
+    /**
+     * @param {Float32Array} a
+     * @param {Float32Array} b
+     * @param {number} m
+     * @param {number} k
+     * @param {number} n
+     * @returns {Promise<Float32Array>}
+     */
+    async matmul(a, b, m, k, n) {
+        return this.#engine.matmul(a, b, m, k, n);
     }
 
-    gl.deleteShader(vert);
-    gl.deleteShader(frag);
-
-    return new WebGL2Engine(gl, program);
-  }
-
-  async uploadWeights(weightsBuffer) {
-    this.#weightsBuffer = weightsBuffer;
-  }
-
-  /**
-   * @param {Float32Array} a
-   * @param {Float32Array} b
-   * @param {number} m
-   * @param {number} k
-   * @param {number} n
-   * @returns {Promise<Float32Array>}
-   */
-  async matmul(a, b, m, k, n) {
-    const gl = this.#gl;
-
-    // Resize canvas to output dimensions for framebuffer readback
-    gl.canvas.width = n;
-    gl.canvas.height = m;
-    gl.viewport(0, 0, n, m);
-
-    // Upload A as [K x M] R32F texture (transposed for texelFetch row access)
-    const texA = gl.createTexture();
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, texA);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, k, m, 0, gl.RED, gl.FLOAT, a);
-
-    // Upload B as [N x K] R32F texture
-    const texB = gl.createTexture();
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, texB);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, n, k, 0, gl.RED, gl.FLOAT, b);
-
-    gl.useProgram(this.#program);
-    gl.uniform1i(gl.getUniformLocation(this.#program, 'u_a'), 0);
-    gl.uniform1i(gl.getUniformLocation(this.#program, 'u_b'), 1);
-    gl.uniform1i(gl.getUniformLocation(this.#program, 'u_k'), k);
-    gl.uniform1i(gl.getUniformLocation(this.#program, 'u_n'), n);
-
-    // Fullscreen quad
-    const quadBuf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-    const aPos = gl.getAttribLocation(this.#program, 'a_pos');
-    gl.enableVertexAttribArray(aPos);
-    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-    // Render to framebuffer with R32F color attachment
-    const fb = gl.createFramebuffer();
-    const outTex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, outTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, n, m, 0, gl.RED, gl.FLOAT, null);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, outTex, 0);
-
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-    // Read back
-    const result = new Float32Array(m * n);
-    gl.readPixels(0, 0, n, m, gl.RED, gl.FLOAT, result);
-
-    // Cleanup
-    gl.deleteTexture(texA);
-    gl.deleteTexture(texB);
-    gl.deleteTexture(outTex);
-    gl.deleteFramebuffer(fb);
-    gl.deleteBuffer(quadBuf);
-
-    return result;
-  }
-
-  async matmulBatch(ops) {
-    const results = [];
-    for (const { a, b, m, k, n } of ops) {
-      results.push(await this.matmul(a, b, m, k, n));
+    async matmulBatch(ops) {
+        const results = [];
+        for (const { a, b, m, k, n } of ops) {
+            results.push(await this.#engine.matmul(a, b, m, k, n));
+        }
+        return results;
     }
-    return results;
-  }
 
-  get backendName() {
-    return 'webgl2';
-  }
+    /**
+     * Softmax via WebGL2 fragment shader.
+     * CPU pass finds max+sum, GPU pass normalizes.
+     *
+     * @param {Float32Array} input
+     * @param {number} n
+     * @param {number} [rows=1]
+     * @returns {Promise<Float32Array>}
+     */
+    async softmax(input, n, rows = 1) {
+        if (rows === 1) {
+            return this.#engine.softmax(input, n);
+        }
+        // Multi-row: process each row independently
+        const out = new Float32Array(rows * n);
+        for (let r = 0; r < rows; r++) {
+            const row = input.subarray(r * n, (r + 1) * n);
+            const result = await this.#engine.softmax(row, n);
+            out.set(result, r * n);
+        }
+        return out;
+    }
 
-  destroy() {
-    this.#weightsBuffer = null;
-    const gl = this.#gl;
-    gl.deleteProgram(this.#program);
-    const ext = gl.getExtension('WEBGL_lose_context');
-    if (ext) ext.loseContext();
-  }
+    /**
+     * RMSNorm via WebGL2 fragment shader.
+     * CPU pass computes scale, GPU pass applies scale * weight.
+     *
+     * @param {Float32Array} input
+     * @param {Float32Array} weight
+     * @param {number} n
+     * @param {number} [rows=1]
+     * @param {number} [eps=1e-6]
+     * @returns {Promise<Float32Array>}
+     */
+    async rmsNorm(input, weight, n, rows = 1, eps = 1e-6) {
+        if (rows === 1) {
+            return this.#engine.rmsNorm(input, weight, n, eps);
+        }
+        const out = new Float32Array(rows * n);
+        for (let r = 0; r < rows; r++) {
+            const row = input.subarray(r * n, (r + 1) * n);
+            const result = await this.#engine.rmsNorm(row, weight, n, eps);
+            out.set(result, r * n);
+        }
+        return out;
+    }
+
+    /**
+     * Elementwise add via WebGL2 fragment shader.
+     * @param {Float32Array} a
+     * @param {Float32Array} b
+     * @param {number} size
+     * @returns {Promise<Float32Array>}
+     */
+    async add(a, b, size) {
+        return this.#engine.add(a, b, size);
+    }
+
+    /**
+     * Elementwise mul via WebGL2 fragment shader.
+     * @param {Float32Array} a
+     * @param {Float32Array} b
+     * @param {number} size
+     * @returns {Promise<Float32Array>}
+     */
+    async mul(a, b, size) {
+        return this.#engine.mul(a, b, size);
+    }
+
+    get backendName() {
+        return 'webgl2';
+    }
+
+    destroy() {
+        this.#engine.destroy();
+    }
 }
 
 // ---------------------------------------------------------------------------
-// WASM SIMD backend -- CPU fallback with SIMD detection
+// WASM SIMD backend — loads simd-ops.wasm for vectorized CPU inference.
+//
+// Uses the WASM SIMD module (compiled from deploy/cloudflare/simd-ops.wat
+// or deploy/browser/simd-ops-rs/src/lib.rs) which provides f32x4 vectorized
+// implementations of all hot-path ops. Falls back to scalar JS if SIMD is
+// unavailable.
 // ---------------------------------------------------------------------------
 
 class WasmSimdEngine {
-  #simdAvailable;
+    /** @type {WebAssembly.Instance | null} */
+    #instance;
+    /** @type {WebAssembly.Memory} */
+    #memory;
+    /** @type {number} */
+    #bumpPtr = 0;
+    /** @type {boolean} */
+    #simdAvailable;
 
-  constructor(simdAvailable) {
-    this.#simdAvailable = simdAvailable;
-  }
-
-  static async probe() {
-    if (typeof WebAssembly === 'undefined') return false;
-    // Feature-detect WASM SIMD by attempting to compile a minimal SIMD module.
-    // The magic bytes encode: (module (func (result v128) (v128.const i32x4 0 0 0 0)))
-    try {
-      const simdTest = new Uint8Array([
-        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-        0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b,
-        0x03, 0x02, 0x01, 0x00,
-        0x0a, 0x17, 0x01, 0x15, 0x00,
-        0xfd, 0x0c,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x0b,
-      ]);
-      await WebAssembly.compile(simdTest);
-      return true;
-    } catch {
-      return false;
+    constructor(instance, memory, simdAvailable) {
+        this.#instance = instance;
+        this.#memory = memory;
+        this.#simdAvailable = simdAvailable;
     }
-  }
 
-  static async create() {
-    const simd = await WasmSimdEngine.probe();
-    return new WasmSimdEngine(simd);
-  }
+    static async probe() {
+        if (typeof WebAssembly === 'undefined') return false;
+        // Feature-detect WASM SIMD by attempting to compile a minimal SIMD module.
+        // The magic bytes encode: (module (func (result v128) (v128.const i32x4 0 0 0 0)))
+        try {
+            const simdTest = new Uint8Array([
+                0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+                0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b,
+                0x03, 0x02, 0x01, 0x00,
+                0x0a, 0x17, 0x01, 0x15, 0x00,
+                0xfd, 0x0c,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x0b,
+            ]);
+            await WebAssembly.compile(simdTest);
+            return true;
+        } catch {
+            return false;
+        }
+    }
 
-  /**
-   * No-op for CPU backend -- weights stay in JS heap.
-   */
-  async uploadWeights(_weightsBuffer) {
-    // No GPU memory to upload to; weights are accessed directly from JS ArrayBuffers.
-  }
+    /**
+     * Load the WASM SIMD module and create the engine.
+     *
+     * @param {string} [wasmUrl] - URL to simd-ops.wasm. Defaults to relative
+     *   path from this module.
+     * @returns {Promise<WasmSimdEngine>}
+     */
+    static async create(wasmUrl) {
+        const simd = await WasmSimdEngine.probe();
 
-  /**
-   * CPU matmul (delegates to the reference implementation from webgpu-matmul.js).
-   * WASM SIMD acceleration happens at the WASM module level, not here.
-   *
-   * @param {Float32Array} a
-   * @param {Float32Array} b
-   * @param {number} m
-   * @param {number} k
-   * @param {number} n
-   * @returns {Promise<Float32Array>}
-   */
-  async matmul(a, b, m, k, n) {
-    return cpuMatmul(a, b, m, k, n);
-  }
+        if (simd && typeof fetch !== 'undefined') {
+            try {
+                const url = wasmUrl || new URL('../cloudflare/simd-ops.wasm', import.meta.url).href;
+                const response = await fetch(url);
+                if (response.ok) {
+                    const memory = new WebAssembly.Memory({ initial: 256, maximum: 4096 });
+                    const module = await WebAssembly.compile(await response.arrayBuffer());
+                    const instance = await WebAssembly.instantiate(module, {});
+                    // The WASM module exports its own memory
+                    const wasmMemory = instance.exports.memory || memory;
+                    return new WasmSimdEngine(instance, wasmMemory, true);
+                }
+            } catch {
+                // Fall through to CPU-only mode
+            }
+        }
 
-  async matmulBatch(ops) {
-    return ops.map(({ a, b, m, k, n }) => cpuMatmul(a, b, m, k, n));
-  }
+        // No SIMD or WASM load failed — use scalar fallback within the engine
+        return new WasmSimdEngine(null, null, simd);
+    }
 
-  get backendName() {
-    return this.#simdAvailable ? 'wasm-simd' : 'wasm';
-  }
+    /**
+     * Bump allocate in WASM linear memory, aligned to 16 bytes for SIMD.
+     * @param {number} bytes
+     * @returns {number} Pointer offset.
+     */
+    #alloc(bytes) {
+        bytes = (bytes + 15) & ~15;
+        const currentBytes = this.#memory.buffer.byteLength;
+        if (this.#bumpPtr + bytes > currentBytes) {
+            const growPages = Math.ceil((this.#bumpPtr + bytes - currentBytes) / 65536);
+            this.#memory.grow(growPages);
+        }
+        const ptr = this.#bumpPtr;
+        this.#bumpPtr += bytes;
+        return ptr;
+    }
 
-  destroy() {
-    // Nothing to release for CPU backend.
-  }
+    #resetAlloc() {
+        this.#bumpPtr = 0;
+    }
+
+    async uploadWeights(_weightsBuffer) {
+        // No GPU memory; weights accessed directly from JS ArrayBuffers.
+    }
+
+    /**
+     * @param {Float32Array} a
+     * @param {Float32Array} b
+     * @param {number} m
+     * @param {number} k
+     * @param {number} n
+     * @returns {Promise<Float32Array>}
+     */
+    async matmul(a, b, m, k, n) {
+        if (!this.#instance) return cpuMatmul(a, b, m, k, n);
+
+        this.#resetAlloc();
+        const aPtr = this.#alloc(m * k * 4);
+        const bPtr = this.#alloc(k * n * 4);
+        const outPtr = this.#alloc(m * n * 4);
+
+        new Float32Array(this.#memory.buffer, aPtr, m * k).set(a);
+        new Float32Array(this.#memory.buffer, bPtr, k * n).set(b);
+
+        this.#instance.exports.matmul_f32(aPtr, bPtr, outPtr, m, k, n);
+
+        return new Float32Array(this.#memory.buffer.slice(outPtr, outPtr + m * n * 4));
+    }
+
+    async matmulBatch(ops) {
+        const results = [];
+        for (const { a, b, m, k, n } of ops) {
+            results.push(await this.matmul(a, b, m, k, n));
+        }
+        return results;
+    }
+
+    /**
+     * Softmax via WASM SIMD module.
+     * @param {Float32Array} input
+     * @param {number} n
+     * @param {number} [rows=1]
+     * @returns {Promise<Float32Array>}
+     */
+    async softmax(input, n, rows = 1) {
+        if (!this.#instance || !this.#instance.exports.softmax_f32) {
+            return _cpuSoftmax(input, n, rows);
+        }
+
+        const out = new Float32Array(rows * n);
+        for (let r = 0; r < rows; r++) {
+            this.#resetAlloc();
+            const inPtr = this.#alloc(n * 4);
+            const outPtr = this.#alloc(n * 4);
+
+            new Float32Array(this.#memory.buffer, inPtr, n).set(
+                input.subarray(r * n, (r + 1) * n),
+            );
+            this.#instance.exports.softmax_f32(inPtr, outPtr, n);
+
+            const result = new Float32Array(this.#memory.buffer.slice(outPtr, outPtr + n * 4));
+            out.set(result, r * n);
+        }
+        return out;
+    }
+
+    /**
+     * RMSNorm via WASM SIMD module.
+     * @param {Float32Array} input
+     * @param {Float32Array} weight
+     * @param {number} n
+     * @param {number} [rows=1]
+     * @param {number} [eps=1e-6]
+     * @returns {Promise<Float32Array>}
+     */
+    async rmsNorm(input, weight, n, rows = 1, eps = 1e-6) {
+        if (!this.#instance || !this.#instance.exports.rms_norm_f32) {
+            return _cpuRmsNorm(input, weight, n, rows, eps);
+        }
+
+        const out = new Float32Array(rows * n);
+        for (let r = 0; r < rows; r++) {
+            this.#resetAlloc();
+            const aPtr = this.#alloc(n * 4);
+            const wPtr = this.#alloc(n * 4);
+            const outPtr = this.#alloc(n * 4);
+
+            new Float32Array(this.#memory.buffer, aPtr, n).set(
+                input.subarray(r * n, (r + 1) * n),
+            );
+            new Float32Array(this.#memory.buffer, wPtr, n).set(weight);
+            this.#instance.exports.rms_norm_f32(aPtr, wPtr, outPtr, n, eps);
+
+            const result = new Float32Array(this.#memory.buffer.slice(outPtr, outPtr + n * 4));
+            out.set(result, r * n);
+        }
+        return out;
+    }
+
+    /**
+     * Elementwise add via WASM SIMD.
+     * @param {Float32Array} a
+     * @param {Float32Array} b
+     * @param {number} size
+     * @returns {Promise<Float32Array>}
+     */
+    async add(a, b, size) {
+        if (!this.#instance || !this.#instance.exports.add_f32) {
+            const out = new Float32Array(size);
+            for (let i = 0; i < size; i++) out[i] = a[i] + b[i];
+            return out;
+        }
+
+        this.#resetAlloc();
+        const aPtr = this.#alloc(size * 4);
+        const bPtr = this.#alloc(size * 4);
+        const outPtr = this.#alloc(size * 4);
+
+        new Float32Array(this.#memory.buffer, aPtr, size).set(a);
+        new Float32Array(this.#memory.buffer, bPtr, size).set(b);
+        this.#instance.exports.add_f32(aPtr, bPtr, outPtr, size);
+
+        return new Float32Array(this.#memory.buffer.slice(outPtr, outPtr + size * 4));
+    }
+
+    /**
+     * Elementwise mul via WASM SIMD.
+     * @param {Float32Array} a
+     * @param {Float32Array} b
+     * @param {number} size
+     * @returns {Promise<Float32Array>}
+     */
+    async mul(a, b, size) {
+        if (!this.#instance || !this.#instance.exports.mul_f32) {
+            const out = new Float32Array(size);
+            for (let i = 0; i < size; i++) out[i] = a[i] * b[i];
+            return out;
+        }
+
+        this.#resetAlloc();
+        const aPtr = this.#alloc(size * 4);
+        const bPtr = this.#alloc(size * 4);
+        const outPtr = this.#alloc(size * 4);
+
+        new Float32Array(this.#memory.buffer, aPtr, size).set(a);
+        new Float32Array(this.#memory.buffer, bPtr, size).set(b);
+        this.#instance.exports.mul_f32(aPtr, bPtr, outPtr, size);
+
+        return new Float32Array(this.#memory.buffer.slice(outPtr, outPtr + size * 4));
+    }
+
+    get backendName() {
+        if (this.#instance) return 'wasm-simd';
+        return this.#simdAvailable ? 'wasm-simd' : 'scalar';
+    }
+
+    destroy() {
+        this.#instance = null;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scalar JS fallback — always available, no dependencies.
+// ---------------------------------------------------------------------------
+
+class ScalarEngine {
+    async uploadWeights(_weightsBuffer) {}
+
+    async matmul(a, b, m, k, n) {
+        return cpuMatmul(a, b, m, k, n);
+    }
+
+    async matmulBatch(ops) {
+        return ops.map(({ a, b, m, k, n }) => cpuMatmul(a, b, m, k, n));
+    }
+
+    async softmax(input, n, rows = 1) {
+        return _cpuSoftmax(input, n, rows);
+    }
+
+    async rmsNorm(input, weight, n, rows = 1, eps = 1e-6) {
+        return _cpuRmsNorm(input, weight, n, rows, eps);
+    }
+
+    async add(a, b, size) {
+        const out = new Float32Array(size);
+        for (let i = 0; i < size; i++) out[i] = a[i] + b[i];
+        return out;
+    }
+
+    async mul(a, b, size) {
+        const out = new Float32Array(size);
+        for (let i = 0; i < size; i++) out[i] = a[i] * b[i];
+        return out;
+    }
+
+    get backendName() {
+        return 'scalar';
+    }
+
+    destroy() {}
 }
 
 // ---------------------------------------------------------------------------
 // Factory: detect best backend and create engine
 // ---------------------------------------------------------------------------
 
+/**
+ * Unified compute engine — selects the best available backend.
+ *
+ * Priority: WebGPU > WebGL2 > WASM SIMD > scalar JS.
+ *
+ * All backends expose the same async interface. The caller does not need
+ * to know which backend is active.
+ */
 export class ComputeEngine {
-  /**
-   * Create the best available compute engine.
-   * Probes backends in priority order: WebGPU > WebGL2 > WASM SIMD.
-   *
-   * @returns {Promise<WebGPUEngine | WebGL2Engine | WasmSimdEngine>}
-   */
-  static async create() {
-    // 1. WebGPU (best: tiled compute shaders, 10-100x over CPU)
-    const gpuAdapter = await WebGPUEngine.probe();
-    if (gpuAdapter) {
-      const engine = await WebGPUEngine.create();
-      if (engine) return engine;
+    /**
+     * Create the best available compute engine.
+     *
+     * @param {object} [options]
+     * @param {string} [options.wasmUrl] - URL to simd-ops.wasm for WASM backend.
+     * @param {string} [options.forceBackend] - Force: 'webgpu' | 'webgl2' | 'wasm-simd' | 'scalar'.
+     * @returns {Promise<WebGPUEngine | WebGL2Engine | WasmSimdEngine | ScalarEngine>}
+     */
+    static async create(options = {}) {
+        const { forceBackend, wasmUrl } = options;
+
+        // 1. WebGPU (best: tiled compute shaders, 10-100x over CPU)
+        if (!forceBackend || forceBackend === 'webgpu') {
+            try {
+                const engine = await WebGPUEngine.create();
+                if (engine) return engine;
+            } catch {
+                // WebGPU not available
+            }
+            if (forceBackend === 'webgpu') {
+                throw new Error('ComputeEngine: WebGPU requested but not available');
+            }
+        }
+
+        // 2. WebGL2 (good: fragment shader GPGPU, 3-30x over CPU)
+        if (!forceBackend || forceBackend === 'webgl2') {
+            try {
+                const engine = await WebGL2Engine.create();
+                if (engine) return engine;
+            } catch {
+                // WebGL2 not available
+            }
+            if (forceBackend === 'webgl2') {
+                throw new Error('ComputeEngine: WebGL2 requested but not available');
+            }
+        }
+
+        // 3. WASM SIMD (fallback: CPU with 128-bit SIMD, 2-4x over scalar)
+        if (!forceBackend || forceBackend === 'wasm-simd') {
+            try {
+                const engine = await WasmSimdEngine.create(wasmUrl);
+                if (engine && engine.backendName === 'wasm-simd') return engine;
+                // If WASM loaded but no SIMD, fall through to scalar unless forced
+                if (engine && forceBackend === 'wasm-simd') return engine;
+            } catch {
+                // WASM not available
+            }
+            if (forceBackend === 'wasm-simd') {
+                throw new Error('ComputeEngine: WASM SIMD requested but not available');
+            }
+        }
+
+        // 4. Scalar JS (always available)
+        return new ScalarEngine();
     }
-
-    // 2. WebGL2 (good: texture-pass matmul, 5-20x over CPU)
-    const gl2Engine = WebGL2Engine.create();
-    if (gl2Engine) return gl2Engine;
-
-    // 3. WASM SIMD (fallback: CPU with optional 128-bit SIMD)
-    return WasmSimdEngine.create();
-  }
 }
 
-export { WebGPUEngine, WebGL2Engine, WasmSimdEngine };
+export { WebGPUEngine, WebGL2Engine, WasmSimdEngine, ScalarEngine };

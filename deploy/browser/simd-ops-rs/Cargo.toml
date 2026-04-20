@@ -1,0 +1,15 @@
+[package]
+name = "simd-ops"
+version = "0.1.0"
+edition = "2021"
+description = "WASM SIMD vectorized ops for Falcon-OCR inference (Rust source)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "z"      # Optimize for size (target < 5 KB)
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
