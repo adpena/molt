@@ -226,9 +226,11 @@ export async function runWorkersAiOcr(env, imageBytes, options = {}) {
           return {
             text,
             confidence: estimateConfidence(text),
+            engine: "falcon-ocr",
             model: model.id,
             model_used: model.name,
             backend: "workers-ai",
+            auto_filled: true,
             time_ms: Date.now() - start,
             retries: attempt,
           };
