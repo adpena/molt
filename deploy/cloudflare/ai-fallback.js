@@ -39,10 +39,16 @@
  * OCR prompt template for vision models.
  * Structured to extract maximum text with formatting preservation.
  */
-const OCR_PROMPT = `Extract ALL text from this document image exactly as it appears.
-Preserve the layout, line breaks, and formatting.
-Include all numbers, dates, currency amounts, and special characters.
-Do not interpret or summarize — output the raw text only.`;
+const OCR_PROMPT = `Extract ALL text from this invoice image. Return the text exactly as it appears, preserving:
+- Line items with quantities, rates, and amounts
+- All dates (issue date, due date)
+- Invoice number
+- Company names and addresses
+- Totals, subtotals, tax amounts
+- Currency symbols and formatting
+- Payment terms
+
+Output the raw text line-by-line, exactly as printed. Do not summarize or interpret.`;
 
 /**
  * Invoice-specific prompt for higher accuracy on structured documents.
@@ -51,6 +57,44 @@ const INVOICE_OCR_PROMPT = `Extract ALL text from this invoice/receipt image exa
 Include: company name, invoice number, dates, all line items with amounts,
 subtotals, taxes, and totals. Preserve exact formatting and numbers.
 Output raw text only, no interpretation.`;
+
+/**
+ * Structured invoice extraction prompt that returns JSON.
+ * Used by the /ocr/structured endpoint for MCP agent consumption.
+ */
+const STRUCTURED_INVOICE_PROMPT = `Extract invoice data as JSON: {"vendor":"...","invoice_number":"...","issue_date":"...","due_date":"...","items":[{"description":"...","qty":N,"rate":N,"amount":N}],"subtotal":N,"tax":N,"total":N,"currency":"..."}`;
+
+/**
+ * JSON schema for structured invoice output validation.
+ * @type {object}
+ */
+const STRUCTURED_INVOICE_SCHEMA = {
+  type: "object",
+  required: ["vendor", "invoice_number", "total", "currency"],
+  properties: {
+    vendor: { type: "string" },
+    invoice_number: { type: "string" },
+    issue_date: { type: "string" },
+    due_date: { type: "string" },
+    items: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["description", "amount"],
+        properties: {
+          description: { type: "string" },
+          qty: { type: "number" },
+          rate: { type: "number" },
+          amount: { type: "number" },
+        },
+      },
+    },
+    subtotal: { type: "number" },
+    tax: { type: "number" },
+    total: { type: "number" },
+    currency: { type: "string" },
+  },
+};
 
 /**
  * Preferred Workers AI models for OCR, in order of quality.
@@ -114,6 +158,7 @@ function isCapacityError(err) {
  * @param {object} options - Optional configuration
  * @param {string} [options.prompt] - Custom OCR prompt
  * @param {boolean} [options.isInvoice] - Use invoice-specific prompt
+ * @param {boolean} [options.structured] - Return structured JSON instead of raw text
  * @param {number} [options.maxTokens] - Max output tokens
  * @returns {Promise<AiFallbackResult>}
  */
@@ -122,7 +167,9 @@ export async function runWorkersAiOcr(env, imageBytes, options = {}) {
     throw new Error("Workers AI binding not available");
   }
 
-  const prompt = options.prompt || (options.isInvoice ? INVOICE_OCR_PROMPT : OCR_PROMPT);
+  const prompt = options.prompt || (options.structured
+    ? STRUCTURED_INVOICE_PROMPT
+    : (options.isInvoice ? INVOICE_OCR_PROMPT : OCR_PROMPT));
   const maxTokens = options.maxTokens || 2048;
   const start = Date.now();
   const deadline = start + AI_TOTAL_TIMEOUT_MS;
@@ -295,6 +342,117 @@ function uint8ArrayToBase64(bytes) {
     }
   }
   return btoa(binary);
+}
+
+/**
+ * Parse structured JSON from AI response text.
+ *
+ * The model may return the JSON wrapped in markdown code fences or with
+ * surrounding prose.  This extracts the first valid JSON object.
+ *
+ * @param {string} text - Raw AI response
+ * @returns {object|null} Parsed invoice data, or null if unparseable
+ */
+function parseStructuredResponse(text) {
+  // Try direct parse first
+  try {
+    const parsed = JSON.parse(text.trim());
+    if (typeof parsed === "object" && parsed !== null) return parsed;
+  } catch (_) { /* fall through */ }
+
+  // Extract JSON from markdown code fences or surrounding text
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (typeof parsed === "object" && parsed !== null) return parsed;
+    } catch (_) { /* fall through */ }
+  }
+
+  return null;
+}
+
+/**
+ * Validate structured invoice data against the expected schema.
+ *
+ * Performs type coercion for numeric fields (the model sometimes returns
+ * numbers as strings) and ensures required fields are present.
+ *
+ * @param {object} data - Parsed JSON from AI response
+ * @returns {object} Validated and coerced invoice data
+ */
+function validateStructuredInvoice(data) {
+  const result = {
+    vendor: String(data.vendor || ""),
+    invoice_number: String(data.invoice_number || ""),
+    issue_date: String(data.issue_date || ""),
+    due_date: String(data.due_date || ""),
+    items: [],
+    subtotal: 0,
+    tax: 0,
+    total: 0,
+    currency: String(data.currency || "USD"),
+  };
+
+  // Coerce numeric fields
+  if (data.subtotal != null) result.subtotal = Number(data.subtotal) || 0;
+  if (data.tax != null) result.tax = Number(data.tax) || 0;
+  if (data.total != null) result.total = Number(data.total) || 0;
+
+  // Validate items array
+  if (Array.isArray(data.items)) {
+    for (const item of data.items) {
+      if (typeof item === "object" && item !== null) {
+        result.items.push({
+          description: String(item.description || ""),
+          qty: Number(item.qty) || 0,
+          rate: Number(item.rate) || 0,
+          amount: Number(item.amount) || 0,
+        });
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Run structured OCR inference that returns parsed invoice JSON.
+ *
+ * Uses Workers AI with the structured prompt, parses the JSON response,
+ * validates it against the invoice schema, and returns a clean object.
+ *
+ * @param {object} env - Worker environment with AI binding
+ * @param {Uint8Array} imageBytes - Raw image file bytes (JPEG/PNG)
+ * @returns {Promise<{invoice: object, confidence: number, model: string, model_used: string, time_ms: number}>}
+ */
+export async function runStructuredOcr(env, imageBytes) {
+  const result = await runWorkersAiOcr(env, imageBytes, {
+    structured: true,
+    maxTokens: 2048,
+  });
+
+  const parsed = parseStructuredResponse(result.text);
+  if (!parsed) {
+    return {
+      invoice: validateStructuredInvoice({}),
+      raw_text: result.text,
+      confidence: 0.0,
+      model: result.model,
+      model_used: result.model_used,
+      time_ms: result.time_ms,
+      parse_error: "Failed to extract JSON from model response",
+    };
+  }
+
+  const invoice = validateStructuredInvoice(parsed);
+  return {
+    invoice,
+    confidence: result.confidence,
+    model: result.model,
+    model_used: result.model_used,
+    time_ms: result.time_ms,
+  };
 }
 
 /**
