@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased] - 2026-04-20
+
+### Added
+- Falcon-OCR WASM compilation and execution (13 MB, 3.9 MB gzipped)
+- 26 tinygrad-conformant GPU primitives (molt-gpu crate)
+- 7 shader renderers (MSL, WGSL, GLSL, CUDA, HIP, OpenCL, MIL)
+- Workers AI OCR with retry logic and model fallback
+- x402 payment integration ($0.001/request USDC)
+- Template-from-scan feature
+- NL invoice filling
+- Tiered KV cache with H2O scoring
+- Browser WASM loader with IndexedDB caching
+- INT4 quantized model (129 MB, 5 shards)
+
+### Fixed
+- SCCP dead block elimination (SSA dominance violation)
+- WASM import alias resolution (frontend)
+- WASM linker table ref preservation (null function traps)
+- Turnstile iPad Safari login (explicit render mode)
+
+### Performance
+- Fused matmul: 10.9x speedup
+- SIMD everywhere (WASM, Rust, all shaders)
+- WASM binary: 44 MB -> 13 MB (strip + optimize)
+- 7,359 dead exports eliminated
+
 ## [Unreleased] - 2026-03-20
 
 ### WASM Optimization (Complete Sections 1-5 of WASM Optimization Plan)
