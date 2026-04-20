@@ -30,6 +30,8 @@ export interface FalconOcrConfig {
   weightChunkSize?: number;
   /** Base URL of the falcon-ocr Worker (for template extraction and batch endpoints). */
   workerUrl?: string;
+  /** Progress callback for download/init phases. */
+  onProgress?: (phase: string, percent: number, detail?: Record<string, unknown>) => void;
 }
 
 export interface OcrResult {
@@ -108,7 +110,6 @@ function decodeTokens(tokenIds: number[], vocab: TokenizerVocab): string {
 // --------------------------------------------------------------------------
 
 const PATCH_SIZE = 16;
-
 function imageDataToRgb(imageData: ImageData): { width: number; height: number; rgb: Uint8Array } {
   const { width, height, data } = imageData;
   const pixelCount = width * height;

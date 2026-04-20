@@ -18,6 +18,8 @@
  *   - Request ID for debugging
  */
 
+import { buildFalconOcrPromptIds } from "./tokenizer.js";
+
 const MAX_IMAGE_BYTES_DEFAULT = 10 * 1024 * 1024; // 10 MB
 
 /**
@@ -69,7 +71,7 @@ const SUPPORTED_CONTENT_TYPES = new Set([
  *
  * @param {Request} request
  * @param {object} env
- * @returns {Promise<{ bytes: Uint8Array, format: string, maxTokens?: number } | { error: string, status: number }>}
+ * @returns {Promise<{ bytes: Uint8Array, format: string, maxTokens?: number, category?: string } | { error: string, status: number }>}
  */
 async function extractImage(request, env) {
   const maxBytes = parseInt(env.MAX_IMAGE_BYTES || String(MAX_IMAGE_BYTES_DEFAULT), 10);
@@ -97,11 +99,12 @@ async function extractImage(request, env) {
     return {
       bytes: new Uint8Array(await file.arrayBuffer()),
       format: imageType,
+      category: typeof formData.get("category") === "string" ? String(formData.get("category")) : undefined,
     };
   }
 
   if (contentType.includes("application/json")) {
-    const body = /** @type {{ image?: string, format?: string, max_tokens?: number }} */ (await request.json());
+    const body = /** @type {{ image?: string, format?: string, max_tokens?: number, category?: string }} */ (await request.json());
     if (!body.image || typeof body.image !== "string") {
       return { error: "Missing 'image' field (base64 string) in JSON body", status: 400 };
     }
@@ -124,7 +127,8 @@ async function extractImage(request, env) {
       };
     }
     const maxTokens = typeof body.max_tokens === "number" ? body.max_tokens : undefined;
-    return { bytes, format, maxTokens };
+    const category = typeof body.category === "string" ? body.category : undefined;
+    return { bytes, format, maxTokens, category };
   }
 
   return {
@@ -662,9 +666,7 @@ export async function handleOcrRequest(request, backend, env, cors, rid, device 
   const resized = resizeForInference(decoded.rgb, decoded.width, decoded.height, maxDim);
   const { width: finalW, height: finalH, rgb } = resized;
 
-  // Default OCR prompt: empty prompt IDs triggers the model's default
-  // OCR behavior (describe the document content).
-  const promptIds = [];
+  const promptIds = buildFalconOcrPromptIds(imageResult.category || "plain");
 
   // Respect max_tokens from request body if provided.
   // CPU mode default: 5 tokens (micro model ~60ms/step, fits Workers budget).
@@ -1377,7 +1379,7 @@ export async function handleBatchOcr(request, backend, env, cors, rid, device = 
   }
 
   const maxBytes = parseInt(env.MAX_IMAGE_BYTES || String(MAX_IMAGE_BYTES_DEFAULT), 10);
-  const promptIds = [];
+  const promptIds = buildFalconOcrPromptIds(body.prompt || "plain");
   const maxNewTokens = device === "cpu" ? 1 : 512;
   const results = [];
 
