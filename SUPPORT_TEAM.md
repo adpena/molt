@@ -4,6 +4,11 @@
 **From:** Primary agent (GPU primitive stack, Cloudflare deployment, enjoice integration)
 **To:** Trusted partner for parallel work
 
+> Consolidation note: `PRIMARY_HANDOFF.md` is now the canonical fast resume
+> point for the active Molt implementation lane. Keep this file as detailed
+> parallel-lane context for the WASM/Falcon-OCR work, but update
+> `PRIMARY_HANDOFF.md` first when handoff state changes.
+
 ---
 
 ## What's Done (don't duplicate this work)
@@ -14,27 +19,20 @@
 - enjoice integration — molt OCR backend registered as highest priority, template-from-scan button on ScanButton, Turnstile iPad fix, visual polish
 - Real Falcon-OCR weights downloaded (1.03 GB, 269M params, 22 layers, dim=768)
 
-## Your Parallel Lane: molt WASM Compilation Pipeline
+## Your Parallel Lane: molt WASM Runtime-Proof Pipeline
 
-**The #1 blocker for production Falcon-OCR inference is the WASM build pipeline.**
+**The #1 blocker for production Falcon-OCR inference is now runtime proof and integration, not initial WASM compilation.**
 
-Currently, `molt build wasm_driver.py --target wasm` fails because the tinygrad Python modules haven't been lowered to Rust intrinsics. The Worker runs inference via Workers AI (Cloudflare's GPU fleet) which works but costs $0.001/request and has capacity limits. True edge inference (0 cost, 0 latency, offline-capable) requires the WASM path.
+The full Falcon-OCR inference module now compiles to WASM according to the current status below. The Worker can still run inference through Workers AI, but true edge inference (0 cost, low latency, offline-capable) requires proving the compiled WASM module loads weights, initializes, returns tokens, and then integrating that path into browser/enjoice.
 
 ### What needs to happen
 
-1. **Create `_intrinsics` wrappers for core Tensor operations**
-   - The molt WASM target requires all Python modules to have corresponding Rust intrinsic implementations
-   - Location: `runtime/molt-runtime/src/builtins/` (existing pattern)
-   - Bridge: `runtime/molt-runtime/src/builtins/gpu_primitives.rs` exists (I created it) — it exposes molt-gpu ops via FFI
-   - The gap: the Python `Tensor` class methods (`.dot()`, `.softmax()`, `.reshape()`, etc.) need to be callable from WASM-compiled code
-   - This means: each Tensor method needs a Rust intrinsic that the frontend lowers to
+1. **Verify runtime compilation health**
+   - Run `cargo check -p molt-runtime --target wasm32-wasip1`.
+   - If new Tensor/intrinsic gaps appear, add Rust intrinsic wrappers through the canonical manifest/generated path.
+   - Bridge: `runtime/molt-runtime/src/builtins/gpu_primitives.rs` exists and exposes molt-gpu ops via FFI.
 
-2. **Fix remaining WASM compilation errors**
-   - Three errors were fixed: duplicate import in `array_mod.rs`, missing `HEADER_FLAG_RAW_ALLOC`, missing `function_set_globals_bits`
-   - But partner WIP may have introduced new issues — run `cargo check -p molt-runtime --target wasm32-wasip1` and fix whatever comes up
-   - Simple programs (`def add(a, b): return a + b`) DO compile to WASM successfully
-
-3. **Test with a minimal tensor program**
+2. **Test with a minimal tensor program**
    ```python
    from tinygrad.tensor import Tensor
    def matmul_test():
@@ -45,8 +43,12 @@ Currently, `molt build wasm_driver.py --target wasm` fails because the tinygrad 
    ```
    Get this compiling to WASM. It exercises: Tensor construction, LazyOp DAG, schedule, fuse, CpuDevice interpret.
 
-4. **Build the actual Falcon-OCR WASM module**
-   Once Tensor ops work in WASM, build `src/molt/stdlib/tinygrad/wasm_driver.py` which exports `init()` and `ocr_tokens()`.
+3. **Prove the actual Falcon-OCR WASM module executes**
+   - Rebuild `src/molt/stdlib/tinygrad/wasm_driver.py`, which exports `init()` and `ocr_tokens()`.
+   - Instantiate the output module.
+   - Load weights/config.
+   - Call `init()`.
+   - Call `ocr_tokens()` on a deterministic image/prompt fixture.
 
 ### Key files to read first
 - `runtime/molt-runtime/src/builtins/gpu_primitives.rs` — FFI bridge (I wrote this)
