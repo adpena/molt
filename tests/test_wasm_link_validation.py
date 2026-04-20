@@ -1776,6 +1776,58 @@ def test_strip_internal_exports_dedupes_duplicate_export_names() -> None:
     assert list(name for name in exports if name == "molt_main") == ["molt_main"]
 
 
+def test_neutralize_linked_table_init_replaces_body_with_noop() -> None:
+    write_varuint = wasm_link._write_varuint
+
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    func_payload = write_varuint(2) + write_varuint(0) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(2))
+    export_payload.extend(wasm_link._write_string("molt_table_init"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(0))
+    export_payload.extend(wasm_link._write_string("molt_main"))
+    export_payload.append(0x00)
+    export_payload.extend(write_varuint(1))
+    sections.append((7, bytes(export_payload)))
+
+    table_init_body = bytes([0x00, 0x41, 0x01, 0x1A, 0x0B])
+    main_body = bytes([0x00, 0x10, 0x00, 0x0B])
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(2))
+    code_payload.extend(write_varuint(len(table_init_body)))
+    code_payload.extend(table_init_body)
+    code_payload.extend(write_varuint(len(main_body)))
+    code_payload.extend(main_body)
+    sections.append((10, bytes(code_payload)))
+
+    updated = wasm_link._neutralize_linked_table_init(
+        wasm_link._build_sections(sections)
+    )
+    assert updated is not None
+
+    code_section = next(
+        payload
+        for section_id, payload in wasm_link._parse_sections(updated)
+        if section_id == 10
+    )
+    count, offset = wasm_link._read_varuint(code_section, 0)
+    assert count == 2
+    table_body_size, offset = wasm_link._read_varuint(code_section, offset)
+    table_body = code_section[offset: offset + table_body_size]
+    assert table_body == bytes([0x00, 0x0B])
+
+
 def test_required_linked_table_min_respects_exported_table_refs() -> None:
     write_varuint = wasm_link._write_varuint
 

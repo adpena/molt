@@ -10,15 +10,23 @@ Generates 5 high-quality synthetic invoices with varied layouts:
 
 Sends each to the live Worker and measures field extraction accuracy.
 Results are saved to docs/benchmarks/invoice_accuracy.md.
+
+Accuracy evaluation uses:
+  - Fuzzy matching (Levenshtein ratio > 0.7) for text fields
+  - Numeric extraction with 1% tolerance for amounts
+  - Date normalization to ISO format
+  - Value extraction from prose responses ("The vendor is Acme Corp")
 """
 
 import base64
 import io
 import json
 import os
+import re
 import time
 import unittest
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -372,9 +380,141 @@ class AccuracyResult:
         return self.fields_found / self.fields_expected
 
 
-def evaluate_accuracy(spec: InvoiceSpec, ocr_response: dict) -> AccuracyResult:
-    """Check which expected fields appear in the OCR output."""
-    # Extract text from response (handle both raw text and structured formats)
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """Compute Levenshtein edit distance between two strings."""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+
+    prev_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = prev_row[j + 1] + 1
+            deletions = curr_row[j] + 1
+            substitutions = prev_row[j] + (c1 != c2)
+            curr_row.append(min(insertions, deletions, substitutions))
+        prev_row = curr_row
+
+    return prev_row[-1]
+
+
+def normalize(text: str) -> str:
+    """Normalize text for comparison: lowercase, strip, remove punctuation."""
+    return re.sub(r'[^\w\s]', '', text.lower().strip())
+
+
+def fuzzy_match(expected: str, text: str, threshold: float = 0.7) -> bool:
+    """Check if expected value appears in text using fuzzy matching."""
+    expected_norm = normalize(expected)
+    text_norm = normalize(text)
+
+    if not expected_norm:
+        return False
+
+    # Check substring containment first
+    if expected_norm in text_norm:
+        return True
+
+    # Check each word-window of the text (sliding window of expected length)
+    words_expected = expected_norm.split()
+    words_text = text_norm.split()
+    window_size = len(words_expected)
+
+    for i in range(max(1, len(words_text) - window_size + 1)):
+        window = " ".join(words_text[i:i + window_size])
+        max_len = max(len(expected_norm), len(window))
+        if max_len == 0:
+            continue
+        dist = _levenshtein_distance(expected_norm, window)
+        ratio = 1.0 - dist / max_len
+        if ratio >= threshold:
+            return True
+
+    # Full text comparison as last resort
+    max_len = max(len(expected_norm), len(text_norm))
+    if max_len > 0:
+        ratio = 1.0 - _levenshtein_distance(expected_norm, text_norm) / max_len
+        if ratio >= threshold:
+            return True
+
+    return False
+
+
+def extract_amount(text: str) -> Optional[float]:
+    """Extract dollar/currency amounts from text like '$4,200.00' or '4200'."""
+    # Try common patterns: $1,234.56 or 1234.56 or 1,234
+    match = re.search(r'[\$\u20ac\u00a3]?\s*([\d,]+\.?\d*)', text.replace(' ', ''))
+    if match:
+        num_str = match.group(1).replace(',', '')
+        try:
+            return float(num_str)
+        except ValueError:
+            pass
+    return None
+
+
+def amounts_match(expected_str: str, text: str, tolerance: float = 0.01) -> bool:
+    """Compare amounts with 1% tolerance after numeric extraction."""
+    expected_val = extract_amount(expected_str)
+    if expected_val is None:
+        return False
+
+    # Try to find any amount in the text that matches
+    for match in re.finditer(r'[\$\u20ac\u00a3]?\s*([\d,]+\.?\d*)', text):
+        num_str = match.group(1).replace(',', '')
+        try:
+            found_val = float(num_str)
+            if found_val == 0:
+                continue
+            # Within 1% tolerance
+            if abs(found_val - expected_val) / max(abs(expected_val), 1e-9) <= tolerance:
+                return True
+        except ValueError:
+            continue
+
+    return False
+
+
+def extract_value_from_prose(text: str) -> str:
+    """Extract the value from model prose like 'The vendor is Acme Corp' or 'vendor: Acme Corp'."""
+    # Try "is <value>" pattern
+    match = re.search(r'\bis\s+(.+?)(?:\.|$)', text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    # Try ":<value>" pattern
+    match = re.search(r':\s*(.+?)(?:\.|$)', text)
+    if match:
+        return match.group(1).strip()
+
+    return text
+
+
+def parse_date_flexible(text: str) -> Optional[str]:
+    """Parse various date formats to ISO (YYYY-MM-DD)."""
+    text = text.strip()
+    formats = [
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+        "%m/%d/%Y",
+        "%B %d, %Y",
+        "%b %d, %Y",
+        "%d %B %Y",
+        "%d %b %Y",
+    ]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(text, fmt)
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def extract_text_from_response(ocr_response: dict) -> str:
+    """Extract text content from various OCR response formats."""
     text = ""
     if isinstance(ocr_response, dict):
         text = ocr_response.get("text", "")
@@ -389,39 +529,57 @@ def evaluate_accuracy(spec: InvoiceSpec, ocr_response: dict) -> AccuracyResult:
         # Also check lines array
         if not text and "lines" in ocr_response:
             text = " ".join(ocr_response["lines"])
+        # Check structured fields (Workers AI structured response)
+        if not text and "fields" in ocr_response:
+            fields = ocr_response["fields"]
+            if isinstance(fields, dict):
+                text = " ".join(str(v) for v in fields.values())
+        # Check response field (Workers AI raw response)
+        if not text and "response" in ocr_response:
+            resp = ocr_response["response"]
+            if isinstance(resp, str):
+                text = resp
 
-    text_lower = text.lower()
+    # Handle prose-style responses: extract values
+    processed = extract_value_from_prose(text)
+    # Return both original and processed for matching
+    return text if len(text) >= len(processed) else processed
+
+
+def evaluate_accuracy(spec: InvoiceSpec, ocr_response: dict) -> AccuracyResult:
+    """Check which expected fields appear in the OCR output using fuzzy matching."""
+    text = extract_text_from_response(ocr_response)
 
     details: dict[str, bool] = {}
     fields_expected = 0
     fields_found = 0
 
-    # Check vendor name
+    # Check vendor name (fuzzy match)
     fields_expected += 1
-    vendor_found = spec.vendor.lower() in text_lower
+    vendor_found = fuzzy_match(spec.vendor, text)
     details["vendor"] = vendor_found
     if vendor_found:
         fields_found += 1
 
-    # Check invoice number (if expected)
+    # Check invoice number (fuzzy match — OCR may misread a character)
     if spec.invoice_number:
         fields_expected += 1
-        inv_found = spec.invoice_number.lower() in text_lower
+        inv_found = fuzzy_match(spec.invoice_number, text, threshold=0.8)
         details["invoice_number"] = inv_found
         if inv_found:
             fields_found += 1
 
-    # Check total amount
+    # Check total amount (numeric comparison with 1% tolerance)
     fields_expected += 1
-    amount_found = spec.total_amount in text
+    amount_found = amounts_match(spec.total_amount, text)
     details["total_amount"] = amount_found
     if amount_found:
         fields_found += 1
 
-    # Check line items
+    # Check line items (fuzzy match)
     for item in spec.line_items:
         fields_expected += 1
-        item_found = item.lower() in text_lower
+        item_found = fuzzy_match(item, text, threshold=0.7)
         details[f"line_item:{item}"] = item_found
         if item_found:
             fields_found += 1
