@@ -622,7 +622,7 @@ export default {
       const obj = await env.WEIGHTS.get(key);
       if (!obj) {
         return new Response(
-          JSON.stringify({ error: "Not found", request_id: rid }),
+          JSON.stringify({ error: "Not found", key, request_id: rid }),
           { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
         );
       }
