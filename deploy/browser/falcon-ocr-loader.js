@@ -5,6 +5,10 @@
  * in IndexedDB for offline use, and runs OCR inference entirely in the browser.
  * No image data ever leaves the device.
  *
+ * Weight loading uses progressive shard-by-shard download with per-shard
+ * progress reporting and independent IndexedDB caching, enabling resume of
+ * interrupted downloads without re-fetching completed shards.
+ *
  * Usage:
  *   import { FalconOCR } from './falcon-ocr-loader.js';
  *
@@ -21,7 +25,7 @@
  */
 
 const DB_NAME = 'falcon-ocr-cache';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'assets';
 
 /**
@@ -79,6 +83,25 @@ async function setCached(key, buffer) {
     });
   } catch {
     // Cache write failure is non-fatal
+  }
+}
+
+/**
+ * Delete a cached asset from IndexedDB.
+ * @param {string} key
+ */
+async function deleteCached(key) {
+  try {
+    const db = await openCacheDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.delete(key);
+      req.onsuccess = () => resolve();
+      req.onerror = () => resolve();
+    });
+  } catch {
+    // Cache delete failure is non-fatal
   }
 }
 
@@ -142,16 +165,16 @@ function imageDataToRGB(imageData) {
 export class FalconOCR {
   /**
    * @param {object} config
+   * @param {string} [config.baseUrl] - Base URL for weight/WASM serving
    * @param {string} [config.wasmUrl] - URL to falcon-ocr.wasm
-   * @param {string} [config.weightsUrl] - URL to INT4 weights file
-   * @param {string} [config.configUrl] - URL to model config.json
-   * @param {(phase: 'wasm'|'weights'|'config'|'init', percent: number) => void} [config.onProgress]
+   * @param {string} [config.weightsVariant] - Weight variant path (default: 'falcon-ocr-int4')
+   * @param {(phase: string, percent: number, detail?: object) => void} [config.onProgress]
    */
   constructor(config = {}) {
     const base = config.baseUrl || 'https://falcon-ocr.adpena.workers.dev';
     this.wasmUrl = config.wasmUrl || `${base}/wasm/falcon-ocr.wasm`;
-    this.weightsUrl = config.weightsUrl || `${base}/weights/model-int4.safetensors`;
-    this.configUrl = config.configUrl || `${base}/weights/config.json`;
+    this.weightsVariant = config.weightsVariant || 'falcon-ocr-int4';
+    this.weightsBaseUrl = `${base}/weights/${this.weightsVariant}`;
     this.onProgress = config.onProgress || (() => {});
     this._instance = null;
     this._ready = false;
@@ -159,12 +182,16 @@ export class FalconOCR {
 
   /**
    * Download WASM + weights, initialize model. Must be called before recognize().
-   * Downloads are cached in IndexedDB — subsequent calls skip the network.
+   *
+   * Weight shards are downloaded progressively and cached independently in
+   * IndexedDB. If a download is interrupted, only uncached shards are fetched
+   * on the next init() call. Progress is reported per-shard via onProgress
+   * with phase 'weights' and detail { shard, totalShards, shardBytes }.
    */
   async init() {
     if (this._ready) return;
 
-    // 1. Download and compile WASM module (4 MB gzipped, streaming compilation)
+    // 1. Download and compile WASM module (streaming compilation)
     this.onProgress('wasm', 0);
     let wasmModule = await getCached('wasm:' + this.wasmUrl);
     if (wasmModule) {
@@ -198,33 +225,122 @@ export class FalconOCR {
     const instance = await WebAssembly.instantiate(compiled, importObject);
     this._instance = instance;
 
-    // 2. Download weights (129 MB INT4, cached in IndexedDB for offline)
-    this.onProgress('weights', 0);
-    let weightsBuffer = await getCached('weights:' + this.weightsUrl);
-    if (weightsBuffer) {
-      this.onProgress('weights', 100);
-    } else {
-      weightsBuffer = await fetchWithProgress(this.weightsUrl, (received, total) => {
-        if (total > 0) this.onProgress('weights', Math.round((received / total) * 100));
-      });
-      await setCached('weights:' + this.weightsUrl, weightsBuffer);
-      this.onProgress('weights', 100);
+    // 2. Download shard index
+    this.onProgress('config', 0);
+    const indexUrl = `${this.weightsBaseUrl}/model.safetensors.index.json`;
+    let indexBuffer = await getCached('index:' + indexUrl);
+    if (!indexBuffer) {
+      indexBuffer = await fetchWithProgress(indexUrl, () => {});
+      await setCached('index:' + indexUrl, indexBuffer);
     }
+    const shardIndex = JSON.parse(new TextDecoder().decode(indexBuffer));
 
     // 3. Download config
-    this.onProgress('config', 0);
-    let configBuffer = await getCached('config:' + this.configUrl);
+    const configUrl = `${this.weightsBaseUrl}/config.json`;
+    let configBuffer = await getCached('config:' + configUrl);
     if (!configBuffer) {
-      configBuffer = await fetchWithProgress(this.configUrl, () => {});
-      await setCached('config:' + this.configUrl, configBuffer);
+      configBuffer = await fetchWithProgress(configUrl, () => {});
+      await setCached('config:' + configUrl, configBuffer);
     }
     const configJson = new TextDecoder().decode(configBuffer);
+
+    // 4. Download scales
+    const scalesUrl = `${this.weightsBaseUrl}/scales.json`;
+    let scalesBuffer = await getCached('scales:' + scalesUrl);
+    if (!scalesBuffer) {
+      scalesBuffer = await fetchWithProgress(scalesUrl, () => {});
+      await setCached('scales:' + scalesUrl, scalesBuffer);
+    }
+    const scalesJson = new TextDecoder().decode(scalesBuffer);
     this.onProgress('config', 100);
 
-    // 4. Initialize model — loads weights into WASM linear memory
+    // 5. Progressive shard download with per-shard caching
+    const shardFiles = shardIndex.shards || Object.keys(
+      Object.values(shardIndex.weight_map || {}).reduce((acc, file) => {
+        acc[file] = true;
+        return acc;
+      }, {})
+    ).sort();
+
+    const totalShards = shardFiles.length;
+    const shardBuffers = new Array(totalShards);
+    let completedBytes = 0;
+    let totalBytes = 0;
+
+    // First pass: check cache and compute total size needed
+    const uncachedIndices = [];
+    for (let i = 0; i < totalShards; i++) {
+      const shardKey = `shard:${this.weightsBaseUrl}/${shardFiles[i]}`;
+      const cached = await getCached(shardKey);
+      if (cached) {
+        shardBuffers[i] = cached;
+        completedBytes += cached.byteLength;
+        totalBytes += cached.byteLength;
+      } else {
+        uncachedIndices.push(i);
+      }
+    }
+
+    // Report initial progress from cache
+    if (totalShards > 0 && uncachedIndices.length < totalShards) {
+      const cachedPct = Math.round(
+        ((totalShards - uncachedIndices.length) / totalShards) * 100
+      );
+      this.onProgress('weights', cachedPct, {
+        shard: totalShards - uncachedIndices.length,
+        totalShards,
+        fromCache: true,
+      });
+    } else {
+      this.onProgress('weights', 0);
+    }
+
+    // Download uncached shards sequentially (avoids memory pressure from
+    // concurrent large fetches on mobile devices)
+    for (const idx of uncachedIndices) {
+      const shardUrl = `${this.weightsBaseUrl}/${shardFiles[idx]}`;
+      const shardKey = `shard:${shardUrl}`;
+
+      const buffer = await fetchWithProgress(shardUrl, (received, total) => {
+        if (total > 0) {
+          // Per-shard progress within overall weights progress
+          const shardPct = received / total;
+          const completedShards = totalShards - uncachedIndices.length +
+            uncachedIndices.indexOf(idx);
+          const overallPct = Math.round(
+            ((completedShards + shardPct) / totalShards) * 100
+          );
+          this.onProgress('weights', overallPct, {
+            shard: idx + 1,
+            totalShards,
+            shardBytes: received,
+            shardTotal: total,
+          });
+        }
+      });
+
+      shardBuffers[idx] = buffer;
+      totalBytes += buffer.byteLength;
+
+      // Cache each shard independently — enables resume on interruption
+      await setCached(shardKey, buffer);
+    }
+    this.onProgress('weights', 100, { totalShards, totalBytes });
+
+    // 6. Concatenate shard buffers into single weights ArrayBuffer
+    const weightsBuffer = new Uint8Array(totalBytes);
+    let writeOffset = 0;
+    for (const buf of shardBuffers) {
+      const view = new Uint8Array(buf);
+      weightsBuffer.set(view, writeOffset);
+      writeOffset += view.byteLength;
+    }
+
+    // 7. Initialize model — loads weights into WASM linear memory
     this.onProgress('init', 0);
-    const weights = new Uint8Array(weightsBuffer);
-    this._instance.exports.init(weights, configJson);
+    const config = JSON.parse(configJson);
+    const scales = JSON.parse(scalesJson);
+    this._instance.exports.init(weightsBuffer, config, scales);
     this._ready = true;
     this.onProgress('init', 100);
   }
