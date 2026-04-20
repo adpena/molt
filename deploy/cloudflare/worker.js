@@ -23,7 +23,7 @@
  * generated for debugging without exposing PII.
  */
 
-import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleBatchOcr, handleTemplateExtract, handleStructuredOcr } from "./ocr_api.js";
+import { handleOcrRequest, handleHealthRequest, handleTokensRequest, handleBatchOcr, handleTemplateExtract, handleStructuredOcr, handleDetailedOcr, handleTableOcr, handleTemplateExtractFast } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, createRequestLog, emitLog, writeAnalytics, categorizeError } from "./monitoring.js";
 import { getAnalyticsSummary } from "./analytics.js";
@@ -584,13 +584,13 @@ function fallbackErrorResponse(err, rid, cors) {
       fallback_available: true,
       fallback_url: "/api/ocr/paddle",
       backends: {
-        "molt-gpu": { status: "error", error: err.message.split("\n")[0].slice(0, 200) },
+        "molt-gpu": { status: "error" },
         "paddle-ocr": { status: "available", url: "/api/ocr/paddle" },
       },
     }),
     {
       status: 503,
-      headers: { ...cors, "Content-Type": "application/json" },
+      headers: { ...cors, "Content-Type": "application/json", "Retry-After": "10" },
     },
   );
 }
@@ -688,7 +688,8 @@ export default {
         }
 
         if (imageBytes) {
-          const result = await handleTemplateExtract(env, imageBytes, extractOptions);
+          // Use fast handler (Llama 3.2 3B + caching) for < 3s latency
+          const result = await handleTemplateExtractFast(env, imageBytes, extractOptions);
           const responseBody = { ...result, request_id: rid };
           const headers = { ...cors, "Content-Type": "application/json" };
           if (payment.receipt) headers["X-Payment-Receipt"] = payment.receipt;
@@ -697,15 +698,46 @@ export default {
       } catch (err) {
         return new Response(
           JSON.stringify({
-            error: `Template extraction failed: ${err.message}`,
+            error: "Template extraction temporarily unavailable",
+            error_category: categorizeError(err, 503),
             request_id: rid,
           }),
           {
             status: 503,
-            headers: { ...cors, "Content-Type": "application/json" },
+            headers: { ...cors, "Content-Type": "application/json", "Retry-After": "5" },
           },
         );
       }
+    }
+
+    // Fast path: detailed OCR with block-level output, tables, and multi-page support
+    if (path === "/ocr/detailed" && request.method === "POST" && isWorkersAiAvailable(env)) {
+      const payment = await verifyX402(request, env, rid, cors);
+      if (!payment.authorized) {
+        return payment.response;
+      }
+      const response = await handleDetailedOcr(request, env, cors, rid);
+      if (payment.receipt) {
+        const headers = new Headers(response.headers);
+        headers.set("X-Payment-Receipt", payment.receipt);
+        return new Response(response.body, { status: response.status, headers });
+      }
+      return response;
+    }
+
+    // Fast path: table-only extraction
+    if (path === "/ocr/table" && request.method === "POST" && isWorkersAiAvailable(env)) {
+      const payment = await verifyX402(request, env, rid, cors);
+      if (!payment.authorized) {
+        return payment.response;
+      }
+      const response = await handleTableOcr(request, env, cors, rid);
+      if (payment.receipt) {
+        const headers = new Headers(response.headers);
+        headers.set("X-Payment-Receipt", payment.receipt);
+        return new Response(response.body, { status: response.status, headers });
+      }
+      return response;
     }
 
     // Fast path: structured OCR skips local model loading entirely
@@ -766,20 +798,23 @@ export default {
       } catch (err) {
         return new Response(
           JSON.stringify({
-            error: `Workers AI OCR failed: ${err.message}`,
+            error: "OCR inference temporarily unavailable",
+            error_category: categorizeError(err, 503),
             request_id: rid,
             fallback_available: true,
             fallback_url: "/api/ocr/paddle",
           }),
           {
             status: 503,
-            headers: { ...cors, "Content-Type": "application/json" },
+            headers: { ...cors, "Content-Type": "application/json", "Retry-After": "5" },
           },
         );
       }
     }
 
-    const result = await withMonitoring({
+    let result;
+    try {
+    result = await withMonitoring({
       request,
       rid,
       path,
@@ -1052,6 +1087,28 @@ export default {
           return response;
         }
 
+        // Detailed OCR: block-level output with bounding boxes, tables, multi-page
+        if (path === "/ocr/detailed") {
+          const response = await handleDetailedOcr(request, env, cors, rid);
+          if (payment.receipt) {
+            const headers = new Headers(response.headers);
+            headers.set("X-Payment-Receipt", payment.receipt);
+            return new Response(response.body, { status: response.status, headers });
+          }
+          return response;
+        }
+
+        // Table-only extraction
+        if (path === "/ocr/table") {
+          const response = await handleTableOcr(request, env, cors, rid);
+          if (payment.receipt) {
+            const headers = new Headers(response.headers);
+            headers.set("X-Payment-Receipt", payment.receipt);
+            return new Response(response.body, { status: response.status, headers });
+          }
+          return response;
+        }
+
         // Template extraction: OCR -> section classification -> template
         if (path === "/template/extract") {
           const ct = request.headers.get("Content-Type") || "";
@@ -1096,7 +1153,7 @@ export default {
             );
           }
 
-          const result = await handleTemplateExtract(env, imageBytes, extractOptions);
+          const result = await handleTemplateExtractFast(env, imageBytes, extractOptions);
           const response = new Response(
             JSON.stringify({ ...result, request_id: rid }),
             {
@@ -1118,6 +1175,22 @@ export default {
         );
       },
     });
+
+    } catch (err) {
+      // Top-level catch: ensures all unhandled errors return structured JSON
+      // with CORS headers, request_id, and no sensitive data.
+      return new Response(
+        JSON.stringify({
+          error: "Internal server error",
+          error_category: categorizeError(err, 500),
+          request_id: rid,
+        }),
+        {
+          status: 500,
+          headers: { ...cors, "Content-Type": "application/json" },
+        },
+      );
+    }
 
     // Warm instance pool: keep the Worker isolate alive after responding.
     // This ensures subsequent requests hit a warm instance with the model
