@@ -28,7 +28,7 @@ WORKER_URL = os.environ.get(
     "FALCON_OCR_WORKER_URL",
     "https://falcon-ocr.adpena.workers.dev",
 )
-ORIGIN_HEADER = "https://falcon-ocr.adpena.workers.dev"
+ORIGIN_HEADER = "https://freeinvoicemaker.app"
 RESULTS_DIR = Path(__file__).resolve().parents[2] / "docs" / "benchmarks"
 
 try:

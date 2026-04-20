@@ -5829,7 +5829,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_data_list(x_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
+#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
     x_bits: u64,
@@ -6098,7 +6098,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_concat_first_dim(a_bits: u64, b_bits: 
     })
 }
 
-#[unsafe(no_mangle)]
+#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
     base_bits: u64,
@@ -6301,7 +6301,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
     })
 }
 
-#[unsafe(no_mangle)]
+#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u64 {
     crate::with_gil_entry!(_py, {
@@ -6394,7 +6394,7 @@ pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u6
     })
 }
 
-#[unsafe(no_mangle)]
+#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
 pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
     q_bits: u64,
