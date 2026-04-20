@@ -120,8 +120,12 @@
   ],
   "authentication": {
     "type": "x402",
-    "description": "Payment via x402 protocol. Include X-Payment-402 header with payment proof.",
+    "description": "Payment via x402 protocol. Include X-Payment-402 header with payment proof. API clients MUST set User-Agent to 'FalconOCR-Client/1.0' (or any string starting with 'FalconOCR-Client/') to bypass Cloudflare Bot Protection. Requests with X-Payment-402 header are also exempt from bot checks.",
     "header": "X-Payment-402",
+    "required_headers": {
+      "User-Agent": "FalconOCR-Client/1.0",
+      "X-Payment-402": "<payment-proof>"
+    },
     "pricing": {
       "per_request": "0.001 USD",
       "currency": "USD",

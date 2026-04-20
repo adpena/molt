@@ -30,6 +30,20 @@ import type { FalconOCR as FalconOCRLoader } from "../browser/falcon-ocr-loader.
 // Types matching enjoice's OcrBackend interface
 // --------------------------------------------------------------------------
 
+export interface FalconOcrResult {
+  text: string;
+  tokens: number[];
+  engine: "falcon-ocr";
+  model: string;
+  model_used: string;
+  backend: string;
+  auto_filled: boolean;
+  auto_fill_warning: string;
+  auto_fill_dismissable: boolean;
+  confidence: number;
+  time_ms: number;
+}
+
 export interface OcrBackendResult {
   text: string;
   boundingBoxes: Array<{
@@ -41,6 +55,9 @@ export interface OcrBackendResult {
     confidence: number;
   }>;
   confidence: number;
+  autoFilled?: boolean;
+  autoFillWarning?: string;
+  autoFillDismissable?: boolean;
 }
 
 export interface OcrTimings {
@@ -85,6 +102,43 @@ async function detectWebGpu(): Promise<{
       reason: `GPU adapter request failed: ${(err as Error).message}`,
     };
   }
+}
+
+// --------------------------------------------------------------------------
+// Backend implementation
+// --------------------------------------------------------------------------
+
+// --------------------------------------------------------------------------
+// Auto-fill warning management
+// --------------------------------------------------------------------------
+
+const AUTOFILL_WARNING_DISMISSED_KEY = "molt_autofill_warning_dismissed";
+
+/**
+ * Check whether the auto-fill warning has been permanently dismissed.
+ */
+function isAutoFillWarningDismissed(): boolean {
+  if (typeof localStorage === "undefined") return false;
+  return localStorage.getItem(AUTOFILL_WARNING_DISMISSED_KEY) === "true";
+}
+
+/**
+ * Permanently dismiss the auto-fill warning for this browser.
+ * Call this from a "Don't show again" button handler.
+ */
+export function dismissAutoFillWarning(): void {
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem(AUTOFILL_WARNING_DISMISSED_KEY, "true");
+  }
+}
+
+/**
+ * Returns true if an auto-fill warning banner should be shown for the given
+ * result. Checks both the result flags and the localStorage dismissal state.
+ */
+export function shouldShowAutoFillWarning(result: OcrBackendResult): boolean {
+  if (!result.autoFilled) return false;
+  return !isAutoFillWarningDismissed();
 }
 
 // --------------------------------------------------------------------------
@@ -194,11 +248,20 @@ export class MoltOcrBackend {
     const ttfbMs = performance.now() - ttfbStart;
     const totalMs = performance.now() - totalStart;
 
+    const ocrAny = ocrResult as OcrResult & {
+      auto_filled?: boolean;
+      auto_fill_warning?: string;
+      auto_fill_dismissable?: boolean;
+    };
+
     return {
       result: {
         text: ocrResult.text,
         boundingBoxes: ocrResult.boundingBoxes,
         confidence: ocrResult.confidence,
+        autoFilled: ocrAny.auto_filled ?? false,
+        autoFillWarning: ocrAny.auto_fill_warning ?? "",
+        autoFillDismissable: ocrAny.auto_fill_dismissable ?? false,
       },
       timings: {
         initMs: this.initTimingMs,
