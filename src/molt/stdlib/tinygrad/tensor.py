@@ -18,7 +18,7 @@ import random as _random
 from _intrinsics import require_intrinsic as _require_intrinsic
 from tinygrad.dtypes import DType, dtypes
 from tinygrad.lazy import LazyBuffer, LazyOp
-from tinygrad.realize import realize as _realize
+import tinygrad.realize
 
 # GPU primitive intrinsics — these bridge to the Rust molt-gpu crate
 # when compiled via `molt build --target wasm`. At runtime in CPython,
@@ -74,12 +74,12 @@ class Tensor:
 
     def realize(self) -> "Tensor":
         """Force materialization of the lazy computation graph."""
-        _realize(self.lazydata)
+        tinygrad.realize.realize(self.lazydata)
         return self
 
     def numpy(self) -> list:
         """Realize and return data as a nested Python list (numpy-like)."""
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         return _unflatten_data(flat, self.shape)
 
     def tolist(self) -> list:
@@ -88,7 +88,7 @@ class Tensor:
 
     def item(self) -> float:
         """Return scalar value. Tensor must have exactly one element."""
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         if len(flat) != 1:
             raise ValueError(f"item() requires tensor with 1 element, got {len(flat)}")
         return flat[0]
@@ -302,7 +302,7 @@ class Tensor:
 
     def argmax(self, axis: int = -1) -> "Tensor":
         """argmax via iterative max comparison."""
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         if axis < 0:
             axis = self.ndim + axis
 
@@ -367,14 +367,14 @@ class Tensor:
             resolved[neg_idx] = self.numel() // known_product
         resolved = tuple(resolved)
 
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=resolved)
         return Tensor(LazyBuffer(op, self.dtype, resolved, data=list(flat)))
 
     def permute(self, *order) -> "Tensor":
         if len(order) == 1 and isinstance(order[0], (list, tuple)):
             order = tuple(order[0])
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         new_shape = tuple(self.shape[i] for i in order)
         # Perform actual permutation on data
         result = _permute_data(flat, self.shape, order)
@@ -383,14 +383,14 @@ class Tensor:
 
     def expand(self, *new_shape) -> "Tensor":
         resolved = _resolve_shape(new_shape)
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         result = _expand_data(flat, self.shape, resolved)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=resolved)
         return Tensor(LazyBuffer(op, self.dtype, resolved, data=result))
 
     def pad(self, padding, value: float = 0.0) -> "Tensor":
         """Pad tensor. padding is list of (before, after) pairs per dim."""
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         new_shape = tuple(
             s + p[0] + p[1] for s, p in zip(self.shape, padding)
         )
@@ -404,14 +404,14 @@ class Tensor:
 
     def shrink(self, bounds) -> "Tensor":
         """Extract sub-region. bounds is list of (start, end) per dim."""
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         new_shape = tuple(e - s for s, e in bounds)
         result = _shrink_data(flat, self.shape, bounds)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=new_shape)
         return Tensor(LazyBuffer(op, self.dtype, new_shape, data=result))
 
     def flip(self, axis: int = 0) -> "Tensor":
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         result = _flip_data(flat, self.shape, axis)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=self.shape)
         return Tensor(LazyBuffer(op, self.dtype, self.shape, data=result))
@@ -472,7 +472,7 @@ class Tensor:
         """
         if n_rep == 1:
             return self
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         ndim = self.ndim
         shape = self.shape
         ax = axis if axis >= 0 else ndim + axis
@@ -517,7 +517,7 @@ class Tensor:
         Returns a tuple of Tensors, each with the last dimension sliced
         according to the sizes tuple.
         """
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         total = sum(sizes)
         if total != self.shape[-1]:
             raise ValueError(
@@ -556,7 +556,7 @@ class Tensor:
         [g0, u0, g1, u1, ...]. Output is relu(gate)^2 * up with
         the last dimension halved.
         """
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         shape = self.shape
         last_dim = shape[-1]
         if last_dim % 2 != 0:
@@ -592,7 +592,7 @@ class Tensor:
 
     def matmul(self, other: "Tensor") -> "Tensor":
         """Matrix multiplication. Supports 2D @ 2D."""
-        a_data = _realize(self.lazydata)
+        a_data = tinygrad.realize.realize(self.lazydata)
         b_data = _realize(other.lazydata)
         if self.ndim == 2 and other.ndim == 2:
             m, k = self.shape
@@ -658,7 +658,7 @@ class Tensor:
 
     def gather(self, dim: int, index: "Tensor") -> "Tensor":
         """Gather elements along a dimension using index tensor."""
-        src_data = _realize(self.lazydata)
+        src_data = tinygrad.realize.realize(self.lazydata)
         idx_data = _realize(index.lazydata)
         result = _gather_data(src_data, self.shape, idx_data, index.shape, dim)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=index.shape)
@@ -666,7 +666,7 @@ class Tensor:
 
     def scatter(self, dim: int, index: "Tensor", src: "Tensor") -> "Tensor":
         """Scatter src elements into self along a dimension using index tensor."""
-        self_data = list(_realize(self.lazydata))
+        self_data = list(tinygrad.realize.realize(self.lazydata))
         src_data = _realize(src.lazydata)
         idx_data = _realize(index.lazydata)
         _scatter_data(self_data, self.shape, src_data, idx_data, index.shape, dim)
@@ -675,7 +675,7 @@ class Tensor:
 
     def __getitem__(self, idx) -> "Tensor":
         """Basic integer/slice indexing."""
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         if isinstance(idx, int):
             if self.ndim == 1:
                 return Tensor([flat[idx]])
@@ -865,7 +865,7 @@ class Tensor:
         """Broadcast this tensor to target_shape by repeating data."""
         if self.shape == target_shape:
             return self
-        flat = _realize(self.lazydata)
+        flat = tinygrad.realize.realize(self.lazydata)
         result = _expand_data(flat, self.shape, target_shape)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=target_shape)
         return Tensor(LazyBuffer(op, self.dtype, target_shape, data=result))

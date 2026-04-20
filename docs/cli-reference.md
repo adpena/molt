@@ -248,9 +248,10 @@ Remove build artifacts and caches.
 
 ```bash
 molt clean                               # Remove caches, tmp, and build artifacts
-molt clean --all                         # Remove everything (caches, bins, cargo, legacy target-* dirs)
+molt clean --all                         # Remove everything (caches, bins, cargo, legacy/nested target dirs)
+molt clean --no-scratch                  # Keep repo-local tmp/cache roots
 molt clean --bins                        # Also remove compiled binaries
-molt clean --cargo-target                # Also remove the repo-local Cargo target/ dir
+molt clean --cargo-target                # Also remove repo-local, legacy, and nested workspace Cargo targets
 ```
 
 #### `molt doctor`

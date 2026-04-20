@@ -2219,6 +2219,10 @@ def test_clean_repo_artifacts_removes_repo_local_cache_roots(
         path.mkdir(parents=True)
         (path / "stamp").write_text(relative)
 
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / "tracked-dep").write_text("keep")
+
     monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: tmp_path)
     monkeypatch.setattr(
         cli,
@@ -2233,6 +2237,38 @@ def test_clean_repo_artifacts_removes_repo_local_cache_roots(
     assert not (tmp_path / ".uv-cache").exists()
     assert not (tmp_path / ".molt_cache").exists()
     assert not (tmp_path / ".molt_cache-typing").exists()
+    assert vendor.exists()
+
+
+def test_clean_default_removes_repo_local_scratch_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for relative in ("tmp", ".uv-cache", ".molt_cache", ".molt_cache-typing"):
+        path = tmp_path / relative
+        path.mkdir(parents=True)
+        (path / "stamp").write_text(relative)
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "evidence.log").write_text("keep")
+
+    monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(
+        cli,
+        "_require_molt_root",
+        lambda _root, _json_output, _command: None,
+    )
+    monkeypatch.setattr(cli, "_default_molt_cache", lambda: tmp_path / ".molt_cache")
+    monkeypatch.setattr(cli, "_default_molt_home", lambda: tmp_path / ".molt_home")
+
+    exit_code = cli.clean()
+
+    assert exit_code == 0
+    assert not (tmp_path / "tmp").exists()
+    assert not (tmp_path / ".uv-cache").exists()
+    assert not (tmp_path / ".molt_cache").exists()
+    assert not (tmp_path / ".molt_cache-typing").exists()
+    assert logs.exists()
 
 
 def test_clean_cargo_target_removes_legacy_session_target_dirs(
@@ -2240,10 +2276,13 @@ def test_clean_cargo_target_removes_legacy_session_target_dirs(
 ) -> None:
     canonical_target = tmp_path / "target"
     legacy_target = tmp_path / "target-alpha_session_beta"
+    nested_runtime_target = tmp_path / "runtime" / "target"
     canonical_target.mkdir()
     legacy_target.mkdir()
+    nested_runtime_target.mkdir(parents=True)
     (canonical_target / "stamp").write_text("canonical")
     (legacy_target / "stamp").write_text("legacy")
+    (nested_runtime_target / "stamp").write_text("runtime")
 
     monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: tmp_path)
     monkeypatch.setattr(
@@ -2257,6 +2296,7 @@ def test_clean_cargo_target_removes_legacy_session_target_dirs(
     assert exit_code == 0
     assert not canonical_target.exists()
     assert not legacy_target.exists()
+    assert not nested_runtime_target.exists()
 
 
 def test_verify_cargo_lock_uses_workspace_member_manifests_only(
