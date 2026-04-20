@@ -4180,26 +4180,22 @@ impl WasmBackend {
             self.exports
                 .export("molt_main", ExportKind::Func, wrapper_index);
 
-            // Export indirect call table refs ONLY for split-runtime builds where
-            // the runtime and app are separate WASM modules that need to
-            // cross-reference function slots. For monolithic/linked builds,
-            // these exports are dead weight: they prevent wasm-opt from
-            // tree-shaking unreachable functions, inflating the binary
-            // from ~2 MB to ~13 MB (7,359 unnecessary exports).
-            let is_split_runtime = self.options.split_runtime_runtime_table_min.is_some();
-            if is_split_runtime {
-                let mut ref_exported = BTreeSet::new();
-                for (slot, func_index) in table_indices.iter().enumerate() {
-                    if slot < split_runtime_owned_slot_start
-                        && slot >= split_runtime_shared_abi_slot_end
-                    {
-                        continue;
-                    }
-                    let table_index = table_base + slot as u32;
-                    if ref_exported.insert(table_index) {
-                        let name = format!("__molt_table_ref_{table_index}");
-                        self.exports.export(&name, ExportKind::Func, *func_index);
-                    }
+            // Relocatable app modules must export table-ref symbols so wasm-ld
+            // can relocate function-pointer table slots correctly. Monolithic
+            // linked outputs strip these exports after linking; removing them
+            // before wasm-ld leaves stale table-index constants that trap in
+            // call_indirect at runtime.
+            let mut ref_exported = BTreeSet::new();
+            for (slot, func_index) in table_indices.iter().enumerate() {
+                if slot < split_runtime_owned_slot_start
+                    && slot >= split_runtime_shared_abi_slot_end
+                {
+                    continue;
+                }
+                let table_index = table_base + slot as u32;
+                if ref_exported.insert(table_index) {
+                    let name = format!("__molt_table_ref_{table_index}");
+                    self.exports.export(&name, ExportKind::Func, *func_index);
                 }
             }
 

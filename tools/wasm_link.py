@@ -882,26 +882,70 @@ def _declare_ref_func_elements(data: bytes) -> bytes | None:
     return _build_sections(new_sections)
 
 
-def _append_table_ref_elements(data: bytes) -> bytes | None:
-    table_refs: set[int] = set()
+def _append_table_ref_elements(
+    data: bytes,
+    *,
+    min_table_index: int = 0,
+    allowed_table_indices: set[int] | None = None,
+) -> bytes | None:
+    table_refs: dict[int, int] = {}
     for func_idx, name in _collect_func_names(data).items():
-        if name.startswith("__molt_table_ref_"):
-            table_refs.add(func_idx)
+        match = re.fullmatch(r"__molt_table_ref_(\d+)", name)
+        if match is not None:
+            table_idx = int(match.group(1))
+            if table_idx >= min_table_index and (
+                allowed_table_indices is None or table_idx in allowed_table_indices
+            ):
+                table_refs[table_idx] = func_idx
     for name, func_idx in _collect_function_exports(data).items():
-        if name.startswith("__molt_table_ref_"):
-            table_refs.add(func_idx)
+        match = re.fullmatch(r"__molt_table_ref_(\d+)", name)
+        if match is not None:
+            table_idx = int(match.group(1))
+            if table_idx >= min_table_index and (
+                allowed_table_indices is None or table_idx in allowed_table_indices
+            ):
+                table_refs[table_idx] = func_idx
     if not table_refs:
         return None
-    sorted_table_refs = sorted(table_refs)
+
+    segments: list[bytes] = []
+    current_start: int | None = None
+    current_prev: int | None = None
+    current_funcs: list[int] = []
+    for table_idx, func_idx in sorted(table_refs.items()):
+        if current_start is None:
+            current_start = current_prev = table_idx
+            current_funcs = [func_idx]
+            continue
+        if table_idx == current_prev + 1:
+            current_prev = table_idx
+            current_funcs.append(func_idx)
+            continue
+        segment = bytearray()
+        segment.append(0x00)
+        segment.append(0x41)
+        segment.extend(_write_varuint(current_start))
+        segment.append(0x0B)
+        segment.extend(_write_varuint(len(current_funcs)))
+        for item in current_funcs:
+            segment.extend(_write_varuint(item))
+        segments.append(bytes(segment))
+        current_start = current_prev = table_idx
+        current_funcs = [func_idx]
+    if current_start is not None:
+        segment = bytearray()
+        segment.append(0x00)
+        segment.append(0x41)
+        segment.extend(_write_varuint(current_start))
+        segment.append(0x0B)
+        segment.extend(_write_varuint(len(current_funcs)))
+        for item in current_funcs:
+            segment.extend(_write_varuint(item))
+        segments.append(bytes(segment))
+
     sections = _parse_sections(data)
     new_sections: list[tuple[int, bytes]] = []
     modified = False
-    new_segment = bytearray()
-    new_segment.append(0x01)
-    new_segment.append(0x00)
-    new_segment.extend(_write_varuint(len(sorted_table_refs)))
-    for func_idx in sorted_table_refs:
-        new_segment.extend(_write_varuint(func_idx))
     for section_id, payload in sections:
         if section_id != 9:
             new_sections.append((section_id, payload))
@@ -910,18 +954,51 @@ def _append_table_ref_elements(data: bytes) -> bytes | None:
         count, offset = _read_varuint(payload, offset)
         rest = payload[offset:]
         updated = bytearray()
-        updated.extend(_write_varuint(count + 1))
+        updated.extend(_write_varuint(count + len(segments)))
         updated.extend(rest)
-        updated.extend(new_segment)
+        for segment in segments:
+            updated.extend(segment)
         new_sections.append((section_id, bytes(updated)))
         modified = True
     if not modified:
-        payload = _write_varuint(1) + bytes(new_segment)
+        payload = _write_varuint(len(segments)) + b"".join(segments)
         new_sections.append((9, payload))
         modified = True
     if not modified:
         return None
     return _build_sections(new_sections)
+
+
+def _linked_runtime_active_table_end(data: bytes) -> int:
+    """Return the exclusive end of the runtime-owned active table prefix."""
+    for section_id, payload in _parse_sections(data):
+        if section_id != 9:
+            continue
+        offset = 0
+        count, offset = _read_varuint(payload, offset)
+        for _ in range(count):
+            flags, offset = _read_varuint(payload, offset)
+            if flags == 0:
+                if offset >= len(payload) or payload[offset] != 0x41:
+                    return 0
+                start, offset = _read_varuint(payload, offset + 1)
+                if offset >= len(payload) or payload[offset] != 0x0B:
+                    return 0
+                offset += 1
+                n, offset = _read_varuint(payload, offset)
+                if start == 1:
+                    return start + n
+                for _item in range(n):
+                    _, offset = _read_varuint(payload, offset)
+                continue
+            if flags == 1:
+                offset += 1
+                n, offset = _read_varuint(payload, offset)
+                for _item in range(n):
+                    _, offset = _read_varuint(payload, offset)
+                continue
+            return 0
+    return 0
 
 
 def _find_call_indirect_mangled(runtime: Path) -> dict[str, str]:
@@ -1870,11 +1947,11 @@ _EMPTY_FUNC_BODY = bytes([0x00, 0x0B])
 def _neutralize_linked_table_init(data: bytes) -> bytes | None:
     """Replace linked-output ``molt_table_init`` with a no-op body.
 
-    Relocatable app modules need ``molt_table_init`` to install their passive
-    table segment into a shared runtime table. A fully linked monolith already
-    has its active element segment applied by WebAssembly instantiation. Running
-    the relocatable table initializer again after ``wasm-ld`` can overwrite
-    runtime-owned table slots with app function refs and break indirect calls.
+    Relocatable app modules need ``molt_table_init`` to install table entries
+    into a separate runtime table. A fully linked monolith must not replay that
+    initializer because its pre-link table indices can overlap runtime-owned
+    active table slots after wasm-ld. App-owned slots are materialized by
+    ``_append_table_ref_elements`` after the runtime-owned prefix is known.
     """
     export_indices = _collect_function_exports(data)
     table_init_index = export_indices.get("molt_table_init")
@@ -1912,14 +1989,9 @@ def _neutralize_linked_table_init(data: bytes) -> bytes | None:
             body_size, body_start = _read_varuint(payload, offset)
             body_end = body_start + body_size
             if idx == local_index:
-                body = payload[body_start:body_end]
-                if body == _EMPTY_FUNC_BODY:
-                    rebuilt.extend(_write_varuint(body_size))
-                    rebuilt.extend(body)
-                else:
-                    rebuilt.extend(_write_varuint(len(_EMPTY_FUNC_BODY)))
-                    rebuilt.extend(_EMPTY_FUNC_BODY)
-                    changed = True
+                rebuilt.extend(_write_varuint(len(_EMPTY_FUNC_BODY)))
+                rebuilt.extend(_EMPTY_FUNC_BODY)
+                changed = True
             else:
                 rebuilt.extend(_write_varuint(body_size))
                 rebuilt.extend(payload[body_start:body_end])
@@ -2136,6 +2208,17 @@ def _write_cached_tree_shaken_runtime(path: Path, data: bytes) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_bytes(data)
     tmp_path.replace(path)
+
+
+def _canonical_split_runtime_required_exports(runtime_data: bytes) -> set[str]:
+    """Return runtime exports that remain app-visible split-runtime contracts."""
+    return {
+        name
+        for name in _collect_function_exports(runtime_data)
+        if name not in _ESSENTIAL_EXPORTS
+        and name not in {"molt_exception_pending"}
+        and not name.startswith("__molt_table_ref_")
+    }
 
 
 def _tree_shake_runtime(
@@ -2600,12 +2683,31 @@ def _strip_debug_sections(data: bytes) -> bytes | None:
 
 
 _ESSENTIAL_EXPORTS = frozenset({
+    "molt_alloc",
+    "molt_bytes_as_ptr",
+    "molt_bytes_from_bytes",
+    "molt_dec_ref_obj",
+    "molt_exception_kind",
+    "molt_exception_last",
+    "molt_exception_message",
+    "molt_handle_resolve",
+    "molt_header_size",
     "memory",
     "molt_memory",
     "molt_host_init",
+    "molt_list_builder_append",
+    "molt_list_builder_finish",
+    "molt_list_builder_new",
     "molt_main",
+    "molt_object_repr",
+    "molt_scratch_alloc",
+    "molt_scratch_free",
+    "molt_string_as_ptr",
+    "molt_string_from_bytes",
     "molt_table_init",
     "molt_table",
+    "molt_traceback_format_exc",
+    "molt_type_tag_of_bits",
     "molt_set_wasm_table_base",
     "__indirect_function_table",
 })
@@ -2628,7 +2730,10 @@ def _split_app_reference_function_exports(reference_data: bytes | None) -> set[s
 
 
 def _strip_internal_exports(
-    data: bytes, *, preserve_exports: set[str] | None = None
+    data: bytes,
+    *,
+    preserve_exports: set[str] | None = None,
+    preserve_table_refs: bool = True,
 ) -> bytes | None:
     """Remove exports that only exist for internal ABI wiring or relocatable linking.
 
@@ -2663,7 +2768,10 @@ def _strip_internal_exports(
             offset += 1
             _, offset = _read_varuint(payload, offset)
             entry_bytes = payload[entry_start:offset]
-            if name not in keep_exports and not name.startswith("__molt_table_ref_"):
+            if (
+                name not in keep_exports
+                and (not preserve_table_refs or not name.startswith("__molt_table_ref_"))
+            ):
                 modified = True
                 continue
             if name in seen_exports:
@@ -4011,6 +4119,7 @@ def _post_link_optimize(
     reference_data: bytes | None = None,
     preserve_exports: set[str] | None = None,
     preserve_reference_exports: bool = True,
+    preserve_table_refs: bool = True,
 ) -> bytes:
     """Apply post-link optimizations to reduce V8 compilation memory pressure.
 
@@ -4042,7 +4151,11 @@ def _post_link_optimize(
     if updated is not None:
         data = updated
 
-    updated = _strip_internal_exports(data, preserve_exports=preserved_export_names)
+    updated = _strip_internal_exports(
+        data,
+        preserve_exports=preserved_export_names,
+        preserve_table_refs=preserve_table_refs,
+    )
     if updated is not None:
         data = updated
 
@@ -4478,6 +4591,11 @@ def _run_wasm_ld(
                 )
                 return 1
 
+    if not split_runtime and not runtime.name.endswith("_reloc.wasm"):
+        reloc_candidate = runtime.with_name(runtime.name.replace(".wasm", "_reloc.wasm"))
+        if reloc_candidate.exists():
+            runtime = reloc_candidate
+
     # When split_runtime is enabled, generate a stub runtime that has the
     # same exported function signatures but trivial (unreachable) bodies.
     # wasm-ld links against the stub so --gc-sections can eliminate dead
@@ -4538,6 +4656,8 @@ def _run_wasm_ld(
     # non-relocatable runtime — they exist in the relocatable runtime
     # and wasm-ld needs to know to keep them in the linked output.
     for sym in force_exports:
+        cmd.append(f"--export-if-defined={sym}")
+    for sym in sorted(_ESSENTIAL_EXPORTS - {"__indirect_function_table", "memory", "molt_main"}):
         cmd.append(f"--export-if-defined={sym}")
     for sym in user_export_symbol_names:
         cmd.append(f"--export={sym}")
@@ -4613,9 +4733,11 @@ def _run_wasm_ld(
             output_reference = output.read_bytes()
         except OSError:
             output_reference = None
-        linked_bytes = _post_link_optimize(
-            linked_bytes, reference_data=output_reference
-        )
+            linked_bytes = _post_link_optimize(
+                linked_bytes,
+                reference_data=output_reference,
+                preserve_table_refs=True,
+            )
         post_opt_size = len(linked_bytes)
         if post_opt_size < pre_opt_size:
             savings = pre_opt_size - post_opt_size
@@ -4653,12 +4775,25 @@ def _run_wasm_ld(
             if updated is not None:
                 linked.write_bytes(updated)
                 linked_bytes = updated
-        append_table_refs = os.environ.get(
-            "MOLT_WASM_LINK_APPEND_TABLE_REFS", "1"
-        ).strip().lower() not in {"0", "false", "no", "off"}
+        append_table_refs_raw = os.environ.get("MOLT_WASM_LINK_APPEND_TABLE_REFS")
+        append_table_refs = (
+            split_runtime
+            if append_table_refs_raw is None
+            else append_table_refs_raw.strip().lower() not in {"0", "false", "no", "off"}
+        )
         if append_table_refs:
             try:
-                updated = _append_table_ref_elements(linked_bytes)
+                allowed_table_indices = None
+                if not split_runtime:
+                    allowed_table_indices = {
+                        int(name.removeprefix("__molt_table_ref_"))
+                        for name in _collect_function_exports(output.read_bytes())
+                        if name.startswith("__molt_table_ref_")
+                    }
+                updated = _append_table_ref_elements(
+                    linked_bytes,
+                    allowed_table_indices=allowed_table_indices,
+                )
             except ValueError as exc:
                 print(f"Failed to append table ref elements: {exc}", file=sys.stderr)
                 return 1
@@ -4684,6 +4819,11 @@ def _run_wasm_ld(
         if updated is not None:
             linked.write_bytes(updated)
             linked_bytes = updated
+        if not split_runtime:
+            updated = _strip_internal_exports(linked_bytes, preserve_table_refs=False)
+            if updated is not None:
+                linked.write_bytes(updated)
+                linked_bytes = updated
         if freestanding:
             try:
                 import importlib.util as _ilu
