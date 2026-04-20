@@ -375,20 +375,64 @@ async function decodeImageToRgb(bytes, _format) {
 
 function alignToPatch(width, height, patchSize = 16) {
   return {
-    width: Math.ceil(width / patchSize) * patchSize,
-    height: Math.ceil(height / patchSize) * patchSize,
+    width: Math.floor(width / patchSize) * patchSize,
+    height: Math.floor(height / patchSize) * patchSize,
   };
 }
 
-function padRgb(rgb, origWidth, origHeight, newWidth, newHeight) {
+function cropRgb(rgb, origWidth, origHeight, newWidth, newHeight) {
   if (origWidth === newWidth && origHeight === newHeight) return rgb;
-  const padded = new Uint8Array(newWidth * newHeight * 3);
-  for (let y = 0; y < origHeight; y++) {
+  const cropped = new Uint8Array(newWidth * newHeight * 3);
+  for (let y = 0; y < newHeight; y++) {
     const srcOffset = y * origWidth * 3;
     const dstOffset = y * newWidth * 3;
-    padded.set(rgb.subarray(srcOffset, srcOffset + origWidth * 3), dstOffset);
+    cropped.set(rgb.subarray(srcOffset, srcOffset + newWidth * 3), dstOffset);
   }
-  return padded;
+  return cropped;
+}
+
+function resizeForInference(rgb, width, height, maxDim = 128, patchSize = 16) {
+  if (width <= maxDim && height <= maxDim) {
+    const aw = Math.floor(width / patchSize) * patchSize;
+    const ah = Math.floor(height / patchSize) * patchSize;
+    if (aw < patchSize || ah < patchSize) return { rgb, width, height };
+    return { rgb: cropRgb(rgb, width, height, aw, ah), width: aw, height: ah };
+  }
+  const scale = Math.min(maxDim / width, maxDim / height);
+  let newW = Math.floor(width * scale);
+  let newH = Math.floor(height * scale);
+  newW = Math.floor(newW / patchSize) * patchSize;
+  newH = Math.floor(newH / patchSize) * patchSize;
+  if (newW < patchSize) newW = patchSize;
+  if (newH < patchSize) newH = patchSize;
+  const out = new Uint8Array(newW * newH * 3);
+  const xRatio = width / newW;
+  const yRatio = height / newH;
+  for (let y = 0; y < newH; y++) {
+    const srcY = y * yRatio;
+    const y0 = Math.floor(srcY);
+    const y1 = Math.min(y0 + 1, height - 1);
+    const yFrac = srcY - y0;
+    for (let x = 0; x < newW; x++) {
+      const srcX = x * xRatio;
+      const x0 = Math.floor(srcX);
+      const x1 = Math.min(x0 + 1, width - 1);
+      const xFrac = srcX - x0;
+      const idx00 = (y0 * width + x0) * 3;
+      const idx10 = (y0 * width + x1) * 3;
+      const idx01 = (y1 * width + x0) * 3;
+      const idx11 = (y1 * width + x1) * 3;
+      const outIdx = (y * newW + x) * 3;
+      for (let c = 0; c < 3; c++) {
+        const v = (1 - xFrac) * (1 - yFrac) * rgb[idx00 + c]
+                + xFrac * (1 - yFrac) * rgb[idx10 + c]
+                + (1 - xFrac) * yFrac * rgb[idx01 + c]
+                + xFrac * yFrac * rgb[idx11 + c];
+        out[outIdx + c] = Math.round(v);
+      }
+    }
+  }
+  return { rgb: out, width: newW, height: newH };
 }
 
 async function handleOcrRequest(request, wasmInstance, env, cors, rid) {
@@ -401,16 +445,18 @@ async function handleOcrRequest(request, wasmInstance, env, cors, rid) {
     );
   }
   const decoded = await decodeImageToRgb(imageResult.bytes, imageResult.format);
-  const aligned = alignToPatch(decoded.width, decoded.height);
-  const rgb = padRgb(decoded.rgb, decoded.width, decoded.height, aligned.width, aligned.height);
+  const maxDim = activeDevice === "cpu" ? 128 : 224;
+  const resized = resizeForInference(decoded.rgb, decoded.width, decoded.height, maxDim);
+  const { width: finalW, height: finalH, rgb } = resized;
   const promptIds = [];
-  const maxNewTokens = 512;
+  const maxNewTokens = activeDevice === "cpu" ? 5 : 512;
 
   let tokens;
   if (activeDevice === "wasm" && wasmInstance) {
-    tokens = wasmInstance.exports.ocr_tokens(aligned.width, aligned.height, rgb, promptIds, maxNewTokens);
+    tokens = wasmInstance.exports.ocr_tokens(finalW, finalH, rgb, promptIds, maxNewTokens);
   } else {
-    tokens = CpuDevice.ocrTokens(aligned.width, aligned.height, rgb, promptIds, maxNewTokens);
+    const maxLayers = 8; // Use first 8 layers for CPU speed
+    tokens = CpuDevice.ocrTokens(finalW, finalH, rgb, promptIds, maxNewTokens, maxLayers);
   }
 
   const timMs = Date.now() - start;
