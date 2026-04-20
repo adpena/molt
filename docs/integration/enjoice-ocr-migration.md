@@ -330,6 +330,246 @@ const { results, total_time_ms } = await response.json();
 // results: Array<{ text, tokens, time_ms }>
 ```
 
+## Batch Import
+
+The `/ocr/batch` endpoint enables bulk invoice processing from enjoice's
+ImportUpload component.  Each uploaded file is OCR'd in parallel, and each
+successful result creates a draft invoice in the user's account.
+
+### TypeScript Integration
+
+Wire the batch endpoint into the `ImportUpload` component:
+
+```typescript
+// site/src/lib/import/BatchImportUploader.tsx
+
+import { useState, useCallback } from "react";
+
+interface BatchImportProgress {
+  total: number;
+  completed: number;
+  results: Array<{
+    filename: string;
+    status: "pending" | "processing" | "done" | "error";
+    invoice?: StructuredInvoice;
+    error?: string;
+  }>;
+}
+
+interface StructuredInvoice {
+  vendor: string;
+  invoice_number: string;
+  issue_date: string;
+  due_date: string;
+  items: Array<{
+    description: string;
+    qty: number;
+    rate: number;
+    amount: number;
+  }>;
+  subtotal: number;
+  tax: number;
+  total: number;
+  currency: string;
+}
+
+const WORKER_URL = "https://falcon-ocr.adpena.workers.dev";
+const MAX_BATCH_SIZE = 10;
+
+async function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      // Strip the data URL prefix (data:image/png;base64,...)
+      resolve(dataUrl.split(",")[1]);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+export function BatchImportUploader({
+  onDraftCreated,
+}: {
+  onDraftCreated: (invoice: StructuredInvoice, filename: string) => void;
+}) {
+  const [progress, setProgress] = useState<BatchImportProgress | null>(null);
+
+  const handleFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const fileArray = Array.from(files).slice(0, MAX_BATCH_SIZE);
+
+      const initial: BatchImportProgress = {
+        total: fileArray.length,
+        completed: 0,
+        results: fileArray.map((f) => ({
+          filename: f.name,
+          status: "pending",
+        })),
+      };
+      setProgress(initial);
+
+      // Process each file through the structured OCR endpoint.
+      // We use individual /ocr/structured requests (not /ocr/batch)
+      // because the structured endpoint returns parsed JSON directly,
+      // eliminating client-side parsing.
+      for (let i = 0; i < fileArray.length; i++) {
+        setProgress((prev) => {
+          if (!prev) return prev;
+          const results = [...prev.results];
+          results[i] = { ...results[i], status: "processing" };
+          return { ...prev, results };
+        });
+
+        try {
+          const b64 = await fileToBase64(fileArray[i]);
+          const resp = await fetch(`${WORKER_URL}/ocr/structured`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ image: b64, format: "image/png" }),
+          });
+
+          if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.error || `HTTP ${resp.status}`);
+          }
+
+          const body = await resp.json();
+          const invoice: StructuredInvoice = body.invoice;
+
+          setProgress((prev) => {
+            if (!prev) return prev;
+            const results = [...prev.results];
+            results[i] = {
+              ...results[i],
+              status: "done",
+              invoice,
+            };
+            return {
+              ...prev,
+              completed: prev.completed + 1,
+              results,
+            };
+          });
+
+          onDraftCreated(invoice, fileArray[i].name);
+        } catch (err) {
+          setProgress((prev) => {
+            if (!prev) return prev;
+            const results = [...prev.results];
+            results[i] = {
+              ...results[i],
+              status: "error",
+              error: err instanceof Error ? err.message : String(err),
+            };
+            return {
+              ...prev,
+              completed: prev.completed + 1,
+              results,
+            };
+          });
+        }
+      }
+    },
+    [onDraftCreated],
+  );
+
+  return (
+    <div>
+      <input
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        multiple
+        onChange={(e) => e.target.files && handleFiles(e.target.files)}
+      />
+      {progress && (
+        <div className="mt-4">
+          <p className="text-sm font-medium">
+            Processing {progress.completed}/{progress.total} invoices...
+          </p>
+          <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
+            <div
+              className="bg-blue-600 h-2 rounded-full transition-all"
+              style={{
+                width: `${(progress.completed / progress.total) * 100}%`,
+              }}
+            />
+          </div>
+          <ul className="mt-3 space-y-1 text-sm">
+            {progress.results.map((r, idx) => (
+              <li key={idx} className="flex items-center gap-2">
+                {r.status === "pending" && (
+                  <span className="text-gray-400">Queued</span>
+                )}
+                {r.status === "processing" && (
+                  <span className="text-blue-500">Processing...</span>
+                )}
+                {r.status === "done" && (
+                  <span className="text-green-600">Done</span>
+                )}
+                {r.status === "error" && (
+                  <span className="text-red-500">Error: {r.error}</span>
+                )}
+                <span className="text-gray-700">{r.filename}</span>
+                {r.invoice && (
+                  <span className="text-gray-500">
+                    {r.invoice.vendor} - {r.invoice.currency}{" "}
+                    {r.invoice.total.toFixed(2)}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+### Usage in ImportUpload Component
+
+```typescript
+// In the existing ImportUpload page component:
+import { BatchImportUploader } from "./BatchImportUploader";
+
+function ImportUploadPage() {
+  const handleDraftCreated = (invoice: StructuredInvoice, filename: string) => {
+    // Create a draft invoice in the local store
+    createDraftInvoice({
+      vendor: invoice.vendor,
+      invoiceNumber: invoice.invoice_number,
+      issueDate: invoice.issue_date,
+      dueDate: invoice.due_date,
+      items: invoice.items,
+      subtotal: invoice.subtotal,
+      tax: invoice.tax,
+      total: invoice.total,
+      currency: invoice.currency,
+      sourceFile: filename,
+      status: "draft",
+    });
+  };
+
+  return (
+    <div>
+      <h2>Import Invoices</h2>
+      <p>Upload invoice images to create draft invoices automatically.</p>
+      <BatchImportUploader onDraftCreated={handleDraftCreated} />
+    </div>
+  );
+}
+```
+
+### Batch Size Limits
+
+- Maximum 10 files per upload (enforced client-side and by `/ocr/batch`)
+- Each file is processed sequentially through `/ocr/structured` for
+  maximum extraction quality (parallel processing via `/ocr/batch` is
+  available for raw text mode when structured parsing is not needed)
+- Total processing time: approximately 1-3 seconds per invoice (Workers AI)
+
 ## Rollback Plan
 
 If the new WASM module has issues in production:
