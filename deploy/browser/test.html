@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Falcon-OCR WebGPU Inference Test</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 24px;
+            background: #0a0a0a;
+            color: #e0e0e0;
+        }
+        h1 { margin-bottom: 16px; font-size: 1.4em; }
+        #status {
+            padding: 12px;
+            background: #1a1a2e;
+            border-left: 3px solid #4a9eff;
+            margin-bottom: 16px;
+            font-size: 0.9em;
+        }
+        #gpu-info {
+            padding: 8px 12px;
+            background: #1a2e1a;
+            border-left: 3px solid #4aff4a;
+            margin-bottom: 16px;
+            font-size: 0.85em;
+            white-space: pre-wrap;
+        }
+        #gpu-info:empty { display: none; }
+        .controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        input[type="file"] {
+            background: #222;
+            color: #e0e0e0;
+            padding: 8px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        canvas {
+            border: 1px solid #333;
+            background: #111;
+            display: block;
+            margin-bottom: 16px;
+        }
+        #output {
+            background: #111;
+            border: 1px solid #333;
+            padding: 16px;
+            min-height: 80px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 0.9em;
+            line-height: 1.5;
+            margin-bottom: 16px;
+        }
+        #output:empty::before {
+            content: 'OCR output will appear here...';
+            color: #555;
+        }
+        #timing {
+            font-size: 0.85em;
+            color: #888;
+        }
+        #timing:empty { display: none; }
+        .error { border-left-color: #ff4a4a !important; }
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: #222;
+            margin-bottom: 16px;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background: #4a9eff;
+            width: 0%;
+            transition: width 0.2s ease;
+        }
+        #speculative-stats {
+            font-size: 0.85em;
+            color: #888;
+            margin-bottom: 16px;
+        }
+        #speculative-stats:empty { display: none; }
+        label {
+            font-size: 0.85em;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <h1>Falcon-OCR WebGPU Test</h1>
+
+    <div class="progress-bar"><div class="progress-bar-fill" id="progress-fill"></div></div>
+    <div id="status">Initializing...</div>
+    <div id="gpu-info"></div>
+
+    <div class="controls">
+        <input type="file" id="image-input" accept="image/*" disabled>
+        <label>
+            <input type="checkbox" id="speculative-toggle">
+            Speculative decoding
+        </label>
+    </div>
+
+    <canvas id="preview" width="224" height="224"></canvas>
+    <pre id="output"></pre>
+    <div id="timing"></div>
+    <div id="speculative-stats"></div>
+
+    <script type="module">
+        import { FalconOCR } from './falcon-ocr-loader.js';
+
+        const status = document.getElementById('status');
+        const gpuInfo = document.getElementById('gpu-info');
+        const output = document.getElementById('output');
+        const timing = document.getElementById('timing');
+        const progressFill = document.getElementById('progress-fill');
+        const imageInput = document.getElementById('image-input');
+        const speculativeToggle = document.getElementById('speculative-toggle');
+        const speculativeStats = document.getElementById('speculative-stats');
+        const canvas = document.getElementById('preview');
+        const ctx = canvas.getContext('2d');
+
+        let speculativeDecoder = null;
+
+        const ocr = new FalconOCR({
+            wasmUrl: 'https://falcon-ocr.adpena.workers.dev/wasm/falcon-ocr.wasm',
+            weightsVariant: 'falcon-ocr-int4',
+            onProgress: (phase, pct, detail) => {
+                const msg = detail?.message || detail?.phase || '';
+                status.textContent = `[${phase}] ${pct}% ${msg}`;
+                progressFill.style.width = `${pct}%`;
+
+                // Color the progress bar by phase
+                if (phase === 'detecting') progressFill.style.background = '#ffaa4a';
+                else if (phase === 'wasm') progressFill.style.background = '#4a9eff';
+                else if (phase === 'weights') progressFill.style.background = '#9e4aff';
+                else if (phase === 'gpu') progressFill.style.background = '#4aff4a';
+                else if (phase === 'init') progressFill.style.background = '#4aff9e';
+            },
+        });
+
+        try {
+            await ocr.init();
+
+            const backend = ocr.computeBackend;
+            gpuInfo.textContent = `Compute backend: ${backend}`;
+
+            if (backend === 'webgpu') {
+                gpuInfo.textContent += '\nWebGPU active — tiled matmul via compute shaders';
+                speculativeToggle.disabled = false;
+            } else if (backend === 'webgl2') {
+                gpuInfo.textContent += '\nWebGL2 active — texture-pass matmul';
+                speculativeToggle.disabled = false;
+            } else {
+                gpuInfo.textContent += `\n${backend} — CPU fallback`;
+                speculativeToggle.disabled = true;
+            }
+
+            // Try to initialize speculative decoder if GPU is available
+            if (backend === 'webgpu' || backend === 'webgl2') {
+                try {
+                    const { SpeculativeBrowserDecoder } = await import('./speculative-browser.js');
+                    // The speculative decoder will be fully initialized when weights are parsed
+                    // For now, store the class for lazy init on first use
+                    window._SpeculativeBrowserDecoder = SpeculativeBrowserDecoder;
+                    gpuInfo.textContent += '\nSpeculative decoding available (toggle to enable)';
+                } catch (err) {
+                    gpuInfo.textContent += `\nSpeculative decoding unavailable: ${err.message}`;
+                    speculativeToggle.disabled = true;
+                }
+            }
+
+            progressFill.style.width = '100%';
+            progressFill.style.background = '#4aff4a';
+            status.textContent = 'Ready — select an image';
+            imageInput.disabled = false;
+        } catch (e) {
+            status.textContent = `Error: ${e.message}`;
+            status.classList.add('error');
+            progressFill.style.background = '#ff4a4a';
+            progressFill.style.width = '100%';
+            console.error('Falcon-OCR init failed:', e);
+        }
+
+        imageInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            output.textContent = '';
+            timing.textContent = '';
+            speculativeStats.textContent = '';
+            status.textContent = 'Running OCR...';
+
+            try {
+                // Draw preview
+                const imageBitmap = await createImageBitmap(file);
+                const scale = Math.min(224 / imageBitmap.width, 224 / imageBitmap.height);
+                const w = Math.round(imageBitmap.width * scale);
+                const h = Math.round(imageBitmap.height * scale);
+                canvas.width = w;
+                canvas.height = h;
+                ctx.drawImage(imageBitmap, 0, 0, w, h);
+                const imageData = ctx.getImageData(0, 0, w, h);
+
+                const start = performance.now();
+                const result = await ocr.recognize(imageData);
+                const elapsed = performance.now() - start;
+
+                output.textContent = result.text;
+                timing.textContent = [
+                    `Inference: ${result.timeMs.toFixed(1)}ms`,
+                    `Total (incl. preprocessing): ${elapsed.toFixed(1)}ms`,
+                    `Backend: ${result.backend}`,
+                    `Tokens: ${result.tokenIds.length}`,
+                ].join('\n');
+
+                status.textContent = 'Done';
+            } catch (err) {
+                output.textContent = `Error: ${err.message}`;
+                status.textContent = 'Error during inference';
+                status.classList.add('error');
+                console.error('OCR inference failed:', err);
+            }
+        });
+    </script>
+</body>
+</html>
