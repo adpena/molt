@@ -1,23 +1,22 @@
 /**
- * Cloudflare Worker entry point for Falcon-OCR inference.
+ * Cloudflare Worker entry point for OCR and document processing.
  *
- * Lifecycle:
- *   1. Cold start: fetch WASM module + weights from R2, initialize model.
- *   2. Warm request: run OCR inference on the cached model.
+ * OCR Engine Architecture:
+ *   PRIMARY: PaddleOCR (99.6% accuracy, client-side WASM in browser, instant)
+ *   EXPERIMENTAL: Falcon-OCR (edge inference, INT4 CPU, degraded quality)
  *
- * Fallback chain (in-Worker):
- *   Falcon-OCR CPU (micro model) -> PaddleOCR fallback -> error
+ * The default /ocr endpoint returns 503 directing clients to PaddleOCR
+ * (which runs client-side — no server round-trip). Falcon-OCR edge
+ * inference is opt-in via X-Use-Backend: falcon-ocr header.
  *
- * NOTE: Workers AI is NOT used for OCR text extraction (it hallucinates content).
- * Workers AI is ONLY used for:
+ * Workers AI endpoints (server-side, no OCR):
  *   - /invoice/fill (NL template filling)
  *   - /template/extract (layout analysis)
- *   - /ocr/structured (structured extraction)
+ *   - /ocr/structured (structured extraction from pre-OCR'd text)
+ *   - /ocr/detailed (block-level output)
+ *   - /ocr/table (table extraction)
  *
- * The WASM path (falcon-ocr.wasm at 13.4 MB + model.safetensors at 1 GB)
- * exceeds Workers' memory and CPU time limits on cold start. The WASM path is
- * only viable for browser-side inference or self-hosted deployments.
- * The CPU micro model is used for in-Worker OCR inference.
+ * Workers AI is NOT used for OCR text extraction — it hallucinates content.
  *
  * The Worker NEVER logs image content (privacy).  Request IDs are
  * generated for debugging without exposing PII.
@@ -747,9 +746,9 @@ export default {
       return response;
     }
 
-    // OCR path: Falcon-OCR CPU (micro model) is the primary backend.
+    // OCR path: PaddleOCR (client-side WASM) is the PRODUCTION PRIMARY engine.
+    // Falcon-OCR is experimental — only activated via X-Use-Backend: falcon-ocr.
     // Workers AI is NOT used for /ocr — it hallucinates invoice content.
-    // If Falcon-OCR model is not loaded, return 503 with PaddleOCR fallback.
     // Workers AI remains available for /invoice/fill and /template/extract only.
 
     let result;
@@ -788,17 +787,31 @@ export default {
           return new Response(
             JSON.stringify({
               status,
-              model: "falcon-ocr",
-              model_variant: modelReady ? activeModelVariant : undefined,
               version: env.MODEL_VERSION || "0.1.0",
-              device,
               request_id: rid,
-              loading: isLoading ? {
-                shards_loaded: loadedShards,
-                shards_total: totalShards,
-                elapsed_ms: elapsedMs,
-                estimated_remaining_ms: estimatedRemainingMs,
-              } : undefined,
+              ocr_engines: {
+                "paddle-ocr": {
+                  status: "recommended",
+                  location: "browser",
+                  quality: "99.6%",
+                  note: "Production primary — runs client-side via WASM, no server round-trip",
+                },
+                "falcon-ocr": {
+                  status: "experimental",
+                  location: "edge",
+                  quality: "degraded (INT4 CPU)",
+                  model_variant: modelReady ? activeModelVariant : undefined,
+                  device: modelReady ? device : undefined,
+                  error: initError || undefined,
+                  loading: isLoading ? {
+                    shards_loaded: loadedShards,
+                    shards_total: totalShards,
+                    elapsed_ms: elapsedMs,
+                    estimated_remaining_ms: estimatedRemainingMs,
+                  } : undefined,
+                  note: "Experimental — activate with X-Use-Backend: falcon-ocr header",
+                },
+              },
               workers_ai_available: isWorkersAiAvailable(env),
               wasm_available: true,
               cache: {
@@ -816,22 +829,19 @@ export default {
                 },
                 window_minutes: analyticsSummary.time_window_minutes,
               } : undefined,
-              ocr_backend_priorities: [
-                "falcon-ocr-cpu (micro model, primary)",
-                "paddle-ocr (CPU fallback)",
-              ],
               workers_ai_usage: "NL fill and template extraction ONLY (not OCR)",
               backends: {
+                "paddle-ocr": {
+                  status: "recommended",
+                  location: "browser",
+                  quality: "99.6%",
+                  note: "Production primary OCR engine (client-side WASM)",
+                },
                 "falcon-ocr": {
                   status: modelReady ? "ready" : initError ? "error" : "loading",
                   device: modelReady ? device : undefined,
                   error: initError || undefined,
-                  note: "Primary OCR engine (CPU micro model)",
-                },
-                "paddle-ocr": {
-                  status: "available",
-                  url: "/api/ocr/paddle",
-                  note: "OCR fallback when Falcon-OCR unavailable",
+                  note: "Experimental OCR engine — use X-Use-Backend: falcon-ocr",
                 },
                 "workers-ai": {
                   status: isWorkersAiAvailable(env) ? "available" : "not-bound",
@@ -869,9 +879,11 @@ export default {
           ? { "X-Payment-Receipt": payment.receipt }
           : {};
 
-        // Route to Durable Object if requested or if default Worker path is
-        // insufficient.  The DO persists model state across requests.
+        // Backend selection: PaddleOCR is the production primary (client-side).
+        // Falcon-OCR is experimental — only when explicitly requested via header.
         const useBackend = request.headers.get("X-Use-Backend");
+
+        // Route to Durable Object for persistent Falcon-OCR inference.
         if (useBackend === "durable" && env.FALCON_OCR && path === "/ocr") {
           try {
             const id = env.FALCON_OCR.idFromName("default");
@@ -900,8 +912,30 @@ export default {
           }
         }
 
-        // Ensure model is loaded (lazy init on first request)
-        // On failure, return fallback response instead of 500
+        // Default /ocr path: PaddleOCR is primary (runs client-side in browser).
+        // The Worker returns 503 directing the client to use PaddleOCR locally,
+        // unless the caller explicitly opts into Falcon-OCR via header.
+        if (path === "/ocr" && useBackend !== "falcon-ocr") {
+          return new Response(
+            JSON.stringify({
+              error: "Use PaddleOCR (client-side) for production OCR",
+              ocr_engine: "paddle-ocr",
+              location: "browser",
+              quality: "99.6%",
+              fallback_url: "/api/ocr/paddle",
+              hint: "PaddleOCR runs client-side via WASM — no server round-trip needed. To use experimental Falcon-OCR edge inference, set header X-Use-Backend: falcon-ocr",
+              request_id: rid,
+            }),
+            {
+              status: 503,
+              headers: { ...cors, ...receiptHeaders, "Content-Type": "application/json" },
+            },
+          );
+        }
+
+        // Falcon-OCR experimental path (X-Use-Backend: falcon-ocr).
+        // Ensure model is loaded (lazy init on first request).
+        // On failure, return fallback response instead of 500.
         try {
           await ensureModelLoaded(env);
         } catch (err) {
