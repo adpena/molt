@@ -17,6 +17,7 @@
 import { createModel, createModelFromTensors, parseSafetensorsToMap } from "./inference-cpu.js";
 import { MICRO_MODEL_B64, MICRO_MODEL_CONFIG } from "./micro-model-data.js";
 import { handleOcrRequest } from "./ocr_api.js";
+import { TokenizerDecoder } from "./tokenizer.js";
 
 /**
  * CpuDevice adapter that wraps a FalconOCRMicro model instance
@@ -43,6 +44,7 @@ export class FalconOCRInference {
     this.state = state;
     this.env = env;
     this.backend = null;
+    this.tokenizer = null;
     this.modelReady = false;
     this.modelVariant = "none";
     this.loadError = null;
@@ -94,7 +96,7 @@ export class FalconOCRInference {
     };
     const rid = request.headers.get("X-Request-ID") || `do-${Date.now().toString(36)}`;
 
-    return handleOcrRequest(request, this.backend, this.env, cors, rid, "cpu");
+    return handleOcrRequest(request, this.backend, this.env, cors, rid, "cpu", this.tokenizer);
   }
 
   /**
@@ -144,24 +146,38 @@ export class FalconOCRInference {
           this.modelReady = true;
           this.loadError = null;
           console.log(`[DO] Loaded INT4-sharded model: ${allTensors.size} tensors`);
-          return;
         }
       } catch (err) {
         console.warn(`[DO] INT4-sharded load failed: ${err.message}`);
       }
 
       // Fallback: embedded micro model (263 KB, always fits)
-      const raw = atob(MICRO_MODEL_B64);
-      const weightsBytes = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) {
-        weightsBytes[i] = raw.charCodeAt(i);
+      if (!this.modelReady) {
+        const raw = atob(MICRO_MODEL_B64);
+        const weightsBytes = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) {
+          weightsBytes[i] = raw.charCodeAt(i);
+        }
+        const model = createModel(weightsBytes.buffer, MICRO_MODEL_CONFIG, null);
+        this.backend = new DOCpuDevice(model);
+        this.modelVariant = "micro";
+        this.modelReady = true;
+        this.loadError = null;
+        console.log("[DO] Loaded embedded micro model");
       }
-      const model = createModel(weightsBytes.buffer, MICRO_MODEL_CONFIG, null);
-      this.backend = new DOCpuDevice(model);
-      this.modelVariant = "micro";
-      this.modelReady = true;
-      this.loadError = null;
-      console.log("[DO] Loaded embedded micro model");
+
+      // Load tokenizer from R2 for server-side token-to-text decoding.
+      // Non-fatal: if unavailable, responses return empty text and the
+      // browser-side tokenizer handles decoding.
+      try {
+        const tokObj = await this.env.WEIGHTS.get("models/falcon-ocr/tokenizer.json");
+        if (tokObj) {
+          this.tokenizer = TokenizerDecoder.fromJSON(await tokObj.text());
+          console.log(`[DO] Tokenizer loaded: ${this.tokenizer.vocab.size} tokens`);
+        }
+      } catch (err) {
+        console.warn(`[DO] Tokenizer load failed (non-fatal): ${err.message}`);
+      }
     })();
 
     try {
