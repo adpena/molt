@@ -30850,6 +30850,7 @@ def clean(
     cargo_target: bool = False,
     clean_all: bool = False,
     include_venvs: bool = False,
+    scratch: bool = True,
 ) -> int:
     root = _find_molt_root(Path.cwd())
     root_error = _require_molt_root(root, json_output, "clean")
@@ -30858,6 +30859,7 @@ def clean(
     removed: list[str] = []
     missing: list[str] = []
     failures: list[str] = []
+    attempted: set[str] = set()
 
     if clean_all:
         cache = True
@@ -30866,8 +30868,13 @@ def clean(
         repo_artifacts = True
         cargo_target = True
         include_venvs = True
+        scratch = True
 
     def _remove_path(path: Path) -> None:
+        normalized = str(path.expanduser().absolute())
+        if normalized in attempted:
+            return
+        attempted.add(normalized)
         try:
             if path.is_symlink():
                 path.unlink()
@@ -30911,21 +30918,8 @@ def clean(
                 dirnames[:] = []
         return pycache_dirs
 
-    if cache:
-        cache_root = _default_molt_cache()
-        _remove_path(cache_root)
-    if artifacts:
-        build_root = _default_molt_home() / "build"
-        _remove_path(build_root)
-    if bins:
-        bin_root = _default_molt_bin()
-        _remove_path(bin_root)
-    if repo_artifacts:
+    def _repo_scratch_dirs() -> list[Path]:
         repo_dirs = [
-            root / "vendor",
-            root / "logs",
-            root / "dist",
-            root / "build",
             root / "tmp",
             root / ".uv-cache",
             root / ".molt_cache",
@@ -30936,6 +30930,29 @@ def clean(
         ]
         repo_dirs.extend(sorted(root.glob(".molt_cache-*")))
         repo_dirs.extend(sorted(root.glob(".uv-cache-*")))
+        return repo_dirs
+
+    if cache:
+        cache_root = _default_molt_cache()
+        _remove_path(cache_root)
+    if artifacts:
+        build_root = _default_molt_home() / "build"
+        _remove_path(build_root)
+    if bins:
+        bin_root = _default_molt_bin()
+        _remove_path(bin_root)
+    if scratch:
+        for path in _repo_scratch_dirs():
+            _remove_path(path)
+        for path in _iter_pycache_dirs(root):
+            _remove_path(path)
+    if repo_artifacts:
+        repo_dirs = [
+            root / "logs",
+            root / "dist",
+            root / "build",
+        ]
+        repo_dirs.extend(_repo_scratch_dirs())
         for path in repo_dirs:
             _remove_path(path)
         for path in _iter_pycache_dirs(root):
@@ -30949,7 +30966,11 @@ def clean(
         for path in repo_files:
             _remove_path(path)
     if cargo_target:
-        cargo_paths = [root / "target", *sorted(root.glob("target-*"))]
+        cargo_paths = [
+            root / "target",
+            *sorted(root.glob("target-*")),
+            *sorted(root.glob("*/target")),
+        ]
         for path in cargo_paths:
             _remove_path(path)
     if json_output:
@@ -34247,6 +34268,12 @@ def main() -> int:
         help="Remove build artifacts under MOLT_HOME/build.",
     )
     clean_parser.add_argument(
+        "--scratch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Remove repo-local scratch/cache roots (tmp/, .uv-cache*, .molt_cache*, Python caches).",
+    )
+    clean_parser.add_argument(
         "--bins",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -34256,7 +34283,7 @@ def main() -> int:
         "--repo-artifacts",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Remove repo-local artifacts (vendor/, logs/, caches, output*.wasm).",
+        help="Remove repo-local generated artifacts (logs/, dist/, build/, caches, output*.wasm).",
     )
     clean_parser.add_argument(
         "--include-venvs",
@@ -34267,7 +34294,7 @@ def main() -> int:
         "--cargo-target",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Remove Cargo target/ build artifacts in the repo root.",
+        help="Remove Cargo target/ artifacts in the repo root, legacy target-* dirs, and top-level nested workspace targets.",
     )
     clean_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
@@ -35156,6 +35183,7 @@ def main() -> int:
             args.cargo_target,
             args.all,
             args.include_venvs,
+            scratch=args.scratch,
         )
     if args.command == "config":
         return show_config(config_root, config, args.json, args.verbose)
