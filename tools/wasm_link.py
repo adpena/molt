@@ -1388,15 +1388,18 @@ def _ensure_function_exports_by_symbol_names(
         for index, name in _collect_func_names(data).items():
             symbol_indices.setdefault(name, index)
     existing_exports = _collect_function_exports(data)
+    replacements: dict[str, int] = {}
     additions: list[tuple[str, int]] = []
     for public_name, symbol_name in public_to_symbol.items():
-        if public_name in existing_exports:
-            continue
         symbol_index = symbol_indices.get(symbol_name)
         if symbol_index is None:
             continue
+        if public_name in existing_exports:
+            if existing_exports[public_name] != symbol_index:
+                replacements[public_name] = symbol_index
+            continue
         additions.append((public_name, symbol_index))
-    if not additions:
+    if not additions and not replacements:
         return None
 
     sections = _parse_sections(data)
@@ -1407,9 +1410,21 @@ def _ensure_function_exports_by_symbol_names(
         if section_id == 7:
             offset = 0
             count, offset = _read_varuint(payload, offset)
+            entries: list[tuple[str, int, int]] = []
+            while offset < len(payload):
+                name, offset = _read_string(payload, offset)
+                kind = payload[offset]
+                offset += 1
+                index, offset = _read_varuint(payload, offset)
+                if kind == 0 and name in replacements:
+                    index = replacements[name]
+                entries.append((name, kind, index))
             updated_payload = bytearray()
             updated_payload.extend(_write_varuint(count + len(additions)))
-            updated_payload.extend(payload[offset:])
+            for name, kind, index in entries:
+                updated_payload.extend(_write_string(name))
+                updated_payload.append(kind)
+                updated_payload.extend(_write_varuint(index))
             for public_name, symbol_index in additions:
                 updated_payload.extend(_write_string(public_name))
                 updated_payload.append(0)
@@ -4693,6 +4708,20 @@ def _run_wasm_ld(
             for name in preserved_output_exports
             if name in export_symbol_map
         }
+        public_export_map.update(
+            {
+                name: export_symbol_map[name]
+                for name in ("molt_main", "molt_table_init")
+                if name in export_symbol_map
+            }
+        )
+        public_export_map.update(
+            {
+                name: export_symbol_map[name]
+                for name in _collect_function_exports(output_data)
+                if name.startswith("__molt_table_ref_") and name in export_symbol_map
+            }
+        )
         updated = _ensure_function_exports_by_symbol_names(
             linked_bytes, public_export_map
         )
@@ -4733,11 +4762,11 @@ def _run_wasm_ld(
             output_reference = output.read_bytes()
         except OSError:
             output_reference = None
-            linked_bytes = _post_link_optimize(
-                linked_bytes,
-                reference_data=output_reference,
-                preserve_table_refs=True,
-            )
+        linked_bytes = _post_link_optimize(
+            linked_bytes,
+            reference_data=output_reference,
+            preserve_table_refs=True,
+        )
         post_opt_size = len(linked_bytes)
         if post_opt_size < pre_opt_size:
             savings = pre_opt_size - post_opt_size
@@ -4777,7 +4806,7 @@ def _run_wasm_ld(
                 linked_bytes = updated
         append_table_refs_raw = os.environ.get("MOLT_WASM_LINK_APPEND_TABLE_REFS")
         append_table_refs = (
-            split_runtime
+            True
             if append_table_refs_raw is None
             else append_table_refs_raw.strip().lower() not in {"0", "false", "no", "off"}
         )
@@ -4820,7 +4849,11 @@ def _run_wasm_ld(
             linked.write_bytes(updated)
             linked_bytes = updated
         if not split_runtime:
-            updated = _strip_internal_exports(linked_bytes, preserve_table_refs=False)
+            updated = _strip_internal_exports(
+                linked_bytes,
+                preserve_exports=set(preserved_output_exports),
+                preserve_table_refs=False,
+            )
             if updated is not None:
                 linked.write_bytes(updated)
                 linked_bytes = updated
