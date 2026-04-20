@@ -4598,6 +4598,7 @@ const extractWasmTableBase = (buffer) => {
     let importFuncCount = 0;
     let tableInitFuncIndex = null;
     let codeBodies = null;
+    const activeTableBases = [];
     while (offset < bytes.length) {
       const sectionId = bytes[offset++];
       const [sectionSize, sizePos] = readVarUint(bytes, offset);
@@ -4655,10 +4656,10 @@ const extractWasmTableBase = (buffer) => {
             }
             if (
               Number.isFinite(tableBase) &&
-              tableBase > 0 &&
+              tableBase > 1 &&
               (!Number.isFinite(exportedBase) || tableBase >= exportedBase)
             ) {
-              return tableBase;
+              activeTableBases.push(tableBase);
             }
           } else if (flags === 1 || flags === 3 || flags === 5 || flags === 7) {
             offset += 1;
@@ -4697,6 +4698,9 @@ const extractWasmTableBase = (buffer) => {
       }
     }
 
+    if (activeTableBases.length > 0) {
+      return Math.min(...activeTableBases);
+    }
     if (tableInitFuncIndex === null || !codeBodies) {
       return exportedBase;
     }

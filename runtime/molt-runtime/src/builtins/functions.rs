@@ -320,13 +320,18 @@ pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
 }
 
 #[inline]
-unsafe fn init_runtime_callable_function_obj(ptr: *mut u8, fn_key: u64, trampoline_ptr: u64) {
+unsafe fn init_runtime_callable_function_obj(
+    ptr: *mut u8,
+    fn_key: u64,
+    raw_fn_ptr: u64,
+    trampoline_ptr: u64,
+) {
     if let Some(call_target) = runtime_callable_target_ptr(fn_key) {
         unsafe {
             function_set_call_target_ptr(ptr, call_target);
         }
     }
-    let normalized_trampoline_ptr = normalize_runtime_trampoline_ptr(fn_key, trampoline_ptr);
+    let normalized_trampoline_ptr = normalize_runtime_trampoline_ptr(raw_fn_ptr, trampoline_ptr);
     if normalized_trampoline_ptr != 0 {
         unsafe {
             function_set_trampoline_ptr(ptr, normalized_trampoline_ptr);
@@ -352,7 +357,7 @@ pub(crate) fn alloc_runtime_function_obj(
         return ptr;
     }
     unsafe {
-        init_runtime_callable_function_obj(ptr, fn_key, 0);
+        init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, 0);
     }
     ptr
 }
@@ -4506,7 +4511,7 @@ pub extern "C" fn molt_func_new(fn_ptr: u64, trampoline_ptr: u64, arity: u64) ->
             MoltObject::none().bits()
         } else {
             unsafe {
-                init_runtime_callable_function_obj(ptr, fn_key, trampoline_ptr);
+                init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr);
             }
             MoltObject::from_ptr(ptr).bits()
         }
@@ -4555,7 +4560,7 @@ fn molt_func_new_builtin_raw_impl(
         return raise_exception::<_>(_py, "RuntimeError", "builtin func alloc failed");
     }
     unsafe {
-        init_runtime_callable_function_obj(ptr, fn_key, trampoline_ptr);
+        init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr);
         let builtin_bits = builtin_classes(_py).builtin_function_or_method;
         object_set_class_bits(_py, ptr, builtin_bits);
         inc_ref_bits(_py, builtin_bits);
@@ -4657,7 +4662,7 @@ pub extern "C" fn molt_func_new_closure(
         }
         unsafe {
             function_set_closure_bits(_py, ptr, closure_bits);
-            init_runtime_callable_function_obj(ptr, fn_key, trampoline_ptr);
+            init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr);
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -4791,11 +4796,7 @@ pub extern "C" fn molt_function_init_metadata_packed(
         }
         let metadata = unsafe { seq_vec_ref(metadata_ptr) };
         if metadata.len() != 11 {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "metadata tuple must contain 11 items",
-            );
+            return raise_exception::<_>(_py, "TypeError", "metadata tuple must contain 11 items");
         }
 
         let set_attr = |name: &'static [u8], value_bits: u64| -> Result<(), u64> {

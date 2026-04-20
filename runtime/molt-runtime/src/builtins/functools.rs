@@ -8,9 +8,9 @@ use molt_obj_model::MoltObject;
 use crate::builtins::methods::not_implemented_bits;
 use crate::builtins::numbers::index_i64_from_obj;
 use crate::{
-    PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_class_obj, alloc_function_obj, alloc_string,
-    alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable2, class_dict_bits,
-    dec_ref_bits, dict_find_entry_kv_in_place, dict_get_in_place, dict_order, dict_set_in_place,
+    PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_class_obj, alloc_string, alloc_tuple,
+    attr_name_bits_from_bytes, builtin_classes, call_callable2, class_dict_bits, dec_ref_bits,
+    dict_find_entry_kv_in_place, dict_get_in_place, dict_order, dict_set_in_place,
     dict_update_apply, dict_update_set_in_place, exception_pending, inc_ref_bits, init_atomic_bits,
     intern_static_name, is_truthy, issubclass_runtime, molt_class_set_base, molt_getattr_builtin,
     molt_is_callable, molt_iter, molt_object_setattr, molt_repr_from_obj, obj_from_bits,
@@ -97,7 +97,7 @@ impl LruOrderState {
 
 fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u64) -> u64 {
     init_atomic_bits(_py, slot, || {
-        let ptr = alloc_function_obj(_py, fn_ptr, arity);
+        let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {
@@ -888,7 +888,7 @@ pub extern "C" fn molt_functools_wraps(
             return MoltObject::none().bits();
         }
         let closure_bits = MoltObject::from_ptr(tuple_ptr).bits();
-        let func_ptr = alloc_function_obj(
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
             crate::molt_functools_wraps_call as *const () as usize as u64,
             1,
@@ -932,7 +932,7 @@ pub extern "C" fn molt_functools_cmp_to_key(cmp_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let closure_bits = MoltObject::from_ptr(tuple_ptr).bits();
-        let func_ptr = alloc_function_obj(
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
             crate::molt_functools_cmp_key_func as *const () as usize as u64,
             1,
@@ -1187,7 +1187,7 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
                 continue;
             }
             let closure_bits = MoltObject::from_ptr(closure_ptr).bits();
-            let func_ptr = alloc_function_obj(
+            let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
                 crate::molt_functools_total_ordering_op as *const () as usize as u64,
                 2,
