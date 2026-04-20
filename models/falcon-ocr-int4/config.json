@@ -1,0 +1,44 @@
+{
+  "architectures": [
+    "FalconOCRForCausalLM"
+  ],
+  "auto_map": {
+    "AutoConfig": "configuration_falcon_ocr.FalconOCRConfig",
+    "AutoModelForCausalLM": "modeling_falcon_ocr.FalconOCRForCausalLM"
+  },
+  "model_type": "falcon_ocr",
+  "torch_dtype": "float32",
+  "dim": 768,
+  "n_layers": 22,
+  "n_heads": 16,
+  "head_dim": 64,
+  "n_kv_heads": 8,
+  "vocab_size": 65536,
+  "ffn_dim": 2304,
+  "norm_eps": 1e-05,
+  "max_seq_len": 8192,
+  "rope_theta": 10000,
+  "channel_size": 3,
+  "spatial_patch_size": 16,
+  "temporal_patch_size": 1,
+  "eos_id": 11,
+  "img_id": 227,
+  "image_cls_token_id": 244,
+  "image_reg_1_token_id": 245,
+  "image_reg_2_token_id": 246,
+  "image_reg_3_token_id": 247,
+  "image_reg_4_token_id": 248,
+  "img_end_id": 230,
+  "quantization": {
+    "method": "symmetric_int4",
+    "bits": 4,
+    "mixed_precision": false,
+    "per_tensor_scales": true,
+    "kept_f32_patterns": [
+      "norm.weight",
+      "sinks",
+      "freqs_cis"
+    ]
+  },
+  "rms_inner_eps": 1e-05
+}
