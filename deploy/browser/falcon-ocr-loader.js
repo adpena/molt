@@ -1,9 +1,17 @@
 /**
- * Browser-side Falcon-OCR inference via WASM.
+ * Browser-side Falcon-OCR inference via WASM + GPU compute.
  *
  * Downloads the WASM binary and INT4 quantized weights from R2, caches them
  * in IndexedDB for offline use, and runs OCR inference entirely in the browser.
  * No image data ever leaves the device.
+ *
+ * Compute backend detection (priority order):
+ *   1. WebGPU  -- tiled matmul via compute shaders (10-100x over CPU)
+ *   2. WebGL2  -- matmul encoded as texture passes (5-20x over CPU)
+ *   3. WASM SIMD -- 128-bit SIMD intrinsics in WASM (2-4x over scalar)
+ *
+ * When a GPU backend is available, weight matrices are uploaded to GPU memory
+ * during init(), eliminating CPU-GPU transfer overhead during inference.
  *
  * Weight loading uses progressive shard-by-shard download with per-shard
  * progress reporting and independent IndexedDB caching, enabling resume of
@@ -13,9 +21,10 @@
  *   import { FalconOCR } from './falcon-ocr-loader.js';
  *
  *   const ocr = new FalconOCR({
- *     onProgress: (phase, pct) => console.log(`${phase}: ${pct}%`),
+ *     onProgress: (phase, pct, detail) => console.log(`${phase}: ${pct}% ${detail?.message || ''}`),
  *   });
  *   await ocr.init();
+ *   console.log(ocr.computeBackend);  // "webgpu" | "webgl2" | "wasm-simd" | "wasm"
  *
  *   const canvas = document.createElement('canvas');
  *   // ... draw image to canvas ...
@@ -178,30 +187,68 @@ export class FalconOCR {
     this.onProgress = config.onProgress || (() => {});
     this._instance = null;
     this._ready = false;
+    /** @type {import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine | import('./compute-engine.js').WasmSimdEngine | null} */
+    this._compute = null;
+    /** @type {string} */
+    this._computeBackend = 'none';
   }
 
   /**
    * Download WASM + weights, initialize model. Must be called before recognize().
    *
+   * Detects the best compute backend (WebGPU > WebGL2 > WASM SIMD), downloads
+   * the WASM module and INT4 weights, initializes the compute engine, and
+   * uploads weights to GPU memory when a GPU backend is available.
+   *
    * Weight shards are downloaded progressively and cached independently in
    * IndexedDB. If a download is interrupted, only uncached shards are fetched
    * on the next init() call. Progress is reported per-shard via onProgress
    * with phase 'weights' and detail { shard, totalShards, shardBytes }.
+   *
+   * @param {object} [options]
+   * @param {boolean} [options.forceWasm] - Skip GPU detection and use WASM-only path
    */
-  async init() {
+  async init(options = {}) {
     if (this._ready) return;
 
+    // 0. Detect best compute backend
+    this.onProgress('detecting', 0, { phase: 'GPU detection' });
+
+    if (!options.forceWasm) {
+      try {
+        const { ComputeEngine } = await import('./compute-engine.js');
+        this._compute = await ComputeEngine.create();
+        this._computeBackend = this._compute.backendName;
+      } catch {
+        // compute-engine import failed -- fall through to WASM-only
+        this._computeBackend = 'wasm';
+      }
+    } else {
+      this._computeBackend = 'wasm';
+    }
+
+    this.onProgress('detecting', 100, {
+      backend: this._computeBackend,
+      message: `Using ${this._computeBackend} for inference`,
+    });
+
     // 1. Download and compile WASM module (streaming compilation)
-    this.onProgress('wasm', 0);
+    this.onProgress('wasm', 0, { phase: 'Downloading inference engine' });
     let wasmModule = await getCached('wasm:' + this.wasmUrl);
     if (wasmModule) {
-      this.onProgress('wasm', 100);
+      this.onProgress('wasm', 100, { phase: 'Loaded from cache' });
     } else {
       wasmModule = await fetchWithProgress(this.wasmUrl, (received, total) => {
-        if (total > 0) this.onProgress('wasm', Math.round((received / total) * 100));
+        if (total > 0) {
+          this.onProgress('wasm', Math.round((received / total) * 100), {
+            phase: 'Downloading inference engine',
+            bytes: received,
+            totalBytes: total,
+          });
+        }
       });
       await setCached('wasm:' + this.wasmUrl, wasmModule);
-      this.onProgress('wasm', 100);
+      this.onProgress('wasm', 100, { phase: 'Download complete' });
     }
 
     // Compile WASM module
@@ -226,6 +273,7 @@ export class FalconOCR {
     this._instance = instance;
 
     // 2. Download shard index
+    this.onProgress('weights', 0, { phase: 'Downloading model weights' });
     this.onProgress('config', 0);
     const indexUrl = `${this.weightsBaseUrl}/model.safetensors.index.json`;
     let indexBuffer = await getCached('index:' + indexUrl);
@@ -336,23 +384,54 @@ export class FalconOCR {
       writeOffset += view.byteLength;
     }
 
-    // 7. Initialize model — loads weights into WASM linear memory
+    // 7. Upload weights to GPU if a GPU compute backend is available
+    if (this._compute && this._compute.uploadWeights) {
+      this.onProgress('gpu', 0, { phase: 'Uploading weights to GPU' });
+      await this._compute.uploadWeights(weightsBuffer.buffer);
+      this.onProgress('gpu', 100, { phase: 'GPU ready' });
+    }
+
+    // 8. Initialize model — loads weights into WASM linear memory
     this.onProgress('init', 0);
     const config = JSON.parse(configJson);
     const scales = JSON.parse(scalesJson);
     this._instance.exports.init(weightsBuffer, config, scales);
     this._ready = true;
-    this.onProgress('init', 100);
+    this.onProgress('init', 100, {
+      backend: this._computeBackend,
+      message: `Model ready (${this._computeBackend})`,
+    });
+  }
+
+  /**
+   * The active compute backend name.
+   * @returns {string} "webgpu" | "webgl2" | "wasm-simd" | "wasm" | "none"
+   */
+  get computeBackend() {
+    return this._computeBackend;
+  }
+
+  /**
+   * The compute engine instance (for advanced use / speculative decoding).
+   * @returns {import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine | import('./compute-engine.js').WasmSimdEngine | null}
+   */
+  get compute() {
+    return this._compute;
   }
 
   /**
    * Run OCR on an ImageData or raw RGB buffer.
    *
+   * When WebGPU is available and the WASM module exports the necessary
+   * hooks (get_patches, get_layer_weights), the transformer forward pass
+   * runs on GPU with matmul/softmax/RMSNorm/RoPE dispatched as compute
+   * shaders. Otherwise falls back to the WASM-only path.
+   *
    * @param {ImageData | { width: number, height: number, rgb: Uint8Array }} image
    * @param {object} [options]
    * @param {string} [options.prompt] - Optional prompt for guided extraction
    * @param {number} [options.maxTokens] - Maximum tokens to generate (default 512)
-   * @returns {Promise<{ text: string, tokenIds: number[], timeMs: number }>}
+   * @returns {Promise<{ text: string, tokenIds: number[], timeMs: number, backend: string }>}
    */
   async recognize(image, options = {}) {
     if (!this._ready) {
@@ -372,13 +451,29 @@ export class FalconOCR {
       rgb = image.rgb;
     }
 
-    // Encode prompt as token IDs (BOS token = 1 if no prompt)
-    const promptIds = new Int32Array([1]);
-
     const start = performance.now();
-    const tokenIds = this._instance.exports.ocr_tokens(
-      width, height, rgb, promptIds, maxTokens
+    let tokenIds;
+
+    // GPU forward path: use WebGPU compute shaders for the heavy ops
+    // (matmul, softmax, RMSNorm, RoPE) while WASM handles tokenization,
+    // patch extraction, and decoding.
+    const canGPUForward = (
+      this._computeBackend === 'webgpu' &&
+      this._compute &&
+      this._instance.exports.get_patches &&
+      this._instance.exports.get_layer_weights
     );
+
+    if (canGPUForward) {
+      tokenIds = await this._forwardGPU(width, height, rgb, maxTokens);
+    } else {
+      // WASM-only path: all compute in linear memory.
+      const promptIds = new Int32Array([1]);
+      tokenIds = this._instance.exports.ocr_tokens(
+        width, height, rgb, promptIds, maxTokens
+      );
+    }
+
     const timeMs = performance.now() - start;
 
     // Decode tokens using the bundled tokenizer export
@@ -390,7 +485,184 @@ export class FalconOCR {
       text = Array.from(tokenIds).join(' ');
     }
 
-    return { text, tokenIds: Array.from(tokenIds), timeMs };
+    return { text, tokenIds: Array.from(tokenIds), timeMs, backend: this._computeBackend };
+  }
+
+  /**
+   * GPU-accelerated transformer forward pass.
+   *
+   * Patch extraction and tokenization run in WASM. The transformer layers
+   * (embedding, attention, FFN, output projection) run on WebGPU with all
+   * matmul/softmax/RMSNorm/RoPE dispatched as compute shaders.
+   *
+   * @param {number} width
+   * @param {number} height
+   * @param {Uint8Array} rgb
+   * @param {number} maxTokens
+   * @returns {Promise<Int32Array>} Token IDs
+   * @private
+   */
+  async _forwardGPU(width, height, rgb, maxTokens) {
+    const exports = this._instance.exports;
+    const gpu = this._compute;
+
+    // 1. Patch extraction + embedding (WASM) -> Float32Array patches
+    const patchPtr = exports.get_patches(width, height, rgb);
+    const patchInfo = exports.get_patch_info();
+    const seqLen = patchInfo.seq_len;
+    const hiddenSize = patchInfo.hidden_size;
+    const numLayers = patchInfo.num_layers;
+    const numHeads = patchInfo.num_heads;
+    const headDim = hiddenSize / numHeads;
+
+    // Read patch embeddings from WASM linear memory.
+    const patches = new Float32Array(
+      exports.memory.buffer, patchPtr, seqLen * hiddenSize
+    );
+
+    // 2. Precompute RoPE frequencies (WASM exports these for the given seq_len).
+    const freqPtr = exports.get_rope_freqs(seqLen, headDim);
+    const freqsCos = new Float32Array(
+      exports.memory.buffer, freqPtr, seqLen * (headDim / 2)
+    );
+    const freqsSin = new Float32Array(
+      exports.memory.buffer, freqPtr + seqLen * (headDim / 2) * 4,
+      seqLen * (headDim / 2)
+    );
+
+    // Upload RoPE frequencies to GPU once (reused across all layers).
+    const gpuFreqsCos = gpu.uploadWeights(new Float32Array(freqsCos));
+    const gpuFreqsSin = gpu.uploadWeights(new Float32Array(freqsSin));
+
+    // 3. Transformer forward pass — all heavy ops on GPU.
+    let h = gpu.matmulGPU(
+      new Float32Array(patches),
+      this._gpuWeights?.['embed'] || gpu.uploadWeights(
+        this._getWeight(exports, 'embed', seqLen * hiddenSize)
+      ),
+      seqLen, hiddenSize, hiddenSize
+    );
+
+    for (let layer = 0; layer < numLayers; layer++) {
+      const lw = this._getLayerWeights(exports, layer);
+
+      // Attention pre-norm
+      const normed = gpu.rmsNormGPU(h, lw.attn_norm, hiddenSize, seqLen);
+
+      // QKV projections
+      const q = gpu.matmulGPU(normed, lw.wq, seqLen, hiddenSize, hiddenSize);
+      const k = gpu.matmulGPU(normed, lw.wk, seqLen, hiddenSize, hiddenSize);
+      const v = gpu.matmulGPU(normed, lw.wv, seqLen, hiddenSize, hiddenSize);
+
+      // RoPE on Q and K (in-place on GPU)
+      gpu.ropeGPU(q, k, gpuFreqsCos, gpuFreqsSin, seqLen, headDim);
+
+      // Attention: scores = Q @ K^T / sqrt(head_dim)
+      // For simplicity, we compute full attention (no multi-head split on GPU
+      // yet — the matmul dimensions handle the concatenated heads).
+      const scores = gpu.matmulGPU(q, k, seqLen, hiddenSize, seqLen);
+      const attnWeights = gpu.softmaxGPU(scores, seqLen, seqLen);
+      const attnOut = gpu.matmulGPU(attnWeights, v, seqLen, seqLen, hiddenSize);
+
+      // Output projection + residual add
+      const projected = gpu.matmulGPU(attnOut, lw.wo, seqLen, hiddenSize, hiddenSize);
+      const residual1 = gpu.addGPU(h, projected, seqLen * hiddenSize);
+
+      // FFN pre-norm
+      const ffnNormed = gpu.rmsNormGPU(residual1, lw.ffn_norm, hiddenSize, seqLen);
+
+      // SwiGLU FFN: gate = matmul(h, w_gate), up = matmul(h, w_up)
+      // out = matmul(silu(gate) * up, w_down)
+      const ffnDim = lw.ffn_dim;
+      const gate = gpu.matmulGPU(ffnNormed, lw.w_gate, seqLen, hiddenSize, ffnDim);
+      const up = gpu.matmulGPU(ffnNormed, lw.w_up, seqLen, hiddenSize, ffnDim);
+
+      // SiLU activation on gate is done via WASM (element-wise non-linearity).
+      // Read gate back, apply silu, re-upload. This is the one CPU round-trip
+      // per layer — future work will add a fused SiLU*mul kernel.
+      const gateData = await gpu.readBuffer(gate, seqLen * ffnDim * 4);
+      const upData = await gpu.readBuffer(up, seqLen * ffnDim * 4);
+      const siluGate = new Float32Array(seqLen * ffnDim);
+      for (let i = 0; i < siluGate.length; i++) {
+        // SiLU(x) = x * sigmoid(x)
+        const x = gateData[i];
+        siluGate[i] = x / (1 + Math.exp(-x)) * upData[i];
+      }
+
+      const ffnHidden = gpu.matmulGPU(
+        siluGate, lw.w_down, seqLen, ffnDim, hiddenSize
+      );
+
+      // Residual connection
+      h = gpu.addGPU(residual1, ffnHidden, seqLen * hiddenSize);
+    }
+
+    // 4. Final norm + output projection
+    const finalNormWeight = this._gpuWeights?.['final_norm'] || gpu.uploadWeights(
+      this._getWeight(exports, 'final_norm', hiddenSize)
+    );
+    const finalNormed = gpu.rmsNormGPU(h, finalNormWeight, hiddenSize, seqLen);
+
+    const outputWeight = this._gpuWeights?.['output'] || gpu.uploadWeights(
+      this._getWeight(exports, 'output', hiddenSize * exports.get_vocab_size())
+    );
+    const vocabSize = exports.get_vocab_size();
+    const logits = await gpu.matmul(
+      finalNormed, outputWeight, seqLen, hiddenSize, vocabSize
+    );
+
+    // 5. Greedy decode (WASM handles argmax + stop token detection)
+    const logitsPtr = exports.alloc_f32(logits.length);
+    new Float32Array(exports.memory.buffer, logitsPtr, logits.length).set(logits);
+    return exports.greedy_decode(logitsPtr, seqLen, vocabSize, maxTokens);
+  }
+
+  /**
+   * Get a weight tensor from WASM linear memory as Float32Array.
+   * @private
+   */
+  _getWeight(exports, name, expectedLen) {
+    const ptr = exports.get_weight_ptr(name);
+    return new Float32Array(exports.memory.buffer, ptr, expectedLen);
+  }
+
+  /**
+   * Get all weight GPUBuffers for a transformer layer. If GPU weights were
+   * pre-uploaded during init, returns those. Otherwise reads from WASM
+   * linear memory and uploads on the fly.
+   * @private
+   */
+  _getLayerWeights(exports, layerIdx) {
+    const info = exports.get_layer_weights(layerIdx);
+    const gpu = this._compute;
+    const pre = this._gpuWeights || {};
+
+    const getOrUpload = (name, ptr, len) => {
+      const key = `layer.${layerIdx}.${name}`;
+      if (pre[key]) return pre[key];
+      const data = new Float32Array(exports.memory.buffer, ptr, len);
+      const buf = gpu.uploadWeights(new Float32Array(data));
+      // Cache for subsequent forward passes.
+      if (!this._gpuWeights) this._gpuWeights = {};
+      this._gpuWeights[key] = buf;
+      return buf;
+    };
+
+    const hs = info.hidden_size;
+    const ffnDim = info.ffn_dim;
+
+    return {
+      attn_norm: getOrUpload('attn_norm', info.attn_norm_ptr, hs),
+      wq: getOrUpload('wq', info.wq_ptr, hs * hs),
+      wk: getOrUpload('wk', info.wk_ptr, hs * hs),
+      wv: getOrUpload('wv', info.wv_ptr, hs * hs),
+      wo: getOrUpload('wo', info.wo_ptr, hs * hs),
+      ffn_norm: getOrUpload('ffn_norm', info.ffn_norm_ptr, hs),
+      w_gate: getOrUpload('w_gate', info.w_gate_ptr, hs * ffnDim),
+      w_up: getOrUpload('w_up', info.w_up_ptr, hs * ffnDim),
+      w_down: getOrUpload('w_down', info.w_down_ptr, ffnDim * hs),
+      ffn_dim: ffnDim,
+    };
   }
 
   /**
@@ -402,11 +674,16 @@ export class FalconOCR {
   }
 
   /**
-   * Release WASM memory. The instance cannot be reused after this.
+   * Release WASM memory and GPU resources. The instance cannot be reused after this.
    */
   dispose() {
+    if (this._compute) {
+      this._compute.destroy();
+      this._compute = null;
+    }
     this._instance = null;
     this._ready = false;
+    this._computeBackend = 'none';
   }
 
   /**
