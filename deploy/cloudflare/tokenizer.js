@@ -9,6 +9,26 @@
  * for the lifetime of the Worker isolate.
  */
 
+export const FALCON_OCR_CATEGORY_PROMPT_IDS = Object.freeze({
+  plain: Object.freeze([227, 46021, 790, 2757, 3463, 1211, 1112, 6883, 537, 709, 257]),
+  text: Object.freeze([227, 46021, 790, 2757, 3463, 1211, 1112, 6883, 537, 709, 257]),
+  formula: Object.freeze([227, 46021, 790, 12211, 3463, 1211, 1112, 6883, 537, 709, 257]),
+  table: Object.freeze([227, 46021, 790, 4336, 3463, 1211, 1112, 6883, 537, 709, 257]),
+  caption: Object.freeze([227, 46021, 790, 2757, 3463, 1211, 1112, 6883, 537, 709, 257]),
+  footnote: Object.freeze([227, 46021, 790, 2757, 3463, 1211, 1112, 6883, 537, 709, 257]),
+  "list-item": Object.freeze([227, 46021, 790, 2757, 3463, 1211, 1112, 6883, 537, 709, 257]),
+  "page-footer": Object.freeze([227, 46021, 790, 2757, 3463, 1211, 1112, 6883, 537, 709, 257]),
+  "page-header": Object.freeze([227, 46021, 790, 2757, 3463, 1211, 1112, 6883, 537, 709, 257]),
+  "section-header": Object.freeze([227, 46021, 790, 2757, 3463, 1211, 1112, 6883, 537, 709, 257]),
+  title: Object.freeze([227, 46021, 790, 2757, 3463, 1211, 1112, 6883, 537, 709, 257]),
+});
+
+export function buildFalconOcrPromptIds(category = "plain") {
+  const key = String(category || "plain").trim().toLowerCase();
+  const ids = FALCON_OCR_CATEGORY_PROMPT_IDS[key] || FALCON_OCR_CATEGORY_PROMPT_IDS.plain;
+  return Array.from(ids);
+}
+
 /**
  * @typedef {Object} TokenizerConfig
  * @property {Map<number, string>} vocab - Token ID to text piece mapping

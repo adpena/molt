@@ -1045,14 +1045,6 @@ export class FalconOCRMicro {
       prefixIds.push(config.img_end_id);
     }
 
-    // Append the OCR task token AFTER image tokens.
-    // Without this, the model has no instruction and produces garbage.
-    // Token 257 = <|OCR_PLAIN|> — plain text extraction
-    // Token 255 = <|OCR_GROUNDING|> — with bounding boxes
-    // Token 256 = <|OCR_DOC_PARSER|> — structured document
-    const OCR_PLAIN_TOKEN = 257;
-    prefixIds.push(OCR_PLAIN_TOKEN);
-
     const imageNoIncrease = new Set([
       config.img_id, config.image_reg_1_token_id,
       config.image_reg_2_token_id, config.image_reg_3_token_id,
