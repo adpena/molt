@@ -864,8 +864,6 @@ def tensor_concat_first_dim(tensors) -> "Tensor":
             raise ValueError(
                 f"concat_first_dim shape mismatch: {tensor._shape} vs {(None,) + tail_shape}"
             )
-        if tensor._dtype is not first._dtype:
-            raise ValueError("concat_first_dim requires matching dtypes")
         if tensor._buf.format_char != first._buf.format_char:
             raise ValueError("concat_first_dim requires matching buffer formats")
         total_rows += tensor._shape[0]
@@ -897,8 +895,6 @@ def tensor_scatter_rows(
         raise ValueError(
             f"scatter_rows trailing shape mismatch: {base._shape} vs {updates._shape}"
         )
-    if base._dtype is not updates._dtype:
-        raise ValueError("scatter_rows requires matching dtypes")
     if base._buf.format_char != updates._buf.format_char:
         raise ValueError("scatter_rows requires matching buffer formats")
     if not isinstance(indices, Tensor):
@@ -2194,6 +2190,10 @@ class Tensor:
 
         return _nest(data, self._shape)
 
+    def tolist(self) -> list:
+        """tinygrad-compatible alias for to_list()."""
+        return self.to_list()
+
     def item(self):
         """Extract a scalar value from a 0-d or 1-element tensor."""
         if self.size != 1:
@@ -2346,6 +2346,10 @@ class Tensor:
                 return Tensor(out[0], dtype=self._dtype)
             return self._from_flat(out, tuple(out_shape))
         raise TypeError(f"Tensor indexing with {type(idx)} not supported")
+
+    def dot(self, other) -> 'Tensor':
+        """tinygrad-compatible matrix product alias."""
+        return self @ other
 
 
 def tensor_scaled_dot_product_attention(
