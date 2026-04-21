@@ -6033,13 +6033,6 @@ pub extern "C" fn molt_gpu_tensor__tensor_concat_first_dim(a_bits: u64, b_bits: 
                 "concat_first_dim trailing shape mismatch",
             );
         }
-        if a.dtype_bits != b.dtype_bits {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "concat_first_dim requires matching dtypes",
-            );
-        }
         if a.buffer.format != b.buffer.format {
             return raise_exception::<_>(
                 _py,
@@ -6133,13 +6126,6 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
                 _py,
                 "ValueError",
                 "scatter_rows trailing shape mismatch",
-            );
-        }
-        if base.dtype_bits != updates.dtype_bits {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "scatter_rows requires matching dtypes",
             );
         }
         if base.buffer.format != updates.buffer.format {

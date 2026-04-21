@@ -80,12 +80,17 @@ MODEL_VERSION = "0.1.0"
 # eliminating cold-start latency for repeat callers.
 [durable_objects]
 bindings = [
-    { name = "FALCON_OCR", class_name = "FalconOCRInference" }
+    { name = "FALCON_OCR", class_name = "FalconOCRInference" },
+    { name = "RATE_LIMITER", class_name = "RateLimiter" }
 ]
 
 [[migrations]]
 tag = "v1"
 new_classes = ["FalconOCRInference"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RateLimiter"]
 
 [observability]
 [observability.logs]

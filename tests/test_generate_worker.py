@@ -247,19 +247,24 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
 
     assert "const indirectName = `molt_call_indirect${arity}`;" in content
     assert "const idx = Number(fnIndex);" in content
-    assert "const directName = `__molt_table_ref_${idx}`;" in content
+    assert "const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);" in content
+    assert "const directName = `__molt_table_ref_${dispatchIdx}`;" in content
     assert "const indirectFn = appInstance?.exports?.[indirectName];" in content
     assert "return indirectFn(fnIndex, ...args);" in content
-    assert "const tableFn = sharedTable.get(idx);" in content
+    assert "const tableFn = sharedTable.get(dispatchIdx);" in content
     assert 'if (typeof tableFn === "function") {' in content
     assert "const signature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;" in content
     assert "return callWithSignature(tableFn, signature, args);" in content
     assert "const rtDirectFn = rtInstance?.exports?.[directName];" in content
     assert "return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || null, args);" in content
-    assert content.index('const indirectFn = appInstance?.exports?.[indirectName];') < content.index("const tableFn = sharedTable.get(idx);")
-    assert content.index("const tableFn = sharedTable.get(idx);") < content.index("const rtDirectFn = rtInstance?.exports?.[directName];")
-    assert "const appHasTableRefs = hasExportedTableRefs(appInstance);" in content
-    assert "if (!appHasTableRefs && appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();" in content
+    assert content.index(
+        'const indirectFn = appInstance?.exports?.[indirectName];'
+    ) < content.index("const tableFn = sharedTable.get(dispatchIdx);")
+    assert content.index(
+        "const tableFn = sharedTable.get(dispatchIdx);"
+    ) < content.index("const rtDirectFn = rtInstance?.exports?.[directName];")
+    assert "hasExportedTableRefs(appInstance)" not in content
+    assert "if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();" in content
 
 
 def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface() -> None:

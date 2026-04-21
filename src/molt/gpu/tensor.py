@@ -2007,6 +2007,30 @@ class Tensor:
             var = var.mean(dim, keepdim=True)
         return centered * (var + eps).rsqrt()
 
+    def scaled_dot_product_attention(
+        self,
+        k: 'Tensor',
+        v: 'Tensor',
+        attn_mask: 'Tensor | None' = None,
+        scale: float | None = None,
+        is_causal: bool = False,
+    ) -> 'Tensor':
+        """tinygrad-compatible SDPA instance method."""
+        actual_scale = scale if scale is not None else (1.0 / math.sqrt(self._shape[-1]))
+        mask = attn_mask
+        if is_causal:
+            seq_q = self._shape[-2]
+            seq_k = k._shape[-2]
+            values = []
+            offset = seq_k - seq_q
+            for q_idx in range(seq_q):
+                allowed_until = q_idx + offset
+                for k_idx in range(seq_k):
+                    values.append(0.0 if k_idx <= allowed_until else float("-inf"))
+            causal_mask = Tensor(values, shape=(1, 1, seq_q, seq_k), dtype=float)
+            mask = causal_mask if mask is None else mask + causal_mask
+        return tensor_scaled_dot_product_attention(self, k, v, mask, actual_scale)
+
     def rms_norm(self, eps: float) -> 'Tensor':
         """RMSNorm over the last axis."""
         if self.ndim == 0:
