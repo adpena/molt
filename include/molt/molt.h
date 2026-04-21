@@ -140,12 +140,18 @@ int64_t molt_sequence_length(MoltHandle seq_bits);
 MoltHandle molt_sequence_getitem(MoltHandle seq_bits, MoltHandle key_bits);
 int32_t molt_sequence_setitem(MoltHandle seq_bits, MoltHandle key_bits,
                               MoltHandle val_bits);
+MoltHandle molt_iter_next(MoltHandle iter_bits);
+MoltHandle molt_list_append(MoltHandle list_bits, MoltHandle val_bits);
 
 MoltHandle molt_mapping_getitem(MoltHandle mapping_bits, MoltHandle key_bits);
 int32_t molt_mapping_setitem(MoltHandle mapping_bits, MoltHandle key_bits,
                              MoltHandle val_bits);
 int64_t molt_mapping_length(MoltHandle mapping_bits);
 MoltHandle molt_mapping_keys(MoltHandle mapping_bits);
+MoltHandle molt_dict_keys(MoltHandle dict_bits);
+MoltHandle molt_dict_values(MoltHandle dict_bits);
+MoltHandle molt_dict_items(MoltHandle dict_bits);
+MoltHandle molt_dict_getitem_borrowed(MoltHandle dict_bits, MoltHandle key_bits);
 MoltHandle molt_tuple_from_array(const MoltHandle *items, uint64_t len);
 MoltHandle molt_list_from_array(const MoltHandle *items, uint64_t len);
 MoltHandle molt_dict_from_pairs(const MoltHandle *keys, const MoltHandle *values,

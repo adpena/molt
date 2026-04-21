@@ -265,6 +265,7 @@ static inline PyObject *PyTuple_GetItem(PyObject *tuple, Py_ssize_t index);
 static inline PyObject *PyNumber_Long(PyObject *obj);
 static inline int PyIter_Check(PyObject *obj);
 static inline PyObject *PyIter_Next(PyObject *obj);
+static inline PyObject *PyObject_Next(PyObject *obj);
 static inline double PyOS_string_to_double(
     const char *text, char **endptr, PyObject *overflow_exception);
 static inline PyObject *PyImport_ImportModule(const char *name);
@@ -5044,6 +5045,10 @@ static inline PyObject *PyIter_Next(PyObject *obj) {
         return NULL;
     }
     return out;
+}
+
+static inline PyObject *PyObject_Next(PyObject *obj) {
+    return PyIter_Next(obj);
 }
 
 static inline int PyObject_IsInstance(PyObject *obj, PyObject *cls) {
