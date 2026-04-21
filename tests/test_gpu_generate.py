@@ -623,6 +623,39 @@ def test_greedy_decode_skips_dflash_default_without_supported_gpu_backend(monkey
     assert calls == [("plain", [0])]
 
 
+def test_greedy_decode_raises_when_gpu_backend_has_no_dflash_adapter(monkeypatch):
+    import molt.gpu.dflash.adapters as adapters_mod
+    from molt.gpu.generate import greedy_decode
+
+    class FakeModel:
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy fallback must not run")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+    monkeypatch.setattr(adapters_mod, "_DFLASH_ADAPTERS", {})
+
+    try:
+        greedy_decode(FakeModel(), [0], max_new_tokens=1)
+        raise AssertionError("expected missing dflash adapter failure")
+    except LookupError as exc:
+        assert "no dflash adapter is available" in str(exc)
+
+
+def test_greedy_decode_allows_plain_decode_when_dflash_preference_disabled(monkeypatch):
+    from molt.gpu.generate import greedy_decode
+    from molt.gpu.tensor import Tensor
+
+    class FakeModel:
+        def __call__(self, tokens):
+            return Tensor([0.0, 1.0, 2.0 + len(tokens)])
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+
+    out = greedy_decode(FakeModel(), [0], max_new_tokens=1, prefer_dflash=False)
+
+    assert out == [0, 2]
+
+
 def test_register_dflash_adapter_rejects_duplicate_names():
     from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
 
@@ -695,6 +728,45 @@ def test_greedy_decode_accepts_explicit_dflash_adapter_override(monkeypatch):
     )
 
     assert out == [0, 1, 2]
+
+
+def test_greedy_decode_raises_for_missing_explicit_dflash_adapter(monkeypatch):
+    from molt.gpu.generate import greedy_decode
+
+    class FakeModel:
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy fallback must not run")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+
+    try:
+        greedy_decode(
+            FakeModel(),
+            [0],
+            max_new_tokens=1,
+            dflash_adapter="missing-drafter",
+        )
+        raise AssertionError("expected missing dflash adapter failure")
+    except LookupError as exc:
+        assert "missing-drafter" in str(exc)
+
+
+def test_greedy_decode_raises_for_missing_model_declared_dflash_adapter(monkeypatch):
+    from molt.gpu.generate import greedy_decode
+
+    class FakeModel:
+        dflash_adapter = "missing-model-drafter"
+
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy fallback must not run")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+
+    try:
+        greedy_decode(FakeModel(), [0], max_new_tokens=1)
+        raise AssertionError("expected missing model dflash adapter failure")
+    except LookupError as exc:
+        assert "missing-model-drafter" in str(exc)
 
 
 def test_greedy_decode_rejects_non_boolean_dflash_supports_result(monkeypatch):
