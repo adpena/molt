@@ -7,11 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers.falcon_ocr_paths import FALCON_OCR_TOKENIZER_PATH
+
 ROOT = Path(__file__).resolve().parents[1]
-TOKENIZER_PATH = (
-    Path("/Users/adpena/Projects/enjoice/experiments/tinygrad-molt/falcon-ocr/weights")
-    / "tokenizer.json"
-)
+TOKENIZER_PATH = FALCON_OCR_TOKENIZER_PATH
 
 OFFICIAL_INSTRUCTIONS = {
     "plain": "Extract the text content from this image.",
@@ -114,6 +113,35 @@ def test_browser_loader_matches_wasm_driver_init_and_decode_contract() -> None:
     assert "this.weightsVariant = config.weightsVariant || 'falcon-ocr-int8-sharded'" in source
 
 
+def test_browser_loader_defaults_point_at_worker_artifacts() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for Falcon-OCR JS loader tests")
+    script = """
+      const { FalconOCR } = await import('./deploy/browser/falcon-ocr-loader.js');
+      const loader = new FalconOCR();
+      process.stdout.write(JSON.stringify({
+        wasmUrl: loader.wasmUrl,
+        tokenizerUrl: loader.tokenizerUrl,
+        weightsVariant: loader.weightsVariant,
+        weightsBaseUrl: loader.weightsBaseUrl
+      }));
+    """
+    run = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=str(ROOT),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    defaults = json.loads(run.stdout)
+    assert defaults == {
+        "wasmUrl": "https://falcon-ocr.adpena.workers.dev/wasm/falcon-ocr.wasm",
+        "tokenizerUrl": "https://falcon-ocr.adpena.workers.dev/tokenizer.json",
+        "weightsVariant": "falcon-ocr-int8-sharded",
+        "weightsBaseUrl": "https://falcon-ocr.adpena.workers.dev/weights/falcon-ocr-int8-sharded",
+    }
+
+
 def test_browser_tokenizer_decoder_uses_byte_level_bpe() -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for Falcon-OCR JS tokenizer tests")
@@ -133,6 +161,85 @@ def test_browser_tokenizer_decoder_uses_byte_level_bpe() -> None:
         text=True,
     )
     assert json.loads(run.stdout) == " Hi\n"
+
+
+def test_cloudflare_worker_routes_browser_artifacts_through_r2_keys() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for Cloudflare Worker route tests")
+    script = """
+      const workerModule = await import('./deploy/cloudflare/worker.js');
+      const encoder = new TextEncoder();
+      const fixtures = new Map([
+        ['models/falcon-ocr/falcon-ocr.wasm', encoder.encode('wasm-binary')],
+        ['models/falcon-ocr/tokenizer.json', encoder.encode('{"model":{"vocab":{}}}')],
+        ['models/falcon-ocr-int8-sharded/model.safetensors.index.json', encoder.encode('{"weight_map":{}}')],
+        ['models/falcon-ocr-int8-sharded/config.json', encoder.encode('{"dim":64}')],
+        ['models/falcon-ocr-int8-sharded/scales.json', encoder.encode('{"x":1}')],
+        ['models/falcon-ocr-int8-sharded/shard-00001-of-00002.safetensors', encoder.encode('shard-bytes')],
+      ]);
+      const calls = [];
+      const env = {
+        CORS_ORIGIN: 'https://freeinvoicemaker.app',
+        WEIGHTS: {
+          async get(key) {
+            calls.push(key);
+            const body = fixtures.get(key);
+            if (!body) return null;
+            return { body, size: body.byteLength };
+          }
+        }
+      };
+      const ctx = { waitUntil() {} };
+      const routes = [
+        ['/wasm/falcon-ocr.wasm', 'application/wasm', 'wasm-binary'],
+        ['/tokenizer.json', 'application/json', '{"model":{"vocab":{}}}'],
+        ['/weights/falcon-ocr-int8-sharded/model.safetensors.index.json', 'application/json', '{"weight_map":{}}'],
+        ['/weights/falcon-ocr-int8-sharded/config.json', 'application/json', '{"dim":64}'],
+        ['/weights/falcon-ocr-int8-sharded/scales.json', 'application/json', '{"x":1}'],
+        ['/weights/falcon-ocr-int8-sharded/shard-00001-of-00002.safetensors', 'application/octet-stream', 'shard-bytes'],
+      ];
+      const results = [];
+      for (const [path, expectedType, expectedText] of routes) {
+        const response = await workerModule.default.fetch(
+          new Request(`https://falcon-ocr.adpena.workers.dev${path}`),
+          env,
+          ctx,
+        );
+        results.push({
+          path,
+          status: response.status,
+          contentType: response.headers.get('content-type'),
+          cacheControl: response.headers.get('cache-control'),
+          contentLength: response.headers.get('content-length'),
+          expectedType,
+          text: await response.text(),
+          expectedText,
+        });
+      }
+      process.stdout.write(JSON.stringify({ calls, results }));
+    """
+    run = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=str(ROOT),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(run.stdout)
+    assert payload["calls"] == [
+        "models/falcon-ocr/falcon-ocr.wasm",
+        "models/falcon-ocr/tokenizer.json",
+        "models/falcon-ocr-int8-sharded/model.safetensors.index.json",
+        "models/falcon-ocr-int8-sharded/config.json",
+        "models/falcon-ocr-int8-sharded/scales.json",
+        "models/falcon-ocr-int8-sharded/shard-00001-of-00002.safetensors",
+    ]
+    for result in payload["results"]:
+        assert result["status"] == 200
+        assert result["contentType"] == result["expectedType"]
+        assert "immutable" in result["cacheControl"]
+        assert int(result["contentLength"]) == len(result["expectedText"].encode())
+        assert result["text"] == result["expectedText"]
 
 
 def test_cloudflare_worker_int8_uses_single_sharded_prefix() -> None:
@@ -184,3 +291,28 @@ def test_enjoice_migration_doc_points_at_worker_wasm_and_tokenizer_artifacts() -
     assert "https://falcon-ocr.adpena.workers.dev/wasm/falcon-ocr.wasm" in source
     assert "/tokenizer.json" in source
     assert "https://falcon-ocr.freeinvoicemaker.workers.dev/falcon-ocr.wasm" not in source
+
+
+def test_falcon_ocr_manifest_fixture_matches_browser_driver_boundary() -> None:
+    manifest = json.loads(
+        (
+            ROOT / "tests" / "fixtures" / "falcon_ocr" / "driver-manifest.base.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert manifest["target"] == "falcon.browser_webgpu"
+    assert manifest["artifacts"] == {
+        "app_wasm": {"url": "/output.wasm"},
+        "runtime_wasm": {"url": "/molt_runtime.wasm"},
+        "config_json": {"url": "/config.json"},
+        "tokenizer_json": {"url": "/tokenizer.json"},
+    }
+    assert manifest["weights"]["base_url"] == "https://weights.example.invalid/falcon"
+    assert manifest["weights"]["files"] == [
+        {"path": "config.json", "url": "config.json"},
+        {"path": "model.safetensors", "url": "model.safetensors"},
+    ]
+    assert manifest["exports"] == {
+        "init": "main_molt__init",
+        "ocrTokens": "main_molt__ocr_tokens",
+    }

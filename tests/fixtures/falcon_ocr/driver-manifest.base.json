@@ -1,0 +1,20 @@
+{
+  "target": "falcon.browser_webgpu",
+  "artifacts": {
+    "app_wasm": { "url": "/output.wasm" },
+    "runtime_wasm": { "url": "/molt_runtime.wasm" },
+    "config_json": { "url": "/config.json" },
+    "tokenizer_json": { "url": "/tokenizer.json" }
+  },
+  "weights": {
+    "base_url": "https://weights.example.invalid/falcon",
+    "files": [
+      { "path": "config.json", "url": "config.json" },
+      { "path": "model.safetensors", "url": "model.safetensors" }
+    ]
+  },
+  "exports": {
+    "init": "main_molt__init",
+    "ocrTokens": "main_molt__ocr_tokens"
+  }
+}
