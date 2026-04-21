@@ -1808,6 +1808,22 @@ class Tensor:
         """Gather slices along axis 0 without materializing the full tensor."""
         return tensor_take_rows(self, indices, allow_negative=allow_negative)
 
+    def gather(self, dim: int, index: 'Tensor') -> 'Tensor':
+        """tinygrad-compatible gather for Falcon-style row selection."""
+        if dim < 0:
+            dim += self.ndim
+        if dim != 0:
+            raise NotImplementedError("Tensor.gather currently supports dim=0")
+        return tensor_take_rows(self, index, allow_negative=False)
+
+    def scatter(self, dim: int, index: 'Tensor', src: 'Tensor') -> 'Tensor':
+        """tinygrad-compatible scatter for Falcon-style row updates."""
+        if dim < 0:
+            dim += self.ndim
+        if dim != 0:
+            raise NotImplementedError("Tensor.scatter currently supports dim=0")
+        return tensor_scatter_rows(self, index, src, allow_negative=False)
+
     # ── Reductions ────────────────────────────────────────────────────
 
     def _reduce(self, op, axis=None, initial=None, keepdim: bool = False):
