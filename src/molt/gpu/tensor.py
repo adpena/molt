@@ -113,6 +113,41 @@ def _product(seq):
     return result
 
 
+def _dtype_cast_kind(dtype) -> str | None:
+    if dtype is float:
+        return "float"
+    if dtype is int:
+        return "int"
+    name = getattr(dtype, "name", None)
+    fmt = getattr(dtype, "fmt", None)
+    if name in {"float", "float32", "float64", "float16", "bfloat16", "half", "double"}:
+        return "float"
+    if fmt in {"f", "d", "e"}:
+        return "float"
+    if name in {
+        "bool",
+        "int",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "uint8",
+        "uint16",
+        "uint32",
+        "uint64",
+        "short",
+        "long",
+        "uchar",
+        "ushort",
+        "uint",
+        "ulong",
+    }:
+        return "int"
+    if fmt in {"?", "b", "h", "i", "q", "B", "H", "I", "Q"}:
+        return "int"
+    return None
+
+
 def _u32(value):
     return (value or 0) & 0xFFFFFFFF
 
@@ -1151,13 +1186,14 @@ class Tensor:
         return self._from_flat(out, shape)
 
     def cast(self, dtype) -> 'Tensor':
-        if dtype in {float}:
+        kind = _dtype_cast_kind(dtype)
+        if kind == "float":
             format_char = "f" if self._buf.format_char == "f" else "d"
             out_buf = alloc(self.size, float, format_char=format_char)
             for idx, value in enumerate(self._data_list()):
                 out_buf[idx] = float(value)
             return Tensor(out_buf, shape=self._shape, dtype=float)
-        if dtype in {int}:
+        if kind == "int":
             out_buf = alloc(self.size, int, format_char="q")
             for idx, value in enumerate(self._data_list()):
                 out_buf[idx] = int(value)

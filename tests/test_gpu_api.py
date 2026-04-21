@@ -421,6 +421,20 @@ def test_tensor_scaled_dot_product_attention_method_supports_causal_mask():
     assert out.to_list()[0][0][0] == [10.0, 1.0]
 
 
+def test_tensor_cast_accepts_tinygrad_dtype_aliases():
+    from tinygrad.dtypes import dtypes
+    from molt.gpu.tensor import Tensor
+
+    t = Tensor([1, 2], shape=(2,), dtype=int)
+
+    as_float = t.cast(dtypes.float32)
+    as_int = as_float.cast(dtypes.int32)
+
+    assert as_float.to_list() == [1.0, 2.0]
+    assert as_float._buf.format_char in {"f", "d"}
+    assert as_int.to_list() == [1, 2]
+
+
 def test_zeros_uses_intrinsic_when_available(monkeypatch):
     import molt.gpu.tensor as tensor_mod
     from molt.gpu.tensor import Tensor, zeros
