@@ -35,6 +35,36 @@ id = "791309f66ab445e8a0327a34206f7005"
 [ai]
 binding = "AI"
 
+# ---------------------------------------------------------------------------
+# Browser Rendering — headless Chrome with WebGPU on the edge.
+#
+# Allows spawning real Chrome instances to run Falcon-OCR with WebGPU
+# acceleration. This is the only path to GPU inference on Cloudflare
+# without dedicated GPU containers (which are not yet customer-facing).
+#
+# Pricing: $0.02 per session (as of 2026-04).
+# Limits: ~2 concurrent sessions per worker instance.
+# ---------------------------------------------------------------------------
+[browser]
+binding = "BROWSER"
+
+# ---------------------------------------------------------------------------
+# Queues — async batch OCR processing.
+#
+# Decouples request latency from inference time. The Worker responds
+# immediately with a batch_id while inference runs asynchronously.
+# Results are stored in KV and polled by the client.
+# ---------------------------------------------------------------------------
+[[queues.producers]]
+binding = "OCR_QUEUE"
+queue = "falcon-ocr-batch"
+
+[[queues.consumers]]
+queue = "falcon-ocr-batch"
+max_batch_size = 10
+max_retries = 3
+dead_letter_queue = "falcon-ocr-dlq"
+
 [vars]
 # Public vars — secrets go via `wrangler secret put`.
 CORS_ORIGIN = "https://freeinvoicemaker.app"
