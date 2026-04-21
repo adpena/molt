@@ -81,11 +81,14 @@ def test_wasm_driver_delegates_to_falcon_ocr():
     for node in tree.body:
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "molt.stdlib.tinygrad.examples.falcon_ocr":
+                if alias.name == "tinygrad.examples.falcon_ocr":
                     falcon_module_bindings.add(alias.asname or "molt")
         elif (
             isinstance(node, ast.ImportFrom)
-            and node.module == "molt.stdlib.tinygrad.examples.falcon_ocr"
+            and (
+                node.module == "tinygrad.examples.falcon_ocr"
+                or (node.level == 1 and node.module == "examples.falcon_ocr")
+            )
         ):
             for alias in node.names:
                 direct_falcon_bindings[alias.asname or alias.name] = alias.name

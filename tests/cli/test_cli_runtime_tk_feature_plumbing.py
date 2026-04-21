@@ -21,7 +21,7 @@ def test_runtime_cargo_features_native_vs_wasm(monkeypatch) -> None:
     cli._runtime_cargo_features_cached.cache_clear()
     assert cli._runtime_cargo_features(None) == ("molt_tk_native",)
     assert cli._runtime_cargo_features("aarch64-apple-darwin") == ("molt_tk_native",)
-    assert cli._runtime_cargo_features("wasm32-wasip1") == ()
+    assert cli._runtime_cargo_features("wasm32-wasip1") == ("molt_gpu_primitives",)
 
 
 def test_runtime_cargo_features_include_gpu_backend_flags(monkeypatch) -> None:
@@ -51,7 +51,7 @@ def test_runtime_cargo_features_include_gpu_backend_flags(monkeypatch) -> None:
         "molt_gpu_cuda",
         "molt_gpu_hip",
     )
-    assert cli._runtime_cargo_features("wasm32-wasip1") == ()
+    assert cli._runtime_cargo_features("wasm32-wasip1") == ("molt_gpu_primitives",)
 
 
 def test_builtin_features_from_import_graph_enable_tk_for_tkinter_submodules() -> None:
@@ -60,6 +60,14 @@ def test_builtin_features_from_import_graph_enable_tk_for_tkinter_submodules() -
         "micro",
     )
     assert "stdlib_tk" in features
+
+
+def test_builtin_features_from_import_graph_enable_gpu_primitives_for_tinygrad() -> None:
+    features = cli._builtin_features_from_import_graph(
+        {"tinygrad.tensor", "molt.stdlib.tinygrad.examples.falcon_ocr"},
+        "micro",
+    )
+    assert "molt_gpu_primitives" in features
 
 
 def test_runtime_cargo_features_is_cached(monkeypatch) -> None:
