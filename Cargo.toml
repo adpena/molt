@@ -21,6 +21,7 @@ members = [
     "runtime/molt-tier",
     "runtime/molt-gpu",
 ]
+exclude = ["deploy/browser/simd-ops-rs"]
 resolver = "2"
 
 [profile.release]
