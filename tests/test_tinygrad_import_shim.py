@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers.falcon_ocr_paths import FALCON_OCR_ARTIFACT_ROOT
+
 
 def _native_molt_env(
     root: Path, *, hermetic: bool = False, module_roots: tuple[Path, ...] = ()
@@ -670,9 +672,7 @@ def test_tinygrad_falcon_main_runs_with_tiny_config_and_empty_weights() -> None:
         encoding="utf-8",
     )
     env = os.environ.copy()
-    env["PYTHONPATH"] = (
-        f"{root / 'src'}:/Users/adpena/Projects/enjoice/experiments/tinygrad-molt/falcon-ocr"
-    )
+    env["PYTHONPATH"] = f"{root / 'src'}:{FALCON_OCR_ARTIFACT_ROOT}"
     run = subprocess.run(
         [sys.executable, str(probe)],
         cwd=root,
@@ -706,7 +706,7 @@ def test_tinygrad_falcon_helper_modules_compile_in_native_molt(tmp_path: Path) -
         root,
         hermetic=True,
         module_roots=(
-            Path("/Users/adpena/Projects/enjoice/experiments/tinygrad-molt/falcon-ocr"),
+            FALCON_OCR_ARTIFACT_ROOT,
         ),
     )
     run = subprocess.run(
@@ -884,7 +884,7 @@ def test_tinygrad_falcon_main_compiles_in_native_molt(tmp_path: Path) -> None:
         root,
         hermetic=True,
         module_roots=(
-            Path("/Users/adpena/Projects/enjoice/experiments/tinygrad-molt/falcon-ocr"),
+            FALCON_OCR_ARTIFACT_ROOT,
         ),
     )
     run = subprocess.run(

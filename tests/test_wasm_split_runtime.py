@@ -1057,6 +1057,187 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
 
 
 @pytest.mark.slow
+def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
+    tmp_path: Path,
+) -> None:
+    from tests.e2e.falcon_ocr_stub_weights import (
+        generate_stub_config_json,
+        generate_stub_weights,
+        generate_test_image,
+    )
+
+    weights_path = tmp_path / "model.safetensors"
+    config_path = tmp_path / "config.json"
+    image_path = tmp_path / "image.rgb"
+    weights = generate_stub_weights()
+    config_json = generate_stub_config_json()
+    image = generate_test_image(32, 32)
+    weights_path.write_bytes(weights)
+    config_path.write_text(config_json, encoding="utf-8")
+    image_path.write_bytes(image)
+
+    expected_empty = []
+    expected_one = [19]
+
+    calls_path = tmp_path / "calls.json"
+    calls_path.write_text(
+        json.dumps(
+            {
+                "calls": [
+                    {
+                        "export": "tinygrad_wasm_driver__init",
+                        "args": [
+                            {
+                                "kind": "bytes_path",
+                                "path": str(weights_path),
+                            },
+                            {
+                                "kind": "text_path",
+                                "path": str(config_path),
+                            },
+                        ],
+                    },
+                    {
+                        "export": "tinygrad_wasm_driver__ocr_tokens",
+                        "args": [
+                            {
+                                "kind": "int",
+                                "value": 32,
+                            },
+                            {
+                                "kind": "int",
+                                "value": 32,
+                            },
+                            {
+                                "kind": "bytes_path",
+                                "path": str(image_path),
+                            },
+                            {
+                                "kind": "list_int",
+                                "value": [1, 2, 3],
+                            },
+                            {
+                                "kind": "int",
+                                "value": 0,
+                            },
+                        ],
+                    },
+                    {
+                        "export": "tinygrad_wasm_driver__ocr_tokens",
+                        "args": [
+                            {
+                                "kind": "int",
+                                "value": 32,
+                            },
+                            {
+                                "kind": "int",
+                                "value": 32,
+                            },
+                            {
+                                "kind": "bytes_path",
+                                "path": str(image_path),
+                            },
+                            {
+                                "kind": "list_int",
+                                "value": [1, 2, 3],
+                            },
+                            {
+                                "kind": "int",
+                                "value": 1,
+                            },
+                        ],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT / "src")
+    env["MOLT_BACKEND_DAEMON"] = "0"
+    env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
+    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    diff_target_dir.mkdir(parents=True, exist_ok=True)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
+    env.setdefault("MOLT_SESSION_ID", "test-linked-falcon-ocr-driver")
+    env.setdefault("CARGO_BUILD_JOBS", "1")
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(ROOT / "src/molt/stdlib/tinygrad/wasm_driver.py"),
+            "--target",
+            "wasm",
+            "--linked",
+            "--no-cache",
+            "--out-dir",
+            str(out_dir),
+        ],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "1"
+    run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
+    run = subprocess.run(
+        ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
+        cwd=str(ROOT),
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert run.returncode == 0, run.stderr
+    results = json.loads(run.stdout)
+    assert results[0]["result_repr"] == "None"
+    assert results[1]["result_repr"] == repr(expected_empty)
+    assert results[2]["result_repr"] == repr(expected_one)
+
+
+@pytest.mark.slow
+def test_split_runtime_direct_indirect_call_uses_initialized_table_refs(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "indirect_smoke.py"
+    source.write_text(
+        "def apply(fn, a, b):\n"
+        "    return fn(a, b)\n"
+        "\n"
+        "def add(a: int, b: int) -> int:\n"
+        "    return a + b\n"
+        "\n"
+        "funcs = [add]\n"
+        "print(apply(funcs[0], 1 << 60, 7))\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    build = _build_split(source, out_dir)
+    assert build.returncode == 0, build.stdout + build.stderr
+
+    run = _run_split_direct(out_dir, timeout=60)
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "1152921504606846983"
+    assert "null function" not in run.stderr
+    assert "function signature mismatch" not in run.stderr
+
+
+@pytest.mark.slow
 def test_split_runtime_host_export_struct_unpack_from_reads_u64(
     tmp_path: Path,
 ) -> None:
