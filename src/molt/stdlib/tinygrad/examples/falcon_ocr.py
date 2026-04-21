@@ -26,7 +26,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 from molt.gpu import Buffer, alloc
-from tinygrad.tensor import Tensor
+from molt.gpu.tensor import Tensor
 from molt.gpu.interop import load_safetensors_bytes
 
 _config: FalconOCRConfig | None = None
