@@ -1152,6 +1152,66 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
         ),
         encoding="utf-8",
     )
+    official_prompt_calls_path = tmp_path / "official_prompt_calls.json"
+    official_prompt_calls_path.write_text(
+        json.dumps(
+            {
+                "calls": [
+                    {
+                        "export": "tinygrad_wasm_driver__init",
+                        "args": [
+                            {
+                                "kind": "bytes_path",
+                                "path": str(weights_path),
+                            },
+                            {
+                                "kind": "text_path",
+                                "path": str(config_path),
+                            },
+                        ],
+                    },
+                    {
+                        "export": "tinygrad_wasm_driver__ocr_tokens",
+                        "args": [
+                            {
+                                "kind": "int",
+                                "value": 32,
+                            },
+                            {
+                                "kind": "int",
+                                "value": 32,
+                            },
+                            {
+                                "kind": "bytes_path",
+                                "path": str(image_path),
+                            },
+                            {
+                                "kind": "list_int",
+                                "value": [
+                                    227,
+                                    46021,
+                                    790,
+                                    2757,
+                                    3463,
+                                    1211,
+                                    1112,
+                                    6883,
+                                    537,
+                                    709,
+                                    257,
+                                ],
+                            },
+                            {
+                                "kind": "int",
+                                "value": 1,
+                            },
+                        ],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
 
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -1205,6 +1265,21 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
     assert results[0]["result_repr"] == "None"
     assert results[1]["result_repr"] == repr(expected_empty)
     assert results[2]["result_repr"] == repr(expected_one)
+
+    official_run_env = os.environ.copy()
+    official_run_env["MOLT_WASM_PREFER_LINKED"] = "1"
+    official_run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(official_prompt_calls_path)
+    official_run = subprocess.run(
+        ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
+        cwd=str(ROOT),
+        env=official_run_env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert official_run.returncode != 0, official_run.stdout
+    assert "Index 46021 out of range" in official_run.stderr
 
 
 @pytest.mark.slow
