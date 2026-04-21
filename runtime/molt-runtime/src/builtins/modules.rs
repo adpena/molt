@@ -4067,6 +4067,42 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
         let (sys_bits, cached_modules) = {
             let cache = crate::builtins::exceptions::internals::module_cache(_py);
             let mut guard = cache.lock().unwrap();
+            // First-init-wins: if a module is already cached under this name
+            // with a valid (non-None, non-zero) module object, do NOT overwrite
+            // it.  WASM linked binaries can include duplicate init sequences for
+            // the same module (e.g., `abc` pulled in from both `os` and
+            // `typing`).  Overwriting destroys class identity — objects created
+            // during the first init hold references to the original type objects,
+            // but code that fetches the class via MODULE_GET_ATTR on the
+            // overwritten module gets a new, incompatible type object.  This
+            // causes `super(type, obj)` failures and isinstance mismatches.
+            if let Some(&existing) = guard.get(&name) {
+                if existing != 0
+                    && !obj_from_bits(existing).is_none()
+                    && existing != module_bits
+                {
+                    if trace_cache {
+                        eprintln!(
+                            "module cache set: {name} SKIPPED (already cached as 0x{existing:x})"
+                        );
+                    }
+                    // Still need to sync sys.modules, but use the EXISTING bits.
+                    // Do NOT dec_ref module_bits — the caller still holds a local
+                    // reference and will populate the orphan module (harmlessly).
+                    // The WASM function's epilogue releases its locals normally.
+                    let sys_bits_out = guard.get("sys").copied();
+                    return if let Some(sys_bits) = sys_bits_out
+                        && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
+                    {
+                        unsafe {
+                            dict_set_in_place(_py, modules_ptr, name_bits, existing);
+                        }
+                        existing
+                    } else {
+                        existing
+                    };
+                }
+            }
             if let Some(old) = guard.insert(name, module_bits) {
                 dec_ref_bits(_py, old);
             }
