@@ -2705,6 +2705,8 @@ _ESSENTIAL_EXPORTS = frozenset({
     "molt_exception_kind",
     "molt_exception_last",
     "molt_exception_message",
+    "molt_exception_pending",
+    "molt_exception_pending_fast",
     "molt_handle_resolve",
     "molt_header_size",
     "memory",
