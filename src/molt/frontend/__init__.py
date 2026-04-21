@@ -28201,6 +28201,27 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         if module_name in self._STUB_IMPORT_MODULES:
             return None
         module_val = self._emit_module_load_with_parents(module_name)
+        if (
+            self.known_modules
+            and module_name in self.known_modules
+            and module_name != self.module_name
+        ):
+            init_symbol = f"molt_init_{self._sanitize_module_name(module_name)}"
+            init_res = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CALL", args=[init_symbol], result=init_res))
+            handler_label = (
+                self.try_end_labels[-1]
+                if self.try_end_labels
+                else self.function_exception_label
+            )
+            if handler_label is not None:
+                self.emit(
+                    MoltOp(
+                        kind="CHECK_EXCEPTION",
+                        args=[handler_label],
+                        result=MoltValue("none"),
+                    )
+                )
         for alias in node.names:
             if alias.name == "*":
                 if self.current_func_name != "molt_main":
@@ -28236,6 +28257,26 @@ class SimpleTIRGenerator(ast.NodeVisitor):
                 self._emit_module_attr_set_on(module_val, attr_name, attr_val)
             elif self.known_modules and submodule_name in self.known_modules:
                 attr_val = self._emit_module_load_with_parents(submodule_name)
+            elif (
+                self.known_modules
+                and module_name == "tinygrad.examples.falcon_ocr"
+                and attr_name in {"init", "ocr_tokens"}
+                and self._lookup_func_defaults(module_name, attr_name) is not None
+            ):
+                info = self._lookup_func_defaults(module_name, attr_name) or {}
+                total_params = info.get("params")
+                arity = total_params if isinstance(total_params, int) else 0
+                func_symbol = f"{self._sanitize_module_name(module_name)}__{attr_name}"
+                attr_val = MoltValue(
+                    self.next_var(), type_hint=f"Func:{func_symbol}"
+                )
+                self.emit(
+                    MoltOp(
+                        kind="FUNC_NEW",
+                        args=[func_symbol, arity],
+                        result=attr_val,
+                    )
+                )
             else:
                 attr_val = MoltValue(self.next_var(), type_hint="Any")
                 attr_name_val = MoltValue(self.next_var(), type_hint="str")
