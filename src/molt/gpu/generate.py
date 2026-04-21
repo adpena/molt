@@ -19,6 +19,7 @@ from .dflash import (
     SpeculativeVerifyResult,
     speculative_decode_greedy,
     speculative_decode_greedy_conditioned,
+    has_dflash_backend,
     resolve_dflash_runtime,
 )
 
@@ -29,6 +30,15 @@ def _requested_gpu_backend() -> str | None:
         return None
     backend = backend.strip().lower()
     return backend or None
+
+
+def _dflash_missing_message(adapter_name: str | None = None) -> str:
+    if adapter_name:
+        return f"dflash adapter '{adapter_name}' is unavailable for this context"
+    return (
+        "no dflash adapter is available for this context; DFlash requires a "
+        "model-specific trained drafter/verifier adapter"
+    )
 
 
 def _resolve_default_dflash_runtime(
@@ -53,10 +63,13 @@ def _resolve_default_dflash_runtime(
         preferred_name = getattr(model, "dflash_adapter", None)
     if preferred_name is not None and not isinstance(preferred_name, str):
         raise TypeError("dflash adapter name must be a string when set")
-    return resolve_dflash_runtime(
+    runtime = resolve_dflash_runtime(
         context,
         preferred_name=preferred_name,
     )
+    if runtime is None and preferred_name is not None and has_dflash_backend(context.backend):
+        raise LookupError(_dflash_missing_message(preferred_name))
+    return runtime
 
 
 
@@ -90,6 +103,7 @@ def greedy_decode(
         return speculative.tokens
 
     if prefer_dflash:
+        backend = _requested_gpu_backend()
         runtime = _resolve_default_dflash_runtime(
             model,
             prompt_tokens,
@@ -109,6 +123,8 @@ def greedy_decode(
                 eos_token_id=eos_token_id,
             )
             return speculative.tokens
+        if has_dflash_backend(backend):
+            raise LookupError(_dflash_missing_message())
 
     tokens = list(prompt_tokens)
     for _ in range(max_new_tokens):
