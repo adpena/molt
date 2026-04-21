@@ -1474,6 +1474,16 @@ def test_tensor_gather_and_scatter_methods_cover_falcon_axis0_patterns():
     assert scattered.to_list() == [[7.0, 7.0], [1.0, 1.0], [8.0, 8.0]]
 
 
+def test_tensor_dot_and_tolist_aliases_match_tinygrad_surface():
+    from molt.gpu.tensor import Tensor
+
+    out = Tensor([[1.0, 2.0], [3.0, 4.0]]).dot(
+        Tensor([[5.0, 6.0], [7.0, 8.0]])
+    )
+
+    assert out.tolist() == [[19.0, 22.0], [43.0, 50.0]]
+
+
 def test_submodule_numpy_io():
     from molt.gpu.numpy_io import load_numpy, load_npz
 
