@@ -86,3 +86,15 @@ def test_cpu_inference_does_not_inject_hidden_ocr_prompt() -> None:
 
     assert "OCR_PLAIN_TOKEN" not in source
     assert "prefixIds.push(257)" not in source
+
+
+def test_browser_wasm_fallback_uses_official_plain_prompt() -> None:
+    source = (ROOT / "deploy" / "browser" / "falcon-ocr-loader.js").read_text(
+        encoding="utf-8"
+    )
+    plain_prompt = _official_prompt_ids()["plain"]
+
+    assert "new Int32Array([1])" not in source
+    assert f"new Int32Array(FALCON_OCR_PLAIN_PROMPT_IDS)" in source
+    for token_id in plain_prompt:
+        assert str(token_id) in source

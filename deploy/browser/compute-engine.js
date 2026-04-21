@@ -416,7 +416,7 @@ class WasmSimdEngine {
         if (simd && typeof fetch !== 'undefined') {
             // Try Zig SIMD binary first (47% smaller per-op than Rust version)
             const zigUrl = wasmUrl || new URL('./simd-ops-zig/simd.wasm', import.meta.url).href;
-            const rustUrl = new URL('../cloudflare/simd-ops.wasm', import.meta.url).href;
+            const rustUrl = new URL('./simd-ops.wasm', import.meta.url).href;
 
             for (const url of [zigUrl, rustUrl]) {
                 try {
