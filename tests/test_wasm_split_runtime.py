@@ -809,6 +809,144 @@ def test_linked_host_export_attribute_error_does_not_return_none(
     assert "foo" in run.stderr
 
 
+def test_linked_host_export_imports_tinygrad_dtype_class(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "tinygrad_dtype_probe.py"
+    source.write_text(
+        "from tinygrad.dtypes import DType\n"
+        "\n"
+        "def dtype_name() -> str:\n"
+        "    return DType('x', 4, 'f').name\n",
+        encoding="utf-8",
+    )
+    calls_path = tmp_path / "calls.json"
+    calls_path.write_text(
+        json.dumps({"calls": [{"export": "tinygrad_dtype_probe__dtype_name", "args": []}]}),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    env = os.environ.copy()
+    repo_src = str(ROOT / "src")
+    env["PYTHONPATH"] = repo_src
+    env["MOLT_BACKEND_DAEMON"] = "0"
+    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    diff_target_dir.mkdir(parents=True, exist_ok=True)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
+    env.setdefault("MOLT_SESSION_ID", "test-linked-host-tinygrad-dtype")
+    env.setdefault("CARGO_BUILD_JOBS", "1")
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(source),
+            "--target",
+            "wasm",
+            "--build-profile",
+            "dev",
+            "--rebuild",
+            "--out-dir",
+            str(out_dir),
+        ],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "1"
+    run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
+    run = subprocess.run(
+        ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
+        cwd=str(ROOT),
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert run.returncode == 0, run.stderr
+    results = json.loads(run.stdout)
+    assert results[0]["result_repr"] == "'x'"
+
+
+def test_linked_host_export_imports_tinygrad_tensor_module(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "tinygrad_tensor_probe.py"
+    source.write_text(
+        "from tinygrad.tensor import Tensor\n"
+        "\n"
+        "def tensor_type_name() -> str:\n"
+        "    return Tensor.__name__\n",
+        encoding="utf-8",
+    )
+    calls_path = tmp_path / "calls.json"
+    calls_path.write_text(
+        json.dumps({"calls": [{"export": "tinygrad_tensor_probe__tensor_type_name", "args": []}]}),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    env = os.environ.copy()
+    repo_src = str(ROOT / "src")
+    env["PYTHONPATH"] = repo_src
+    env["MOLT_BACKEND_DAEMON"] = "0"
+    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    diff_target_dir.mkdir(parents=True, exist_ok=True)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
+    env.setdefault("MOLT_SESSION_ID", "test-linked-host-tinygrad-tensor")
+    env.setdefault("CARGO_BUILD_JOBS", "1")
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(source),
+            "--target",
+            "wasm",
+            "--build-profile",
+            "dev",
+            "--rebuild",
+            "--out-dir",
+            str(out_dir),
+        ],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=_read_timeout_seconds("MOLT_WASM_TEST_BUILD_TIMEOUT_SEC", 900.0),
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+
+    run_env = os.environ.copy()
+    run_env["MOLT_WASM_PREFER_LINKED"] = "1"
+    run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
+    run = subprocess.run(
+        ["node", "wasm/run_wasm.js", str(out_dir / "output_linked.wasm")],
+        cwd=str(ROOT),
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert run.returncode == 0, run.stderr
+    results = json.loads(run.stdout)
+    assert results[0]["result_repr"] == "'Tensor'"
+
+
 @pytest.mark.slow
 def test_split_runtime_host_export_struct_unpack_from_reads_u64(
     tmp_path: Path,

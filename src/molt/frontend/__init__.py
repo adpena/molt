@@ -4499,7 +4499,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="DICT_NEW", args=[], result=exec_map))
         self.module_annotation_exec_map = exec_map
         self._store_local_value(name, exec_map)
-        if self.current_func_name == "molt_main":
+        if self.current_func_name.startswith("molt_init_"):
             self.globals[name] = exec_map
             self._emit_module_attr_set(name, exec_map)
         return exec_map
@@ -4514,7 +4514,7 @@ class SimpleTIRGenerator(ast.NodeVisitor):
         self.emit(MoltOp(kind="DICT_NEW", args=[], result=exec_map))
         self.class_annotation_exec_map = exec_map
         self._store_local_value(name, exec_map)
-        if self.current_func_name == "molt_main":
+        if self.current_func_name.startswith("molt_init_"):
             self.globals[name] = exec_map
             self._emit_module_attr_set(name, exec_map)
         return exec_map
