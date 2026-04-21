@@ -36,6 +36,9 @@
 const DB_NAME = 'falcon-ocr-cache';
 const DB_VERSION = 2;
 const STORE_NAME = 'assets';
+const FALCON_OCR_PLAIN_PROMPT_IDS = Object.freeze([
+  227, 46021, 790, 2757, 3463, 1211, 1112, 6883, 537, 709, 257,
+]);
 
 /**
  * Open the IndexedDB database used for caching WASM + weights.
@@ -468,7 +471,7 @@ export class FalconOCR {
       tokenIds = await this._forwardGPU(width, height, rgb, maxTokens);
     } else {
       // WASM-only path: all compute in linear memory.
-      const promptIds = new Int32Array([1]);
+      const promptIds = new Int32Array(FALCON_OCR_PLAIN_PROMPT_IDS);
       tokenIds = this._instance.exports.ocr_tokens(
         width, height, rgb, promptIds, maxTokens
       );
