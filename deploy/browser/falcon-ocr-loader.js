@@ -1,7 +1,7 @@
 /**
  * Browser-side Falcon-OCR inference via WASM + GPU compute.
  *
- * Downloads the WASM binary and INT4 quantized weights from R2, caches them
+ * Downloads the WASM binary and INT8 quantized weights from R2, caches them
  * in IndexedDB for offline use, and runs OCR inference entirely in the browser.
  * No image data ever leaves the device.
  *
@@ -176,13 +176,13 @@ export class FalconOCR {
    * @param {object} config
    * @param {string} [config.baseUrl] - Base URL for weight/WASM serving
    * @param {string} [config.wasmUrl] - URL to falcon-ocr.wasm
-   * @param {string} [config.weightsVariant] - Weight variant path (default: 'falcon-ocr-int4')
+   * @param {string} [config.weightsVariant] - Weight variant path (default: 'falcon-ocr-int8')
    * @param {(phase: string, percent: number, detail?: object) => void} [config.onProgress]
    */
   constructor(config = {}) {
     const base = config.baseUrl || 'https://falcon-ocr.adpena.workers.dev';
     this.wasmUrl = config.wasmUrl || `${base}/wasm/falcon-ocr.wasm`;
-    this.weightsVariant = config.weightsVariant || 'falcon-ocr-int4';
+    this.weightsVariant = config.weightsVariant || 'falcon-ocr-int8';
     this.weightsBaseUrl = `${base}/weights/${this.weightsVariant}`;
     this.onProgress = config.onProgress || (() => {});
     this._instance = null;
@@ -197,7 +197,7 @@ export class FalconOCR {
    * Download WASM + weights, initialize model. Must be called before recognize().
    *
    * Detects the best compute backend (WebGPU > WebGL2 > WASM SIMD), downloads
-   * the WASM module and INT4 weights, initializes the compute engine, and
+   * the WASM module and INT8 weights, initializes the compute engine, and
    * uploads weights to GPU memory when a GPU backend is available.
    *
    * Weight shards are downloaded progressively and cached independently in
