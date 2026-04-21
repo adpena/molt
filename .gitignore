@@ -90,3 +90,4 @@ tests/harness/corpus/molt_adapted/
 target-sprint-agent/
 target-*/
 tests/e2e/test_images/
+node_modules/
