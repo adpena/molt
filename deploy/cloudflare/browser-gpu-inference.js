@@ -32,13 +32,60 @@
 //       const result = await inferWithBrowserGPU(env, imageBase64);
 //   }
 
+// Cloudflare Browser Rendering uses @cloudflare/puppeteer.
+// The BROWSER binding is passed to puppeteer.launch() as the connection.
+import puppeteer from '@cloudflare/puppeteer';
+
 /**
  * Check if Browser Rendering is available in the current environment.
  * @param {object} env - Worker environment bindings
  * @returns {boolean}
  */
 export function isBrowserRenderingAvailable(env) {
-    return env.BROWSER !== undefined && typeof env.BROWSER.launch === 'function';
+    return env.BROWSER !== undefined;
+}
+
+/**
+ * Probe WebGPU availability in Browser Rendering without loading the full model.
+ * Launches Chrome, checks navigator.gpu, and returns adapter info.
+ * Used to verify that GPU inference is possible before committing to a full run.
+ *
+ * @param {object} env - Worker environment bindings
+ * @returns {Promise<object>} GPU availability info
+ */
+export async function probeGPU(env) {
+    let browser;
+    try {
+        browser = await puppeteer.launch(env.BROWSER);
+        const page = await browser.newPage();
+
+        // Navigate to a minimal page (about:blank works for GPU detection)
+        await page.goto('about:blank');
+
+        const gpuInfo = await page.evaluate(async () => {
+            if (!navigator.gpu) return { available: false, reason: 'no navigator.gpu' };
+            try {
+                const adapter = await navigator.gpu.requestAdapter();
+                if (!adapter) return { available: false, reason: 'no adapter' };
+                const info = await adapter.requestAdapterInfo();
+                return {
+                    available: true,
+                    vendor: info.vendor,
+                    architecture: info.architecture,
+                    device: info.device,
+                    description: info.description,
+                };
+            } catch (err) {
+                return { available: false, reason: err.message };
+            }
+        });
+
+        return gpuInfo;
+    } finally {
+        if (browser) {
+            try { await browser.close(); } catch { /* best-effort */ }
+        }
+    }
 }
 
 /**
@@ -61,22 +108,18 @@ export async function inferWithBrowserGPU(env, imageBase64, options = {}) {
         throw new Error('Browser Rendering binding not available');
     }
 
+
     const startTime = Date.now();
     let browser;
     try {
-        browser = await env.BROWSER.launch();
+        // Cloudflare Browser Rendering: pass the BROWSER binding to puppeteer.launch()
+        browser = await puppeteer.launch(env.BROWSER);
         const page = await browser.newPage();
 
         // Navigate to the Falcon-OCR inference page
-        await page.goto(inferenceUrl, { waitUntil: 'networkidle0' });
+        await page.goto(inferenceUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-        // Wait for the OCR engine to initialize (WebGPU shader compilation, etc.)
-        await page.waitForFunction(
-            () => window.__falconOCR && window.__falconOCR.ready === true,
-            { timeout: timeoutMs }
-        );
-
-        // Check if WebGPU is actually available in this Chrome instance
+        // Check if WebGPU is available BEFORE waiting for model init
         const gpuInfo = await page.evaluate(async () => {
             if (!navigator.gpu) return { available: false, reason: 'no navigator.gpu' };
             const adapter = await navigator.gpu.requestAdapter();
@@ -90,6 +133,13 @@ export async function inferWithBrowserGPU(env, imageBase64, options = {}) {
                 description: info.description,
             };
         });
+
+        // Wait for the OCR engine to initialize (WebGPU shader compilation, etc.)
+        // Timeout is generous because model + weights loading from R2 can take 10-20s.
+        await page.waitForFunction(
+            () => window.__falconOCR && window.__falconOCR.ready === true,
+            { timeout: timeoutMs }
+        );
 
         // Inject the image and run inference
         const result = await page.evaluate(async (imgData) => {
@@ -147,9 +197,10 @@ export async function batchInferWithBrowserGPU(env, images, options = {}) {
         throw new Error('Browser Rendering binding not available');
     }
 
+
     let browser;
     try {
-        browser = await env.BROWSER.launch();
+        browser = await puppeteer.launch(env.BROWSER);
         const page = await browser.newPage();
         await page.goto(inferenceUrl, { waitUntil: 'networkidle0' });
         await page.waitForFunction(

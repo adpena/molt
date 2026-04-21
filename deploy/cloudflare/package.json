@@ -1,0 +1,10 @@
+{
+  "name": "falcon-ocr-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Falcon-OCR Cloudflare Worker with Browser Rendering + Queue batch OCR",
+  "main": "worker.js",
+  "dependencies": {
+    "@cloudflare/puppeteer": "^1.0.0"
+  }
+}

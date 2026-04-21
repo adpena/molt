@@ -214,6 +214,9 @@ const TEST_HTML = `<!DOCTYPE html>
         try {
             await ocr.init();
 
+            // Expose for headless automation (Browser Rendering GPU inference)
+            window.__falconOCR = { ready: true, recognize: (img) => ocr.recognize(img) };
+
             const backend = ocr.computeBackend;
             gpuInfo.textContent = \`Compute backend: \${backend}\`;
 
@@ -1303,6 +1306,37 @@ export default {
       return response;
     }
 
+    // Fast path: Queue-based batch OCR — no local model loading.
+    // Uses Workers AI exclusively via the queue consumer.
+    if (path === "/batch" && request.method === "POST") {
+      const { handleBatchSubmit } = await import("./queue-batch-ocr.js");
+      if (!env.OCR_QUEUE) {
+        return new Response(
+          JSON.stringify({
+            error: "Queue not available",
+            detail: "OCR_QUEUE binding is not configured",
+            hint: "Queues require Workers Paid plan and [[queues.producers]] in wrangler.toml",
+            request_id: rid,
+          }),
+          { status: 501, headers: { ...cors, "Content-Type": "application/json" } },
+        );
+      }
+      const response = await handleBatchSubmit(request, env);
+      const headers = new Headers(response.headers);
+      Object.entries(cors).forEach(([k, v]) => headers.set(k, v));
+      headers.set("X-Request-ID", rid);
+      return new Response(response.body, { status: response.status, headers });
+    }
+
+    if (path.startsWith("/batch/") && request.method === "GET") {
+      const { handleBatchStatus } = await import("./queue-batch-ocr.js");
+      const response = await handleBatchStatus(request, env);
+      const headers = new Headers(response.headers);
+      Object.entries(cors).forEach(([k, v]) => headers.set(k, v));
+      headers.set("X-Request-ID", rid);
+      return new Response(response.body, { status: response.status, headers });
+    }
+
     // OCR path: PaddleOCR (client-side WASM) is the PRODUCTION PRIMARY engine.
     // Falcon-OCR is experimental — only activated via X-Use-Backend: falcon-ocr.
     // Workers AI is NOT used for /ocr — it hallucinates invoice content.
@@ -1463,6 +1497,86 @@ export default {
               }),
               {
                 status: 503,
+                headers: { ...cors, "Content-Type": "application/json" },
+              },
+            );
+          }
+        }
+
+        // Browser Rendering GPU inference path (X-Use-Backend: browser-gpu).
+        // Spawns headless Chrome with WebGPU to run Falcon-OCR on the edge.
+        if (path === "/ocr" && useBackend === "browser-gpu") {
+          const { inferWithBrowserGPU, probeGPU, isBrowserRenderingAvailable } = await import("./browser-gpu-inference.js");
+          if (!isBrowserRenderingAvailable(env)) {
+            return new Response(
+              JSON.stringify({
+                error: "Browser Rendering not available",
+                detail: "BROWSER binding is not configured or not accessible in this environment",
+                hint: "Browser Rendering requires Workers Paid plan and [browser] binding in wrangler.toml",
+                request_id: rid,
+              }),
+              {
+                status: 501,
+                headers: { ...cors, "Content-Type": "application/json" },
+              },
+            );
+          }
+
+          try {
+            const body = await request.json();
+            if (!body.image || typeof body.image !== "string") {
+              return new Response(
+                JSON.stringify({ error: "Missing 'image' field (base64 string)", request_id: rid }),
+                { status: 400, headers: { ...cors, "Content-Type": "application/json" } },
+              );
+            }
+
+            // If probe=true, just check GPU availability without running inference
+            if (body.probe) {
+              const gpuInfo = await probeGPU(env);
+              return new Response(
+                JSON.stringify({
+                  backend: "browser-gpu",
+                  gpu_info: gpuInfo,
+                  request_id: rid,
+                }),
+                {
+                  status: 200,
+                  headers: { ...cors, "Content-Type": "application/json" },
+                },
+              );
+            }
+
+            const result = await inferWithBrowserGPU(env, body.image, {
+              timeoutMs: 30000,
+            });
+
+            return new Response(
+              JSON.stringify({
+                text: result.text,
+                confidence: result.confidence,
+                backend: "browser-gpu",
+                gpu_info: result.gpuInfo,
+                latency_ms: result.latencyMs,
+                inference_ms: result.inferenceMs,
+                request_id: rid,
+              }),
+              {
+                status: 200,
+                headers: { ...cors, ...receiptHeaders, "Content-Type": "application/json" },
+              },
+            );
+          } catch (err) {
+            console.error(`Browser GPU inference error: ${err.message} [rid=${rid}]`);
+            return new Response(
+              JSON.stringify({
+                error: "Browser GPU inference failed",
+                reason: err.message,
+                request_id: rid,
+                fallback_hint: "Use X-Use-Backend: falcon-ocr for CPU inference, or PaddleOCR client-side",
+              }),
+              {
+                status: 502,
                 headers: { ...cors, "Content-Type": "application/json" },
               },
             );
@@ -1773,6 +1887,7 @@ export default {
           return response;
         }
 
+
         return new Response(
           JSON.stringify({ error: "Not found", request_id: rid }),
           { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
@@ -1796,26 +1911,41 @@ export default {
       );
     }
 
-    // Warm instance pool: keep the Worker isolate alive after responding.
-    // This ensures subsequent requests hit a warm instance with the model
-    // already loaded in memory, eliminating cold start latency.
-    // The no-op promise resolves immediately but signals to the runtime
-    // that this isolate should be kept warm.
-    ctx.waitUntil(
-      (async () => {
-        // Pre-warm model loading if not already started.
-        // On warm instances this is a no-op (ensureModelLoaded is idempotent).
-        if (!modelReady && !initPromise && !initError) {
-          try {
-            await ensureModelLoaded(env);
-          } catch (_err) {
-            // Non-fatal: model will be loaded on next request
+    // Warm instance pool: pre-load the Falcon-OCR model on warm instances.
+    // Only pre-warm for paths that actually use the local model (falcon-ocr).
+    // Paths that use Workers AI exclusively (batch, structured, fill) skip
+    // pre-warming to avoid exceeding the 256 MB memory limit.
+    const skipPrewarm = path === "/batch" || path.startsWith("/batch/")
+      || path === "/ocr/structured" || path === "/invoice/fill"
+      || path === "/ocr/detailed" || path === "/ocr/table"
+      || path === "/template/extract";
+    if (!skipPrewarm) {
+      ctx.waitUntil(
+        (async () => {
+          if (!modelReady && !initPromise && !initError) {
+            try {
+              await ensureModelLoaded(env);
+            } catch (_err) {
+              // Non-fatal: model will be loaded on next request
+            }
           }
-        }
-      })()
-    );
+        })()
+      );
+    }
 
     return result;
+  },
+
+  /**
+   * Queue consumer handler — processes async batch OCR messages.
+   * Called by Cloudflare Queues runtime when messages arrive on falcon-ocr-batch.
+   *
+   * @param {object} batch - Queue message batch
+   * @param {object} env - Worker environment bindings
+   */
+  async queue(batch, env) {
+    const { processQueueBatch } = await import("./queue-batch-ocr.js");
+    await processQueueBatch(batch, env);
   },
 };
 
