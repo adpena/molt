@@ -379,6 +379,48 @@ def test_tensor_scaled_dot_product_attention_matches_manual_path():
     assert out.to_list() == [[[[10.0, 1.0], [2.0, 20.0]]]]
 
 
+def test_tensor_scaled_dot_product_attention_method_matches_free_function():
+    import math
+
+    from molt.gpu.tensor import Tensor, tensor_scaled_dot_product_attention
+
+    q = Tensor([1.0, 0.0, 0.0, 1.0], shape=(1, 1, 2, 2))
+    k = Tensor([1.0, 0.0, 0.0, 1.0], shape=(1, 1, 2, 2))
+    v = Tensor([10.0, 1.0, 2.0, 20.0], shape=(1, 1, 2, 2))
+    mask = Tensor([0.0, -1.0e9, -1.0e9, 0.0], shape=(1, 1, 2, 2))
+
+    method_out = q.scaled_dot_product_attention(
+        k,
+        v,
+        attn_mask=mask,
+        scale=None,
+        is_causal=False,
+    )
+    free_out = tensor_scaled_dot_product_attention(
+        q,
+        k,
+        v,
+        mask,
+        1.0 / math.sqrt(q.shape[-1]),
+    )
+
+    assert method_out.shape == free_out.shape
+    assert method_out.to_list() == free_out.to_list()
+
+
+def test_tensor_scaled_dot_product_attention_method_supports_causal_mask():
+    from molt.gpu.tensor import Tensor
+
+    q = Tensor([1.0, 0.0, 0.0, 1.0], shape=(1, 1, 2, 2))
+    k = Tensor([-2.0e9, 0.0, 0.0, 1.0], shape=(1, 1, 2, 2))
+    v = Tensor([10.0, 1.0, 2.0, 20.0], shape=(1, 1, 2, 2))
+
+    out = q.scaled_dot_product_attention(k, v, is_causal=True)
+
+    assert out.shape == (1, 1, 2, 2)
+    assert out.to_list()[0][0][0] == [10.0, 1.0]
+
+
 def test_zeros_uses_intrinsic_when_available(monkeypatch):
     import molt.gpu.tensor as tensor_mod
     from molt.gpu.tensor import Tensor, zeros

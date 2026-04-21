@@ -690,15 +690,14 @@ async function ensureModelLoaded(env) {
       }
 
       // Priority 0: INT8 sharded model (16x quality over INT4).
-      // Total weights: 257 MB across 6 shards (~43 MB each).
-      // Streaming strategy: load one shard at a time, extract tensors into the
-      // model's tensor map, then drop the shard ArrayBuffer before loading the
-      // next. Peak memory is ~80 MB (one shard + accumulated tensor refs), NOT
-      // 257 MB, because V8 can GC the dropped shard buffer.
+      // Total weights: 257 MB across 6 shards (~43 MB each). The shard byte
+      // buffers are loaded one at a time, but the decoded tensor map remains
+      // resident because the CPU model needs all tensors for inference.
       if (!weightsBytes && !skipLargeModels) {
-        const r2Int8Index = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr-int8/model.safetensors.index.json");
-        const r2Int8Config = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr-int8/config.json");
-        const r2Int8Scales = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr-int8/scales.json");
+        const int8Prefix = "models/falcon-ocr-int8-sharded";
+        const r2Int8Index = await fetchR2WithTimeout(env.WEIGHTS, `${int8Prefix}/model.safetensors.index.json`);
+        const r2Int8Config = await fetchR2WithTimeout(env.WEIGHTS, `${int8Prefix}/config.json`);
+        const r2Int8Scales = await fetchR2WithTimeout(env.WEIGHTS, `${int8Prefix}/scales.json`);
 
         if (r2Int8Index && r2Int8Config && r2Int8Scales) {
           try {
@@ -724,12 +723,12 @@ async function ensureModelLoaded(env) {
             let totalBytes = 0;
 
             for (const shardName of shardNames) {
-              const shardObj = await fetchR2WithTimeout(env.WEIGHTS, `models/falcon-ocr-int8/${shardName}`);
+              const shardObj = await fetchR2WithTimeout(env.WEIGHTS, `${int8Prefix}/${shardName}`);
               if (!shardObj) {
                 throw new Error(`INT8 shard not found or timed out in R2: ${shardName}`);
               }
-              // Load shard into buffer, extract tensors, then let buffer be GC'd.
-              // This keeps peak memory at ~80 MB instead of accumulating all 257 MB.
+              // Load shard into a temporary byte buffer, then retain only the
+              // parsed tensor views needed by the model.
               const shardBuffer = await shardObj.arrayBuffer();
               totalBytes += shardBuffer.byteLength;
 
@@ -939,6 +938,73 @@ function fallbackErrorResponse(err, rid, cors) {
   );
 }
 
+export class RateLimiter {
+  /**
+   * @param {DurableObjectState} state
+   * @param {object} env
+   */
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  /**
+   * Serialized per-IP fixed-window limiter. The Worker routes each client IP
+   * to a deterministic Durable Object instance, so concurrent requests from
+   * that IP cannot pass through a stale KV read.
+   *
+   * @param {Request} request
+   * @returns {Promise<Response>}
+   */
+  async fetch(request) {
+    const url = new URL(request.url);
+    const limit = parseInt(url.searchParams.get("limit") || "100", 10);
+    const windowSeconds = parseInt(url.searchParams.get("window") || "60", 10);
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 100;
+    const safeWindowSeconds =
+      Number.isFinite(windowSeconds) && windowSeconds > 0 ? windowSeconds : 60;
+    const bucket = Math.floor(Date.now() / (safeWindowSeconds * 1000));
+    const state = (await this.state.storage.get("counter")) || {
+      bucket: -1,
+      count: 0,
+    };
+    const current = state.bucket === bucket ? Number(state.count) || 0 : 0;
+
+    if (current >= safeLimit) {
+      return new Response(
+        JSON.stringify({
+          allowed: false,
+          limit: safeLimit,
+          remaining: 0,
+          retry_after: safeWindowSeconds,
+        }),
+        {
+          status: 429,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    const nextCount = current + 1;
+    await this.state.storage.put("counter", {
+      bucket,
+      count: nextCount,
+    });
+
+    return new Response(
+      JSON.stringify({
+        allowed: true,
+        limit: safeLimit,
+        remaining: Math.max(0, safeLimit - nextCount),
+        retry_after: safeWindowSeconds,
+      }),
+      {
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
+}
+
 export default {
   /**
    * @param {Request} request
@@ -959,14 +1025,30 @@ export default {
 
     // -----------------------------------------------------------------------
     // Per-IP rate limiting for POST endpoints (100 requests/minute).
-    // Uses KV with 60-second TTL as a lightweight counter.
+    // Uses a per-IP Durable Object for serialized read/update/write.
     // GET endpoints (health, assets) are not rate-limited.
     // -----------------------------------------------------------------------
-    if (request.method === "POST" && env.CACHE) {
+    if (request.method === "POST") {
+      if (!env.RATE_LIMITER) {
+        return new Response(
+          JSON.stringify({
+            error: "Rate limiter unavailable",
+            detail: "RATE_LIMITER Durable Object binding is not configured",
+            request_id: rid,
+          }),
+          {
+            status: 503,
+            headers: { ...cors, "Content-Type": "application/json" },
+          },
+        );
+      }
       const clientIp = request.headers.get("CF-Connecting-IP") || "unknown";
-      const rateKey = `rate:${clientIp}`;
-      const count = parseInt(await env.CACHE.get(rateKey) || "0", 10);
-      if (count >= 100) {
+      const id = env.RATE_LIMITER.idFromName(`rate:${clientIp}`);
+      const rateLimiter = env.RATE_LIMITER.get(id);
+      const rateResponse = await rateLimiter.fetch(
+        "https://rate-limit.local/check?limit=100&window=60",
+      );
+      if (rateResponse.status === 429) {
         return new Response(
           JSON.stringify({
             error: "Rate limited",
@@ -983,9 +1065,6 @@ export default {
           },
         );
       }
-      // Increment counter with 60-second TTL. Fire-and-forget via waitUntil
-      // to avoid adding latency to the request path.
-      ctx.waitUntil(env.CACHE.put(rateKey, String(count + 1), { expirationTtl: 60 }));
     }
 
     // -----------------------------------------------------------------------
@@ -1036,6 +1115,24 @@ export default {
       const headers = {
         ...cors,
         "Content-Type": "application/wasm",
+        "Cache-Control": "public, max-age=86400, immutable",
+        "Content-Length": String(obj.size),
+      };
+      return new Response(obj.body, { status: 200, headers });
+    }
+
+    if (request.method === "GET" && path === "/tokenizer.json") {
+      const key = "models/falcon-ocr/tokenizer.json";
+      const obj = await fetchR2WithTimeout(env.WEIGHTS, key);
+      if (!obj) {
+        return new Response(
+          JSON.stringify({ error: "Not found", key, request_id: rid }),
+          { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
+        );
+      }
+      const headers = {
+        ...cors,
+        "Content-Type": "application/json",
         "Cache-Control": "public, max-age=86400, immutable",
         "Content-Length": String(obj.size),
       };

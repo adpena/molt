@@ -10442,13 +10442,6 @@ export default {
       }
     };
 
-    const hasExportedTableRefs = (instance) => {
-      if (!instance || !instance.exports) {
-        return false;
-      }
-      return Object.keys(instance.exports).some((name) => /^__molt_table_ref_(\\d+)$/.test(name));
-    };
-
     const ensureTableCapacityForExportedRefs = (instance, table) => {
       if (!instance || !table) {
         return;
@@ -10690,7 +10683,8 @@ export default {
         const tableFn = sharedTable.get(dispatchIdx);
         if (typeof tableFn === "function") {
           try {
-            return tableFn(...args);
+            const signature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
+            return callWithSignature(tableFn, signature, args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             const fnName = tableFn.name || "<anon>";
@@ -10700,7 +10694,7 @@ export default {
         const rtDirectFn = rtInstance?.exports?.[directName];
         if (typeof rtDirectFn === "function") {
           try {
-            return rtDirectFn(...args);
+            return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || null, args);
           } catch (err) {
             const detail = err && typeof err.message === "string" ? err.message : String(err);
             throw new Error(`${indirectName} runtime direct export ${directName} failed: ${detail}; fnLen=${rtDirectFn.length}; argsLen=${args.length}`);
@@ -10751,8 +10745,7 @@ export default {
 
       // 3. Initialize and run
       if (rtInstance.exports._initialize) rtInstance.exports._initialize();
-      const appHasTableRefs = hasExportedTableRefs(appInstance);
-      if (!appHasTableRefs && appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
+      if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
       installTableRefs(appInstance, sharedTable);
       if (appInstance.exports.molt_main) appInstance.exports.molt_main();
       else if (appInstance.exports._start) appInstance.exports._start();
