@@ -98,3 +98,89 @@ def test_browser_wasm_fallback_uses_official_plain_prompt() -> None:
     assert f"new Int32Array(FALCON_OCR_PLAIN_PROMPT_IDS)" in source
     for token_id in plain_prompt:
         assert str(token_id) in source
+
+
+def test_browser_loader_matches_wasm_driver_init_and_decode_contract() -> None:
+    source = (ROOT / "deploy" / "browser" / "falcon-ocr-loader.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "scales.json" not in source
+    assert "JSON.parse(configJson)" not in source
+    assert "this._instance.exports.init(weightsBuffer, configJson)" in source
+    assert "decode_tokens" not in source
+    assert ".join(' ')" not in source
+    assert "this._tokenizer.decode(Array.from(tokenIds))" in source
+    assert "this.weightsVariant = config.weightsVariant || 'falcon-ocr-int8-sharded'" in source
+
+
+def test_browser_tokenizer_decoder_uses_byte_level_bpe() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for Falcon-OCR JS tokenizer tests")
+    script = """
+      const { TokenizerDecoder } = await import('./deploy/browser/falcon-ocr-loader.js');
+      const decoder = TokenizerDecoder.fromJSON(JSON.stringify({
+        model: { vocab: { 'Ġ': 0, H: 1, i: 2, 'Ċ': 3 } },
+        added_tokens: [{ id: 4, content: '<|end|>', special: true }]
+      }));
+      process.stdout.write(JSON.stringify(decoder.decode([0, 1, 2, 3, 4])));
+    """
+    run = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=str(ROOT),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(run.stdout) == " Hi\n"
+
+
+def test_cloudflare_worker_int8_uses_single_sharded_prefix() -> None:
+    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'const int8Prefix = "models/falcon-ocr-int8-sharded"' in source
+    assert "`${int8Prefix}/model.safetensors.index.json`" in source
+    assert "`${int8Prefix}/config.json`" in source
+    assert "`${int8Prefix}/scales.json`" in source
+    assert "`${int8Prefix}/${shardName}`" in source
+    assert "models/falcon-ocr-int8/model.safetensors.index.json" not in source
+    assert "`models/falcon-ocr-int8/${shardName}`" not in source
+
+
+def test_cloudflare_worker_serves_browser_tokenizer_artifact() -> None:
+    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'path === "/tokenizer.json"' in source
+    assert '"models/falcon-ocr/tokenizer.json"' in source
+    assert '"application/json"' in source
+
+
+def test_cloudflare_worker_rate_limit_uses_durable_object_not_kv_counter() -> None:
+    worker = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(
+        encoding="utf-8"
+    )
+    wrangler = (ROOT / "deploy" / "cloudflare" / "wrangler.toml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "export class RateLimiter" in worker
+    assert "env.RATE_LIMITER.idFromName" in worker
+    assert "rateLimiter.fetch" in worker
+    assert "env.CACHE.get(rateKey)" not in worker
+    assert "env.CACHE.put(rateKey" not in worker
+    assert '{ name = "RATE_LIMITER", class_name = "RateLimiter" }' in wrangler
+    assert 'new_sqlite_classes = ["RateLimiter"]' in wrangler
+
+
+def test_enjoice_migration_doc_points_at_worker_wasm_and_tokenizer_artifacts() -> None:
+    source = (ROOT / "docs" / "integration" / "enjoice-ocr-migration.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "https://falcon-ocr.adpena.workers.dev/wasm/falcon-ocr.wasm" in source
+    assert "/tokenizer.json" in source
+    assert "https://falcon-ocr.freeinvoicemaker.workers.dev/falcon-ocr.wasm" not in source

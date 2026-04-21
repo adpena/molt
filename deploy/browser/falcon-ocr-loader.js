@@ -40,6 +40,81 @@ const FALCON_OCR_PLAIN_PROMPT_IDS = Object.freeze([
   227, 46021, 790, 2757, 3463, 1211, 1112, 6883, 537, 709, 257,
 ]);
 
+function byteDecoderMap() {
+  const bytes = [];
+  for (let value = '!'.charCodeAt(0); value <= '~'.charCodeAt(0); value++) bytes.push(value);
+  for (let value = 0xa1; value <= 0xac; value++) bytes.push(value);
+  for (let value = 0xae; value <= 0xff; value++) bytes.push(value);
+  const chars = [...bytes];
+  let next = 0;
+  for (let value = 0; value < 256; value++) {
+    if (!bytes.includes(value)) {
+      bytes.push(value);
+      chars.push(256 + next);
+      next++;
+    }
+  }
+  const decoder = new Map();
+  for (let i = 0; i < bytes.length; i++) {
+    decoder.set(String.fromCharCode(chars[i]), bytes[i]);
+  }
+  return decoder;
+}
+
+const BYTE_DECODER = byteDecoderMap();
+const UTF8_DECODER = new TextDecoder('utf-8', { fatal: false });
+const UTF8_ENCODER = new TextEncoder();
+
+export class TokenizerDecoder {
+  constructor(vocab, specialIds) {
+    this.vocab = vocab;
+    this.specialIds = specialIds;
+  }
+
+  static fromJSON(tokenizerJson) {
+    const data = JSON.parse(tokenizerJson);
+    const vocab = new Map();
+    const specialIds = new Set();
+
+    if (data.model && data.model.vocab) {
+      for (const [piece, id] of Object.entries(data.model.vocab)) {
+        vocab.set(id, piece);
+      }
+    }
+
+    if (Array.isArray(data.added_tokens)) {
+      for (const token of data.added_tokens) {
+        vocab.set(token.id, token.content);
+        if (token.special) {
+          specialIds.add(token.id);
+        }
+      }
+    }
+
+    return new TokenizerDecoder(vocab, specialIds);
+  }
+
+  decode(tokenIds) {
+    const pieces = [];
+    for (const id of tokenIds) {
+      if (this.specialIds.has(id)) continue;
+      const piece = this.vocab.get(id);
+      pieces.push(piece === undefined ? `[UNK:${id}]` : piece);
+    }
+    const tokenText = pieces.join('');
+    const bytes = [];
+    for (const ch of tokenText) {
+      const byte = BYTE_DECODER.get(ch);
+      if (byte === undefined) {
+        bytes.push(...UTF8_ENCODER.encode(ch));
+      } else {
+        bytes.push(byte);
+      }
+    }
+    return UTF8_DECODER.decode(new Uint8Array(bytes));
+  }
+}
+
 /**
  * Open the IndexedDB database used for caching WASM + weights.
  * @returns {Promise<IDBDatabase>}
@@ -179,19 +254,23 @@ export class FalconOCR {
    * @param {object} config
    * @param {string} [config.baseUrl] - Base URL for weight/WASM serving
    * @param {string} [config.wasmUrl] - URL to falcon-ocr.wasm
-   * @param {string} [config.weightsVariant] - Weight variant path (default: 'falcon-ocr-int8')
+   * @param {string} [config.tokenizerUrl] - URL to tokenizer.json
+   * @param {string} [config.weightsVariant] - Weight variant path (default: 'falcon-ocr-int8-sharded')
    * @param {(phase: string, percent: number, detail?: object) => void} [config.onProgress]
    */
   constructor(config = {}) {
     const base = config.baseUrl || 'https://falcon-ocr.adpena.workers.dev';
     this.wasmUrl = config.wasmUrl || `${base}/wasm/falcon-ocr.wasm`;
-    this.weightsVariant = config.weightsVariant || 'falcon-ocr-int8';
+    this.tokenizerUrl = config.tokenizerUrl || `${base}/tokenizer.json`;
+    this.weightsVariant = config.weightsVariant || 'falcon-ocr-int8-sharded';
     this.weightsBaseUrl = `${base}/weights/${this.weightsVariant}`;
     this.onProgress = config.onProgress || (() => {});
     this._instance = null;
     this._ready = false;
     /** @type {import('./compute-engine.js').WebGPUEngine | import('./compute-engine.js').WebGL2Engine | import('./compute-engine.js').WasmSimdEngine | null} */
     this._compute = null;
+    /** @type {TokenizerDecoder | null} */
+    this._tokenizer = null;
     /** @type {string} */
     this._computeBackend = 'none';
   }
@@ -295,14 +374,14 @@ export class FalconOCR {
     }
     const configJson = new TextDecoder().decode(configBuffer);
 
-    // 4. Download scales
-    const scalesUrl = `${this.weightsBaseUrl}/scales.json`;
-    let scalesBuffer = await getCached('scales:' + scalesUrl);
-    if (!scalesBuffer) {
-      scalesBuffer = await fetchWithProgress(scalesUrl, () => {});
-      await setCached('scales:' + scalesUrl, scalesBuffer);
+    // 4. Download tokenizer for JS-side decode. The WASM driver returns token IDs.
+    const tokenizerUrl = this.tokenizerUrl;
+    let tokenizerBuffer = await getCached('tokenizer:' + tokenizerUrl);
+    if (!tokenizerBuffer) {
+      tokenizerBuffer = await fetchWithProgress(tokenizerUrl, () => {});
+      await setCached('tokenizer:' + tokenizerUrl, tokenizerBuffer);
     }
-    const scalesJson = new TextDecoder().decode(scalesBuffer);
+    this._tokenizer = TokenizerDecoder.fromJSON(new TextDecoder().decode(tokenizerBuffer));
     this.onProgress('config', 100);
 
     // 5. Progressive shard download with per-shard caching
@@ -396,9 +475,7 @@ export class FalconOCR {
 
     // 8. Initialize model — loads weights into WASM linear memory
     this.onProgress('init', 0);
-    const config = JSON.parse(configJson);
-    const scales = JSON.parse(scalesJson);
-    this._instance.exports.init(weightsBuffer, config, scales);
+    this._instance.exports.init(weightsBuffer, configJson);
     this._ready = true;
     this.onProgress('init', 100, {
       backend: this._computeBackend,
@@ -479,14 +556,10 @@ export class FalconOCR {
 
     const timeMs = performance.now() - start;
 
-    // Decode tokens using the bundled tokenizer export
-    let text;
-    if (this._instance.exports.decode_tokens) {
-      text = this._instance.exports.decode_tokens(tokenIds);
-    } else {
-      // Fallback: return space-joined token IDs
-      text = Array.from(tokenIds).join(' ');
+    if (!this._tokenizer) {
+      throw new Error('FalconOCR tokenizer is not initialized.');
     }
+    const text = this._tokenizer.decode(Array.from(tokenIds));
 
     return { text, tokenIds: Array.from(tokenIds), timeMs, backend: this._computeBackend };
   }

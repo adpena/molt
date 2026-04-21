@@ -5285,13 +5285,6 @@ const installTableRefs = (instance, table, label) => {
   }
 };
 
-const hasExportedTableRefs = (instance) => {
-  if (!instance || !instance.exports) {
-    return false;
-  }
-  return Object.keys(instance.exports).some((name) => /^__molt_table_ref_\d+$/.test(name));
-};
-
 const traceTableSlot = (table, label) => {
   if (!traceRun || !traceTableSlotRaw || !table) {
     return;
@@ -5637,15 +5630,10 @@ const runDirectLink = async () => {
   const { molt_main, molt_memory, molt_table, molt_table_init } =
     outputInstance.exports;
   ensureTableCapacityForExportedRefs(outputInstance, table, 'output');
-  const appHasExportedTableRefs = hasExportedTableRefs(outputInstance);
   if (typeof runtimeInst.exports._initialize === 'function') {
     runtimeInst.exports._initialize();
   }
-  if (
-    !appHasExportedTableRefs &&
-    typeof molt_table_init === 'function' &&
-    process.env.MOLT_WASM_SKIP_TABLE_INIT !== '1'
-  ) {
+  if (typeof molt_table_init === 'function') {
     if (traceRun) {
       console.error('[molt wasm] direct: call molt_table_init');
     }
@@ -5653,15 +5641,11 @@ const runDirectLink = async () => {
     if (traceRun) {
       console.error('[molt wasm] direct: molt_table_init returned');
     }
-  } else if (traceRun && appHasExportedTableRefs) {
-    console.error('[molt wasm] direct: skipping molt_table_init because exported table refs are available');
   }
   traceTableSlot(table, 'after-output-table-init');
   traceTableRange(table, 'after-output-table-init');
   traceI32At('after-output-table-init', table);
-  if (installTableRefsEnabled) {
-    installTableRefs(outputInstance, table, 'output');
-  }
+  installTableRefs(outputInstance, table, 'output');
   traceI32At('after-output-install-refs', table);
   if (!molt_memory || !molt_table) {
     throw new Error(`${wasmPath} missing molt_memory or molt_table export`);

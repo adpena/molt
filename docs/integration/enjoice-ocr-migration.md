@@ -54,9 +54,10 @@ Changes required:
   by a direct WASM URL.
 - Remove `manifestUrl` / `FALCON_OCR_MANIFEST_URL` -- no longer needed.
 - Add `wasmUrl` / `FALCON_OCR_WASM_URL` pointing to the deployed WASM binary
-  (default: `https://falcon-ocr.freeinvoicemaker.workers.dev/falcon-ocr.wasm`
-  or served from R2 via the Worker).
-- Keep `tokenizerUrl` / `FALCON_OCR_TOKENIZER_URL`.
+  (default: `https://falcon-ocr.adpena.workers.dev/wasm/falcon-ocr.wasm`,
+  served from R2 via the Worker).
+- Keep `tokenizerUrl` / `FALCON_OCR_TOKENIZER_URL` pointing at the tokenizer
+  artifact (default: `https://falcon-ocr.adpena.workers.dev/tokenizer.json`).
 
 ### 3. `site/src/lib/capabilities.ts`
 
