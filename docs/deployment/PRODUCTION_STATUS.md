@@ -8,6 +8,10 @@
 | Test Page | falcon-ocr.adpena.workers.dev/test | Live |
 | Health | falcon-ocr.adpena.workers.dev/health | Live (503 while loading, 200 when ready) |
 
+## Differential Test Results
+- **72/72 pass** — full parity across native, WASM, and LLVM backends
+- All edge cases covered: NaN propagation, overflow, denormals, boundary conditions
+
 ## OCR Quality
 | Engine | Quality | Speed | Location |
 |--------|---------|-------|----------|
@@ -31,14 +35,45 @@
 | INT8 weights | 270 MB (6 shards, 43-52 MB each) | models/falcon-ocr-int8/ |
 | INT4 weights | 129 MB (5 shards) | models/falcon-ocr-int4-sharded/ |
 | Tokenizer | 4.8 MB | models/falcon-ocr/tokenizer.json |
-| Zig SIMD | 1.1 KB | browser/simd-ops-zig.wasm |
-| Rust SIMD (fallback) | 4.1 KB | browser/simd-ops.wasm |
+| Zig SIMD | 5.4 KB | browser/simd-ops-zig.wasm |
+| Rust SIMD | 14.0 KB | browser/simd-ops.wasm |
 | Browser JS | ~155 KB total | browser/*.js |
 
 ## WASM SIMD Backend
-- Primary: Zig binary (1.1 KB, 47% smaller per-op)
-- Fallback: Rust binary (4.1 KB)
-- Both provide f32x4 vectorized matmul, softmax, rmsNorm, add, mul
+
+### Binary Sizes
+| Backend | Size | Notes |
+|---------|------|-------|
+| Zig | 5.4 KB | Primary, smaller binary |
+| Rust | 14.0 KB | Full 4x16 register-blocked matmul_f32_fast |
+
+### Benchmark Results (64x64 matmul, Apple Silicon M-series, Node.js V8)
+| Operation | Rust ns/op | Zig ns/op | Winner | Speedup |
+|-----------|-----------|-----------|--------|---------|
+| matmul_f32_tiled 64x64 | ~14,500 | ~36,000 | Rust | 2.5x |
+| matmul_f32_fast 64x64 | ~10,500 | N/A | Rust | -- |
+| matmul_f32_tiled 16x16 | ~240 | ~560 | Rust | 2.3x |
+| softmax_f32_fused 1024 | ~2,250 | ~3,200 | Rust | 1.4x |
+| add_f32 4096 | ~350 | ~980 | Rust | 2.8x |
+| exp2_f32 1024 | ~360 | ~1,330 | Rust | 3.7x |
+| rms_norm_f32 256 | ~143 | ~167 | Rust | 1.2x |
+| reduce_sum_f32 4096 | ~600 | ~700 | Rust | 1.2x |
+
+### Optimizations in Rust SIMD
+- **matmul_f32_tiled**: 4x4 register blocking, K-loop unrolled by 4
+- **matmul_f32_fast**: 4x16 register blocking (16 f32x4 accumulators), fully unrolled K-loop by 4, no memset, precomputed row pointers
+- **softmax**: Online 2-pass algorithm (Milakov & Gimelshein 2018), vectorized pass 2
+- **exp2**: 6th-order Cephes minimax polynomial (max relative error ~2.3e-8)
+
+## Cloudflare Services Inventory
+| Service | Usage |
+|---------|-------|
+| Workers | Main inference endpoint, API routing, x402 payment verification |
+| R2 | Model weight storage (INT8/INT4 shards), WASM binaries, tokenizer |
+| KV | Rate limiting counters, session state, model metadata cache |
+| Durable Objects | Stateful inference sessions (falcon-ocr-do.js) |
+| Browser Rendering | WebGPU inference path (browser-gpu-inference.js) |
+| Queues | Batch OCR processing (queue-batch-ocr.js) |
 
 ## Production Hardening
 | Check | Status |
