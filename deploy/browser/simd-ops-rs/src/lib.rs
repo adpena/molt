@@ -17,6 +17,21 @@
 use core::arch::wasm32::*;
 
 // ---------------------------------------------------------------------------
+// Scalar math ops via WASM SIMD (f32 methods unavailable in no_std wasm32)
+// ---------------------------------------------------------------------------
+#[inline(always)]
+fn sqrt_scalar(x: f32) -> f32 {
+    let v = f32x4_splat(x);
+    f32x4_extract_lane::<0>(f32x4_sqrt(v))
+}
+
+#[inline(always)]
+fn floor_scalar(x: f32) -> f32 {
+    let v = f32x4_splat(x);
+    f32x4_extract_lane::<0>(f32x4_floor(v))
+}
+
+// ---------------------------------------------------------------------------
 // exp2 polynomial — 6th-order Cephes minimax on [0, 1).
 //
 // Coefficients from the Cephes math library exp2f implementation,
@@ -34,7 +49,7 @@ const EXP2_C6: f32 = 1.540_353_0e-4;       // ln(2)^6 / 6!
 /// Scalar exp2(x) via 6th-order Cephes polynomial.
 #[inline(always)]
 fn exp2_scalar(x: f32) -> f32 {
-    let xi = x.floor();
+    let xi = floor_scalar(x);
     let xf = x - xi;
     // Horner's method: p = c0 + xf*(c1 + xf*(c2 + xf*(c3 + xf*(c4 + xf*(c5 + xf*c6)))))
     let mut p = EXP2_C6;
@@ -121,7 +136,7 @@ pub unsafe extern "C" fn matmul_f32_tiled(
 
     // Zero output
     let out_bytes = m * n * 4;
-    core::arch::wasm32::memory_fill(out as *mut u8, 0, out_bytes);
+    core::ptr::write_bytes(out as *mut u8, 0, out_bytes);
 
     let n4 = n & !3; // n rounded down to multiple of 4
 
@@ -374,7 +389,7 @@ pub unsafe extern "C" fn sqrt_f32(a: *const f32, out: *mut f32, n: u32) {
         i += 4;
     }
     while i < n {
-        *out.add(i) = (*a.add(i)).sqrt();
+        *out.add(i) = sqrt_scalar(*a.add(i));
         i += 1;
     }
 }
@@ -512,7 +527,7 @@ pub unsafe extern "C" fn rms_norm_f32(
     }
 
     // scale = 1 / sqrt(sum_sq / n + eps)
-    let scale = 1.0 / (sum_sq / n as f32 + eps).sqrt();
+    let scale = 1.0 / sqrt_scalar(sum_sq / n as f32 + eps);
     let scale_splat = f32x4_splat(scale);
 
     // Pass 2: out[i] = a[i] * w[i] * scale
