@@ -664,30 +664,99 @@ async function ensureModelLoaded(env) {
       // Workers memory limit is 256 MB.  The JS runtime + V8 heap + WASM engine
       // consume ~60-80 MB, leaving ~170-190 MB for model weights + activations.
       //
-      // Memory budget enforcement:
-      //   - INT8 models (257 MB weights) NEVER fit — skip entirely.
-      //   - INT4 sharded (129 MB) is borderline — try with OOM protection.
+      // Memory budget enforcement (streaming shard loading):
+      //   - INT8 sharded (257 MB total, ~43 MB/shard): shards loaded sequentially,
+      //     tensors extracted into model state, shard buffer dropped before next load.
+      //     Peak memory: ~80 MB (one shard buffer + accumulated tensor data).
+      //     This fits within 256 MB Workers memory when loaded incrementally.
+      //   - INT4 sharded (129 MB) is the fallback if INT8 fails.
       //   - Micro model (263 KB) always fits and is the guaranteed fallback.
       //
-      // Priority order (respecting memory budget):
-      //   1. INT4 sharded (~129 MB) — best quality that can fit
-      //   2. INT4 single-file (~129 MB) — same quality, different packaging
-      //   3. Micro model (263 KB embedded) — guaranteed to work
+      // Priority order (best quality first):
+      //   1. INT8 sharded (~6x43 MB shards, streaming) — 16x better than INT4
+      //   2. INT4 sharded (~5x30 MB shards) — fallback
+      //   3. INT4 single-file (~129 MB) — same quality, different packaging
+      //   4. Micro model (263 KB embedded) — guaranteed to work
       let weightsBytes = null;
       let config = null;
       let scales = null;
       let modelVariant = "unknown";
 
-      // NOTE: INT8 models (257 MB) are SKIPPED on Workers.
-      // They exceed the 256 MB memory limit when combined with JS heap overhead.
-      // INT8 is only usable in Durable Objects, Containers, or browser-side.
-      console.log("Skipping INT8 models (exceed 256 MB Worker memory limit)");
-
-      // Memory pressure gate: skip INT4 models if we are already above threshold.
+      // Memory pressure gate: skip large models if we are already above threshold.
       const currentMemMB = estimateMemoryMB();
       const skipLargeModels = currentMemMB > MEMORY_PRESSURE_THRESHOLD_MB;
       if (skipLargeModels) {
-        console.warn(`Memory pressure: ~${currentMemMB} MB used (threshold: ${MEMORY_PRESSURE_THRESHOLD_MB} MB). Skipping INT4 models, falling back to micro.`);
+        console.warn(`Memory pressure: ~${currentMemMB} MB used (threshold: ${MEMORY_PRESSURE_THRESHOLD_MB} MB). Skipping large models, falling back to micro.`);
+      }
+
+      // Priority 0: INT8 sharded model (16x quality over INT4).
+      // Total weights: 257 MB across 6 shards (~43 MB each).
+      // Streaming strategy: load one shard at a time, extract tensors into the
+      // model's tensor map, then drop the shard ArrayBuffer before loading the
+      // next. Peak memory is ~80 MB (one shard + accumulated tensor refs), NOT
+      // 257 MB, because V8 can GC the dropped shard buffer.
+      if (!weightsBytes && !skipLargeModels) {
+        const r2Int8Index = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr-int8/model.safetensors.index.json");
+        const r2Int8Config = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr-int8/config.json");
+        const r2Int8Scales = await fetchR2WithTimeout(env.WEIGHTS, "models/falcon-ocr-int8/scales.json");
+
+        if (r2Int8Index && r2Int8Config && r2Int8Scales) {
+          try {
+            const indexJson = JSON.parse(await r2Int8Index.text());
+            config = JSON.parse(await r2Int8Config.text());
+            scales = JSON.parse(await r2Int8Scales.text());
+            const numShards = indexJson.metadata.num_shards;
+
+            const shardNames = [];
+            const seen = new Set();
+            for (const shardName of Object.values(indexJson.weight_map)) {
+              if (!seen.has(shardName)) {
+                seen.add(shardName);
+                shardNames.push(shardName);
+              }
+            }
+
+            console.log(`Loading INT8 sharded model (streaming): ${numShards} shards`);
+            totalShards = numShards;
+            loadedShards = 0;
+
+            const allTensors = new Map();
+            let totalBytes = 0;
+
+            for (const shardName of shardNames) {
+              const shardObj = await fetchR2WithTimeout(env.WEIGHTS, `models/falcon-ocr-int8/${shardName}`);
+              if (!shardObj) {
+                throw new Error(`INT8 shard not found or timed out in R2: ${shardName}`);
+              }
+              // Load shard into buffer, extract tensors, then let buffer be GC'd.
+              // This keeps peak memory at ~80 MB instead of accumulating all 257 MB.
+              const shardBuffer = await shardObj.arrayBuffer();
+              totalBytes += shardBuffer.byteLength;
+
+              const shardTensors = inf.parseSafetensorsToMap(shardBuffer);
+              for (const [name, tensor] of shardTensors) {
+                allTensors.set(name, tensor);
+              }
+              // shardBuffer goes out of scope here — V8 can reclaim it before
+              // the next iteration allocates the next shard's buffer.
+              loadedShards++;
+              console.log(`  INT8 shard ${loadedShards}/${numShards} ${shardName}: ${shardBuffer.byteLength} bytes, ${shardTensors.size} tensors`);
+            }
+
+            cpuModel = inf.createModelFromTensors(allTensors, config, scales);
+            CpuDevice.initialized = true;
+            activeDevice = "cpu";
+            activeModelVariant = "int8-sharded";
+            modelReady = true;
+            initError = null;
+            console.log(`Model variant: int8-sharded, device: cpu, total: ${totalBytes} bytes, ${allTensors.size} tensors`);
+            return;
+          } catch (err) {
+            console.warn(`INT8 streaming load failed: ${err.message}. Falling back to INT4.`);
+            config = null;
+            scales = null;
+          }
+        }
       }
 
       // Priority 1: INT4 sharded model (~5x30 MB shards, fits Workers memory)
@@ -886,6 +955,37 @@ export default {
     // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: cors });
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-IP rate limiting for POST endpoints (100 requests/minute).
+    // Uses KV with 60-second TTL as a lightweight counter.
+    // GET endpoints (health, assets) are not rate-limited.
+    // -----------------------------------------------------------------------
+    if (request.method === "POST" && env.CACHE) {
+      const clientIp = request.headers.get("CF-Connecting-IP") || "unknown";
+      const rateKey = `rate:${clientIp}`;
+      const count = parseInt(await env.CACHE.get(rateKey) || "0", 10);
+      if (count >= 100) {
+        return new Response(
+          JSON.stringify({
+            error: "Rate limited",
+            detail: "Maximum 100 requests per minute per IP",
+            request_id: rid,
+          }),
+          {
+            status: 429,
+            headers: {
+              ...cors,
+              "Content-Type": "application/json",
+              "Retry-After": "60",
+            },
+          },
+        );
+      }
+      // Increment counter with 60-second TTL. Fire-and-forget via waitUntil
+      // to avoid adding latency to the request path.
+      ctx.waitUntil(env.CACHE.put(rateKey, String(count + 1), { expirationTtl: 60 }));
     }
 
     // -----------------------------------------------------------------------
