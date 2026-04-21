@@ -11,4 +11,15 @@ FALCON_OCR_ARTIFACT_ROOT = Path(
         "/Users/adpena/Projects/enjoice/experiments/tinygrad-molt/falcon-ocr",
     )
 )
+FALCON_OCR_WEIGHTS_DIR = FALCON_OCR_ARTIFACT_ROOT / "weights"
+FALCON_OCR_MODEL_PATH = FALCON_OCR_WEIGHTS_DIR / "model.safetensors"
+FALCON_OCR_CONFIG_PATH = FALCON_OCR_WEIGHTS_DIR / "config.json"
 FALCON_OCR_TOKENIZER_PATH = FALCON_OCR_ARTIFACT_ROOT / "weights" / "tokenizer.json"
+
+
+def falcon_ocr_weights_available() -> bool:
+    return (
+        FALCON_OCR_MODEL_PATH.is_file()
+        and FALCON_OCR_CONFIG_PATH.is_file()
+        and FALCON_OCR_TOKENIZER_PATH.is_file()
+    )
