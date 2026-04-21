@@ -7524,6 +7524,7 @@ def _runtime_cargo_features_cached(
 ) -> tuple[str, ...]:
     features: list[str] = []
     if target_triple is not None and target_triple.startswith("wasm32"):
+        features.append("molt_gpu_primitives")
         if True if gpu_webgpu_raw is None or gpu_webgpu_raw.strip() == "" else _coerce_bool(gpu_webgpu_raw, True):
             pass
         return tuple(features)
@@ -7678,6 +7679,24 @@ _STDLIB_DOMAIN_PREFIX_MAP: tuple[tuple[str, str], ...] = (
     ("tarfile.", "stdlib_archive"),
 )
 
+_GPU_PRIMITIVE_IMPLYING_MODULE_PREFIXES = (
+    "molt.gpu",
+    "tinygrad",
+    "molt.stdlib.tinygrad",
+)
+
+
+def _resolved_modules_require_gpu_primitives(
+    resolved_modules: set[str] | frozenset[str] | None,
+) -> bool:
+    if resolved_modules is None:
+        return False
+    return any(
+        module_name == prefix or module_name.startswith(prefix + ".")
+        for module_name in resolved_modules
+        for prefix in _GPU_PRIMITIVE_IMPLYING_MODULE_PREFIXES
+    )
+
 _SET_IMPLYING_MODULES = frozenset(
     {
         "email",
@@ -7733,6 +7752,7 @@ _ALL_DOMAIN_FEATURES: tuple[str, ...] = (
     "stdlib_ast",
     "stdlib_unicode_names",
     "stdlib_fs_extra",
+    "molt_gpu_primitives",
 )
 
 
@@ -7787,6 +7807,9 @@ def _builtin_features_from_import_graph(
             continue
         if any(r.startswith(prefix) for r in resolved_modules):
             features.append(feature)
+
+    if _resolved_modules_require_gpu_primitives(frozenset(resolved_modules)):
+        features.append("molt_gpu_primitives")
 
     return features
 
@@ -23174,7 +23197,9 @@ def _ensure_runtime_wasm(
         )
     if freestanding and 'getrandom_backend="' not in rustflags:
         rustflags = f'{rustflags} --cfg getrandom_backend="unsupported"'.strip()
-    cargo_runtime_features = ("wasm_freestanding",) if freestanding else ()
+    cargo_runtime_features = tuple(
+        ["molt_gpu_primitives"] + (["wasm_freestanding"] if freestanding else [])
+    )
     builtin_features = _builtin_features_from_import_graph(
         set(resolved_modules) if resolved_modules is not None else None,
         stdlib_profile,
@@ -23417,6 +23442,10 @@ def _ensure_runtime_wasm(
                 "builtin_contextvars",
                 "builtin_fcntl",
             ]
+            if _resolved_modules_require_gpu_primitives(
+                frozenset(resolved_modules or ())
+            ):
+                wasm_features.append("molt_gpu_primitives")
             cmd.extend(["--features", ",".join(wasm_features)])
         if reloc:
             cmd.extend(["--", "--crate-type=staticlib"])
