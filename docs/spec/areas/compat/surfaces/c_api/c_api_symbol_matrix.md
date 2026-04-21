@@ -40,8 +40,8 @@ Status legend:
 | `PyObject_IsTrue` | bool(o) | Partial | `include/molt/Python.h` maps to `molt_object_truthy`. |
 | `PyObject_RichCompare`| compare | Partial | Header shim currently routes through `PyObject_RichCompareBool` and returns `Py_True`/`Py_False` (no `NotImplemented` lane yet). |
 | `PyObject_RichCompareBool`| compare bool | Partial | `include/molt/Python.h` maps `==`/`!=` to `molt_object_equal`/`molt_object_not_equal` and falls back to dunder calls for ordered comparisons. |
-| `PyObject_GetIter` | iter(o) | Missing | - |
-| `PyObject_Next` | next(o) | Missing | - |
+| `PyObject_GetIter` | iter(o) | Partial | Header shim maps to `molt_iter`; iterator parity follows Molt iterator semantics. |
+| `PyObject_Next` | next(o) | Partial | Header shim delegates to `PyIter_Next` and clears `StopIteration` like CPython. |
 
 ### 2.2 Numbers (PyNumber_*)
 | Symbol | Semantics | Status | Notes |
@@ -73,7 +73,7 @@ Status legend:
 | `PyMapping_GetItemKey`| o[key] | Partial | `include/molt/Python.h` maps to `molt_mapping_getitem`/`PyMapping_GetItemString`. |
 | `PyMapping_SetItemString`| o[key] = v | Partial | `include/molt/Python.h` maps to `molt_mapping_setitem`. |
 | `PyMapping_Keys` | o.keys() | Partial | `include/molt/Python.h` maps to `molt_mapping_keys`. |
-| `PyMapping_Values` | o.values() | Missing | Returns list. |
+| `PyMapping_Values` | o.values() | Partial | Header shim calls `values()` and returns the resulting view/list object. |
 
 ### 2.5 Exceptions (PyErr_*)
 | Symbol | Semantics | Status | Notes |
