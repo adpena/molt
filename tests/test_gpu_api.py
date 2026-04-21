@@ -1459,6 +1459,21 @@ def test_tensor_scatter_rows_preserves_f32_layout():
     assert from_device(out._buf) == [7.0, 8.0, 0.0, 0.0, 9.0, 10.0]
 
 
+def test_tensor_gather_and_scatter_methods_cover_falcon_axis0_patterns():
+    from molt.gpu.tensor import Tensor
+
+    table = Tensor([[10.0, 11.0], [20.0, 21.0], [30.0, 31.0]])
+    gathered = table.gather(0, Tensor([2, 0]))
+    assert gathered.shape == (2, 2)
+    assert gathered.to_list() == [[30.0, 31.0], [10.0, 11.0]]
+
+    base = Tensor([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])
+    updates = Tensor([[7.0, 7.0], [8.0, 8.0]])
+    scattered = base.scatter(0, Tensor([0, 2]), updates)
+    assert scattered.shape == (3, 2)
+    assert scattered.to_list() == [[7.0, 7.0], [1.0, 1.0], [8.0, 8.0]]
+
+
 def test_submodule_numpy_io():
     from molt.gpu.numpy_io import load_numpy, load_npz
 
