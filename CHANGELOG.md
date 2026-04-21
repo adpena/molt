@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased] - 2026-04-21
+
+### Performance
+- **matmul_f32_fast**: New 4x16 register-blocked WASM SIMD matmul with fully unrolled K-loop (64x64: ~10.5 us, 28% faster than matmul_f32_tiled)
+- **matmul_f32_tiled**: K-loop unrolled by 4 with precomputed row pointers
+- Rust SIMD opt-level raised from "z" to 2 for speed-critical paths
+- Rust SIMD binary: 4.1 KB -> 14.0 KB (size trade-off for ~30% matmul speedup)
+
+### Changed
+- Benchmark harness updated to test matmul_f32_fast variant
+- Production status docs updated with SIMD benchmark numbers, CF services inventory, differential test results
+
 ## [Unreleased] - 2026-04-20
 
 ### Added

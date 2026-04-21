@@ -119,8 +119,10 @@ unsafe fn hmax_f32x4(v: v128) -> f32 {
 
 /// Tiled matmul: C = A @ B where A is [M, K] and B is [K, N].
 ///
-/// Uses 4x4 register tiling: processes 4 rows of A and 4 columns of B
-/// simultaneously, accumulating 4 f32x4 accumulators (16 output elements).
+/// Uses 4x4 register tiling with K-loop unrolled by 4: processes 4 rows of A
+/// and 4 columns of B simultaneously with 16 f32x4 accumulators.
+/// Inner K loop processes 4 values per iteration for reduced loop overhead
+/// and better instruction-level parallelism.
 #[no_mangle]
 pub unsafe extern "C" fn matmul_f32_tiled(
     a: *const f32,
@@ -139,12 +141,19 @@ pub unsafe extern "C" fn matmul_f32_tiled(
     core::ptr::write_bytes(out as *mut u8, 0, out_bytes);
 
     let n4 = n & !3; // n rounded down to multiple of 4
+    let k4 = k & !3; // k rounded down to multiple of 4
 
     // Process 4 rows at a time
     let m4 = m & !3;
     let mut mi = 0usize;
 
     while mi < m4 {
+        // Base pointers for 4 rows of A
+        let a_row0 = a.add(mi * k);
+        let a_row1 = a.add((mi + 1) * k);
+        let a_row2 = a.add((mi + 2) * k);
+        let a_row3 = a.add((mi + 3) * k);
+
         // For each 4-wide column strip of the output
         let mut ni = 0usize;
         while ni < n4 {
@@ -154,30 +163,397 @@ pub unsafe extern "C" fn matmul_f32_tiled(
             let mut acc2 = f32x4_splat(0.0);
             let mut acc3 = f32x4_splat(0.0);
 
-            // Accumulate over K dimension
-            for ki in 0..k {
-                // Load 4 elements from B[ki, ni..ni+4]
-                let b_ptr = b.add(ki * n + ni);
-                let b_vec = v128_load(b_ptr as *const v128);
+            // Unrolled K loop: process 4 K values per iteration
+            let mut ki = 0usize;
+            while ki < k4 {
+                // Iteration 0
+                let b_vec0 = v128_load(b.add(ki * n + ni) as *const v128);
+                let a00 = f32x4_splat(*a_row0.add(ki));
+                let a10 = f32x4_splat(*a_row1.add(ki));
+                let a20 = f32x4_splat(*a_row2.add(ki));
+                let a30 = f32x4_splat(*a_row3.add(ki));
+                acc0 = f32x4_add(acc0, f32x4_mul(a00, b_vec0));
+                acc1 = f32x4_add(acc1, f32x4_mul(a10, b_vec0));
+                acc2 = f32x4_add(acc2, f32x4_mul(a20, b_vec0));
+                acc3 = f32x4_add(acc3, f32x4_mul(a30, b_vec0));
 
-                // Broadcast each A[row, ki] and multiply-accumulate
-                let a0 = f32x4_splat(*a.add((mi + 0) * k + ki));
-                let a1 = f32x4_splat(*a.add((mi + 1) * k + ki));
-                let a2 = f32x4_splat(*a.add((mi + 2) * k + ki));
-                let a3 = f32x4_splat(*a.add((mi + 3) * k + ki));
+                // Iteration 1
+                let b_vec1 = v128_load(b.add((ki + 1) * n + ni) as *const v128);
+                let a01 = f32x4_splat(*a_row0.add(ki + 1));
+                let a11 = f32x4_splat(*a_row1.add(ki + 1));
+                let a21 = f32x4_splat(*a_row2.add(ki + 1));
+                let a31 = f32x4_splat(*a_row3.add(ki + 1));
+                acc0 = f32x4_add(acc0, f32x4_mul(a01, b_vec1));
+                acc1 = f32x4_add(acc1, f32x4_mul(a11, b_vec1));
+                acc2 = f32x4_add(acc2, f32x4_mul(a21, b_vec1));
+                acc3 = f32x4_add(acc3, f32x4_mul(a31, b_vec1));
 
+                // Iteration 2
+                let b_vec2 = v128_load(b.add((ki + 2) * n + ni) as *const v128);
+                let a02 = f32x4_splat(*a_row0.add(ki + 2));
+                let a12 = f32x4_splat(*a_row1.add(ki + 2));
+                let a22 = f32x4_splat(*a_row2.add(ki + 2));
+                let a32 = f32x4_splat(*a_row3.add(ki + 2));
+                acc0 = f32x4_add(acc0, f32x4_mul(a02, b_vec2));
+                acc1 = f32x4_add(acc1, f32x4_mul(a12, b_vec2));
+                acc2 = f32x4_add(acc2, f32x4_mul(a22, b_vec2));
+                acc3 = f32x4_add(acc3, f32x4_mul(a32, b_vec2));
+
+                // Iteration 3
+                let b_vec3 = v128_load(b.add((ki + 3) * n + ni) as *const v128);
+                let a03 = f32x4_splat(*a_row0.add(ki + 3));
+                let a13 = f32x4_splat(*a_row1.add(ki + 3));
+                let a23 = f32x4_splat(*a_row2.add(ki + 3));
+                let a33 = f32x4_splat(*a_row3.add(ki + 3));
+                acc0 = f32x4_add(acc0, f32x4_mul(a03, b_vec3));
+                acc1 = f32x4_add(acc1, f32x4_mul(a13, b_vec3));
+                acc2 = f32x4_add(acc2, f32x4_mul(a23, b_vec3));
+                acc3 = f32x4_add(acc3, f32x4_mul(a33, b_vec3));
+
+                ki += 4;
+            }
+
+            // K tail: remaining 0-3 elements
+            while ki < k {
+                let b_vec = v128_load(b.add(ki * n + ni) as *const v128);
+                let a0 = f32x4_splat(*a_row0.add(ki));
+                let a1 = f32x4_splat(*a_row1.add(ki));
+                let a2 = f32x4_splat(*a_row2.add(ki));
+                let a3 = f32x4_splat(*a_row3.add(ki));
                 acc0 = f32x4_add(acc0, f32x4_mul(a0, b_vec));
                 acc1 = f32x4_add(acc1, f32x4_mul(a1, b_vec));
                 acc2 = f32x4_add(acc2, f32x4_mul(a2, b_vec));
                 acc3 = f32x4_add(acc3, f32x4_mul(a3, b_vec));
+                ki += 1;
             }
 
             // Store 4x4 tile to output
-            v128_store(out.add((mi + 0) * n + ni) as *mut v128, acc0);
+            v128_store(out.add(mi * n + ni) as *mut v128, acc0);
             v128_store(out.add((mi + 1) * n + ni) as *mut v128, acc1);
             v128_store(out.add((mi + 2) * n + ni) as *mut v128, acc2);
             v128_store(out.add((mi + 3) * n + ni) as *mut v128, acc3);
 
+            ni += 4;
+        }
+
+        // Scalar tail for remaining columns
+        for row in mi..mi + 4 {
+            for col in n4..n {
+                let mut sum = 0.0f32;
+                for ki in 0..k {
+                    sum += *a.add(row * k + ki) * *b.add(ki * n + col);
+                }
+                *out.add(row * n + col) = sum;
+            }
+        }
+
+        mi += 4;
+    }
+
+    // Scalar tail for remaining rows
+    for row in m4..m {
+        let mut ni = 0usize;
+        while ni < n4 {
+            let mut acc = f32x4_splat(0.0);
+            for ki in 0..k {
+                let a_val = f32x4_splat(*a.add(row * k + ki));
+                let b_vec = v128_load(b.add(ki * n + ni) as *const v128);
+                acc = f32x4_add(acc, f32x4_mul(a_val, b_vec));
+            }
+            v128_store(out.add(row * n + ni) as *mut v128, acc);
+            ni += 4;
+        }
+        for col in n4..n {
+            let mut sum = 0.0f32;
+            for ki in 0..k {
+                sum += *a.add(row * k + ki) * *b.add(ki * n + col);
+            }
+            *out.add(row * n + col) = sum;
+        }
+    }
+}
+
+/// High-performance matmul: C = A @ B where A is [M, K] and B is [K, N].
+///
+/// Uses 4x4 register blocking with 16 f32x4 accumulators (processing a 4x16
+/// output tile per inner loop iteration), K-loop unrolled by 4, and
+/// pre-computed row pointers for minimal address arithmetic.
+///
+/// This variant processes 4 columns of B per row accumulator (16 output
+/// elements per tile), maximizing register utilization on WASM SIMD.
+/// Does NOT zero-fill output -- all elements are written directly.
+#[no_mangle]
+pub unsafe extern "C" fn matmul_f32_fast(
+    a: *const f32,
+    b: *const f32,
+    out: *mut f32,
+    m: u32,
+    k: u32,
+    n: u32,
+) {
+    let m = m as usize;
+    let k = k as usize;
+    let n = n as usize;
+
+    let n16 = n & !15; // n rounded down to multiple of 16
+    let n4 = n & !3;   // n rounded down to multiple of 4
+    let k4 = k & !3;
+
+    let m4 = m & !3;
+    let mut mi = 0usize;
+
+    while mi < m4 {
+        let a_row0 = a.add(mi * k);
+        let a_row1 = a.add((mi + 1) * k);
+        let a_row2 = a.add((mi + 2) * k);
+        let a_row3 = a.add((mi + 3) * k);
+
+        // Process 16 columns at a time (4 f32x4 per row = 16 output elements)
+        let mut ni = 0usize;
+        while ni < n16 {
+            // 16 accumulators: 4 rows x 4 column-vectors
+            let mut acc00 = f32x4_splat(0.0);
+            let mut acc01 = f32x4_splat(0.0);
+            let mut acc02 = f32x4_splat(0.0);
+            let mut acc03 = f32x4_splat(0.0);
+            let mut acc10 = f32x4_splat(0.0);
+            let mut acc11 = f32x4_splat(0.0);
+            let mut acc12 = f32x4_splat(0.0);
+            let mut acc13 = f32x4_splat(0.0);
+            let mut acc20 = f32x4_splat(0.0);
+            let mut acc21 = f32x4_splat(0.0);
+            let mut acc22 = f32x4_splat(0.0);
+            let mut acc23 = f32x4_splat(0.0);
+            let mut acc30 = f32x4_splat(0.0);
+            let mut acc31 = f32x4_splat(0.0);
+            let mut acc32 = f32x4_splat(0.0);
+            let mut acc33 = f32x4_splat(0.0);
+
+            let mut ki = 0usize;
+            while ki < k4 {
+                // K iteration 0
+                let b_base0 = b.add(ki * n + ni);
+                let bv0_0 = v128_load(b_base0 as *const v128);
+                let bv1_0 = v128_load(b_base0.add(4) as *const v128);
+                let bv2_0 = v128_load(b_base0.add(8) as *const v128);
+                let bv3_0 = v128_load(b_base0.add(12) as *const v128);
+                let a0_0 = f32x4_splat(*a_row0.add(ki));
+                let a1_0 = f32x4_splat(*a_row1.add(ki));
+                let a2_0 = f32x4_splat(*a_row2.add(ki));
+                let a3_0 = f32x4_splat(*a_row3.add(ki));
+                acc00 = f32x4_add(acc00, f32x4_mul(a0_0, bv0_0));
+                acc01 = f32x4_add(acc01, f32x4_mul(a0_0, bv1_0));
+                acc02 = f32x4_add(acc02, f32x4_mul(a0_0, bv2_0));
+                acc03 = f32x4_add(acc03, f32x4_mul(a0_0, bv3_0));
+                acc10 = f32x4_add(acc10, f32x4_mul(a1_0, bv0_0));
+                acc11 = f32x4_add(acc11, f32x4_mul(a1_0, bv1_0));
+                acc12 = f32x4_add(acc12, f32x4_mul(a1_0, bv2_0));
+                acc13 = f32x4_add(acc13, f32x4_mul(a1_0, bv3_0));
+                acc20 = f32x4_add(acc20, f32x4_mul(a2_0, bv0_0));
+                acc21 = f32x4_add(acc21, f32x4_mul(a2_0, bv1_0));
+                acc22 = f32x4_add(acc22, f32x4_mul(a2_0, bv2_0));
+                acc23 = f32x4_add(acc23, f32x4_mul(a2_0, bv3_0));
+                acc30 = f32x4_add(acc30, f32x4_mul(a3_0, bv0_0));
+                acc31 = f32x4_add(acc31, f32x4_mul(a3_0, bv1_0));
+                acc32 = f32x4_add(acc32, f32x4_mul(a3_0, bv2_0));
+                acc33 = f32x4_add(acc33, f32x4_mul(a3_0, bv3_0));
+
+                // K iteration 1
+                let b_base1 = b.add((ki + 1) * n + ni);
+                let bv0_1 = v128_load(b_base1 as *const v128);
+                let bv1_1 = v128_load(b_base1.add(4) as *const v128);
+                let bv2_1 = v128_load(b_base1.add(8) as *const v128);
+                let bv3_1 = v128_load(b_base1.add(12) as *const v128);
+                let a0_1 = f32x4_splat(*a_row0.add(ki + 1));
+                let a1_1 = f32x4_splat(*a_row1.add(ki + 1));
+                let a2_1 = f32x4_splat(*a_row2.add(ki + 1));
+                let a3_1 = f32x4_splat(*a_row3.add(ki + 1));
+                acc00 = f32x4_add(acc00, f32x4_mul(a0_1, bv0_1));
+                acc01 = f32x4_add(acc01, f32x4_mul(a0_1, bv1_1));
+                acc02 = f32x4_add(acc02, f32x4_mul(a0_1, bv2_1));
+                acc03 = f32x4_add(acc03, f32x4_mul(a0_1, bv3_1));
+                acc10 = f32x4_add(acc10, f32x4_mul(a1_1, bv0_1));
+                acc11 = f32x4_add(acc11, f32x4_mul(a1_1, bv1_1));
+                acc12 = f32x4_add(acc12, f32x4_mul(a1_1, bv2_1));
+                acc13 = f32x4_add(acc13, f32x4_mul(a1_1, bv3_1));
+                acc20 = f32x4_add(acc20, f32x4_mul(a2_1, bv0_1));
+                acc21 = f32x4_add(acc21, f32x4_mul(a2_1, bv1_1));
+                acc22 = f32x4_add(acc22, f32x4_mul(a2_1, bv2_1));
+                acc23 = f32x4_add(acc23, f32x4_mul(a2_1, bv3_1));
+                acc30 = f32x4_add(acc30, f32x4_mul(a3_1, bv0_1));
+                acc31 = f32x4_add(acc31, f32x4_mul(a3_1, bv1_1));
+                acc32 = f32x4_add(acc32, f32x4_mul(a3_1, bv2_1));
+                acc33 = f32x4_add(acc33, f32x4_mul(a3_1, bv3_1));
+
+                // K iteration 2
+                let b_base2 = b.add((ki + 2) * n + ni);
+                let bv0_2 = v128_load(b_base2 as *const v128);
+                let bv1_2 = v128_load(b_base2.add(4) as *const v128);
+                let bv2_2 = v128_load(b_base2.add(8) as *const v128);
+                let bv3_2 = v128_load(b_base2.add(12) as *const v128);
+                let a0_2 = f32x4_splat(*a_row0.add(ki + 2));
+                let a1_2 = f32x4_splat(*a_row1.add(ki + 2));
+                let a2_2 = f32x4_splat(*a_row2.add(ki + 2));
+                let a3_2 = f32x4_splat(*a_row3.add(ki + 2));
+                acc00 = f32x4_add(acc00, f32x4_mul(a0_2, bv0_2));
+                acc01 = f32x4_add(acc01, f32x4_mul(a0_2, bv1_2));
+                acc02 = f32x4_add(acc02, f32x4_mul(a0_2, bv2_2));
+                acc03 = f32x4_add(acc03, f32x4_mul(a0_2, bv3_2));
+                acc10 = f32x4_add(acc10, f32x4_mul(a1_2, bv0_2));
+                acc11 = f32x4_add(acc11, f32x4_mul(a1_2, bv1_2));
+                acc12 = f32x4_add(acc12, f32x4_mul(a1_2, bv2_2));
+                acc13 = f32x4_add(acc13, f32x4_mul(a1_2, bv3_2));
+                acc20 = f32x4_add(acc20, f32x4_mul(a2_2, bv0_2));
+                acc21 = f32x4_add(acc21, f32x4_mul(a2_2, bv1_2));
+                acc22 = f32x4_add(acc22, f32x4_mul(a2_2, bv2_2));
+                acc23 = f32x4_add(acc23, f32x4_mul(a2_2, bv3_2));
+                acc30 = f32x4_add(acc30, f32x4_mul(a3_2, bv0_2));
+                acc31 = f32x4_add(acc31, f32x4_mul(a3_2, bv1_2));
+                acc32 = f32x4_add(acc32, f32x4_mul(a3_2, bv2_2));
+                acc33 = f32x4_add(acc33, f32x4_mul(a3_2, bv3_2));
+
+                // K iteration 3
+                let b_base3 = b.add((ki + 3) * n + ni);
+                let bv0_3 = v128_load(b_base3 as *const v128);
+                let bv1_3 = v128_load(b_base3.add(4) as *const v128);
+                let bv2_3 = v128_load(b_base3.add(8) as *const v128);
+                let bv3_3 = v128_load(b_base3.add(12) as *const v128);
+                let a0_3 = f32x4_splat(*a_row0.add(ki + 3));
+                let a1_3 = f32x4_splat(*a_row1.add(ki + 3));
+                let a2_3 = f32x4_splat(*a_row2.add(ki + 3));
+                let a3_3 = f32x4_splat(*a_row3.add(ki + 3));
+                acc00 = f32x4_add(acc00, f32x4_mul(a0_3, bv0_3));
+                acc01 = f32x4_add(acc01, f32x4_mul(a0_3, bv1_3));
+                acc02 = f32x4_add(acc02, f32x4_mul(a0_3, bv2_3));
+                acc03 = f32x4_add(acc03, f32x4_mul(a0_3, bv3_3));
+                acc10 = f32x4_add(acc10, f32x4_mul(a1_3, bv0_3));
+                acc11 = f32x4_add(acc11, f32x4_mul(a1_3, bv1_3));
+                acc12 = f32x4_add(acc12, f32x4_mul(a1_3, bv2_3));
+                acc13 = f32x4_add(acc13, f32x4_mul(a1_3, bv3_3));
+                acc20 = f32x4_add(acc20, f32x4_mul(a2_3, bv0_3));
+                acc21 = f32x4_add(acc21, f32x4_mul(a2_3, bv1_3));
+                acc22 = f32x4_add(acc22, f32x4_mul(a2_3, bv2_3));
+                acc23 = f32x4_add(acc23, f32x4_mul(a2_3, bv3_3));
+                acc30 = f32x4_add(acc30, f32x4_mul(a3_3, bv0_3));
+                acc31 = f32x4_add(acc31, f32x4_mul(a3_3, bv1_3));
+                acc32 = f32x4_add(acc32, f32x4_mul(a3_3, bv2_3));
+                acc33 = f32x4_add(acc33, f32x4_mul(a3_3, bv3_3));
+
+                ki += 4;
+            }
+
+            // K tail
+            while ki < k {
+                let b_base = b.add(ki * n + ni);
+                let bv0 = v128_load(b_base as *const v128);
+                let bv1 = v128_load(b_base.add(4) as *const v128);
+                let bv2 = v128_load(b_base.add(8) as *const v128);
+                let bv3 = v128_load(b_base.add(12) as *const v128);
+
+                let a0 = f32x4_splat(*a_row0.add(ki));
+                acc00 = f32x4_add(acc00, f32x4_mul(a0, bv0));
+                acc01 = f32x4_add(acc01, f32x4_mul(a0, bv1));
+                acc02 = f32x4_add(acc02, f32x4_mul(a0, bv2));
+                acc03 = f32x4_add(acc03, f32x4_mul(a0, bv3));
+
+                let a1 = f32x4_splat(*a_row1.add(ki));
+                acc10 = f32x4_add(acc10, f32x4_mul(a1, bv0));
+                acc11 = f32x4_add(acc11, f32x4_mul(a1, bv1));
+                acc12 = f32x4_add(acc12, f32x4_mul(a1, bv2));
+                acc13 = f32x4_add(acc13, f32x4_mul(a1, bv3));
+
+                let a2 = f32x4_splat(*a_row2.add(ki));
+                acc20 = f32x4_add(acc20, f32x4_mul(a2, bv0));
+                acc21 = f32x4_add(acc21, f32x4_mul(a2, bv1));
+                acc22 = f32x4_add(acc22, f32x4_mul(a2, bv2));
+                acc23 = f32x4_add(acc23, f32x4_mul(a2, bv3));
+
+                let a3 = f32x4_splat(*a_row3.add(ki));
+                acc30 = f32x4_add(acc30, f32x4_mul(a3, bv0));
+                acc31 = f32x4_add(acc31, f32x4_mul(a3, bv1));
+                acc32 = f32x4_add(acc32, f32x4_mul(a3, bv2));
+                acc33 = f32x4_add(acc33, f32x4_mul(a3, bv3));
+
+                ki += 1;
+            }
+
+            // Store 4x16 tile
+            let o0 = out.add(mi * n + ni);
+            v128_store(o0 as *mut v128, acc00);
+            v128_store(o0.add(4) as *mut v128, acc01);
+            v128_store(o0.add(8) as *mut v128, acc02);
+            v128_store(o0.add(12) as *mut v128, acc03);
+
+            let o1 = out.add((mi + 1) * n + ni);
+            v128_store(o1 as *mut v128, acc10);
+            v128_store(o1.add(4) as *mut v128, acc11);
+            v128_store(o1.add(8) as *mut v128, acc12);
+            v128_store(o1.add(12) as *mut v128, acc13);
+
+            let o2 = out.add((mi + 2) * n + ni);
+            v128_store(o2 as *mut v128, acc20);
+            v128_store(o2.add(4) as *mut v128, acc21);
+            v128_store(o2.add(8) as *mut v128, acc22);
+            v128_store(o2.add(12) as *mut v128, acc23);
+
+            let o3 = out.add((mi + 3) * n + ni);
+            v128_store(o3 as *mut v128, acc30);
+            v128_store(o3.add(4) as *mut v128, acc31);
+            v128_store(o3.add(8) as *mut v128, acc32);
+            v128_store(o3.add(12) as *mut v128, acc33);
+
+            ni += 16;
+        }
+
+        // Remaining columns (4-wide tiles)
+        while ni < n4 {
+            let mut acc0 = f32x4_splat(0.0);
+            let mut acc1 = f32x4_splat(0.0);
+            let mut acc2 = f32x4_splat(0.0);
+            let mut acc3 = f32x4_splat(0.0);
+
+            let mut ki = 0usize;
+            while ki < k4 {
+                let b_vec0 = v128_load(b.add(ki * n + ni) as *const v128);
+                let b_vec1 = v128_load(b.add((ki + 1) * n + ni) as *const v128);
+                let b_vec2 = v128_load(b.add((ki + 2) * n + ni) as *const v128);
+                let b_vec3 = v128_load(b.add((ki + 3) * n + ni) as *const v128);
+
+                acc0 = f32x4_add(acc0, f32x4_mul(f32x4_splat(*a_row0.add(ki)), b_vec0));
+                acc0 = f32x4_add(acc0, f32x4_mul(f32x4_splat(*a_row0.add(ki + 1)), b_vec1));
+                acc0 = f32x4_add(acc0, f32x4_mul(f32x4_splat(*a_row0.add(ki + 2)), b_vec2));
+                acc0 = f32x4_add(acc0, f32x4_mul(f32x4_splat(*a_row0.add(ki + 3)), b_vec3));
+
+                acc1 = f32x4_add(acc1, f32x4_mul(f32x4_splat(*a_row1.add(ki)), b_vec0));
+                acc1 = f32x4_add(acc1, f32x4_mul(f32x4_splat(*a_row1.add(ki + 1)), b_vec1));
+                acc1 = f32x4_add(acc1, f32x4_mul(f32x4_splat(*a_row1.add(ki + 2)), b_vec2));
+                acc1 = f32x4_add(acc1, f32x4_mul(f32x4_splat(*a_row1.add(ki + 3)), b_vec3));
+
+                acc2 = f32x4_add(acc2, f32x4_mul(f32x4_splat(*a_row2.add(ki)), b_vec0));
+                acc2 = f32x4_add(acc2, f32x4_mul(f32x4_splat(*a_row2.add(ki + 1)), b_vec1));
+                acc2 = f32x4_add(acc2, f32x4_mul(f32x4_splat(*a_row2.add(ki + 2)), b_vec2));
+                acc2 = f32x4_add(acc2, f32x4_mul(f32x4_splat(*a_row2.add(ki + 3)), b_vec3));
+
+                acc3 = f32x4_add(acc3, f32x4_mul(f32x4_splat(*a_row3.add(ki)), b_vec0));
+                acc3 = f32x4_add(acc3, f32x4_mul(f32x4_splat(*a_row3.add(ki + 1)), b_vec1));
+                acc3 = f32x4_add(acc3, f32x4_mul(f32x4_splat(*a_row3.add(ki + 2)), b_vec2));
+                acc3 = f32x4_add(acc3, f32x4_mul(f32x4_splat(*a_row3.add(ki + 3)), b_vec3));
+
+                ki += 4;
+            }
+            while ki < k {
+                let b_vec = v128_load(b.add(ki * n + ni) as *const v128);
+                acc0 = f32x4_add(acc0, f32x4_mul(f32x4_splat(*a_row0.add(ki)), b_vec));
+                acc1 = f32x4_add(acc1, f32x4_mul(f32x4_splat(*a_row1.add(ki)), b_vec));
+                acc2 = f32x4_add(acc2, f32x4_mul(f32x4_splat(*a_row2.add(ki)), b_vec));
+                acc3 = f32x4_add(acc3, f32x4_mul(f32x4_splat(*a_row3.add(ki)), b_vec));
+                ki += 1;
+            }
+
+            v128_store(out.add(mi * n + ni) as *mut v128, acc0);
+            v128_store(out.add((mi + 1) * n + ni) as *mut v128, acc1);
+            v128_store(out.add((mi + 2) * n + ni) as *mut v128, acc2);
+            v128_store(out.add((mi + 3) * n + ni) as *mut v128, acc3);
             ni += 4;
         }
 
