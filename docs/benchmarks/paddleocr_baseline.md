@@ -53,6 +53,19 @@ Relu, Reshape, Shape, Sigmoid, Slice, Softmax, Sqrt, Squeeze, Sub,
 Transpose, Unsqueeze
 ```
 
+Additional correctness hardening now covered by focused regressions:
+
+- `MaxPool` support for the classifier graph, including `SAME_UPPER` and
+  `SAME_LOWER` auto padding.
+- `AveragePool` `count_include_pad`, `ceil_mode`, and auto-padding semantics.
+- `Slice` positive and negative `steps`, with missing required inputs rejected.
+- `Resize` nearest-mode coordinate handling: `half_pixel` default,
+  `align_corners`, nearest rounding modes, scales/sizes exclusivity, and
+  unsupported mode rejection.
+- Grouped `Conv` channel-contract validation before execution.
+- Fail-fast validation for unsupported `Cast` targets and invalid
+  `Squeeze`/`Unsqueeze` axes.
+
 BN folding candidates: 3 (compile-time constant fold Conv+BN pairs).
 
 ## Model Sizes
@@ -94,15 +107,20 @@ PaddleOCR driver compiled successfully to WASM via molt:
 2. **BN folding** -- 3 BatchNorm nodes folded into Conv at compile time (eliminates BN entirely)
 3. **Conv kernel fusion** -- fuse Conv+Clip, Conv+Relu, Conv+HardSigmoid sequences (reduces 62+24+1+1 ops to ~40)
 4. **WebGPU dispatch** -- 62 conv ops dispatched to GPU compute shaders (Conv is 60% of time)
-5. **Tree-shaking** -- only 15 op types compiled in, dead code eliminated
+5. **Tree-shaking** -- compile only the op surface reachable from the selected
+   detector/recognizer/classifier graph; detector-only builds remain smaller
+   than full OCR bundles.
 6. **SIMD matmul** -- our 10.3 us matmul vs onnxruntime's generic dispatcher
 7. **Batched recognition** -- run all crop recognitions in a single batched inference pass
 8. **Zero-copy preprocessing** -- image normalization fused into first Conv layer weights
 
 ## Known Issues
 
+- Raw detector/recognizer forward parity against ONNX Runtime is not yet
+  checked end to end on real model tensors; the current tests prove parser and
+  op-level semantics.
 - English recognizer (en_mobile) character decoding produces garbled output with `en_ppocr_dict.txt`
   -- the dict file has 437 entries but the model outputs 438 classes. Character mapping needs
   alignment (likely off-by-one in blank token handling).
-- WASM node.js execution completes silently (no model weights embedded yet -- driver is compiled
-  but model data loading not wired).
+- WASM driver compilation succeeds, but real model artifact loading and
+  end-to-end execution are still separate wiring/proof tasks.
