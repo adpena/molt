@@ -5,6 +5,38 @@ import pytest
 from tests.helpers.tinygrad_stdlib_loader import tinygrad_stdlib_context
 
 
+@pytest.mark.parametrize(
+    ("nearest_mode", "expected"),
+    [
+        ("round_prefer_floor", [10.0, 10.0, 20.0, 20.0]),
+        ("round_prefer_ceil", [10.0, 20.0, 20.0, 20.0]),
+        ("floor", [10.0, 10.0, 20.0, 20.0]),
+        ("ceil", [10.0, 20.0, 20.0, 20.0]),
+    ],
+)
+def test_onnx_resize_nearest_mode_variants(nearest_mode: str, expected: list[float]) -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([10.0, 20.0], (1, 1, 2, 1))
+
+        out = onnx._op_resize(
+            [
+                x,
+                None,
+                None,
+                onnx._make_int_tensor([1, 1, 4, 1], (4,)),
+            ],
+            {
+                "mode": "nearest",
+                "coordinate_transformation_mode": "asymmetric",
+                "nearest_mode": nearest_mode,
+            },
+        )[0]
+
+        assert out.shape == (1, 1, 4, 1)
+        assert onnx._realize_floats(out) == expected
+
+
 def test_onnx_conv_uses_general_path_for_asymmetric_strides() -> None:
     with tinygrad_stdlib_context("onnx_interpreter") as modules:
         onnx = modules["onnx_interpreter"]
@@ -272,6 +304,23 @@ def test_onnx_resize_rejects_unsupported_interpolation_modes() -> None:
                     onnx._make_int_tensor([1, 1, 4, 1], (4,)),
                 ],
                 {"mode": "linear"},
+            )
+
+
+def test_onnx_resize_rejects_both_scales_and_sizes() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([10.0, 20.0], (1, 1, 2, 1))
+
+        with pytest.raises(ValueError, match="Resize cannot specify both scales and sizes"):
+            onnx._op_resize(
+                [
+                    x,
+                    None,
+                    onnx._make_tensor([1.0, 1.0, 2.0, 1.0], (4,)),
+                    onnx._make_int_tensor([1, 1, 4, 1], (4,)),
+                ],
+                {"mode": "nearest"},
             )
 
 
