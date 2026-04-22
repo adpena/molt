@@ -356,12 +356,23 @@ export class MoltOcrBackend {
           });
           return true;
         } catch (wasmErr) {
-          // WASM init failed — fall through to session-based approach
-          console.warn(
-            `Falcon-OCR WASM init failed, falling back to session: ${(wasmErr as Error).message}`,
-          );
+          // Classify the failure for better diagnostics
+          const errMsg = (wasmErr as Error).message ?? String(wasmErr);
+          const isCors = errMsg.includes("CORS") || errMsg.includes("cross-origin") || errMsg.includes("opaque");
+          const isNetwork = errMsg.includes("NetworkError") || errMsg.includes("Failed to fetch") || errMsg.includes("net::ERR");
+          const isOom = errMsg.includes("out of memory") || errMsg.includes("OOM") || errMsg.includes("RangeError");
+
+          const reason = isCors
+            ? "CORS policy blocked weight download"
+            : isNetwork
+              ? "Network error during model download (check connectivity)"
+              : isOom
+                ? "Out of memory loading model weights"
+                : errMsg;
+
+          console.warn(`Falcon-OCR WASM init failed, falling back to session: ${reason}`);
           progress?.("init", 0, {
-            message: `WASM init failed: ${(wasmErr as Error).message}, falling back`,
+            message: `WASM init failed: ${reason}, falling back`,
           });
         }
       }
@@ -404,7 +415,16 @@ export class MoltOcrBackend {
         message: "Running OCR inference...",
       });
 
-      const wasmResult = await (this.browserOcr as any).recognize(image);
+      let wasmResult: { text: string; timeMs: number; backend?: string; tokenIds?: number[] };
+      try {
+        wasmResult = await (this.browserOcr as any).recognize(image);
+      } catch (inferErr) {
+        const errMsg = inferErr instanceof Error ? inferErr.message : String(inferErr);
+        progress?.("done", 0, {
+          message: `Inference failed: ${errMsg}`,
+        });
+        throw new Error(`Falcon-OCR WASM inference failed: ${errMsg}`);
+      }
 
       progress?.("decoding", 90, {
         message: "Decoding text...",
@@ -420,11 +440,19 @@ export class MoltOcrBackend {
         message: "Done - '" + textPreview + "' extracted in " + (totalMs / 1000).toFixed(1) + "s",
       });
 
+      // Auto-fill: WASM-based results are always auto-filled (no user typed them)
+      const autoFilled = wasmResult.text.length > 0;
+
       return {
         result: {
           text: wasmResult.text,
           boundingBoxes: [], // WASM model returns raw text only; bounding boxes require post-processing
-          confidence: 0.95, // INT4 accuracy estimate
+          confidence: 0.95, // INT8 accuracy estimate
+          autoFilled,
+          autoFillWarning: autoFilled
+            ? "This text was extracted by AI and may contain errors. Please verify."
+            : "",
+          autoFillDismissable: true,
         },
         timings: {
           initMs: this.initTimingMs,
