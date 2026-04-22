@@ -34,6 +34,42 @@ def test_onnx_max_pool_dispatch_matches_nchw_reference() -> None:
         assert onnx._realize_floats(out) == [6.0, 8.0, 10.0, 12.0]
 
 
+def test_onnx_max_pool_auto_pad_same_upper() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([float(i) for i in range(1, 10)], (1, 1, 3, 3))
+
+        out = onnx._op_max_pool(
+            [x],
+            {
+                "auto_pad": "SAME_UPPER",
+                "kernel_shape": [2, 2],
+                "strides": [2, 2],
+            },
+        )[0]
+
+        assert out.shape == (1, 1, 2, 2)
+        assert onnx._realize_floats(out) == [5.0, 6.0, 8.0, 9.0]
+
+
+def test_onnx_max_pool_auto_pad_same_lower() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([float(i) for i in range(1, 10)], (1, 1, 3, 3))
+
+        out = onnx._op_max_pool(
+            [x],
+            {
+                "auto_pad": "SAME_LOWER",
+                "kernel_shape": [2, 2],
+                "strides": [2, 2],
+            },
+        )[0]
+
+        assert out.shape == (1, 1, 2, 2)
+        assert onnx._realize_floats(out) == [1.0, 3.0, 7.0, 9.0]
+
+
 def test_onnx_average_pool_excludes_padding_by_default() -> None:
     with tinygrad_stdlib_context("onnx_interpreter") as modules:
         onnx = modules["onnx_interpreter"]
@@ -201,3 +237,23 @@ def test_onnx_resize_honors_align_corners_for_nearest() -> None:
 
         assert out.shape == (1, 1, 4, 1)
         assert onnx._realize_floats(out) == [10.0, 20.0, 20.0, 30.0]
+
+
+def test_onnx_conv_rejects_non_divisible_group_count() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0] * 12, (1, 3, 2, 2))
+        weight = onnx._make_tensor([1.0] * 4, (4, 1, 1, 1))
+
+        with pytest.raises(ValueError, match="input channels.*divisible"):
+            onnx._op_conv([x, weight, None], {"group": 2})
+
+
+def test_onnx_conv_rejects_group_weight_channel_mismatch() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0] * 16, (1, 4, 2, 2))
+        weight = onnx._make_tensor([1.0] * 4, (4, 1, 1, 1))
+
+        with pytest.raises(ValueError, match="weight input channels"):
+            onnx._op_conv([x, weight, None], {"group": 2})
