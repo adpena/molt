@@ -34,6 +34,39 @@ def test_onnx_max_pool_dispatch_matches_nchw_reference() -> None:
         assert onnx._realize_floats(out) == [6.0, 8.0, 10.0, 12.0]
 
 
+def test_onnx_average_pool_excludes_padding_by_default() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0, 2.0, 3.0, 4.0], (1, 1, 2, 2))
+
+        out = onnx._op_average_pool(
+            [x],
+            {"kernel_shape": [2, 2], "strides": [1, 1], "pads": [1, 1, 0, 0]},
+        )[0]
+
+        assert out.shape == (1, 1, 2, 2)
+        assert onnx._realize_floats(out) == [1.0, 1.5, 2.0, 2.5]
+
+
+def test_onnx_average_pool_can_include_padding() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([1.0, 2.0, 3.0, 4.0], (1, 1, 2, 2))
+
+        out = onnx._op_average_pool(
+            [x],
+            {
+                "kernel_shape": [2, 2],
+                "strides": [1, 1],
+                "pads": [1, 1, 0, 0],
+                "count_include_pad": 1,
+            },
+        )[0]
+
+        assert out.shape == (1, 1, 2, 2)
+        assert onnx._realize_floats(out) == [0.25, 0.75, 1.0, 2.5]
+
+
 def test_onnx_interpreter_rejects_unimplemented_declared_outputs() -> None:
     with tinygrad_stdlib_context("onnx_interpreter") as modules:
         onnx = modules["onnx_interpreter"]
