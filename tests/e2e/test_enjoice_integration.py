@@ -101,6 +101,16 @@ def test_falcon_ocr_molt_decoder_preserves_unknown_token_ids():
     assert "parts.push(`[UNK:${id}]`)" in content
 
 
+def test_falcon_ocr_molt_decoder_preserves_edge_whitespace():
+    """Decoded OCR whitespace is signal and must not be trimmed away."""
+    path = os.path.join(DEPLOY_ENJOICE, "falcon-ocr-molt.ts")
+    with open(path, "r") as f:
+        content = f.read()
+
+    assert 'return parts.join("");' in content
+    assert 'return parts.join("").trim();' not in content
+
+
 def test_ocr_backend_molt_does_not_default_nemotron_endpoint():
     path = os.path.join(DEPLOY_ENJOICE, "ocr-backend-molt.ts")
     with open(path, "r") as f:
