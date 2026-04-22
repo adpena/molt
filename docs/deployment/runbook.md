@@ -69,14 +69,6 @@ If only weights have changed (no code changes):
 ./deploy/scripts/upload_weights.sh ~/.cache/molt/falcon-ocr
 ```
 
-### Using the bundled Worker
-
-If wrangler module resolution fails, update `wrangler.toml` to use the bundle:
-
-```toml
-main = "worker-bundle.js"
-```
-
 ## Rollback
 
 ### Immediate rollback (last known good)
@@ -219,10 +211,7 @@ No image content or user identifiers are ever logged.
    node --check deploy/cloudflare/monitoring.js
    ```
 
-3. Regenerate bundle if using bundled mode:
-   Re-run the bundle generation process and validate with `node --check deploy/cloudflare/worker-bundle.js`.
-
-4. Deploy:
+3. Deploy:
    ```bash
    ./deploy/scripts/deploy.sh staging   # test first
    ./deploy/scripts/deploy.sh production
