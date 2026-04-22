@@ -1061,7 +1061,12 @@ def _op_conv_transpose(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]
 
 
 def _op_matmul(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
-    return [inputs[0].matmul(inputs[1])]
+    if len(inputs) < 2 or inputs[0] is None or inputs[1] is None:
+        raise ValueError("MatMul requires two tensor inputs")
+    lhs, rhs = inputs[0], inputs[1]
+    if lhs.ndim not in (1, 2) or rhs.ndim not in (1, 2):
+        raise ValueError(f"MatMul unsupported ranks: {lhs.ndim} @ {rhs.ndim}")
+    return [lhs.matmul(rhs)]
 
 
 def _op_batch_norm(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
