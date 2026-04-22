@@ -20,7 +20,7 @@ HF_API_URL = "https://huggingface.co/api/models"
 HF_CDN_URL = "https://huggingface.co"
 CACHE_DIR = Path.home() / ".cache" / "molt" / "hub"
 
-_REVISION_RE = re.compile(r'^[a-zA-Z0-9._-]+$')
+_REVISION_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 
 def _validate_revision(revision: str) -> None:
@@ -29,16 +29,19 @@ def _validate_revision(revision: str) -> None:
         raise ValueError(f"Invalid revision: {revision!r}")
 
 
-def download_model(repo_id: str, filename: str = None, revision: str = "main",
-                   cache_dir: str = None) -> str:
+def download_model(
+    repo_id: str, filename: str = None, revision: str = "main", cache_dir: str = None
+) -> str:
     """Download a model file from HuggingFace Hub.
 
     Returns the local file path.
+    When filename is omitted, only the common weight file names used by Molt's
+    existing loaders are probed. GGUF artifacts must be requested explicitly.
 
     Example:
         path = download_model("bert-base-uncased", "model.safetensors")
     """
-    if not re.match(r'^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$', repo_id):
+    if not re.match(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$", repo_id):
         raise ValueError(f"Invalid repo_id: {repo_id}")
     _validate_revision(revision)
 
@@ -49,14 +52,14 @@ def download_model(repo_id: str, filename: str = None, revision: str = "main",
     if filename is None:
         # Try common filenames — only catch 404 (FileNotFoundError).
         # Let auth errors, validation errors, and network failures propagate.
-        for candidate in ["model.safetensors", "pytorch_model.bin", "model.gguf"]:
+        for candidate in ["model.safetensors", "pytorch_model.bin"]:
             try:
                 return download_model(repo_id, candidate, revision, cache_dir)
             except FileNotFoundError:
                 continue
         raise FileNotFoundError(f"No model file found in {repo_id}")
 
-    if '/' in filename or '..' in filename:
+    if "/" in filename or ".." in filename:
         raise ValueError(f"Invalid filename: {filename}")
 
     local_path = repo_dir / filename
@@ -76,11 +79,11 @@ def download_model(repo_id: str, filename: str = None, revision: str = "main",
 
         tmp_path = str(local_path) + ".tmp"
         with urllib.request.urlopen(req) as response:
-            total = int(response.headers.get('Content-Length', 0))
+            total = int(response.headers.get("Content-Length", 0))
             downloaded = 0
             chunk_size = 8 * 1024 * 1024  # 8MB chunks
 
-            with open(tmp_path, 'wb') as f:
+            with open(tmp_path, "wb") as f:
                 while True:
                     chunk = response.read(chunk_size)
                     if not chunk:
@@ -89,7 +92,11 @@ def download_model(repo_id: str, filename: str = None, revision: str = "main",
                     downloaded += len(chunk)
                     if total > 0:
                         pct = downloaded * 100 // total
-                        print(f"\r  {downloaded // (1024*1024)}MB / {total // (1024*1024)}MB ({pct}%)", end="", flush=True)
+                        print(
+                            f"\r  {downloaded // (1024 * 1024)}MB / {total // (1024 * 1024)}MB ({pct}%)",
+                            end="",
+                            flush=True,
+                        )
 
             print(f"\n  Saved to {local_path}")
 
@@ -101,13 +108,15 @@ def download_model(repo_id: str, filename: str = None, revision: str = "main",
         if e.code == 404:
             raise FileNotFoundError(f"File '{filename}' not found in {repo_id}")
         elif e.code == 401:
-            raise PermissionError(f"Authentication required. Set HF_TOKEN environment variable.")
+            raise PermissionError(
+                "Authentication required. Set HF_TOKEN environment variable."
+            )
         raise
 
 
 def list_files(repo_id: str, revision: str = "main") -> list:
     """List files in a HuggingFace model repository."""
-    if not re.match(r'^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$', repo_id):
+    if not re.match(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$", repo_id):
         raise ValueError(f"Invalid repo_id: {repo_id}")
     _validate_revision(revision)
     url = f"{HF_API_URL}/{repo_id}?revision={urllib.parse.quote(revision, safe='')}"
@@ -118,7 +127,9 @@ def list_files(repo_id: str, revision: str = "main") -> list:
             return [s["rfilename"] for s in siblings]
     except urllib.error.HTTPError as e:
         if e.code == 401:
-            raise PermissionError(f"Authentication required for {repo_id}. Set HF_TOKEN.") from e
+            raise PermissionError(
+                f"Authentication required for {repo_id}. Set HF_TOKEN."
+            ) from e
         if e.code == 404:
             raise FileNotFoundError(f"Repository not found: {repo_id}") from e
         raise ConnectionError(f"HTTP {e.code} listing files for {repo_id}") from e
@@ -128,7 +139,7 @@ def list_files(repo_id: str, revision: str = "main") -> list:
 
 def model_info(repo_id: str) -> dict:
     """Get metadata about a HuggingFace model."""
-    if not re.match(r'^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$', repo_id):
+    if not re.match(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$", repo_id):
         raise ValueError(f"Invalid repo_id: {repo_id}")
     url = f"{HF_API_URL}/{repo_id}"
     try:
@@ -136,7 +147,9 @@ def model_info(repo_id: str) -> dict:
             return json.loads(response.read())
     except urllib.error.HTTPError as e:
         if e.code == 401:
-            raise PermissionError(f"Authentication required for {repo_id}. Set HF_TOKEN.") from e
+            raise PermissionError(
+                f"Authentication required for {repo_id}. Set HF_TOKEN."
+            ) from e
         if e.code == 404:
             raise FileNotFoundError(f"Repository not found: {repo_id}") from e
         raise ConnectionError(f"HTTP {e.code} getting info for {repo_id}") from e

@@ -5,6 +5,24 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dflash_adapter_registry():
+    from molt.gpu.dflash import (
+        clear_dflash_adapters,
+        restore_dflash_adapters,
+        snapshot_dflash_adapters,
+    )
+
+    snapshot = snapshot_dflash_adapters()
+    clear_dflash_adapters()
+    try:
+        yield
+    finally:
+        restore_dflash_adapters(snapshot)
+
 
 def _native_molt_env(root: Path) -> dict[str, str]:
     env = os.environ.copy()
@@ -133,7 +151,9 @@ def test_speculative_decode_greedy_stops_when_target_emits_eos():
     assert result.verify_calls == 1
 
 
-def test_greedy_decode_routes_through_speculative_engine_when_callbacks_present(monkeypatch):
+def test_greedy_decode_routes_through_speculative_engine_when_callbacks_present(
+    monkeypatch,
+):
     import molt.gpu.generate as generate_mod
     from molt.gpu.generate import SpeculativeDecodeResult, greedy_decode
 
@@ -155,7 +175,9 @@ def test_greedy_decode_routes_through_speculative_engine_when_callbacks_present(
 
     class UnusedModel:
         def __call__(self, _tokens):
-            raise AssertionError("default greedy path should not run when speculative callbacks are provided")
+            raise AssertionError(
+                "default greedy path should not run when speculative callbacks are provided"
+            )
 
     def draft_block(prefix_tokens, block_size):
         return [7][:block_size]
@@ -214,7 +236,9 @@ def test_speculative_decode_greedy_rejects_invalid_callback_contracts():
         assert "more than the requested block size" in str(exc)
 
     try:
-        speculative_decode_greedy(verify_short, lambda _p, _n: [1], [0], max_new_tokens=1)
+        speculative_decode_greedy(
+            verify_short, lambda _p, _n: [1], [0], max_new_tokens=1
+        )
         raise AssertionError("expected verify length contract violation")
     except ValueError as exc:
         assert "len(drafted_tokens) + 1" in str(exc)
@@ -557,8 +581,6 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
     from molt.gpu.dflash import (
         DFlashRuntime,
         DFlashAdapterSpec,
-        DFlashConditioning,
-        SpeculativeConditioning,
         SpeculativeDraftResult,
         SpeculativeVerifyResult,
         register_dflash_adapter,
@@ -566,7 +588,10 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
     from molt.gpu.generate import greedy_decode
 
     def supports(context):
-        return context.backend == "webgpu" and getattr(context.model, "kind", None) == "fake-model"
+        return (
+            context.backend == "webgpu"
+            and getattr(context.model, "kind", None) == "fake-model"
+        )
 
     def create_runtime(context):
         assert context.prompt_tokens == [0]
@@ -679,7 +704,9 @@ def test_greedy_decode_chooses_highest_priority_matching_dflash_adapter(monkeypa
     assert out == [0, 1, 2]
 
 
-def test_greedy_decode_raises_when_top_priority_dflash_adapters_are_ambiguous(monkeypatch):
+def test_greedy_decode_raises_when_top_priority_dflash_adapters_are_ambiguous(
+    monkeypatch,
+):
     from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
     from molt.gpu.generate import greedy_decode
 
@@ -732,7 +759,9 @@ def test_greedy_decode_skips_dflash_default_without_supported_gpu_backend(monkey
         return True
 
     def create_runtime(_context):
-        raise AssertionError("adapter runtime should not be created without supported gpu backend")
+        raise AssertionError(
+            "adapter runtime should not be created without supported gpu backend"
+        )
 
     class FakeModel:
         kind = "fake-model"
@@ -757,7 +786,7 @@ def test_greedy_decode_skips_dflash_default_without_supported_gpu_backend(monkey
 
 
 def test_greedy_decode_raises_when_gpu_backend_has_no_dflash_adapter(monkeypatch):
-    import molt.gpu.dflash.adapters as adapters_mod
+    from molt.gpu.dflash import clear_dflash_adapters
     from molt.gpu.generate import greedy_decode
 
     class FakeModel:
@@ -765,7 +794,7 @@ def test_greedy_decode_raises_when_gpu_backend_has_no_dflash_adapter(monkeypatch
             raise AssertionError("plain greedy fallback must not run")
 
     monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
-    monkeypatch.setattr(adapters_mod, "_DFLASH_ADAPTERS", {})
+    clear_dflash_adapters()
 
     try:
         greedy_decode(FakeModel(), [0], max_new_tokens=1)
@@ -806,12 +835,41 @@ def test_register_dflash_adapter_rejects_duplicate_names():
         assert "already registered" in str(exc)
 
 
+def test_dflash_adapter_registry_snapshot_restore_isolates_mutation():
+    from molt.gpu.dflash import (
+        DFlashAdapterSpec,
+        clear_dflash_adapters,
+        get_dflash_adapter,
+        list_dflash_adapters,
+        register_dflash_adapter,
+        restore_dflash_adapters,
+        snapshot_dflash_adapters,
+    )
+
+    baseline = snapshot_dflash_adapters()
+    register_dflash_adapter(
+        DFlashAdapterSpec(
+            name="snapshot-adapter",
+            supports=lambda _context: True,
+            create_runtime=lambda _context: None,
+        )
+    )
+    mutated = snapshot_dflash_adapters()
+
+    clear_dflash_adapters()
+    assert list_dflash_adapters() == []
+
+    restore_dflash_adapters(mutated)
+    assert get_dflash_adapter("snapshot-adapter") is not None
+
+    restore_dflash_adapters(baseline)
+    assert get_dflash_adapter("snapshot-adapter") is None
+
+
 def test_greedy_decode_accepts_explicit_dflash_adapter_override(monkeypatch):
     from molt.gpu.dflash import (
         DFlashAdapterSpec,
         DFlashRuntime,
-        DFlashConditioning,
-        SpeculativeConditioning,
         SpeculativeDraftResult,
         SpeculativeVerifyResult,
         register_dflash_adapter,
@@ -885,6 +943,28 @@ def test_greedy_decode_raises_for_missing_explicit_dflash_adapter(monkeypatch):
         assert "missing-drafter" in str(exc)
 
 
+def test_greedy_decode_raises_for_explicit_dflash_adapter_without_backend(monkeypatch):
+    from molt.gpu.generate import greedy_decode
+
+    class FakeModel:
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy fallback must not run")
+
+    monkeypatch.delenv("MOLT_GPU_BACKEND", raising=False)
+
+    try:
+        greedy_decode(
+            FakeModel(),
+            [0],
+            max_new_tokens=1,
+            dflash_adapter="requires-backend",
+        )
+        raise AssertionError("expected explicit DFlash request to fail closed")
+    except LookupError as exc:
+        assert "requires-backend" in str(exc)
+        assert "backend" in str(exc).lower()
+
+
 def test_greedy_decode_raises_for_missing_model_declared_dflash_adapter(monkeypatch):
     from molt.gpu.generate import greedy_decode
 
@@ -911,7 +991,9 @@ def test_greedy_decode_rejects_non_boolean_dflash_supports_result(monkeypatch):
         return "yes"
 
     def create_runtime(_context):
-        raise AssertionError("invalid supports result should fail before runtime creation")
+        raise AssertionError(
+            "invalid supports result should fail before runtime creation"
+        )
 
     class FakeModel:
         dflash_adapter = "bad-supports"
@@ -966,6 +1048,15 @@ def test_greedy_decode_rejects_invalid_dflash_runtime_type(monkeypatch):
         raise AssertionError("expected invalid runtime type failure")
     except TypeError as exc:
         assert "DFlashRuntime" in str(exc)
+
+
+def test_dflash_namespace_does_not_export_generic_speculative_helpers():
+    import molt.gpu.dflash as dflash
+
+    assert "speculative_decode_greedy" not in dflash.__all__
+    assert "speculative_decode_greedy_conditioned" not in dflash.__all__
+    assert not hasattr(dflash, "speculative_decode_greedy")
+    assert not hasattr(dflash, "speculative_decode_greedy_conditioned")
 
 
 def test_build_dflash_runtime_constructs_runtime_from_explicit_adapter():

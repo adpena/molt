@@ -26,6 +26,8 @@
 import { createWebGPUMatmul, cpuMatmul } from './webgpu-matmul.js';
 import { WebGL2Engine as WebGL2GPGPUEngine } from './webgl2-engine.js';
 
+const AVAILABLE_BACKENDS = new Set(['webgpu', 'webgl2', 'wasm-simd', 'scalar']);
+
 // ---------------------------------------------------------------------------
 // Shared CPU implementations for ops not covered by all backends.
 // ---------------------------------------------------------------------------
@@ -712,6 +714,16 @@ export class ComputeEngine {
      */
     static async create(options = {}) {
         const { forceBackend, wasmUrl } = options;
+
+        if (forceBackend != null && !AVAILABLE_BACKENDS.has(forceBackend)) {
+            throw new Error(
+                `ComputeEngine: unknown requested backend '${forceBackend}'`,
+            );
+        }
+
+        if (forceBackend === 'scalar') {
+            return new ScalarEngine();
+        }
 
         // 1. WebGPU (best: tiled compute shaders, 10-100x over CPU)
         if (!forceBackend || forceBackend === 'webgpu') {

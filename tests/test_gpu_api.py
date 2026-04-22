@@ -1561,15 +1561,12 @@ def test_submodule_dflash():
         DFlashAdapterSpec,
         DFlashConditioning,
         SpeculativeConditioning,
-        SpeculativeDecodeResult,
         SpeculativeDraftRequest,
         SpeculativeDraftResult,
         SpeculativeVerifyRequest,
         SpeculativeVerifyResult,
         build_dflash_runtime,
         require_dflash_conditioning,
-        speculative_decode_greedy,
-        speculative_decode_greedy_conditioned,
     )
 
 

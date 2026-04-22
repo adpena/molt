@@ -7,19 +7,24 @@ temperature-controlled generation, and lossless block-speculative decoding.
 
 import math
 import os
-from .tensor import Tensor
 from .dflash import (
     DFlashSelectionContext,
-    SpeculativeDecodeResult,
-    SpeculativeConditioning,
-    SpeculativeDraftRequest,
-    SpeculativeDraftResult,
-    SpeculativeVerifyRequest,
-    SpeculativeVerifyResult,
-    speculative_decode_greedy,
-    speculative_decode_greedy_conditioned,
     resolve_dflash_runtime,
 )
+from .dflash.runtime import (
+    SpeculativeDecodeResult,
+    speculative_decode_greedy,
+    speculative_decode_greedy_conditioned,
+)
+
+__all__ = [
+    "SpeculativeDecodeResult",
+    "speculative_decode_greedy",
+    "speculative_decode_greedy_conditioned",
+    "greedy_decode",
+    "top_k_sample",
+    "top_p_sample",
+]
 
 
 def _requested_gpu_backend() -> str | None:
@@ -65,15 +70,22 @@ def _resolve_default_dflash_runtime(
         preferred_name = getattr(model, "dflash_adapter", None)
     if preferred_name is not None and not isinstance(preferred_name, str):
         raise TypeError("dflash adapter name must be a string when set")
+    if preferred_name is not None and not _has_dflash_backend(context.backend):
+        raise LookupError(
+            f"dflash adapter '{preferred_name}' requires an explicit GPU backend; "
+            "set MOLT_GPU_BACKEND"
+        )
     runtime = resolve_dflash_runtime(
         context,
         preferred_name=preferred_name,
     )
-    if runtime is None and preferred_name is not None and _has_dflash_backend(context.backend):
+    if (
+        runtime is None
+        and preferred_name is not None
+        and _has_dflash_backend(context.backend)
+    ):
         raise LookupError(_dflash_missing_message(preferred_name))
     return runtime
-
-
 
 
 def greedy_decode(
@@ -141,7 +153,9 @@ def greedy_decode(
     return tokens
 
 
-def top_k_sample(model, prompt_tokens, max_new_tokens=100, k=50, temperature=1.0, eos_token_id=None):
+def top_k_sample(
+    model, prompt_tokens, max_new_tokens=100, k=50, temperature=1.0, eos_token_id=None
+):
     """Generate with top-k sampling: only consider the k highest-probability tokens."""
     tokens = list(prompt_tokens)
     for _ in range(max_new_tokens):
@@ -154,12 +168,15 @@ def top_k_sample(model, prompt_tokens, max_new_tokens=100, k=50, temperature=1.0
         else:
             # Apply temperature
             if temperature != 1.0:
-                last_logits = [l / temperature for l in last_logits]
+                last_logits = [logit / temperature for logit in last_logits]
 
             # Top-k: zero out everything except top k
             indexed = sorted(enumerate(last_logits), key=lambda x: -x[1])
             top_k_indices = set(i for i, _ in indexed[:k])
-            filtered = [l if i in top_k_indices else -1e9 for i, l in enumerate(last_logits)]
+            filtered = [
+                logit if i in top_k_indices else -1e9
+                for i, logit in enumerate(last_logits)
+            ]
 
             # Softmax + sample
             probs = softmax_list(filtered)
@@ -171,7 +188,9 @@ def top_k_sample(model, prompt_tokens, max_new_tokens=100, k=50, temperature=1.0
     return tokens
 
 
-def top_p_sample(model, prompt_tokens, max_new_tokens=100, p=0.9, temperature=1.0, eos_token_id=None):
+def top_p_sample(
+    model, prompt_tokens, max_new_tokens=100, p=0.9, temperature=1.0, eos_token_id=None
+):
     """Generate with nucleus (top-p) sampling: sample from the smallest set whose probability >= p."""
     tokens = list(prompt_tokens)
     for _ in range(max_new_tokens):
@@ -183,7 +202,7 @@ def top_p_sample(model, prompt_tokens, max_new_tokens=100, p=0.9, temperature=1.
             next_token = argmax(last_logits)
         else:
             if temperature != 1.0:
-                last_logits = [l / temperature for l in last_logits]
+                last_logits = [logit / temperature for logit in last_logits]
 
             # Sort by probability
             probs = softmax_list(last_logits)
@@ -199,7 +218,9 @@ def top_p_sample(model, prompt_tokens, max_new_tokens=100, p=0.9, temperature=1.
                     break
 
             # Zero out non-allowed, re-normalize
-            filtered_probs = [prob if i in allowed else 0.0 for i, prob in enumerate(probs)]
+            filtered_probs = [
+                prob if i in allowed else 0.0 for i, prob in enumerate(probs)
+            ]
             total = sum(filtered_probs)
             if total > 0:
                 filtered_probs = [fp / total for fp in filtered_probs]
@@ -213,6 +234,7 @@ def top_p_sample(model, prompt_tokens, max_new_tokens=100, p=0.9, temperature=1.
 
 
 # --- Helpers ---
+
 
 def get_last_logits(logits):
     """Extract logits for the last token position."""
