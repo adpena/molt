@@ -27,7 +27,7 @@ import _intrinsics as _molt_intrinsics
 
 
 def _default_format_char(element_type: type) -> str:
-    return "d" if element_type == float else "q"
+    return "d" if element_type is float else "q"
 
 
 def _format_itemsize(format_char: str) -> int:
@@ -106,7 +106,7 @@ class Buffer:
         if isinstance(self._data, bytes):
             self._data = bytearray(self._data)
         offset = index * self._itemsize
-        if self._element_type == float:
+        if self._element_type is float:
             struct.pack_into(self._format_char, self._data, offset, float(value))
         else:
             struct.pack_into(self._format_char, self._data, offset, int(value))
@@ -236,16 +236,16 @@ class _KernelLauncher:
         import molt.gpu as gpu_module
         original_thread_id = gpu_module.thread_id
 
-        for tid in range(total_threads):
-            # Monkey-patch thread_id to return current tid
-            gpu_module.thread_id = lambda _tid=tid: _tid
-            try:
-                self._func(*args)
-            except IndexError:
-                pass  # Thread ID out of bounds — expected for guard patterns
-
-        # Restore
-        gpu_module.thread_id = original_thread_id
+        try:
+            for tid in range(total_threads):
+                # Monkey-patch thread_id to return current tid
+                gpu_module.thread_id = lambda _tid=tid: _tid
+                try:
+                    self._func(*args)
+                except IndexError:
+                    pass  # Thread ID out of bounds — expected for guard patterns
+        finally:
+            gpu_module.thread_id = original_thread_id
 
 
 def kernel(func):
