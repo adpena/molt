@@ -218,8 +218,10 @@ class Tokenizer:
                     ch_id = self._vocab.get(ch)
                     if ch_id is not None:
                         ids.append(ch_id)
-                    # If still not found, skip (should not happen with
-                    # byte-level BPE since all 256 bytes are in vocab)
+                    else:
+                        raise ValueError(
+                            f"Tokenizer vocabulary missing byte-level token: {ch!r}"
+                        )
 
         return ids
 
@@ -239,7 +241,8 @@ class Tokenizer:
                 parts.append(self._added_ids[token_id])
             elif token_id in self._vocab_inv:
                 parts.append(self._vocab_inv[token_id])
-            # else: unknown token, skip
+            else:
+                raise ValueError(f"Unknown token id: {token_id}")
 
         # Join all token strings
         text = "".join(parts)
