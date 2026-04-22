@@ -158,6 +158,66 @@ def _write_extension_numpy_project(project_root: Path) -> None:
     )
 
 
+def _write_extension_iterator_mapping_project(project_root: Path) -> None:
+    src_dir = project_root / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    (src_dir / "demoext_iter.c").write_text(
+        "\n".join(
+            [
+                "#include <Python.h>",
+                "",
+                "int demoext_iter_mapping_touch(PyObject *seq, PyObject *dict) {",
+                "    PyObject *iter = PyObject_GetIter(seq);",
+                "    PyObject *first = NULL;",
+                "    PyObject *second = NULL;",
+                "    PyObject *borrowed = NULL;",
+                "    PyObject *values = NULL;",
+                "    int ok = 0;",
+                "    if (iter == NULL) {",
+                "        return -1;",
+                "    }",
+                "    first = PyIter_Next(iter);",
+                "    second = PyObject_Next(iter);",
+                "    if (first == NULL || second == NULL) {",
+                "        goto done;",
+                "    }",
+                "    borrowed = PyDict_GetItemWithError(dict, first);",
+                "    values = PyMapping_Values(dict);",
+                "    if (borrowed != NULL && values != NULL) {",
+                "        ok = 1;",
+                "    }",
+                "done:",
+                "    Py_XDECREF(values);",
+                "    Py_XDECREF(first);",
+                "    Py_XDECREF(second);",
+                "    Py_DECREF(iter);",
+                "    return ok;",
+                "}",
+                "",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (project_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "demo-iter-mapping-ext"',
+                'version = "0.1.0"',
+                "",
+                "[tool.molt.extension]",
+                'module = "demoext_iter"',
+                'sources = ["src/demoext_iter.c"]',
+                'capabilities = ["fs.read"]',
+                'molt_c_api_version = "1"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def _write_extension_wheel(
     root: Path,
     *,
@@ -362,6 +422,38 @@ def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -
         names = set(zf.namelist())
         assert "extension_manifest.json" in names
         assert manifest["extension"] in names
+
+
+@pytest.mark.slow
+def test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mock(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("clang") is None:
+        pytest.skip("clang is required for real libmolt extension build smoke")
+    project_root = tmp_path / "iter_mapping_ext"
+    project_root.mkdir()
+    _write_extension_iterator_mapping_project(project_root)
+
+    out_dir = project_root / "dist"
+    rc = cli.extension_build(
+        project=str(project_root),
+        out_dir=str(out_dir),
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+    )
+
+    assert rc == 0
+    wheels = sorted(out_dir.glob("*.whl"))
+    assert len(wheels) == 1
+    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    assert manifest["module"] == "demoext_iter"
+    assert manifest["capabilities"] == ["fs.read"]
+    with zipfile.ZipFile(wheels[0]) as zf:
+        names = set(zf.namelist())
+        assert "extension_manifest.json" in names
+        assert manifest["extension"] in names
+        assert zf.read(manifest["extension"])
 
 
 def test_extension_build_cross_target_uses_target_runtime(
