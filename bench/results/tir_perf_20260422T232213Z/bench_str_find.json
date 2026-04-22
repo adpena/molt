@@ -1,0 +1,50 @@
+{
+  "benchmarks": {
+    "bench_str_find.py": {
+      "codon_build_s": null,
+      "codon_ok": false,
+      "codon_size_kb": null,
+      "codon_time_s": null,
+      "cpython_time_s": 0.024456777997935813,
+      "molt_args": [],
+      "molt_build_s": 4.705204667057842,
+      "molt_codon_ratio": null,
+      "molt_cpython_ratio": 0.8303418391763208,
+      "molt_nuitka_ratio": null,
+      "molt_ok": true,
+      "molt_pyodide_ratio": null,
+      "molt_pypy_ratio": null,
+      "molt_size_kb": 14892.9375,
+      "molt_speedup": 1.204323271234864,
+      "molt_time_s": 0.020307486023133,
+      "nuitka_build_s": null,
+      "nuitka_ok": false,
+      "nuitka_size_kb": null,
+      "nuitka_time_s": null,
+      "pyodide_build_s": null,
+      "pyodide_ok": false,
+      "pyodide_size_kb": null,
+      "pyodide_time_s": null,
+      "pypy_ok": false,
+      "pypy_time_s": null,
+      "run_args": []
+    }
+  },
+  "created_at": "2026-04-22T23:22:24.788893+00:00",
+  "git_rev": "a6491123075125cdd16260aa99c5f54af20f5dd0",
+  "samples": 3,
+  "schema_version": 1,
+  "super_run": false,
+  "system": {
+    "cpu_count": 18,
+    "load_avg": [
+      9.83056640625,
+      11.30078125,
+      11.36474609375
+    ],
+    "machine": "arm64",
+    "platform": "macOS-26.4-arm64-arm-64bit",
+    "python": "3.12.13"
+  },
+  "warmup": 1
+}

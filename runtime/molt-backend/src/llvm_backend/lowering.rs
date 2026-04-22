@@ -1533,16 +1533,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             .cloned()
                             .unwrap_or(TirType::DynBox);
                         let expected_params = target_fn.count_params() as usize;
-                        if expected_params != direct_operands.len() {
-                            if let Some(callable_id) = guarded_callable {
-                                let callable = self.resolve(callable_id);
-                                let result = self.emit_call_bind_runtime(callable, direct_operands);
-                                if let Some(&result_id) = op.results.first() {
-                                    self.values.insert(result_id, result);
-                                    self.value_types.insert(result_id, TirType::DynBox);
-                                }
-                                return;
+                        if expected_params != direct_operands.len()
+                            && let Some(callable_id) = guarded_callable
+                        {
+                            let callable = self.resolve(callable_id);
+                            let result = self.emit_call_bind_runtime(callable, direct_operands);
+                            if let Some(&result_id) = op.results.first() {
+                                self.values.insert(result_id, result);
+                                self.value_types.insert(result_id, TirType::DynBox);
                             }
+                            return;
                         }
                         let current_bb = self
                             .backend

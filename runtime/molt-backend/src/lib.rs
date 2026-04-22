@@ -4892,7 +4892,8 @@ mod tests {
         assert!(
             symbols
                 .lines()
-                .any(|line| line.contains(" U _molt_init_sys") || line == "                 U molt_init_sys"),
+                .any(|line| line.contains(" U _molt_init_sys")
+                    || line == "                 U molt_init_sys"),
             "shared stdlib symbol must be an undefined external, got:\n{symbols}"
         );
         assert!(
