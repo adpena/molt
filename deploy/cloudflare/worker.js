@@ -4,7 +4,7 @@
  * OCR Engine Architecture:
  *   PRIMARY: PaddleOCR (99.6% accuracy, client-side WASM in browser, instant)
  *   EXPERIMENTAL: Falcon-OCR (edge inference, INT4 CPU, degraded quality)
- *   PLANNED: Nemotron v2 (GPU server via Modal A10G, batch processing, 28x faster)
+ *   PLANNED: Nemotron v2 through an explicitly configured GPU service endpoint
  *
  * The default /ocr endpoint returns 503 directing clients to PaddleOCR
  * (which runs client-side — no server round-trip). Falcon-OCR edge
@@ -1656,23 +1656,21 @@ export default {
         }
 
         // Nemotron OCR v2 path (X-Use-Backend: nemotron).
-        // 3-stage pipeline: detector (182 MB) + recognizer (25 MB) + relational (9 MB).
-        // Too large for Workers memory; requires GPU server (Modal A10G).
-        // Currently returns 501 — activate when Modal deployment is live.
+        // The current upstream package is PyTorch/CUDA-oriented and must be
+        // routed through an explicitly configured GPU service endpoint before use.
+        // Until then this route fails closed instead of guessing an endpoint.
         if (path === "/ocr" && useBackend === "nemotron") {
           return new Response(
             JSON.stringify({
-              error: "Nemotron OCR v2 is not yet deployed on this Worker",
+              error: "Nemotron OCR v2 requires a configured GPU service endpoint",
               status: "planned",
               info: {
                 model: "nvidia/nemotron-ocr-v2",
                 pipeline: "3-stage (detector + recognizer + relational)",
-                english_size_mb: 216,
-                multilingual_size_mb: 336,
+                runtime: "PyTorch/CUDA upstream package",
                 format: "PyTorch .pth (no ONNX export available)",
-                deployment_target: "Modal A10G GPU",
-                modal_endpoint: "https://adpena--nemotron-ocr-ocr-endpoint.modal.run",
-                blocker: "Modal authentication required (modal token new)",
+                deployment_target: "configured GPU service endpoint",
+                blocker: "no Nemotron GPU service endpoint configured",
               },
               request_id: rid,
             }),
@@ -1691,7 +1689,7 @@ export default {
               location: "browser",
               quality: "99.6%",
               fallback_url: "/api/ocr/paddle",
-              hint: "PaddleOCR runs client-side via WASM — no server round-trip needed. To use experimental Falcon-OCR edge inference, set header X-Use-Backend: falcon-ocr. For Nemotron v2 GPU OCR (planned), set X-Use-Backend: nemotron",
+              hint: "PaddleOCR runs client-side via WASM — no server round-trip needed. To use experimental Falcon-OCR edge inference, set header X-Use-Backend: falcon-ocr. Nemotron v2 requires an explicitly configured GPU service endpoint.",
               request_id: rid,
             }),
             {
