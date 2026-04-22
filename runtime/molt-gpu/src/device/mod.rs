@@ -45,6 +45,7 @@ unsafe impl Sync for BufferHandle {}
 #[derive(Debug)]
 pub struct CompiledProgram {
     /// Backend-specific compiled program handle.
+    #[allow(dead_code)]
     pub(crate) handle: ProgramHandle,
     /// Entry point function name.
     pub entry: String,
