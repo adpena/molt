@@ -198,6 +198,24 @@ def test_kernel_launcher_uses_backend_intrinsic_when_available(monkeypatch):
     assert gpu.from_device(c) == [0.0, 0.0, 0.0, 0.0]
 
 
+def test_kernel_simulation_restores_thread_id_after_kernel_error(monkeypatch):
+    import molt.gpu as gpu
+
+    original_thread_id = gpu.thread_id
+    monkeypatch.setattr(gpu, "_MOLT_GPU_KERNEL_LAUNCH", None)
+
+    @gpu.kernel
+    def explode():
+        assert gpu.thread_id() == 0
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        explode[1, 1]()
+
+    assert gpu.thread_id is original_thread_id
+    assert gpu.thread_id() == 0
+
+
 # ── Tensor ───────────────────────────────────────────────────────────────────
 
 def test_tensor_create_and_shape():
