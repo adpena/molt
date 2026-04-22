@@ -2,7 +2,7 @@
  * Cloudflare Worker entry point for OCR and document processing.
  *
  * OCR Engine Architecture:
- *   PRIMARY: PaddleOCR (99.6% accuracy, client-side WASM in browser, instant)
+ *   RECOMMENDED: configured browser-side OCR path (client-side)
  *   EXPERIMENTAL: Falcon-OCR (edge inference, INT4 CPU, degraded quality)
  *   PLANNED: Nemotron v2 through an explicitly configured GPU service endpoint
  *
@@ -340,7 +340,19 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         .status-ok { color: #4aff4a; font-weight: bold; }
         .status-warn { color: #ffaa4a; }
         .status-err { color: #ff4a4a; }
-        #health-status { font-size: 0.85em; color: #888; margin-top: 8px; }
+        #health-status { font-size: 0.85em; color: #888; margin-top: 8px; white-space: pre-wrap; word-break: break-word; }
+        @media (max-width: 600px) {
+            body { padding: 12px; }
+            h1 { font-size: 1.2em; margin-bottom: 16px; }
+            .card { padding: 14px; }
+            .metric {
+                flex-direction: column;
+                gap: 4px;
+                padding: 10px 0;
+            }
+            .metric span:last-child { font-size: 0.85em; }
+            #daily-req { width: 80px !important; font-size: 16px !important; padding: 6px 8px !important; }
+        }
     </style>
 </head>
 <body>
@@ -530,6 +542,18 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** Edge cache TTL: 1 hour (Cache API). */
 const EDGE_CACHE_TTL_S = 3600;
+
+/**
+ * In-flight deduplication map.
+ *
+ * When two concurrent requests arrive for the same image (identified by
+ * SHA-256 hash), only the first performs inference.  The second awaits
+ * the first's promise and shares its result.  The entry is removed once
+ * the inference promise settles.
+ *
+ * @type {Map<string, Promise<Response>>}
+ */
+const inflightRequests = new Map();
 
 /**
  * Compute a SHA-256 hash of image bytes for cache keying.
@@ -775,13 +799,13 @@ async function ensureModelLoaded(env) {
       //     Peak memory: ~80 MB (one shard buffer + accumulated tensor data).
       //     This fits within 256 MB Workers memory when loaded incrementally.
       //   - INT4 sharded (129 MB) is the fallback if INT8 fails.
-      //   - Micro model (263 KB) always fits and is the guaranteed fallback.
+      //   - Micro model (263 KB) is the last recovery option when larger variants are unavailable.
       //
       // Priority order (best quality first):
       //   1. INT8 sharded (~6x43 MB shards, streaming) — 16x better than INT4
       //   2. INT4 sharded (~5x30 MB shards) — fallback
       //   3. INT4 single-file (~129 MB) — same quality, different packaging
-      //   4. Micro model (263 KB embedded) — guaranteed to work
+      //   4. Micro model (263 KB embedded) — last recovery option
       let weightsBytes = null;
       let config = null;
       let scales = null;
@@ -1508,8 +1532,8 @@ export default {
                 "paddle-ocr": {
                   status: "recommended",
                   location: "browser",
-                  quality: "99.6%",
-                  note: "Production primary — runs client-side via WASM, no server round-trip",
+                  quality: "external benchmark required",
+                  note: "Recommended browser-side OCR path; verify against current benchmarks",
                 },
                 "falcon-ocr": {
                   status: "experimental",
@@ -1550,8 +1574,8 @@ export default {
                 "paddle-ocr": {
                   status: "recommended",
                   location: "browser",
-                  quality: "99.6%",
-                  note: "Production primary OCR engine (client-side WASM)",
+                  quality: "external benchmark required",
+                  note: "Recommended browser-side OCR engine; verify against current benchmarks",
                 },
                 "falcon-ocr": {
                   status: modelReady ? "ready" : initError ? "error" : "loading",
@@ -1580,7 +1604,7 @@ export default {
         if (request.method !== "POST") {
           return new Response(
             JSON.stringify({ error: "Method not allowed", request_id: rid }),
-            { status: 405, headers: { ...cors, "Content-Type": "application/json" } },
+            { status: 405, headers: { ...cors, "Content-Type": "application/json", "X-Request-ID": rid } },
           );
         }
 
@@ -1595,7 +1619,7 @@ export default {
           ? { "X-Payment-Receipt": payment.receipt }
           : {};
 
-        // Backend selection: PaddleOCR is the production primary (client-side).
+        // Backend selection: PaddleOCR is the recommended client-side OCR path.
         // Falcon-OCR is experimental — only when explicitly requested via header.
         const useBackend = request.headers.get("X-Use-Backend");
 
@@ -1887,12 +1911,12 @@ export default {
         if (path === "/ocr" && useBackend !== "falcon-ocr") {
           return new Response(
             JSON.stringify({
-              error: "Use PaddleOCR (client-side) for production OCR",
+              error: "Use the configured client-side OCR path",
               ocr_engine: "paddle-ocr",
               location: "browser",
-              quality: "99.6%",
+              quality: "external benchmark required",
               fallback_url: "/api/ocr/paddle",
-              hint: "PaddleOCR runs client-side via WASM — no server round-trip needed. To use experimental Falcon-OCR edge inference, set header X-Use-Backend: falcon-ocr. Nemotron v2 requires an explicitly configured GPU service endpoint.",
+              hint: "The client-side OCR path runs in the browser when configured. To use experimental Falcon-OCR edge inference, set header X-Use-Backend: falcon-ocr. Nemotron v2 requires an explicitly configured GPU service endpoint.",
               request_id: rid,
             }),
             {
@@ -1975,6 +1999,7 @@ export default {
                     ...cors,
                     "Content-Type": "application/json",
                     "X-Cache-Status": "HIT-KV",
+                    "X-Request-ID": rid,
                   },
                 },
               );
@@ -1987,15 +2012,70 @@ export default {
             }
           }
 
-          // Level 3: Compute inference (cache miss) — with timeout guard
+          // Level 3: Compute inference (cache miss) — with inflight dedup + timeout guard.
+          //
+          // If another request for the same image is already running inference,
+          // wait for that result instead of launching a duplicate forward pass.
+          // The inflight map stores a Promise that resolves to a buffered JSON
+          // body + status, so every waiter can construct an independent Response.
           let response;
-          try {
-            response = await withTimeout(
+
+          /**
+           * Run inference, cache the result, and return a { body, status } pair
+           * that can be shared across concurrent waiters without body-consumed issues.
+           */
+          const doInference = async () => {
+            const inferResult = await withTimeout(
               () => handleOcrRequest(request, inferenceBackend, env, cors, rid, activeDevice, cachedTokenizer),
               INFERENCE_TIMEOUT_MS,
               "OCR inference",
             );
+
+            // Buffer the response body so we can share it across waiters.
+            const bodyText = await inferResult.text();
+            const status = inferResult.status;
+            const headers = Object.fromEntries(inferResult.headers.entries());
+
+            // Cache the result for future requests
+            if (imageHash && status === 200) {
+              try {
+                const resultBody = JSON.parse(bodyText);
+                setCachedResult(env, imageHash, resultBody, ctx);
+                setEdgeCachedResponse(
+                  request,
+                  imageHash,
+                  new Response(bodyText, { status, headers: { ...headers } }),
+                  ctx,
+                );
+              } catch (_err) {
+                // Cache write failure is non-fatal
+              }
+            }
+            return { bodyText, status, headers };
+          };
+
+          try {
+            let shared;
+            if (imageHash && inflightRequests.has(imageHash)) {
+              // Another request is already computing this image — share the result.
+              shared = await inflightRequests.get(imageHash);
+            } else {
+              const inferencePromise = doInference();
+              if (imageHash) {
+                inflightRequests.set(imageHash, inferencePromise);
+              }
+              try {
+                shared = await inferencePromise;
+              } finally {
+                if (imageHash) inflightRequests.delete(imageHash);
+              }
+            }
+            response = new Response(shared.bodyText, {
+              status: shared.status,
+              headers: { ...shared.headers },
+            });
           } catch (timeoutErr) {
+            if (imageHash) inflightRequests.delete(imageHash);
             console.error(`Inference timeout: ${timeoutErr.message} [rid=${rid}]`);
             return new Response(
               JSON.stringify({
@@ -2007,34 +2087,27 @@ export default {
               }),
               {
                 status: 504,
-                headers: { ...cors, "Content-Type": "application/json", "Retry-After": "5" },
+                headers: { ...cors, "Content-Type": "application/json", "Retry-After": "5", "X-Request-ID": rid },
               },
             );
-          }
-
-          // Cache the result for future requests
-          if (imageHash && response.status === 200) {
-            try {
-              const responseClone = response.clone();
-              const resultBody = await responseClone.json();
-              setCachedResult(env, imageHash, resultBody, ctx);
-              // Also store in edge cache
-              setEdgeCachedResponse(request, imageHash, response.clone(), ctx);
-            } catch (_err) {
-              // Cache write failure is non-fatal
-            }
           }
 
           // Attach payment receipt to successful responses
           if (payment.receipt) {
             const headers = new Headers(response.headers);
             headers.set("X-Payment-Receipt", payment.receipt);
+            headers.set("X-Request-ID", rid);
             return new Response(response.body, {
               status: response.status,
               headers,
             });
           }
-          return response;
+          const finalHeaders = new Headers(response.headers);
+          finalHeaders.set("X-Request-ID", rid);
+          return new Response(response.body, {
+            status: response.status,
+            headers: finalHeaders,
+          });
         }
 
         if (path === "/ocr/tokens") {
@@ -2188,7 +2261,7 @@ export default {
 
         return new Response(
           JSON.stringify({ error: "Not found", request_id: rid }),
-          { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
+          { status: 404, headers: { ...cors, "Content-Type": "application/json", "X-Request-ID": rid } },
         );
       },
     });
@@ -2204,7 +2277,7 @@ export default {
         }),
         {
           status: 500,
-          headers: { ...cors, "Content-Type": "application/json" },
+          headers: { ...cors, "Content-Type": "application/json", "X-Request-ID": rid },
         },
       );
     }
