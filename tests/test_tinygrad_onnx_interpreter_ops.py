@@ -239,6 +239,25 @@ def test_onnx_resize_honors_align_corners_for_nearest() -> None:
         assert onnx._realize_floats(out) == [10.0, 20.0, 20.0, 30.0]
 
 
+def test_onnx_resize_defaults_to_half_pixel_coordinates_for_nearest() -> None:
+    with tinygrad_stdlib_context("onnx_interpreter") as modules:
+        onnx = modules["onnx_interpreter"]
+        x = onnx._make_tensor([10.0, 20.0, 30.0, 40.0, 50.0], (1, 1, 5, 1))
+
+        out = onnx._op_resize(
+            [
+                x,
+                None,
+                None,
+                onnx._make_int_tensor([1, 1, 3, 1], (4,)),
+            ],
+            {"mode": "nearest"},
+        )[0]
+
+        assert out.shape == (1, 1, 3, 1)
+        assert onnx._realize_floats(out) == [10.0, 30.0, 50.0]
+
+
 def test_onnx_conv_rejects_non_divisible_group_count() -> None:
     with tinygrad_stdlib_context("onnx_interpreter") as modules:
         onnx = modules["onnx_interpreter"]

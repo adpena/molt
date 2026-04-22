@@ -1259,7 +1259,7 @@ def _op_resize(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     """
     x = inputs[0]
     mode = _get_attr_string(attrs, "mode", "nearest")
-    coordinate_mode = _get_attr_string(attrs, "coordinate_transformation_mode", "asymmetric")
+    coordinate_mode = _get_attr_string(attrs, "coordinate_transformation_mode", "half_pixel")
     nearest_mode = _get_attr_string(attrs, "nearest_mode", "round_prefer_floor")
 
     # Determine output size from scales or sizes input
