@@ -8,6 +8,7 @@ from typing import Iterable
 _IMPORT_REGISTRY_ENTRY_RE = re.compile(r'\("([^"]+)",\s*\d+\)')
 _INTRINSIC_CALL_RE = re.compile(
     r'(?:_(?:require|lazy|optional)_intrinsic|_intrinsic_require)\(\s*"(?P<name>molt_[A-Za-z0-9_]+)"'
+    r'|_resolve_optional_intrinsic\(\s*"[^"]+"\s*,\s*"(?P<resolved_name>molt_[A-Za-z0-9_]+)"'
 )
 _INTRINSIC_SYMBOL_RE = re.compile(
     r'IntrinsicSpec\s*\{\s*name:\s*"(?P<name>[^"]+)"\s*,\s*symbol:\s*"(?P<symbol>[^"]+)"',
@@ -131,7 +132,7 @@ def _resolved_runtime_owned_intrinsic_exports(
             continue
         text = module_path.read_text(encoding="utf-8")
         for match in _INTRINSIC_CALL_RE.finditer(text):
-            names.add(match.group("name"))
+            names.add(match.group("name") or match.group("resolved_name"))
     return tuple(sorted(names))
 
 

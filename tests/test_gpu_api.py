@@ -231,7 +231,7 @@ def test_kernel_launcher_resolves_backend_intrinsic_lazily(monkeypatch):
     assert gpu.from_device(c) == [0.0]
 
 
-def test_kernel_launcher_runtime_active_missing_intrinsic_fails_closed(monkeypatch):
+def test_kernel_launcher_runtime_active_missing_intrinsic_uses_interpreter(monkeypatch):
     import molt.gpu as gpu
 
     executed = []
@@ -258,10 +258,10 @@ def test_kernel_launcher_runtime_active_missing_intrinsic_fails_closed(monkeypat
     b = gpu.to_device([2.0])
     c = gpu.alloc(1, float)
 
-    with pytest.raises(RuntimeError, match="molt_gpu_kernel_launch"):
-        vector_add[1, 1](a, b, c, 1)
+    vector_add[1, 1](a, b, c, 1)
 
-    assert executed == []
+    assert executed == ["ran"]
+    assert gpu.from_device(c) == [3.0]
 
 
 def test_kernel_simulation_restores_thread_id_after_kernel_error(monkeypatch):
@@ -920,7 +920,7 @@ def test_tensor_take_rows_rejects_out_of_range_indices():
         t.take_rows(Tensor([2]))
 
 
-def test_tensor_take_rows_uses_intrinsic_when_available(monkeypatch):
+def test_tensor_take_rows_uses_portable_row_copy_when_intrinsic_present(monkeypatch):
     import array
     from molt.gpu import to_device
     import molt.gpu.tensor as tensor_mod
@@ -943,7 +943,7 @@ def test_tensor_take_rows_uses_intrinsic_when_available(monkeypatch):
 
     out = tensor_take_rows(weight, [2, 0], allow_negative=False)
 
-    assert calls == [((3, 2), (2,), False)]
+    assert calls == []
     assert out.to_list() == [[5.0, 6.0], [1.0, 2.0]]
 
 

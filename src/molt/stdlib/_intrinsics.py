@@ -78,9 +78,6 @@ def runtime_active():
         return True
     if globals().get("_molt_runtime", False) or globals().get("_molt_intrinsics_strict", False):
         return True
-    reg = _lookup_builtin_obj(builtins_obj, _REGISTRY_NAME)
-    if isinstance(reg, dict):
-        return True
     helper = _lookup_builtin_obj(builtins_obj, _LOOKUP_HELPER_NAME)
     if _is_intrinsic_value(helper):
         return True
