@@ -189,6 +189,9 @@ export async function processQueueBatch(batch, env) {
         try {
             // Run OCR inference (uses Workers AI or local WASM depending on config)
             const ocrResult = await runOCRInference(env, imageData);
+            if (typeof ocrResult.text !== 'string' || ocrResult.text.trim() === '') {
+                throw new Error('OCR returned empty text');
+            }
 
             // Store result in KV
             await env.CACHE.put(

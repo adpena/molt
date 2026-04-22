@@ -54,6 +54,13 @@ async function getSimdOpsWasm() {
 import { isWorkersAiAvailable } from "./ai-fallback.js";
 import { proxyToGPU, gpuInferenceStatus } from "./gpu-proxy.js";
 
+function isFromBrowser(request, env) {
+  const origin = request.headers.get("Origin");
+  if (!origin) return false;
+  const allowedOrigin = env.CORS_ORIGIN || "https://freeinvoicemaker.app";
+  return origin === allowedOrigin;
+}
+
 // ---------------------------------------------------------------------------
 // Embedded browser test page HTML (serves at /test)
 // JS imports rewritten from relative to /browser/ for R2 serving.
@@ -199,7 +206,7 @@ const TEST_HTML = `<!DOCTYPE html>
 
         const ocr = new FalconOCR({
             wasmUrl: 'https://falcon-ocr.adpena.workers.dev/wasm/falcon-ocr.wasm',
-            weightsVariant: 'falcon-ocr-int4',
+            weightsVariant: 'falcon-ocr-int8',
             onProgress: (phase, pct, detail) => {
                 const msg = detail?.message || detail?.phase || '';
                 status.textContent = \`[\${phase}] \${pct}% \${msg}\`;
@@ -295,6 +302,105 @@ const TEST_HTML = `<!DOCTYPE html>
                 console.error('OCR inference failed:', err);
             }
         });
+    </script>
+</body>
+</html>`;
+
+// ---------------------------------------------------------------------------
+// Embedded dashboard HTML (serves at /dashboard)
+// Revenue calculator and system status overview.
+// ---------------------------------------------------------------------------
+const DASHBOARD_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Falcon-OCR Dashboard</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 24px;
+            background: #0a0a0a;
+            color: #e0e0e0;
+        }
+        h1 { margin-bottom: 24px; font-size: 1.4em; }
+        h2 { margin-bottom: 12px; font-size: 1.1em; color: #4a9eff; }
+        .card {
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #222;
+            font-size: 0.9em;
+        }
+        .metric:last-child { border-bottom: none; }
+        .status-ok { color: #4aff4a; font-weight: bold; }
+        .status-warn { color: #ffaa4a; }
+        .status-err { color: #ff4a4a; }
+        #health-status { font-size: 0.85em; color: #888; margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <h1>Falcon-OCR Dashboard</h1>
+
+    <div class="card">
+        <h2>Revenue Calculator</h2>
+        <div class="metric"><span>x402 price per OCR</span><span>$0.001</span></div>
+        <div class="metric"><span>GPU service cost per OCR</span><span>configured externally</span></div>
+        <div class="metric"><span>Margin per request</span><span class="status-warn">not estimated</span></div>
+        <div class="metric"><span>Daily requests</span><span><input id="daily-req" type="number" value="100" style="width:60px;background:#222;color:#fff;border:1px solid #444;padding:2px 4px;text-align:right"> </span></div>
+        <div class="metric"><span>Monthly revenue</span><span class="status-ok" id="monthly-rev">$3.00</span></div>
+        <div class="metric"><span>Monthly cost</span><span id="monthly-cost">configured externally</span></div>
+        <div class="metric"><span>Monthly profit</span><span class="status-warn" id="monthly-profit">not estimated</span></div>
+    </div>
+
+    <div class="card">
+        <h2>System Status</h2>
+        <div id="health-status">Loading...</div>
+    </div>
+
+    <div class="card">
+        <h2>Architecture</h2>
+        <div class="metric"><span>Browser users (Origin header)</span><span>Free WebGPU inference (client-side)</span></div>
+        <div class="metric"><span>API agents (no Origin)</span><span>x402 payment -> configured GPU service</span></div>
+        <div class="metric"><span>GPU fallback</span><span>Edge CPU inference (INT8)</span></div>
+        <div class="metric"><span>GPU provider</span><span>See /health configuration</span></div>
+    </div>
+
+    <script>
+    document.getElementById('daily-req').addEventListener('input', (e) => {
+        const daily = parseInt(e.target.value) || 0;
+        const monthly = daily * 30;
+        document.getElementById('monthly-rev').textContent = '$' + (monthly * 0.001).toFixed(2);
+        document.getElementById('monthly-cost').textContent = 'configured externally';
+        document.getElementById('monthly-profit').textContent = 'not estimated';
+    });
+    fetch('/health').then(r => r.json()).then(d => {
+        const el = document.getElementById('health-status');
+        const lines = [];
+        lines.push('Status: ' + d.status);
+        lines.push('Version: ' + (d.version || 'unknown'));
+        if (d.gpu_inference) lines.push('GPU: ' + (d.gpu_inference.configured ? 'configured (' + (d.gpu_inference.provider || 'unknown') + ')' : 'not configured'));
+        lines.push('Workers AI: ' + (d.workers_ai_available ? 'available' : 'not bound'));
+        lines.push('Cache KV: ' + (d.cache?.kv ? 'yes' : 'no'));
+        if (d.analytics) {
+            lines.push('RPM: ' + (d.analytics.requests_per_minute || 0));
+            lines.push('Error rate: ' + (d.analytics.error_rate || '0%'));
+            lines.push('Cache hit ratio: ' + (d.analytics.cache_hit_ratio || '0%'));
+        }
+        el.textContent = lines.join('\\n');
+    }).catch(err => {
+        document.getElementById('health-status').textContent = 'Failed to load: ' + err.message;
+    });
     </script>
 </body>
 </html>`;
@@ -903,6 +1009,22 @@ async function ensureModelLoaded(env) {
  * @param {object} env
  * @returns {Record<string, string>}
  */
+/**
+ * Detect whether the request originates from a browser (has Origin header
+ * matching the allowed CORS origin).  Browser users get free WebGPU inference
+ * client-side; API agents (no Origin) pay via x402 and get server-side GPU.
+ *
+ * @param {Request} request
+ * @param {object} env
+ * @returns {boolean}
+ */
+function isFromBrowser(request, env) {
+  const origin = request.headers.get("Origin");
+  if (!origin) return false;
+  const allowedOrigin = env.CORS_ORIGIN || "https://freeinvoicemaker.app";
+  return origin === allowedOrigin;
+}
+
 function corsHeaders(env) {
   const origin = env.CORS_ORIGIN || "https://freeinvoicemaker.app";
   return {
@@ -1173,6 +1295,12 @@ export default {
     // -----------------------------------------------------------------------
     if (request.method === "GET" && path === "/test") {
       return new Response(TEST_HTML, {
+        headers: { "Content-Type": "text/html; charset=utf-8", ...cors }
+      });
+    }
+
+    if (request.method === "GET" && path === "/dashboard") {
+      return new Response(DASHBOARD_HTML, {
         headers: { "Content-Type": "text/html; charset=utf-8", ...cors }
       });
     }
@@ -1476,6 +1604,87 @@ export default {
         // Backend selection: PaddleOCR is the production primary (client-side).
         // Falcon-OCR is experimental — only when explicitly requested via header.
         const useBackend = request.headers.get("X-Use-Backend");
+
+        // -------------------------------------------------------------------
+        // x402 → configured GPU inference path (default for API agents).
+        //
+        // For API agents (no Origin header, paying via x402):
+        //   Route to the configured GPU inference proxy.
+        //
+        // Browser users (Origin header) skip this — they get free WebGPU
+        // inference client-side via PaddleOCR/Falcon-OCR WASM.
+        //
+        // If the caller explicitly sets X-Use-Backend, respect that choice
+        // and fall through to the existing backend routing below.
+        // -------------------------------------------------------------------
+        if (path === "/ocr" && !useBackend && !isFromBrowser(request, env)) {
+          const gpuStatus = gpuInferenceStatus(env);
+          if (gpuStatus.configured) {
+            try {
+              const body = await request.clone().json();
+              if (body.image && typeof body.image === "string") {
+                const gpuResult = await proxyToGPU(env, body.image, {
+                  maxTokens: body.max_tokens || 512,
+                  category: body.category || "plain",
+                  timeout: 30_000,
+                });
+                if (gpuResult) {
+                  return new Response(
+                    JSON.stringify({
+                      ...gpuResult,
+                      engine: "falcon-ocr",
+                      backend: "gpu",
+                      payment_receipt: payment.receipt || undefined,
+                      request_id: rid,
+                    }),
+                    {
+                      status: 200,
+                      headers: {
+                        ...cors,
+                        ...receiptHeaders,
+                        "Content-Type": "application/json",
+                        "X-Request-ID": rid,
+                      },
+                    },
+                  );
+                }
+                return new Response(
+                  JSON.stringify({
+                    error: "GPU inference backend returned no result",
+                    request_id: rid,
+                  }),
+                  {
+                    status: 503,
+                    headers: {
+                      ...cors,
+                      ...receiptHeaders,
+                      "Content-Type": "application/json",
+                      "X-Request-ID": rid,
+                    },
+                  },
+                );
+              }
+            } catch (gpuErr) {
+              return new Response(
+                JSON.stringify({
+                  error: "GPU inference backend failed",
+                  detail: gpuErr.message,
+                  request_id: rid,
+                }),
+                {
+                  status: 503,
+                  headers: {
+                    ...cors,
+                    ...receiptHeaders,
+                    "Content-Type": "application/json",
+                    "X-Request-ID": rid,
+                  },
+                },
+              );
+            }
+          }
+          // GPU not configured — continue to existing explicit backend guidance below.
+        }
 
         // Route to Durable Object for persistent Falcon-OCR inference.
         if (useBackend === "durable" && env.FALCON_OCR && path === "/ocr") {

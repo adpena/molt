@@ -19,7 +19,6 @@ import array
 import json
 import math
 import os
-import _intrinsics
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 # GPU primitive intrinsic — required for WASM stdlib enforcement
@@ -39,22 +38,18 @@ _freqs: list | None = None
 _freqs_len = 0
 
 
-def _load_optional_intrinsic(name: str):
-    loader = getattr(_intrinsics, "load_intrinsic", None)
-    if callable(loader):
-        return loader(name)
-    require = getattr(_intrinsics, "require_intrinsic", None)
-    if callable(require):
-        try:
-            return require(name)
-        except RuntimeError:
-            return None
-    return None
-
-
-_MOLT_GPU_ROPE_APPLY_CONTIGUOUS = _load_optional_intrinsic(
+_MOLT_GPU_ROPE_APPLY_CONTIGUOUS = _require_intrinsic(
     "molt_gpu_rope_apply_contiguous"
 )
+
+
+def _require_weight(state, name: str):
+    try:
+        return state[name]
+    except KeyError as exc:
+        raise KeyError(
+            f"Falcon-OCR weights missing required tensor: {name}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -577,22 +572,22 @@ def init(weights_bytes: bytes, config_json: str) -> None:
     global _config, _tok_embeddings, _img_projector, _layers, _norm_weight, _output, _freqs, _freqs_len
     _config = FalconOCRConfig.from_json(config_json)
     state = load_safetensors_bytes(weights_bytes)
-    _tok_embeddings = state["tok_embeddings.weight"]
-    _img_projector = state["img_projector.weight"]
+    _tok_embeddings = _require_weight(state, "tok_embeddings.weight")
+    _img_projector = _require_weight(state, "img_projector.weight")
     _layers = []
     for i in range(_config.n_layers):
         prefix = f"layers.{i}"
         _layers.append(
             (
-                state[f"{prefix}.attention.wqkv.weight"],
-                state[f"{prefix}.attention.wo.weight"],
-                state.get(f"{prefix}.attention.sinks", Tensor.zeros(_config.n_heads)),
-                state[f"{prefix}.feed_forward.w13.weight"],
-                state[f"{prefix}.feed_forward.w2.weight"],
+                _require_weight(state, f"{prefix}.attention.wqkv.weight"),
+                _require_weight(state, f"{prefix}.attention.wo.weight"),
+                _require_weight(state, f"{prefix}.attention.sinks"),
+                _require_weight(state, f"{prefix}.feed_forward.w13.weight"),
+                _require_weight(state, f"{prefix}.feed_forward.w2.weight"),
             )
         )
-    _norm_weight = state["norm.weight"]
-    _output = state["output.weight"]
+    _norm_weight = _require_weight(state, "norm.weight")
+    _output = _require_weight(state, "output.weight")
     _freqs = None
     _freqs_len = 0
 

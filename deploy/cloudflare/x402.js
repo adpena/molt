@@ -224,6 +224,9 @@ function paymentRequiredResponse(error, rid, walletAddress, cors) {
         currency: "USDC",
         description: "Falcon-OCR inference: $0.001 per request",
         price_usd: PRICE_USD,
+        quality: "GPU bfloat16 (highest quality)",
+        speed: "~1s inference on A10G",
+        engine: "falcon-ocr",
       },
     }),
     {
