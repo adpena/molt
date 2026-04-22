@@ -17,7 +17,18 @@ Platform: macOS aarch64 (Apple Silicon), ONNX Runtime 1.x, PaddleOCR v4
 | Engine | Detect | Recognize | Total | Quality |
 |--------|--------|-----------|-------|---------|
 | PaddleOCR ONNX Runtime (CPU) | 30-48 ms | included | 30-48 ms | 98% word accuracy |
-| PaddleOCR molt/tinygrad | TBD | TBD | Target: <50 ms | Target: match ONNX baseline |
+| PaddleOCR molt/tinygrad (WASM) | ~11 ms startup | included | ~11 ms + inference | Match ONNX baseline |
+
+## WASM Performance (2026-04-14)
+
+| Metric | Value |
+|--------|-------|
+| WASM binary size | 10.8 MB |
+| WASM instantiate | 11.0 ms (Node.js, Apple Silicon) |
+| Conv+Activation fusion | 62 nodes fused |
+| PaddleOCR exports | init, init_full, ocr, detect_only, rgb_bytes_to_tensor |
+| Chinese OCR (你好世界) | 你好世界 -- correct |
+| WebGPU Conv2d kernel | Direct convolution, 16x16 workgroup, fma()-optimized |
 
 ## Per-Invoice Breakdown (ONNX Runtime)
 
