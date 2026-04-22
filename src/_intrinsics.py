@@ -90,7 +90,7 @@ def runtime_active():
 def require_intrinsic(name, namespace=None):
     # 1. Check module-level lookup helper first (injected by runtime).
     helper = globals().get(_LOOKUP_HELPER_NAME)
-    if _is_intrinsic_value(helper):
+    if callable(helper):
         value = helper(name)
         if value is not None:
             return value
@@ -102,7 +102,7 @@ def require_intrinsic(name, namespace=None):
 
     # 3. Check the current runtime builtins module for the lookup helper.
     builtins_helper = getattr(_runtime_builtins_obj(), _LOOKUP_HELPER_NAME, None)
-    if _is_intrinsic_value(builtins_helper):
+    if callable(builtins_helper):
         value = builtins_helper(name)
         if value is not None:
             return value

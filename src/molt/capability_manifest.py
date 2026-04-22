@@ -22,7 +22,7 @@ import sys
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional, Union
+from typing import Any, Literal, Optional, Union, cast
 
 # tomllib is stdlib in 3.11+; fall back to tomli for 3.10.
 if sys.version_info >= (3, 11):
@@ -98,7 +98,7 @@ _DURATION_MULTIPLIERS: dict[str, float] = {
 }
 
 
-def parse_size(s: str) -> int:
+def parse_size(s: str | int | float) -> int:
     """Parse a human-readable size string to bytes.
 
     Accepted formats: ``"64MB"``, ``"10KB"``, ``"1GB"``, ``"512B"``.
@@ -119,7 +119,7 @@ def parse_size(s: str) -> int:
     return result
 
 
-def parse_duration(s: str) -> float:
+def parse_duration(s: str | int | float) -> float:
     """Parse a human-readable duration string to seconds.
 
     Accepted formats: ``"30s"``, ``"500ms"``, ``"2m"``, ``"1h"``.
@@ -941,7 +941,7 @@ def _run_tests() -> None:
             failed += 1
             print(f"  FAIL: {msg}")
 
-    def _assert_raises(exc_type: type, fn: Any, msg: str) -> None:
+    def _assert_raises(exc_type: type[BaseException], fn: Any, msg: str) -> None:
         nonlocal passed, failed
         try:
             fn()
@@ -1117,7 +1117,7 @@ tier_up_threshold = 50
     m = CapabilityManifest(resources=ResourceLimits(max_memory=-1))
     _assert_raises(ManifestError, lambda: validate_manifest(m), "negative max_memory")
 
-    m = CapabilityManifest(io=IoConfig(mode="invalid"))  # type: ignore[arg-type]
+    m = CapabilityManifest(io=IoConfig(mode=cast(Any, "invalid")))
     _assert_raises(ManifestError, lambda: validate_manifest(m), "invalid io mode")
 
     m = CapabilityManifest(monty=MontyConfig(tier_up_threshold=-5))
