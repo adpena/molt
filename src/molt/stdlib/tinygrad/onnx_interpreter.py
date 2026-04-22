@@ -29,6 +29,13 @@ from tinygrad.tensor import Tensor
 from tinygrad.dtypes import dtypes
 
 
+def _shape_product(shape: tuple[int, ...] | list[int]) -> int:
+    result = 1
+    for dim in shape:
+        result *= dim
+    return result
+
+
 # ---------------------------------------------------------------------------
 # ONNX attribute helpers
 # ---------------------------------------------------------------------------
@@ -656,6 +663,11 @@ def _op_reduce_mean(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     # Normalize negative axes
     ndim = len(x.shape)
     axes = [a if a >= 0 else a + ndim for a in axes]
+    for ax in axes:
+        if ax < 0 or ax >= ndim:
+            raise ValueError(f"ReduceMean axis {ax} out of range for rank {ndim}")
+    if len(set(axes)) != len(axes):
+        raise ValueError(f"ReduceMean axes must be unique, got {axes}")
     axes = sorted(axes)
 
     result = x
@@ -1080,6 +1092,8 @@ def _op_matmul(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
 
 def _op_batch_norm(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     """BatchNormalization: (x - mean) / sqrt(var + eps) * scale + bias."""
+    if len(inputs) < 5 or any(t is None for t in inputs[:5]):
+        raise ValueError("BatchNormalization requires x, scale, bias, mean, and var")
     x = inputs[0]
     scale = inputs[1]
     bias = inputs[2]
@@ -1117,7 +1131,9 @@ def _op_reshape(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
         shape = _get_attr_ints(attrs, "shape", [])
 
     if not shape:
-        return [x]
+        raise ValueError("Reshape requires shape")
+    if shape.count(-1) > 1:
+        raise ValueError("Reshape shape may contain at most one -1")
 
     # Handle 0 dims (copy from input shape)
     allowzero = _get_attr_int(attrs, "allowzero", 0)
@@ -1125,6 +1141,19 @@ def _op_reshape(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
         for i in range(len(shape)):
             if shape[i] == 0 and i < len(x.shape):
                 shape[i] = x.shape[i]
+    known_product = 1
+    inferred = False
+    for dim in shape:
+        if dim == -1:
+            inferred = True
+            continue
+        known_product *= dim
+    x_numel = _shape_product(x.shape)
+    if inferred:
+        if known_product == 0 or x_numel % known_product != 0:
+            raise ValueError(f"Reshape cannot reshape {x.shape} to {tuple(shape)}")
+    elif known_product != x_numel:
+        raise ValueError(f"Reshape cannot reshape {x.shape} to {tuple(shape)}")
 
     return [x.reshape(*shape)]
 
@@ -1135,6 +1164,9 @@ def _op_transpose(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     if not perm:
         # Default: reverse all axes
         perm = list(range(len(x.shape) - 1, -1, -1))
+    ndim = len(x.shape)
+    if sorted(perm) != list(range(ndim)):
+        raise ValueError(f"Transpose perm must be a permutation of rank {ndim}, got {perm}")
     return [x.permute(*perm)]
 
 
@@ -1188,6 +1220,8 @@ def _op_unsqueeze(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
 def _op_concat(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     axis = _get_attr_int(attrs, "axis", 0)
     tensors = [t for t in inputs if t is not None]
+    if not tensors:
+        raise ValueError("Concat requires at least one tensor")
     return [Tensor.cat(*tensors, dim=axis)]
 
 
