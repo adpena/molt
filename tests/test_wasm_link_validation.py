@@ -753,7 +753,7 @@ def test_run_wasm_opt_via_optimize_enforces_current_export_contract(
             module.optimize = fake_optimize
 
     monkeypatch.setattr(
-        wasm_link.importlib.util,
+        importlib.util,
         "spec_from_file_location",
         lambda _name, _path: importlib.machinery.ModuleSpec(
             "wasm_optimize",
