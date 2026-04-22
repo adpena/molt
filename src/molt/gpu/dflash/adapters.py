@@ -58,6 +58,36 @@ def list_dflash_adapters():
     return sorted(_DFLASH_ADAPTERS)
 
 
+def snapshot_dflash_adapters():
+    """Return a shallow snapshot of the registered adapter specs.
+
+    Adapter specs are immutable by convention after registration. The snapshot
+    is intended for deterministic registry lifecycle management in embedding
+    contexts and tests that need temporary adapter sets.
+    """
+    return dict(_DFLASH_ADAPTERS)
+
+
+def restore_dflash_adapters(snapshot) -> None:
+    if not isinstance(snapshot, dict):
+        raise TypeError("dflash adapter snapshot must be a dict")
+    restored = {}
+    for name, spec in snapshot.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("dflash adapter snapshot keys must be non-empty strings")
+        if not isinstance(spec, DFlashAdapterSpec):
+            raise TypeError("dflash adapter snapshot values must be DFlashAdapterSpec")
+        if spec.name != name:
+            raise ValueError("dflash adapter snapshot key must match spec.name")
+        restored[name] = spec
+    _DFLASH_ADAPTERS.clear()
+    _DFLASH_ADAPTERS.update(restored)
+
+
+def clear_dflash_adapters() -> None:
+    _DFLASH_ADAPTERS.clear()
+
+
 def has_dflash_backend(backend: str | None) -> bool:
     if backend is None:
         return False
@@ -92,7 +122,9 @@ def resolve_default_dflash_adapter(context):
     tied = [adapter for adapter in candidates if adapter.priority == top.priority]
     if len(tied) > 1:
         names = ", ".join(adapter.name for adapter in tied)
-        raise ValueError(f"multiple dflash adapters match with the same priority: {names}")
+        raise ValueError(
+            f"multiple dflash adapters match with the same priority: {names}"
+        )
     return top
 
 
@@ -133,5 +165,7 @@ def build_dflash_runtime(
     if runtime is not None:
         return runtime
     if dflash_adapter is not None:
-        raise LookupError(f"dflash adapter '{dflash_adapter}' is unavailable for this context")
+        raise LookupError(
+            f"dflash adapter '{dflash_adapter}' is unavailable for this context"
+        )
     return None
