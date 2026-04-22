@@ -8,7 +8,6 @@ integration requires the molt runtime and is covered by runtime tests.
 import os
 import sys
 import glob
-import struct
 import types
 
 
@@ -27,6 +26,8 @@ def _import_paddleocr_module():
     mock_dtypes_mod = types.ModuleType("tinygrad.dtypes")
     mock_lazy = types.ModuleType("tinygrad.lazy")
     mock_realize = types.ModuleType("tinygrad.realize")
+    mock_intrinsics = types.ModuleType("_intrinsics")
+    mock_intrinsics.require_intrinsic = lambda _name: (lambda *args, **kwargs: None)
 
     class FakeDtypes:
         float32 = "float32"
@@ -56,10 +57,11 @@ def _import_paddleocr_module():
     mock_lazy.LazyBuffer = FakeLazyBuffer
 
     saved = {}
-    for name in ("tinygrad", "tinygrad.tensor", "tinygrad.dtypes",
+    for name in ("_intrinsics", "tinygrad", "tinygrad.tensor", "tinygrad.dtypes",
                   "tinygrad.lazy", "tinygrad.realize"):
         saved[name] = sys.modules.get(name)
 
+    sys.modules["_intrinsics"] = mock_intrinsics
     sys.modules["tinygrad"] = mock_tinygrad
     sys.modules["tinygrad.tensor"] = mock_tensor
     sys.modules["tinygrad.dtypes"] = mock_dtypes_mod
@@ -188,6 +190,35 @@ def test_classifier_weights_load() -> None:
     print("  PASS")
 
 
+def test_recognizer_load_populates_charset_on_normal_load_path() -> None:
+    """PaddleOCR.load_recognizer() must not leave CTC charset empty."""
+    mod = _import_paddleocr_module()
+
+    fake_onnx = types.ModuleType("tinygrad.onnx_interpreter")
+
+    class FakeInterpreter:
+        def load_model(self, _data):
+            return None
+
+    fake_onnx.OnnxInterpreter = FakeInterpreter
+    saved = sys.modules.get("tinygrad.onnx_interpreter")
+    sys.modules["tinygrad.onnx_interpreter"] = fake_onnx
+    original_load_onnx = mod.WeightStore.load_onnx
+    mod.WeightStore.load_onnx = lambda self, _data: 1
+    try:
+        recognizer = mod.PaddleOCRRecognizer()
+
+        recognizer.load(b"onnx", "A\nB\n")
+
+        assert recognizer.charset == ["", "A", "B", " "]
+    finally:
+        mod.WeightStore.load_onnx = original_load_onnx
+        if saved is None:
+            sys.modules.pop("tinygrad.onnx_interpreter", None)
+        else:
+            sys.modules["tinygrad.onnx_interpreter"] = saved
+
+
 def test_weight_parser_dtype_coverage() -> None:
     """Verify the parser handles all ONNX dtypes present in PaddleOCR models."""
     onnx_path = find_onnx_file("ch_PP-OCRv4_rec.onnx")
@@ -221,7 +252,6 @@ def test_weight_data_integrity() -> None:
 
     try:
         import onnx
-        from onnx import numpy_helper
     except ImportError:
         print("SKIP: onnx library not available for cross-validation")
         return
