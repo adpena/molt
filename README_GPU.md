@@ -99,6 +99,68 @@ Browser (WebGPU/WASM)     API Request
                         Response
 ```
 
+## Model Comparison
+
+| Engine | Params | Accuracy | Latency (browser) | Languages | Use Case |
+|--------|--------|----------|--------------------|-----------|----------|
+| PaddleOCR | ~12M | 99.6% | ~200ms | 10 | Invoices, receipts, forms |
+| Falcon-OCR INT8 | 300M | High | ~2-4s | Multi | Complex documents, tables |
+| Falcon-OCR INT4 | 300M | Good | ~1-2s | Multi | Memory-constrained edge |
+| Whisper tiny | 39M | -- | Scaffold | -- | Speech-to-text (coming) |
+
+## Browser Compute Priority Chain
+
+The browser runtime probes backends in order and uses the first available:
+
+```
+1. WebNN        -- Hardware ML accelerator (Chrome 127+, Edge)
+2. WebGPU       -- GPU compute shaders (Chrome, Firefox Nightly)
+3. WebGL2       -- Fragment shader fallback (universal GPU)
+4. WASM SIMD    -- CPU vectorized (all modern browsers)
+5. WASM scalar  -- CPU baseline (universal fallback)
+```
+
+Server-side fallback chain:
+```
+6. Workers AI   -- Cloudflare GPU fleet
+7. External GPU -- HuggingFace / Replicate / RunPod / Modal / Fly.io
+```
+
+## Deployment Architecture
+
+```
+                    +------------------+
+                    |  HuggingFace     |
+                    |  Space (static)  |
+                    +--------+---------+
+                             |
+                             v
++-------------+    +-------------------+    +----------------+
+| Browser     |--->| Cloudflare Worker |--->| R2 Storage     |
+| (WebGPU/    |    | (edge inference)  |    | (weights/WASM) |
+|  WASM)      |    +--------+----------+    +----------------+
++-------------+             |
+                    +-------+--------+
+                    | Fallback chain  |
+                    | 1. Workers AI   |
+                    | 2. External GPU |
+                    | 3. PaddleOCR    |
+                    +-----------------+
+```
+
+## Performance Baselines
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| WASM binary | 10.5 MB raw | 4-6 MB achievable with tree-shaking |
+| SIMD matmul 64x64 (Rust) | ~14,500 ns | 2.5x faster than Zig |
+| SIMD softmax 1024 (Rust) | ~2,250 ns | Online 2-pass algorithm |
+| Health endpoint | 79ms avg | 10 concurrent |
+| Invoice fill (Workers AI) | 2.74s avg | 5 concurrent |
+| ONNX op parity | 29/29 ops | max_diff < 4e-6 |
+| Differential tests | 72/72 pass | native + WASM + LLVM |
+| Codebase | ~2.3M LOC | Rust 660K + Python 1.5M + JS 63K |
+
 ## Health Check
 
 ```bash
