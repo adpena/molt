@@ -1,13 +1,13 @@
 /**
  * GPU inference proxy — forwards OCR requests to an external GPU service
- * for bfloat16-quality Falcon-OCR inference.
+ * for externally hosted Falcon-OCR inference.
  *
  * Supported backends (in priority order):
  *   1. HuggingFace Inference Endpoints (custom endpoint with tiiuae/Falcon-OCR)
  *   2. Replicate (push Falcon-OCR as a Cog model)
- *   3. RunPod serverless (A100/H100, lowest latency for sustained load)
- *   4. Modal (A100/H100, per-second billing, cold start ~30s)
- *   5. Fly.io GPU Machines (A100/H100, $2.50/hr, persistent)
+ *   3. RunPod serverless
+ *   4. Modal
+ *   5. Fly.io GPU Machines
  *
  * Required env vars:
  *   GPU_INFERENCE_URL    — Full URL of the GPU inference endpoint
@@ -16,10 +16,8 @@
  *
  * Docker image for self-hosted backends: ghcr.io/tiiuae/falcon-ocr:latest
  *
- * GPU requirements:
- *   - Minimum: NVIDIA T4 (16 GB VRAM) for INT8 inference
- *   - Recommended: A100 40 GB for bfloat16 full-precision inference
- *   - bfloat16 requires: CUDA compute capability >= 8.0 (A100, H100, L40S)
+ * GPU requirements are provider/model specific. Validate memory, precision,
+ * latency, and cost for the configured endpoint before enabling production use.
  */
 
 const SUPPORTED_GPU_PROVIDERS = new Set(["huggingface", "replicate", "runpod", "modal", "flyio"]);

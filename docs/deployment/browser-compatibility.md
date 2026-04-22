@@ -126,14 +126,14 @@ The notice should be dismissible and rate-limited (show once per session).
 
 The system implements a three-tier fallback chain:
 
-1. **molt-gpu** (WebGPU): highest quality, fastest on supported browsers
+1. **molt-gpu** (WebGPU): preferred accelerated path on supported browsers; benchmark per release
 2. **PaddleOCR** (WASM): production-ready fallback, works everywhere
 3. **Server-side OCR** (API): last resort, works on any browser
 
 If the primary backend fails at runtime (WASM load failure, GPU OOM),
 the worker returns a structured 503 response with `fallback_available: true`
 and `fallback_url: "/api/ocr/paddle"`. The client-side code detects this
-and automatically retries with PaddleOCR.
+and can route to PaddleOCR when that client-side backend is configured.
 
 ## Testing
 

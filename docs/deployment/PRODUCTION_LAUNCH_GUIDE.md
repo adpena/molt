@@ -4,7 +4,7 @@
 
 - **Browser**: Falcon-OCR WASM (3.9 MB) + INT4 weights (129 MB, cached in IndexedDB)
 - **Edge**: Falcon-OCR CPU on Cloudflare Workers (INT4 sharded, 5-min CPU budget)
-- **Fallback**: PaddleOCR (99.6% accuracy, no GPU needed)
+- **Fallback**: configured client-side OCR path (browser-side; benchmark per release)
 - **NL Fill**: Workers AI (Llama 3.2 3B) for natural language invoice filling
 - **Payment**: x402 USDC on Base ($0.001/request)
 

@@ -546,6 +546,62 @@ def test_deploy_production_status_avoids_unverified_working_claims() -> None:
     assert "silently falls back" not in source
 
 
+def test_deployment_docs_avoid_unsourced_ocr_quality_speed_claims() -> None:
+    docs = [
+        ROOT / "docs" / "deployment" / "PRODUCTION_STATUS.md",
+        ROOT / "docs" / "deployment" / "PRODUCTION_LAUNCH_GUIDE.md",
+        ROOT / "docs" / "deployment" / "browser-compatibility.md",
+    ]
+    forbidden = [
+        "99.6%",
+        "Instant",
+        "instant",
+        "production primary",
+        "highest quality",
+        "fastest",
+        "automatically retries",
+    ]
+    for path in docs:
+        source = path.read_text(encoding="utf-8")
+        for needle in forbidden:
+            assert needle not in source, f"{path} still contains {needle!r}"
+
+
+def test_cloudflare_gpu_docs_avoid_unsourced_provider_perf_claims() -> None:
+    files = [
+        ROOT / "deploy" / "cloudflare" / "browser-gpu-inference.js",
+        ROOT / "deploy" / "cloudflare" / "gpu-proxy.js",
+        ROOT / "deploy" / "cloudflare" / "wrangler.toml",
+    ]
+    forbidden = [
+        "REAL WebGPU",
+        "only path to GPU",
+        "A100/H100",
+        "cold start ~30s",
+        "$2.50/hr",
+        "$0.44/hr",
+        "Recommended: A100",
+        "bfloat16 full-precision",
+    ]
+    for path in files:
+        source = path.read_text(encoding="utf-8")
+        for needle in forbidden:
+            assert needle not in source, f"{path} still contains {needle!r}"
+
+
+def test_cloudflare_worker_avoids_unsourced_ocr_quality_claims() -> None:
+    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "PaddleOCR (99.6% accuracy" not in source
+    assert "client-side WASM in browser, instant" not in source
+    assert "always fits and is the guaranteed fallback" not in source
+    assert "guaranteed fallback" not in source
+    assert "Production primary" not in source
+    assert '"99.6%"' not in source
+
+
 def test_x402_payment_metadata_has_no_unverified_gpu_quality_claims() -> None:
     source = (ROOT / "deploy" / "cloudflare" / "x402.js").read_text(encoding="utf-8")
 
