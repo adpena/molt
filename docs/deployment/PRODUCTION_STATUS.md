@@ -1,4 +1,4 @@
-# Production Status — 2026-04-21
+# Production Status — 2026-04-14
 
 ## Live Endpoints
 | Endpoint | URL | Status |
@@ -74,6 +74,37 @@
 | Durable Objects | Stateful inference sessions and per-IP rate limiter |
 | Browser Rendering | WebGPU inference path (browser-gpu-inference.js) |
 | Queues | Batch OCR processing (queue-batch-ocr.js) |
+
+## GPU Inference Proxy
+| Setting | Value |
+|---------|-------|
+| Route | `X-Use-Backend: gpu` on `/ocr` |
+| Supported providers | HuggingFace Inference Endpoints, Replicate, RunPod, Modal, Fly.io |
+| Status | Wired in Worker, awaiting GPU_INFERENCE_URL/KEY/PROVIDER secrets |
+| Docker image | `ghcr.io/tiiuae/falcon-ocr:latest` |
+| Minimum GPU | NVIDIA T4 (16 GB VRAM) for INT8 |
+| Recommended GPU | A100 40 GB for bfloat16 full-precision |
+
+## WASM Binary Analysis (10.1 MB raw)
+| Section | Size | Notes |
+|---------|------|-------|
+| Code | 8.2 MB (8,644,113 bytes) | 9,934 functions |
+| Data | 1.8 MB (1,881,563 bytes) | 1,358 data segments |
+| Other | 0.1 MB | type, import, func, elem, export, custom |
+
+Reduction opportunities:
+- Tree-shake unused tinygrad Tensor methods (Falcon-OCR uses ~15 of ~100)
+- Dead function elimination on unused codegen paths
+- Data segment deduplication (1,358 segments may have overlap)
+- Further wasm-opt passes (Oz with --converge)
+- Theoretical achievable: 4-6 MB (50-60% of current size)
+
+## Load Test Results (2026-04-14)
+| Endpoint | Requests | Concurrency | Avg Latency | Status |
+|----------|----------|-------------|-------------|--------|
+| /health | 20 | 5 | 115ms | 503 (model not warmed) |
+| /invoice/fill (Workers AI) | 10 | 5 | 2.04s | 200 (10/10) |
+| /ocr (GPU proxy) | 1 | 1 | N/A | 503 (x402 payment-gated) |
 
 ## Production Hardening
 | Check | Status |

@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased] - 2026-04-14
+
+### Added
+- **GPU inference proxy** (`gpu-proxy.js`): External GPU service forwarding for bfloat16-quality Falcon-OCR inference. Supports HuggingFace Inference Endpoints, Replicate, RunPod, Modal, and Fly.io. Wired into Worker as `X-Use-Backend: gpu` route.
+- **ScanButton UX phases**: Extended `InitProgressPhase` with `inferring`, `decoding`, and `done` phases. Added `OcrProgress` interface for unified lifecycle progress reporting. `MoltOcrBackend.recognize()` now emits progress callbacks during inference.
+- **Load test harness** (`tests/e2e/test_load.sh`): Concurrent load testing for /health, /invoice/fill, and /ocr GPU proxy endpoints with latency statistics.
+- GPU inference status included in /health endpoint response
+
+### Changed
+- WASM binary analysis documented: 10.1 MB total (8.2 MB code / 9,934 functions, 1.8 MB data / 1,358 segments)
+- Production status docs updated with GPU proxy status, WASM analysis, and load test results
+
 ## [Unreleased] - 2026-04-21
 
 ### Performance
