@@ -877,6 +877,24 @@ def _op_conv(inputs: list[Tensor | None], attrs: dict) -> list[Tensor]:
     strides = _get_attr_ints(attrs, "strides", [1, 1])
     pads = _get_attr_ints(attrs, "pads", [0, 0, 0, 0])
     dilations = _get_attr_ints(attrs, "dilations", [1, 1])
+    if group <= 0:
+        raise ValueError(f"Conv group must be positive, got {group}")
+    _, c_in, _, _ = x.shape
+    c_out, c_in_per_group, _, _ = weight.shape
+    if c_in % group != 0:
+        raise ValueError(
+            f"Conv input channels {c_in} must be divisible by group {group}"
+        )
+    if c_out % group != 0:
+        raise ValueError(
+            f"Conv output channels {c_out} must be divisible by group {group}"
+        )
+    expected_weight_channels = c_in // group
+    if c_in_per_group != expected_weight_channels:
+        raise ValueError(
+            f"Conv weight input channels {c_in_per_group} do not match "
+            f"input channels per group {expected_weight_channels}"
+        )
 
     stride_h, stride_w = strides[0], strides[1] if len(strides) > 1 else strides[0]
     pad_top, pad_left = pads[0], pads[1] if len(pads) > 1 else pads[0]
