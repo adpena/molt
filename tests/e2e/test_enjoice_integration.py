@@ -121,6 +121,17 @@ def test_ocr_backend_molt_does_not_default_nemotron_endpoint():
     assert "configured endpoint only" in content
 
 
+def test_ocr_backend_molt_avoids_unverified_speed_or_availability_claims():
+    path = os.path.join(DEPLOY_ENJOICE, "ocr-backend-molt.ts")
+    with open(path, "r") as f:
+        content = f.read()
+
+    assert "fastest browser path" not in content
+    assert '"Decoding text..." (instant)' not in content
+    assert '"Reading model config..." (instant)' not in content
+    assert "caller should use PaddleOCR fallback" not in content
+
+
 def test_typescript_files_have_jsdoc():
     """TypeScript files have module-level documentation."""
     ts_files = [
