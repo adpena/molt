@@ -8,6 +8,11 @@
 > point for the active Molt implementation lane. Keep this file as detailed
 > parallel-lane context for the WASM/Falcon-OCR work, but update
 > `PRIMARY_HANDOFF.md` first when handoff state changes.
+>
+> 2026-04-22 note: `9fe653df` landed the Rust Clippy/Miri cleanup and updated
+> `PRIMARY_HANDOFF.md` with fresh local verification evidence. This file still
+> describes the Falcon-OCR WASM runtime-proof lane; do not treat it as proof
+> that the deployed R2 WASM object currently instantiates or returns OCR tokens.
 
 ---
 

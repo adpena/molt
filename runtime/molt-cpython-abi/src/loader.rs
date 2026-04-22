@@ -1,13 +1,13 @@
-//! C extension loader — dlopen a real CPython `.so` and call `PyInit_<name>()`.
+//! Explicit CPython-ABI bridge loader — dlopen an allowlisted `.so` and call
+//! `PyInit_<name>()`.
 //!
 //! ## What this does
 //!
-//! When Molt encounters `import numpy` (for example), instead of failing it
-//! can try to load the system's `numpy.cpython-312-darwin.so`. That `.so` was
-//! compiled against CPython 3.12's C API, but our `molt-cpython-abi` crate
-//! provides compatible implementations of all the C API symbols via normal
-//! dynamic linking (the loader binary links against this crate, which exports
-//! `PyLong_FromLong`, `PyDict_New`, etc.).
+//! This module is an explicit bridge lane, not Molt's primary extension
+//! strategy. The primary path is recompiling extensions against `libmolt`.
+//! When the bridge feature is intentionally enabled, callers provide an
+//! allowlisted extension directory through `MOLT_EXTENSION_PATH`; this loader
+//! never probes host Python or system site-packages.
 //!
 //! Execution flow:
 //! 1. `load_cpython_extension(path, "numpy")` opens the `.so` via libloading.
@@ -31,7 +31,11 @@
 use crate::abi_types::PyObject;
 use crate::bridge::GLOBAL_BRIDGE;
 use libloading::{Library, Symbol};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use std::path::Path;
+
+static LOADED_EXTENSION_LIBRARIES: Lazy<Mutex<Vec<Library>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 /// Error type for extension loading failures.
 #[derive(Debug)]
@@ -42,6 +46,10 @@ pub enum LoadError {
     InitSymbolMissing { lib_path: String, symbol: String },
     /// `PyInit_<name>()` returned NULL — initialization error.
     InitReturnedNull { name: String },
+    /// `PyInit_<name>()` returned an object that is not known to the bridge.
+    InitReturnedUnmappedObject { name: String },
+    /// No explicit extension artifact was found for this module.
+    ExtensionNotFound { name: String },
 }
 
 impl std::fmt::Display for LoadError {
@@ -53,6 +61,18 @@ impl std::fmt::Display for LoadError {
             }
             Self::InitReturnedNull { name } => {
                 write!(f, "PyInit_{name}() returned NULL (module init error)")
+            }
+            Self::InitReturnedUnmappedObject { name } => {
+                write!(
+                    f,
+                    "PyInit_{name}() returned an object outside the libmolt bridge registry"
+                )
+            }
+            Self::ExtensionNotFound { name } => {
+                write!(
+                    f,
+                    "extension {name} not found in explicit MOLT_EXTENSION_PATH search roots"
+                )
             }
         }
     }
@@ -92,28 +112,30 @@ pub unsafe fn load_cpython_extension(path: &Path, name: &str) -> Result<u64, Loa
         });
     }
 
-    // Convert the returned *mut PyObject to a Molt handle.
+    // Convert the returned *mut PyObject to a Molt handle. Unknown pointers are
+    // a bridge contract violation and must fail loudly; returning None would
+    // hide an unsupported extension init path.
     let molt_bits = {
         let bridge = GLOBAL_BRIDGE.lock();
         bridge
             .pyobj_to_handle(module_ptr)
-            .unwrap_or_else(|| molt_lang_obj_model::MoltObject::none().bits())
+            .ok_or_else(|| LoadError::InitReturnedUnmappedObject {
+                name: name.to_owned(),
+            })?
     };
 
-    // Keep the library alive by leaking it — modules are kept for the lifetime
-    // of the process. Production code would store it in a registry.
-    std::mem::forget(lib);
+    // Keep the library alive for the process lifetime; extension code/data may
+    // be referenced by module objects and function pointers after init.
+    LOADED_EXTENSION_LIBRARIES.lock().push(lib);
 
     Ok(molt_bits)
 }
 
 /// Search standard CPython extension paths for `name`.
 ///
-/// Tries in order:
-/// 1. `MOLT_EXTENSION_PATH` env var (colon-separated directories)
-/// 2. Site-packages of the active Python (from `python3 -c "import site"`)
-/// 3. `/usr/local/lib/python3.*/lib-dynload/`
-/// 4. `/usr/lib/python3/dist-packages/`
+/// This bridge loader intentionally searches only explicit
+/// `MOLT_EXTENSION_PATH` roots. It does not inspect host Python, site-packages,
+/// or system lib-dynload directories.
 pub fn find_extension(name: &str) -> Option<std::path::PathBuf> {
     let candidates = extension_candidate_paths(name);
     candidates.into_iter().find(|p| p.exists())
@@ -124,43 +146,16 @@ fn extension_candidate_paths(name: &str) -> Vec<std::path::PathBuf> {
 
     let mut out = Vec::new();
 
-    // MOLT_EXTENSION_PATH
     if let Ok(env_path) = std::env::var("MOLT_EXTENSION_PATH") {
         for dir in env_path.split(':') {
+            if dir.is_empty() {
+                continue;
+            }
             let dir = PathBuf::from(dir);
             // Try common suffixes.
             for suffix in cpython_so_suffixes(name) {
                 out.push(dir.join(&suffix));
             }
-        }
-    }
-
-    // Probe python3 for site-packages.
-    if let Ok(output) = std::process::Command::new("python3")
-        .args([
-            "-c",
-            "import site; print('\\n'.join(site.getsitepackages()))",
-        ])
-        .output()
-        && output.status.success()
-    {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let dir = PathBuf::from(line.trim());
-            for suffix in cpython_so_suffixes(name) {
-                out.push(dir.join(name).join(&suffix));
-                out.push(dir.join(&suffix));
-            }
-        }
-    }
-
-    // System fallbacks.
-    for base in [
-        "/usr/local/lib/python3.12/lib-dynload",
-        "/usr/local/lib/python3.11/lib-dynload",
-        "/usr/lib/python3/dist-packages",
-    ] {
-        for suffix in cpython_so_suffixes(name) {
-            out.push(PathBuf::from(base).join(&suffix));
         }
     }
 
@@ -173,7 +168,7 @@ fn cpython_so_suffixes(name: &str) -> Vec<String> {
         // CPython 3.12 ABI tag — most common on modern systems.
         #[cfg(target_os = "macos")]
         format!("{name}.cpython-312-darwin.so"),
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
         format!("{name}.cpython-312-x86_64-linux-gnu.so"),
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         format!("{name}.cpython-312-aarch64-linux-gnu.so"),
@@ -192,9 +187,46 @@ fn cpython_so_suffixes(name: &str) -> Vec<String> {
 /// # Safety
 /// Same requirements as `load_cpython_extension`.
 pub unsafe fn import_cpython_extension(name: &str) -> Result<u64, LoadError> {
-    let path = find_extension(name).ok_or_else(|| LoadError::InitSymbolMissing {
-        lib_path: format!("<search paths for '{name}'>"),
-        symbol: format!("PyInit_{name}"),
+    let path = find_extension(name).ok_or_else(|| LoadError::ExtensionNotFound {
+        name: name.to_owned(),
     })?;
     unsafe { load_cpython_extension(&path, name) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LoadError, extension_candidate_paths};
+
+    #[test]
+    fn extension_search_uses_only_explicit_env_roots() {
+        let prior = std::env::var("MOLT_EXTENSION_PATH").ok();
+        unsafe {
+            std::env::set_var("MOLT_EXTENSION_PATH", "/explicit/a:/explicit/b");
+        }
+
+        let candidates = extension_candidate_paths("demoext");
+
+        match prior {
+            Some(value) => unsafe {
+                std::env::set_var("MOLT_EXTENSION_PATH", value);
+            },
+            None => unsafe {
+                std::env::remove_var("MOLT_EXTENSION_PATH");
+            },
+        }
+
+        assert!(!candidates.is_empty());
+        assert!(candidates.iter().all(|path| {
+            let text = path.to_string_lossy();
+            text.starts_with("/explicit/a/") || text.starts_with("/explicit/b/")
+        }));
+    }
+
+    #[test]
+    fn extension_not_found_error_is_explicit() {
+        let error = LoadError::ExtensionNotFound {
+            name: "demoext".to_string(),
+        };
+        assert!(error.to_string().contains("MOLT_EXTENSION_PATH"));
+    }
 }

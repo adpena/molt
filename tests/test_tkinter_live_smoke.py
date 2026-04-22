@@ -637,7 +637,7 @@ def _live_smoke_script(expected_platform: str) -> str:
 
 def _run_live_smoke(expected_platform: str) -> None:
     _require_live_smoke_prereqs(expected_platform)
-    base_tmp = EXT_ROOT / "tmp"
+    base_tmp = _artifact_root() / "tmp"
     base_tmp.mkdir(parents=True, exist_ok=True)
     run_dir = Path(
         tempfile.mkdtemp(prefix=f"tk_live_{expected_platform}_", dir=str(base_tmp))
@@ -834,7 +834,7 @@ def _live_filehandler_smoke_script(expected_platform: str) -> str:
 
 def _run_live_filehandler_smoke(expected_platform: str) -> None:
     _require_live_smoke_prereqs(expected_platform)
-    base_tmp = EXT_ROOT / "tmp"
+    base_tmp = _artifact_root() / "tmp"
     base_tmp.mkdir(parents=True, exist_ok=True)
     run_dir = Path(
         tempfile.mkdtemp(
