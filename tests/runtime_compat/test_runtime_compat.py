@@ -291,7 +291,7 @@ def print_summary(results: list[dict]) -> None:
 
     print()
     print("=" * 60)
-    print(f"  Runtime Compatibility Results")
+    print("  Runtime Compatibility Results")
     print(f"  PASS: {pass_count}  FAIL: {fail_count}  BUILD_FAIL: {build_fail}  RUN_FAIL: {run_fail}  SKIP: {skip_count}  TOTAL: {total}")
     print("=" * 60)
 

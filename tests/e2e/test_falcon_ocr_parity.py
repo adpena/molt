@@ -705,7 +705,7 @@ class TestPerformanceBaseline:
 
         # Print for visibility in test output
         print(f"\n{'='*60}")
-        print(f"Falcon-OCR Stub Performance Baseline")
+        print("Falcon-OCR Stub Performance Baseline")
         print(f"  Init time:           {t_init:.4f}s")
         print(f"  Total inference:     {t_total:.4f}s")
         print(f"  Tokens generated:    {n_tokens}")

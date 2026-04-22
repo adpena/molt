@@ -200,8 +200,8 @@ def render_markdown(rows: list[dict], summary: dict,
 
     # Summary
     lines.append("## Summary\n")
-    lines.append(f"| Metric | Value |")
-    lines.append(f"|--------|-------|")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
     lines.append(f"| Total benchmarks | {summary['total']} |")
     lines.append(f"| Pass / Fail / Skip | {summary['pass_count']} / {summary['fail_count']} / {summary['skip_count']} |")
     lines.append(f"| Pass rate | {summary['pass_rate']:.1f}% |")

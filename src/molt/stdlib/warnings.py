@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 import re as _re

@@ -70,7 +70,7 @@ def main():
         Softmax(),
     )
 
-    print(f"\nModel architecture:")
+    print("\nModel architecture:")
     print(model)
 
     # Count parameters

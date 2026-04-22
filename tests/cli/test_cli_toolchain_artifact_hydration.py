@@ -133,7 +133,7 @@ def test_ensure_runtime_wasm_hydrates_from_current_target_artifact(
         target_root / ".molt_state",
         canonical_runtime,
         subdir="runtime_fingerprints",
-        stem_suffix=f"dev-fast.wasm32-wasip1",
+        stem_suffix="dev-fast.wasm32-wasip1",
         extension="fingerprint",
     )
     canonical_fp.parent.mkdir(parents=True, exist_ok=True)

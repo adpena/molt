@@ -67,7 +67,7 @@ print("=== zip strict ===")
 try:
     list(zip([1, 2], [10, 20, 30], strict=True))
 except ValueError as e:
-    print(f"zip strict error: ValueError")
+    print("zip strict error: ValueError")
 
 print(list(zip([1, 2], [10, 20], strict=True)))
 

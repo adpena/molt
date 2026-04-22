@@ -7,6 +7,7 @@ compiled code without introducing dynamic indirection.
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+import sys as _sys
 
 _MOLT_SYS_MODULES = _require_intrinsic("molt_sys_modules")
 

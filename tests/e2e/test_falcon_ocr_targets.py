@@ -582,7 +582,7 @@ class TestCrossTargetParity:
             results["METAL"] = {"time": t_metal, "tokens": tokens}
 
         print(f"\n{'='*60}")
-        print(f"Cross-target timing report")
+        print("Cross-target timing report")
         for target, data in results.items():
             n = len(data["tokens"])
             tps = n / data["time"] if data["time"] > 0 else 0

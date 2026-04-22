@@ -420,6 +420,58 @@ def _module_with_linking_symbols(entries: list[bytes]) -> bytes:
     return wasm_link._build_sections([(0, custom)])
 
 
+def _build_linked_host_table_module(table_import_name: str) -> bytes:
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+
+    type_payload = bytearray()
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+
+    import_payload = bytearray()
+    import_payload.extend(write_varuint(1))
+    import_payload.extend(wasm_link._write_string("env"))
+    import_payload.extend(wasm_link._write_string(table_import_name))
+    import_payload.append(0x01)
+    import_payload.append(0x70)
+    import_payload.extend(write_varuint(0))
+    import_payload.extend(write_varuint(1))
+    sections.append((2, bytes(import_payload)))
+
+    func_payload = write_varuint(1) + write_varuint(0)
+    sections.append((3, bytes(func_payload)))
+
+    memory_payload = bytearray()
+    memory_payload.extend(write_varuint(1))
+    memory_payload.append(0x00)
+    memory_payload.extend(write_varuint(1))
+    sections.append((5, bytes(memory_payload)))
+
+    export_payload = bytearray()
+    export_payload.extend(write_varuint(3))
+    for name, kind, index in (
+        ("molt_main", 0x00, 0),
+        ("molt_table", 0x01, 0),
+        ("molt_memory", 0x02, 0),
+    ):
+        export_payload.extend(wasm_link._write_string(name))
+        export_payload.append(kind)
+        export_payload.extend(write_varuint(index))
+    sections.append((7, bytes(export_payload)))
+
+    code_payload = bytearray()
+    code_payload.extend(write_varuint(1))
+    code_payload.extend(write_varuint(2))
+    code_payload.append(0x00)
+    code_payload.append(0x0B)
+    sections.append((10, bytes(code_payload)))
+
+    return wasm_link._build_sections(sections)
+
+
 def _parse_data_segments(data: bytes) -> list[bytes]:
     sections = wasm_link._parse_sections(data)
     for section_id, payload in sections:
@@ -462,6 +514,36 @@ def test_wasm_link_allows_ref_func_element_expr() -> None:
     data = _build_minimal_module(bytes(payload))
     ok, err = wasm_link._validate_elements(data)
     assert ok, err
+
+
+def test_validate_linked_accepts_known_host_table_contract(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: None)
+
+    linked = tmp_path / "linked.wasm"
+    linked.write_bytes(_build_linked_host_table_module("__indirect_function_table"))
+
+    assert wasm_link._validate_linked(linked)
+    captured = capsys.readouterr()
+    assert "host-table contract" in captured.err
+
+
+def test_validate_linked_rejects_unexpected_table_import_contract(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: None)
+
+    linked = tmp_path / "linked.wasm"
+    linked.write_bytes(_build_linked_host_table_module("mystery_table"))
+
+    assert not wasm_link._validate_linked(linked)
+    captured = capsys.readouterr()
+    assert "unsupported table" in captured.err
 
 
 def test_stub_dead_functions_preserves_start_root_reachability() -> None:
@@ -1753,6 +1835,44 @@ def test_run_wasm_ld_split_runtime_fails_if_linked_validation_fails_after_output
     assert rc == 1
     assert (split_dir / "app.wasm").exists()
     assert (split_dir / "molt_runtime.wasm").exists()
+
+
+def test_run_wasm_ld_fails_when_ref_func_declaration_cannot_be_materialized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime_bytes = _build_exported_runtime_module("molt_main")
+    output_bytes = _build_exported_runtime_module("molt_main")
+    runtime = tmp_path / "runtime.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    runtime.write_bytes(runtime_bytes)
+    output.write_bytes(output_bytes)
+
+    def fake_run(_cmd, **_kwargs):
+        linked.write_bytes(output_bytes)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return Result()
+
+    monkeypatch.setattr(wasm_link.subprocess, "run", fake_run)
+    monkeypatch.setattr(wasm_link, "_scan_code_ref_funcs", lambda _data: {0})
+    monkeypatch.setattr(
+        wasm_link,
+        "_declare_ref_func_elements",
+        lambda _data: (_ for _ in ()).throw(ValueError("boom")),
+    )
+
+    rc = wasm_link._run_wasm_ld("wasm-ld", runtime, output, linked)
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "Failed to declare ref.func elements: boom" in captured.err
 
 
 def test_wasm_link_allows_ref_null_element_expr() -> None:

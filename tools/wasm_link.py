@@ -1649,6 +1649,35 @@ def _has_table(data: bytes) -> bool:
     return False
 
 
+def _validate_linked_table_import_contract(
+    imports: list[tuple[str, str, int, bytes]],
+) -> tuple[bool, str | None]:
+    table_imports = [
+        (module, name, desc)
+        for module, name, kind, desc in imports
+        if kind == 1
+    ]
+    if not table_imports:
+        return True, None
+    if len(table_imports) > 1:
+        table_names = ", ".join(f"{module}::{name}" for module, name, _ in table_imports)
+        return (
+            False,
+            "Linked wasm imports multiple tables "
+            f"({table_names}); only env::__indirect_function_table is supported.",
+        )
+    module, name, desc = table_imports[0]
+    if module != "env" or name != "__indirect_function_table":
+        return (
+            False,
+            "Linked wasm imports unsupported table "
+            f"{module}::{name}; expected env::__indirect_function_table.",
+        )
+    if not desc:
+        return False, "Linked wasm table import is missing its limits descriptor."
+    return True, None
+
+
 def _ensure_table_export(data: bytes, export_name: str = "molt_table") -> bytes | None:
     if not _has_table(data):
         return None
@@ -4304,14 +4333,14 @@ def _validate_linked(linked: Path) -> bool:
             file=sys.stderr,
         )
         return False
-    table_imports = [
-        (module, name)
-        for module, name, kind, _ in imports
-        if kind == 1 and name == "__indirect_function_table"
-    ]
-    if table_imports:
+    ok, err = _validate_linked_table_import_contract(imports)
+    if not ok:
+        print(f"Linked wasm table import validation failed: {err}", file=sys.stderr)
+        return False
+    if any(kind == 1 for _, _, kind, _ in imports):
         print(
-            "Linked wasm imports a function table; host will supply it.",
+            "Linked wasm retains env::__indirect_function_table under the "
+            "host-table contract.",
             file=sys.stderr,
         )
     memory_imports = [(module, name) for module, name, kind, _ in imports if kind == 2]
@@ -4842,16 +4871,19 @@ def _run_wasm_ld(
                 linked.write_bytes(updated)
                 linked_bytes = updated
         try:
-            updated = _declare_ref_func_elements(linked_bytes)
+            referenced_ref_funcs = _scan_code_ref_funcs(linked_bytes)
         except ValueError as exc:
-            print(
-                f"Warning: skipping ref.func element declaration: {exc}",
-                file=sys.stderr,
-            )
-            updated = None
-        if updated is not None:
-            linked.write_bytes(updated)
-            linked_bytes = updated
+            print(f"Failed to inspect ref.func instructions: {exc}", file=sys.stderr)
+            return 1
+        if referenced_ref_funcs:
+            try:
+                updated = _declare_ref_func_elements(linked_bytes)
+            except ValueError as exc:
+                print(f"Failed to declare ref.func elements: {exc}", file=sys.stderr)
+                return 1
+            if updated is not None:
+                linked.write_bytes(updated)
+                linked_bytes = updated
         try:
             updated = _ensure_table_export(linked_bytes)
         except ValueError as exc:

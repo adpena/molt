@@ -421,7 +421,7 @@ examples:
                 f.write(GENERATOR_SOURCE)
             bench_files = [("zone_generator", py_path)]
 
-        print(f"=== Molt Luau Benchmark Suite ===")
+        print("=== Molt Luau Benchmark Suite ===")
         print(f"Benchmarks: {len(bench_files)}  Iterations: {args.iterations}")
         if args.cpython_only:
             print("Mode: CPython-only")

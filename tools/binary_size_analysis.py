@@ -323,7 +323,7 @@ def print_native_report(analysis: dict) -> None:
 
     # Mach-O segment breakdown (if available)
     if segments:
-        print(f"\n--- Mach-O Segments ---")
+        print("\n--- Mach-O Segments ---")
         print(f"{'Segment / Section':<40s} {'Size':>12s}  {'% of file':>9s}")
         print("-" * 65)
         for seg in segments:
@@ -336,7 +336,7 @@ def print_native_report(analysis: dict) -> None:
         print()
 
     # Category breakdown from symbol analysis
-    print(f"--- Symbol Category Breakdown ---")
+    print("--- Symbol Category Breakdown ---")
     print(f"{'Category':<30s} {'Size':>12s}  {'% of syms':>9s}  {'% of file':>9s}")
     print("-" * 65)
     for key, size in sorted(cat_totals.items(), key=lambda kv: -kv[1]):
@@ -351,7 +351,7 @@ def print_native_report(analysis: dict) -> None:
     print(f"  {'File total':<28s} {_fmt_bytes(total):>12s}")
 
     # Top 50 largest symbols
-    print(f"\n--- Top 50 Largest Symbols ---")
+    print("\n--- Top 50 Largest Symbols ---")
     print(f"{'#':>4s}  {'Size':>12s}  {'Category':<22s}  {'Symbol'}")
     print("-" * 76)
     for i, sym in enumerate(symbols[:50], 1):
@@ -488,7 +488,7 @@ def print_wasm_report(analysis: dict) -> None:
     print("-" * 57)
     print(f"  {'TOTAL':<33s} {_fmt_bytes(total):>12s}")
 
-    print(f"\n--- Code Section Details ---")
+    print("\n--- Code Section Details ---")
     print(f"  Function count:        {func_count:,}")
     print(f"  Code section size:     {_fmt_bytes(analysis['code_size'])}")
     print(f"  Avg function size:     {_fmt_bytes(avg_func)}")
@@ -499,7 +499,7 @@ def print_wasm_report(analysis: dict) -> None:
     custom_total = sum(v for k, v in by_type.items() if k.startswith("custom:"))
     structural = total - code_total - data_total - custom_total
 
-    print(f"\n--- Estimated Contribution ---")
+    print("\n--- Estimated Contribution ---")
     print(f"  Code (functions):      {_fmt_bytes(code_total):>12s}  {_pct(code_total, total)}")
     print(f"  Data (constants/heap): {_fmt_bytes(data_total):>12s}  {_pct(data_total, total)}")
     print(f"  Custom sections:       {_fmt_bytes(custom_total):>12s}  {_pct(custom_total, total)}")

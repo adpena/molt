@@ -243,5 +243,5 @@ def test_total_download_size_budget():
     )
     # Document actual size
     print(f"\nTotal browser download size: {total / 1_000_000:.1f} MB")
-    print(f"  WASM: ~14.1 MB")
+    print("  WASM: ~14.1 MB")
     print(f"  Weights (5 shards): ~{(total - 14_091_993) / 1_000_000:.1f} MB")

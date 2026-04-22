@@ -303,7 +303,7 @@ def describe_stub_model() -> str:
     total = tok_params + proj_params + n_layers * layer_params + norm_params + output_params
 
     lines = [
-        f"Falcon-OCR Stub Model",
+        "Falcon-OCR Stub Model",
         f"  dim={dim}, n_layers={n_layers}, n_heads={n_heads}, head_dim={head_dim}",
         f"  n_kv_heads={n_kv_heads}, ffn_dim={ffn_dim}, vocab_size={vocab_size}",
         f"  patch_dim={patch_dim}",
