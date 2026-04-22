@@ -1,9 +1,9 @@
-# Production Status — 2026-04-14
+# Production Status — 2026-04-21
 
 ## Live Endpoints
 | Endpoint | URL | Status |
 |----------|-----|--------|
-| Worker | falcon-ocr.adpena.workers.dev | Live (v310c2be8) |
+| Worker | falcon-ocr.adpena.workers.dev | Live |
 | App | freeinvoicemaker.app | Live |
 | Test Page | falcon-ocr.adpena.workers.dev/test | Live |
 | Health | falcon-ocr.adpena.workers.dev/health | Live (503 while loading, 200 when ready) |
@@ -16,15 +16,15 @@
 | Engine | Quality | Speed | Location |
 |--------|---------|-------|----------|
 | PaddleOCR | 99.6% | Instant | Browser (production primary) |
-| Falcon-OCR INT8 CPU | Good (16x better than INT4) | ~60s/token | Edge (streaming shard load) |
+| Falcon-OCR INT8 CPU | Good (16x better than INT4) | ~60s/token | Edge (sharded load) |
 | Falcon-OCR INT4 CPU | Degraded (14% quant error) | ~24s/token (8 layers) | Edge (fallback) |
 | Falcon-OCR WebGPU | TBD | 10-100x faster than CPU | Browser |
 
 ## Model Loading Strategy (Workers, 256 MB limit)
 | Priority | Variant | Total Size | Peak Memory | Strategy |
 |----------|---------|-----------|-------------|----------|
-| 0 | INT8 sharded | 257 MB (6 shards) | ~80 MB | Stream: load shard, extract tensors, drop buffer, next |
-| 1 | INT4 sharded | 129 MB (5 shards) | ~60 MB | Same streaming approach |
+| 0 | INT8 sharded | 257 MB (6 shards) | Full decoded tensor map + one shard buffer | Load one shard buffer at a time; decoded tensors remain resident |
+| 1 | INT4 sharded | 129 MB (5 shards) | Full decoded tensor map + one shard buffer | Same sharded loading approach |
 | 2 | INT4 single | 129 MB | 129 MB | Direct load |
 | 3 | Micro model | 263 KB | <1 MB | Embedded, always works |
 
@@ -32,10 +32,10 @@
 | Asset | Size | Path |
 |-------|------|------|
 | WASM binary | 10.5 MB (raw) | models/falcon-ocr/falcon-ocr.wasm |
-| INT8 weights | 270 MB (6 shards, 43-52 MB each) | models/falcon-ocr-int8/ |
+| INT8 weights | 270 MB (6 shards, 43-52 MB each) | models/falcon-ocr-int8-sharded/ |
 | INT4 weights | 129 MB (5 shards) | models/falcon-ocr-int4-sharded/ |
 | Tokenizer | 4.8 MB | models/falcon-ocr/tokenizer.json |
-| Zig SIMD | 5.4 KB | browser/simd-ops-zig.wasm |
+| Zig SIMD | 5.4 KB | browser/simd-ops-zig/simd.wasm |
 | Rust SIMD | 14.0 KB | browser/simd-ops.wasm |
 | Browser JS | ~155 KB total | browser/*.js |
 
@@ -70,15 +70,15 @@
 |---------|-------|
 | Workers | Main inference endpoint, API routing, x402 payment verification |
 | R2 | Model weight storage (INT8/INT4 shards), WASM binaries, tokenizer |
-| KV | Rate limiting counters, session state, model metadata cache |
-| Durable Objects | Stateful inference sessions (falcon-ocr-do.js) |
+| KV | Session state, model metadata cache, batch result state |
+| Durable Objects | Stateful inference sessions and per-IP rate limiter |
 | Browser Rendering | WebGPU inference path (browser-gpu-inference.js) |
 | Queues | Batch OCR processing (queue-batch-ocr.js) |
 
 ## Production Hardening
 | Check | Status |
 |-------|--------|
-| Rate limiting | Per-IP, 100 req/min via KV counter (POST only) |
+| Rate limiting | Per-IP, 100 req/min via Durable Object (POST only) |
 | CORS | Locked to freeinvoicemaker.app (no wildcard) |
 | Error responses | All paths return JSON with request_id |
 | PII logging | None (no image content logged) |
