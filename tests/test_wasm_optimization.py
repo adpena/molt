@@ -79,6 +79,38 @@ def _build_wasm(src: Path, out_dir: Path) -> Path:
     return wasm_path
 
 
+def _varuint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _wasm_string(value: str) -> bytes:
+    raw = value.encode("utf-8")
+    return _varuint(len(raw)) + raw
+
+
+def _exported_func_module(export_name: str) -> bytes:
+    sections: list[tuple[int, bytes]] = []
+    sections.append((1, b"\x01\x60\x00\x00"))
+    sections.append((3, b"\x01\x00"))
+    export_payload = b"\x01" + _wasm_string(export_name) + b"\x00\x00"
+    sections.append((7, export_payload))
+    sections.append((10, b"\x01\x02\x00\x0b"))
+    data = bytearray(b"\x00asm\x01\x00\x00\x00")
+    for section_id, payload in sections:
+        data.append(section_id)
+        data.extend(_varuint(len(payload)))
+        data.extend(payload)
+    return bytes(data)
+
+
 # ---------------------------------------------------------------------------
 # Tests: wasm-opt reduction
 # ---------------------------------------------------------------------------
@@ -174,6 +206,38 @@ class TestWasmOptReduction:
         cmd = recorded["cmd"]
         assert "--converge" not in cmd
         assert "-Oz" in cmd
+
+    def test_optimize_rejects_missing_required_exports(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        import tools.wasm_optimize as mod
+
+        input_wasm = tmp_path / "input.wasm"
+        output_wasm = tmp_path / "output.wasm"
+        input_wasm.write_bytes(_exported_func_module("required"))
+
+        monkeypatch.setattr(mod, "find_wasm_opt", lambda: "/usr/bin/wasm-opt")
+
+        def fake_run(cmd, capture_output, text, timeout):  # type: ignore[no-untyped-def]
+            del capture_output, text, timeout
+            output_path = Path(cmd[cmd.index("-o") + 1])
+            output_path.write_bytes(_exported_func_module("wrong"))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        result = mod.optimize(
+            input_wasm,
+            output_path=output_wasm,
+            level="Oz",
+            required_exports={"required"},
+        )
+
+        assert result["ok"] is False
+        assert "missing required exports" in str(result["error"])
+        assert "required" in str(result["error"])
 
 
 # ---------------------------------------------------------------------------

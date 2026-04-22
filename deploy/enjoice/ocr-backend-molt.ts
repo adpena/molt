@@ -75,13 +75,29 @@ export interface OcrBackendStatus {
   reason?: string;
 }
 
+/**
+ * Progress phases the ScanButton UI should display:
+ *
+ *   detecting    - "Detecting GPU..." (~100ms)
+ *   wasm         - "Loading WASM runtime..." (~200ms)
+ *   config       - "Reading model config..." (instant)
+ *   weights      - "Downloading model (45 MB / 257 MB)..." (progressive)
+ *   gpu          - "Initializing GPU compute..." (1-3s)
+ *   init         - "Preparing inference engine..." (~500ms)
+ *   inferring    - "Running OCR inference..." (1-30s depending on GPU)
+ *   decoding     - "Decoding text..." (instant)
+ *   done         - "Done - extracted in 2.3s"
+ */
 export type InitProgressPhase =
   | "detecting"
   | "wasm"
   | "config"
   | "weights"
   | "gpu"
-  | "init";
+  | "init"
+  | "inferring"
+  | "decoding"
+  | "done";
 
 export interface InitProgressDetail {
   phase?: string;
@@ -92,6 +108,18 @@ export interface InitProgressDetail {
   shard?: number;
   totalShards?: number;
   fromCache?: boolean;
+}
+
+/**
+ * Unified progress callback for the full OCR lifecycle (init + inference).
+ * The ScanButton component subscribes to this to drive its progress bar
+ * and status text through all phases.
+ */
+export interface OcrProgress {
+  phase: InitProgressPhase;
+  percent: number;
+  detail?: string;
+  timing?: { elapsed_ms: number };
 }
 
 export type OnInitProgress = (
@@ -296,10 +324,27 @@ export class MoltOcrBackend {
     // Browser WASM path: all inference runs locally, no network
     if (this.usingBrowserWasm && this.browserOcr) {
       const totalStart = performance.now();
+      const progress = this._onInitProgress;
+
+      progress?.("inferring", 0, {
+        message: "Running OCR inference...",
+      });
+
       const wasmResult = await (this.browserOcr as any).recognize(image);
-      const totalMs = performance.now() - totalStart;
+
+      progress?.("decoding", 90, {
+        message: "Decoding text...",
+      });
 
       const backend = wasmResult.backend ?? this._computeBackend;
+      const totalMs = performance.now() - totalStart;
+      const textPreview = wasmResult.text.length > 40
+        ? wasmResult.text.slice(0, 40) + "..."
+        : wasmResult.text;
+
+      progress?.("done", 100, {
+        message: "Done - '" + textPreview + "' extracted in " + (totalMs / 1000).toFixed(1) + "s",
+      });
 
       return {
         result: {

@@ -1,4 +1,5 @@
 import hashlib
+import importlib.machinery
 import importlib.util
 import tempfile
 from pathlib import Path
@@ -712,6 +713,56 @@ def test_tree_shake_runtime_uses_converge_flag(
     assert shaken.startswith(b"\x00asm\x01\x00\x00\x00")
     assert calls, "expected wasm-opt tree-shake invocation"
     assert "--converge" in calls[0]
+
+
+def test_run_wasm_opt_via_optimize_enforces_current_export_contract(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    linked = tmp_path / "linked.wasm"
+    linked.write_bytes(
+        _build_exported_runtime_module_many(["molt_main", "molt_host_init"])
+    )
+    seen: dict[str, object] = {}
+
+    class _Loader:
+        def create_module(self, _spec):  # noqa: ANN001
+            return None
+
+        def exec_module(self, module):  # noqa: ANN001
+            def fake_optimize(
+                input_path,
+                *,
+                output_path,
+                level,
+                extra_passes,
+                converge,
+                required_exports,
+            ):
+                seen["input_path"] = input_path
+                seen["level"] = level
+                seen["converge"] = converge
+                seen["required_exports"] = set(required_exports)
+                output_path.write_bytes(input_path.read_bytes())
+                return {
+                    "ok": True,
+                    "output_bytes": output_path.stat().st_size,
+                    "error": "",
+                }
+
+            module.optimize = fake_optimize
+
+    monkeypatch.setattr(
+        wasm_link.importlib.util,
+        "spec_from_file_location",
+        lambda _name, _path: importlib.machinery.ModuleSpec(
+            "wasm_optimize",
+            _Loader(),
+        ),
+    )
+
+    assert wasm_link._run_wasm_opt_via_optimize(linked, level="Oz")
+    assert seen["required_exports"] == {"molt_main", "molt_host_init"}
 
 
 

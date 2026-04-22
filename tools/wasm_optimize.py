@@ -46,6 +46,62 @@ def find_wasm_opt() -> str | None:
     return shutil.which("wasm-opt")
 
 
+def _read_varuint(data: bytes, offset: int) -> tuple[int, int]:
+    result = 0
+    shift = 0
+    while True:
+        if offset >= len(data):
+            raise ValueError("unexpected EOF while reading varuint")
+        byte = data[offset]
+        offset += 1
+        result |= (byte & 0x7F) << shift
+        if byte & 0x80 == 0:
+            return result, offset
+        shift += 7
+        if shift > 63:
+            raise ValueError("varuint too large")
+
+
+def _read_string(data: bytes, offset: int) -> tuple[str, int]:
+    size, offset = _read_varuint(data, offset)
+    end = offset + size
+    if end > len(data):
+        raise ValueError("unexpected EOF while reading string")
+    return data[offset:end].decode("utf-8"), end
+
+
+def _collect_function_exports(path: Path) -> set[str]:
+    data = path.read_bytes()
+    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\0\0\0":
+        return set()
+    offset = 8
+    exports: set[str] = set()
+    while offset < len(data):
+        section_id = data[offset]
+        offset += 1
+        section_size, offset = _read_varuint(data, offset)
+        end = offset + section_size
+        if end > len(data):
+            raise ValueError("unexpected EOF while reading section")
+        payload = data[offset:end]
+        offset = end
+        if section_id != 7:
+            continue
+        cursor = 0
+        count, cursor = _read_varuint(payload, cursor)
+        for _ in range(count):
+            name, cursor = _read_string(payload, cursor)
+            if cursor >= len(payload):
+                raise ValueError("unexpected EOF while reading export kind")
+            kind = payload[cursor]
+            cursor += 1
+            _, cursor = _read_varuint(payload, cursor)
+            if kind == 0:
+                exports.add(name)
+        break
+    return exports
+
+
 def optimize(
     input_path: Path,
     output_path: Path | None = None,
@@ -53,6 +109,7 @@ def optimize(
     extra_passes: list[str] | None = None,
     *,
     converge: bool = True,
+    required_exports: set[str] | frozenset[str] | None = None,
 ) -> dict[str, object]:
     """Run ``wasm-opt`` on *input_path*.
 
@@ -142,6 +199,33 @@ def optimize(
             "output_path": str(output_path),
             "error": (proc.stderr or proc.stdout)[:500],
         }
+
+    if required_exports:
+        try:
+            exports = _collect_function_exports(output_path)
+        except (OSError, ValueError) as exc:
+            return {
+                "ok": False,
+                "input_bytes": input_bytes,
+                "output_bytes": output_path.stat().st_size if output_path.exists() else 0,
+                "reduction_bytes": 0,
+                "reduction_pct": 0.0,
+                "elapsed_s": elapsed,
+                "output_path": str(output_path),
+                "error": f"failed to verify optimized exports: {exc}",
+            }
+        missing = sorted(set(required_exports) - exports)
+        if missing:
+            return {
+                "ok": False,
+                "input_bytes": input_bytes,
+                "output_bytes": output_path.stat().st_size if output_path.exists() else 0,
+                "reduction_bytes": 0,
+                "reduction_pct": 0.0,
+                "elapsed_s": elapsed,
+                "output_path": str(output_path),
+                "error": "optimized wasm missing required exports: " + ", ".join(missing),
+            }
 
     output_bytes = output_path.stat().st_size
     reduction = input_bytes - output_bytes
