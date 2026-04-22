@@ -156,6 +156,7 @@ def run_repl(
         Exit code (0 for normal exit).
     """
     # Try to enable readline for history and completion
+    history_path: Path | None = None
     try:
         import readline
 
@@ -173,8 +174,7 @@ def run_repl(
         if history_path.exists():
             readline.read_history_file(str(history_path))
     except ImportError:
-        readline = None  # type: ignore[assignment]
-        history_path = None
+        pass
 
     print("Molt REPL (Python subset, compiled execution)")
     print("Type 'exit()' or Ctrl-D to quit.")
